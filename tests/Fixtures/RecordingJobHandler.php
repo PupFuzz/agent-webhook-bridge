@@ -25,6 +25,8 @@ final class RecordingJobHandler implements JobHandler
         private readonly JobCapability $capability = JobCapability::ReadAndAlert,
         /** When set, the handler throws it instead of returning — the failure path. */
         public ?string $throwMessage = null,
+        /** When set, the OK summary this handler reports instead of the recorded default. */
+        public ?string $okSummary = null,
     ) {}
 
     public function name(): string
@@ -45,7 +47,7 @@ final class RecordingJobHandler implements JobHandler
             throw new RuntimeException($this->throwMessage);
         }
 
-        return JobOutcome::ok('recorded call '.count($this->calls).' from '.$ctx->source->value);
+        return JobOutcome::ok($this->okSummary ?? 'recorded call '.count($this->calls).' from '.$ctx->source->value);
     }
 
     /** @return list<string> the ingress each call arrived on, in order */

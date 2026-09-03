@@ -214,7 +214,10 @@ final class AgentConfig
         if ($url !== null) {
             $urlStr = is_scalar($url) ? (string) $url : '';
             if ($urlStr === '' || preg_match('/\s/', $urlStr) === 1) {
-                throw new ConfigException("channel.url '{$urlStr}' must be a non-empty URL with no whitespace");
+                // Redacted at the interpolation, not by a reader of the thrown message: the
+                // SSH-tunnel form this key exists for is exactly where an operator writes
+                // `https://user:token@…` (card#8433, same rule as `UrlValidator`).
+                throw new ConfigException("channel.url '".SecretScrubber::url($urlStr)."' must be a non-empty URL with no whitespace");
             }
         }
         if ($socketStr !== null && $urlStr !== null) {

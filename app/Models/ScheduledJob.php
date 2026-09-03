@@ -2,9 +2,11 @@
 
 namespace App\Models;
 
+use App\Bridge\Scheduling\JobHandler;
 use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobSpec;
+use App\Bridge\Support\SecretScrubber;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 
@@ -31,6 +33,14 @@ use Illuminate\Support\Carbon;
  * is a place a secret could sit unread, which is why omitting one is a defect and not a
  * formatting choice. (`id` and the framework `created_at`/`updated_at` carry no caller value
  * and are not printed — that is the whole carve-out.)
+ *
+ * ⚑ TWO OF THOSE COLUMNS ARE WRITTEN FROM TEXT THIS APP DID NOT COMPOSE, and they get a
+ * BACKSTOP on top of the rule (DL-344). `last_error` and `last_summary` carry a
+ * {@see JobHandler}'s own words — operator or third-party code, a
+ * system boundary — so {@see JobScheduler} scrubs both through
+ * {@see SecretScrubber} before the row is saved. ⛔ THAT DOES NOT
+ * RELAX THE RULE ABOVE: the scrubber matches credential SHAPES and URL COMPONENTS, so a bare
+ * unkeyed secret still lands verbatim, and every other column here has no scrub at all.
  *
  * ⚑ AND THAT UNIVERSAL IS A GUARD, NOT A SENTENCE SOMEBODY MAINTAINS. It was hand-maintained
  * and it was false twice, each repair narrowing to the columns the last review had named.
