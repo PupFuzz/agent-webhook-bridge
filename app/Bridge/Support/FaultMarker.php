@@ -25,23 +25,24 @@ use Throwable;
  * stopped. Each leg is guarded separately, so a fault in either still leaves the other.
  *
  * ⚠ A TOTAL RECORDING FAILURE — both legs down at once — IS SILENT HERE, AND THAT IS THE
- * RIGHT TRADE. Whether the FACT still reaches anyone then is NOT uniform across the callers,
- * so it is stated per caller instead of promised for all of them. `record()` has exactly
- * three callers: `App\Bridge\Scheduling\JobScheduler::passSafely()`,
- * `App\Bridge\Retention\RetentionGate::runSafely()` and
- * `App\Bridge\Standup\StandupGate::runSafely()`.
- * ⭐ REPORTED — the TICK path: `passSafely()` returns a `JobPassResult` carrying the fault,
- * and `bridge:tick` / `bridge:jobs run` read `passFailed()` off that result and exit
- * non-zero, so a crontab line still learns the pass failed with neither log nor marker
- * written.
- * ⛔ UNREPORTED — the two gates and the EVENT ingress: `RetentionGate` and `StandupGate`
- * record from a `void` terminating callback, which has no result to carry, and
- * `App\Bridge\Scheduling\JobSchedulerGate` calls the same `passSafely()` from a terminating
- * callback that DISCARDS its return value. On those three paths a simultaneous log-and-cache
- * failure leaves no record at all, and that pairing is not exotic: on the default config both
- * legs are files under one directory tree (`LOG_CHANNEL=stack` → `single` writes
- * `storage/logs`, `CACHE_STORE=file` writes `storage/framework/cache/data`), so ONE cause —
- * a full disk, an unwritable `storage/` — takes both.
+ * RIGHT TRADE. Whether the FACT still reaches anyone then is NOT uniform across the PATHS
+ * that reach this class, so it is stated per path instead of promised for all of them. Since
+ * card#8432 `record()` has exactly ONE caller — {@see AfterResponseGate::recordFault()},
+ * which binds the key, the cadence and the message per subsystem — and three paths arrive
+ * through it:
+ * ⭐ REPORTED — the TICK path: `App\Bridge\Scheduling\JobScheduler::passSafely()` returns a
+ * `JobPassResult` carrying the fault, and `bridge:tick` / `bridge:jobs run` read
+ * `passFailed()` off that result and exit non-zero, so a crontab line still learns the pass
+ * failed with neither log nor marker written.
+ * ⛔ UNREPORTED — the two gates and the EVENT ingress: `App\Bridge\Retention\RetentionGate::runSafely()`
+ * and `App\Bridge\Standup\StandupGate::runSafely()` record from a `void` terminating callback,
+ * which has no result to carry, and `App\Bridge\Scheduling\JobSchedulerGate` calls the same
+ * `passSafely()` from a terminating callback that DISCARDS its return value. On those three
+ * paths a simultaneous log-and-cache failure leaves no record at all, and that pairing is not
+ * exotic: on the default config both legs are files under one directory tree
+ * (`LOG_CHANNEL=stack` → `single` writes `storage/logs`, `CACHE_STORE=file` writes
+ * `storage/framework/cache/data`), so ONE cause — a full disk, an unwritable `storage/` —
+ * takes both.
  * What must never happen either way is the recording putting the throw back on the path the
  * shell was written to keep clean.
  */
