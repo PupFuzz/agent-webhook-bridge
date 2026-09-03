@@ -52,6 +52,33 @@ use Throwable;
  * recording a fault cannot re-raise it — and hoisting a second overlapping recorder would be
  * this class's own defect. What this adds is that the key, the cadence and the message are
  * bound ONCE per subsystem instead of being spelled out at each call.
+ *
+ * ⚠ WHAT THE THREE SUITES PIN HERE, AND WHAT THEY DO NOT. "The existing tests are the
+ * regression net for this class" holds only of the cells a mutation actually reds, so the
+ * remainder is written down rather than left to be assumed. Measured by mutating this class
+ * one cell at a time and watching which suites go red (card#8432):
+ *  - **PINNED.** Removing the lost-lock arm, not arming the marker, dropping the due-check,
+ *    and making {@see self::recordFault()} or {@see self::clearFault()} a no-op each red the
+ *    retention, standup AND jobs suites together, from one edit here; three of those five
+ *    red a fourth suite as well. Those cells cannot change unnoticed.
+ *  - **NOT PINNED — three cells nothing reds.** {@see self::LOCK_TTL}'s VALUE; the `$seconds`
+ *    {@see self::backOff()} arms the marker with; and the `$cadenceSeconds` closure being
+ *    INVOKED rather than standing in for a literal. Break all three at once — a TTL of 1, a
+ *    fixed back-off, a literal cadence — and the FULL suite is still green (measured, not
+ *    inferred). None is a regression: all three were equally unpinned by the three
+ *    hand-written copies this replaced. But a change to any of them is one no test will
+ *    catch, so two are closed by READING instead: the back-off TTL by
+ *    `Illuminate\Cache\Repository::put()`, where a TTL `<= 0` degrades to a `forget`; the
+ *    cadence closure by {@see FaultMarker::record()}, which floors the marker TTL at
+ *    {@see FaultMarker::TTL_FLOOR}, so a mis-resolved cadence is inert until the subsystem's
+ *    interval exceeds that floor — above roughly 30 days, which no shipped default
+ *    approaches.
+ *  - **ONE GATE-SIDE HOLE THIS CLASS INHERITS RATHER THAN INTRODUCES.** Arming the marker
+ *    AFTER the work instead of before reds the retention and jobs suites but NOT the standup
+ *    one: `tests/Feature/Standup/StandupGateTest.php` asserts that a failing push is logged
+ *    and leaves an error marker, never that it leaves the INTERVAL marker armed. So the
+ *    marker-before-work rule above has no witness on the standup path. It had none at the
+ *    three copies either, and card#8432 did not close it.
  */
 final class AfterResponseGate
 {
@@ -60,7 +87,7 @@ final class AfterResponseGate
      * released. Only relevant if a worker is killed mid-pass; a pass that takes anywhere
      * near this is already pathological.
      */
-    public const LOCK_TTL = 300;
+    private const LOCK_TTL = 300;
 
     /**
      * @param  string  $lockKey  the cache key the non-blocking pass lock lives at
@@ -97,6 +124,17 @@ final class AfterResponseGate
      * own catch arm recording through {@see self::recordFault()}. Swallowing anything here
      * would put a fault where nothing reports it. That includes a cache backend so dead that
      * acquiring the lock is itself the fault.
+     *
+     * ⚑ THE `TWork|GateSkip` RETURN IS WHAT MAKES A CALLER'S MAPPING STATICALLY EXHAUSTIVE.
+     * A bare `mixed` leaves a caller that discriminates on the enum unable to write a `match`
+     * phpstan can check, so it falls back to a ternary whose else-arm silently absorbs any
+     * case added later — the same reason `phpstan-laravel.neon` pulls individual enum
+     * consumers into its analysed paths.
+     *
+     * @template TWork
+     *
+     * @param  Closure(): TWork  $work
+     * @return TWork|GateSkip
      */
     public function oncePerInterval(int $interval, Closure $work): mixed
     {

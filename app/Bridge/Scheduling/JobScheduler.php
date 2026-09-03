@@ -196,9 +196,19 @@ final class JobScheduler
             return $outcome;
         }
 
-        return JobPassResult::skipped($source, $outcome === GateSkip::TooSoon
-            ? JobPassResult::SKIP_TOO_SOON
-            : JobPassResult::SKIP_LOCKED);
+        // ⛔ EXHAUSTIVE ON PURPOSE, never a ternary with a catch-all arm. A third
+        // {@see GateSkip} case — which is exactly what a fourth subsystem binding the
+        // primitive is expected to add — would be silently reported as `lock held` by an
+        // else-arm, putting a cause that never happened on the one surface DL-325 built to
+        // be enumerable. Because {@see AfterResponseGate::oncePerInterval()} is typed
+        // `TWork|GateSkip` rather than `mixed`, the analyser reds an unhandled case at CI;
+        // the `UnhandledMatchError` is the runtime backstop, and it reaches
+        // {@see self::passSafely()}, which records it as a pass fault: loud, and in the
+        // direction this subsystem chose everywhere else.
+        return JobPassResult::skipped($source, match ($outcome) {
+            GateSkip::TooSoon => JobPassResult::SKIP_TOO_SOON,
+            GateSkip::Locked => JobPassResult::SKIP_LOCKED,
+        });
     }
 
     private function runDue(JobPassSource $source, int $maxPerPass): JobPassResult
