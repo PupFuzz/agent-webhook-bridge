@@ -259,9 +259,18 @@ removed is credential-shaped — a sensitive key's value, a `Bearer`/`Basic`/`to
 vendor token prefix — plus the **userinfo, query and fragment of any URL** in the text, which
 are credential-bearing by position whatever they are named. Scheme, host, port and path
 survive, so `push to https://ops.example/hook?k=…` reads back as
-`push to https://ops.example/hook?[REDACTED]`. ⛔ **Do not read this as a guarantee**: it is a
-filter over shapes, and a bare unkeyed secret in your message is not reachable by it. Keep
-credentials out of your message text; this is a backstop, not permission.
+`push to https://ops.example/hook?[REDACTED]`.
+
+⚠ **Two ways it removes MORE than you might expect, so your message stays diagnostic.** An
+at-sign anywhere in a URL is read as the end of a userinfo, so `https://ops.example/@you/x`
+reads back as `https://***@you/x` — the host and path go with it. And a redaction runs to the
+next **whitespace**, so anything you append to a URL without a space goes with the query: a
+comma-joined second URL disappears, and `(https://ops.example/x?k=…)` loses its closing
+bracket. Put a space before anything you need to survive.
+
+⛔ **Do not read this as a guarantee**: it is a filter over shapes, and a bare unkeyed secret
+in your message is not reachable by it. Keep credentials out of your message text; this is a
+backstop, not permission.
 
 ## Shipped handlers
 

@@ -19,8 +19,10 @@ namespace App\Bridge\Support;
  *  - {@see self::text()} works on TEXT SOMEONE ELSE COMPOSED — an upstream error body, a
  *    third-party `App\Bridge\Scheduling\JobHandler`'s exception message. It matches
  *    credential SHAPES (a sensitive key's value, an auth scheme, a vendor prefix), and it
- *    additionally strips the userinfo/query/fragment of any `http(s)://…` run it finds,
- *    because those components are credential-bearing by POSITION whatever they are named.
+ *    additionally strips the userinfo/query/fragment of any `http(s)://…` run it finds —
+ *    a JSON-escaped `https:\/\/…` included, which is the form the one body this app scrubs
+ *    most actually arrives in — because those components are credential-bearing by POSITION
+ *    whatever they are named.
  *  - {@see self::url()} works on a URL VALUE WE ARE ABOUT TO INTERPOLATE OURSELVES. It puts
  *    the same positional rule over the WHOLE value — including one with NO SCHEME, which
  *    the embedded-URL pass cannot recognise and which is exactly what
@@ -35,7 +37,29 @@ namespace App\Bridge\Support;
  * ⚠ OVER-REDACTION IS DELIBERATE, inherited from the rule this class was hoisted out of: a
  * benign field whose key merely contains a sensitive word loses its value too, and a URL's
  * query string is dropped whether or not it held anything. A leaked credential is the
- * failure mode designed against; a redacted-but-benign field is not.
+ * failure mode designed against; a redacted-but-benign field is not. Three consequences of
+ * that choice, stated so no caller reads the output as minimal:
+ *  - The userinfo binds at the LAST at-sign before whitespace, so one sitting in a PATH or a
+ *    QUERY is taken for a userinfo terminator and the scheme aside, everything in front of
+ *    it — host and path included — is replaced. The alternative, stopping the userinfo at
+ *    the first `/`, `?` or `#`, cannot reach an at-sign behind any of those three, and `/`
+ *    is in the base64 alphabet while `?` and `#` are ordinary generated-password
+ *    characters, so that bound echoed real credentials. Both directions are worked in
+ *    {@see self::stripCredentialComponents()} and pinned in `Tests\Unit\Support\SecretScrubberTest`.
+ *  - The redaction of a query/fragment runs to the next WHITESPACE, so non-whitespace text
+ *    following a redacted URL is dropped with it — a comma-joined second URL, a closing
+ *    bracket, a trailing sentence period (see {@see self::text()} for why it is not
+ *    narrowed).
+ *  - A `[REDACTED]` in the output therefore marks that SOMETHING credential-shaped or
+ *    credential-positioned was there; it never bounds how much of the surrounding text went.
+ *
+ * ⚠ IT REDACTS AT THE WRITE, SO IT SAYS NOTHING ABOUT ALREADY-STORED TEXT. Rows and cache
+ * markers written before this class shipped still hold whatever the raw text was, and the
+ * readers still print it verbatim (`bridge:jobs`, `bridge:check`). No migration rewrites
+ * them: the `bridge:{jobs,retention,standup}:last-error` markers age out at their 30-day
+ * TTL floor, and a `scheduled_jobs.last_error` / `.last_summary` row is overwritten the next
+ * time that job runs. Stated in DL-344's bounds as a known limit rather than left to be
+ * assumed clean.
  *
  * ⚠ WHAT IT DOES NOT DO, stated so no caller reads more into it. It does not redact a
  * secret carried in a URL's PATH (`https://host/hooks/T0/B0/<secret>`), because a path is
@@ -66,11 +90,25 @@ final class SecretScrubber
     public static function text(string $text): string
     {
         // Embedded URLs first, so a query value can never reach the shape rules below as a
-        // partial match. A trailing sentence period inside the matched run is dropped with
-        // the query it follows — cosmetic, and the alternative is a lookbehind that guesses
-        // at punctuation inside a URL, which is the wrong side to be wrong on.
+        // partial match.
+        //
+        // ⚠ THE RUN ENDS AT WHITESPACE, SO EVERYTHING FROM THE `?`/`#` TO THE NEXT SPACE IS
+        // DROPPED WITH THE QUERY — not just a trailing sentence period. Following text that
+        // is not whitespace-separated goes too: a comma-joined second URL
+        // (`…/?k=1,https://b.example/?j=2` → `…/?[REDACTED]`) and a closing bracket
+        // (`(https://x/?k=1)` → `(https://x/?[REDACTED]`). ⛔ NOT NARROWED ON PURPOSE: every
+        // way to end the run earlier (stop at `,` or `)`, trim trailing punctuation) ends it
+        // INSIDE a query that legitimately contains that character, and the tail then
+        // survives unredacted — trading a diagnostic loss for a credential leak, which is
+        // the wrong side to be wrong on. The bound is stated on the class and in DL-344.
+        //
+        // `\/` is admitted into the scheme and the run because a JSON body escapes forward
+        // slashes: Symfony's `JsonResponse::DEFAULT_ENCODING_OPTIONS` does NOT set
+        // `JSON_UNESCAPED_SLASHES`, so kanban's 4xx bodies — the only input
+        // {@see RefusalContext::from()} ever has — carry `https:\/\/…`. Keyed on `://`
+        // alone this pass was inert on exactly the surface it was written for.
         $text = (string) preg_replace_callback(
-            '#\bhttps?://[^\s<>"\'\\\\]+#i',
+            '#\bhttps?:(?:\\\\?/){2}(?:\\\\/|[^\s<>"\'\\\\])+#i',
             static fn (array $m): string => self::stripCredentialComponents($m[0]),
             $text,
         );
@@ -146,10 +184,22 @@ final class SecretScrubber
      */
     private static function stripCredentialComponents(string $value): string
     {
-        // userinfo — everything before the first `@` that precedes the path/query/fragment.
-        // The scheme is optional; see {@see self::url()} for why.
+        // userinfo — everything up to the LAST `@` before whitespace.
+        //
+        // ⛔ THE BINDING IS THE LAST `@`, NOT THE FIRST DELIMITER, AND THAT IS THE WHOLE
+        // POINT. A userinfo bounded by `[^/?#]*` cannot reach an `@` sitting behind a `/`,
+        // `?` or `#` — and `/` is in the base64 alphabet while `?` and `#` are ordinary
+        // generated-password characters, so `svc:pa/ss@host` echoed the entire credential
+        // and `svc:pa?ss@host` echoed its head followed by `[REDACTED]`, which reads as
+        // redacted to an operator and to any presence assertion. The scheme is optional;
+        // see {@see self::url()} for why.
+        //
+        // ⚠ WHAT THAT BINDING COSTS, worked: `https://h/@you/x` → `https://***@you/x`, and
+        // `https://board.example/api?to=a@b.example` → `https://***@b.example`. An at-sign
+        // outside a userinfo takes the host and path with it. Over-redaction is the side
+        // this class declares it errs on, and the alternative bound leaked.
         $value = (string) preg_replace(
-            '#^([A-Za-z][A-Za-z0-9+.-]*://)?[^/?\#]*@#',
+            '#^([A-Za-z][A-Za-z0-9+.-]*:(?:\\\\?/){2})?[^\s]*@#',
             '${1}***@',
             $value,
         );

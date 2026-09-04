@@ -156,6 +156,133 @@ class SecretScrubberTest extends TestCase
         }
     }
 
+    /**
+     * ⭐ THE USERINFO IS BOUND AT THE LAST `@`, NOT AT THE FIRST `/`, `?` OR `#`.
+     *
+     * `/` is in the base64 alphabet and `?`/`#` are ordinary generated-password characters,
+     * so all three occur in a real userinfo. A userinfo bounded by `[^/?#]*` cannot reach
+     * the `@` behind them and left the credential in the message.
+     *
+     * ⛔ THE `?` AND `#` SHAPES ARE WHY THIS IS ASSERTED ON THE EXACT STRING rather than on
+     * `[REDACTED]` being present: under the old bound the query cut still fired, so the
+     * output CARRIED `[REDACTED]` while the password's head sat in front of it. A
+     * presence-of-`[REDACTED]` assertion — and an operator reading the line — called that
+     * safe. Absence of the canary plus the exact survivor is the only pair that catches it.
+     *
+     * @return list<array{0: string, 1: string}>
+     */
+    public static function userinfoDelimiters(): array
+    {
+        return [
+            // [what an operator's generated password can contain, the whole scrubbed value]
+            'slash in the password (base64 alphabet)' => [
+                'http://svc:CANARYab/cdSYNTH@kanban.internal/api/v3',
+                'http://***@kanban.internal/api/v3',
+            ],
+            'question mark in the password' => [
+                'http://svc:CANARYsec?retSYNTH@kanban.internal/api/v3',
+                'http://***@kanban.internal/api/v3',
+            ],
+            'hash in the password' => [
+                'http://svc:CANARYsec#fragSYNTH@kanban.internal/api/v3',
+                'http://***@kanban.internal/api/v3',
+            ],
+        ];
+    }
+
+    #[DataProvider('userinfoDelimiters')]
+    public function test_url_strips_a_userinfo_containing_a_url_delimiter(string $raw, string $expected): void
+    {
+        $safe = SecretScrubber::url($raw);
+
+        $this->assertStringNotContainsString('CANARY', $safe);
+        $this->assertSame($expected, $safe);
+    }
+
+    #[DataProvider('userinfoDelimiters')]
+    public function test_text_strips_a_userinfo_containing_a_url_delimiter(string $raw, string $expected): void
+    {
+        // The same hole was in the embedded-URL pass, so it was never confined to the
+        // config-value leg: a handler's own message quoting the URL it called leaked too.
+        $safe = SecretScrubber::text('GET '.$raw.' failed');
+
+        $this->assertStringNotContainsString('CANARY', $safe);
+        $this->assertSame('GET '.$expected.' failed', $safe);
+    }
+
+    public function test_the_userinfo_binding_still_stops_at_whitespace(): void
+    {
+        // ⭐ THE REGRESSION CASE FOR THE LAST-`@` BINDING. `UrlValidator` quotes a
+        // whitespace-bearing value on the branch that exists to say "check for paste
+        // errors"; a binding that ran past the space would swallow the rest of the message.
+        $this->assertSame(
+            'https://***@remote host:8787',
+            SecretScrubber::url('https://svc:CANARYSYNTHETIC@remote host:8787'),
+        );
+    }
+
+    public function test_an_at_sign_outside_the_userinfo_over_redacts_and_that_is_the_accepted_cost(): void
+    {
+        // ⚠ PINNING THE COST, NOT A DESIRED BEHAVIOUR. Binding at the last `@` means an `@`
+        // in a PATH or QUERY is taken for a userinfo terminator and the host/path in front
+        // of it goes. That is the side this class declares it errs on — the alternative
+        // bound echoed real credentials — and it is stated on the class docblock. If a
+        // future change narrows the binding, this case must be re-derived, not deleted.
+        $this->assertSame('https://***@user/x', SecretScrubber::url('https://h/@user/x'));
+        $this->assertSame(
+            'GET https://***@b.example failed',
+            SecretScrubber::text('GET https://board.example/api?to=a@b.example failed'),
+        );
+    }
+
+    public function test_text_reaches_a_url_whose_slashes_are_json_escaped(): void
+    {
+        // ⭐ THE ONLY INPUT `RefusalContext::from()` EVER HAS IS A KANBAN JSON BODY, and
+        // Symfony's `JsonResponse::DEFAULT_ENCODING_OPTIONS` does not set
+        // `JSON_UNESCAPED_SLASHES` — so the wire form is `https:\/\/…`. A pass keyed on
+        // `://` alone was inert on precisely the surface it was written for.
+        //
+        // ⛔ THE INPUT IS BUILT BY `json_encode`, NOT HAND-TYPED. Hand-typing the escaped
+        // form is how the encoder's actual behaviour stopped being the thing under test.
+        $body = json_encode(['error' => 'GET https://board.example/api/v3?k=CANARYSYNTHETIC failed']);
+        $this->assertIsString($body);
+        $this->assertStringContainsString('https:\/\/', $body);
+
+        $scrubbed = SecretScrubber::text($body);
+
+        $this->assertStringNotContainsString('CANARYSYNTHETIC', $scrubbed);
+        $this->assertSame('{"error":"GET https:\\/\\/board.example\\/api\\/v3?[REDACTED] failed"}', $scrubbed);
+    }
+
+    public function test_text_reaches_a_json_escaped_urls_userinfo(): void
+    {
+        $body = json_encode(['error' => 'GET https://svc:CANARYSYNTHETIC@board.example/api/v3 failed']);
+        $this->assertIsString($body);
+
+        $scrubbed = SecretScrubber::text($body);
+
+        $this->assertStringNotContainsString('CANARYSYNTHETIC', $scrubbed);
+        $this->assertSame('{"error":"GET https:\\/\\/***@board.example\\/api\\/v3 failed"}', $scrubbed);
+    }
+
+    public function test_the_redaction_run_ends_at_whitespace_and_takes_what_it_covers(): void
+    {
+        // ⚠ A STATED BOUND UNDER TEST, NOT A PROPERTY WORTH KEEPING. Everything from the
+        // `?`/`#` to the next whitespace goes: a comma-joined second URL and a closing
+        // bracket included. It is not narrowed because every earlier stop (`,`, `)`,
+        // trailing punctuation) also occurs INSIDE real query strings, where stopping there
+        // leaves the tail of the credential in the message — a leak traded for cosmetics.
+        // If the run is ever narrowed, the class docblock and DL-344 must move with it.
+        $this->assertSame(
+            'urls: https://a.example/?[REDACTED]',
+            SecretScrubber::text('urls: https://a.example/?k=1,https://b.example/?j=2'),
+        );
+        $this->assertSame(
+            'see (https://x/?[REDACTED] for detail',
+            SecretScrubber::text('see (https://x/?k=1) for detail'),
+        );
+    }
+
     public function test_url_still_applies_the_text_rules_to_what_survives(): void
     {
         // A vendor-prefixed token sitting in the PATH — the one path-borne shape that IS

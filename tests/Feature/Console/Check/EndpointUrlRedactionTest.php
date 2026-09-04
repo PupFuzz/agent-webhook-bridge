@@ -46,6 +46,26 @@ class EndpointUrlRedactionTest extends TestCase
                 'ftp://svc:'.self::CANARY.'@bridge.example.com/webhooks',
                 'ftp://***@bridge.example.com/webhooks',
             ],
+            // ⭐ THE TWO SHAPES THAT ESCAPED THE FIRST CUT OF THE RULE, on the operator
+            // surface they escaped it on. A userinfo bounded by `[^/?#]*` cannot reach the
+            // `@` behind a `/`, `?` or `#`, and all three occur in generated passwords (`/`
+            // is base64). Both were measured through this command's real output before the
+            // bound was changed. The `#` shape behaves exactly as `?` does and is pinned in
+            // `SecretScrubberTest` rather than paying for a fourth full `bridge:check` run.
+            'api_base_url, a SLASH inside the password — the whole value came back' => [
+                'bridge.providers.kanban.api_base_url',
+                'http://svc:'.self::CANARY.'/x@kanban.internal/api/v3',
+                'http://***@kanban.internal/api/v3',
+            ],
+            // ⛔ THE DANGEROUS ONE: the old output CARRIED `[REDACTED]`
+            // (`http://svc:CANARY…?[REDACTED]`), so the operator, the reviewer and any
+            // presence-of-`[REDACTED]` assertion all read a leak as a redaction. Only the
+            // pairing of the canary-absence with the EXACT survivor catches that.
+            'api_base_url, a QUESTION MARK inside the password — the head survived' => [
+                'bridge.providers.kanban.api_base_url',
+                'http://svc:'.self::CANARY.'?x@kanban.internal/api/v3',
+                'http://***@kanban.internal/api/v3',
+            ],
         ];
     }
 
