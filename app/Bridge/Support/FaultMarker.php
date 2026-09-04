@@ -57,23 +57,32 @@ final class FaultMarker
     public const TTL_FLOOR = 2592000;
 
     /**
+     * ⚑ THE MESSAGE IS SCRUBBED ONCE, HERE, AND BOTH LEGS GET THE SAME STRING (card#8433).
+     * The throw can come from a third-party `App\Bridge\Scheduling\JobHandler`, so its text
+     * is data this app did not compose; the marker is DURABLE and `bridge:check` prints it
+     * back to an operator. Scrubbing at each leg instead would be two chances for the two
+     * records of one fault to disagree. The exception CLASS and the file:line are ours and
+     * are left alone.
+     *
      * @param  string  $key  the cache key this subsystem's last-fault marker lives at
      * @param  int  $cadenceSeconds  seconds between this subsystem's passes — the marker must outlive it
      * @param  array<string, mixed>  $context  extra log context; the exception's own detail is added here
      */
     public static function record(string $key, Throwable $e, int $cadenceSeconds, string $message, array $context = []): void
     {
+        $error = SecretScrubber::text($e->getMessage());
+
         self::log($message, $context + [
             'exception' => $e::class,
             'at' => $e->getFile().':'.$e->getLine(),
-            'error' => $e->getMessage(),
+            'error' => $error,
         ]);
 
         try {
             Cache::put($key, [
                 'at' => now()->toIso8601String(),
                 'exception' => $e::class,
-                'error' => $e->getMessage(),
+                'error' => $error,
             ], max(self::TTL_FLOOR, $cadenceSeconds + 3600));
         } catch (Throwable) {
             // The store the marker lives in is the very thing that failed. The log line

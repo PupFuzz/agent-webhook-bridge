@@ -33,64 +33,9 @@ class RefusalContextTest extends TestCase
     }
 
     /**
-     * @return list<array{0: string}>
+     * ⚑ THE SCRUBBER'S OWN CASES LIVE IN `SecretScrubberTest` SINCE card#8433 — this class
+     * keeps only what `from()` adds on top of it, which is the ORDER below.
      */
-    public static function credentialBodies(): array
-    {
-        return [
-            'json token value' => ['{"token":"ghp_SUPERSECRETVALUE1234567890"}'],
-            'json api_token key (key-contains)' => ['{"api_token":"ghp_SUPERSECRETVALUE1234567890"}'],
-            'json access_token key' => ['{"access_token":"ghp_SUPERSECRETVALUE1234567890"}'],
-            'json password value' => ['{"password":"SUPERSECRETVALUE1234567890"}'],
-            'json authorization value' => ['{"authorization":"Bearer SUPERSECRETVALUE1234567890"}'],
-            'bearer scheme in prose' => ['upstream sent header Bearer SUPERSECRETVALUE1234567890 back'],
-            'github token scheme' => ['Authorization: token SUPERSECRETVALUE1234567890'],
-            'query/form style' => ['api_key=SUPERSECRETVALUE1234567890&board=8'],
-        ];
-    }
-
-    #[DataProvider('credentialBodies')]
-    public function test_scrub_redacts_credential_adjacent_values(string $body): void
-    {
-        $scrubbed = RefusalContext::scrub($body);
-
-        $this->assertStringNotContainsString('SUPERSECRETVALUE1234567890', $scrubbed);
-        $this->assertStringContainsString('[REDACTED]', $scrubbed);
-    }
-
-    public function test_scrub_leaves_a_benign_body_intact(): void
-    {
-        $body = '{"error":"invalid stage","card_id":5,"board_id":8}';
-
-        $this->assertSame($body, RefusalContext::scrub($body));
-    }
-
-    public function test_scrub_redacts_even_a_short_bearer_value(): void
-    {
-        // Bearer/Basic take NO length floor — a short-but-real echoed token must not slip.
-        $scrubbed = RefusalContext::scrub('echoed header: Authorization: Bearer wb-tok8');
-
-        $this->assertStringNotContainsString('wb-tok8', $scrubbed);
-        $this->assertStringContainsString('[REDACTED]', $scrubbed);
-    }
-
-    public function test_scrub_redacts_a_github_token_prefix_anywhere(): void
-    {
-        // Unambiguous prefixes are redacted even un-keyed / in an odd body shape.
-        $scrubbed = RefusalContext::scrub('{"note":"leaked ghp_abcDEF123456 in a nested field"}');
-
-        $this->assertStringNotContainsString('ghp_abcDEF123456', $scrubbed);
-        $this->assertStringContainsString('[REDACTED]', $scrubbed);
-    }
-
-    public function test_scrub_preserves_prose_after_the_word_token(): void
-    {
-        // The `token` scheme's length floor keeps ordinary error prose readable.
-        $body = '{"message":"your token expired; the token cannot write custom fields"}';
-
-        $this->assertSame($body, RefusalContext::scrub($body));
-    }
-
     public function test_credential_split_across_the_truncation_boundary_is_still_redacted(): void
     {
         // The token's closing quote sits PAST the 500-char cutoff. Scrubbing must run

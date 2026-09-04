@@ -251,6 +251,27 @@ instance's own row (`last_status`, `last_error`, `consecutive_failures`), and ne
 webhook response nor the tick's exit code is affected. `bridge:jobs` prints it and
 `bridge:check` warns at three consecutive failures.
 
+⚑ **Your text is credential-scrubbed before it is stored (DL-344).** Both the exception
+message and the `JobOutcome::ok()` summary go through `App\Bridge\Support\SecretScrubber`,
+because this interface is a **system boundary**: a handler is operator or third-party code,
+and what it says lands in a **durable** column and on two operator-facing commands. What is
+removed is credential-shaped — a sensitive key's value, a `Bearer`/`Basic`/`token` scheme, a
+vendor token prefix — plus the **userinfo, query and fragment of any URL** in the text, which
+are credential-bearing by position whatever they are named. Scheme, host, port and path
+survive, so `push to https://ops.example/hook?k=…` reads back as
+`push to https://ops.example/hook?[REDACTED]`.
+
+⚠ **Two ways it removes MORE than you might expect, so your message stays diagnostic.** An
+at-sign anywhere in a URL is read as the end of a userinfo, so `https://ops.example/@you/x`
+reads back as `https://***@you/x` — the host and path go with it. And a redaction runs to the
+next **whitespace**, so anything you append to a URL without a space goes with the query: a
+comma-joined second URL disappears, and `(https://ops.example/x?k=…)` loses its closing
+bracket. Put a space before anything you need to survive.
+
+⛔ **Do not read this as a guarantee**: it is a filter over shapes, and a bare unkeyed secret
+in your message is not reachable by it. Keep credentials out of your message text; this is a
+backstop, not permission.
+
 ## Shipped handlers
 
 | handler | capability | what it does |

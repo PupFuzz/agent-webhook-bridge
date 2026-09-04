@@ -4,6 +4,7 @@ namespace App\Bridge\Scheduling;
 
 use App\Bridge\Support\AfterResponseGate;
 use App\Bridge\Support\GateSkip;
+use App\Bridge\Support\SecretScrubber;
 use App\Models\ScheduledJob;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -280,8 +281,9 @@ final class JobScheduler
 
         try {
             $outcome = $runnable->run(JobContext::forJob($job, $source));
+            $summary = SecretScrubber::text($outcome->summary);
             $job->last_status = ScheduledJob::STATUS_OK;
-            $job->last_summary = mb_substr($outcome->summary, 0, 255);
+            $job->last_summary = mb_substr($summary, 0, 255);
             $job->last_error = null;
             $job->consecutive_failures = 0;
             $status = ScheduledJob::STATUS_OK;
@@ -290,12 +292,13 @@ final class JobScheduler
                 'name' => $job->name,
                 'handler' => $job->handler,
                 'source' => $source->value,
-                'summary' => $outcome->summary,
+                'summary' => $summary,
             ]);
         } catch (Throwable $e) {
+            $error = SecretScrubber::text($e->getMessage());
             $job->last_status = ScheduledJob::STATUS_FAILED;
             $job->last_summary = mb_substr($e::class, 0, 255);
-            $job->last_error = $e->getMessage();
+            $job->last_error = $error;
             $job->consecutive_failures = (int) $job->consecutive_failures + 1;
             $status = ScheduledJob::STATUS_FAILED;
 
@@ -305,7 +308,7 @@ final class JobScheduler
                 'source' => $source->value,
                 'exception' => $e::class,
                 'at' => $e->getFile().':'.$e->getLine(),
-                'error' => $e->getMessage(),
+                'error' => $error,
                 'consecutive_failures' => $job->consecutive_failures,
             ]);
         }

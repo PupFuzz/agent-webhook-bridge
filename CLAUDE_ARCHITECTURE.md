@@ -166,6 +166,7 @@ migrated, and what each stage measured, is owned by
 | `app/Bridge/Support/SecretPath.php` | The single shared secret-path shape: `<secret_dir>/<provider>/webhook-secret-scope-<scope>` |
 | `app/Bridge/Support/InstallGuard.php` | Dev/prod crosstalk guard (`BRIDGE_INSTALL_SUFFIX` ↔ DB-name marker) |
 | `app/Bridge/Support/{BridgePaths,PathHelper}.php` | Resolve config dir / secret dir / state dir from `config/bridge.php` |
+| `app/Bridge/Support/SecretScrubber.php` | **The app's ONE credential redactor (DL-344).** `text()` for text this app did not compose (an upstream 4xx body via `RefusalContext`, a third-party `JobHandler`'s exception message); `url()` for a config URL value we are about to interpolate into our own message, where the userinfo/query/fragment come off by POSITION — the leg no reader of a finished message can do. ⚠ Not a guarantee: it filters credential SHAPES and URL COMPONENTS, and its own docblock states what it deliberately leaves (a secret in a URL PATH) |
 | `app/Bridge/Validation/{ProviderName,ScopeId,SocketPath}.php` | Format validators reused across config + provisioning |
 | `config/bridge.php` | Runtime config: `config_dir`, `secret_dir`, `install_suffix`, `max_body_bytes` (envelope cap). The state dir (inbox.jsonl + inbox-seen.json) is derived as `<config_dir>/state` by `BridgePaths`, not a separate key |
 
