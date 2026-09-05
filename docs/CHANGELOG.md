@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-09-05
+
 ### Added
 
 - **card#8683 (DL-345)** — **`bridge:check` gains a `standup.posture` leg, so a WEDGED standup digest finally surfaces.** ⚠ **ADDS ONE OPERATOR-FACING LEG**; no migration, no config key, no `.env` change, no receiver accept/reject change, no other check's output moves.
