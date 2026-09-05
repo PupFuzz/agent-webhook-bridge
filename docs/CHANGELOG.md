@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#8787** — **the release-promote leg's two SILENT `return false` arms name their cause.** A 200 carrying no `merged`, or no compare `status`, read as "not merged yet" — stranding a card at Shipped on the leg with **no reconcile backstop**. ⛔ **Promote behaviour unchanged.** Three `reason` values split a degraded read from the normal negative, which stays quiet.
+
 ## [0.81.0] - 2026-09-05
 
 ### Added
