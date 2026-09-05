@@ -56,7 +56,7 @@ jobs:
       - name: PHPStan (level 7; scope is phpstan-laravel.neon's own `paths`)
         run: vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
 
-      - name: Doc-sync (references resolve, no line citations, no unbounded coverage claims)
+      - name: Doc-sync (three rules; the run prints each rule's own surface)
         run: php bin/check-doc-refs.php
 
       - name: PHPUnit (SQLite in-memory)
