@@ -9,10 +9,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Kanban-board writeback client (DL-009/019) — sibling to the
- * provisioning-scoped KanbanProvisionClient, but for the card-move WRITE path.
- * It authenticates with a DEDICATED least-privilege writeback token (its own
- * 0600 file, NOT the broad provisioning token) so a leak is bounded to card
- * moves. Throws on non-2xx.
+ * provisioning-scoped KanbanProvisionClient, but for the board WRITE path.
+ * It authenticates with a DEDICATED writeback token (its own 0600 file, NOT the
+ * broad provisioning token), so it is NARROWER than the provisioning token.
+ * Which board permissions it carries is docs/writeback.md § 1's permission table
+ * to state, not this docblock's: the spelling here was "a leak is bounded to card
+ * moves", which has been wrong since the first non-stage-only PATCH shipped and
+ * understates a leak by the whole board role the token's user holds. Throws on
+ * non-2xx.
  *
  * It also owns the board-correlation READ (the search that both finders share),
  * and that is the one place it deviates from "thin verb-only client + caller
@@ -61,9 +65,10 @@ final class KanbanClient
      * this asks another tenant's card for its state as readily as it asks ours, and the
      * answer is what the belongs-to-mapped-board compare then reads. That is fine only
      * where the id has ALREADY been established as this install's — which is what
-     * {@see cardRowsOnBoard} is for, and what `kanban_move_card` now does before it calls
-     * this (card#8375). A new caller reaching this with an author-supplied id and no such
-     * check is the defect that card names, not a shortcut.
+     * {@see cardRowsOnBoard} is for, and what both token-resolved arms — `kanban_move_card`
+     * (card#8375) and the `kanban_block_reason` draft overlay (card#8415) — now do before they
+     * call this. A new caller reaching this with an author-supplied id and no such check is the
+     * defect those cards name, not a shortcut.
      *
      * @return array<string, mixed>
      */
@@ -109,25 +114,49 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        $rows = [];
-        foreach (is_array($data) ? $data : [] as $row) {
-            if (is_array($row)) {
-                $rows[] = $row;
-            }
-        }
+        // No DL-026 line here, deliberately: an unreadable body yields no rows, and BOTH callers
+        // (MappedBoardGuard's board-scope resolution, BoardCorrectCardTool's ownership lookup)
+        // already refuse LOUDLY on a result that does not name this card — the same fact,
+        // reported where the operator can act on it.
+        return self::rowList($data) ?? [];
+    }
 
-        return $rows;
+    /**
+     * WRITE A FLAT FIELD SET ONTO A CARD — the one PATCH primitive the narrow write
+     * verbs below are expressed in (card#8378). `PATCH /tasks/{id}.json` with a FLAT
+     * body: kanban DL-219 dropped the `{"task":{…}}` wrapper and now strict-rejects a
+     * top-level `task` key. Throws on non-2xx.
+     *
+     * ⛔ THIS AUTHORIZES NOTHING. It is a thin verb like every other write here — WHICH
+     * fields a caller may write, and whether that caller may write this card at all, is
+     * the CALLER's to establish before calling (`board_correct_card` allow-lists the
+     * field set and proves ownership off a board-scoped row first). A guard here would
+     * be in the wrong place: it cannot see the authority, only the payload.
+     *
+     * ⚠ Two kanban field semantics ride on this and neither is negotiable from here:
+     * `payload` MERGES per key (kanban #2180 — so a delta patch preserves the custom
+     * fields it omits, which is what {@see stampCorrelationRefs} relies on), while
+     * `tags` is REPLACED WHOLESALE, so a caller writing tags must re-send every tag the
+     * card is to keep. {@see archiveCard} deliberately does NOT route through here: it
+     * sends the top-level `_action` CONTROL key rather than a field, and reads its own
+     * response to confirm the write applied.
+     *
+     * @param  array<string, mixed>  $fields
+     */
+    public function patchCard(int $cardId, array $fields): void
+    {
+        $this->http()->patch("/tasks/{$cardId}.json", $fields)->throw();
     }
 
     /** Move the card to a workflow stage (column-only; never touches payload/other fields). */
     public function moveCard(int $cardId, int $stageId): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['workflow_stage_id' => $stageId])->throw();
+        $this->patchCard($cardId, ['workflow_stage_id' => $stageId]);
     }
 
     /**
      * Stamp correlation refs (dl_number / pr_number / pr_url) onto a card's payload — a DELTA
-     * PATCH that relies on the kanban per-key payload merge (kanban #2180): only the
+     * patch that relies on the per-key payload merge {@see patchCard} owns: only the
      * keys in $refs are written; every other custom field is left as-is (and a
      * concurrent edit to one survives). Distinct from {@see moveCard}, which stays
      * column-only — the add-if-missing decision is the caller's (from the card it
@@ -137,20 +166,20 @@ final class KanbanClient
      */
     public function stampCorrelationRefs(int $cardId, array $refs): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['payload' => $refs])->throw();
+        $this->patchCard($cardId, ['payload' => $refs]);
     }
 
     /**
      * Set (or clear) a card's `block_reason` field (DL-193) — a plain fillable
-     * field write, so a flat `{"block_reason":…}` PATCH (kanban DL-219 dropped the
-     * `{"task":{…}}` wrapper and now strict-rejects a top-level `task` key), mirroring
-     * {@see moveCard} (which is column-only and never touches this field). Passing null
+     * field write through {@see patchCard} (which owns the flat-body contract),
+     * mirroring {@see moveCard} (which is column-only and never touches this
+     * field). Passing null
      * clears the reason. The add-if-missing / clear-if-ours decision is the caller's
      * (from the card it already read); this is the thin write verb. Throws on non-2xx.
      */
     public function setBlockReason(int $cardId, ?string $reason): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['block_reason' => $reason])->throw();
+        $this->patchCard($cardId, ['block_reason' => $reason]);
     }
 
     /**
@@ -388,6 +417,20 @@ final class KanbanClient
      * page). Distinct from {@see cardsByTag}/{@see idList}, which project to ids
      * only — board_my_cards needs each row's name/stage/tags/payload.
      *
+     * ⛔ It carries the DL-026 degraded-read warning, and did NOT until card#8586: this read
+     * hand-rolled the row extraction, so a 200 whose body carried no card collection became an
+     * EMPTY LANE with no log and no signal. Its only caller is `board_my_cards`, so the seat was
+     * told *"no cards"* — indistinguishable from a lane that genuinely holds none, when what
+     * happened is that kanban's response shape changed or something other than kanban answered
+     * the URL, and the operator's next action differs completely between those two facts. It
+     * still returns `[]` rather than throwing (DL-020); it just stops being silent.
+     *
+     * ⚠ THE SIGNAL IS PER PAGE, deliberately and boundedly: each page is its own read, and *which*
+     * page went unreadable is the difference between a lane nobody can read and a lane that was
+     * TRUNCATED mid-walk (rows already read are still returned). A body that carries a non-null
+     * `links.next` while carrying no `data` therefore emits one line per page up to MAX_PAGES —
+     * loud, bounded, and the honest count of reads that answered nothing.
+     *
      * @return list<array<string, mixed>>
      */
     public function swimlaneCards(int $boardId, int $swimlaneId): array
@@ -396,19 +439,18 @@ final class KanbanClient
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
             $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} swimlane_id={$swimlaneId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            $rows = is_array($batch) ? $batch : [];
-            foreach ($rows as $row) {
-                if (is_array($row)) {
-                    $cards[] = $row;
-                }
+            foreach (self::correlationRows(self::rowList($batch), "swimlane-search {$swimlaneId} page {$page}", $boardId) as $row) {
+                $cards[] = $row;
             }
+            // RAW batch length, never the filtered/merged count — {@see readBoard} owns why.
+            $batchSize = is_array($batch) ? count($batch) : 0;
 
             $links = is_array($json) ? ($json['links'] ?? null) : null;
             if (is_array($links) && array_key_exists('next', $links)) {
                 if ($links['next'] === null) {
                     return $cards;
                 }
-            } elseif (count($rows) < self::SEARCH_LIMIT) {
+            } elseif ($batchSize < self::SEARCH_LIMIT) {
                 return $cards;
             }
         }
@@ -434,6 +476,14 @@ final class KanbanClient
      * no `archived` key reaches the query string at all, which is what keeps a
      * pre-DL-296 kanban answering the live search identically.
      *
+     * ⛔ It carries {@see cardsByTag}'s DL-026 degraded-read warning, and did NOT until
+     * card#8523's review: this read is silent-degrading in exactly the way that one is
+     * (a 200 whose body has no card collection reads as "no rows"), and card#8523 moved
+     * `BoardCreateCardTool`'s post-create collapse onto it — dropping the warning from the
+     * one read the DL-340 pin consult depends on. Both projections now report through
+     * {@see warnUnreadableCollection}, so neither can lose it again by being switched for
+     * the other.
+     *
      * @return list<array<string, mixed>>
      */
     public function cardRowsByTag(int $boardId, string $tag, bool $archivedOnly = false): array
@@ -444,14 +494,7 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        $cards = [];
-        foreach (is_array($data) ? $data : [] as $row) {
-            if (is_array($row)) {
-                $cards[] = $row;
-            }
-        }
-
-        return $cards;
+        return self::correlationRows(self::rowList($data), 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''), $boardId);
     }
 
     /**
@@ -591,19 +634,19 @@ final class KanbanClient
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
             $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            $rows = is_array($batch) ? $batch : [];
-            foreach ($rows as $row) {
-                if (is_array($row)) {
-                    $cards[] = $row;
-                }
+            // Extraction shared with the other three reads ({@see rowList}); the SIGNAL is not —
+            // this method stays pure and correlationCards() owns the warning for it.
+            foreach (self::rowList($batch) ?? [] as $row) {
+                $cards[] = $row;
             }
+            $batchSize = is_array($batch) ? count($batch) : 0;
 
             $links = is_array($json) ? ($json['links'] ?? null) : null;
             if (is_array($links) && array_key_exists('next', $links)) {
                 if ($links['next'] === null) {
                     return new BoardRead($cards, false);   // DL-146: no next page ⇒ fully read
                 }
-            } elseif (count($rows) < self::SEARCH_LIMIT) {
+            } elseif ($batchSize < self::SEARCH_LIMIT) {
                 return new BoardRead($cards, false);   // pre-DL-146 fallback: short/empty page ⇒ fully read
             }
         }
@@ -721,7 +764,9 @@ final class KanbanClient
      * is kanban's fractional ordering double; a card and its move-target are always
      * on the same workflow, so comparing their positions orders them correctly even
      * though the map is flattened across a board's workflows. Empty when the read
-     * carries no stages — the caller treats "can't order" as fail-open.
+     * carries no stages — the caller treats "can't order" as fail-open, and since
+     * card#8761 BOTH ends say so: {@see preloadStages} names an unreadable body here,
+     * and the guard names its own fail-open there.
      *
      * @return array<int, float>
      */
@@ -836,26 +881,143 @@ final class KanbanClient
         if ($ids !== null) {
             return $ids;
         }
-
-        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL", ['board_id' => $boardId, 'read' => $read]);
+        self::warnUnreadableCollection($read, $boardId);
 
         return [];
     }
 
     /**
+     * {@see idList}'s discrimination for the ROW projection — the array rows of a decoded
+     * collection, or NULL when the response carried no collection at all. Same rule, same
+     * bound (a skipped row is not signalled; the question is *"did the response carry a
+     * collection"*, never *"was it complete"*); only the projection differs.
+     *
+     * ⭐ IT IS SPLIT FROM {@see correlationRows} BECAUSE THE EXTRACTION AND THE POLICY HAVE
+     * DIFFERENT POPULATIONS, which is the same reason `idList` is split from
+     * {@see correlationIds}. Before card#8586 this loop existed in FOUR copies — hand-rolled
+     * inside {@see cardRowsOnBoard}, {@see swimlaneCards} and {@see readBoard}, and a fourth
+     * time inside `correlationRows` itself, which was the only copy carrying the DL-026
+     * warning and reached only by {@see cardRowsByTag}. So a fix to the shape (the warning
+     * being exactly such a fix, at card#8523) landed on that one copy and missed the other
+     * three with nothing red. The DIAGNOSTIC postures then differ legitimately and stay where
+     * they belong: `swimlaneCards` and `cardRowsByTag` warn through `correlationRows`;
+     * `readBoard` stays deliberately pure (its own docblock owns why), so the signal is the
+     * caller's — {@see correlationCards} carries it on the correlation path (DL-028), and the
+     * public twin {@see readBoardCards} passes the read out unlogged for its callers to
+     * report; and both of `cardRowsOnBoard`'s callers refuse loudly on a result that does not
+     * name the card.
+     *
+     * @return list<array<string, mixed>>|null
+     */
+    private static function rowList(mixed $data): ?array
+    {
+        if (! is_array($data)) {
+            return null;
+        }
+        $rows = [];
+        foreach ($data as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * {@see correlationIds}'s treatment for the ROW-returning reads, and it exists because
+     * card#8523 walked a caller off the ids-only read and lost the warning with it:
+     * `BoardCreateCardTool`'s post-create collapse moved from {@see cardsByTag} (loud on an
+     * unreadable body) to {@see cardRowsByTag} (silent), and that is the one read the DL-340
+     * pin consult now rides on — an unreadable body there reads as "no duplicates" and the
+     * collapse no-ops, which is safe, but a body kanban stopped serving is a bug to chase and
+     * a genuine no-match is not. card#8586 then added {@see swimlaneCards}, whose empty answer
+     * is a whole EMPTY LANE reported to a seat. Same policy, same words, one emitter: the
+     * degradation still returns an empty list rather than throwing (DL-020), it just stops
+     * being silent.
+     *
+     * @param  list<array<string, mixed>>|null  $rows  {@see rowList}'s verdict — NULL is
+     *                                                 "the body carried no collection"
+     * @return list<array<string, mixed>>
+     */
+    private static function correlationRows(?array $rows, string $read, int $boardId): array
+    {
+        if ($rows !== null) {
+            return $rows;
+        }
+        self::warnUnreadableCollection($read, $boardId);
+
+        return [];
+    }
+
+    /**
+     * The CAUSE clause every unreadable-200 line in this client ends with. It is a const and
+     * not a repeated literal because it is the only part of those lines that is the SAME fact
+     * — what an unreadable body means and what to look at — while each subject's consequence
+     * legitimately differs; two hand-written copies of one account of one failure is two places
+     * for it to drift.
+     */
+    private const UNREADABLE_BODY_CAUSE = "kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL";
+
+    /** The DL-026 degraded-read line both correlation projections share — one message, one owner. */
+    private static function warnUnreadableCollection(string $read, int $boardId): void
+    {
+        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; ".self::UNREADABLE_BODY_CAUSE, ['board_id' => $boardId, 'read' => $read]);
+    }
+
+    /**
+     * The same degraded-read report for the STAGE projection (card#8761). It is a separate
+     * line and not a second caller of {@see warnUnreadableCollection} because the two differ in
+     * the fact that matters to whoever reads the log: an unreadable card collection silently
+     * no-ops ONE correlation, while an unreadable workflows collection empties EVERY stage
+     * answer this client gives for the board — and the no-regression guard's fail-open is
+     * downstream of that. Only the cause clause is shared, and it is shared as a const.
+     *
+     * ⭐ IT FIRES ONLY ON A BODY THAT CARRIED NO COLLECTION AT ALL, never on `workflows: []`.
+     * That discrimination is what makes it safe for all three of {@see preloadStages}'s callers
+     * rather than only the guard: a board that genuinely has no workflows is a fact each caller
+     * already handles correctly and quietly, and a warning on it would be the noise that trains
+     * an operator to ignore the line that matters.
+     */
+    private static function warnUnreadableStages(int $boardId): void
+    {
+        Log::warning("writeback stage read: board {$boardId}'s preload read returned a 200 whose body carried no workflows collection — every stage answer this client gives for the board (order, name, id) is EMPTY, and empty is indistinguishable from a board with no stages, so each caller degrades as though it had one; ".self::UNREADABLE_BODY_CAUSE, ['board_id' => $boardId, 'read' => 'board-preload-stages']);
+    }
+
+    /**
      * Yield each stage array across a board's workflows from the lightweight
      * preload read — the shared fetch + `workflows[].stages[]` descent behind
-     * {@see boardStageOrder()} and {@see boardStageIdsByName()}, which diverge only
-     * in the per-stage field guard and how they accumulate (so each keeps its own).
-     * A non-array workflow, a missing/non-array `stages`, or a non-array stage is
-     * skipped — a caller sees only array stages.
+     * {@see boardStageOrder()}, {@see boardStageNames()} and {@see boardStageIdsByName()},
+     * which diverge only in the per-stage field guard and how they accumulate (so each
+     * keeps its own). A non-array workflow, a missing/non-array `stages`, or a non-array
+     * stage is skipped — a caller sees only array stages.
+     *
+     * ⭐ A BODY THAT CARRIED NO `data.workflows` COLLECTION AT ALL yields nothing and is
+     * REPORTED through {@see warnUnreadableStages} (card#8761). Before that it was the
+     * fifth copy of the absent-collection collapse card#8586 consolidated: a 200 whose
+     * body kanban stopped serving became `[]`, byte-identical to a board with no stages,
+     * and the loudest consumer downstream — the DL-163 no-regression guard — then failed
+     * open on the empty order with no log at either end.
+     *
+     * ⛔ IT REPORTS, IT DOES NOT THROW, and that is a decision about the OTHER TWO CALLERS,
+     * not timidity about this one. `boardStageNames()` serves `board_my_cards` (a display
+     * grouping that falls back to the raw stage id) and `boardStageIdsByName()` serves
+     * `bridge:check`'s DL-200 compare (which already treats an empty answer as "could not
+     * verify"); both degrade correctly on an empty read, so a throw here would convert a
+     * silent degradation into a broken writeback and a broken preflight to fix a guard
+     * that is required to fail open anyway (DL-020).
      *
      * @return iterable<array<string, mixed>>
      */
     private function preloadStages(int $boardId): iterable
     {
         $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
-        foreach (is_array($workflows) ? $workflows : [] as $wf) {
+        if (! is_array($workflows)) {
+            self::warnUnreadableStages($boardId);
+
+            return;
+        }
+        foreach ($workflows as $wf) {
             $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
             foreach ($stages as $s) {
                 if (is_array($s)) {

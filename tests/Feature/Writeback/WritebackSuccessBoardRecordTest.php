@@ -74,9 +74,15 @@ use Tests\TestCase;
  *     directory further out: `bridge:reconcile --fix` is a kanban write inside the DL-009
  *     mapped-board regime that no glob here reached, so it was carried as a stated residue
  *     instead of being policed. An event handler is not the only thing that writes to a card.
- *   • VERBS — {@see writeMethodsOf} reads `KanbanClient` and keeps every method whose
- *     body issues a mutating HTTP verb (`->patch(` / `->post(` / `->delete(`). A
- *     hand-written const would not red when a new write method shipped; this does.
+ *   • VERBS — {@see writeMethodsOf} reads `KanbanClient` and keeps every method that reaches
+ *     a mutating HTTP verb (`->patch(` / `->post(` / `->delete(`) — directly, OR through a
+ *     `$this->` call to a sibling that does, to a fixed point. A hand-written const would not
+ *     red when a new write method shipped; this does. ⛔ The transitive leg is load-bearing,
+ *     not tidiness: when card#8378 hoisted the client's three flat-PATCH writes behind one
+ *     `patchCard` primitive, the direct-issuer rule stopped seeing `moveCard`,
+ *     `setBlockReason` and `stampCorrelationRefs`, and NINE accounted call sites left the
+ *     census with every behavioural test still green. A correct consolidation had silently
+ *     narrowed the population this guard derives over.
  *   • RECEIVERS — {@see writeSites} matches `->verb(` on ANY receiver, subtracting only
  *     `$this->`. The earlier form allow-listed `$client` / `$kanban`, so
  *     `$this->client->moveCard(` or an aliased local was invisible to the census.
@@ -154,6 +160,15 @@ class WritebackSuccessBoardRecordTest extends TestCase
             'record' => 'CREATE — no resolved card exists to read a board from; the board is the POST target, '
                 .'so `board` there is outcome and intent at once. The create RESPONSE returns an id only.',
         ],
+        'KanbanCoordCardHandler.php:patchCard' => [
+            'sites' => 1,
+            'record' => 'PAIRED — the DL-341 name restamp on an upstream issue retitle, the coord sibling of '
+                .'the DL-328 dependabot one below. Group-B (card#7211): the id came from the board-scoped '
+                .'`cardRowsByTag` search, so the row is the only reading of where the write landed. '
+                .'`restamped name from the upstream retitle` carries the pair — and so does the arm that '
+                .'writes NOTHING because the name is not the one the bridge stamped, which is deliberate: it '
+                .'names a card this delivery READ and decided about, and a no-write is not a refusal by kanban.',
+        ],
         'KanbanCoordCardMoveHandler.php:moveCard' => [
             'sites' => 3,
             'record' => 'PAIRED — terminal / revived / re-laned each carry boardContext($card, $mapping). '
@@ -168,6 +183,15 @@ class WritebackSuccessBoardRecordTest extends TestCase
         'KanbanDependabotCardHandler.php:moveCard' => [
             'sites' => 1,
             'record' => 'PAIRED — Group-B, as the archive arm; the survivor row carries its own board.',
+        ],
+        'KanbanDependabotCardHandler.php:patchCard' => [
+            'sites' => 1,
+            'record' => 'PAIRED — the DL-328 name restamp on an upstream retitle. Group-B, as the archive '
+                .'and move arms beside it: the id came from the same board-scoped correlate, so the row is '
+                .'the only reading of where the write landed. `restamped name from the upstream retitle` '
+                .'carries the pair — and so does the arm that writes NOTHING because the name is not the '
+                .'one the bridge stamped, which is deliberate: it names a card this delivery READ and '
+                .'decided about, and a no-write is not a refusal by kanban.',
         ],
         'KanbanDependabotCardHandler.php:createCard' => [
             'sites' => 1,
@@ -285,6 +309,48 @@ class WritebackSuccessBoardRecordTest extends TestCase
         );
     }
 
+    public function test_the_write_verb_derivation_follows_a_delegating_write(): void
+    {
+        // card#8378's control, and it is a POSITIVE and a NEGATIVE in one fixture, because
+        // the transitive rule is only trustworthy if it also declines: `delegatesToARead`
+        // calls a sibling exactly as `delegatesToTheWriter` does, and must NOT be a writer.
+        // Without this leg the client could consolidate its writes behind one primitive and
+        // the census would go quiet — which is what happened, and what the fixed point fixes.
+        $source = <<<'PHP'
+        <?php
+        public function issuesTheVerb(int $id, array $fields): void
+        {
+            $this->http()->patch("/tasks/{$id}.json", $fields)->throw();
+        }
+
+        public function delegatesToTheWriter(int $id, int $stage): void
+        {
+            $this->issuesTheVerb($id, ['workflow_stage_id' => $stage]);
+        }
+
+        public function delegatesTwoDeep(int $id): void
+        {
+            $this->delegatesToTheWriter($id, 1);
+        }
+
+        public function readsOnly(int $id): array
+        {
+            return $this->http()->get("/tasks/{$id}.json")->throw()->json('data');
+        }
+
+        public function delegatesToARead(int $id): array
+        {
+            return $this->readsOnly($id);
+        }
+        PHP;
+
+        $this->assertSame(
+            ['delegatesToTheWriter', 'delegatesTwoDeep', 'issuesTheVerb'],
+            self::writeMethodsOf($source),
+            'a method that reaches a mutating verb through a sibling is a WRITE; one that reaches only a read is not'
+        );
+    }
+
     public function test_the_write_scanner_discriminates_a_real_call_from_a_comment(): void
     {
         // The census expects an exact map, so a scanner that had stopped matching would red
@@ -327,7 +393,20 @@ class WritebackSuccessBoardRecordTest extends TestCase
     }
 
     /**
-     * Every method in $source whose body issues a mutating HTTP verb, sorted.
+     * Every method in $source that writes — one that issues a mutating HTTP verb ITSELF, or
+     * one that reaches a write by calling another method of the same class, to a fixed point.
+     *
+     * ⛔ THE TRANSITIVE LEG IS NOT A REFINEMENT, IT IS WHAT KEEPS THE CENSUS FROM EMPTYING
+     * ITSELF (card#8378). The direct-issuer rule was exact only while every write verb spelled
+     * `->patch(` in its own body. The moment the client grew ONE shared PATCH primitive and the
+     * narrow verbs delegated to it — `moveCard` / `setBlockReason` / `stampCorrelationRefs` now
+     * read `$this->patchCard(…)` — those three stopped matching, the derivation lost them, and
+     * **nine accounted call sites vanished from the census while every behavioural test stayed
+     * green**. That is the failure this class exists to prevent, arriving through its own
+     * instrument: a consolidation that is correct in the code silently narrows the population
+     * the guard is derived over. Following `$this-><method>(` to a fixed point makes the
+     * derivation describe what a WRITE is (a call that ends in a mutating verb) rather than how
+     * one happens to be spelled today.
      *
      * ⚑ Visibility is deliberately NOT filtered. A private writer cannot be called from a
      * handler, so including it can only WIDEN the set of names the census looks for — and a
@@ -340,15 +419,44 @@ class WritebackSuccessBoardRecordTest extends TestCase
     private static function writeMethodsOf(string $source): array
     {
         $writers = [];
+        $selfCalls = [];
         $current = null;
         foreach (SourceScan::codeLines($source) as $line) {
             if (preg_match('/\bfunction\s+(\w+)\s*\(/', $line, $m) === 1) {
                 $current = $m[1];
             }
-            if ($current !== null && preg_match('/->(?:patch|post|delete)\(/', $line) === 1) {
+            if ($current === null) {
+                continue;
+            }
+            if (preg_match('/->(?:patch|post|delete)\(/', $line) === 1) {
                 $writers[$current] = true;
             }
+            if (preg_match_all('/\$this->(\w+)\(/', $line, $calls) > 0) {
+                foreach ($calls[1] as $callee) {
+                    $selfCalls[$current][] = $callee;
+                }
+            }
         }
+
+        // Fixed point: a method calling a writer is a writer. Terminates because each pass
+        // either adds a name from a finite set or stops.
+        do {
+            $grew = false;
+            foreach ($selfCalls as $method => $callees) {
+                if (isset($writers[$method])) {
+                    continue;
+                }
+                foreach ($callees as $callee) {
+                    if (isset($writers[$callee])) {
+                        $writers[$method] = true;
+                        $grew = true;
+
+                        break;
+                    }
+                }
+            }
+        } while ($grew);
+
         $names = array_keys($writers);
         sort($names);
 
@@ -493,9 +601,9 @@ class WritebackSuccessBoardRecordTest extends TestCase
         // scanner that had stopped matching would report the repo clean. Both directions.
         $source = <<<'PHP'
         <?php
-        // Prose: CardCollapse::toSurvivor($client, $cards, 'x', []) with no mapping.
-        CardCollapse::toSurvivor($client, $cards, $mapping, 'kanban_dependabot_card', ['repo' => $repo]);
-        CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'board_create_card', ['agent' => $a]);
+        // Prose: CardCollapse::toSurvivor($client, $cards, 'x', '', []) with no mapping.
+        CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', $repo, ['repo' => $repo], $mapping);
+        CardCollapse::toSurvivor($client, $live, 'board_create_card', '', ['agent' => $a]);
         PHP;
 
         $this->assertSame(['Fixture.php:4'], self::collapseCallsWithoutMapping($source, 'Fixture.php'));

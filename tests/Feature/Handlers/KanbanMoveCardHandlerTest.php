@@ -93,7 +93,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET
                 ->push(['data' => ['id' => 5]]),                                                // PATCH
         ] + $this->fakePreload());
 
@@ -354,7 +354,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
@@ -514,7 +514,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET ok
                 ->push(['error' => 'invalid stage'], 422),                                      // PATCH 4xx
         ] + $this->fakePreload());
 
@@ -535,7 +535,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5]]]]]]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET ok
                 ->push(['message' => 'you are not authorized to move this card'], 403),         // PATCH 403 authz
         ]);
 
@@ -580,7 +580,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5]]]]]]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['message' => 'denied', 'echo' => ['token' => 'wb-SECRET-TOKEN-abc123']], 403),
         ]);
 
@@ -885,7 +885,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
@@ -905,6 +905,13 @@ class KanbanMoveCardHandlerTest extends TestCase
     /**
      * Board-8 order for the guard: In-Progress 49 < In-Review 50 < Shipped 52 < Released 53.
      *
+     * ⛔ THE DEFAULTS AT THE END ARE LOAD-BEARING, not tidiness. This helper stubs the row the
+     * PIN CONSULT reads, and a row carrying neither `block_reason` nor `tags` makes
+     * `PinGuard::isPinned` answer "not pinned" because nobody could READ the pin — so
+     * `test_an_unpinned_card_moves_on_this_outcome`, the control for the four pinned legs,
+     * passed without the predicate ever being exercised (card#8523 R2). `$cardExtra` still
+     * wins over them, so every pinned leg states its own pin exactly as before.
+     *
      * @param  array<string, mixed>  $cardExtra  extra card fields (block_reason / tags / payload)
      */
     private function fakeStageOrderAndCard(int $currentStage, array $cardExtra = []): void
@@ -916,7 +923,9 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ['id' => 52, 'position' => 5120.0],
                 ['id' => 53, 'position' => 6144.0],
             ]]]]]),
-            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage] + $cardExtra]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage]
+                + $cardExtra
+                + ['block_reason' => null, 'tags' => []]]),
         ]);
     }
 
@@ -993,6 +1002,130 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->handle($this->payload(['outcome' => 'opened']));
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+    }
+
+    /**
+     * card#8761 — THE GUARD'S SECOND FAIL-OPEN ROUTE, AND THE ONE THAT HAD NO LINE.
+     *
+     * The four legs below are ONE measurement and neither half of it means anything alone.
+     * Every one drives the SAME move — `opened` on a card already at Released(53), the exact
+     * event DL-163's guard exists to refuse — and they differ only in what the board's preload
+     * read answered. Three of them therefore ALLOW a move the fourth refuses, which is the
+     * fail-open the operator ruling KEEPS; what is being pinned is that the three now SAY SO,
+     * and say it apart, while the fourth stays silent because nothing degraded.
+     *
+     * ⛔ The `reason` key is asserted by VALUE, not merely present: the whole finding is that
+     * two causes needing two different operator actions were one silence, so a test happy with
+     * any reason would certify the collapse it exists to detect.
+     */
+    public function test_an_unreadable_preload_body_says_the_guard_failed_open_and_still_moves(): void
+    {
+        // A 200 kanban answered without a `data.workflows` collection at all. Before card#8761
+        // this emptied the stage order and the guard returned "not regressive" with no log at
+        // either end — the move below is the one DL-163 was written to stop.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => []]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53, 'block_reason' => null, 'tags' => []]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        // ⭐ BEHAVIOUR IS UNCHANGED — leg 2 (fail closed) is declined, so the move must land.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        // The consumer names the fail-open it just took, in the catch arm's own words.
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'for the no-regression guard — allowing the move')
+                && $c['board'] === 8
+                && $c['reason'] === 'stage_order_empty'
+                && $c['current_stage'] === 53
+                && $c['target_stage'] === 50
+        )->once();
+        // ...and the CLIENT names the cause, which is the half the consumer cannot know.
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'carried no workflows collection')
+                && ($c['board_id'] ?? null) === 8
+        )->once();
+    }
+
+    public function test_a_board_that_genuinely_has_no_workflows_reports_the_fail_open_but_no_unreadable_body(): void
+    {
+        // THE CONTRAST, and the reason the client half is a separate line: `workflows: []` is a
+        // readable answer. The guard still cannot order the move and still says so — but there
+        // is no degraded read to chase, so the client stays quiet. An operator seeing the pair
+        // reaches for kanban's response shape; seeing only the guard line, for the board.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53, 'block_reason' => null, 'tags' => []]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'for the no-regression guard — allowing the move')
+                && $c['reason'] === 'stage_order_empty'
+        )->once();
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'carried no workflows collection')),
+            \Mockery::any(),
+        ]);
+    }
+
+    public function test_a_mapped_stage_that_is_not_on_the_board_names_itself_and_still_moves(): void
+    {
+        // The OTHER cause of the same fail-open, and it needs a different action: the order read
+        // fine, and `writeback.json` names a stage id this board does not carry. One reason value
+        // apart, because "kanban's answer degraded" and "your mapping is stale" are not one fact.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
+                ['id' => 49, 'position' => 3072.0],
+                ['id' => 50, 'position' => 4096.0],
+            ]]]]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53, 'block_reason' => null, 'tags' => []]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'for the no-regression guard — allowing the move')
+                && $c['reason'] === 'stage_not_on_board'
+                && $c['current_stage'] === 53
+        )->once();
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'carried no workflows collection')),
+            \Mockery::any(),
+        ]);
+    }
+
+    public function test_a_readable_order_still_refuses_the_regressive_move_and_says_nothing(): void
+    {
+        // ⭐ THE REGRESSION WITNESS. Same event, same card, the only readable order of the four —
+        // and the move is REFUSED, exactly as before card#8761. Without this leg the three above
+        // are compatible with a change that made the guard stop guarding on every board.
+        // The silence is the second half: a diagnostic that also fires on the healthy path is
+        // the noise that gets the real one filtered out.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(53);   // Released, and 53 IS in the order
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'for the no-regression guard — allowing the move')),
+            \Mockery::any(),
+        ]);
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'carried no workflows collection')),
+            \Mockery::any(),
+        ]);
     }
 
     public function test_board_stage_order_preload_is_read_once_across_cards_on_one_instance(): void
@@ -1197,8 +1330,10 @@ class KanbanMoveCardHandlerTest extends TestCase
         //
         // ⚑ The 403 slug is the NARROWED one (card#8375): the board-scoped check has already
         // read this id back off the mapped board, so a foreign card id is excluded here and
-        // the slug names the one cause left. `kanban_block_reason`, which makes no such
-        // check, still emits the two-cause slug — pinned in its own class.
+        // the slug names the one cause left. Since card#8415 the `kanban_block_reason`
+        // overlay makes the same check and narrows the same way; the two-cause slug now
+        // belongs to no shipped arm and is pinned in `RefusalContextTest` as the honest
+        // answer for an arm that makes no such check.
         $this->writeWritebackWithAlert();
         $this->writeToken();
         Http::fake([
@@ -1297,9 +1432,9 @@ class KanbanMoveCardHandlerTest extends TestCase
         // (DL-314). The board-scoped check now runs BEFORE this read and has already found
         // this id on the mapped board, so the foreign half is ruled out by a measurement and
         // the message must say so: a text still offering both would send the operator hunting
-        // a cause this arm can no longer have. The two-cause wording lives on in
-        // `kanban_block_reason`, which makes no such check — pinned in its own class, so
-        // deleting it here does not retire the assertion that it exists somewhere.
+        // a cause this arm can no longer have. card#8415 wired the same check into the
+        // `kanban_block_reason` overlay, so its text was reversed the same way; what still
+        // pins the two-cause slug's existence is `RefusalContextTest`, not a shipped arm.
         $this->writeWriteback();
         $this->writeToken();
         Log::spy();
@@ -1356,7 +1491,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok — read works
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET ok — read works
                 ->push(['message' => 'this token cannot write board 8'], 403),                  // PATCH refused
         ]);
 
@@ -1382,7 +1517,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['error' => 'invalid stage'], 422),
         ]);
 
@@ -1398,7 +1533,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['error' => 'gone'], 404),
         ]);
 
@@ -1442,7 +1577,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // event 1 GET
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // event 1 GET
                 ->push(['message' => 'denied'], 403)                                            // event 1 move PATCH
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52]])   // event 2 GET (already there)
                 ->push(['message' => 'denied'], 403),                                           // event 2 stamp PATCH
@@ -1471,7 +1606,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             '*://127.0.0.1:*/*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['message' => 'denied'], 403),
         ]);
 
@@ -1490,7 +1625,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push('upstream error', 503),
         ]);
 
@@ -2635,7 +2770,7 @@ pull request it already names', $notes[0]);
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET
                 ->push(['data' => ['id' => 5]]),                                              // PATCH
         ] + $this->fakePreload());
         Log::spy();

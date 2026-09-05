@@ -1188,6 +1188,38 @@ $claimSurface = '#^(app/Bridge/Check/|tests/Unit/Bridge/Check/|tests/Support/Che
 $claimTrigger = '/check-golden-coverage|disclosed[- ]gaps?/i';
 
 /**
+ * The path prefixes a `#^(a|b|c)#` surface pattern admits, READ OUT OF THE PATTERN ITSELF.
+ *
+ * WHY THIS IS A FUNCTION AND NOT A STRING BESIDE THE CONSTANT. The success line has to name the
+ * surface it speaks for, and the obvious way to do that — type the four prefixes into the message
+ * — is the defect being fixed, one level up: card#8601 is about a summary sentence whose STATED
+ * scope was wider than the predicate it reports on, and a hand-typed restatement of the predicate
+ * is exactly the copy that drifts the next time a root is added. Derived here, the message cannot
+ * disagree with the rule, because there is only one spelling of the rule.
+ *
+ * FAIL-LOUD, NOT FAIL-OPEN, and that is the opposite of {@see sentencesOf()}'s bound on purpose:
+ * a fragment that function cannot compute must never invent a finding, so it widens; a scope this
+ * function cannot compute would be printed as a narrower or empty claim, which is the failure mode
+ * the whole change exists to remove. A pattern shape it does not understand therefore throws
+ * rather than returning a partial list nobody would notice was partial. The group is optional
+ * because narrowing a surface to a single root drops the parentheses and is an ordinary edit, not
+ * a mis-parse; a nested group is neither, and stops the run with the pattern in the message.
+ *
+ * @return list<string>
+ */
+function surfacePrefixes(string $pattern): array
+{
+    if (preg_match('#^\#\^\(?([^()]+)\)?\##', $pattern, $m) !== 1) {
+        throw new RuntimeException("surfacePrefixes(): cannot read the alternation out of {$pattern} — the success line would understate its own scope.");
+    }
+
+    return array_map(
+        static fn (string $alt): string => stripslashes($alt),
+        explode('|', $m[1])
+    );
+}
+
+/**
  * Three of the four sanctioned ways to license a mention. Each states a CONSEQUENCE rather than a
  * fact of absence, because absence is the trap: "absent from that list ENTIRELY" reads as
  * reassurance until the block also says that absence protects nothing.
@@ -1435,5 +1467,38 @@ if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
     exit(1);
 }
 
-fwrite(STDOUT, "doc-refs: all PHP references in CLAUDE_*.md resolve; no line-number citations; no unbounded coverage claims.\n");
+/**
+ * THE SUCCESS LINE NAMES RULE 3'S SURFACE, because for three review rounds it did not and a green
+ * run was read as covering prose it never opened (card#8601).
+ *
+ * "no unbounded coverage claims", unqualified, is a claim about every completeness sentence in the
+ * repo. The predicate is four path prefixes, PHP comments only, and one trigger — so the identical
+ * sentence that reds inside `app/Bridge/Check/` passes in `CLAUDE_TESTING.md`, and the old line
+ * reported that pass as a clean bill on the docs. Confidence in place of a question is worse than
+ * no gate: a reviewer who reads the line as covering the docs stops looking.
+ *
+ * BOTH HALVES ARE DERIVED, not restated. The prefixes come out of `$claimSurface` itself
+ * ({@see surfacePrefixes()}) and the trigger is printed as the pattern the rule matches on, so
+ * neither can drift from the predicate — a second hand-typed copy of the scope is the very defect
+ * this line is being fixed FOR. The CLAUDE_*.md sentence is derived the same way: it is a
+ * measurement of the current-state doc list AGAINST the surface pattern, not an assertion about
+ * it, so widening the rule to those docs flips the sentence with no edit here.
+ *
+ * ⚠ THE OTHER TWO CLAUSES ARE UNCHANGED AND BOTH STILL OVERCLAIM. Rule 1a reads the `$docs`
+ * allow-list, not every `CLAUDE_*.md` on disk, and rule 2 bans offsets into `$volatileFile` plus
+ * bare offsets under `$bareCiteSurface` — deliberately not a repo-wide ban, as its own docblock
+ * says. Both are named by their CONSTANT rather than by a file list, so this warning cannot go
+ * stale the way a copy of either scope would. They are their own decision, not an oversight of
+ * this one.
+ */
+$claimDocsInSurface = array_values(array_filter($docs, static fn (string $d): bool => preg_match($claimSurface, $d) === 1));
+
+fwrite(STDOUT, sprintf(
+    "doc-refs: all PHP references in CLAUDE_*.md resolve; no line-number citations; no unbounded coverage claims in PHP comments under %s, matched on %s. That rule reads nothing else — %s.\n",
+    implode(', ', surfacePrefixes($claimSurface)),
+    $claimTrigger,
+    $claimDocsInSurface === []
+        ? 'no current-state CLAUDE_*.md is in its surface, so this run says nothing about prose claims there'
+        : 'of the current-state docs it covers '.implode(', ', $claimDocsInSurface)
+));
 exit(0);

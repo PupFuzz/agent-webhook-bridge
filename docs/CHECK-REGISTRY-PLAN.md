@@ -2775,6 +2775,23 @@ the work distinguishes those.
   MULTISET against the same enumerator — a SEPARATE term with its own banner, not a widened one,
   because the two must be independently satisfiable: the case it exists for is exactly the one
   where the count agrees and the currency guard therefore requires ITS banner ABSENT.
+  **Worked example 2 — `standup.posture` (card#8683 / DL-345), and what it cost against the
+  price quoted above.** A GLOBAL `Check` this time rather than a per-agent one, so it is the
+  cheaper shape: one new class, one new `CheckSlot` (ordered after `Jobs` and before
+  `Providers`), ONE `emitReport` arm in `handle()` — a per-agent leg costs two predicates, a
+  global one costs this — the pinned id list, the `assertSame(39, …)` registered-total literal
+  in `CheckGoldenTest`, and the whole golden corpus. **The corpus diff is exactly what the
+  card#7756 entry predicts and nothing more:** all 45 committed captures moved their inventory
+  line (`39 registered · 23 ran (…, 14 …)` → `40 · 24 (…, 15 …)`) and **not one line of
+  content**, because the leg is silent on an install that left the digest off — which every
+  fixture but the three added here does. `UnvalidatedCallSiteTest` reds as designed (one new
+  site, argued in place). ⚑ **The `39` literal is a SECOND statement of the registered total on
+  purpose** and must be moved by hand in the same commit; deriving it from the registration
+  list would make the two terms agree by construction and cost the independent statement. ⚑
+  **`docs/check-golden-coverage.{md,json}` were NOT regenerated** — both banners were already
+  up for DL-325's predicate, and this adds a second; their prose now names both, which is what
+  keeps the disclosure true rather than merely present.
+
   ⛔ **A cheap guard on the VERDICTS was considered and DECLINED.** The candidate was a fingerprint
   over the measurement's inputs, stored beside the artifact. The input closure of a verdict is the
   whole `bridge:check` plane plus its config defaults and the golden corpus, so a fingerprint over

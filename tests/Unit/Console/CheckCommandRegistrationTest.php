@@ -53,6 +53,8 @@ class CheckCommandRegistrationTest extends TestCase
         'database.install_suffix',
         'install.inbox_config',
         'retention.posture',
+        'jobs.posture',
+        'standup.posture',
         'install.endpoint_urls',
         'install.provider_adapters',
         // per-agent planes (stages 1, 5a, 5b)

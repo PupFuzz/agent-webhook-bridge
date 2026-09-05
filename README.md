@@ -66,7 +66,7 @@ Don't use the bridge when:
 3. **Configure your agent identity**: copy `examples/sample-config/agent.yml.example` to `~/.config/agent-webhook-bridge/<your-agent-name>/<agent>.yml` and fill in your kanban API token, user_id, and webhook secret paths.
 4. **Validate the install**: `php artisan bridge:check`
 5. **Provision subscriptions**: `php artisan bridge:provision`
-6. **Deploy the app**: point Apache + PHP-FPM at `public/`; no cron, no worker, no scheduler.
+6. **Deploy the app**: point Apache + PHP-FPM at `public/`; no worker, no daemon, and no cron is required — the one OPT-IN crontab line an install may add is `bridge:tick` over the periodic-job registry (`docs/periodic-jobs.md`), and an install that adds nothing runs the registry off the inbound webhook.
 7. **Wire your agent hooks** (Claude Code example): see `examples/claude-code/settings.json.example`.
 
 After step 7, kanban activity reaches your agent's session-start and mid-session surfaces within seconds of the webhook arriving. Edit a card via the kanban UI, start a new Claude session, see the event in your context.
@@ -103,6 +103,7 @@ php artisan migrate             # run DB migrations
 - [`docs/customization.md`](docs/customization.md) — Write your own classifier, surface formatter, handlers (PHP)
 - [`docs/provider-adapters.md`](docs/provider-adapters.md) — Add support for a new webhook-emitting upstream
 - [`docs/multi-agent.md`](docs/multi-agent.md) — Run parallel agents on the same bridge
+- [`docs/periodic-jobs.md`](docs/periodic-jobs.md) — The periodic-job registry: why event-driven comes first, and the one opt-in crontab line if it cannot
 - [`docs/consumer-guide.md`](docs/consumer-guide.md) — Build a downstream consumer on the bridge's event stream
 
 ## License

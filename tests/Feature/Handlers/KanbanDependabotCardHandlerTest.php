@@ -90,6 +90,207 @@ class KanbanDependabotCardHandlerTest extends TestCase
         );
     }
 
+    /**
+     * The DL-328 rename target — the retitle leg's own entry point. `name_from` is the
+     * title the PR carried BEFORE the edit, i.e. the string the bridge stamped on the card
+     * at birth; `pr_title` is what it carries now.
+     */
+    private function handleRename(string $nameFrom, string $title, int $pr = 42): void
+    {
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', "pr-{$pr}", payload: [
+                'repo' => 'owner/repo', 'outcome' => KanbanDependabotCardHandler::RENAMED_OUTCOME, 'pr_number' => $pr,
+                'pr_title' => $title, 'pr_url' => 'https://github.com/owner/repo/pull/'.$pr,
+                'name_from' => $nameFrom,
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+    }
+
+    /**
+     * A correlated dependabot card on the mapped board carrying $name. `$boardId` is the
+     * ROW's own spelling of its board — the accepted interval (DL-292) admits the numeric
+     * string, which is what lets a card#7212 record be forced apart from the config value.
+     *
+     * ⛔ THE ROW CARRIES BOTH PIN FIELDS, DEFAULTED TO UNPINNED, and that is not decoration
+     * (card#8523 R2's lesson, reached here by card#8557). Since the restamp consults
+     * `PinGuard`, a row carrying NEITHER `block_reason` nor `tags` would make the predicate
+     * answer "not pinned" because nobody could READ the pin — every restamp test would then
+     * pass without exercising the guard at all, and each would emit a `pin_row_unreadable`
+     * warning about a fixture rather than about the code. Kanban emits both keys on every
+     * row it serves, so this is also the more faithful shape.
+     *
+     * @param  list<string>  $tags
+     */
+    private function fakeCardNamed(string $name, int|string $boardId = 8, ?string $blockReason = null, array $tags = []): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => $boardId, 'name' => $name, 'workflow_stage_id' => 50, 'block_reason' => $blockReason, 'tags' => $tags, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+    }
+
+    public function test_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped(): void
+    {
+        // The live incident (roundtable 212): dependabot retitled the PR 45 minutes before
+        // merging it, and the card kept asserting a version that never shipped. The retitle
+        // here is a DOWNGRADE (7.0.2 → 6.0.3) — the direction a fix assuming monotonic
+        // version bumps would get wrong, and the direction the reported drift ran.
+        $this->fakeCardNamed('chore(deps): Bump typescript from 5.9.0 to 7.0.2');
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json')
+            && $r['name'] === 'chore(deps): Bump typescript from 5.9.0 to 6.0.3'
+            && ! isset($r['task'])                     // DL-219: flat field write
+            && $r->data() === ['name' => 'chore(deps): Bump typescript from 5.9.0 to 6.0.3']);
+        // A retitle writes the name and NOTHING else: no column move, no archive, no create.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && (isset($r['workflow_stage_id']) || isset($r['_action'])));
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_retitle_restamps_every_matching_card_of_a_create_race(): void
+    {
+        // ⚑ THE >1-CARD RULING, pinned (DL-328 Decision 5): a create race leaves two cards
+        // carrying the SAME bridge-stamped name, so both are the bridge's and both are
+        // restamped. Restamping only a survivor would leave the twin asserting the version
+        // that never shipped — this leg's whole defect, re-minted on the duplicate — and
+        // this arm deliberately does not collapse: retiring a duplicate belongs to the move
+        // path (DL-198), which is where the survivor is chosen.
+        $from = 'chore(deps): Bump typescript from 5.9.0 to 7.0.2';
+        $to = 'chore(deps): Bump typescript from 5.9.0 to 6.0.3';
+        $row = fn (int $id, string $name) => ['id' => $id, 'board_id' => 8, 'name' => $name, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => $row(7, $from)]),
+            '*/tasks/9.json' => Http::response(['data' => $row(9, $from)]),
+        ]);
+
+        $this->handleRename($from, $to);
+
+        foreach ([7, 9] as $id) {
+            Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$id}.json")
+                && $r->data() === ['name' => $to]);
+        }
+        // Name-only on BOTH: no collapse rides along, so neither twin is archived here.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['_action']));
+    }
+
+    public function test_retitle_leaves_a_human_renamed_card_alone(): void
+    {
+        // ⭐ THE CONTROL, and without it this change is indistinguishable from the naive
+        // "always overwrite the name from the upstream title" fix that destroys a human
+        // edit on the next webhook. The card's name differs from the title the bridge
+        // stamped (`name_from`) by exactly the human's edit ⇒ the bridge does not own it
+        // ⇒ NO write at all. Same event, same card, same everything else as the test above.
+        $this->fakeCardNamed('typescript bump — HOLD, breaks the build (see #221)');
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_retitle_leaves_a_card_whose_name_differs_by_one_character(): void
+    {
+        // The test is BYTE-equality, not resemblance: a name that merely looks machine-made
+        // is not evidence the machine wrote it. One trailing space is the whole difference.
+        $this->fakeCardNamed('chore(deps): Bump typescript from 5.9.0 to 7.0.2 ');
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_retitle_with_no_correlated_card_writes_nothing(): void
+    {
+        // Never tracked ⇒ nothing to restamp, and emphatically NOT a create: the retitle
+        // leg only ever corrects a name that already exists.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_retitle_with_a_malformed_payload_alerts_and_writes_nothing(): void
+    {
+        // A rename target with no `name_from` carries no ownership evidence — a
+        // deterministic upstream bug, so it alerts + no-ops rather than writing the name
+        // it cannot justify (and rather than throwing into a redelivery storm).
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response('', 204),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', 'pr-42', payload: [
+                'repo' => 'owner/repo', 'outcome' => KanbanDependabotCardHandler::RENAMED_OUTCOME, 'pr_number' => 42,
+                'pr_title' => 'chore(deps): Bump x from 1 to 3', 'pr_url' => 'https://github.com/owner/repo/pull/42',
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'dependabot_card_rename_payload_invalid'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 42);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_restamp_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // card#7212 on the DL-328 write site: a record that only PROVED both keys present would
+        // pass against a "fix" rendering `mapped_board` into both slots, so the two values are
+        // forced apart through the accepted interval (DL-292) — the ROW says the numeric string
+        // `'8'`, the CONFIG says int 8 — and pinned with `===`. Group-B, like the archive and
+        // move arms: the id came from a board-scoped search, so this row is the only reading of
+        // where the name write landed, and `cardsForRepo`'s DL-298 gate does not substitute for
+        // it (a gate emits evidence only when it REFUSES).
+        $this->fakeCardNamed('chore(deps): Bump typescript from 5.9.0 to 7.0.2', boardId: '8');
+        Log::spy();
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && isset($r['name']));
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'restamped name from the upstream retitle')
+            && $ctx['card_board'] === '8'      // the ROW's spelling, verbatim
+            && $ctx['mapped_board'] === 8);    // the CONFIG's, unchanged
+    }
+
+    public function test_the_left_alone_record_also_names_the_board_the_read_landed_on(): void
+    {
+        // The no-write arm carries the pair too: it names a card this delivery read and made a
+        // decision about, so "which board was that card on" stays answerable on the path where
+        // nothing was written — the same reason the success record exists at all.
+        $this->fakeCardNamed('typescript bump — HOLD, breaks the build (see #221)', boardId: '8');
+        Log::spy();
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not `changes.title.from`; not restamped')
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
     public function test_opened_with_no_existing_card_creates_one_at_the_opened_stage(): void
     {
         Http::fake([
@@ -732,5 +933,242 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         Log::shouldHaveReceived('error')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'duplicate archive returned 200 but the card is not archived')
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
+    /**
+     * card#8454 / DL-335 — the ARCHIVE arm. Before this guard a closed-unmerged dependabot
+     * PR retired a card a human had parked, while `bridge:reconcile` and the release-promote
+     * sweep both skipped it: the backstop could not even see what the event path had taken
+     * off the board. The pinned card here carries a `block_reason`, one of PinGuard's two
+     * signals; the tag half rides the move leg below.
+     */
+    public function test_closed_unmerged_does_not_archive_a_pinned_card(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'block_reason' => 'holding this one', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archive refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The control for the leg above: the SAME fixture with no pin signal archives, so the
+     * assertion is about the pin and not about a fixture that never reaches the write.
+     */
+    public function test_the_same_closed_unmerged_fixture_without_a_pin_is_archived(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'block_reason' => '', 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('closed_unmerged');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+    }
+
+    /**
+     * card#8454 / DL-335 — the MOVE arm, on the other PinGuard signal (`no-automove`). The
+     * refusal is taken where the move handler takes its own: AFTER the already-in-target-stage
+     * no-op, so a pinned card that needs no write raises no alert.
+     */
+    public function test_a_pinned_card_is_not_moved_to_the_outcomes_stage(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');   // target stage 52, card sits at 50
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'move refused — card is pinned')
+            && $ctx['card_id'] === 7)->once();
+    }
+
+    /**
+     * The control for the leg above: the SAME fixture with an unrecognised tag moves.
+     */
+    public function test_the_same_move_fixture_without_a_pin_is_moved(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['dependencies'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('merged');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && ($r['workflow_stage_id'] ?? null) === 52);
+    }
+
+    /**
+     * A pinned card ALREADY in the outcome's stage raises no refusal signal: there was no
+     * write to refuse, and an alert there would be a false permanent-failure report.
+     *
+     * ⭐ THE `GET` IS A PRESENCE WITNESS (card#8523 R1, the same shape fixed on the coord-move
+     * twin in the same round — two copies, so the SHAPE was fixed, not the instance). The two
+     * `assertNotSent` legs are absences and would stay green under any early return upstream of
+     * the stage compare, certifying whatever replaced it; the card read pins that the handler
+     * actually reached the arm being bounded.
+     */
+    public function test_a_pinned_card_already_in_the_target_stage_does_not_alert(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 52, 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('merged');   // target stage 52 — already there
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    /**
+     * card#8523 / DL-340 — THE R1 REPRODUCTION from card#8454 comment 2258, now the guard.
+     * DL-335 refused the survivor's MOVE on a pinned card but left `CardCollapse` pin-blind,
+     * and `handle()` calls it BEFORE that consult — so on a create race (two cards for one
+     * repo+PR) the pinned TWIN was archived anyway and only the survivor's move was withheld.
+     * The reviewer measured it: `PATCH /tasks/9.json {"_action":"archive"}` went out against
+     * the post-DL-335 handler.
+     *
+     * ⭐ The fix is in the PRIMITIVE, not in this handler's call ORDER (canon #5): a
+     * pre-collapse consult would have covered this caller and left the coord create leg and
+     * the board tool, and it would have refused the WHOLE delivery — DL-335 alternative (b),
+     * which the operator did not ask for. Per-card inside the loop means the pinned twin
+     * survives and the unpinned survivor still moves, which is what a hold on ONE card means.
+     */
+    public function test_a_pinned_duplicate_twin_is_not_archived_by_the_collapse(): void
+    {
+        $this->writeWritebackWithAlert();
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => 'human parked this twin', 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json'));
+        // The survivor still moves — a hold is a property of the CARD, not of the delivery,
+        // and this is the witness that the refusal is not just an inert fixture.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json')
+            && ($r['workflow_stage_id'] ?? null) === 52);
+        // The collapse's own alert outcome is the SUBSYSTEM, not this handler's synthetic
+        // `dependabot_card`, so a collapse refusal and a move refusal never share a dedup
+        // marker and cannot silence each other.
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['outcome'] === 'kanban_dependabot_card'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === 9);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'duplicate archive refused — card is pinned')
+            && $ctx['card_id'] === 9 && $ctx['survivor'] === 7 && $ctx['card_board'] === 8)->once();
+    }
+
+    /**
+     * The control for the leg above, on the SAME fixture: with no pin on card 9 the collapse
+     * archives it exactly as it did before, so the assertion above is about the pin and not
+     * about a fixture that never reaches the write.
+     */
+    public function test_the_same_duplicate_fixture_without_a_pin_is_archived(): void
+    {
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+
+        $this->handle('merged');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
+            && ($r['_action'] ?? null) === 'archive');
+    }
+
+    // --- card#8557: the DL-178 hold reaches the DL-328 NAME write ---
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE. DL-335 shipped with a disclosure that the restamp was
+     * outside the pin *by the rule as written*; card#8557 is the ruling that changed the
+     * rule, and its acceptance criterion is that the refusal is LOUD — a silent no-op would
+     * leave an operator believing a frozen card is frozen while nothing said otherwise.
+     *
+     * ⭐ ITS CONTROL IS {@see test_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped}
+     * — the same event, the same card, the same ownership test passed, no pin, PATCH sent.
+     */
+    public function test_a_pinned_card_is_not_restamped_and_the_refusal_is_loud(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+        $this->fakeCardNamed('chore(deps): Bump x from 1 to 2', blockReason: 'parked pending a decision');
+        Log::spy();
+
+        $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'name restamp refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['pr'] === 42 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The pin's OTHER spelling on the same leg. The predicate is a disjunction, so a test of
+     * the `block_reason` arm says nothing about the tag.
+     *
+     * ⭐ THE READ IS A PRESENCE WITNESS, NOT DECORATION. Every other assertion here is an
+     * ABSENCE, and an absence-only test certifies whatever replaces the behaviour: an early
+     * return added anywhere upstream leaves it green while nothing ever reaches the guard.
+     * Requiring the read pins that the run got INTO the code under test.
+     */
+    public function test_a_card_tagged_no_automove_is_not_restamped_either(): void
+    {
+        $this->fakeCardNamed('chore(deps): Bump x from 1 to 2', tags: ['dependencies', 'no-automove']);
+
+        $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

@@ -10,4 +10,4 @@ retention: DISABLED (BRIDGE_RETENTION_ENABLED=false) — nothing prunes webhook_
 agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
-checks: 38 registered · 22 ran (9 reported above, 13 with nothing to report) · 2 opt-in probes not requested · 14 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 38 are accounted for — nothing was skipped uncounted.
+checks: 40 registered · 24 ran (9 reported above, 15 with nothing to report) · 2 opt-in probes not requested · 14 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 40 are accounted for — nothing was skipped uncounted.

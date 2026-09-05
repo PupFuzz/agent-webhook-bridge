@@ -33,11 +33,13 @@ use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
 use App\Bridge\Check\Checks\InstallProviderAdaptersCheck;
 use App\Bridge\Check\Checks\InstallSecretDirCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
+use App\Bridge\Check\Checks\JobsPostureCheck;
 use App\Bridge\Check\Checks\ReconcileRepoTokensCheck;
 use App\Bridge\Check\Checks\RetentionPostureCheck;
 use App\Bridge\Check\Checks\SharedIdentitiesCheck;
 use App\Bridge\Check\Checks\SshLiveProbeCheck;
 use App\Bridge\Check\Checks\SshPinnedLineCheck;
+use App\Bridge\Check\Checks\StandupPostureCheck;
 use App\Bridge\Check\Checks\WakeMembershipCheck;
 use App\Bridge\Check\Checks\WritebackAlertChannelCheck;
 use App\Bridge\Check\Checks\WritebackBoardStateCheck;
@@ -51,6 +53,7 @@ use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
+use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
@@ -154,6 +157,19 @@ class CheckCommand extends BridgeCommand
         }
 
         if (! $this->emitReport($runner->run(CheckSlot::Retention, $ctx))) {
+            $ok = false;
+        }
+
+        // The periodic-job registry (DL-325). Silent unless this install adopted the tick or
+        // holds instances, so it costs a line only where there is one to give.
+        if (! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))) {
+            $ok = false;
+        }
+
+        // The standup digest (DL-306). Silent unless this install turned the digest on, so
+        // like the registry above it costs a line only where there is one to give — and it
+        // is the only surface that reads the gate's fault marker (card#8683 / DL-345).
+        if (! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))) {
             $ok = false;
         }
 
@@ -763,7 +779,9 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
             ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
-            ->register(CheckSlot::Retention, new RetentionPostureCheck)
+            ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
+            ->register(CheckSlot::Jobs, new JobsPostureCheck)
+            ->register(CheckSlot::Standup, new StandupPostureCheck)
             ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
             ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)

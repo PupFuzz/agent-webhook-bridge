@@ -19,22 +19,18 @@ use Illuminate\Http\Client\RequestException;
  * hands the operator what the server actually said instead of a guessed cause.
  *
  * The body is scrubbed BEFORE truncation: a credential could otherwise be split
- * across the truncation boundary, leaving its head unredacted. Over-redaction is
- * deliberate — a benign key that merely contains a sensitive word loses its value
- * too; a leaked token is the failure mode we design against, a redacted-but-benign
- * field is not.
+ * across the truncation boundary, leaving its head unredacted. ⛔ That ORDER is the
+ * contract, not a style choice, and it is why {@see self::from()} — not the scrubber —
+ * owns the truncation.
+ *
+ * The scrubbing itself is {@see SecretScrubber}'s. It used to live here, and card#8433
+ * moved it out when a second subject (a third-party job handler's exception message)
+ * needed it: a class documented as the 4xx-refusal vocabulary is not where the app's
+ * credential redactor belongs, and leaving it here is how a second redactor gets written.
  */
 final class RefusalContext
 {
     private const MAX_BODY = 500;
-
-    /**
-     * Key- and scheme-name fragments whose adjacent value is a probable credential.
-     * `[_-]?` tolerates the api_key / api-key / apikey spellings.
-     */
-    private const SENSITIVE = 'authorization|bearer|token|secret|passwd|password|api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|credential|x-api-key';
-
-    private const REDACTED = '[REDACTED]';
 
     /**
      * @return array{status: int, body: string}
@@ -43,7 +39,7 @@ final class RefusalContext
     {
         return [
             'status' => $e->response->status(),
-            'body' => self::truncate(self::scrub($e->response->body())),
+            'body' => self::truncate(SecretScrubber::text($e->response->body())),
         ];
     }
 
@@ -105,16 +101,18 @@ final class RefusalContext
      *
      * ⭐ $foreignIdExcluded IS THE OTHER EVIDENCE — and it is precisely the thing DL-314
      * recorded as the deferred option: a BOARD-SCOPED read of the id against this install's
-     * own board. Since card#8375 `kanban_move_card` makes exactly that read BEFORE it calls
+     * own board. Since card#8375 `kanban_move_card` — and since card#8415 the
+     * `kanban_block_reason` draft overlay — makes exactly that read BEFORE it calls
      * `getCard` ({@see MappedBoardGuard::refusesCardIdOutsideMappedBoard}).
-     * By the time its 403 arm fires, cause (a) has been ruled out BY A MEASUREMENT: the same
-     * token read this id back off the mapped board moments earlier. That caller passes true and
-     * gets `{verb}_403_token_scope`, naming the one cause left.
+     * By the time either 403 arm fires, cause (a) has been ruled out BY A MEASUREMENT: the same
+     * token read this id back off the mapped board moments earlier. Those callers pass true and
+     * get `{verb}_403_token_scope`, naming the one cause left.
      * ⛔ THE FLAG IS A CLAIM ABOUT THE CALL SITE, NEVER A PREFERENCE. Pass it only where a
      * board-scoped establishment of THIS id precedes the failing read, or where the failing
      * read is ITSELF board-scoped (a 403 on a query naming our own board says nothing about
-     * whose card the id is). An arm with no such check — `kanban_block_reason`'s draft overlay
-     * today — keeps the default, and the two-cause slug stays true there.
+     * whose card the id is). No shipped arm passes the default today — the two-cause slug is
+     * kept, and pinned in `RefusalContextTest`, because it is the honest answer for an arm
+     * that makes no such check, not because one currently exists.
      */
     public static function readReason(string $verb, RequestException $e, bool $foreignIdExcluded = false): string
     {
@@ -123,59 +121,6 @@ final class RefusalContext
             403 => $foreignIdExcluded ? $verb.'_403_token_scope' : $verb.'_403_foreign_card_id_or_token_scope',
             default => $verb.'_4xx',
         };
-    }
-
-    /**
-     * Redact credential-adjacent values a kanban error body — or an echoed request
-     * inside it — could carry: JSON values of a sensitive key, query/form `key=value`
-     * pairs, and `Bearer`/`Basic`/`token` auth-scheme values.
-     */
-    public static function scrub(string $body): string
-    {
-        // JSON string value of any key CONTAINING a sensitive word: "api_token":"…" → "api_token":"[REDACTED]"
-        $body = (string) preg_replace(
-            '/("[^"]*(?:'.self::SENSITIVE.')[^"]*"\s*:\s*)"(?:[^"\\\\]|\\\\.)*"/i',
-            '$1"'.self::REDACTED.'"',
-            $body,
-        );
-
-        // query / form-encoded: token=abc&… → token=[REDACTED]&…
-        $body = (string) preg_replace(
-            '/\b((?:'.self::SENSITIVE.')=)[^&\s"]+/i',
-            '$1'.self::REDACTED,
-            $body,
-        );
-
-        // HTTP `Bearer`/`Basic` auth schemes echoed as raw text (e.g. an echoed
-        // Authorization header). These keywords are never followed by a prose word in
-        // an error body, so redact the value at ANY length — a short-but-real token
-        // must not slip through.
-        $body = (string) preg_replace(
-            '/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i',
-            '$1 '.self::REDACTED,
-            $body,
-        );
-
-        // GitHub's `token <pat>` scheme. Unlike Bearer/Basic, bare `token` DOES occur
-        // in prose ("token expired", "token cannot write …"), so require a
-        // credential-LONG value (>=16 of the token charset) to avoid mangling the very
-        // reason the body exists to surface. Keyed/short credentials stay covered by
-        // the JSON/query/Bearer rules.
-        $body = (string) preg_replace(
-            '/\btoken\s+[A-Za-z0-9._~+\/=-]{16,}/i',
-            'token '.self::REDACTED,
-            $body,
-        );
-
-        // Defense-in-depth: unambiguous secret PREFIXES redacted wherever they appear,
-        // even un-keyed / in an unexpected body shape — these tokens never occur in
-        // prose. Covers GitHub PATs/OAuth/app tokens (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`)
-        // and fine-grained PATs (`github_pat_`).
-        return (string) preg_replace(
-            '/\b(?:gh[opusr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/',
-            self::REDACTED,
-            $body,
-        );
     }
 
     private static function truncate(string $body): string

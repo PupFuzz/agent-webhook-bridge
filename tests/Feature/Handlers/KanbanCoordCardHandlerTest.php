@@ -10,6 +10,7 @@ use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
 use Closure;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
@@ -21,6 +22,15 @@ use Tests\TestCase;
 
 class KanbanCoordCardHandlerTest extends TestCase
 {
+    // The DL-341 retitle arm is the first leg in this class that can make
+    // `MappedBoardGuard::refuses()` PERSIST a `writeback_board_divergences` row (DL-300):
+    // its card set comes from a live tag search whose rows a test can point at another
+    // board. A committed row on the mysql leg outlives the class and is read by every
+    // later test in the run — `TestCase`'s isolation guard fails the class by name for
+    // exactly that, and SQLite `:memory:` never reproduces it (CLAUDE_TESTING.md
+    // § Isolation).
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void
@@ -936,5 +946,321 @@ class KanbanCoordCardHandlerTest extends TestCase
         $handler->handle($target, $agent);
 
         $this->assertCreatedInStage(40);   // the `now` lane's id — not the fixed 21, and not the `later` default
+    }
+
+    // =====================================================================
+    // DL-341 — the upstream RETITLE restamp (the coord sibling of DL-328)
+    // =====================================================================
+
+    /**
+     * The DL-341 rename target — the retitle arm's own entry point. `name_from` is the
+     * title the issue carried BEFORE the edit, i.e. the string the bridge stamped on the
+     * card at birth; `title` is what it carries now. The `sid` is derived from `name_from`
+     * by the classifier, which is why the tag below is `id:QUERY-4` even when the new title
+     * says `[TASK]`.
+     */
+    private function handleRename(string $nameFrom, string $title, string $sid = 'QUERY-4'): void
+    {
+        $this->handle([
+            'sid' => $sid,
+            'title' => $title,
+            'name_from' => $nameFrom,
+            'disposition' => KanbanCoordCardHandler::RENAMED_DISPOSITION,
+        ]);
+    }
+
+    /**
+     * The tag search answers one correlated coord card carrying $name. `$boardId` is the
+     * ROW's own spelling of its board — the accepted interval (DL-292) admits the numeric
+     * string, which is what lets a card#7212 record be forced apart from the config value.
+     */
+    private function fakeTaggedCardNamed(string $name, int|string $boardId = 8, int $id = 7): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => $id, 'board_id' => $boardId, 'name' => $name,
+                'workflow_stage_id' => 21, 'tags' => ['id:QUERY-4', 'type:query'],
+            ]]]),
+            "*/tasks/{$id}.json" => Http::response(['data' => ['id' => $id]]),   // the restamp PATCH
+        ]);
+    }
+
+    public function test_a_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped(): void
+    {
+        $this->fakeTaggedCardNamed('[QUERY] can we ship?');
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json')
+            && ! isset($r['task'])                     // DL-219: flat field write
+            && $r->data() === ['name' => '[QUERY] can we ship it THIS week?']);
+        // A retitle writes the name and NOTHING else: no column move, no archive, no create.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && (isset($r['workflow_stage_id']) || isset($r['_action'])));
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+        // ⛔ And it never asks the ARCHIVE side: that read exists to suppress a CREATE
+        // (DL-296), and this arm cannot create. A second search here would be a request
+        // paid on every retitle for an answer nothing consumes.
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'archived=1'));
+    }
+
+    public function test_a_retitle_leaves_a_human_renamed_card_alone(): void
+    {
+        // ⭐ THE CONTROL, and without it this change is indistinguishable from the naive
+        // "always write the upstream title onto the card" fix that destroys a human edit on
+        // the next webhook. The card's name differs from the title the bridge stamped
+        // (`name_from`) by exactly the human's edit ⇒ the bridge does not own it ⇒ NO write
+        // at all. Same event, same card, same everything else as the test above.
+        $this->fakeTaggedCardNamed('QUERY-4 — parked, waiting on the vendor (see #221)');
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_a_retitle_leaves_a_card_whose_name_differs_by_one_character(): void
+    {
+        // The test is BYTE-equality, not resemblance: a name that merely looks machine-made
+        // is not evidence the machine wrote it. One trailing space is the whole difference.
+        $this->fakeTaggedCardNamed('[QUERY] can we ship? ');
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_a_retitle_restamps_every_matching_card_of_a_create_race(): void
+    {
+        // ⚑ THE >1-CARD RULING, pinned (DL-341, adopting DL-328 Decision 5): a create race
+        // leaves two cards carrying the SAME bridge-stamped name, so both are the bridge's
+        // and both are restamped. Restamping only a survivor would leave the twin asserting
+        // the stale title — this leg's whole defect, re-minted on the duplicate — and this
+        // arm deliberately does not collapse: retiring a raced duplicate belongs to the
+        // CREATE path, which is where a survivor is chosen (DL-198).
+        $from = '[QUERY] can we ship?';
+        $to = '[QUERY] can we ship it THIS week?';
+        $row = fn (int $id, string $name) => ['id' => $id, 'board_id' => 8, 'name' => $name, 'workflow_stage_id' => 21, 'tags' => ['id:QUERY-4']];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [$row(7, $from), $row(9, $from)]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7]]),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9]]),
+        ]);
+
+        $this->handleRename($from, $to);
+
+        foreach ([7, 9] as $id) {
+            Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$id}.json")
+                && $r->data() === ['name' => $to]);
+        }
+        // Name-only on BOTH: no collapse rides along, so neither twin is archived here.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['_action']));
+    }
+
+    public function test_a_retitle_with_no_correlated_card_writes_nothing(): void
+    {
+        // Never carded ⇒ nothing to restamp, and emphatically NOT a create: the retitle arm
+        // only ever corrects a name that already exists.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_a_retitle_refuses_a_card_that_does_not_name_the_mapped_board(): void
+    {
+        // The DL-298 board gate is INHERITED, not re-spelled: the restamp draws its card set
+        // from the same `onMappedBoard` every other write on this handler does, so a row
+        // naming another board is refused and reported rather than written to. Card ids are
+        // GLOBAL across boards, which is why this is a security gate and not tidiness.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response('', 204),
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 7, 'board_id' => 99, 'name' => '[QUERY] can we ship?', 'workflow_stage_id' => 21,
+            ]]]),
+        ]);
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'card_not_on_mapped_board');
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_retitle_with_a_malformed_payload_alerts_and_writes_nothing(): void
+    {
+        // A rename target with no `name_from` carries no ownership evidence — a
+        // deterministic upstream bug, so it alerts + no-ops rather than writing a name it
+        // cannot justify (and rather than throwing into a redelivery storm). Checked in the
+        // HANDLER because it is a published extension point: another classifier can emit
+        // this target, and the failure refused here is a card renamed to the WRONG string,
+        // which no later event corrects.
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response('', 204)]);
+
+        $this->handle([
+            'title' => '[QUERY] can we ship it THIS week?',
+            'disposition' => KanbanCoordCardHandler::RENAMED_DISPOSITION,
+        ]);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_rename_payload_invalid'
+            && $r['repo'] === 'org/coord'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 4);
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'GET'], true));
+    }
+
+    public function test_a_retitle_with_no_tag_correlation_key_alerts_and_writes_nothing(): void
+    {
+        // The by-ref population (`issue_population: all`, a non-prefixed issue) carries no
+        // `id:<sid>` tag, and the restamp resolves by tag alone — so a rename target with an
+        // empty sid has no key at all. The classifier refuses to emit one (the STATED GAP);
+        // this is the handler's own refusal for a target another classifier emitted.
+        //
+        // The mapping must be `issue_population: all` for the branch to be REACHABLE at all:
+        // under the `prefixed` default an empty sid is refused earlier, by the create arm's
+        // own `coord_card_no_correlation_key` guard, and this arm is never entered.
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['org/coord' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']],
+        ]));
+        Http::fake([self::ALERT_URL.'*' => Http::response('', 204)]);
+
+        $this->handle([
+            'sid' => '', 'title' => 'a plain issue, edited', 'name_from' => 'a plain issue',
+            'disposition' => KanbanCoordCardHandler::RENAMED_DISPOSITION,
+        ]);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'coord_card_rename_payload_invalid');
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'GET'], true));
+    }
+
+    public function test_a_retitle_across_the_lane_model_gate_writes_the_name_and_never_a_stage(): void
+    {
+        // ⚑ THE LANE RULING, and it is the reason this test exists rather than a comment.
+        // `CoordLaneStages::governs()` gates the lane model on the ANCHORED TITLE, so this
+        // retitle — `[QUERY]` → `[TASK]` on a board WITH a lane model, and with a `stage:*`
+        // label on the issue — flips whether the model would govern the thread at all. The
+        // restamp still writes `{name}` and moves NOTHING: a coord-card move is a separate
+        // opt-in (`move_coord_cards`, DL-200) this mapping does not set, a title edit
+        // DECLARES no lane (so a derivation would demote an unlabelled card to the `later`
+        // default on a rename — card#6393's own excluded shape), and the un-governing
+        // direction's only target is the fixed stage, which is a rewrite of wherever the
+        // card sits. A `stage:*` label edit is what states a lane; `coord-card-relane`
+        // carries it.
+        $this->writeLaneMapping();
+        $this->fakeTaggedCardNamed('[QUERY] can we ship?');
+
+        $this->handleRename('[QUERY] can we ship?', '[TASK] ship it');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json')
+            && $r->data() === ['name' => '[TASK] ship it']);
+        // Not stage 40 (`now`), not 42 (the `later` default), not the fixed 21 — no stage at all.
+        Http::assertNotSent(fn ($r) => isset($r['workflow_stage_id']));
+    }
+
+    public function test_the_restamp_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // card#7212 on the DL-341 write site: a record that only PROVED both keys present
+        // would pass against a "fix" rendering `mapped_board` into both slots, so the two
+        // values are forced apart through the accepted interval (DL-292) — the ROW says the
+        // numeric string `'8'`, the CONFIG says int 8 — and pinned with `===`. Group-B: the
+        // id came from a board-scoped search, so this row is the only reading of where the
+        // name write landed.
+        $this->fakeTaggedCardNamed('[QUERY] can we ship?', boardId: '8');
+        Log::spy();
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && isset($r['name']));
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'restamped name from the upstream retitle')
+            && $ctx['card_board'] === '8'      // the ROW's spelling, verbatim
+            && $ctx['mapped_board'] === 8);    // the CONFIG's, unchanged
+    }
+
+    public function test_the_left_alone_record_also_names_the_board_the_read_landed_on(): void
+    {
+        // The no-write arm carries the pair too: it names a card this delivery read and made
+        // a decision about, so "which board was that card on" stays answerable on the path
+        // where nothing was written — the same reason the success record exists at all.
+        $this->fakeTaggedCardNamed('QUERY-4 — parked, waiting on the vendor (see #221)', boardId: '8');
+        Log::spy();
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not `changes.title.from`; not restamped')
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
+    // =====================================================================
+    // card#8557 — the DL-178 hold reaches the NAME write
+    // =====================================================================
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE, which is the acceptance criterion the ruling shipped with:
+     * a NAME write to a pinned card must fail LOUDLY, never silently no-op, or the next
+     * reader inherits exactly the defect the card was filed for. So this asserts the ALERT
+     * and the warning as well as the absent PATCH.
+     *
+     * ⭐ ITS CONTROL IS {@see test_a_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped}
+     * — same event, same card, same tag, same name-ownership test passed, no pin, PATCH sent.
+     * Without it a green here could be a fixture that never reached the write at all.
+     */
+    public function test_a_pinned_card_is_not_restamped_and_the_refusal_is_loud(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 7, 'board_id' => 8, 'name' => '[QUERY] can we ship?',
+                'workflow_stage_id' => 21, 'tags' => ['id:QUERY-4', 'type:query'],
+                'block_reason' => 'parked pending a decision',
+            ]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7]]),
+        ]);
+        Log::spy();
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'org/coord'
+            && $r['outcome'] === 'coord_card_create'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'name restamp refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['issue'] === 4 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The pin's OTHER spelling on the same leg — the tag, which is what an operator reaches
+     * for when the card carries no block text. The predicate is a disjunction and a test of
+     * one arm says nothing about the other.
+     *
+     * ⭐ THE READ IS A PRESENCE WITNESS, NOT DECORATION. Every other assertion here is an
+     * ABSENCE, and an absence-only test certifies whatever replaces the behaviour: an early
+     * return added anywhere upstream leaves it green while nothing ever reaches the guard.
+     * Requiring the read pins that the run got INTO the code under test.
+     */
+    public function test_a_card_tagged_no_automove_is_not_restamped_either(): void
+    {
+        // ⚠ NO `fakeTaggedCardNamed()` first: `Http::fake()` STACKS and the FIRST matching
+        // stub wins, so a helper call ahead of this one would serve the unpinned row and
+        // this test would pass by never reaching the guard.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 7, 'board_id' => 8, 'name' => '[QUERY] can we ship?',
+                'workflow_stage_id' => 21, 'tags' => ['id:QUERY-4', 'no-automove'],
+            ]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7]]),
+        ]);
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

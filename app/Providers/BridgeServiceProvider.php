@@ -4,6 +4,12 @@ namespace App\Providers;
 
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Dispatch\IntentLog;
+use App\Bridge\Retention\DatabaseRetentionStoreProbe;
+use App\Bridge\Retention\RetentionStoreProbe;
+use App\Bridge\Scheduling\JobHandlerRegistry;
+use App\Bridge\Scheduling\JobRegistry;
+use App\Bridge\Scheduling\JobScheduler;
+use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\HandlerRegistry;
@@ -46,6 +52,27 @@ class BridgeServiceProvider extends ServiceProvider
             fn (): HandlerRegistry => new HandlerRegistry((bool) config('bridge.spawn.enabled')),
         );
 
+        // The periodic-job HANDLER registry (card#8425 / DL-325) — a container singleton
+        // for the same reason HandlerRegistry is one: an operator registers custom job
+        // handlers against the exact instance the scheduler resolves, from a ServiceProvider
+        // (see docs/customization.md). "Singleton" is PER PROCESS, and that matters more
+        // here than anywhere else in this file: the FPM worker running the event-gated pass
+        // and the CLI process running `bridge:tick` are different processes with their own
+        // container, so a handler wired anywhere but a provider both load exists on ONE
+        // ingress and is a loud refusal on the other.
+        //
+        // ⭐ The armed-mutators list is a CONSTRUCTOR ARGUMENT, not something the registry
+        // reads for itself: what a build can do must not depend on config state read at an
+        // unpredictable moment, and a test binding its own list must not have to fight the
+        // container for it.
+        $this->app->singleton(JobHandlerRegistry::class, fn (): JobHandlerRegistry => new JobHandlerRegistry(
+            JobHandlerRegistry::armedFromConfig(),
+            $this->app->make(StandupGate::class),
+        ));
+
+        $this->app->singleton(JobScheduler::class, fn (): JobScheduler => new JobScheduler($this->app->make(JobHandlerRegistry::class)));
+        $this->app->bind(JobRegistry::class, fn (): JobRegistry => new JobRegistry($this->app->make(JobHandlerRegistry::class)));
+
         // Board-tools registry (DL-217), a container singleton like HandlerRegistry
         // so an operator can register custom tools against the exact instance BOTH
         // front doors resolve. Carries no per-request state (the shipped tools are
@@ -76,6 +103,12 @@ class BridgeServiceProvider extends ServiceProvider
         // (DL-242 stage 5b) — the default connects for real; a test binds a fake so a
         // live-vs-dead endpoint (and the platform's own error text) is deterministic.
         $this->app->bind(ChannelProbeEnvironment::class, SystemChannelProbeEnvironment::class);
+
+        // The store-cost seam behind the bridge:check retention posture (card#8374) —
+        // the default queries the live database; the golden harness binds a pinned answer,
+        // because the subject is the storage ENGINE and the suite runs against SQLite and
+        // the MariaDB matrix alike, where a real size read is a different number per job.
+        $this->app->bind(RetentionStoreProbe::class, DatabaseRetentionStoreProbe::class);
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');

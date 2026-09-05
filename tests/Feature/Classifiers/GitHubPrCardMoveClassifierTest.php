@@ -7,10 +7,12 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Writeback\PinGuard;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -53,12 +55,16 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         parent::tearDown();
     }
 
-    /** @param array<mixed> $pr */
-    private function classify(string $eventType, array $pr, string $repo = 'owner/repo'): ClassifyResult
+    /**
+     * @param  array<mixed>  $pr
+     * @param  array<string, mixed>  $extra  merged at the TOP level of the webhook payload
+     *                                       (GitHub puts `changes` there, beside `pull_request`)
+     */
+    private function classify(string $eventType, array $pr, string $repo = 'owner/repo', array $extra = []): ClassifyResult
     {
         return (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
             $eventType,
-            ['pull_request' => $pr, 'repository' => ['full_name' => $repo]],
+            ['pull_request' => $pr, 'repository' => ['full_name' => $repo]] + $extra,
             new Actor('999'),
             'github',
             $repo,
@@ -396,6 +402,101 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('opened', $t->payload['outcome']);
         $this->assertSame(77, $t->payload['pr_number']);
         Http::assertNothingSent();   // create/move decided by the durable handler, not here
+    }
+
+    /**
+     * DL-328. The retitle target carries BOTH sides of the change: the new title to write
+     * and `name_from`, the title as it stood BEFORE the edit — which is the string the
+     * bridge stamped on the card at birth and therefore the only evidence the handler can
+     * gate the write on. A retitle emits NO move: `edited` has no outcome.
+     */
+    public function test_dependabot_retitle_emits_a_rename_target_carrying_the_previous_title(): void
+    {
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+            'number' => 77,
+            'head' => ['ref' => 'dependabot/npm_and_yarn/typescript-7.0.2'],
+            'html_url' => 'https://github.com/owner/repo/pull/77',
+        ], extra: ['changes' => ['title' => ['from' => 'chore(deps): Bump typescript from 5.9.0 to 7.0.2']]]);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_dependabot_card', $t->handler);
+        $this->assertSame('pr-77', $t->targetId);
+        $this->assertSame(KanbanDependabotCardHandler::RENAMED_OUTCOME, $t->payload['outcome']);
+        $this->assertSame(77, $t->payload['pr_number']);
+        $this->assertSame('chore(deps): Bump typescript from 5.9.0 to 6.0.3', $t->payload['pr_title']);
+        $this->assertSame('chore(deps): Bump typescript from 5.9.0 to 7.0.2', $t->payload['name_from']);
+        // ⛔ The head REF still says 7.0.2 — it is frozen at branch creation while the diff
+        // is retargeted, so nothing here may be derived from it. Neither carried string is.
+        $this->assertStringNotContainsString('7.0.2', $t->payload['pr_title']);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_pr_edit_that_is_not_a_retitle_emits_nothing(): void
+    {
+        // GitHub sends `changes` with a key per field it changed; a body edit carries no
+        // `title` key, so there is no previous title and nothing to compare a name against.
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump x from 1 to 2', 'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ], extra: ['changes' => ['body' => ['from' => 'old body']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_retitle_to_the_same_title_emits_nothing(): void
+    {
+        // Nothing changed ⇒ no write to make. Refused HERE so the handler never sees a
+        // rename target whose two strings are equal.
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump x from 1 to 2', 'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ], extra: ['changes' => ['title' => ['from' => 'chore(deps): Bump x from 1 to 2']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_retitle_of_a_non_dependabot_pr_emits_nothing(): void
+    {
+        // The restamp is bounded to the cards the bridge MINTS. A human PR's card was
+        // named by whoever opened it, and this leg never reaches for it.
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'fix: something (card#77)', 'number' => 77,
+            'head' => ['ref' => 'fix/77-something'],
+        ], extra: ['changes' => ['title' => ['from' => 'fix: somthing (card#77)']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_dependabot_retitle_emits_nothing_when_the_mapping_has_not_opted_in(): void
+    {
+        // setUp's mapping has no create_dependabot_cards → the bridge minted no card here,
+        // so it owns no name to restamp.
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump x from 1 to 3', 'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ], extra: ['changes' => ['title' => ['from' => 'chore(deps): Bump x from 1 to 2']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
     }
 
     public function test_dependabot_pr_falls_through_when_not_opted_in(): void
@@ -2181,7 +2282,12 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         // …and the ESCAPE HATCH is reachable end-to-end: a revert whose author writes their
         // OWN closing form outside the quotes closes the card, deliberately. Positional, so
         // it cannot fire by accident — GitHub never writes outside the quotes — and it needs
-        // no new vocabulary (card#8294's `[no-close]` stays the CI-only inverse it was).
+        // no new vocabulary. ⚠ The parenthetical that read "card#8294's `[no-close]` stays
+        // the CI-only inverse it was" is SUPERSEDED by card#8344: the writeback now reads
+        // that marker. The ruling here is untouched — a marker meaning *close anyway* is
+        // still not minted, and `[no-close]` runs the OTHER way, withholding a move rather
+        // than causing one. This hatch is still positional, and a marker in the quoted
+        // original does not veto it (`NoCloseGrammarTest`).
         //
         // ⚠ IT RE-CLOSES THE CORRELATED CARD; IT DOES NOT REDIRECT THE MOVE. Closure only
         // FILTERS what correlation already selected, and on a GitHub revert the head ref is
@@ -2368,5 +2474,129 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'foreign-DL-mention guard, DL-218')
             && str_contains((string) $msg, 'the card token in force is card#4811')
             && ! str_contains((string) $msg, 'moving card#4811'))->once();
+    }
+
+    public function test_a_no_close_title_withholds_the_structural_move_and_says_why(): void
+    {
+        // ⛔ THE card#8344 DEFECT, end to end, on the shape that produced it: a context PR
+        // built ON the card's own branch. The structural route (DL-308) reads the ref's
+        // IDENTITY, and this PR has exactly the ref a PR that FINISHES the card has — so
+        // merging a design note promoted the card into a terminal stage. Nothing in the
+        // artifact can tell the two apart; the author's `[no-close]` is the only signal
+        // that exists, and until now nothing at runtime read it.
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the prior ruling [no-close] (card#4811)', 'card-4811-widget'));
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+        // NEVER A SILENT NO-OP, and the line must not be the DEFAULT one, which is FALSE
+        // here: this PR's ref DOES name the card. An operator told otherwise would rename a
+        // branch to undo a refusal they deliberately asked for.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
+            && str_contains((string) $msg, '4811')
+            && str_contains((string) $msg, 'NO stage move')
+            && str_contains((string) $msg, '[no-close]')
+            && str_contains((string) $msg, 'card#8344')
+            && ! str_contains((string) $msg, 'the HEAD BRANCH REF does not name'))->once();
+    }
+
+    public function test_a_no_close_title_withholds_the_lexical_and_dl_routes_too(): void
+    {
+        // BOTH ROUTES, separated, because the witness above is satisfied by a fix to the
+        // structural half alone. Row 1: the author writes a closing form AND the marker —
+        // a contradiction, read the recoverable way. Row 2: the DL form, which
+        // `bridge:reconcile` also closes on, so a veto spelled in one predicate would be
+        // missed by the other.
+        $this->fakeBoardCards();   // DL-9 → card 7; stubbed FIRST — `Http::fake()` stacks and the first stub wins
+
+        $lexical = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the ruling [no-close] (closes card#4811)', 'fix/streaming-timeout'));
+        $this->assertSame([], $this->targetsNamed($lexical, 'kanban_move_card'), 'a closing form beside the marker must not close');
+
+        $dl = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the ruling [no-close] (closes DL-9)', 'fix/streaming-timeout'));
+        $this->assertSame([], $this->targetsNamed($dl, 'kanban_move_card'), 'a closing DL form beside the marker must not close');
+    }
+
+    public function test_the_no_close_controls_that_discriminate(): void
+    {
+        // ⛔ WITHOUT THESE, every marker witness above is satisfied by a gate that refuses
+        // everything — the DL-305 failure mode exactly (a gate nothing satisfies freezes
+        // the board it guards, quietly). Each control is ONE VARIABLE away: the identical
+        // event with the marker deleted.
+        $this->fakeBoardCards();   // DL-9 → card 7; stubbed FIRST — `Http::fake()` stacks and the first stub wins
+
+        $structural = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the prior ruling (card#4811)', 'card-4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($structural, 'kanban_move_card')));
+
+        $lexical = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the ruling (closes card#4811)', 'fix/streaming-timeout'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($lexical, 'kanban_move_card')));
+
+        $dl = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the ruling (closes DL-9)', 'fix/streaming-timeout'));
+        $this->assertSame([7], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($dl, 'kanban_move_card')));
+
+        // …and PROSE RESEMBLING the marker still closes: it is a literal, not a grammar
+        // (card#8294's ruling, inherited). A fuzzier surface would resume the guessing at
+        // intent this gate exists to stop.
+        $prose = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the ruling, no close intended (card#4811)', 'card-4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($prose, 'kanban_move_card')));
+    }
+
+    public function test_the_marker_leaves_every_ungated_outcome_byte_identical(): void
+    {
+        // CORRELATION IS UNTOUCHED, exactly as it is for a revert (card#8306) — and this is
+        // the leg that keeps the marker from stranding the card it withholds. The card is
+        // still selected, `opened` still fires and still stamps the PR refs, so
+        // `bridge:reconcile` keeps the card in its population and an operator who removes
+        // the marker (or moves the card by hand) is not fighting a lost correlation.
+        Http::fake();
+
+        $opened = $this->classify('pull_request.opened', [
+            'number' => 7348, 'merged' => false, 'base' => ['ref' => 'dev'],
+            'title' => 'docs: cite the prior ruling [no-close] (card#4811)',
+            'head' => ['ref' => 'card-4811-widget'],
+            'html_url' => 'https://github.com/owner/repo/pull/7348',
+        ]);
+        $targets = $this->targetsNamed($opened, 'kanban_move_card');
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $targets));
+        $this->assertSame('opened', $targets[0]->payload['outcome']);
+        $this->assertSame(7348, $targets[0]->payload['stamp_pr']);
+    }
+
+    public function test_the_marker_and_the_card_side_pin_both_hold(): void
+    {
+        // ⛔ THE PRECEDENCE, asserted at the seam rather than described in prose. The two
+        // opt-outs answer different questions on different surfaces and BOTH hold; neither
+        // can overturn the other, because both can only WITHHOLD.
+        //
+        //  - `[no-close]` is read HERE, at classify time, off the event payload's title. Its
+        //    refusal is strictly EARLIER: no `kanban_move_card` target is emitted at all, so
+        //    the handler — where `PinGuard` lives — is never reached and the card's pin
+        //    state cannot matter. That is what this leg measures.
+        //  - The pin is read at WRITE time off the card, on every outcome (card#8289), and
+        //    `KanbanMoveCardHandlerTest::test_pinned_merge_refusal_alerts()` owns that half.
+        //    It is deliberately NOT re-asserted here: a second copy of that witness would be
+        //    the duplication this repo keeps paying for.
+        //
+        // The composition therefore has no order in which the two disagree, and the control
+        // below shows the classifier half is live rather than vacuous.
+        Http::fake();
+
+        $marked = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the prior ruling [no-close] (card#4811)', 'card-4811-widget'));
+        $this->assertSame([], $marked->targets, 'no target reaches the handler, so the pin has nothing left to refuse');
+
+        $this->assertTrue(PinGuard::isPinned(['tags' => ['no-automove']]),
+            'the pin predicate must be live, or this leg claims a composition with a dead half');
+        $unmarked = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'docs: cite the prior ruling (card#4811)', 'card-4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($unmarked, 'kanban_move_card')),
+            'without the marker the target IS emitted and the pin is what stands between it and a move');
     }
 }

@@ -2,8 +2,8 @@
 
 namespace App\Bridge\Retention;
 
+use App\Bridge\Support\AfterResponseGate;
 use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -37,6 +37,14 @@ use Illuminate\Support\Facades\Log;
  * trim streams instead of slurping: an OOM there would be uncatchable, and would
  * strand the pass AFTER its back-off marker was set.)
  *
+ * ⭐ THREE OF THOSE PROPERTIES NOW LIVE IN {@see AfterResponseGate}, NOT HERE (card#8432).
+ * The interval marker, the non-blocking lock and the never-throws recording were restated
+ * by hand in this gate, in `App\Bridge\Standup\StandupGate` and in
+ * `App\Bridge\Scheduling\JobScheduler`, so a defect fixed in one copy survived in the other
+ * two — which is what happened to the catch arm DL-325 had to repair three times over. What
+ * stays here is what is genuinely retention's: the posture, the BOUNDED batch, the misconfig
+ * back-off, and the batch-filled re-open that drains a backlog across deliveries.
+ *
  * Two environment constraints this design depends on, stated so they are not
  * rediscovered the hard way:
  *  - **PHP-FPM.** The after-response property is `fastcgi_finish_request()`. Without
@@ -68,23 +76,25 @@ final class RetentionGate
     public const ERROR_KEY = 'bridge:retention:last-error';
 
     /**
-     * Floor on the last-error marker's lifetime. It must outlive the interval back-off
-     * so `bridge:check` still sees a persistent failure between the once-per-interval
-     * retries; a longer configured interval widens it (see {@see runSafely}).
+     * The lock, the interval marker and the fault recording, owned once for every
+     * after-response subsystem in this app (card#8432). Constructed here rather than
+     * injected: its arguments are this subsystem's own key strings, which the container
+     * cannot resolve and no other class has any business supplying.
      */
-    private const ERROR_TTL = 2592000; // 30 days
-
-    /**
-     * Ceiling on how long one bounded pass may hold the lock before it is presumed
-     * dead and released. Only relevant if a worker is killed mid-pass; a pass that
-     * takes anywhere near this is already pathological.
-     */
-    private const LOCK_TTL = 300;
+    private readonly AfterResponseGate $gate;
 
     public function __construct(
         private readonly Application $app,
         private readonly RetentionService $retention,
-    ) {}
+    ) {
+        $this->gate = new AfterResponseGate(
+            lockKey: self::LOCK_KEY,
+            markerKey: self::MARKER_KEY,
+            errorKey: self::ERROR_KEY,
+            faultMessage: 'retention pass failed',
+            cadenceSeconds: static fn (): int => (int) config('bridge.retention.interval'),
+        );
+    }
 
     /**
      * Queue a retention pass to run after this request's response has been sent.
@@ -106,47 +116,36 @@ final class RetentionGate
      */
     private function runSafely(): void
     {
-        try {
-            $this->run();
-        } catch (\Throwable $e) {
-            // A single failure may be transient (a lock timeout, a momentary DB blip),
-            // so this stays a warning rather than crying wolf on the first blip. But it
-            // must not merely vanish: the marker-before-prune back-off means a
-            // persistently-throwing pass runs at most once per interval, so without a
-            // durable record it leaves only this one line — in a log nobody tails —
-            // while `bridge:check` still says `retention: on`. Record it so the
-            // preflight surfaces the stuck state; a later clean pass clears it. The TTL
-            // outlives the interval so the marker is still there at the next retry.
-            Cache::put(self::ERROR_KEY, [
-                'at' => now()->toIso8601String(),
-                'exception' => $e::class,
-                'error' => $e->getMessage(),
-            ], max(self::ERROR_TTL, (int) config('bridge.retention.interval') + 3600));
-            Log::warning('retention pass failed', [
-                'exception' => $e::class,
-                'at' => $e->getFile().':'.$e->getLine(),
-                'error' => $e->getMessage(),
-            ]);
-        }
+        // A single failure may be transient (a lock timeout, a momentary DB blip), so the
+        // recorded line stays a warning rather than crying wolf on the first blip. But it
+        // must not merely vanish: the marker-before-prune back-off means a
+        // persistently-throwing pass runs at most once per interval, so without a durable
+        // record it leaves only that one line — in a log nobody tails — while
+        // `bridge:check` still says `retention: on`. The marker is what lets the preflight
+        // surface the stuck state; a later clean pass clears it.
+        //
+        // ⛔ AND RECORDING IT MUST NOT RE-RAISE IT — {@see AfterResponseGate::neverThrows()}
+        // records through {@see App\Bridge\Support\FaultMarker}, which owns the order (log
+        // first, marker second, each leg guarded) and the TTL that outlives this interval.
+        // Written out by hand here, the marker put was the FIRST statement of this arm, so a
+        // dead cache store threw out of a terminating callback: an unhandled fatal after the
+        // response, in the one process nobody watches.
+        $this->gate->neverThrows($this->run(...));
     }
 
     private function run(): void
     {
-        // The due-check lives INSIDE the lock, and only there. A cheaper check before
-        // the lock would be an optimization that buys a race: two receives can both
-        // read "due" before either acquires, and the loser then runs a second pass the
-        // moment the winner releases. One check under the lock has no such window.
-        Cache::lock(self::LOCK_KEY, self::LOCK_TTL)->get(function () {
-            if (Cache::has(self::MARKER_KEY)) {
-                return;
-            }
-
+        // The non-blocking lock, the due-check inside it and the marker armed BEFORE the
+        // work all belong to the gate primitive now — the interval is handed to it as the
+        // same value {@see RetentionConfig::fromConfig()} would resolve, because the marker
+        // has to be written before anything can throw.
+        $this->gate->oncePerInterval((int) config('bridge.retention.interval'), function (): void {
             $cfg = RetentionConfig::fromConfig();
 
             if (! $cfg->isUsable()) {
-                // Back off a full day before complaining again: this runs per webhook,
-                // and a config mistake must not turn every delivery into a log line.
-                Cache::put(self::MARKER_KEY, true, 86400);
+                // Back off a full DAY rather than the ordinary interval: this runs per
+                // webhook, and a config mistake must not turn every delivery into a log line.
+                $this->gate->backOff(86400);
                 Log::warning('retention is enabled but misconfigured; nothing pruned', [
                     'problem' => $cfg->problem,
                 ]);
@@ -156,22 +155,17 @@ final class RetentionGate
 
             $batch = $cfg->batch;
 
-            // Mark BEFORE pruning, so a pass that throws backs off a full interval
-            // instead of retrying on every subsequent delivery.
-            Cache::put(self::MARKER_KEY, true, $cfg->interval);
-
             $result = $this->retention->prune($cfg->olderThanDays, $cfg->nullPayloadsOlderThanDays, false, $batch);
 
             // The pass completed — erase any failure the preflight was surfacing.
-            Cache::forget(self::ERROR_KEY);
+            $this->gate->clearFault();
 
             if ($this->backlogRemains($result, $batch)) {
-                // A leg filled its batch, so there is more to drain. Clear the marker
-                // so the NEXT delivery continues instead of waiting out the interval —
-                // this is what drains a 20k-row backlog in hours rather than months.
-                // Each pass is still individually bounded, which is the property that
-                // matters for the worker.
-                Cache::forget(self::MARKER_KEY);
+                // A leg filled its batch, so there is more to drain. Re-open the interval
+                // so the NEXT delivery continues instead of waiting it out — this is what
+                // drains a 20k-row backlog in hours rather than months. Each pass is still
+                // individually bounded, which is the property that matters for the worker.
+                $this->gate->reopen();
             }
 
             Log::info('retention pass', [
