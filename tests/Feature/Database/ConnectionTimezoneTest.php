@@ -40,7 +40,9 @@ use Tests\TestCase;
  *    hand the one-time data correction a genuinely skewed row, on MySQL only. It is the only
  *    coverage the destructive half of this change has, and it asserts all three of its
  *    properties: that it repairs, that it leaves the DB-written column alone, and that a second
- *    application does not move the data again.
+ *    application does not move the data again. ⭐ Unlike the two legs above it is NOT bounded by
+ *    the runner's own zone — the correction reads its shift out of the data, so this leg is a
+ *    real measurement on CI's UTC MariaDB containers.
  */
 class ConnectionTimezoneTest extends TestCase
 {
@@ -145,9 +147,15 @@ class ConnectionTimezoneTest extends TestCase
     /**
      * ⭐ The one-time correction is the DESTRUCTIVE half of card#8825 — applied twice it would
      * subtract the offset again — so its repair, its refusal to repeat, and its refusal to touch
-     * the DB-written column are asserted rather than reasoned about. Same skewed-session
-     * technique as the control above, which is what lets a MariaDB job reproduce a defect that
-     * needs a non-UTC server.
+     * the DB-written column are asserted rather than reasoned about.
+     *
+     * ⭐ IT RUNS ON ANY MySQL SERVER, INCLUDING A UTC ONE, AND THAT IS THE POINT OF THE SECOND
+     * SHAPE OF THAT MIGRATION. The first shape derived its shift from the SERVER's own zone, so
+     * on a UTC container it was the identity: this test planted a four-hour skew, the pass
+     * reported "corrected", wrote nothing, and the assertion below is what caught it. Deriving
+     * the shift from the in-row witness instead makes both the repair and this test independent
+     * of what zone the host runs — so a green MariaDB matrix leg is evidence about the
+     * correction rather than evidence about the runner.
      */
     public function test_the_correction_migration_repairs_a_skewed_row_exactly_once(): void
     {

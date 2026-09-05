@@ -103,7 +103,11 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 >
 > ⛔ **`webhook_events.received_at` is NOT touched, and that is deliberate** — it is DB-written (`->useCurrent()`), so it always held the right instant and only *displayed* wrong. On this upgrade it starts reading four hours later than you are used to seeing; that reading is the correct one and nothing about the stored value changed.
 >
+> ⛔ **IT IS NOT REVERSIBLE.** The shift is read out of the disagreement between a DB-written and a PHP-written timestamp in the same row, and repairing the rows is what removes that disagreement — so `migrate:rollback` **refuses** rather than silently doing nothing. The pre-upgrade backup is the only way back; take it.
+>
 > ⚑ **Run the steps in the order above** (`migrate` BEFORE `optimize` and the FPM reload). Workers are still serving under the cached OLD config while the migration runs, so an event arriving in that window is written with the old skew and is not corrected — a handful of audit timestamps four hours out. The reverse order has the opposite residue, which is a correctly-written row the correction would shift again, so this order is the safe one. Quiesce the receiver if even that is unwanted. Re-running `migrate` is safe: the correction measures the skew before it writes anything and does nothing when there is none.
+>
+> ⚠ **It can REFUSE, and a refusal is not a failure to work around.** If `webhook_events` discloses more than one clock offset — a history that spans a DST boundary or a host whose zone was changed — no single shift is correct for all of it, so the pass throws and names the offsets with their row counts rather than corrupting the rows it would get wrong. Prune below the transition and re-run, or ask for a per-row repair; do not edit the migration to pick one.
 
 ### Reconcile out-of-repo copies (session launcher + channel server + custom classifier)
 
