@@ -241,6 +241,18 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * (5xx/timeout) error PROPAGATES so redelivery re-scans (idempotent — a promoted card
      * leaves the Shipped filter).
      *
+     * ⭐ THE NON-PROMOTING EXITS ARE NOT ALL THE SAME EXIT (card#8787). Three loud `catch`
+     * arms sat beside two silent `return false`s, and the silent pair could not tell
+     * *"GitHub answered a body this projection could not read"* from *"not merged yet"* /
+     * *"not on main yet"* — so a degraded read left the card at Shipped with no signal, on
+     * the one leg `docs/writeback.md` records as having NO reconcile backstop, and the
+     * `scan complete` counts cannot separate it from the dominant normal negative. WHICH
+     * CARDS MOVE IS UNCHANGED: an unreadable answer skips exactly as it always did. What
+     * changed is that it now says so, through {@see skipUnverifiable}, in the `catch` arms'
+     * own words so one grep (`— skipping card`) finds every non-promoting route, and the
+     * two genuinely normal negatives stay QUIET — that contrast is the whole signal, and a
+     * line on the normal negatives would destroy it.
+     *
      * $boardContext is the candidate ROW's own board paired with the mapped one, rendered by
      * {@see MappedBoardGuard::boardContext} at scan time and carried here so the success
      * record names the board the promote LANDED on, not only the one config aimed at
@@ -270,7 +282,20 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
         // An OPEN PR carries a non-null TEST-merge sha on no branch — gate on merged, not on
         // emptiness. A merged PR with no sha (rare) is likewise not verifiable → skip.
-        if ($pr['merged'] !== true || $pr['merge_commit_sha'] === '') {
+        if ($pr['merged'] === null) {
+            // NOT `merged: false`: the answer carried no merge state at all. Same skip, and
+            // deliberately so — this leg never promotes on a fact it could not read — but a
+            // different operator action, so it gets a different reason.
+            $this->skipUnverifiable($repo, $cardId, $prNumber, 'promote_pr_merge_state_unreadable');
+
+            return false;
+        }
+        if ($pr['merged'] !== true) {
+            return false;   // genuinely still open / closed-unmerged — QUIET, the normal negative
+        }
+        if ($pr['merge_commit_sha'] === '') {
+            $this->skipUnverifiable($repo, $cardId, $prNumber, 'promote_merged_without_merge_sha');
+
             return false;
         }
 
@@ -289,10 +314,17 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             throw $e;
         }
 
+        if ($status === '') {
+            // NOT `behind`/`diverged`: a real compare always names one of the four statuses,
+            // so the empty string is only ever a body the projection could not read.
+            $this->skipUnverifiable($repo, $cardId, $prNumber, 'promote_compare_status_unreadable');
+
+            return false;
+        }
         // ahead/identical ⇒ main is ahead-of/equal-to the merge sha ⇒ the sha is an ancestor
         // of main ⇒ the card's work is on main ⇒ released. behind/diverged ⇒ not yet released.
         if ($status !== 'ahead' && $status !== 'identical') {
-            return false;
+            return false;   // genuinely not on main yet — QUIET, the dominant normal negative
         }
 
         try {
@@ -315,6 +347,35 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;
+    }
+
+    /**
+     * The report for a candidate this leg could NOT decide about — GitHub answered, and the
+     * answer does not carry the fact the promote turns on (card#8787). One message, three
+     * `reason` values, because an operator's next action differs by cause and the three sit
+     * at different depths of the same read:
+     *
+     * - `promote_pr_merge_state_unreadable` — the pull body carried no `merged` at all
+     *   (`GitHubReadClient::getPull` names the read itself in the same log).
+     * - `promote_merged_without_merge_sha` — a MERGED PR with no `merge_commit_sha`; there is
+     *   nothing to test reachability of, so the card can never promote until GitHub answers one.
+     * - `promote_compare_status_unreadable` — the compare body carried no `status`.
+     *
+     * ⭐ IT ROUTES THROUGH THE PAIRED ALERT PRIMITIVE, like the three `catch` arms and unlike
+     * card#8761's fail-OPEN twin, because the outcomes differ in the direction that matters:
+     * that guard's silence meant a move HAPPENED, this one means a released card is stranded at
+     * Shipped, permanently and with no backstop — the same standing as the 4xx arms beside it,
+     * and giving it a quieter channel would be exactly the asymmetry-inside-one-handler DL-285
+     * and DL-292 closed twice. Dedup is per (repo, outcome, reason), so a whole scan degrading
+     * one way is ONE push carrying the first card, and the `Log::warning` enumerates the rest.
+     */
+    private function skipUnverifiable(string $repo, int $cardId, int $prNumber, string $reason): void
+    {
+        $this->alerts->warnAndNotify(
+            'kanban_promote_released: GitHub answered, but the answer does not say whether this card is released — skipping card (see `reason`)',
+            ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'reason' => $reason],
+            $repo, 'promote_on_release', $cardId, $reason,
+        );
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Bridge\Writeback;
 
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Read-only GitHub PR-state client for the reconciler (bridge:reconcile, DL-183).
@@ -77,7 +78,17 @@ final class GitHubReadClient
      * that goes null on a deleted fork, and nothing here reads it. An absent ref reads as
      * `''`, which names no card: the safe direction, and the same one the title takes.
      *
-     * @return array{state: string, merged: bool, base_ref: string, html_url: string, merge_commit_sha: string, title: string, head_ref: string}
+     * ⭐ `merged` IS NULLABLE, and the null is the whole point (card#8787). It was a plain
+     * `bool` collapsed from `($pr['merged'] ?? false) === true`, so a 200 whose body carried
+     * no `merged` at all was byte-identical to an honest `merged: false` — and both silently
+     * meant "not merged" to every consumer. `null` now says the third thing that was true all
+     * along and unsayable: THE ANSWER DID NOT CARRY A MERGE STATE. Every consumer's existing
+     * falsy test (`! $pr['merged']`, `!== true`) reads null exactly as it read the collapsed
+     * false, so nothing any caller decides moves; what changes is that a caller CAN now tell
+     * the two apart, and {@see warnUnreadableBody} names the cause here for the callers that
+     * cannot.
+     *
+     * @return array{state: string, merged: ?bool, base_ref: string, html_url: string, merge_commit_sha: string, title: string, head_ref: string}
      */
     public function getPull(string $repo, int $number): array
     {
@@ -85,10 +96,18 @@ final class GitHubReadClient
         $pr = is_array($pr) ? $pr : [];
         $base = is_array($pr['base'] ?? null) ? ($pr['base']['ref'] ?? '') : '';
         $head = is_array($pr['head'] ?? null) ? ($pr['head']['ref'] ?? '') : '';
+        $merged = $pr['merged'] ?? null;
+        if (! is_bool($merged)) {
+            self::warnUnreadableBody(
+                "the pull read for {$repo}#{$number} returned a 200 whose body carries no readable `merged` flag — the PR's merge state is UNKNOWN, not false, and a consumer that reads it as \"not merged yet\" degrades silently",
+                ['repo' => $repo, 'pr' => $number, 'read' => 'get-pull'],
+            );
+            $merged = null;
+        }
 
         return [
             'state' => is_string($pr['state'] ?? null) ? $pr['state'] : '',
-            'merged' => ($pr['merged'] ?? false) === true,
+            'merged' => $merged,
             'base_ref' => is_string($base) ? $base : '',
             'html_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
             'merge_commit_sha' => is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '',
@@ -107,13 +126,57 @@ final class GitHubReadClient
      * `commits[]` is irrelevant (no truncation risk). `base`/`head` may each be a raw
      * SHA or a ref. Throws RequestException on any non-2xx (a bad/unknown sha 404s —
      * the caller warns + skips that card, as with getPull).
+     *
+     * ⭐ `''` MEANS "THE ANSWER CARRIED NO STATUS", never "not reachable" (card#8787). A real
+     * compare always names one of the four statuses, so the empty string is unreachable from a
+     * body this projection could read — which is what makes it a usable sentinel and why the
+     * signature does not need a null. The caller may (and does) act on it as a distinct cause;
+     * {@see warnUnreadableBody} names it here for the whole read, once, whoever is calling.
      */
     public function compareStatus(string $repo, string $base, string $head): string
     {
         $cmp = $this->http()->get(self::API_BASE."/repos/{$repo}/compare/{$base}...{$head}")->throw()->json();
         $cmp = is_array($cmp) ? $cmp : [];
+        $status = $cmp['status'] ?? null;
+        if (! is_string($status)) {
+            self::warnUnreadableBody(
+                "the compare read for {$repo} {$base}...{$head} returned a 200 whose body carries no readable `status` — reachability is UNKNOWN, not \"not reachable\", and a consumer that reads it as a negative degrades silently",
+                ['repo' => $repo, 'base' => $base, 'head' => $head, 'read' => 'compare'],
+            );
 
-        return is_string($cmp['status'] ?? null) ? $cmp['status'] : '';
+            return '';
+        }
+
+        return $status;
+    }
+
+    /**
+     * The CAUSE clause both unreadable-200 lines in this client end with. It is a const and not
+     * a repeated literal because it is the only part of those lines that is the SAME fact —
+     * what an unreadable body means and what to look at — while each read's consequence
+     * legitimately differs. It is deliberately NOT shared with {@see KanbanClient}'s twin: that
+     * one names KANBAN as the shape that may have changed, and the two ends fail for different
+     * reasons and are fixed by different people.
+     */
+    private const UNREADABLE_BODY_CAUSE = "GitHub's response shape may have changed, or something other than GitHub (a proxy, a cache, an auth portal) may be answering this URL";
+
+    /**
+     * The degraded-read report for a 200 this client's projections could not read (card#8787).
+     *
+     * ⛔ IT REPORTS, IT DOES NOT THROW, and that is a decision about the CALLERS, not timidity
+     * about the read. `getPull` has two — `KanbanPromoteReleasedHandler::promoteIfReleased()`
+     * and `bridge:reconcile`'s per-card recompute — and `compareStatus` has one; a throw here
+     * would turn a per-card degradation into an aborted reconcile run (its `catch (Throwable)`
+     * arm would swallow it back into a per-card skip anyway) to serve the one caller that
+     * already has a per-card skip. The consumer that must SAY something about a specific card
+     * owns that half; this line owns the half no consumer can see, which is WHY the projection
+     * is empty.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private static function warnUnreadableBody(string $what, array $context): void
+    {
+        Log::warning("github read: {$what}; ".self::UNREADABLE_BODY_CAUSE, $context);
     }
 
     private function http(): PendingRequest
