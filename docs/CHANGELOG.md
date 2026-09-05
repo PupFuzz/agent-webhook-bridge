@@ -8,6 +8,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#8825 (DL-346)** — **every PHP-written timestamp was being stored skewed by the host's UTC offset, and the column that looked wrong was the only correct one.** ⚠ **THIS UPGRADE REWRITES STORED DATA** — read `CLAUDE_DEPLOYMENT.md` § Update an existing install before merging, and back the database up first.
+  - **The defect:** `app.timezone` is UTC and PHP serialises an Eloquent timestamp as a bare literal with no offset marker, while `config/database.php` declared no `timezone`, so the MySQL session kept the server's `SYSTEM` zone. MySQL read each UTC literal as local time and stored `instant + host_offset` — invisibly, because the same offset was applied again on the way out.
+  - ⭐ **The inversion is the finding.** `webhook_events.received_at` is DB-written (`->useCurrent()`), so it always held the true instant and merely RENDERED four hours behind — it is correct, and on this upgrade it starts reading four hours later, which is the right reading. `created_at` / `updated_at` and every other PHP-written column were four hours in the FUTURE and looked fine. Live consequence beyond audit noise: `RetentionService` compares `received_at` against a PHP-computed cutoff, so the prune window ran ~4h long.
+  - **The pin is on the CONNECTION, never the server:** `'timezone' => env('DB_TIMEZONE', '+00:00')` on the `mysql` and `mariadb` connections. ⛔ A `my.cnf` `time_zone` is global and would change how every other database on the host reads.
+  - **The data repair is per row and carries no offset literal.** `CONVERT_TZ(col, '+00:00', 'SYSTEM')` asks the server for the offset its own zone had at that row's instant, so a history spanning a DST transition is corrected correctly on both sides of it and an install in another zone gets its own offset. ⛔ `received_at` is deliberately NOT touched.
+  - ⛔ **It cannot be applied twice.** The gate is a witness rather than run-once bookkeeping: `webhook_events` holds a DB-written and a PHP-written timestamp in the same row from the same INSERT, so their difference IS the skew — no skew, nothing written. The pass runs in one transaction, so a partial failure rolls back and re-runs clean.
+  - **The permanent test is the assertion nobody had made:** `Tests\Feature\Database\ConnectionTimezoneTest` asserts a freshly written row's DB-written and PHP-written timestamps agree with each other and with the true instant. ⚠ It is a MEASUREMENT only on the `phpunit-mariadb` matrix — SQLite has no session zone and cannot represent the skew — and it ships with a positive control that skews the session by hand and asserts the measurement reports it.
+
 ## [0.81.0] - 2026-09-05
 
 ### Added

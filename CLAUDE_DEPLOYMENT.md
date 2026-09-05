@@ -39,6 +39,7 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 # BRIDGE_GITHUB_API_BASE_URL=https://api.github.com            # defaults to api.github.com
 # BRIDGE_MAX_BODY_BYTES=262144        # optional; default 256K. Keep ≤ the FPM pool's post_max_size.
 # BRIDGE_INSTALL_SUFFIX=-prod         # -prod/-dev cross-DSN safety marker
+# DB_TIMEZONE=+00:00                  # MySQL session time_zone; defaults to +00:00 and must match app.timezone (DL-346)
 ```
 
 The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
@@ -97,6 +98,12 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 > **No `sudo`?** The FPM reload is for a clean worker recycle; it's not strictly required. With PHP's default `opcache.validate_timestamps=On`, FPM workers pick up changed `.php` / cached-config files within `revalidate_freq` (a couple of seconds) on their own. After a code/`.env` change, `optimize:clear && optimize` + a healthy `bridge:check` and `/up` 200 confirm the new state is live; reload when you can for a deterministic recycle.
 
 > **⚠ Adding a writeback outcome that a newer version introduced (e.g. `started`, DL-160 / v0.37.0) — deploy the code FIRST, edit `writeback.json` SECOND.** A new outcome key is *unknown* to the older `WritebackConfig`, which rejects it as a **malformed config — and a malformed `writeback.json` fails closed for EVERY mapping in the file**, silently disabling your whole writeback (all repos), not just the one you edited. So if you edit config before the new code is actually serving (e.g. between the pull and the FPM reload, or you touched config first), every writeback goes dark until the new code runs. Order it: pull → `optimize` → reload/recycle → `bridge:check` green → **then** edit `writeback.json` → `bridge:check` again. See [`docs/writeback.md`](docs/writeback.md) § *Branch-create → In Progress* for the `started` config + the required `push` webhook event.
+
+> **⚠ ONE-TIME, ON THE UPGRADE THAT INTRODUCES `config/database.php`'s `timezone` KEY (card#8825 / DL-346) — `php artisan migrate --force` REWRITES STORED TIMESTAMPS.** Before that key existed, the MySQL session kept the server's `SYSTEM` zone while PHP serialised every Eloquent timestamp as a bare UTC literal, so MySQL read each one as local time and stored `instant + host_offset`. The key stops that happening; the migration `2026_09_05_000001_correct_php_written_timestamps_to_utc.php` repairs the rows already written that way — every PHP-written column in `webhook_events`, `agent_dispatches`, `writeback_board_divergences`, `board_tools_client_calls` and `scheduled_jobs`. **Back the database up first** (`mysqldump` of this install's DB); it is a bulk `UPDATE` over your whole event history and the migration prints the row count it touched per table.
+>
+> ⛔ **`webhook_events.received_at` is NOT touched, and that is deliberate** — it is DB-written (`->useCurrent()`), so it always held the right instant and only *displayed* wrong. On this upgrade it starts reading four hours later than you are used to seeing; that reading is the correct one and nothing about the stored value changed.
+>
+> ⚑ **Run the steps in the order above** (`migrate` BEFORE `optimize` and the FPM reload). Workers are still serving under the cached OLD config while the migration runs, so an event arriving in that window is written with the old skew and is not corrected — a handful of audit timestamps four hours out. The reverse order has the opposite residue, which is a correctly-written row the correction would shift again, so this order is the safe one. Quiesce the receiver if even that is unwanted. Re-running `migrate` is safe: the correction measures the skew before it writes anything and does nothing when there is none.
 
 ### Reconcile out-of-repo copies (session launcher + channel server + custom classifier)
 
