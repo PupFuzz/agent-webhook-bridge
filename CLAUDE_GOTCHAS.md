@@ -282,6 +282,20 @@ cp .env.example .env && php artisan key:generate --force
 
 ---
 
+## G-022 — the column that looks wrong is the right one: a `SYSTEM` connection zone skews the PHP-written timestamps, not the DB-written one
+
+**Symptom:** `webhook_events.received_at` reads hours behind the wall clock while `created_at` reads correct, so `received_at` looks like the broken column. Retention prunes more than its configured window. A `bridge:inspect` row shows two timestamps for one event that do not agree.
+
+**Cause:** `app.timezone` is UTC and PHP serialises an Eloquent timestamp as a bare `Y-m-d H:i:s` literal **with no offset marker**. If the connection has no `timezone` key the session keeps the server's `time_zone` (`SYSTEM` — the host's zone), so MySQL reads that UTC literal as LOCAL time and stores `instant + host_offset`. ⭐ **The inversion is the whole trap:** `received_at` is filled by the DB (`->useCurrent()`), so it holds the true instant and merely *renders* in the session zone — it is CORRECT. `created_at` / `updated_at` and every other PHP-written column hold `instant + offset` — they are WRONG, and they read back looking right because the same offset is subtracted again on the way out. Reading one column and trusting its appearance gets the diagnosis exactly backwards.
+
+**Fix:** shipped — `config/database.php` pins `'timezone' => env('DB_TIMEZONE', '+00:00')` on the `mysql` and `mariadb` connections, and `2026_09_05_000001_correct_php_written_timestamps_to_utc.php` repairs rows written before it (DL-346). ⛔ **Do not fix this on the MySQL SERVER.** `my.cnf`'s `time_zone` is global and this host serves other tenants' databases; the connection key is app-scoped and needs no server privilege. To diagnose a suspected recurrence, read ONE row under two session zones — `SET SESSION time_zone='+00:00'` vs `'SYSTEM'` — and compare the pair; the column whose UTC reading matches the true instant is the DB-written one.
+
+**Discovery:** measured on the prod install, 2026-09-05 (card#8825): the same row read 16:21:10 / 20:21:10 for `received_at` and 20:21:10 / 2026-09-06 00:21:10 for `created_at` against a true instant of ~20:21 UTC.
+
+**Related:** `config/database.php` (the pin), `tests/Feature/Database/ConnectionTimezoneTest.php` (the agreement assertion + its positive control), `App\Bridge\Retention\RetentionService` (the PHP-computed cutoff that was being compared against the wrong clock), DL-346, G-002 (the other MariaDB-vs-SQLite datetime divergence).
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).

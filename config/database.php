@@ -55,6 +55,14 @@ return [
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
             'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            // ⛔ MUST equal `app.timezone`'s offset, and its ABSENCE is not neutral (card#8825).
+            // Without it the session keeps the server's `time_zone` (`SYSTEM` by default, i.e.
+            // whatever zone the host runs in), while PHP serialises every Eloquent timestamp as
+            // a bare `app.timezone` literal with no offset marker. MySQL then reads that UTC
+            // literal AS local time and stores the offset as an error, so every PHP-written
+            // column is skewed by it — silently, because the same wrong offset is applied again
+            // on the way out. `Tests\Feature\Database\ConnectionTimezoneTest` is the witness.
+            'timezone' => env('DB_TIMEZONE', '+00:00'),
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
@@ -75,6 +83,11 @@ return [
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
             'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            // The same pin as the `mysql` block above, for the same reason, because this is the
+            // sibling an operator reaches by flipping one env var: `MariaDbConnector` extends
+            // `MySqlConnector` and inherits exactly the same `SET time_zone` behaviour, so an
+            // install on this connection would carry the identical defect (card#8825).
+            'timezone' => env('DB_TIMEZONE', '+00:00'),
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
