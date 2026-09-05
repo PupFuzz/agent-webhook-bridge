@@ -62,6 +62,18 @@ final class StandupGate
      * would rebuild DL-012 — the marker-before-push back-off means a persistently failing
      * push retries at most once per interval, so the seat simply stops receiving digests
      * with nothing anywhere saying so. A clean pass forgets it.
+     *
+     * ⭐ THE PREFLIGHT THAT READS IT IS `App\Bridge\Check\Checks\StandupPostureCheck`
+     * (card#8683 / DL-345), NAMED HERE BECAUSE UNTIL THAT LEG SHIPPED THERE WAS NONE. The
+     * sentence above is what this docblock claimed from the day the marker was written, and
+     * it was FALSE for the whole of that time: the key had a write site and no read site
+     * anywhere in `app/`, so a wedged digest left a cache entry nobody looked at while this
+     * text told its reader `bridge:check` would surface it. That is worse than the silence
+     * it describes — the reader gets confidence instead of a question. It is repaired by
+     * building the reader rather than by softening the claim, and the reader is named so the
+     * next audit of *"a durable fault marker with no reader"* can settle this key by reading
+     * one line. ⚠ The leg does NOT read this key on an install with the digest switched
+     * off; see that class for why.
      */
     public const ERROR_KEY = 'bridge:standup:last-error';
 

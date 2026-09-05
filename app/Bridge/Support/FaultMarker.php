@@ -92,6 +92,41 @@ final class FaultMarker
     }
 
     /**
+     * THE READ HALF OF {@see self::record()} — the standing fault at $key, rendered for one
+     * operator line, or `null` when none stands (card#8683).
+     *
+     * ⚑ IT LIVES BESIDE THE WRITE SITE BECAUSE THE PAYLOAD KEYS ARE THE CONTRACT. `at`,
+     * `exception` and `error` are written a few lines above and were re-spelled, with their
+     * fallbacks, at each `bridge:check` posture leg that reads a marker — two copies at the
+     * hoist, and the standup leg would have been the third. A key renamed at the write site
+     * would have degraded every reader to its fallbacks in silence, because a fallback
+     * cannot tell a missing key from a marker that never carried one.
+     *
+     * ⛔ IT DOES NOT CATCH, AND THAT IS THE CUT. The store this reads may itself be the
+     * fault, and what a reader does about that is the READER's decision, not this class's:
+     * `CheckRunner` deliberately does not isolate, so each posture leg keeps its own local
+     * catch and answers with its own `unvalidated` line rather than aborting `bridge:check`.
+     * Swallowing here would hand every reader a `null` — indistinguishable from a clean
+     * subsystem, which is the vacuous green the markers exist to prevent.
+     *
+     * ⚠ IT ASSERTS NOTHING ABOUT FRESHNESS. A marker outlives the condition on a since-quieted
+     * install (it is cleared by the next successful pass, and otherwise by its TTL), so the
+     * `at` is rendered and no staleness verdict is derived from it. A reader that wants one
+     * must state the rule it is applying; none does today.
+     */
+    public static function lastFault(string $key): ?string
+    {
+        $marker = Cache::get($key);
+
+        if (! is_array($marker)) {
+            return null;
+        }
+
+        return ($marker['exception'] ?? 'error').': '.($marker['error'] ?? '')
+            .' at '.($marker['at'] ?? '?');
+    }
+
+    /**
      * Log a fault without re-raising. Public because a caller whose fault has no marker
      * (a tick stamp that could not be written) needs exactly this leg and nothing else.
      *

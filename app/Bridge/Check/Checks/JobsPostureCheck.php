@@ -9,10 +9,10 @@ use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobsConfig;
 use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Scheduling\TickState;
+use App\Bridge\Support\FaultMarker;
 use App\Bridge\Support\Finding;
 use App\Models\ScheduledJob;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
@@ -185,11 +185,12 @@ final class JobsPostureCheck implements Check
     private function passErrorFindings(): iterable
     {
         try {
-            $lastError = Cache::get(JobScheduler::ERROR_KEY);
-            if (is_array($lastError)) {
+            // Rendered by the class that WRITES the marker ({@see FaultMarker::lastFault()},
+            // card#8683); the sentence below is this leg's own.
+            $lastError = FaultMarker::lastFault(JobScheduler::ERROR_KEY);
+            if ($lastError !== null) {
                 yield Finding::warn('jobs: the LAST SCHEDULER PASS FAILED as a whole and no instance has run since ('
-                    .($lastError['exception'] ?? 'error').': '.($lastError['error'] ?? '')
-                    .' at '.($lastError['at'] ?? '?').'). The marker clears itself on the next clean pass.');
+                    .$lastError.'). The marker clears itself on the next clean pass.');
             }
         } catch (Throwable $e) {
             yield Finding::unvalidated('jobs: could not read the last-pass-failure marker ('.$e->getMessage()

@@ -4,16 +4,19 @@
 > Measured against `app/Console/Commands/Bridge/CheckCommand.php` over the
 > 49 branch predicates in `handle()`, in 50 minutes. Decision record: **DL-242**.
 
-> ⚠ **STALE — the counts below are NOT this branch's.** card#8425 / DL-325 added one
-> predicate to `handle()` (the `CheckSlot::Jobs` emit for the periodic-job registry's
-> posture leg), so the live enumeration finds one more predicate than the run above
-> measured. The measurement was NOT re-run: it is a ~50-minute mutation pass, and nothing
-> in this change touches a predicate the tables below name.
+> ⚠ **STALE — the counts below are NOT this branch's.** TWO predicates have been added to
+> `handle()` since the run above: the `CheckSlot::Jobs` emit for the periodic-job registry's
+> posture leg (card#8425 / DL-325) and the `CheckSlot::Standup` emit for the standup
+> digest's (card#8683 / DL-345), so the live enumeration finds **51** where the header states
+> 49. The measurement was NOT re-run: it is a ~50-minute mutation pass that must execute on a
+> COPY of the repo, and neither change touches a predicate the tables below name.
 
-> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The one
-> predicate present but never measured is `if ! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))`
-> (card#8425 / DL-325). Its verdict is therefore UNKNOWN here, in either direction — it is
-> not in the disclosed-gap table because it was not measured, which is a different thing
+> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The two
+> predicates present but never measured are
+> `if ! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))` (card#8425 / DL-325) and
+> `if ! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))` (card#8683 / DL-345).
+> Their verdicts are therefore UNKNOWN here, in either direction — they are
+> not in the disclosed-gap table because they were not measured, which is a different thing
 > from being protected. Re-run `php bin/check-golden-mutate.php` to retire both banners.
 
 > ⚑ **WHAT IS GUARDED HERE, AND WHAT IS NOT (card#7992).** Two suite guards keep this file
