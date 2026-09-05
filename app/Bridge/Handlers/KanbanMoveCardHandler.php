@@ -822,6 +822,18 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * in a way the no-regression guard (#2935) refuses. Fail-open (false) whenever
      * the board order can't be determined — the guard never blocks a move on missing
      * order data, only on a definite backward step.
+     *
+     * ⭐ THERE ARE TWO FAIL-OPEN ROUTES AND BOTH ARE LOUD (card#8761). Failing open is the
+     * ruled behaviour and card#8761 did not change it: refusing the move when the order
+     * cannot be read would strand cards exactly when kanban is degraded. What it changed is
+     * that the second route now SAYS it fired. Read the two lines apart by `reason`: absent
+     * (the catch arm carries `error` instead) ⇒ the preload read threw; `stage_order_empty`
+     * ⇒ it answered, with nothing usable — `KanbanClient::preloadStages()` emits a second,
+     * more specific line when the cause was a 200 carrying no workflows collection, and its
+     * ABSENCE beside this one means the board genuinely has no stages; `stage_not_on_board`
+     * ⇒ the order read fine and one of these two stage ids is not in it, i.e. `writeback.json`
+     * names a stage this board does not have (the same drift `bridge:check` warns about at
+     * preflight, seen here at runtime).
      */
     private function isRegressiveMove(string $outcome, int $currentStage, int $targetStage, WritebackMapping $mapping, KanbanClient $client): bool
     {
@@ -840,6 +852,17 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $currentPos = $order[$currentStage] ?? null;
         $targetPos = $order[$targetStage] ?? null;
         if ($currentPos === null || $targetPos === null) {
+            // The catch above needs kanban to THROW; this route needs only a 200 the client
+            // could not read, or one stale stage id — so it is the one that actually happens,
+            // and it was the silent one. Same tail as the catch arm so one grep finds both.
+            Log::warning('kanban_move_card: could not place this move in the board stage order for the no-regression guard — allowing the move', [
+                'board' => $mapping->boardId,
+                'reason' => $order === [] ? 'stage_order_empty' : 'stage_not_on_board',
+                'outcome' => $outcome,
+                'current_stage' => $currentStage,
+                'target_stage' => $targetStage,
+            ]);
+
             return false;   // a stage isn't on the board (config drift) → can't order → allow
         }
 
