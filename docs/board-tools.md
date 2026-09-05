@@ -142,6 +142,20 @@ filter: every returned row is re-checked against your configured swimlane and an
 non-matching row is **dropped and logged**. The upstream `swimlane_id=` search
 term is efficiency + defense-in-depth, not the boundary.
 
+### An empty window is not always an empty lane
+
+⚠ **Check the bridge log before you believe an empty answer.** When kanban
+answers `200` with a body carrying no card collection at all, the read degrades
+to "no cards" and the tool answers exactly as it does for a lane that genuinely
+holds none. Since card#8586 that degradation is **not silent**:
+the bridge writes a `Log::warning` naming the read, the board and the page (*"the
+swimlane-search … read returned a 200 whose body carried no card collection"*), which
+says kanban's response shape may have changed or that something other than kanban — a
+proxy, an auth portal — answered the URL. ⛔ **The converse is not covered and is not
+claimed:** a kanban that dropped or renamed the `swimlane_id=` filter still answers a
+well-formed empty collection, which the bridge cannot tell from a genuinely empty lane
+(`docs/kanban-integration-contract.md` §2 owns that hazard, on the far end).
+
 ## `board_create_card`
 
 **Arguments:**
