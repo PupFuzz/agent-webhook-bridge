@@ -114,14 +114,11 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        $rows = [];
-        foreach (is_array($data) ? $data : [] as $row) {
-            if (is_array($row)) {
-                $rows[] = $row;
-            }
-        }
-
-        return $rows;
+        // No DL-026 line here, deliberately: an unreadable body yields no rows, and BOTH callers
+        // (MappedBoardGuard's board-scope resolution, BoardCorrectCardTool's ownership lookup)
+        // already refuse LOUDLY on a result that does not name this card — the same fact,
+        // reported where the operator can act on it.
+        return self::rowList($data) ?? [];
     }
 
     /**
@@ -420,6 +417,20 @@ final class KanbanClient
      * page). Distinct from {@see cardsByTag}/{@see idList}, which project to ids
      * only — board_my_cards needs each row's name/stage/tags/payload.
      *
+     * ⛔ It carries the DL-026 degraded-read warning, and did NOT until card#8586: this read
+     * hand-rolled the row extraction, so a 200 whose body carried no card collection became an
+     * EMPTY LANE with no log and no signal. Its only caller is `board_my_cards`, so the seat was
+     * told *"no cards"* — indistinguishable from a lane that genuinely holds none, when what
+     * happened is that kanban's response shape changed or something other than kanban answered
+     * the URL, and the operator's next action differs completely between those two facts. It
+     * still returns `[]` rather than throwing (DL-020); it just stops being silent.
+     *
+     * ⚠ THE SIGNAL IS PER PAGE, deliberately and boundedly: each page is its own read, and *which*
+     * page went unreadable is the difference between a lane nobody can read and a lane that was
+     * TRUNCATED mid-walk (rows already read are still returned). A body that carries a non-null
+     * `links.next` while carrying no `data` therefore emits one line per page up to MAX_PAGES —
+     * loud, bounded, and the honest count of reads that answered nothing.
+     *
      * @return list<array<string, mixed>>
      */
     public function swimlaneCards(int $boardId, int $swimlaneId): array
@@ -428,19 +439,18 @@ final class KanbanClient
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
             $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} swimlane_id={$swimlaneId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            $rows = is_array($batch) ? $batch : [];
-            foreach ($rows as $row) {
-                if (is_array($row)) {
-                    $cards[] = $row;
-                }
+            foreach (self::correlationRows(self::rowList($batch), "swimlane-search {$swimlaneId} page {$page}", $boardId) as $row) {
+                $cards[] = $row;
             }
+            // RAW batch length, never the filtered/merged count — {@see readBoard} owns why.
+            $batchSize = is_array($batch) ? count($batch) : 0;
 
             $links = is_array($json) ? ($json['links'] ?? null) : null;
             if (is_array($links) && array_key_exists('next', $links)) {
                 if ($links['next'] === null) {
                     return $cards;
                 }
-            } elseif (count($rows) < self::SEARCH_LIMIT) {
+            } elseif ($batchSize < self::SEARCH_LIMIT) {
                 return $cards;
             }
         }
@@ -484,7 +494,7 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        return self::correlationRows($data, 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''), $boardId);
+        return self::correlationRows(self::rowList($data), 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''), $boardId);
     }
 
     /**
@@ -624,19 +634,19 @@ final class KanbanClient
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
             $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            $rows = is_array($batch) ? $batch : [];
-            foreach ($rows as $row) {
-                if (is_array($row)) {
-                    $cards[] = $row;
-                }
+            // Extraction shared with the other three reads ({@see rowList}); the SIGNAL is not —
+            // this method stays pure and correlationCards() owns the warning for it.
+            foreach (self::rowList($batch) ?? [] as $row) {
+                $cards[] = $row;
             }
+            $batchSize = is_array($batch) ? count($batch) : 0;
 
             $links = is_array($json) ? ($json['links'] ?? null) : null;
             if (is_array($links) && array_key_exists('next', $links)) {
                 if ($links['next'] === null) {
                     return new BoardRead($cards, false);   // DL-146: no next page ⇒ fully read
                 }
-            } elseif (count($rows) < self::SEARCH_LIMIT) {
+            } elseif ($batchSize < self::SEARCH_LIMIT) {
                 return new BoardRead($cards, false);   // pre-DL-146 fallback: short/empty page ⇒ fully read
             }
         }
@@ -875,23 +885,32 @@ final class KanbanClient
     }
 
     /**
-     * {@see correlationIds}'s treatment for the ROW-returning reads, and it exists because
-     * card#8523 walked a caller off the ids-only read and lost the warning with it:
-     * `BoardCreateCardTool`'s post-create collapse moved from {@see cardsByTag} (loud on an
-     * unreadable body) to {@see cardRowsByTag} (silent), and that is the one read the DL-340
-     * pin consult now rides on — an unreadable body there reads as "no duplicates" and the
-     * collapse no-ops, which is safe, but a body kanban stopped serving is a bug to chase and
-     * a genuine no-match is not. Same policy, same words, one emitter: the degradation still
-     * returns an empty list rather than throwing (DL-020), it just stops being silent.
+     * {@see idList}'s discrimination for the ROW projection — the array rows of a decoded
+     * collection, or NULL when the response carried no collection at all. Same rule, same
+     * bound (a skipped row is not signalled; the question is *"did the response carry a
+     * collection"*, never *"was it complete"*); only the projection differs.
      *
-     * @return list<array<string, mixed>>
+     * ⭐ IT IS SPLIT FROM {@see correlationRows} BECAUSE THE EXTRACTION AND THE POLICY HAVE
+     * DIFFERENT POPULATIONS, which is the same reason `idList` is split from
+     * {@see correlationIds}. Before card#8586 this loop existed in FOUR copies — hand-rolled
+     * inside {@see cardRowsOnBoard}, {@see swimlaneCards} and {@see readBoard}, and a fourth
+     * time inside `correlationRows` itself, which was the only copy carrying the DL-026
+     * warning and reached only by {@see cardRowsByTag}. So a fix to the shape (the warning
+     * being exactly such a fix, at card#8523) landed on that one copy and missed the other
+     * three with nothing red. The DIAGNOSTIC postures then differ legitimately and stay where
+     * they belong: `swimlaneCards` and `cardRowsByTag` warn through `correlationRows`;
+     * `readBoard` stays deliberately pure (its own docblock owns why), so the signal is the
+     * caller's — {@see correlationCards} carries it on the correlation path (DL-028), and the
+     * public twin {@see readBoardCards} passes the read out unlogged for its callers to
+     * report; and both of `cardRowsOnBoard`'s callers refuse loudly on a result that does not
+     * name the card.
+     *
+     * @return list<array<string, mixed>>|null
      */
-    private static function correlationRows(mixed $data, string $read, int $boardId): array
+    private static function rowList(mixed $data): ?array
     {
         if (! is_array($data)) {
-            self::warnUnreadableCollection($read, $boardId);
-
-            return [];
+            return null;
         }
         $rows = [];
         foreach ($data as $row) {
@@ -901,6 +920,32 @@ final class KanbanClient
         }
 
         return $rows;
+    }
+
+    /**
+     * {@see correlationIds}'s treatment for the ROW-returning reads, and it exists because
+     * card#8523 walked a caller off the ids-only read and lost the warning with it:
+     * `BoardCreateCardTool`'s post-create collapse moved from {@see cardsByTag} (loud on an
+     * unreadable body) to {@see cardRowsByTag} (silent), and that is the one read the DL-340
+     * pin consult now rides on — an unreadable body there reads as "no duplicates" and the
+     * collapse no-ops, which is safe, but a body kanban stopped serving is a bug to chase and
+     * a genuine no-match is not. card#8586 then added {@see swimlaneCards}, whose empty answer
+     * is a whole EMPTY LANE reported to a seat. Same policy, same words, one emitter: the
+     * degradation still returns an empty list rather than throwing (DL-020), it just stops
+     * being silent.
+     *
+     * @param  list<array<string, mixed>>|null  $rows  {@see rowList}'s verdict — NULL is
+     *                                                 "the body carried no collection"
+     * @return list<array<string, mixed>>
+     */
+    private static function correlationRows(?array $rows, string $read, int $boardId): array
+    {
+        if ($rows !== null) {
+            return $rows;
+        }
+        self::warnUnreadableCollection($read, $boardId);
+
+        return [];
     }
 
     /** The DL-026 degraded-read line both correlation projections share — one message, one owner. */

@@ -735,6 +735,62 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client()->cardRowsByTag(8, 'id:TASK-9'));
     }
 
+    /**
+     * card#8586 — THE PAGED SWIMLANE READ CARRIES THE SAME WARNING, and it did not until this
+     * round: it hand-rolled the row extraction instead of projecting through
+     * `correlationRows()`, so a 200 whose body carries no card collection became an EMPTY LANE
+     * with no log, no signal, nothing. Its only caller is `board_my_cards`, so a seat asking for
+     * its own cards was told "no cards" — a sentence indistinguishable from a genuinely empty
+     * lane, when what actually happened is that kanban's response shape changed or something
+     * other than kanban answered the URL. The operator's next action differs completely between
+     * those two facts.
+     *
+     * ⭐ THE PAIR IS THE TEST, NOT EITHER HALF. This leg and its twin below drive the SAME method
+     * with the SAME arguments and assert the SAME return value; the only thing that separates
+     * them is the log line. If a future change loses the warning, the two collapse into one fact
+     * again and this leg reds — which is the whole finding.
+     */
+    public function test_an_unreadable_swimlane_read_no_ops_but_logs(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
+                && $c['board_id'] === 8
+                && str_contains($c['read'], 'swimlane-search 31'));
+        Http::fake(['*/tasks/search.json*' => Http::response(['meta' => []])]);
+
+        $this->assertSame([], $this->client()->swimlaneCards(8, 31));
+    }
+
+    public function test_a_genuinely_empty_swimlane_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->swimlaneCards(8, 31));
+    }
+
+    /**
+     * The page walk is unchanged by the warning, and the page a body went unreadable ON is in
+     * the log line: a first page kanban served fine followed by a second it could not is a
+     * TRUNCATED lane, not an empty one, and the rows that did arrive are still returned.
+     */
+    public function test_a_swimlane_page_that_carries_no_collection_names_its_page_and_keeps_the_rows_already_read(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
+                && str_contains($c['read'], 'swimlane-search 31 page 2'));
+        $full = array_map(fn (int $i) => ['id' => $i, 'swimlane_id' => 31], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['meta' => []]);
+
+        $rows = $this->client()->swimlaneCards(8, 31);
+
+        $this->assertCount(KanbanClient::SEARCH_LIMIT, $rows);
+    }
+
     public function test_board_stage_ids_by_name_maps_names_to_ids(): void
     {
         // DL-200: the coord-config compare resolves a terminal column NAME to a stage
