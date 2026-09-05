@@ -1,0 +1,86 @@
+<!--
+  FIXTURE — NOT A DOCUMENT. Read bin/test_check_doc_secret_fences.py first.
+
+  The five known members of the class card#8351 named, lifted VERBATIM out of the
+  v0.79.0 tag, where every one of them was still live. Four were fixed by DL-321
+  and the fifth by DL-322; this file is the only place they still exist, so that
+  the backstop that catches them can be SEEN to fail rather than assumed to work.
+
+  The extension is `.md.fixture`, not `.md`, and that is load-bearing: the tool
+  globs `*.md`, so the fixture is out of its own default walk by construction
+  rather than by an exclusion list. The tests pass this path explicitly.
+
+  `test_every_fence_here_is_verbatim_v0790` re-derives each fence below from
+  `git show v0.79.0:<path>` and fails if any byte drifts, so a fixture edited to
+  make a test pass reds instead.
+-->
+
+# v0.79.0 — the five live members, one per section
+
+## 1. CLAUDE_DEPLOYMENT.md — the signed smoke test (DL-322's member; argv)
+
+Provenance: `v0.79.0:CLAUDE_DEPLOYMENT.md` lines 144-161.
+
+```bash
+SCOPE='<org/repo>'                                 # GitHub: equals repository.full_name AND ?b=
+SECRET=$(cat "<secret_dir>/github/webhook-secret-scope-${SCOPE}")
+BODY='{"action":"created",
+       "repository":{"full_name":"'"$SCOPE"'"},
+       "issue":{"number":1,"title":"smoke","labels":[]},
+       "comment":{"body":"smoke","html_url":"https://example.invalid/x"},
+       "sender":{"id":<sender-id>,"login":"x"}}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $NF}')
+curl -X POST \
+  -H "X-Hub-Signature-256: sha256=$SIG" \
+  -H "X-GitHub-Event: issue_comment" \
+  -H "X-GitHub-Delivery: smoke-$(date +%s)" \
+  --data-binary "$BODY" \
+  "$BRIDGE_RECEIVER_BASE_URL/github?b=${SCOPE}"     # BRIDGE_RECEIVER_BASE_URL ends in /webhooks → POST /webhooks/github
+# then: php artisan bridge:stats   (expect errored=0) ; php artisan bridge:inspect <N>
+```
+
+
+## 2. docs/multi-host.md — generating the channel token (DL-321 site 1; stdout)
+
+Provenance: `v0.79.0:docs/multi-host.md` lines 46-54.
+
+```bash
+# A port no other service on either host uses. 8788 is the channels reference default.
+export BRIDGE_CHANNEL_PORT=8788
+
+# A long-random shared secret. Both .mcp.json (server side) and the bridge's
+# classifier (client side) need this exact value.
+export BRIDGE_CHANNEL_TOKEN="$(openssl rand -base64 48 | tr -d /=+ | head -c 64)"
+echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"
+```
+
+## 3. docs/multi-host.md — the direct tunnel test (DL-321 site 2; argv)
+
+Provenance: `v0.79.0:docs/multi-host.md` lines 265-271.
+
+```bash
+# From host A:
+curl -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BRIDGE_CHANNEL_TOKEN" \
+  -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
+  http://127.0.0.1:8788/
+```
+
+## 4. docs/provider-adapters.md — placing an HMAC secret (DL-321 site 4a; shell history)
+
+Provenance: `v0.79.0:docs/provider-adapters.md` lines 201-206.
+
+```bash
+mkdir -p "$BRIDGE_SECRET_DIR/your_provider"
+# generate the same secret you entered in the provider's webhook settings
+echo -n "your-hmac-secret" > "$BRIDGE_SECRET_DIR/your_provider/webhook-secret-scope-<scope>"
+chmod 600 "$BRIDGE_SECRET_DIR/your_provider/webhook-secret-scope-<scope>"
+```
+
+## 5. docs/writeback.md — placing the writeback token (DL-321 site 4b; shell history)
+
+Provenance: `v0.79.0:docs/writeback.md` lines 68-70.
+
+```bash
+install -m 600 /dev/stdin "$BRIDGE_DIR/kanban/writeback-token" <<<'<the-token>'
+```

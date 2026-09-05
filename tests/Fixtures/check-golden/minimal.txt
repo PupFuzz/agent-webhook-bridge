@@ -7,9 +7,10 @@ database: connected
 install-suffix DSN check: ok
 inbox surfacing config: ok (layout=shared)
 retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
+retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
 retention: could NOT determine whether the receiver ends the request early — bridge:check is a console command, so the SAPI running it is not the receiver's and does not define fastcgi_finish_request(), and no php-fpm binary was findable on the PATH this process sees (a healthy FPM install can keep it in /usr/sbin, off a non-root PATH), so this run is no evidence either way. If the receiver is NOT served under PHP-FPM, retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Confirm how the receiver is served (see CLAUDE_DEPLOYMENT.md); if it is not PHP-FPM, either serve it under PHP-FPM or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
 agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
-checks: 38 registered · 22 ran (9 reported above, 13 with nothing to report) · 2 opt-in probes not requested · 14 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 38 are accounted for — nothing was skipped uncounted.
+checks: 40 registered · 24 ran (9 reported above, 15 with nothing to report) · 2 opt-in probes not requested · 14 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 40 are accounted for — nothing was skipped uncounted.
 1 finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.

@@ -21,8 +21,15 @@ final class WritebackMapping
     /**
      * @param  array<string, int>  $stages  outcome => workflow_stage_id
      * @param  bool  $createDependabotCards  opt-in: a dependabot PR (head `dependabot/*`)
-     *                                       with no tracking card gets one created on
-     *                                       open and moved on close (keyed by PR number)
+     *                                       gets a tracking card of its own, keyed by PR
+     *                                       number. The per-event lifecycle — create on
+     *                                       open, move, ARCHIVE on closed-unmerged (DL-161),
+     *                                       restamp the name on an upstream retitle
+     *                                       (DL-328) — is owned by
+     *                                       `KanbanDependabotCardHandler` and
+     *                                       `docs/writeback.md`, and is deliberately not
+     *                                       restated here (this line still said "moved on
+     *                                       close" long after the close arm stopped moving)
      * @param  ?int  $swimlaneId  optional lane for CREATED cards only (DL-027) — on a
      *                            lane-per-repo board the per-repo mapping IS the lane
      *                            discriminator. Applied at create (incl. create-on-missed);

@@ -4,6 +4,7 @@
   "version_file": "VERSION",
   "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
   "ref_token_regex": "DL-[0-9]+",
+  "card_token_regex": "card#[0-9]+",
   "artifacts": [
     "VERSION → {{version}}",
     "docs/CHANGELOG.md → [{{version}}] section",
@@ -12,6 +13,8 @@
   "promote": {
     "board_id": 8,
     "released_stage_id": 53,
-    "api_base": "https://kanban.example.com/api/v3"
+    "api_base": "https://kanban.example.com/api/v3",
+    "_source_note": "Board 8 is NOT single-repo: it carries cards whose by-ref source is a different repo, so \"*\" (which DECLARES a single-repo board) would be a false declaration. Naming this repo qualifies every dl_number/pr_number match against the card's own by-ref source, so a colliding ref number cannot promote another repo's card. A ref whose only match is an UNSOURCED card is named and skipped, never moved -- stamp it with `kbcard patch --pr-url`. Census and evidence: card#8423.",
+    "source": "PupFuzz/agent-webhook-bridge"
   }
 }

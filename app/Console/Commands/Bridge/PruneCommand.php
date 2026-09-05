@@ -15,10 +15,15 @@ use App\Bridge\Retention\RetentionService;
  * design accepts". It is not one any more: DL-012 shipped it and scheduled it
  * NOWHERE — three installs, ~45 days, zero prunes — so DL-199 moved retention
  * onto the inbound webhook itself ({@see RetentionGate}),
- * after the response and bounded. The design now has NO cron exception at all,
- * and this command is the MANUAL entry point to the same shared service: an
- * operator's one-off, and the way to drain a backlog in a single unbounded pass.
- * An install that also runs it on a cron keeps working — the two are idempotent.
+ * after the response and bounded. RETENTION still has no cron, and this command is
+ * the MANUAL entry point to the same shared service: an operator's one-off, and the
+ * way to drain a backlog in a single unbounded pass. An install that also runs it on
+ * a cron keeps working — the two are idempotent.
+ *
+ * ⚠ "NO cron exception at all" was true of DL-199 and is no longer — DL-325 added ONE,
+ * opt-in per install: a single crontab line running `bridge:tick` over the periodic-job
+ * REGISTRY. It does not schedule this command and is not a route to doing so; retention
+ * is not a row in that registry, and the sentence above still holds for it.
  *
  *  --older-than=Nd                deletes webhook_events (cascading agent_dispatches)
  *                                 received before the cutoff, and trims inbox lines

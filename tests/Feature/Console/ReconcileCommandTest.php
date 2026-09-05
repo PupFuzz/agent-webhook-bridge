@@ -830,4 +830,56 @@ class ReconcileCommandTest extends TestCase
             && str_contains($r->url(), '/tasks/5.json')
             && $r->data() === ['workflow_stage_id' => 52]);
     }
+
+    // --- card#8344 / DL-327: the `[no-close]` declaration, in lockstep on the backstop ---
+
+    public function test_the_backstop_honours_a_no_close_title(): void
+    {
+        // ⛔ THE LOCKSTEP, on the leg that runs unattended. The classifier declines this
+        // merge at event time; without the same term the cron would PATCH card 5 forward an
+        // hour later with a CLI's name on it — the DL-305 §6 failure re-minted through a
+        // third door. The term is not spelled here: it lives inside the two authorities
+        // `closes()` already ORs (`ClosureGrammar`, `PrOutcome::mergeClosesCard()`), which
+        // is exactly why this leg is needed — nothing in this file would otherwise show it
+        // reached the backstop at all.
+        //
+        // The fixture is the shape the card was filed for: a context PR built ON the card's
+        // own branch, so the STRUCTURAL route would close it. (Delete the term ⇒ card 5 is
+        // PATCHed to stage 52 by a cron.)
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'docs: cite the prior ruling [no-close] (card#5)', 'head' => ['ref' => 'card-5-widget'],
+        ]]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            // The line must NAME the author's declaration rather than assert the default
+            // sentence, which is FALSE here — the ref DOES name card 5. One matcher,
+            // because the first consumes the line.
+            ->expectsOutputToContain('its TITLE declares it does not finish this card')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_backstop_still_reconciles_the_same_pr_without_the_marker(): void
+    {
+        // ⛔ THE CONTROL, one variable away: the identical card, stage, branch and title
+        // with the marker deleted. It reconciles exactly as before, so the leg above is
+        // evidence about the MARKER and not about a backstop that stopped closing anything
+        // — the DL-305 failure mode this whole area exists to avoid.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'docs: cite the prior ruling (card#5)', 'head' => ['ref' => 'card-5-widget'],
+        ]]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->doesntExpectOutputToContain('does not finish this card')
+            ->assertExitCode(0);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
 }

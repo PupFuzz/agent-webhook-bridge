@@ -28,7 +28,9 @@ Upstream system (kanban-board, GitHub, ...)
    │    └─ run each target's Handler                              (C) throws → dispatch done-with-note, continue
    └─ return
    ▼
- RetentionGate::schedule()   registers a terminating callback (no work yet)   ← DL-199
+ RetentionGate::schedule()      registers a terminating callback (no work yet)   ← DL-199
+ StandupGate::schedule()        same shape, opt-in and off by default            ← DL-306
+ JobSchedulerGate::schedule()   same shape, over the periodic-job REGISTRY       ← DL-325
    ▼
  200 "ok"   (only after every subscribed agent is processed)
    ▼
@@ -36,7 +38,9 @@ Upstream system (kanban-board, GitHub, ...)
    ▼
  [terminating] RetentionGate: interval-gated, non-blocking-locked, BOUNDED prune
                of webhook_events (+ cascading agent_dispatches) + inbox*.jsonl.
-               Never throws. Client already has its 200; only the worker is held.
+ [terminating] StandupGate / JobSchedulerGate: the same four properties, over a
+               digest and over the due job instances respectively.
+               None throws. Client already has its 200; only the worker is held.
 ```
 
 ### The terminating stage (DL-199) — the only work that outlives the response
@@ -49,9 +53,18 @@ deliberately the *only* thing allowed to: it holds an FPM worker, so it is inter
 drained), bounded (`retention.batch` rows per leg), guarded by a **non-blocking** `Cache::lock` (a
 blocking one would queue concurrent receives behind the pruner — the exact DL-001 regression), and it
 never throws (a 5xx would make the provider redeliver, compounding the failure). This replaced DL-012's
-cron, which three installs never scheduled — so the design now has **no cron exception at all**.
+cron, which three installs never scheduled. ⛔ **"Never throws" includes the catch arm's own fault
+recording**, which is why all three gates on this stage record through `App\Bridge\Support\FaultMarker`
+(log first, marker second, each leg guarded): each arm used to write its last-error marker to the cache
+unguarded, so a DEAD CACHE STORE re-raised out of a terminating callback — an unhandled fatal after the
+response, in the one process nobody watches (card#8425/DL-325). Since card#8432 they reach `FaultMarker`
+through the one primitive below rather than each calling it.
 
-`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation. `writeback_board_divergences` is a THIRD store with a different shape and a different retention posture: it takes a row only when a writeback observes a card whose board disagrees with the repo's mapped board, so it is expected to be empty, its growth is the signal, and retention deliberately never touches it (DL-300). `board_tools_client_calls` is a FOURTH, and is neither a queue nor an audit trail but a **one-row-per-agent stamp**: a successful board-tools call rewrites that agent's row in place, so the table is bounded by the number of board-tools agents rather than by traffic, and retention does not touch it either. It exists because a successful call is the only evidence the bridge can honestly have that the CALLING SEAT's half of the door works — the seat's own keypair and `.mcp.json` are files the bridge may not read (DL-313).
+⭐ **The rules of this stage have ONE owner rather than a copy per gate: `App\Bridge\Support\AfterResponseGate` (card#8432/DL-343).** It holds the non-blocking lock, the interval marker (the due-check inside the lock, armed BEFORE the work, extended into a longer back-off, re-opened when a bounded pass filled its batch) and the fault recording — the last by *calling* `App\Bridge\Support\FaultMarker` rather than restating it. A subsystem **binds** the primitive: it constructs one with its own lock / marker / error cache keys, its fault message and a closure resolving its cadence, then runs its pass through `App\Bridge\Support\AfterResponseGate::oncePerInterval()`, which returns either the pass's own value or an `App\Bridge\Support\GateSkip` saying why no work happened. The keys are constructor **arguments and are never derived from the subsystem's name** — the three installed marker keys do not share one spelling, so deriving them would rename a deployed install's marker on upgrade. `App\Bridge\Retention\RetentionGate` and `App\Bridge\Standup\StandupGate` additionally hand their whole pass to `App\Bridge\Support\AfterResponseGate::neverThrows()`; `App\Bridge\Scheduling\JobScheduler` keeps its own catch arm, because its fault must become a typed `App\Bridge\Scheduling\JobPassResult` that `bridge:tick`'s exit code is read off, and shares the recording leg alone via `App\Bridge\Support\AfterResponseGate::recordFault()`. What stays with each gate is what genuinely differs: its `enabled` predicate, its `Application::terminating()` registration, what its pass does and returns, and the moment a completed pass clears the fault. ⚑ **A fourth periodic subsystem binds that class instead of copying these rules, so read it before the three gates** — they are its callers, not three specifications. ⚠ Its own docblock records which of the rules the three suites pin under mutation and which cells they do not, so nothing here should be read as a coverage claim.
+
+⚠ **"No cron exception at all" was true of DL-199 and is no longer the whole picture — DL-325 amended it.** Three subsystems now ride this stage with the same four properties (retention, the opt-in standup digest, and the periodic-job registry), and the registry additionally accepts a **second, OPT-IN ingress**: ONE crontab line running `bridge:tick`. It is opt-in because the event-gated path above is complete on its own — an install that adds no line behaves exactly as it did — and it exists because no arrival-gated mechanism can run periodic work on an install receiving NOTHING (DL-306's documented dead end). Job execution is never on a client-visible path on either ingress. See `docs/periodic-jobs.md`; a periodic job is the **last** resort there, and the registry refuses an instance that does not say why the work cannot be event-driven.
+
+`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation. `writeback_board_divergences` is a THIRD store with a different shape and a different retention posture: it takes a row only when a writeback observes a card whose board disagrees with the repo's mapped board, so it is expected to be empty, its growth is the signal, and retention deliberately never touches it (DL-300). `board_tools_client_calls` is a FOURTH, and is neither a queue nor an audit trail but a **one-row-per-agent stamp**: a successful board-tools call rewrites that agent's row in place, so the table is bounded by the number of board-tools agents rather than by traffic, and retention does not touch it either. It exists because a successful call is the only evidence the bridge can honestly have that the CALLING SEAT's half of the door works — the seat's own keypair and `.mcp.json` are files the bridge may not read (DL-313). `scheduled_jobs` is a FIFTH, and is a **declaration store**: one row per periodic job INSTANCE, inserted and removed at runtime by any code path (`App\Bridge\Scheduling\JobRegistry`) and bounded by how many jobs this install declares rather than by traffic. Retention does not touch it — a row is the declaration that the job exists, so a window on it would silently unschedule work (DL-325).
 
 ### The three-way failure treatment (load-bearing)
 
@@ -112,7 +125,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Bridge/Classifiers/InboxOnlyClassifier.php` | Reference classifier — surfaces lifecycle/activity events as intents; no dispatched targets |
 | `app/Bridge/Classifiers/EventDrivenClassifier.php` | Reference event-driven classifier — emits `channel_push` targets paired with intents |
 | `app/Bridge/Classifiers/GitHubPrCardMoveClassifier.php` | Correlation classifier for the writeback — a `pull_request` event → a `kanban_move_card` target (FR #2016, `docs/writeback.md`) |
-| `app/Bridge/Contracts/Handler.php` + `app/Bridge/Handlers/*` | Reaction handlers: `LogIntentHandler`, `ChannelPushHandler`, `RegistryAppendHandler`, `KanbanMoveCardHandler` (the durable card-move writeback), `KanbanDependabotCardHandler` (DL-024), `KanbanBlockReasonHandler` (DL-193), `KanbanCoordCardHandler` (coord issue → card create, DL-198), `KanbanCoordCardMoveHandler` (coord issue close→terminal / reopen→revive, DL-200), `SpawnDetachedHandler` (opt-in) |
+| `app/Bridge/Contracts/Handler.php` + `app/Bridge/Handlers/*` | Reaction handlers: `LogIntentHandler`, `ChannelPushHandler`, `RegistryAppendHandler`, `KanbanMoveCardHandler` (the durable card-move writeback), `KanbanDependabotCardHandler` (DL-024), `KanbanBlockReasonHandler` (DL-193), `KanbanCoordCardHandler` (coord issue → card create, DL-198; + the name restamp on an upstream retitle, DL-341), `KanbanCoordCardMoveHandler` (coord issue close→terminal / reopen→revive, DL-200), `SpawnDetachedHandler` (opt-in) |
 | `app/Bridge/Contracts/DurableReaction.php` + `app/Bridge/Writeback/*` | The writeback: `DurableReaction` marker, `WritebackConfig`/`WritebackMapping` (`writeback.json` policy), `KanbanClient` + `WritebackClientFactory` (the card-move write, DL-009/018-021), `CardNote` (the card-VISIBLE record of a correlation leg the writeback deliberately did NOT stamp, card#7064) |
 | `app/Bridge/Support/HandlerRegistry.php` / `ClassifierResolver.php` | Resolve the agent-configured handler/classifier names → instances |
 
@@ -153,6 +166,7 @@ migrated, and what each stage measured, is owned by
 | `app/Bridge/Support/SecretPath.php` | The single shared secret-path shape: `<secret_dir>/<provider>/webhook-secret-scope-<scope>` |
 | `app/Bridge/Support/InstallGuard.php` | Dev/prod crosstalk guard (`BRIDGE_INSTALL_SUFFIX` ↔ DB-name marker) |
 | `app/Bridge/Support/{BridgePaths,PathHelper}.php` | Resolve config dir / secret dir / state dir from `config/bridge.php` |
+| `app/Bridge/Support/SecretScrubber.php` | **The app's ONE credential redactor (DL-344).** `text()` for text this app did not compose (an upstream 4xx body via `RefusalContext`, a third-party `JobHandler`'s exception message); `url()` for a config URL value we are about to interpolate into our own message, where the userinfo/query/fragment come off by POSITION — the leg no reader of a finished message can do. ⚠ Not a guarantee: it filters credential SHAPES and URL COMPONENTS, and its own docblock states what it deliberately leaves (a secret in a URL PATH) |
 | `app/Bridge/Validation/{ProviderName,ScopeId,SocketPath}.php` | Format validators reused across config + provisioning |
 | `config/bridge.php` | Runtime config: `config_dir`, `secret_dir`, `install_suffix`, `max_body_bytes` (envelope cap). The state dir (inbox.jsonl + inbox-seen.json) is derived as `<config_dir>/state` by `BridgePaths`, not a separate key |
 

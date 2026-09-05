@@ -158,14 +158,22 @@ def cmd_check(args: argparse.Namespace) -> int:
     WHAT `--base` MUST BE — a PAIRING with `--head`, not the fork point. "Present
     at head, absent at base" means "this change minted it" only while head is a
     snapshot containing base plus this change and nothing else. The CI caller
-    satisfies that by passing the PR's `base.sha` — the base-branch TIP, which is
-    frequently NOT the merge base — while `--head` is the working tree at
-    `github.sha`, the merge of the PR head INTO that same `base.sha`. The two are
-    ONE snapshot of the base branch and must not be sourced independently;
+    satisfies that by passing the FIRST PARENT of the merge commit it is running
+    on — `HEAD^1`, read by `bin/pr-base-snapshot.sh` — while `--head` is the
+    working tree at `github.sha`, that same merge. The two are ONE snapshot of the
+    base branch by construction, because the base end is the commit the head end
+    RECORDS as its parent; they must not be sourced independently.
     `.github/workflows/dl-collision-gate.yml` owns that invariant and the measured
     consequence of breaking it. Hand this command a base its head does not
     contain — the merge base, say — and `added` silently gains the base branch's
     OWN post-fork entries, which then read as this change's mints.
+
+    ⛔ NOT `github.event.pull_request.base.sha`, which the CI caller passed until
+    card#8527. GitHub does not refresh that field on every `synchronize`, so it
+    can LAG the base tip the merge commit was built on: measured 2026-09-02 on
+    PR #640 (run 33598959720), `base.sha` 549c894 against a merge commit whose
+    first parent was 7a11085. Paired that way this command returned 6 and the gate
+    refused an innocent PR, naming a number the base branch had minted itself.
 
     STATED BOUND — this is the whole of what the guard claims, and it is
     deliberately narrower than "no duplicate DL can be minted":
@@ -408,8 +416,9 @@ def main(argv: list[str] | None = None) -> int:
     p_check.add_argument("--head", required=True, help="the decision log as this change leaves it")
     p_check.add_argument(
         "--base",
-        help="the decision log at the snapshot --head is the merge of; in CI the PR's base.sha, "
-        "which is the base-branch TIP and NOT the merge base (see the cmd_check docstring)",
+        help="the decision log at the snapshot --head is the merge of; in CI the FIRST PARENT "
+        "of that merge commit (bin/pr-base-snapshot.sh), NOT the merge base and NOT the "
+        "pull_request event's base.sha (see the cmd_check docstring)",
     )
     p_check.add_argument("--target", help="the decision log at the live tip of the target branch")
     p_check.set_defaults(func=cmd_check)

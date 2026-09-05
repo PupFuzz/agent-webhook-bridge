@@ -36,8 +36,9 @@ use Illuminate\Support\Facades\Log;
  * releases the pin. No change to PinGuard.
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
- * split as the move handler (DL-020/DL-274), and the same belongs-to-mapped-board
- * security guard. Its non-4xx refusals (a non-card target_id, a malformed payload, no
+ * split as the move handler (DL-020/DL-274), the same board-scoped tenant check BEFORE the
+ * card is read (card#8375 → card#8415) and the same belongs-to-mapped-board compare on the
+ * row it gets back. Its non-4xx refusals (a non-card target_id, a malformed payload, no
  * writeback.json, the board guard) signal too since DL-285 — the board guard's twin in
  * the move handler always did, and the asymmetry was inside one guard.
  * Idempotent: a no-op SET/CLEAR (already-marker / not-ours) writes nothing.
@@ -125,29 +126,48 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
 
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token or base url
 
+        // SECURITY (tenant scope, card#8375 → card#8415): establish that this card id is on
+        // the operator-mapped board BEFORE reading the card at all. The overlay's id reaches
+        // it from the SAME author-controlled `card#`/DL token grammar as the move handler's,
+        // against a kanban id space that is GLOBAL across every board on the instance, and
+        // `getCard` below names no board — so without this the belongs-to-mapped-board
+        // compare's precondition was a SUCCESSFUL CROSS-TENANT READ, and on a 403 the compare
+        // was not reached at all. That this overlay writes one field rather than moving a card
+        // is a smaller blast radius, not a different class. The rule, the board-scoped lookup
+        // and the refusal report live in MappedBoardGuard with the post-read compare below,
+        // which stays: this one decides whether we may READ the card, that one decides whether
+        // we may WRITE the row we got, and only that one can record the (card board, mapped
+        // board) divergence pair.
+        if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_block_reason', $cardId, $repo, self::ALERT_OUTCOME)) {
+            return;
+        }
+
         // A kanban 4xx (deleted card) is PERMANENT — log + no-op. Only a 5xx / timeout
         // / connection error is transient (throw → redelivery retries).
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                // ⛔ THE CHANNEL COPY CARRIES NO CARD ID (DL-314, card#7846) — the move
-                // handler's twin arm, and the same reasoning: this overlay's card id is
-                // resolved by the SAME author-controlled `card#`/DL token grammar against
-                // a GLOBAL kanban id space, so a read that failed leaves the id
-                // unestablished as this install's. The log keeps it; the push does not.
+                // ⛔ THE CHANNEL COPY STILL CARRIES NO CARD ID (DL-314, card#7846) — the move
+                // handler's twin arm, and the same reasoning: the withholding is keyed on THE
+                // READ FAILED, not on the foreign-id hypothesis the check above now excludes.
+                // This arm holds an id whose card it could not read, and the `Log::warning`
+                // context is the local operator's surface for it while the channel is the one
+                // that can reach a party the id is not about.
                 //
-                // ⚑ THE TWO ARMS ARE NO LONGER TWINS ON THE 403, and this one is the WIDER
-                // of the pair: since card#8375 `kanban_move_card` establishes its card id on
-                // the mapped board through a board-scoped lookup BEFORE it reads the card, so
-                // its 403 can no longer mean a foreign card id. This overlay makes no such
-                // check yet — the id here really may be another install's — so it keeps the
-                // default two-cause slug, which stays true of it. Extending the scoped check
-                // to this arm is filed as card#8415, not done here.
+                // ⭐ THE FOREIGN-CARD-ID HYPOTHESIS IS RULED OUT ON THIS ARM (card#8415), by a
+                // measurement rather than by an assumption: the board-scoped check above has
+                // already read this id back off the mapped board, so a 403 here can no longer
+                // mean "somebody else's card" and the slug narrows with the code (the flag is
+                // a claim about the call site — see RefusalContext::readReason()'s docblock).
+                // The message stays ONE line rather than splitting by status the way the move
+                // handler's twin does: the shared thing is the reason vocabulary, which
+                // `readReason()` owns for both, and a second copy of that arm's prose here is
+                // what would let the two drift.
                 $this->alerts->warnAndNotifyCardIdWithheld(
-                    'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave); on a 403 the card id may name another install\'s card, so it is in this log line only, never in the alert channel',
+                    'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave); the board-scoped check above read this card id back off the mapped board moments earlier, so a foreign install\'s card id is EXCLUDED here and what `body`\'s status leaves is this token\'s own access to this card (403) or a card that went away between the two reads (404); the card id is in this log line only, never in the alert channel',
                     ['card_id' => $cardId] + RefusalContext::from($e),
-                    $repo, self::ALERT_OUTCOME, RefusalContext::readReason('getcard', $e),
+                    $repo, self::ALERT_OUTCOME, RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
                 );
 
                 return;

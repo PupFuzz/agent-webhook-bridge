@@ -5,6 +5,7 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -36,6 +37,13 @@ use Illuminate\Support\Facades\Log;
  * the DL-302 board keys). The field costs no extra API call —
  * `KanbanClient::swimlaneCards()` already fetches `description` and the
  * projection discarded it.
+ *
+ * ⭐ A PERMANENT 4xx FROM THE BOARD IS A NAMED REFUSAL, NOT THE RETRYABLE 502 (card#8486)
+ * — see {@see readRefusal}. Every read this tool makes is covered, on both the own/shared
+ * and the coord leg. ⛔ It is also the only tool whose refusals span BOTH {@see BoardReadRoute}
+ * cases, so each read is caught separately and names its own: what a 403 or a 404 MEANS differs
+ * between a board-scoped read and a card search, and a refusal naming the wrong one denies the
+ * true cause to the operator by name.
  */
 final class BoardMyCardsTool implements Tool
 {
@@ -49,12 +57,25 @@ final class BoardMyCardsTool implements Tool
         $descriptionCap = $this->descriptionCap($args, $cfg);
         $boardId = (int) $cfg->boardId;
         $swimlaneId = (int) $cfg->swimlaneId;
-        $stageNames = $client->boardStageNames($boardId);
+        // ⛔ TWO `try`s FOR TWO KANBAN ROUTE CLASSES, NOT A STYLE CHOICE (card#8486 R1). The
+        // stage-name read is board-scoped (`boards/{id}/preload.json`) and the card reads are
+        // searches, and a 403/404 means something DIFFERENT on each — see {@see BoardReadRoute}.
+        // One `try` over both could only name one of them, so the refusal it composed would
+        // deny the true cause by name on whichever call actually failed.
+        try {
+            $stageNames = $client->boardStageNames($boardId);
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'stages', BoardReadRoute::BoardScoped, "the structure of your board {$boardId}");
+        }
 
-        $ownRows = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
-        $sharedRows = $cfg->sharedSwimlaneId === null
-            ? null
-            : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+        try {
+            $ownRows = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
+            $sharedRows = $cfg->sharedSwimlaneId === null
+                ? null
+                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
+        }
 
         [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRows, $sharedRows ?? []), $boardId, $agentName, $sharedRows === null ? 'own' : 'own+shared');
         $result = [
@@ -85,6 +106,43 @@ final class BoardMyCardsTool implements Tool
         }
 
         return $result;
+    }
+
+    /**
+     * A 4xx the BOARD answered on one of this tool's reads, mapped to a named refusal;
+     * anything else (5xx, a timeout) is re-thrown for the dispatcher's retryable 502
+     * (card#8486 — the mapping DL-326 built for `board_correct_card`, now
+     * {@see BoardCallRefusal}'s for the whole door).
+     *
+     * ⭐ THIS TOOL IS THE ONE A ROTATED WRITEBACK TOKEN HITS FIRST, and it is the reason the
+     * hoist matters: a seat's first act is usually to read its own cards, and until this a
+     * 401 came back as `502 upstream board error` — an instruction to retry a call that
+     * kanban's `auth:sanctum` door will refuse identically forever.
+     *
+     * ⚠ $route IS LOAD-BEARING, NOT A LABEL. `boardStageNames()` reads
+     * `boards/{id}/preload.json`, which kanban authorizes with `view` ON THE BOARD, while the
+     * card reads are searches kanban floors to the caller's own boards. So on the board-scoped
+     * legs a membership gap is a live 403 cause and a 404 most likely means the configured
+     * board id does not resolve — both of which the search strings deny by name. The caller
+     * therefore catches each route class on its own `try`; see {@see BoardReadRoute}.
+     *
+     * ⚠ THE WHOLE CALL REFUSES, INCLUDING WHEN ONLY THE COORD LEG FAILED — unchanged from
+     * the 502 this replaces. A partial window is the one answer this tool must never give:
+     * `board_my_cards` is what a seat reads to decide what work exists, and a response
+     * silently missing its coordination cards reads exactly like a board with none.
+     */
+    private function readRefusal(RequestException $e, string $agentName, string $leg, BoardReadRoute $route, string $what): \Throwable
+    {
+        $status = BoardCallRefusal::permanentOnRead($e);
+        if ($status === null) {
+            return $e;
+        }
+
+        Log::warning('board_my_cards: the board refused a read', [
+            'agent' => $agentName, 'leg' => $leg, 'route' => $route->name, 'status' => $status,
+        ]);
+
+        return BoardCallRefusal::readRefusal($this->name(), $route, $status, $what, 'so NO cards were returned — this is not an empty window');
     }
 
     /**
@@ -239,17 +297,30 @@ final class BoardMyCardsTool implements Tool
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
-        foreach ($cfg->addressTags as $tag) {
-            foreach ($client->cardRowsByTag($coordBoardId, $tag) as $row) {
-                $id = $row['id'] ?? null;
-                if (is_numeric($id)) {
-                    $byId[(int) $id] = $row;
+        try {
+            foreach ($cfg->addressTags as $tag) {
+                foreach ($client->cardRowsByTag($coordBoardId, $tag) as $row) {
+                    $id = $row['id'] ?? null;
+                    if (is_numeric($id)) {
+                        $byId[(int) $id] = $row;
+                    }
                 }
             }
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'coord', BoardReadRoute::Search, "the coordination board {$coordBoardId} your address tags are on");
         }
         ksort($byId);
         $rows = array_values($byId);
-        $coordStageNames = $client->boardStageNames($coordBoardId);
+
+        // Split for the same reason as the own/shared legs above: this one is board-scoped,
+        // and on the COORD board it is the likeliest place a membership gap actually shows —
+        // `coord_board_id` is configured separately from `board_id`, so an install can hold
+        // membership of one and not the other.
+        try {
+            $coordStageNames = $client->boardStageNames($coordBoardId);
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'coord stages', BoardReadRoute::BoardScoped, "the structure of the coordination board {$coordBoardId} your address tags are on");
+        }
         [$observedBoard, $boardObserved] = $this->observedBoard($rows, $coordBoardId, $agentName, 'coord');
 
         return [

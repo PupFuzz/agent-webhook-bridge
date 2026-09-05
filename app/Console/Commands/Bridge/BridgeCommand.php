@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use Illuminate\Console\Command;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
 /**
@@ -40,17 +41,30 @@ abstract class BridgeCommand extends Command
      * pattern-matching a driver-specific message (`no such table` is `HY000` on SQLite and
      * `42S02` on MariaDB — a sniff would have been right on one CI leg and wrong on the other).
      *
+     * ⚑ `$diagnostics` EXISTS FOR THE COMMANDS THAT OWN A STDOUT DOCUMENT. `$this->error()`
+     * writes to STDOUT, which is correct for a command whose stdout is prose and wrong for
+     * one whose stdout is a single JSON document a hook parses — there, this message would
+     * append a human sentence to the document and the consumer would fail to decode it at
+     * exactly the moment the fault fired. Such a caller passes its own error stream; the
+     * message text is the same either way, so the two cannot drift.
+     *
      * @param  \Closure(): int  $body
      */
-    protected function guardDatabase(\Closure $body): int
+    protected function guardDatabase(\Closure $body, ?OutputInterface $diagnostics = null): int
     {
         try {
             return $body();
         } catch (QueryException $e) {
-            $this->error($this->databaseAnswers($e->getConnectionName())
+            $message = $this->databaseAnswers($e->getConnectionName())
                 ? 'database query failed, but the server ANSWERED — this is not connectivity. An install '
                     .'that has not run `php artisan migrate` is the usual cause ('.$e->getMessage().')'
-                : 'database unreachable — check DB_HOST / DB_DATABASE / credentials in .env ('.$e->getMessage().')');
+                : 'database unreachable — check DB_HOST / DB_DATABASE / credentials in .env ('.$e->getMessage().')';
+
+            if ($diagnostics === null) {
+                $this->error($message);
+            } else {
+                $diagnostics->writeln('<error>'.$message.'</error>');
+            }
 
             return self::FAILURE;
         }

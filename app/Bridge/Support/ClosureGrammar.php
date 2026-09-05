@@ -54,6 +54,16 @@ namespace App\Bridge\Support;
  * question about the identical field, and DL-305 §6 / DL-308 ruled that a term on one
  * path and not the other means the two disagree about which merges close a card.
  *
+ * ⛔ `[no-close]` VETOES THE WHOLE TITLE (card#8344), and the difference from the revert
+ * rule above is the whole reason it is not expressed the same way. A quoted revert is
+ * someone ELSE's text, so it is SUBTRACTED and the rest of the title still speaks; the
+ * marker is THIS author saying *this PR cites the card, it does not finish it* — a claim
+ * about the PR, not about a span of it — so once it is present no position in the title
+ * can carry a closing form. {@see NoCloseGrammar} owns the marker and applies the
+ * quotation rule to itself; this class owns only the consequence, and it is applied at
+ * the same single choke point for the same reason (both consumers of this predicate must
+ * get the identical answer — DL-305 §6 / DL-308's lockstep).
+ *
  * A BARE MENTION IS A NO-OP, NEVER A DEMOTION — the consumer's rule, stated here
  * because this predicate is what makes it reachable. The writeback re-classifies
  * in-window PRs on EVERY pass, so a rule that returned an earlier stage for a bare
@@ -221,10 +231,21 @@ final class ClosureGrammar
      * by another. Offsets are taken against the SUBTRACTED text on purpose — the
      * positions this grammar may read from are the ones the author actually wrote.
      *
+     * THE `[no-close]` VETO SITS HERE FOR THE SAME REASON (card#8344), and it returns the
+     * EMPTY set rather than editing the text: the marker withholds every closing form in
+     * the title at once, including a `Closes DL-NNN` that `closedDls()` would otherwise
+     * read, so expressing it as a subtraction would leave one predicate to re-derive it.
+     * It is asked BEFORE the revert subtraction because {@see NoCloseGrammar::marks()}
+     * applies that subtraction itself — the marker inside a quoted revert is the original
+     * author's, not this one's.
+     *
      * @return list<string>
      */
     private static function remainders(string $text): array
     {
+        if (NoCloseGrammar::marks($text)) {
+            return [];
+        }
         $text = RevertGrammar::withoutQuotedRevert($text);
         if (preg_match_all(self::BRIDGE, $text, $m, PREG_OFFSET_CAPTURE) < 1) {
             return [];

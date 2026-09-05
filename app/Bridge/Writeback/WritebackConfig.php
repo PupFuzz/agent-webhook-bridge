@@ -562,4 +562,41 @@ final class WritebackConfig
 
         return false;
     }
+
+    /**
+     * Every install-declared hold-marker tag (DL-194) in force on a BOARD, deduped,
+     * first-seen order — the board-keyed read of a repo-keyed key.
+     *
+     * `hold_marker_tags` is declared per repo MAPPING, but what it names is a property
+     * of the CARDS on the board that mapping targets: it is the install's own hold
+     * convention, the thing `no-automove` is the built-in of. Several repo mappings can
+     * name one board (which is why this dedups, exactly as the standup's Now-lane map
+     * does), and a consumer that knows only a board id — a board-tools seat knows
+     * `board_tools.board_id` and no repo at all — has no other route to the set.
+     *
+     * ⛔ THIS IS NOT A PIN PREDICATE. It answers WHICH TAGS THIS INSTALL CALLS A HOLD on
+     * this board, not whether a given card is held: {@see PinGuard::isPinned} owns that
+     * question, and {@see KanbanMoveCardHandler} owns what an unpark alert does with the
+     * answer. The board-tools correction path consumes it for a third purpose again — to
+     * know which tags on a card are somebody ELSE'S control and must survive a wholesale
+     * tag replace.
+     *
+     * @return list<string>
+     */
+    public function holdMarkerTagsForBoard(int $boardId): array
+    {
+        $tags = [];
+        foreach ($this->mappings as $mapping) {
+            if ($mapping->boardId !== $boardId) {
+                continue;
+            }
+            foreach ($mapping->holdMarkerTags as $tag) {
+                if (! in_array($tag, $tags, true)) {
+                    $tags[] = $tag;
+                }
+            }
+        }
+
+        return $tags;
+    }
 }

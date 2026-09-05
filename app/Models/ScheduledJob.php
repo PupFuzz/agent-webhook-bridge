@@ -1,0 +1,118 @@
+<?php
+
+namespace App\Models;
+
+use App\Bridge\Scheduling\JobHandler;
+use App\Bridge\Scheduling\JobRegistry;
+use App\Bridge\Scheduling\JobScheduler;
+use App\Bridge\Scheduling\JobSpec;
+use App\Bridge\Support\SecretScrubber;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
+
+/**
+ * One INSTANCE in the periodic-job registry (card#8425 / DL-325) — written by
+ * {@see JobRegistry} and executed by {@see JobScheduler}.
+ *
+ * ⭐ THE ROW IS DATA; THE HANDLER IS CODE. That split is the governance model, not an
+ * implementation detail: `handler` is a key into a registry of classes that exist in this
+ * repository, so what any job CAN DO was fixed at code-review time, while inserting and
+ * removing instances of an already-reviewed handler is ungated and happens at runtime. A
+ * `handler` naming nothing is refused loudly at both ends rather than skipped.
+ *
+ * ⭐ `justification` IS REQUIRED AND IS PART OF THE PUBLIC ENUMERATION. A periodic job is
+ * the last resort in this design; the field is the one sentence the inserter owes saying
+ * why the event-gated path could not do it. It is friction by intent — see
+ * {@see JobSpec} for what that friction does and does not buy.
+ *
+ * ⛔ NO SECRET, TOKEN OR CONFIG VALUE MAY BE STORED ON THIS MODEL. Every column below is
+ * printed by `bridge:jobs` — both the human listing and `--json`, and `payload` included —
+ * and several are summarised by `bridge:check`. The rule is stated over the columns rather
+ * than over `payload` alone because it is the STORE that is operator-visible, and it is only
+ * honest while the listing really does print what is stored: a column the enumeration omits
+ * is a place a secret could sit unread, which is why omitting one is a defect and not a
+ * formatting choice. (`id` and the framework `created_at`/`updated_at` carry no caller value
+ * and are not printed — that is the whole carve-out.)
+ *
+ * ⚑ TWO OF THOSE COLUMNS ARE WRITTEN FROM TEXT THIS APP DID NOT COMPOSE, and they get a
+ * BACKSTOP on top of the rule (DL-344). `last_error` and `last_summary` carry a
+ * {@see JobHandler}'s own words — operator or third-party code, a
+ * system boundary — so {@see JobScheduler} scrubs both through
+ * {@see SecretScrubber} before the row is saved. ⛔ THAT DOES NOT
+ * RELAX THE RULE ABOVE: the scrubber matches credential SHAPES and URL COMPONENTS, so a bare
+ * unkeyed secret still lands verbatim, and every other column here has no scrub at all.
+ *
+ * ⚑ AND THAT UNIVERSAL IS A GUARD, NOT A SENTENCE SOMEBODY MAINTAINS. It was hand-maintained
+ * and it was false twice, each repair narrowing to the columns the last review had named.
+ * `Tests\Feature\Console\JobsCommandOutputTest` now enumerates this table's columns FROM THE
+ * SCHEMA, subtracts the three above, and reds on any remaining column missing from either
+ * surface — so a column added here without a printer fails, naming itself, instead of quietly
+ * widening the space this rule is stated over.
+ *
+ * ⚑ `last_status` HAS THREE VALUES AND A NULL, and collapsing them loses the remedy.
+ * `ok` / `failed` / `refused` / never-run: a refusal means the scheduler declined to invoke
+ * anything (the handler name resolves to nothing, or names a state-mutating handler this
+ * install has not armed), which is a different fact from a handler that ran and threw.
+ *
+ * The `@property` block below is not decoration: `app/Models` is outside the analysed paths
+ * (see `phpstan-laravel.neon`), so a reader in `app/Bridge` — which IS analysed — otherwise
+ * sees every column as the raw `string|null` the schema hands back and the casts below are
+ * invisible to it.
+ *
+ * @property string $name
+ * @property string $handler
+ * @property int $interval_s
+ * @property string $owner
+ * @property string $docs_ref
+ * @property string $justification
+ * @property bool $enabled
+ * @property array<mixed>|null $payload
+ * @property Carbon|null $last_run_at
+ * @property Carbon|null $next_due_at
+ * @property string|null $last_status
+ * @property string|null $last_summary
+ * @property string|null $last_error
+ * @property int|null $last_duration_ms
+ * @property int $consecutive_failures
+ */
+class ScheduledJob extends Model
+{
+    /** A pass completed and the handler returned an outcome. */
+    public const STATUS_OK = 'ok';
+
+    /** The handler ran and threw. `last_error` carries the exception. */
+    public const STATUS_FAILED = 'failed';
+
+    /**
+     * The scheduler declined to invoke anything. NOT a failing handler — nothing ran.
+     * `last_error` carries the refusal reason in operator vocabulary.
+     */
+    public const STATUS_REFUSED = 'refused';
+
+    protected $fillable = [
+        'name',
+        'handler',
+        'interval_s',
+        'owner',
+        'docs_ref',
+        'justification',
+        'enabled',
+        'payload',
+    ];
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'enabled' => 'boolean',
+            'payload' => 'array',
+            'interval_s' => 'integer',
+            'last_duration_ms' => 'integer',
+            'consecutive_failures' => 'integer',
+            'last_run_at' => 'datetime',
+            'next_due_at' => 'datetime',
+        ];
+    }
+}

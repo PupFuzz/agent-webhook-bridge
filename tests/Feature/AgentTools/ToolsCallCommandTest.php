@@ -349,6 +349,55 @@ class ToolsCallCommandTest extends TestCase
         $this->assertFalse(json_decode($r['stdout'], true)['ok']);
         Http::assertNothingSent();
     }
+
+    // ─── the cross-door contract (DL-326 Decision 7) ─────────────────────────
+
+    /**
+     * ⭐ THIS DOOR IS THE ONLY PLACE THE CLEAR-A-DESCRIPTION RULE CAN BE MEASURED. Laravel's
+     * global `TrimStrings` + `ConvertEmptyStringsToNull` run on the HTTP door and NOT here —
+     * `bridge:tools-call` json_decodes the body itself — so `"   "` arrives at the tool as
+     * three spaces here and as `null` there. An HTTP-door test of this case is VACUOUS: it
+     * passes against a tool that trims and against one that does not, because the middleware
+     * has already collapsed the value before the tool sees it.
+     *
+     * The claim being pinned is that a call MEANS the same thing on both transports: a
+     * whitespace-only description CLEARS the field, rather than writing whitespace on one
+     * door and clearing on the other. `""` is the same rule from the other side and is
+     * asserted with it (this door preserves an empty string where the HTTP door nulls it).
+     *
+     * ⚑ RED-WHEN-REVERTED: drop the `trim()` in `textCorrections()` and the first leg
+     * writes `"   "`.
+     */
+    public function test_a_whitespace_only_description_clears_on_the_ssh_door_as_it_does_on_http(): void
+    {
+        foreach (['   ', ''] as $sent) {
+            $this->writeSshAgent();
+            Http::fake(function ($request) {
+                if (str_contains($request->url(), '/tasks/search.json')) {
+                    return Http::response(['data' => [[
+                        'id' => 42, 'board_id' => 10, 'swimlane_id' => 4, 'tags' => ['created-by:me'],
+                    ]]]);
+                }
+
+                return Http::response(['data' => ['id' => 42]]);
+            });
+
+            $r = $this->runCommand('me', (string) json_encode([
+                'tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => $sent],
+            ]));
+
+            $this->assertSame(0, $r['exit'], 'stdout: '.$r['stdout']);
+            $body = null;
+            Http::recorded(function ($request) use (&$body) {
+                if ($request->method() === 'PATCH') {
+                    $body = json_decode((string) $request->body(), true);
+                }
+
+                return false;
+            });
+            $this->assertSame(['description' => ''], $body, "a description of '{$sent}' must CLEAR the field on this door too");
+        }
+    }
 }
 
 /**

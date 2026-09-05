@@ -62,9 +62,15 @@ namespace App\Bridge\Support;
  * original: `Revert "feat: x (closes card#123)" (closes card#456)` closes 456 and not 123
  * at this layer. That is the existing grammar used as-is, so an author learns nothing new,
  * and it cannot fire by accident because GitHub never writes outside the quotes. ⛔ A
- * marker meaning *close anyway* was deliberately NOT invented: card#8294's `[no-close]` is
- * a CI-only suppression that nothing at runtime reads, and its inverse would be the first
- * title DIRECTIVE the writeback obeys — a new accept-surface, and its own decision.
+ * marker meaning *close anyway* is still deliberately NOT invented: its effect would be to
+ * MOVE a card the writeback had otherwise refused to move — the first title DIRECTIVE the
+ * writeback OBEYS, a new accept-surface, and its own decision. ⚠ The clause that read
+ * *"card#8294's `[no-close]` is a CI-only suppression that nothing at runtime reads"* is
+ * SUPERSEDED, and the ruling it supported is not: card#8344 / DL-327 made the writeback read
+ * that marker, in the OPPOSITE direction — `[no-close]` can only ever WITHHOLD a move, never
+ * cause one, so it opens no accept-surface. {@see NoCloseGrammar} owns it, and applies this
+ * class's own quotation rule to itself: a marker inside `Revert "…"` is the ORIGINAL
+ * author's, so it does not veto a closing form written outside the quotes.
  *
  * ⚠ A KNOWN DIVERGENCE FROM CI, filed rather than repaired here — the same shape
  * {@see PrOutcome::mergeClosesCard()}'s docblock already records for the branch predicate.

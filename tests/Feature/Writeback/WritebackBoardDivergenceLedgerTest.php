@@ -92,6 +92,7 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
             WritebackClientFactory::make(),
             [7 => $this->card(7, self::FOREIGN_BOARD), 9 => $this->card(9, self::FOREIGN_BOARD)],
             'kanban_dependabot_card',
+            'owner/repo',
             ['repo' => 'owner/repo'],
             $this->mapping(),
         );
@@ -120,6 +121,7 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
             WritebackClientFactory::make(),
             [7 => $this->card(7, self::MAPPED_BOARD), 9 => ['id' => 9]],
             'kanban_dependabot_card',
+            'owner/repo',
             ['repo' => 'owner/repo'],
             $this->mapping(),
         );
@@ -142,6 +144,7 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
             WritebackClientFactory::make(),
             [7 => $this->card(7, self::MAPPED_BOARD), 9 => $this->card(9, '8abc')],
             'kanban_dependabot_card',
+            'owner/repo',
             ['repo' => 'owner/repo'],
             $this->mapping(),
         );
@@ -206,6 +209,7 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
             WritebackClientFactory::make(),
             [7 => $this->card(7, self::MAPPED_BOARD), 9 => $this->card(9, self::MAPPED_BOARD)],
             'kanban_dependabot_card',
+            'owner/repo',
             ['repo' => 'owner/repo'],
             $this->mapping(),
         );
@@ -232,6 +236,7 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
             WritebackClientFactory::make(),
             [7 => $this->card(7, self::MAPPED_BOARD), 9 => $this->card(9, '8')],
             'kanban_dependabot_card',
+            'owner/repo',
             ['repo' => 'owner/repo'],
             $this->mapping(),
         );
@@ -346,6 +351,7 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
             WritebackClientFactory::make(),
             [7 => $this->card(7, self::FOREIGN_BOARD), 9 => $this->card(9, self::FOREIGN_BOARD)],
             'kanban_dependabot_card',
+            'owner/repo',
             ['repo' => 'owner/repo'],
             $this->mapping(),
         );

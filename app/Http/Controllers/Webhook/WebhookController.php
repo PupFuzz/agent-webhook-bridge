@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
 use App\Bridge\Http\PlainTextResponse;
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Scheduling\JobSchedulerGate;
 use App\Bridge\Standup\StandupGate;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
@@ -28,8 +29,17 @@ use Symfony\Component\HttpFoundation\Response;
  * dispatch() has a second, non-inbound caller — `bridge:replay` — where the gate
  * would fire for no benefit. `receive` is the shared inbound entry across every
  * provider, which is exactly the arrival the gate keys off. The opt-in standup
- * digest (DL-306) rides the same arrival for the same reason — this design has no
- * cron, and a report is not a good enough reason to reintroduce one.
+ * digest (DL-306) rides the same arrival for the same reason — a report is not a
+ * good enough reason to add a scheduler.
+ *
+ * The periodic-job registry (card#8425 / DL-325) rides it too, and is the reason the
+ * sentence above no longer says "this design has no cron". It says something narrower
+ * and truer: the EVENT GATE IS STILL THE DEFAULT AND STILL COMPLETE ON ITS OWN. An
+ * install that adds no crontab line runs its whole job registry from this arrival,
+ * exactly as it runs retention. An install that additionally adopts `bridge:tick`
+ * gains the one thing no arrival can provide — periodic work when nothing arrives
+ * (DL-306's documented dead end). Both ingresses share one bounded, non-blocking,
+ * after-response pass, so nothing here reaches the client's request.
  */
 class WebhookController extends Controller
 {
@@ -37,6 +47,7 @@ class WebhookController extends Controller
         private DispatchService $dispatcher,
         private RetentionGate $retentionGate,
         private StandupGate $standupGate,
+        private JobSchedulerGate $jobGate,
     ) {}
 
     public function receive(Request $request): Response
@@ -87,6 +98,11 @@ class WebhookController extends Controller
 
         // Off unless the install opts in; both passes run after the response below.
         $this->standupGate->schedule();
+
+        // The periodic-job registry's EVENT ingress (DL-325). Registered on every install:
+        // with no rows it costs one indexed query per `jobs.min_pass_interval` and does
+        // nothing else, which is what makes adopting the tick opt-in rather than required.
+        $this->jobGate->schedule();
 
         return $this->plain('ok', 200);
     }

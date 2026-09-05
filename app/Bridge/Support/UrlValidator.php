@@ -14,6 +14,16 @@ use App\Bridge\Exceptions\ConfigException;
  * parse site in `AgentConfig` and its loopback gate belongs to the `channel_push`
  * handler; `alert_channel.url` has `LocalhostUrl`. Listing a caller this class
  * does not have is what sent a reader here looking for the https floor on it.
+ *
+ * ⛔ EVERY MESSAGE QUOTES {@see SecretScrubber::url()}'s OUTPUT, NEVER `$value` (card#8433).
+ * These messages are rendered verbatim by `bridge:check` (`App\Bridge\Check\Checks\InstallEndpointUrlsCheck`)
+ * and re-wrapped by `App\Bridge\Writeback\WritebackClientFactory::make()`, and
+ * {@see self::secureHttpUrl()}'s own text says this field *receives the bearer
+ * token/webhook secret* — so an operator who put a credential in the userinfo or the query
+ * string had it echoed back by the validator that exists to protect it. ⚑ A redactor
+ * reading the thrown MESSAGE cannot close this: once we have interpolated the value,
+ * nothing marks which substring was the secret. It has to happen HERE, at the
+ * interpolation (canon #20).
  */
 final class UrlValidator
 {
@@ -22,18 +32,21 @@ final class UrlValidator
         if (! is_string($value) || $value === '') {
             throw new ConfigException("{$field} must be a non-empty string URL");
         }
+        // Bound ONCE, before the first branch that quotes it, so no later branch can be
+        // added that reaches for the raw `$value` because it was the variable in scope.
+        $safe = SecretScrubber::url($value);
         if (preg_match('/\s/', $value) === 1) {
-            throw new ConfigException("{$field} '{$value}' contains whitespace; check for paste errors");
+            throw new ConfigException("{$field} '{$safe}' contains whitespace; check for paste errors");
         }
         $parts = parse_url($value);
         if ($parts === false) {
-            throw new ConfigException("{$field} '{$value}' is not a valid URL");
+            throw new ConfigException("{$field} '{$safe}' is not a valid URL");
         }
         if (! in_array($parts['scheme'] ?? '', ['http', 'https'], true)) {
-            throw new ConfigException("{$field} '{$value}' must use http or https");
+            throw new ConfigException("{$field} '{$safe}' must use http or https");
         }
         if (($parts['host'] ?? '') === '') {
-            throw new ConfigException("{$field} '{$value}' must have a host component");
+            throw new ConfigException("{$field} '{$safe}' must have a host component");
         }
 
         return $value;
@@ -53,7 +66,7 @@ final class UrlValidator
         $parts = parse_url($value);
         $scheme = $parts['scheme'] ?? '';
         if ($scheme === 'http' && ! LoopbackHost::matches((string) ($parts['host'] ?? ''))) {
-            throw new ConfigException("{$field} '{$value}' must use https — this endpoint receives the bearer token/webhook secret, and cleartext http would expose them on the wire (http is allowed only for loopback hosts)");
+            throw new ConfigException("{$field} '".SecretScrubber::url($value)."' must use https — this endpoint receives the bearer token/webhook secret, and cleartext http would expose them on the wire (http is allowed only for loopback hosts)");
         }
 
         return $value;

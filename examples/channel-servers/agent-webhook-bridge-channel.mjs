@@ -179,7 +179,8 @@ const CLEAR_CONTEXT_ENABLED = shouldAdvertiseClearContext();
 // tool family is advertised — the two gates are independent.
 const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
 
-// The v1 tool surface, hard-coded to mirror the bridge contract (DL-217). Kept
+// The tool surface, hard-coded to mirror the bridge contract (DL-217; the
+// correction tool is DL-326). Kept
 // here because tools/list must advertise a schema; the bridge remains the single
 // authority on validation/scoping — this is the MCP surface, not board logic. If
 // the bridge contract changes, update both (a reference example server, by design).
@@ -190,7 +191,11 @@ const TOOL_DEFINITIONS = [
       'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
       'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
-      'include_description when you need the SCOPE written on a card.',
+      'include_description when you need the SCOPE written on a card. A board fault ' +
+      'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
+      'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
+      'window and never a retryable upstream error, so do not retry it: tell your ' +
+      'operator.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -218,18 +223,27 @@ const TOOL_DEFINITIONS = [
       'from the scope you are configured for, which is returned beside them as ' +
       'configured_board_id/configured_swimlane_id. placement_observed: false means ' +
       'the bridge could not read the placement — both ids are then null and the ' +
-      'response claims none; the card still exists and card_id is still the answer.',
+      'response claims none; the card still exists and card_id is still the answer. ' +
+      'A board fault that cannot clear (the bridge token revoked/rotated, its scope ' +
+      'too narrow, or a value kanban itself rejects) is REFUSED (422) with NO card ' +
+      'created — not a retryable upstream error, so do not retry it.',
     inputSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Card title (required).' },
+        title: {
+          type: 'string',
+          description:
+            "Card title (required, non-empty, at most 255 characters — kanban's own " +
+            'limit). An over-long title is REFUSED (422) before any request is sent.',
+        },
         description: { type: 'string', description: 'Card body (optional).' },
         tags: {
           type: 'array',
           items: { type: 'string' },
           description:
             'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:) ' +
-            'and the bare tag "triaged" are refused.',
+            'and the bare tag "triaged" are refused, and each tag is capped at 64 ' +
+            "characters (kanban's own limit).",
         },
         idempotency_key: {
           type: 'string',
@@ -241,6 +255,63 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ['title'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_correct_card',
+    description:
+      'Correct a card YOU filed — its name, description or tags — instead of ' +
+      'minting a second card to say the first one is wrong. Scoped to cards ' +
+      'carrying your own bridge-stamped created-by: tag on your own board; ' +
+      'anything else is REFUSED, never silently ignored. A PRESENT argument is a ' +
+      'correction and an ABSENT one leaves that field alone, so tags: [] means ' +
+      '"drop my tags" and an empty description clears the body. Column moves, ' +
+      'correlation refs (dl/pr/issue), external ids, card type and block_reason ' +
+      'are NOT correctable here — each is refused by name with the authority that ' +
+      'owns it. A PINNED card also refuses a name correction: a non-empty ' +
+      'block_reason or a no-automove tag is a human freezing the card, and the ' +
+      "bridge's own automation is refused the same write on the same card. " +
+      'Because the correction is ONE patch with no half-applied form, a call ' +
+      'sending name BESIDE description or tags then writes NEITHER — send those ' +
+      'on their own, or ask whoever pinned it to lift the hold. ' +
+      'Your tag list replaces only YOUR OWN tags: because kanban replaces ' +
+      'the tag list wholesale, the bridge re-sends every tag on the card that is ' +
+      "somebody else's — the ones you may not supply (created-by:, idem:, id:, " +
+      'type:, triaged) AND the holds anyone may set but nobody else may drop ' +
+      "(no-automove, plus your install's own hold tags).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'integer',
+          description:
+            'The id of the card to correct, as board_my_cards reports it. Must be ' +
+            'an integer — a decorated string is refused, never coerced.',
+        },
+        name: {
+          type: 'string',
+          description:
+            'Replacement title (non-empty, at most 255 characters — kanban\'s own ' +
+            'limit). There is no clear form — omit it to leave the title alone.',
+        },
+        description: {
+          type: 'string',
+          description:
+            'Replacement body. Present-and-empty CLEARS it; omit it to leave it alone.',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Your replacement tag list (an empty list drops YOUR tags). The same ' +
+            'reserved prefixes (created-by:, idem:, id:, type:) and the bare tag ' +
+            '"triaged" are refused as at create, and each tag is capped at 64 ' +
+            'characters (kanban\'s own limit). Tags that are not yours to drop are ' +
+            'preserved: the reserved ones and any hold marker (no-automove).',
+        },
+      },
+      required: ['card_id'],
       additionalProperties: false,
     },
   },
@@ -379,8 +450,9 @@ const INSTRUCTIONS = [
   ...(TOOLS_ENABLED
     ? [
         'This server ALSO exposes request/response board tools scoped to YOUR channel identity:',
-        'board_my_cards (read your own cards) and board_create_card (create a card in your own swimlane) —',
-        'call them to see or capture board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
+        'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane) and',
+        'board_correct_card (correct a card YOU filed — never mint a second card to say the first is wrong) —',
+        'call them to see, capture or fix board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED

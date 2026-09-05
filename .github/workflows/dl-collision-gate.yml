@@ -27,7 +27,8 @@ name: DL collision gate
 # so there is no cost worth buying that failure mode with.
 #
 # SECURITY: nothing author-controlled reaches a `run:` body by interpolation.
-# The base ref and SHA arrive through `env:` and are used quoted (DL-182/DL-284).
+# The base ref and the PR head SHA arrive through `env:` and are used quoted
+# (DL-182/DL-284); the base snapshot is derived from git, not from the payload.
 
 on:
   pull_request:
@@ -47,15 +48,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # REQUIRED: the step reads the decision log at the PR's `base.sha` (the
-          # base-branch TIP snapshot — NOT the merge base; see the step below) and
-          # at the live target-branch tip. A shallow clone has neither.
+          # REQUIRED: the step reads the decision log at the base snapshot it
+          # derives from the checked-out merge commit (`HEAD^1` — NOT the merge
+          # base; see the step below) and at the live target-branch tip. A shallow
+          # clone has neither, and it must not be shallow enough to truncate the
+          # merge's first parent either.
           fetch-depth: 0
 
       - name: A DL number this PR mints is not already in use
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          # The PR head sha is the SECOND leg of the pairing check in
+          # bin/pr-base-snapshot.sh: it is what proves the merge at HEAD is a
+          # merge of THIS PR. The base snapshot is NOT an input any more — it is
+          # derived from HEAD, for the measured reason in the step body.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
@@ -63,45 +70,62 @@ jobs:
           LOG=CLAUDE_DECISIONS.md
           work=$(mktemp -d)
 
-          # The log AT `base.sha` — a snapshot of the BASE BRANCH, and deliberately
-          # NOT the merge base, which is a different commit.
-          # `github.event.pull_request.base.sha` is the base branch's tip as GitHub
-          # recorded it for this event; against the PR's own branch tip it is
-          # routinely neither the merge base nor an ancestor at all (measured on
-          # this repo, 2026-08-21: PR #542's base.sha fe562910 is not an ancestor of
-          # its head branch 270c236f, whose merge base is 61e40d85).
+          # THE BASE SNAPSHOT IS `HEAD^1`, derived by bin/pr-base-snapshot.sh:
+          # the FIRST PARENT of the merge commit actions/checkout leaves in the
+          # work tree. That script owns the derivation for every gate in this repo
+          # that needs a base, so there is one place where this is stated and one
+          # place where it can be wrong.
           #
-          # THE PAIRING IS THE INVARIANT, and it is what makes the `added` set below
-          # mean "what this PR mints". `--head` is the WORKING TREE, and for a
-          # `pull_request` event actions/checkout leaves that at `github.sha` — the
-          # merge commit GitHub computed for THIS event, the PR head merged into
-          # this same `base.sha`. Head and base are therefore ONE snapshot of the
-          # base branch plus this PR, so a number present at head and absent here
-          # was minted by this PR. Hand the step two independently-sourced commits
-          # and that stops being true: pair this head with the FORK POINT and every
-          # entry the base branch gained after the fork is inside the merge tree at
-          # head, absent at the fork point, and read as this PR's mint — measured:
-          # the predicate returns 6 and the step refuses an innocent PR
-          # (`DlCollisionGateTest`'s pairing case runs exactly that as its control).
+          # THE PAIRING IS THE INVARIANT, and it is what makes the `added` set
+          # below mean "what this PR mints". `--head` is the WORKING TREE, and for
+          # a `pull_request` event actions/checkout leaves that at `github.sha` —
+          # the merge commit GitHub computed for THIS event, the PR head merged
+          # into the base commit that merge records as its first parent. Head and
+          # base are therefore ONE snapshot of the base branch plus this PR, so a
+          # number present at head and absent here was minted by this PR. Hand the
+          # step two INDEPENDENTLY-SOURCED commits and that stops being true: pair
+          # this head with the FORK POINT and every entry the base branch gained
+          # after the fork is inside the merge tree at head, absent at the fork
+          # point, and read as this PR's mint — the predicate returns 6 and the
+          # step refuses an innocent PR. `DlCollisionGateTest`'s pairing case runs
+          # exactly that as its control.
           #
-          # ⚠ WHY A `git merge-base "$BASE" HEAD` "correction" WOULD LOOK HARMLESS,
-          # and is still wrong. While the pairing holds, `$BASE` IS an ancestor of
-          # the merge commit, so `merge-base "$BASE" HEAD` returns `$BASE` and the
-          # rewrite changes no verdict — measured: with the pairing fixture in place
-          # every case in `DlCollisionGateTest` stays green with that rewrite live.
-          # What it changes is the CONTRACT: the step would then compute its base
-          # from whatever head it is given, so the first caller whose head is NOT
-          # that merge (a `push`-triggered run, a local invocation, a re-pointed
-          # fixture) silently gets the fork point and the false refusal above. Say
-          # what the input IS; do not re-derive it. The predicate's own statement of
-          # this contract lives on `cmd_check` in bin/decision-log.py.
+          # ⛔ MEASURED 2026-09-02 (card#8527), and it is why this line no longer
+          # reads `github.event.pull_request.base.sha`. GitHub does NOT refresh
+          # that field on every `synchronize`, so it can LAG the base tip the
+          # merge commit was actually built on — the two are not one snapshot, and
+          # nothing in the payload says when they diverge. On PR #640, run
+          # 33598959720, the event carried `base.sha` 549c894 while the merge
+          # commit 642decf that same event checked out has first parent 7a11085
+          # (`dev`'s tip once #639 had merged). The pairing broke exactly as the
+          # paragraph above says it would: this step read `dev`'s own DL-335 as a
+          # number THIS PR minted and refused an innocent PR. DL-295 bound (f)
+          # named the shape as unverifiable-from-here; this is its measurement,
+          # and the fix is to stop taking the claim from the payload. `HEAD^1`
+          # cannot lag: it is the base commit the merge itself records.
+          #
+          # ⚠ WHY A `git merge-base "$BASE" HEAD` "CORRECTION" WOULD STILL BE
+          # WRONG — the warning is unchanged, and `HEAD^1` is NOT that correction.
+          # `merge-base` RE-DERIVES a base from whatever head it is handed, so the
+          # first caller whose head is NOT this merge (a `push`-triggered run, a
+          # local invocation, a re-pointed fixture) silently gets the fork point
+          # and the false refusal above; and it is INERT while the pairing holds
+          # (`$BASE` is then an ancestor of the merge, so `merge-base` returns
+          # `$BASE`), so no test would say so. `HEAD^1` computes nothing — it
+          # READS the base out of the merge commit — and when the work tree is not
+          # that merge, bin/pr-base-snapshot.sh fails LOUD rather than
+          # substituting a guess. Say what the input IS; do not re-derive it. The
+          # predicate's own statement of this contract lives on `cmd_check` in
+          # bin/decision-log.py.
+          BASE=$(bin/pr-base-snapshot.sh "$HEAD_SHA")
           git show "$BASE:$LOG" > "$work/base.md"
 
           # The log at the LIVE tip of the branch being merged into, fetched
           # fresh rather than read from `$BASE`: the whole point of the second
-          # assertion is to see an entry the target branch gained AFTER the
-          # `base.sha` snapshot above was taken, which is by definition not in
-          # either file the gate already holds.
+          # assertion is to see an entry the target branch gained AFTER the base
+          # snapshot above — after the merge commit was built, now that the
+          # snapshot is `HEAD^1` — which is by definition not in either file the
+          # gate already holds.
           git fetch --no-tags --quiet origin "+refs/heads/$BASE_REF:refs/remotes/dl-gate/$BASE_REF"
           git show "refs/remotes/dl-gate/$BASE_REF:$LOG" > "$work/target.md"
 

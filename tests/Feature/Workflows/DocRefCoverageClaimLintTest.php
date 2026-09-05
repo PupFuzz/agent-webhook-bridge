@@ -228,6 +228,75 @@ class DocRefCoverageClaimLintTest extends TestCase
     }
 
     /**
+     * THE CONTRAST card#8601 IS ABOUT, pinned so it cannot be re-derived by argument.
+     *
+     * For three review rounds of one PR the gate printed "no unbounded coverage claims" while
+     * every completeness sentence in `CLAUDE_TESTING.md` sat outside its surface — the docs were
+     * the subject of two consecutive major findings the gate reported clean. The pass here is
+     * CORRECT and stays correct: widening the predicate to doc prose changes what the repo
+     * refuses and is a separate, ungranted decision. What was wrong was the SENTENCE, so the
+     * assertion is on the sentence — a run that accepts the doc must say it never read it.
+     *
+     * The two halves are one vector deliberately: an acceptance of the doc, on its own, is
+     * indistinguishable from a gate that scanned nothing.
+     */
+    public function test_the_same_claim_passes_in_a_doc_and_the_success_line_says_the_rule_never_read_it(): void
+    {
+        [$rc, $out] = $this->runGate(['CLAUDE_TESTING.md' => "# Testing\n\n".self::CLAIM."\n"]);
+
+        $this->assertSame(0, $rc,
+            "doc prose is outside the rule's surface, so the claim must be accepted:\n{$out}");
+        $this->assertStringContainsString('no current-state CLAUDE_*.md is in its surface', $out,
+            "the success line must say the rule did not read the docs — a bare pass reads as a clean bill on them:\n{$out}");
+
+        $this->assertGateRejects('app/Bridge/Check/Checks/ExampleCheck.php',
+            $this->php($this->docblock(self::CLAIM)), 3,
+            'the witness: the identical sentence inside the surface must red, or the acceptance above proves only that the vector ran');
+    }
+
+    /**
+     * The printed scope must be READ OUT OF the predicate, never typed beside it.
+     *
+     * A message that restates its rule is a second copy of the rule, and the next root added to
+     * the surface silently makes it a lie — the exact shape this line was fixed for. So the
+     * needles come from the script's own `$claimSurface` literal rather than from a list here:
+     * hand-type the prefixes into the message and drop a root from the pattern, and this test is
+     * the thing that reds. The assertion is SET EQUALITY rather than a contains-each loop, because
+     * a loop only catches understatement: it would pass a line that names the four roots plus a
+     * fifth the rule never reads, which overstates the scope in the same direction as the defect.
+     */
+    public function test_the_success_line_names_every_root_of_the_rules_surface_and_nothing_outside_it(): void
+    {
+        $script = (string) file_get_contents(base_path('bin/check-doc-refs.php'));
+        $this->assertSame(1, preg_match("/^\\\$claimSurface = '(.+)';$/m", $script, $m),
+            'the surface constant must be readable from the script, or this test is asserting nothing');
+
+        $surface = $m[1];
+        $prefixes = explode('|', (string) preg_replace('#^\#\^\(?|\)?\#[a-z]*$#', '', $surface));
+        $this->assertNotEmpty($prefixes, 'the surface pattern must yield at least one root');
+
+        // The control on the extraction itself: a fragment this test mis-split would not be a path
+        // the predicate admits, and every needle below would then be asserting about noise.
+        foreach ($prefixes as $prefix) {
+            $this->assertSame(1, preg_match($surface, $prefix.'Fixture.php'),
+                "`{$prefix}` was read out of {$surface} but the pattern does not admit a file under it — the extraction is wrong, not the message");
+        }
+
+        [$rc, $out] = $this->runGate([]);
+        $this->assertSame(0, $rc, "the empty-tree control must pass:\n{$out}");
+
+        $this->assertSame(1, preg_match('/no unbounded coverage claims in PHP comments under (.+?), matched on /', $out, $printed),
+            "the success line must name the rule's surface in the form this test reads:\n{$out}");
+
+        $this->assertSame(
+            array_map(stripslashes(...), $prefixes),
+            explode(', ', $printed[1]),
+            'the printed scope must be the surface EXACTLY — a missing root understates the claim, an extra one '
+            ."overstates it, and only set equality catches both:\n{$out}"
+        );
+    }
+
+    /**
      * The blocks are tokenized rather than pattern-matched, so a comment delimiter inside a
      * string literal cannot open a phantom block. Fixture strings in a test are exactly that
      * shape, and a repo-wide rule that mistook them for comments would be unfixable except by

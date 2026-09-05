@@ -3,12 +3,16 @@
 namespace App\Bridge\Support;
 
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Tools\BoardToolsRegistry;
 
 /**
  * The resolved `board_tools` section of a per-agent config (DL-217) — the
  * channel-identity-scoped board window an impl agent gets over the two-way
- * agent channel (board_my_cards read-proxy + board_create_card own-swimlane
- * write). Agent-keyed authz belongs on the agent's OWN config, not the
+ * agent channel. WHICH tools that window contains is
+ * {@see BoardToolsRegistry}'s to say and is deliberately not
+ * enumerated here: this docblock named two, a third arrived with DL-326, and a list
+ * kept in the consumer of a registry is a list that goes quietly stale.
+ * Agent-keyed authz belongs on the agent's OWN config, not the
  * repo-keyed writeback.json: `swimlane_id` here IS the write scope, forced from
  * config so a caller can never name another lane.
  *

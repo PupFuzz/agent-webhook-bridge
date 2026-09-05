@@ -99,9 +99,9 @@ final class EventConsumerReconciler
             // Seconds precision: received_at is timestamp(3) and MariaDB's MAX() returns
             // the fractional part while SQLite returns the stored string — trim to the
             // driver-independent 19 chars. The is_scalar guard is driver-boundary
-            // narrowing of a selectRaw value, not a reachable state: received_at is
-            // NOT NULL, DB-defaulted, and never written by app code, so downstream
-            // renderers trust `last` unconditionally (card#5555).
+            // narrowing of a selectRaw value, not a state reachable through app code:
+            // received_at is NOT NULL, DB-defaulted, and never written by it, so
+            // downstream renderers trust `last` unconditionally (card#5555).
             $last = is_scalar($row->last_seen ?? null) ? substr((string) $row->last_seen, 0, 19) : '';
             $count = (int) ($row->occurrences ?? 0);
             $prev = $observed[$top] ?? ['count' => 0, 'last' => ''];

@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
@@ -400,9 +401,19 @@ class ReconcileCommand extends BridgeCommand
             // closing form — an operator told otherwise goes and rewrites correct prose.
             // The sentence is `RevertGrammar`'s so the classifier's withheld-merge warning
             // renders the identical one; only the surrounding line shape differs.
-            $this->line(RevertGrammar::isRevert($pr['title'], $pr['head_ref'])
-                ? "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$pr['head_ref']}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal()
-                : "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped");
+            //
+            // The `[no-close]` arm (card#8344) is the same argument on a second case, and
+            // is asked FIRST for the reason the classifier asks it first: the two can only
+            // both be true on a hand-made revert whose author typed the marker outside the
+            // quotes, where their own declaration is the answer. This backstop must carry
+            // the arm at all because it re-derives the identical proposition on a schedule —
+            // a term on one path and not the other is the DL-305 §6 drift, and here the
+            // divergence would be in the OPERATOR-FACING text rather than in the verdict.
+            $this->line(match (true) {
+                NoCloseGrammar::marks($pr['title']) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
+                RevertGrammar::isRevert($pr['title'], $pr['head_ref']) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$pr['head_ref']}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
+                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
+            });
             $this->skipped++;
 
             return;
@@ -520,6 +531,12 @@ class ReconcileCommand extends BridgeCommand
      * naming the `DL-NNN` the card carries in its payload — a card stamped `dl_number` IS
      * the card that DL resolves to here, which is the same relation the classifier's DL arm
      * uses to authorize its set.
+     *
+     * THE `[no-close]` MARKER IS NOT A TERM HERE, and its absence is the design rather than
+     * an omission (card#8344): it is refused inside BOTH authorities this method ORs — the
+     * grammar's choke point and `mergeClosesCard()` — so the backstop inherits it without
+     * spelling it, exactly as it inherits the revert refusal. A term added here would be
+     * the second copy DL-305 §6 forbids.
      *
      * THE DL IS READ OFF THE CARD, NEVER OFF THE TITLE. A `DL-NNN` in the title that this
      * card does not carry is another card's work, and reading it would re-open through the

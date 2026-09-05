@@ -81,6 +81,37 @@ class KanbanClientTest extends TestCase
         $this->client()->cardRowsOnBoard(8, 5);
     }
 
+    public function test_patch_card_sends_one_flat_field_body_and_nothing_else(): void
+    {
+        // card#8378: the general PATCH primitive the narrow write verbs are expressed in.
+        // FLAT (kanban DL-219 dropped the `{"task":{…}}` wrapper and strict-rejects a
+        // top-level `task` key), and it sends the caller's field set VERBATIM — no key it
+        // was not given, and no authorization of its own (that is the caller's, and the
+        // caller here has already established the card is the seat's).
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->patchCard(5, ['name' => 'corrected', 'tags' => ['a', 'created-by:me']]);
+
+        Http::assertSent(function (Request $r) {
+            $body = json_decode((string) $r->body(), true);
+
+            return $r->method() === 'PATCH'
+                && str_contains($r->url(), '/tasks/5.json')
+                && $body === ['name' => 'corrected', 'tags' => ['a', 'created-by:me']];
+        });
+    }
+
+    public function test_patch_card_throws_on_non_2xx_so_a_refused_write_is_never_read_as_applied(): void
+    {
+        // A 403/404 must reach the caller as a failure it can name, not as a silent
+        // success: `board_correct_card` answers `corrected: true` off the absence of a
+        // throw here.
+        Http::fake(['*' => Http::response('nope', 403)]);
+
+        $this->expectException(RequestException::class);
+        $this->client()->patchCard(5, ['name' => 'x']);
+    }
+
     public function test_move_card_patches_workflow_stage_only(): void
     {
         Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
@@ -91,6 +122,27 @@ class KanbanClientTest extends TestCase
             && str_contains($r->url(), '/tasks/5.json')
             && $r['workflow_stage_id'] === 52   // DL-219: flat top-level field, NOT under a task wrapper
             && ! isset($r['task']));            // column-only, no other fields
+    }
+
+    public function test_patch_card_sends_exactly_the_named_fields_flat(): void
+    {
+        // The general flat-field PATCH verb (card#8377): it writes what the caller names
+        // and nothing else — no task wrapper (DL-219), no field the caller did not pass.
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->patchCard(5, ['name' => 'chore(deps): Bump x from 1 to 3']);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['name' => 'chore(deps): Bump x from 1 to 3']
+            && ! isset($r['task']));
+    }
+
+    public function test_patch_card_throws_on_non_2xx(): void
+    {
+        Http::fake(['*' => Http::response(['error' => 'unprocessable'], 422)]);
+        $this->expectException(RequestException::class);
+        $this->client()->patchCard(5, ['name' => 'x']);
     }
 
     public function test_add_comment_posts_the_nested_comments_endpoint_with_a_content_body(): void
@@ -654,6 +706,91 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client()->cardsByTag(8, 'id:TASK-9'));
     }
 
+    /**
+     * card#8523 R1 — THE ROW-RETURNING TWIN CARRIES THE SAME WARNING, and it did not until this
+     * round: card#8523 moved `BoardCreateCardTool`'s post-create collapse from `cardsByTag` onto
+     * this read, which silently returned `[]` on an unreadable body — dropping the DL-026 signal
+     * from the one read the DL-340 pin consult rides on. "kanban answered a body with no card
+     * collection" and "this key has no duplicates" are different facts and only the first is a
+     * bug to chase; the collapse no-ops either way, which is exactly why the silence was cheap
+     * to keep and expensive to have.
+     */
+    public function test_an_unreadable_row_correlation_read_no_ops_but_logs(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
+                && $c['board_id'] === 8
+                && str_contains($c['read'], 'id:TASK-9'));
+        Http::fake(['*/tasks/search.json*' => Http::response(['meta' => []])]);
+
+        $this->assertSame([], $this->client()->cardRowsByTag(8, 'id:TASK-9'));
+    }
+
+    public function test_an_ordinary_empty_row_read_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->cardRowsByTag(8, 'id:TASK-9'));
+    }
+
+    /**
+     * card#8586 — THE PAGED SWIMLANE READ CARRIES THE SAME WARNING, and it did not until this
+     * round: it hand-rolled the row extraction instead of projecting through
+     * `correlationRows()`, so a 200 whose body carries no card collection became an EMPTY LANE
+     * with no log, no signal, nothing. Its only caller is `board_my_cards`, so a seat asking for
+     * its own cards was told "no cards" — a sentence indistinguishable from a genuinely empty
+     * lane, when what actually happened is that kanban's response shape changed or something
+     * other than kanban answered the URL. The operator's next action differs completely between
+     * those two facts.
+     *
+     * ⭐ THE PAIR IS THE TEST, NOT EITHER HALF. This leg and its twin below drive the SAME method
+     * with the SAME arguments and assert the SAME return value; the only thing that separates
+     * them is the log line. If a future change loses the warning, the two collapse into one fact
+     * again and this leg reds — which is the whole finding.
+     */
+    public function test_an_unreadable_swimlane_read_no_ops_but_logs(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
+                && $c['board_id'] === 8
+                && str_contains($c['read'], 'swimlane-search 31'));
+        Http::fake(['*/tasks/search.json*' => Http::response(['meta' => []])]);
+
+        $this->assertSame([], $this->client()->swimlaneCards(8, 31));
+    }
+
+    public function test_a_genuinely_empty_swimlane_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->swimlaneCards(8, 31));
+    }
+
+    /**
+     * The page walk is unchanged by the warning, and the page a body went unreadable ON is in
+     * the log line: a first page kanban served fine followed by a second it could not is a
+     * TRUNCATED lane, not an empty one, and the rows that did arrive are still returned.
+     */
+    public function test_a_swimlane_page_that_carries_no_collection_names_its_page_and_keeps_the_rows_already_read(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
+                && str_contains($c['read'], 'swimlane-search 31 page 2'));
+        $full = array_map(fn (int $i) => ['id' => $i, 'swimlane_id' => 31], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['meta' => []]);
+
+        $rows = $this->client()->swimlaneCards(8, 31);
+
+        $this->assertCount(KanbanClient::SEARCH_LIMIT, $rows);
+    }
+
     public function test_board_stage_ids_by_name_maps_names_to_ids(): void
     {
         // DL-200: the coord-config compare resolves a terminal column NAME to a stage
@@ -683,8 +820,68 @@ class KanbanClientTest extends TestCase
 
     public function test_board_stage_ids_by_name_is_empty_when_no_stages_are_read(): void
     {
-        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => []])]);
+        // `workflows: []` — a board that genuinely carries no stages, which is what this
+        // leg's name claims. It read `['data' => []]` until card#8761, i.e. it was pinning the
+        // UNREADABLE body under the name of the empty one — the two are separated below.
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]])]);
 
         $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
+
+    /**
+     * card#8761 — THE STAGE PROJECTION'S HALF OF THE card#8586 SHAPE, AND THE PAIR IS THE TEST.
+     *
+     * The three legs below drive the three methods that read `preload.json`'s stages, on the
+     * SAME body and for the SAME empty answer their twins beneath return on `workflows: []`.
+     * Only the log line separates them, which is the whole point: `[]` was the client's answer
+     * to both "kanban served a body with no workflows collection" and "this board has no
+     * stages", and the loudest consumer of the difference — the DL-163 no-regression guard —
+     * fails open on the first while reading it as the second.
+     *
+     * ⛔ ALL THREE CALLERS, not just the guard's. A warning here fires for `board_my_cards`'s
+     * stage-name grouping and for `bridge:check`'s DL-200 name→id compare too, and that is
+     * deliberate: neither degrades CORRECTLY on a body kanban stopped serving — one silently
+     * groups a seat's cards under raw numeric ids, the other reports `unvalidated` with no
+     * cause — so their silence on THIS state was never right either. Their silence on a
+     * genuinely empty board still is, and the second leg is what holds that line.
+     */
+    public function test_a_preload_body_carrying_no_workflows_collection_empties_every_stage_answer_and_says_so(): void
+    {
+        Log::shouldReceive('warning')
+            ->times(3)
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no workflows collection')
+                && str_contains($m, 'every stage answer this client gives for the board (order, name, id) is EMPTY')
+                && $c['board_id'] === 8
+                && $c['read'] === 'board-preload-stages');
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->boardStageOrder(8));
+        $this->assertSame([], $this->client()->boardStageNames(8));
+        $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
+
+    public function test_a_board_that_genuinely_has_no_workflows_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]])]);
+
+        $this->assertSame([], $this->client()->boardStageOrder(8));
+        $this->assertSame([], $this->client()->boardStageNames(8));
+        $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
+
+    /**
+     * The read still degrades rather than throwing, and this is the leg that says so — the
+     * ⛔ on card#8761 is that two of the three callers above are not the guard, so a throw
+     * would convert a silent degradation into a broken `board_my_cards` and a broken
+     * `bridge:check`. A rows-present body is unaffected either way, which the assertion pins.
+     */
+    public function test_an_unreadable_workflows_body_does_not_throw_and_a_readable_one_still_reads(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [['id' => 49, 'name' => 'In Progress', 'position' => 3072.0]]],
+        ]]])]);
+
+        $this->assertSame([49 => 3072.0], $this->client()->boardStageOrder(8));
     }
 }

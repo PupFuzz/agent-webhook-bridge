@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
@@ -228,8 +229,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // by a measurement rather than by an assumption: the board-scoped check above
                 // has already read this id back off the mapped board, so a 403 here can no
                 // longer mean "somebody else's card". That is what the deferred option in
-                // DL-314 was for, and it is why this arm's 403 slug is narrower than the one
-                // the draft-overlay twin (which makes no such check) still uses.
+                // DL-314 was for. Since card#8415 the draft-overlay twin makes the same check
+                // and narrows the same way, so the two-cause slug names no shipped arm — read
+                // RefusalContext::readReason()'s docblock for what still keeps it.
                 //
                 // ⛔ THE CHANNEL COPY STILL CARRIES NO CARD ID (DL-314, card#7846). The
                 // withholding is keyed on THE READ FAILED, not on the foreign hypothesis:
@@ -364,13 +366,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // refusal here that stamps, and it is the one whose reason casts no doubt on
         // WHICH card the event is about (contrast the DL-270 arm above, which must set no
         // field at all precisely because card identity is what is in question).
-        // Loud so a refused move stays visible.
-        if (PinGuard::isPinned($card) && ! $isUnpark && ! $isRevive) {
-            $this->alerts->warnAndNotify(
-                "kanban_move_card: {$outcome} move refused — card is pinned (block_reason/no-automove)",
-                ['card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current],
-                $repo, $outcome, $cardId, 'pinned_no_automove',
-            );
+        // Loud so a refused move stays visible — and the report lives in the predicate's
+        // own class since card#8523 (`PinGuard::refuses`, the MappedBoardGuard pairing), so no
+        // writer that consults the pin can drift on reason code or log level. `PinGuard`'s
+        // docblock owns that population and the grep that re-derives it; no count here. The
+        // two overrides are tested FIRST, before the consult: `refuses()` REPORTS as well as
+        // answers, so asking it about a move we are about to make anyway would alert on it.
+        if (! $isUnpark && ! $isRevive
+            && PinGuard::refuses($this->alerts, $card, 'kanban_move_card', "{$outcome} move", $cardId, $repo, $outcome, ['current_stage' => $current])) {
             $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;
@@ -759,7 +762,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         } catch (Throwable $e) {
             $this->alerts->warnAndNotify(
                 'kanban_move_card: the card note could not be sent to kanban — the dropped correlation leg stays in this log but is NOT visible on the card',
-                ['card_id' => $cardId, 'marker' => $note->marker, 'error' => RefusalContext::scrub($e->getMessage())],
+                ['card_id' => $cardId, 'marker' => $note->marker, 'error' => SecretScrubber::text($e->getMessage())],
                 $repo, $outcome, $cardId, 'cardnote_send_failed',
             );
         }
@@ -819,6 +822,18 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * in a way the no-regression guard (#2935) refuses. Fail-open (false) whenever
      * the board order can't be determined — the guard never blocks a move on missing
      * order data, only on a definite backward step.
+     *
+     * ⭐ THERE ARE TWO FAIL-OPEN ROUTES AND BOTH ARE LOUD (card#8761). Failing open is the
+     * ruled behaviour and card#8761 did not change it: refusing the move when the order
+     * cannot be read would strand cards exactly when kanban is degraded. What it changed is
+     * that the second route now SAYS it fired. Read the two lines apart by `reason`: absent
+     * (the catch arm carries `error` instead) ⇒ the preload read threw; `stage_order_empty`
+     * ⇒ it answered, with nothing usable — `KanbanClient::preloadStages()` emits a second,
+     * more specific line when the cause was a 200 carrying no workflows collection, and its
+     * ABSENCE beside this one means the board genuinely has no stages; `stage_not_on_board`
+     * ⇒ the order read fine and one of these two stage ids is not in it, i.e. `writeback.json`
+     * names a stage this board does not have (the same drift `bridge:check` warns about at
+     * preflight, seen here at runtime).
      */
     private function isRegressiveMove(string $outcome, int $currentStage, int $targetStage, WritebackMapping $mapping, KanbanClient $client): bool
     {
@@ -837,6 +852,17 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $currentPos = $order[$currentStage] ?? null;
         $targetPos = $order[$targetStage] ?? null;
         if ($currentPos === null || $targetPos === null) {
+            // The catch above needs kanban to THROW; this route needs only a 200 the client
+            // could not read, or one stale stage id — so it is the one that actually happens,
+            // and it was the silent one. Same tail as the catch arm so one grep finds both.
+            Log::warning('kanban_move_card: could not place this move in the board stage order for the no-regression guard — allowing the move', [
+                'board' => $mapping->boardId,
+                'reason' => $order === [] ? 'stage_order_empty' : 'stage_not_on_board',
+                'outcome' => $outcome,
+                'current_stage' => $currentStage,
+                'target_stage' => $targetStage,
+            ]);
+
             return false;   // a stage isn't on the board (config drift) → can't order → allow
         }
 

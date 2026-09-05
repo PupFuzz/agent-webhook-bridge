@@ -2,6 +2,7 @@
 
 namespace Tests\Support\CheckGolden;
 
+use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\ChannelProbeEnvironment;
 
 /**
@@ -19,8 +20,9 @@ use App\Bridge\Support\ChannelProbeEnvironment;
  *
  * THE ORDER IS LOAD-BEARING, and each step is here rather than in the caller for a
  * reason the caller cannot see:
- *   - the channel seam is bound BEFORE the builder runs, so a fixture that ever wants a
- *     live endpoint overrides it deliberately instead of inheriting the box;
+ *   - the channel and retention-store seams are bound BEFORE the builder runs, so a
+ *     fixture that ever wants a live endpoint, or a different store shape, overrides one
+ *     deliberately instead of inheriting the box;
  *   - {@see PinnedHost::resetAmbientState()} runs BEFORE the builder too, because a
  *     fixture that WANTS ambient cache state sets it in the builder and a reset after
  *     that erases it (card#5552 — one fixture sat byte-identical to its own baseline from
@@ -61,6 +63,7 @@ trait BootsGoldenInstall
         $this->host = new PinnedHost($this->install->path());
 
         $this->app->instance(ChannelProbeEnvironment::class, new GoldenChannelEnvironment);
+        $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::loaded());
         $this->host->resetAmbientState();
         if ($perturb) {
             $this->host->perturbAmbient();

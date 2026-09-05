@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\DeadBackend;
 use Tests\TestCase;
 
 /**
@@ -353,6 +354,25 @@ class RetentionGateTest extends TestCase
 
         Log::shouldHaveReceived('info')
             ->withArgs(fn (string $m, array $c) => $m === 'retention pass' && $c['events_deleted'] === 1)
+            ->once();
+    }
+
+    /**
+     * ⛔ THE FAULT THE ARM ITSELF COULD NOT SURVIVE (card#8425 / DL-325). Every other test
+     * of "nothing escapes this callback" breaks the WORK and leaves the recorder intact.
+     * With the CACHE as the fault the arm's own marker write re-raised — an unhandled fatal
+     * in the FPM worker, after the response, on every delivery. `App\Bridge\Support\FaultMarker`
+     * owns the order and the guards; this pins that this gate goes through it.
+     */
+    public function test_a_dead_cache_backend_does_not_escape_the_callback(): void
+    {
+        Log::spy();
+        Cache::swap(new DeadBackend('cache'));
+
+        $this->fire();   // must not throw
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $m) => $m === 'retention pass failed')
             ->once();
     }
 }

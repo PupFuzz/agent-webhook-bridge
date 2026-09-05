@@ -160,6 +160,72 @@ Classifier that always throws. Used to verify case-A failure treatment: classify
 
 Classifier that emits a target naming a handler that doesn't exist. Used to verify case-C failure treatment: handler resolution failure marks the dispatch done-with-note (intent was staged first, per B-before-C ordering).
 
+### A pin-SUBJECT test's faked CARD row must carry `block_reason` and `tags` (card#8523)
+
+⚠ **Scoped deliberately, and the narrower scope is the true one.** This is NOT "every faked kanban
+row in the suite carries both keys" — that is false of this repo today (by how much, the recipe
+below enumerates; no figure is quoted, because it moves), and a rule stated wider than it is
+enforced teaches the next author to ignore it. The rule is: **a row
+that reaches a pin consult, in a test whose SUBJECT is the pin, must carry both keys.**
+
+`TaskResource` emits both keys on **every** row kanban serves — the by-id read and the
+`tasks/search.json` projection alike — so a row carrying NEITHER is, in production, a degraded
+read and nothing else. `PinGuard::reportUnreadableRow()` says so with a `Log::warning` under
+`pin_row_unreadable`, at the consult, on any path that asks whether a card is pinned.
+
+⛔ **Why the scope matters, and it is not tidiness.** `PinGuard::isPinned` answers *"not pinned"*
+for a row carrying neither key — not because the card is unpinned, but because **nobody could
+read the pin**. So an UNPINNED CONTROL on such a row passes for the wrong reason: it would pass
+just as green with the guard deleted from the caller, and it certifies nothing about the
+predicate. That is not hypothetical — four of them shipped that way with the detector
+(`test_close_moves_the_tagged_card_to_the_terminal_stage`,
+`test_the_same_duplicate_fixture_without_a_pin_is_archived`,
+`AgentToolsCallTest::test_idempotency_raced_duplicate_is_collapsed`,
+`test_an_unpinned_card_moves_on_this_outcome`), and they were repaired at their fixture HELPERS
+(`fakeStageOrderAndCard`, `fakeBoard`, `archiveAxisFake`), which default both keys with `+` so
+each pinned leg still states its own pin and wins. **Give the fixture
+`'block_reason' => null, 'tags' => []`** — the shape an unpinned card actually has — rather than
+relaxing a count or leaving a control that cannot discriminate.
+
+Outside that scope a thin row is log NOISE, not a defect — with one exception that IS the reason
+to keep the noise readable: a test asserting `Log::shouldHaveReceived('warning')->once()` over a
+pin-consulting path reds with *"called 2 times"* rather than with anything about its own subject.
+Fix the fixture, never the count.
+
+⭐ **RE-DERIVE the population; do not trust a figure.** No count is quoted here, because the set
+moves with every fixture written. Temporarily make the detector name its caller, run the suite,
+and read the result — it is one edit and one run:
+
+```php
+// app/Bridge/Writeback/PinGuard.php, first line of reportUnreadableRow() after the early return
+$t = null;
+foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $f) {
+    if (isset($f['class'], $f['function']) && str_starts_with($f['function'], 'test_')) {
+        $t = $f['class'].'::'.$f['function'];
+    }
+}
+file_put_contents(getenv('PIN_PROBE') ?: '/dev/null', ($t ?? 'UNKNOWN')."\n", FILE_APPEND);
+```
+
+```bash
+PIN_PROBE=/tmp/pin-probe.txt php artisan test && sort /tmp/pin-probe.txt | uniq -c | sort -rn
+```
+
+Then **revert the edit**. Every line is a test whose row could not be read at a consult; the ones
+that matter are the ones whose subject is the pin. ⚠ A run measures the branches that run — a
+consult reached only on a path this run did not take is not in the output.
+
+⚠ There is **no CI guard** on any of this, and that is deliberate (card#8555's standing ruling:
+delete the figure, point at ONE owner, add nothing that can block a merge). The recipe above is
+the owner. ⛔ It is also what to run FIRST if card#8557 ever rules the detector fail-CLOSED — every
+test in that output changes behaviour on the same day.
+
+⚠ The production twin of the same trap: a caller that hands the pin consult rows it never read
+makes the predicate unable to fire at all. The board-tools collapse leg was the shipped instance
+(card#8523, DL-340 Decision 3) — `array_fill_keys($ids, [])` — fixed at the write site, not with
+a read-time fallback.
+
+
 ## The channel-server version-agreement control (DL-268)
 
 `tests/Feature/Workflows/ChannelServerVersionAgreementTest.php` extracts the
@@ -199,20 +265,99 @@ fetch at all, and a pre-computed file would assert the fixture.
 - **Two cases pin the gate's stated BOUND, not its catch:** two concurrently-open PRs minting one
   number both pass, and the second reds only after the first has merged *and* it re-runs. They
   exist so the claim cannot quietly widen into "no duplicate DL can be minted".
-- **One case builds the CI PAIRING for real, because every other case only approximates it.**
-  `BASE` is the PR's `base.sha` — a snapshot of the base-branch **tip**, NOT the merge base — while
-  the tree the step reads as head is `github.sha`, the merge of the PR head into that same
-  `base.sha`. "Present at head, absent at `BASE`" means "this PR minted it" only because those two
-  are one snapshot; the other cases pair a branch tip with the commit it was cut from, which equals
-  CI only while the branch is not behind the target. That case therefore builds a real merge commit
-  (two parents, asserted) and runs the step twice: with `BASE` at the base tip it passes, and with
-  `BASE` at the **fork point** — the control, and what a `merge-base` against the PR branch returns
-  — it reds, naming the target branch's own post-fork entry as if this PR had minted it. The
-  invariant itself is owned by the workflow comment, which also records why rewriting the step to
-  derive its base with `git merge-base` would leave every case green while breaking the contract.
-- The step calls the real `bin/decision-log.py`, copied into the work tree at the repo-relative
-  path the step names, so a change to the predicate reds here as well as in
-  `bin/test_decision_log.py`.
+- **EVERY case's work tree is a real merge commit, because that is what the step reads its base
+  OUT OF (card#8527).** The base is no longer an input the test hands in: CI checks out
+  `github.sha` — the PR head merged into the base branch — and the step derives its snapshot from
+  that merge's **first parent** via `bin/pr-base-snapshot.sh`. "Present at head, absent at base"
+  means "this PR minted it" only because those two are one snapshot, and they now are one *by
+  construction*: the base end is the commit the head end records as its parent. `makeRepos()`
+  builds the merge and asserts its two parents; the only sha the step is handed is the PR head sha
+  the pairing is CHECKED against.
+- **One case pins what that fix retired, with the measured red as its control.** The step used to
+  take `github.event.pull_request.base.sha`, which GitHub does not refresh on every `synchronize`:
+  on PR #640 (run 33598959720, 2026-09-02) it carried `549c894` while the merge commit the same
+  event checked out had first parent `7a11085`. The case builds exactly that divergence — the base
+  branch mints its own DL after the fork, the merge is rebuilt onto the newer tip — and runs three
+  legs: the step passes; the derived base is asserted to BE the moved tip and NOT the stale sha;
+  and the predicate run against the stale sha returns **6**, naming the base branch's own entry as
+  this PR's mint. That last leg is PR #640's refusal in miniature.
+- **Two cases pin that the pairing is CHECKED, not assumed.** Standing on a non-merge HEAD, or on a
+  merge whose second parent is not this PR's head, the step propagates
+  `bin/pr-base-snapshot.sh`'s refusal (exit 4 and 5) instead of substituting a payload field or a
+  `merge-base` fork point. The workflow comment owns why `merge-base` would be the wrong
+  correction, and § *The PR base snapshot* below owns the measured figure for how much of the
+  harness would notice it — deliberately not restated here, because that figure moves with every
+  merge into this branch and the first copy of it drifted inside one merge round.
+- The step calls the real `bin/decision-log.py` and the real `bin/pr-base-snapshot.sh`, copied into
+  the work tree at the repo-relative paths the step names, so a change to either reds here as well
+  as in `bin/test_decision_log.py` / `PrBaseSnapshotTest`.
+
+## The PR base snapshot, derived once for four gates (card#8527)
+
+`bin/pr-base-snapshot.sh` prints the first parent of the merge commit `actions/checkout` leaves in
+the work tree, and refuses — loudly, printing no sha — when that work tree is not a two-parent
+merge whose second parent is the PR head sha the event carried. Four gates call it:
+`dl-collision-gate.yml`, both steps of `changelog-gate.yml`,
+`channel-server-supply-chain.yml`'s version-bump guard, and `release-artifacts-gate.yml` (which
+feeds the derived sha to a pinned composite action's `base-sha` input through a step output).
+
+`tests/Feature/Workflows/PrBaseSnapshotTest.php` exercises the script itself, because each caller's
+harness only takes the arm its own fixtures reach. **Its refusal arms are the point, not edge
+cases:** the script's value is that it says "I cannot tell you what the base is" rather than
+substituting the payload field or a fork point, both of which return a plausible sha and a wrong
+verdict. Every arm asserts its exit code (2 no argument, 3 unreadable HEAD, 4 not a two-parent
+merge, 5 a merge of some other head) — callers propagate it under `set -e` — and asserts that
+**stdout is empty** on every refusal, since a caller capturing `$( )` would otherwise treat a
+diagnostic line as a revision. The octopus-merge case is there because `HEAD^1` is readable and
+wrong on a three-parent commit, so "exactly two" is asserted rather than "is a merge".
+
+⚠ **One case in that class pins the DERIVATION and the other six pin the refusals, and the split
+matters**: every refusal fixture is linear — the base an ancestor of the head — where `HEAD^1` and
+`git merge-base HEAD^1 HEAD^2` are the same commit, so the class was inert to the one substitution
+the script exists not to be until
+`test_it_reads_the_recorded_parent_rather_than_re_deriving_a_fork_point` was added. It builds PR
+#640's shape (the base branch moves after the fork) and asserts the fork point differs from the
+recorded parent *before* asserting what the script prints, so it cannot pass on a fixture where the
+two coincide.
+
+### The mutation controls, and how to RE-DERIVE them rather than cite them
+
+**This section is the one owner of these figures.** `CLAUDE_DECISIONS.md` (DL-295's card#8527
+amendment), `docs/CHANGELOG.md` and the workflow comments point here instead of restating a count:
+the denominator is the size of three test classes and moves with every merge, and the first copy of
+it was falsified by the very merge round that carried it. **Re-run all three before quoting any of
+them; the figures below are what the recipe printed at `abef6f0`, not a property of the design.**
+
+| mutation | apply it to | measured at `abef6f0` |
+| --- | --- | --- |
+| **the fork-point rewrite** — replace `bin/pr-base-snapshot.sh`'s last line with `git merge-base "$base_parent" "$head_parent"` | the derivation all four gates share | **8 red of 75**: `DlCollisionGateTest` 1/12, `ChangelogGateTest` 6/56, `PrBaseSnapshotTest` 1/7 |
+| **the retired pairing** — `diff --name-only "$BASE" "$HEAD"` at both `CHANGED=$(git … diff --name-only "$BASE" HEAD)` predicates in `changelog-gate.yml`, one per step | what card#8441 was filed against | **2 red of 56** in `ChangelogGateTest`: the release-step and feature-step cells, the first failing with an oversize `[1.1.0]` the branch never wrote |
+| **the branch-tip three-dot** — `diff --name-only "$BASE...$HEAD"` at the feature-step predicate | PR #642's superseded spelling | **1 red of 56** in `ChangelogGateTest`: `test_a_change_the_base_already_carries_identically_is_not_in_scope`, the only cell where that range and the merge's delta disagree |
+
+Denominator: run `vendor/bin/phpunit` once per file over
+`tests/Feature/Workflows/DlCollisionGateTest.php`,
+`tests/Feature/Workflows/ChangelogGateTest.php` and
+`tests/Feature/Workflows/PrBaseSnapshotTest.php`, and take each class's count from its own run —
+those three are the classes that execute a base-snapshot derivation, and the population is
+re-counted, never carried. Restore the mutated file by `cp` from a
+copy taken first and `cmp` it back, not by hand.
+
+Two readings the numerator does **not** support, stated because a bare count invites both. Six of
+the eight reds under the fork-point rewrite are not a measure of that rewrite's blast radius on
+CI: three are card#8339's pre-fold cases, which red because a fork-point base changes what the
+diagnosis reads, and three are the card#8441/8527 cells that assert the derived base directly. And
+the rewrite stays **inert on every other case in all three classes**, which is exactly what made it
+look like a harmless simplification — the reason the distinction is written out at the call sites
+rather than left to the diff.
+
+⚑ **Every workflow fixture merges with `--no-ff`, and that is not cosmetic.** Requiring two parents
+raises one obvious worry — a PR whose branch has already merged the base — and it was measured
+rather than argued: GitHub **never fast-forwards** `refs/pull/<n>/merge`. Checked 2026-09-02 against
+the two open PRs on this repo in exactly that state (#635, merge `570d1dc`; #630, merge `6286dc9`),
+both are two-parent merges while `git merge-base --is-ancestor <base> <head>` is true for each. A
+plain `git merge` in a fixture *does* fast-forward there, and the resulting one-parent work tree is
+a tree GitHub would never hand a gate — so a fixture without `--no-ff` tests a shape that does not
+exist, and the script refuses it, correctly.
 
 ## The channel-server live-state sandbox (DL-269)
 
@@ -284,7 +429,7 @@ read first, means a value edited on the `<env>` line alone would be silently ign
 **Job 1 — `PHPUnit + Pint + PHPStan (SQLite)`:**
 - Push to `main`/`dev`; pull requests to `main`/`dev`
 - Runs on **PHP 8.5** (via the `setup-app` composite action), `pdo_sqlite` + `pdo_mysql` extensions installed. The job **label** still reads "PHP 8.3" — it's a required-status-check identifier pinned in `dev`/`main` branch protection, so renaming it must be done together with a `gh api` branch-protection contexts update (see DL-040), not in a routine PR.
-- Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), the doc-sync gate (`bin/check-doc-refs.php` — references resolve, no line-number citations, no unbounded coverage claims), then PHPUnit against SQLite `:memory:`
+- Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), the doc-sync gate (`bin/check-doc-refs.php` — three rules; each run prints the surface it actually read, and that is deliberately not copied here: every rule's surface is narrower than its name, so a restatement drifts), then PHPUnit against SQLite `:memory:`
 
 **Job 2 — `PHPUnit (MariaDB ${{ matrix.mariadb }})` (matrix: `["10.6", "11"]`):**
 - Spins up a `mariadb:<version>` service container matching the production driver versions
@@ -321,6 +466,7 @@ docker rm -f bridge-test-mariadb
 | A security-sensitive change | additional regression tests for the attack surface (e.g. `WebhookReceiveTest` covers path-traversal scope, empty secret, relative secret_dir) |
 | A change to `bridge:check`'s output, or a refactor of it | see § The `bridge:check` golden harness below — a behavior-preserving refactor is checked by the golden files, an intended change regenerates them |
 | A `Check` migrated into the DL-242 registry | `tests/Unit/Bridge/Check/Checks/<Name>CheckTest.php`, scoped to **the legs the golden suite cannot reach** — `catch` arms, `switch` arms, and any leg needing an unreachable backend or a controlled HTTP outcome. Do NOT re-cover golden-measured legs: the golden files pin the operator-visible line, which is the stronger measurement. Every absence assertion needs a witness that the check ran |
+| A structural coverage / census class over the source tree | read the source through `Tests\Support\SourceScan`, never a fresh walk of your own; a file population narrower than `app/` needs a minuted reason — see § *Structural coverage classes derive ONE population* |
 
 ## The `bridge:check` golden harness (DL-242)
 
@@ -393,6 +539,100 @@ what turns that from an intention into a measurement.
   wrong sentence would pass silently, where an unrecognised right one merely fails loudly. It
   gates the copy-a-neighbour path that minted fifteen of these at once, **not** the truth of any
   individual claim: a false claim carrying a sanctioned sentence still passes.
+
+## Structural coverage classes derive ONE population (`Tests\Support\SourceScan`)
+
+Several tests here are not behavioural — they are **census instruments** over the source tree. They
+answer "is every X in this repo accounted for?", where a MISS is silent: the suite goes green over
+the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
+`WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
+handlers, and every read of a card's `board_id` in `app/`), `PinnedFieldWriteCoverageTest` (every
+`->patchCard(` in `app/`, against the DL-342 pinned-field rule) and `WritebackSuccessBoardRecordTest`
+(a kanban write made under the DL-009 mapped-board regime) are the ones that derive their
+population THROUGH the shared primitive. ⛔
+**They are not the whole census population of this repo** — see *The un-migrated remainder* below
+before you conclude that a class you are reading is out of scope for the rule.
+
+**Read the source through `Tests\Support\SourceScan`, never through a walk of your own.** That
+class owns the two shapes:
+
+- **`codeLines($source)`** — the LINE walk, for a regex-per-line census. It skips lines that open
+  or continue a comment; its bound (a trailing comment on a code line is not skipped) is in its
+  docblock, and it fails LOUD — an extra site the caller must account for.
+- **`sitesInApp($siteAt)` / `sites($source, $file, $siteAt)`** — the TOKENIZED walk over the whole
+  of `app/`. The caller supplies a PREDICATE over tokens and gets back sites keyed
+  `<path under app/>::<enclosing function>#<ordinal>`. Comments, docblocks and string mentions are
+  excluded by construction rather than by a regex the next spelling walks past, and the key never
+  carries a LINE NUMBER — an offset pin reds on an unrelated docblock edit, and its only
+  remediation ("re-derive the offsets") is the same action that absorbs a real new site.
+
+⛔ **A hand-written glob plus a STATED BOUND for everything outside it is a declaration with no
+check, and this repo has paid for it.** Two classes police the two ends of ONE tenant boundary;
+while they derived two different populations — one walking all of `app/`, the other a pair of
+globs — a board compare in `app/Bridge/Tools/` was outside both, and it was found by the class
+whose population was the tree, not by the bound that disclosed it (card#8440 → card#8530). If the
+population you need is "everything in `app/`", say so in code — `sitesInApp()` is that spelling.
+
+⚠ **A narrower FILE population is not forbidden; an UNMINUTED one is.** The minuted ones:
+`WritebackRefusalSignalCoverageTest`'s LEVEL-keyed leg globs the
+`Kanban*Handler.php` files under `app/Bridge/Handlers/` because its subject — a bare `Log::warning`/`Log::error`
+that should have been a paired alert — is a property of the writeback handlers (DL-274/DL-285), and
+`WritebackSuccessBoardRecordTest` globs the writeback surface for the same kind of reason — its
+subject is a kanban write made under the DL-009 mapped-board regime, and the board-tools door sits
+outside that REGIME rather than merely outside a directory list. ⛔ **Neither clause here is either
+class's SCOPE — each class's own docblock is, and both carry theirs** (`WritebackSuccessBoardRecordTest`'s
+*STATED BOUNDS*, narrower and longer than this § should ever restate: it names what a write in
+`app/Bridge/Tools/` is outside, and why). Read the scope there; what belongs on this page is only
+that each narrowing was MINUTED, never a second copy of what it says. Both still do their SCANNING
+through `SourceScan::codeLines`. What is forbidden is the shape card#8530 paid
+for: a glob chosen because it was the code in front of the author, carrying a STATED BOUND for
+everything outside it. ⛔ **That bound was measured, not hypothetical** — the old KIND leg globbed
+handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern was invisible to it
+exactly as the `app/Bridge/Tools/` compare was.
+
+**When the answer for a site is "yes, and that is fine", DISPOSITION it — do not narrow the
+population to exclude it.** A disposition list entry names the SUBJECT the site reads and why it
+is not the thing being policed; a narrowed population reports clean over a question nobody asked.
+Both directions of set equality, always: a new site reds, and so does a disposition whose site has
+gone (a stale exemption is its own defect).
+
+**Every census instrument owns a fixture control**, because its expectation is satisfied by a
+scanner that has stopped matching. The control asserts BOTH directions on a source string whose
+answer is known — real sites found, prose and near-miss spellings skipped.
+
+### The un-migrated remainder
+
+⛔ **The rule above is the STANDARD, not a description of this tree.** Census instruments over
+`app/` still carry their own copy of the walk and do not go through `SourceScan` — one of them
+(`BoardScopedReadConstructionTest`'s private `appPhpFiles()`) is a duplicate of
+`SourceScan::appFiles()`, sitting in `tests/Feature/Writeback/` beside the two classes this rule
+was minted for and censusing the same tenant boundary. They are neither exempt nor minuted
+narrower populations: they predate the primitive, and migrating them was out of scope for the card
+that minted it (card#8530 — one change does one thing). **bridge card#8575 owns that
+consolidation.** ⚠ Do not read their existence as licence. Copying the nearest neighbour is exactly
+how the N+1th copy gets minted, which is the failure this § exists to stop — and an un-migrated
+walk is where the next silently-narrow population comes from.
+
+**Re-derive the remainder; do not trust a list written here** — a hand-written member list is how
+this § came to tell the next author that the class they were about to copy was out of scope. What
+follows is a starting point for that re-derivation, not the population:
+
+    command grep -rln 'RecursiveIteratorIterator\|glob(' tests/ \
+      | xargs -r grep -ln "app/\|app_path(" | xargs -r grep -L 'SourceScan'
+
+⛔ **Its output is a LEAD LIST, and a clean run of it discharges nothing.** What it prints is what
+three greps say: a file that globs or recurses, names the tree, and does not mention the primitive.
+That makes each one a real LEAD — read it and confirm the walk; a `glob()` over a fixture directory
+in a file that separately mentions `app/` would print here too. And what it cannot tell you at all
+is that there are no OTHERS, because it keys on SPELLINGS — a walk naming the tree some third way, or
+a class going through `SourceScan` for one leg and its own walk for another, is outside its reach
+by construction. **The stage-2 alternation is in there because that blind spot was LIVE, not
+hypothetical:** keyed on `'app/'` alone this recipe missed a classifier census that spells the tree
+`app_path(`, while the sentence above it told the reader an empty result meant the remainder was
+gone. Reading a recipe's silence as coverage is the same defect as reading a stated bound as a
+check — the one this whole § exists to stop, re-minted by the § itself. **The enumeration belongs
+to bridge card#8575, not to this recipe and not to this page:** take what this prints to that card,
+and let the card own what the population is and when it is empty.
 
 ## Anti-patterns to avoid
 

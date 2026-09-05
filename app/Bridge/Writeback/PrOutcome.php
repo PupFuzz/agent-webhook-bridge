@@ -4,6 +4,7 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClosureGrammar;
+use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
 
 /**
@@ -186,13 +187,26 @@ final class PrOutcome
      * reason. Priced at zero on real data: `revert` + whitespace + `"` appears in
      * 0 of the 1,566 merged PR titles across all three repos this shop owns — measured here, with a control planted into that same corpus to prove the predicate discriminates.
      *
+     * ⛔ `[no-close]` IN THE TITLE REFUSES THIS ROUTE TOO (card#8344 / DL-327), and the
+     * structural route is the one that made the marker necessary. Everything above rests on
+     * the head ref being the CARD's own branch — which is exactly what a PR written FOR a
+     * card while deliberately not finishing it also has, so the premise holds and the
+     * conclusion is still wrong. No predicate over a ref, a title and a diff can tell the
+     * two apart; only the author can, and {@see NoCloseGrammar} is where they say so. The
+     * marker can only ever WITHHOLD a move here — it is a term in a conjunction, never a
+     * disjunct — so it does not make this predicate reachable by anything it could not
+     * already refuse.
+     *
      * @param  string  $title  REQUIRED, deliberately not defaulted: a caller that forgets it
      *                         must fail to compile rather than silently keep the ref-only
-     *                         reading this clause exists to replace.
+     *                         reading this clause exists to replace. Since card#8344 it also
+     *                         carries the author's `[no-close]` declaration, so a ref-only
+     *                         caller would resurrect the defect on a second route.
      */
     public static function mergeClosesCard(string $outcome, string $headRef, int $cardId, string $title): bool
     {
         return $outcome === self::INTEGRATION_MERGE
+            && ! NoCloseGrammar::marks($title)
             && ! RevertGrammar::isRevert($title, $headRef)
             && CardTokenGrammar::parse($headRef) === $cardId;
     }
@@ -221,14 +235,36 @@ final class PrOutcome
     public static function describeClosure(): string
     {
         return self::structuralClause().' ('.CardTokenGrammar::describe()
-            .'), or a closing form in the PR TITLE naming it ('.ClosureGrammar::describe().')';
+            .'), or a closing form in the PR TITLE naming it ('.ClosureGrammar::describe().')'
+            .self::noCloseClause();
     }
 
     /** {@see self::describeClosure()}, accepted spellings only — the setup-time flavour. */
     public static function describeClosureAccepted(): string
     {
         return self::structuralClause().' ('.implode(', ', CardTokenGrammar::accepted())
-            .'), or a closing form in the PR TITLE naming it ('.implode(', ', ClosureGrammar::accepted()).')';
+            .'), or a closing form in the PR TITLE naming it ('.implode(', ', ClosureGrammar::accepted()).')'
+            .self::noCloseClause();
+    }
+
+    /**
+     * The SUBTRACTIVE half of both sentences (card#8344 / DL-327) — and it belongs in both
+     * flavours, unlike the rejected-spelling lists the two are split over.
+     *
+     * A rejected SPELLING is diagnosis: an operator at setup time does not need to be told
+     * that `Related to card#123` closes nothing. `[no-close]` is not a spelling that fails
+     * the accept-set, it is a CONDITION that empties it — a merge satisfying both routes
+     * still moves no card while it is present. A sentence that named the two routes and
+     * omitted it would be FALSE about a PR the author deliberately marked, on the exact
+     * surface (`bridge:check`, the withheld-merge warning) an operator consults to find out
+     * why nothing moved. It renders {@see NoCloseGrammar::MARKER} rather than spelling the
+     * literal, for the reason every other clause here is derived.
+     */
+    private static function noCloseClause(): string
+    {
+        return ' — unless the PR TITLE carries the literal `'.NoCloseGrammar::MARKER
+            .'`, the author\'s declaration that this PR CITES the card rather than finishing it,'
+            .' which withholds the move on BOTH routes';
     }
 
     /** The half neither grammar can render: what the MERGE itself must be. */

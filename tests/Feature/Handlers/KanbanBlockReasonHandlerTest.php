@@ -12,6 +12,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\ScopeLookupStub;
 use Tests\TestCase;
 
 class KanbanBlockReasonHandlerTest extends TestCase
@@ -72,9 +73,29 @@ class KanbanBlockReasonHandlerTest extends TestCase
         return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
     }
 
+    /**
+     * Whether this test has already had the card#8415 board-scope fallback registered.
+     *
+     * ⛔ ONCE PER TEST, and the flag is what makes that true: `Http::fake()` also RESETS the
+     * recorded-request log (G-020), so registering it on a SECOND `handle()` call would erase
+     * the first delivery's requests. No leg here drives two deliveries today; the guard is the
+     * same idiom as `KanbanMoveCardHandlerTest`'s, where legs do — and the failure it prevents
+     * is the silent one, since an `assertNotSent` over an erased log passes vacuously.
+     */
+    private bool $scopeLookupStubbed = false;
+
     /** @param array<string, mixed> $extra extra payload keys (the card#5953 corroboration flag + pr_number) */
     private function handle(string $action, int $cardId = 5, string $repo = 'owner/repo', array $extra = []): void
     {
+        // The board-scoped tenant check (card#8415) is made on every delivery that gets as far
+        // as building a client, so every leg below reaches this endpoint. Registered LAST so a
+        // leg that stubs the search itself still wins (G-020: first match wins); see
+        // {@see ScopeLookupStub} for why it is a fixture rather than an assertion.
+        if (! $this->scopeLookupStubbed) {
+            Http::fake(ScopeLookupStub::onMappedBoard(8));
+            $this->scopeLookupStubbed = true;
+        }
+
         (new KanbanBlockReasonHandler)->handle(
             ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: array_merge(['repo' => $repo, 'action' => $action], $extra)),
             AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
@@ -367,19 +388,19 @@ class KanbanBlockReasonHandlerTest extends TestCase
             && ($ctx['card_id'] ?? null) === 5);
     }
 
-    public function test_getcard_403_keeps_the_two_cause_reason_because_this_arm_makes_no_board_scoped_check(): void
+    public function test_getcard_403_names_only_the_token_scope_because_the_board_scoped_check_excluded_a_foreign_id(): void
     {
-        // ⚑ THE SIBLING DIFFERENCE, pinned where it can red (card#8375). `kanban_move_card`
-        // now establishes its card id on the mapped board through a board-scoped lookup
-        // BEFORE it reads the card, so its 403 can no longer mean a foreign install's card
-        // id and its slug was narrowed to `getcard_403_token_scope`. THIS arm makes no such
-        // check — its id comes from the same author-controlled token grammar against the same
-        // GLOBAL id space, so both causes are still live here and the two-cause slug is still
-        // the honest one. If the scoped check is ever extended to this handler, this leg is
-        // what says the slug must move with it rather than being left behind as a name for a
-        // cause the code has excluded. Filed as card#8415.
+        // ⚑ THIS LEG REVERSED WITH card#8415, and the reversal is the deliverable. It was
+        // written as the SIBLING DIFFERENCE: `kanban_move_card` had gained the board-scoped
+        // lookup (card#8375) and narrowed its 403 slug, while this overlay made no such check,
+        // so both causes stayed live here and `getcard_403_foreign_card_id_or_token_scope` was
+        // the honest name. The check is now wired into this arm too — the same token read this
+        // id back off the mapped board a request earlier — so the foreign half is ruled out by
+        // a measurement and the slug must move with the code rather than be left behind naming
+        // a cause the code has excluded (the shape DL-314 was filed on, inverted).
         $this->writeWritebackWithAlert();
         $this->writeToken();
+        Log::spy();
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::response(['message' => 'forbidden'], 403),
@@ -388,10 +409,18 @@ class KanbanBlockReasonHandlerTest extends TestCase
         $this->handle('set');
 
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
-            && $r['reason'] === 'getcard_403_foreign_card_id_or_token_scope'
+            && $r['reason'] === 'getcard_403_token_scope'
+            // The withholding is keyed on THE READ FAILED, not on the foreign hypothesis the
+            // check above excludes, so DL-314's rule still holds on this arm.
             && $r['card_id'] === null
             && ($r['card_id_withheld'] ?? false) === true);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        // …and the operator's local line must not keep offering the cause the slug dropped.
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'board-scoped check')
+            && str_contains($msg, 'EXCLUDED')
+            && ! str_contains($msg, 'may name another install')
+            && ($ctx['status'] ?? null) === 403
+            && ($ctx['card_id'] ?? null) === 5);
     }
 
     public function test_setblockreason_4xx_alerts_with_the_write_reason(): void
@@ -757,5 +786,50 @@ class KanbanBlockReasonHandlerTest extends TestCase
 
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_block_reason: set'
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
+    /**
+     * ⭐ AN EXPLICIT RULING, PINNED AS A TEST RATHER THAN LEFT AS PROSE (card#8557): a card
+     * pinned by the `no-automove` TAG ALONE still takes this overlay's draft marker, and
+     * that is the DESIGNED outcome, not a hole the pin forgot to cover.
+     *
+     * The finding that raised it: the add-if-missing guard tests `block_reason` only, so a
+     * tag-only pin does not stop the write — which reads like the pin-blindness card#8557
+     * was filed on. It is not, for three reasons, and they are recorded here because the
+     * decision is only falsifiable if the reasoning is written where the behaviour is.
+     *  1. **The rule as ruled.** The pin governs a card's STAGE, its LIFECYCLE and the
+     *     fields `PinGuard::PINNED_FIELDS` names. `block_reason` is deliberately outside
+     *     that set, on the same reading that keeps the correlation stamps in policy: this
+     *     write records what happened TO the card (its PR went to draft), it does not
+     *     restate what the card IS.
+     *  2. **It only ever STRENGTHENS the hold.** The marker is a non-empty `block_reason`,
+     *     so the card comes out of this write pinned by BOTH spellings — which is DL-193's
+     *     stated intent (a drafted card is gated against the branch-push promote), not a
+     *     side effect.
+     *  3. **The inverse cannot weaken it.** `clear` is clear-if-OURS: it nulls a
+     *     `block_reason` only when it is byte-identical to this handler's own marker, and
+     *     it never touches `tags` at all — so no path here can remove the operator's pin.
+     * Accept-current-state, evidence-backed. ⚠ THIS METHOD PINS GROUNDS 1 AND 2 — it drives a
+     * tag-only pinned card through the write and asserts the marker lands and the `tags` key
+     * is absent. Ground 3, clear-if-OURS, is pinned by
+     * {@see test_clear_leaves_a_human_block_reason_intact} elsewhere in this file, and saying
+     * so here is the point: a docblock claiming one method reds on all three would send a
+     * reader who deleted the OTHER test looking for a red that never comes.
+     */
+    public function test_a_tag_pinned_card_still_takes_the_draft_marker_and_that_is_the_ruling(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'block_reason' => null, 'tags' => ['no-automove'],
+        ]])]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['block_reason' => KanbanBlockReasonHandler::MARKER]);
+        // …and the operator's own pin is untouched: this write names no `tags` key, and
+        // kanban replaces `tags` WHOLESALE, so sending one would have been the deletion.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data()));
     }
 }

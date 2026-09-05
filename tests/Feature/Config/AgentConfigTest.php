@@ -175,6 +175,27 @@ class AgentConfigTest extends TestCase
         AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '${XDG_RUNTIME}/x.sock']]));
     }
 
+    /**
+     * ⭐ REDACTED AT THE INTERPOLATION (card#8433, canon #20). `channel.url` exists for the
+     * SSH-tunnelled remote-host case, which is exactly where an operator writes
+     * `https://user:token@…`; the shape refusal quoted the whole value straight back.
+     * ⛔ Both directions: the credential is gone AND the endpoint the operator has to go
+     * and fix is still named.
+     */
+    public function test_a_refused_channel_url_is_redacted_but_still_identifiable(): void
+    {
+        $canary = 'CANARY8433SYNTHETICVALUE';
+
+        try {
+            AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'https://svc:'.$canary.'@remote host:8787']]));
+            $this->fail('a whitespace-bearing channel.url was accepted');
+        } catch (ConfigException $e) {
+            $this->assertStringNotContainsString($canary, $e->getMessage());
+            $this->assertStringContainsString("channel.url 'https://***@remote host:8787'", $e->getMessage());
+            $this->assertStringContainsString('no whitespace', $e->getMessage());
+        }
+    }
+
     public function test_channel_server_path_defaults_null(): void
     {
         // Absent ⇒ null; bridge:check does not run the snapshot legs and reports
