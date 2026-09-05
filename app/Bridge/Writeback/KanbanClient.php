@@ -764,7 +764,9 @@ final class KanbanClient
      * is kanban's fractional ordering double; a card and its move-target are always
      * on the same workflow, so comparing their positions orders them correctly even
      * though the map is flattened across a board's workflows. Empty when the read
-     * carries no stages — the caller treats "can't order" as fail-open.
+     * carries no stages — the caller treats "can't order" as fail-open, and since
+     * card#8761 BOTH ends say so: {@see preloadStages} names an unreadable body here,
+     * and the guard names its own fail-open there.
      *
      * @return array<int, float>
      */
@@ -948,26 +950,74 @@ final class KanbanClient
         return [];
     }
 
+    /**
+     * The CAUSE clause every unreadable-200 line in this client ends with. It is a const and
+     * not a repeated literal because it is the only part of those lines that is the SAME fact
+     * — what an unreadable body means and what to look at — while each subject's consequence
+     * legitimately differs; two hand-written copies of one account of one failure is two places
+     * for it to drift.
+     */
+    private const UNREADABLE_BODY_CAUSE = "kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL";
+
     /** The DL-026 degraded-read line both correlation projections share — one message, one owner. */
     private static function warnUnreadableCollection(string $read, int $boardId): void
     {
-        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL", ['board_id' => $boardId, 'read' => $read]);
+        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; ".self::UNREADABLE_BODY_CAUSE, ['board_id' => $boardId, 'read' => $read]);
+    }
+
+    /**
+     * The same degraded-read report for the STAGE projection (card#8761). It is a separate
+     * line and not a second caller of {@see warnUnreadableCollection} because the two differ in
+     * the fact that matters to whoever reads the log: an unreadable card collection silently
+     * no-ops ONE correlation, while an unreadable workflows collection empties EVERY stage
+     * answer this client gives for the board — and the no-regression guard's fail-open is
+     * downstream of that. Only the cause clause is shared, and it is shared as a const.
+     *
+     * ⭐ IT FIRES ONLY ON A BODY THAT CARRIED NO COLLECTION AT ALL, never on `workflows: []`.
+     * That discrimination is what makes it safe for all three of {@see preloadStages}'s callers
+     * rather than only the guard: a board that genuinely has no workflows is a fact each caller
+     * already handles correctly and quietly, and a warning on it would be the noise that trains
+     * an operator to ignore the line that matters.
+     */
+    private static function warnUnreadableStages(int $boardId): void
+    {
+        Log::warning("writeback stage read: board {$boardId}'s preload read returned a 200 whose body carried no workflows collection — every stage answer this client gives for the board (order, name, id) is EMPTY, and empty is indistinguishable from a board with no stages, so each caller degrades as though it had one; ".self::UNREADABLE_BODY_CAUSE, ['board_id' => $boardId, 'read' => 'board-preload-stages']);
     }
 
     /**
      * Yield each stage array across a board's workflows from the lightweight
      * preload read — the shared fetch + `workflows[].stages[]` descent behind
-     * {@see boardStageOrder()} and {@see boardStageIdsByName()}, which diverge only
-     * in the per-stage field guard and how they accumulate (so each keeps its own).
-     * A non-array workflow, a missing/non-array `stages`, or a non-array stage is
-     * skipped — a caller sees only array stages.
+     * {@see boardStageOrder()}, {@see boardStageNames()} and {@see boardStageIdsByName()},
+     * which diverge only in the per-stage field guard and how they accumulate (so each
+     * keeps its own). A non-array workflow, a missing/non-array `stages`, or a non-array
+     * stage is skipped — a caller sees only array stages.
+     *
+     * ⭐ A BODY THAT CARRIED NO `data.workflows` COLLECTION AT ALL yields nothing and is
+     * REPORTED through {@see warnUnreadableStages} (card#8761). Before that it was the
+     * fifth copy of the absent-collection collapse card#8586 consolidated: a 200 whose
+     * body kanban stopped serving became `[]`, byte-identical to a board with no stages,
+     * and the loudest consumer downstream — the DL-163 no-regression guard — then failed
+     * open on the empty order with no log at either end.
+     *
+     * ⛔ IT REPORTS, IT DOES NOT THROW, and that is a decision about the OTHER TWO CALLERS,
+     * not timidity about this one. `boardStageNames()` serves `board_my_cards` (a display
+     * grouping that falls back to the raw stage id) and `boardStageIdsByName()` serves
+     * `bridge:check`'s DL-200 compare (which already treats an empty answer as "could not
+     * verify"); both degrade correctly on an empty read, so a throw here would convert a
+     * silent degradation into a broken writeback and a broken preflight to fix a guard
+     * that is required to fail open anyway (DL-020).
      *
      * @return iterable<array<string, mixed>>
      */
     private function preloadStages(int $boardId): iterable
     {
         $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
-        foreach (is_array($workflows) ? $workflows : [] as $wf) {
+        if (! is_array($workflows)) {
+            self::warnUnreadableStages($boardId);
+
+            return;
+        }
+        foreach ($workflows as $wf) {
             $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
             foreach ($stages as $s) {
                 if (is_array($s)) {

@@ -1004,6 +1004,130 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
     }
 
+    /**
+     * card#8761 — THE GUARD'S SECOND FAIL-OPEN ROUTE, AND THE ONE THAT HAD NO LINE.
+     *
+     * The four legs below are ONE measurement and neither half of it means anything alone.
+     * Every one drives the SAME move — `opened` on a card already at Released(53), the exact
+     * event DL-163's guard exists to refuse — and they differ only in what the board's preload
+     * read answered. Three of them therefore ALLOW a move the fourth refuses, which is the
+     * fail-open the operator ruling KEEPS; what is being pinned is that the three now SAY SO,
+     * and say it apart, while the fourth stays silent because nothing degraded.
+     *
+     * ⛔ The `reason` key is asserted by VALUE, not merely present: the whole finding is that
+     * two causes needing two different operator actions were one silence, so a test happy with
+     * any reason would certify the collapse it exists to detect.
+     */
+    public function test_an_unreadable_preload_body_says_the_guard_failed_open_and_still_moves(): void
+    {
+        // A 200 kanban answered without a `data.workflows` collection at all. Before card#8761
+        // this emptied the stage order and the guard returned "not regressive" with no log at
+        // either end — the move below is the one DL-163 was written to stop.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => []]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53, 'block_reason' => null, 'tags' => []]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        // ⭐ BEHAVIOUR IS UNCHANGED — leg 2 (fail closed) is declined, so the move must land.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        // The consumer names the fail-open it just took, in the catch arm's own words.
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'for the no-regression guard — allowing the move')
+                && $c['board'] === 8
+                && $c['reason'] === 'stage_order_empty'
+                && $c['current_stage'] === 53
+                && $c['target_stage'] === 50
+        )->once();
+        // ...and the CLIENT names the cause, which is the half the consumer cannot know.
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'carried no workflows collection')
+                && ($c['board_id'] ?? null) === 8
+        )->once();
+    }
+
+    public function test_a_board_that_genuinely_has_no_workflows_reports_the_fail_open_but_no_unreadable_body(): void
+    {
+        // THE CONTRAST, and the reason the client half is a separate line: `workflows: []` is a
+        // readable answer. The guard still cannot order the move and still says so — but there
+        // is no degraded read to chase, so the client stays quiet. An operator seeing the pair
+        // reaches for kanban's response shape; seeing only the guard line, for the board.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53, 'block_reason' => null, 'tags' => []]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'for the no-regression guard — allowing the move')
+                && $c['reason'] === 'stage_order_empty'
+        )->once();
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'carried no workflows collection')),
+            \Mockery::any(),
+        ]);
+    }
+
+    public function test_a_mapped_stage_that_is_not_on_the_board_names_itself_and_still_moves(): void
+    {
+        // The OTHER cause of the same fail-open, and it needs a different action: the order read
+        // fine, and `writeback.json` names a stage id this board does not carry. One reason value
+        // apart, because "kanban's answer degraded" and "your mapping is stale" are not one fact.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
+                ['id' => 49, 'position' => 3072.0],
+                ['id' => 50, 'position' => 4096.0],
+            ]]]]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53, 'block_reason' => null, 'tags' => []]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'for the no-regression guard — allowing the move')
+                && $c['reason'] === 'stage_not_on_board'
+                && $c['current_stage'] === 53
+        )->once();
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'carried no workflows collection')),
+            \Mockery::any(),
+        ]);
+    }
+
+    public function test_a_readable_order_still_refuses_the_regressive_move_and_says_nothing(): void
+    {
+        // ⭐ THE REGRESSION WITNESS. Same event, same card, the only readable order of the four —
+        // and the move is REFUSED, exactly as before card#8761. Without this leg the three above
+        // are compatible with a change that made the guard stop guarding on every board.
+        // The silence is the second half: a diagnostic that also fires on the healthy path is
+        // the noise that gets the real one filtered out.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(53);   // Released, and 53 IS in the order
+        Log::spy();
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'for the no-regression guard — allowing the move')),
+            \Mockery::any(),
+        ]);
+        Log::shouldNotHaveReceived('warning', [
+            \Mockery::on(fn ($m) => str_contains((string) $m, 'carried no workflows collection')),
+            \Mockery::any(),
+        ]);
+    }
+
     public function test_board_stage_order_preload_is_read_once_across_cards_on_one_instance(): void
     {
         // #3575: a bundled PR/DL moving N cards on the same board dispatches N

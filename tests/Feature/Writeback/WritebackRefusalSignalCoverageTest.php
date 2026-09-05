@@ -71,6 +71,12 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'kanban_move_card: revived a card from the abandon stage on PR reopen' => 'paired with notifyRevive — a distinct signal type, not a refusal',
         // A documented FAIL-OPEN diagnostic: the move still happens, so nothing was refused.
         'kanban_move_card: could not read board stage order for the no-regression guard — allowing the move' => 'fail-open diagnostic — the move proceeds, no refusal to signal',
+        // The SECOND fail-open route of the same guard (card#8761), and the one that had no
+        // line at all: the preload read answered, with an empty order or without one of the
+        // two stage ids. Same disposition as its twin above for the same reason — the move
+        // proceeds — and it is listed BESIDE it deliberately: a guard with one instrumented
+        // route and one silent one reports its common case as its rare one.
+        'kanban_move_card: could not place this move in the board stage order for the no-regression guard — allowing the move' => 'fail-open diagnostic — the move proceeds, no refusal to signal',
         // TYPE-NARROWING for a state WritebackConfig::load refuses at parse time (it
         // rejects a promote_on_release mapping missing either stage, and validates every
         // stage value as numeric). An alert here could never be seen to fail (canon #9).

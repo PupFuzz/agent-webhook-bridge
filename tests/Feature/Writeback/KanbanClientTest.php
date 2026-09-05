@@ -820,8 +820,68 @@ class KanbanClientTest extends TestCase
 
     public function test_board_stage_ids_by_name_is_empty_when_no_stages_are_read(): void
     {
-        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => []])]);
+        // `workflows: []` — a board that genuinely carries no stages, which is what this
+        // leg's name claims. It read `['data' => []]` until card#8761, i.e. it was pinning the
+        // UNREADABLE body under the name of the empty one — the two are separated below.
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]])]);
 
         $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
+
+    /**
+     * card#8761 — THE STAGE PROJECTION'S HALF OF THE card#8586 SHAPE, AND THE PAIR IS THE TEST.
+     *
+     * The three legs below drive the three methods that read `preload.json`'s stages, on the
+     * SAME body and for the SAME empty answer their twins beneath return on `workflows: []`.
+     * Only the log line separates them, which is the whole point: `[]` was the client's answer
+     * to both "kanban served a body with no workflows collection" and "this board has no
+     * stages", and the loudest consumer of the difference — the DL-163 no-regression guard —
+     * fails open on the first while reading it as the second.
+     *
+     * ⛔ ALL THREE CALLERS, not just the guard's. A warning here fires for `board_my_cards`'s
+     * stage-name grouping and for `bridge:check`'s DL-200 name→id compare too, and that is
+     * deliberate: neither degrades CORRECTLY on a body kanban stopped serving — one silently
+     * groups a seat's cards under raw numeric ids, the other reports `unvalidated` with no
+     * cause — so their silence on THIS state was never right either. Their silence on a
+     * genuinely empty board still is, and the second leg is what holds that line.
+     */
+    public function test_a_preload_body_carrying_no_workflows_collection_empties_every_stage_answer_and_says_so(): void
+    {
+        Log::shouldReceive('warning')
+            ->times(3)
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no workflows collection')
+                && str_contains($m, 'every stage answer this client gives for the board (order, name, id) is EMPTY')
+                && $c['board_id'] === 8
+                && $c['read'] === 'board-preload-stages');
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->boardStageOrder(8));
+        $this->assertSame([], $this->client()->boardStageNames(8));
+        $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
+
+    public function test_a_board_that_genuinely_has_no_workflows_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]])]);
+
+        $this->assertSame([], $this->client()->boardStageOrder(8));
+        $this->assertSame([], $this->client()->boardStageNames(8));
+        $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
+
+    /**
+     * The read still degrades rather than throwing, and this is the leg that says so — the
+     * ⛔ on card#8761 is that two of the three callers above are not the guard, so a throw
+     * would convert a silent degradation into a broken `board_my_cards` and a broken
+     * `bridge:check`. A rows-present body is unaffected either way, which the assertion pins.
+     */
+    public function test_an_unreadable_workflows_body_does_not_throw_and_a_readable_one_still_reads(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [['id' => 49, 'name' => 'In Progress', 'position' => 3072.0]]],
+        ]]])]);
+
+        $this->assertSame([49 => 3072.0], $this->client()->boardStageOrder(8));
     }
 }
