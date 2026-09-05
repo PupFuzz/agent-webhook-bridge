@@ -343,6 +343,8 @@ retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a pa
 
 A misconfigured posture pushes **nothing** and warns once per day, never per delivery; there is no partial digest and no fallback recipient.
 
+⭐ **`bridge:check`'s `standup.posture` leg (card#8683 / DL-345) is where a WEDGED digest surfaces.** It is **silent** on an install that left the digest off, and on an armed one it prints the posture (`standup: on (push to <agent>, every Ns …)`) or the misconfiguration. Its third line is the one that matters: the gate arms its interval marker BEFORE the push, so a pass that throws — a channel server that is down on the recipient seat is the ordinary case — backs off a full `interval` and the seat simply **stops receiving digests with nothing saying so**. The gate records that throw, and this leg is what reports it; it clears itself on the next clean pass. ⚠ It never `fail`s, so it does not move `bridge:check`'s exit code — an opt-in report being down must not red a deploy.
+
 ### Periodic jobs (DL-325)
 
 ⛔ **Read `docs/periodic-jobs.md` before adding a job. A periodic job is the LAST resort here** — the event gate is the first answer, and the registry refuses an instance that does not say, in one sentence, why the work cannot be event-driven.

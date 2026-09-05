@@ -5,6 +5,7 @@ namespace Tests\Feature\Console\Check;
 use App\Bridge\Retention\RetentionFootprint;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Retention\RetentionStoreProbe;
+use App\Bridge\Standup\StandupGate;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\BoardToolsClientCall;
@@ -166,6 +167,45 @@ class CheckGoldenTest extends TestCase
                     'error' => 'disk full',
                     'at' => '2026-01-01T00:00:00+00:00',
                 ], 60);
+
+                return $default;
+
+                // ---- the standup digest's posture (card#8683 / DL-345). `minimal` is the
+                // fourth arm and needs no fixture of its own: the digest is OFF by default,
+                // so every other capture in this corpus is the silent control. ----
+            case 'standup-enabled':
+                // The armed install, and the DISCRIMINATING PAIR for the fixture below: same
+                // config, no marker. Its absent subject is what makes the fault leg's silence
+                // asserted rather than assumed — a leg that printed the fault line
+                // unconditionally would be caught here and nowhere else.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.standup.enabled' => true, 'bridge.standup.agent' => 'prod-agent']);
+
+                return $default;
+
+            case 'standup-last-pass-failed':
+                // The card#8683 subject: a wedged digest, surfaced. Before this leg existed
+                // the gate wrote this marker and NOTHING in the app read it, so this install
+                // shape was byte-identical to the one above.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.standup.enabled' => true, 'bridge.standup.agent' => 'prod-agent']);
+                // The ambient-cache input, set deliberately, and `at` is a literal rather
+                // than a clock read — the same rule the retention fixture above follows,
+                // for the same reason: a captured timestamp would expire the golden file.
+                Cache::put(StandupGate::ERROR_KEY, [
+                    'exception' => 'App\\Bridge\\Exceptions\\HandlerException',
+                    'error' => 'channel_push: connection refused',
+                    'at' => '2026-01-01T00:00:00+00:00',
+                ], 60);
+
+                return $default;
+
+            case 'standup-misconfigured':
+                // Enabled with no recipient: the arm that pushes nothing and backs off a
+                // DAY, so an operator who fat-fingered the key learns it here or a day at a
+                // time in the log.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.standup.enabled' => true, 'bridge.standup.agent' => '']);
 
                 return $default;
 
@@ -643,6 +683,9 @@ class CheckGoldenTest extends TestCase
             'retention-store-past-window',
             'retention-store-off-page-accounting',
             'retention-store-unmeasurable',
+            'standup-enabled',
+            'standup-last-pass-failed',
+            'standup-misconfigured',
             'agent-yaml-malformed',
             'agent-classifier-missing',
             'agent-missing-secret-and-token',
@@ -737,6 +780,11 @@ class CheckGoldenTest extends TestCase
             'retention-store-past-window' => ['PAST the 30d delete window'],
             'retention-store-off-page-accounting' => ['share of the database NOT shown'],
             'retention-store-unmeasurable' => ['could NOT measure what the store is holding'],
+
+            // ---- standup posture (card#8683 / DL-345) ----
+            'standup-enabled' => ['standup: on (push to prod-agent, every 86400s (on the first delivery after))'],
+            'standup-last-pass-failed' => ['standup: the LAST PASS FAILED and no digest has been pushed since (App\\Bridge\\Exceptions\\HandlerException: channel_push: connection refused at 2026-01-01T00:00:00+00:00)'],
+            'standup-misconfigured' => ['standup: enabled but MISCONFIGURED — standup is enabled but standup.agent names no seat'],
 
             // ---- per-agent legs ----
             'agent-yaml-malformed' => ['is not valid YAML'],
@@ -873,6 +921,16 @@ class CheckGoldenTest extends TestCase
             // line must not claim a delete window, and it must not read MISCONFIGURED
             // (which is what this same .env printed before DL-315 moved the default).
             'retention-row-leg-off' => ['delete >', 'MISCONFIGURED'],
+            // The INVERSE of `standup-last-pass-failed`, and the half that makes the pair a
+            // measurement: same armed install, no marker, so the fault line must be absent.
+            // Paired with that fixture's exact-line positive above, this is the two-direction
+            // evidence card#8683 exists for — an alarm asserted to fire, with nothing showing
+            // it stays quiet, is the defect that card names one level up.
+            'standup-enabled' => ['LAST PASS FAILED'],
+            // Enabled-but-broken must not also print the healthy posture line: `on (…)` and
+            // `MISCONFIGURED` are exclusive arms, and a leg that yielded both would read as
+            // an install that is armed AND unarmed.
+            'standup-misconfigured' => ['standup: on ('],
         ];
     }
 
@@ -1049,9 +1107,13 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins 39 as the registered total, which the registration test pins BY ID.
+        // It also pins 40 as the registered total, which the registration test pins BY ID.
         // Two independent statements of the same fact on purpose: the id list catches a
         // check being swapped, this catches the operator-facing line disagreeing with it.
+        // ⚑ THE LITERAL MOVES WITH THE REGISTERED SET, IN THE SAME COMMIT — it was 39 until
+        // card#8683 / DL-345 registered `standup.posture`. Deriving it from the registration
+        // list instead would make this term agree with that one by construction and stop
+        // being a second statement of the fact.
         foreach (self::fixtures() as [$name]) {
             $golden = $this->goldenFor($name);
 
@@ -1075,7 +1137,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(39, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame(40, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,

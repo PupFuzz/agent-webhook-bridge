@@ -8,8 +8,8 @@ use App\Bridge\Retention\RetentionConfig;
 use App\Bridge\Retention\RetentionFootprint;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Retention\RetentionStoreProbe;
+use App\Bridge\Support\FaultMarker;
 use App\Bridge\Support\Finding;
-use Illuminate\Support\Facades\Cache;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 
@@ -108,15 +108,17 @@ final class RetentionPostureCheck implements Check
         // CheckRunner deliberately does not isolate, so hoisting this would turn an
         // unreachable cache backend into an aborted `bridge:check`.
         try {
-            $lastError = Cache::get(RetentionGate::ERROR_KEY);
-            if (is_array($lastError)) {
+            // The marker's PAYLOAD is rendered by the class that writes it
+            // ({@see FaultMarker::lastFault()}, card#8683) — this leg owns the sentence an
+            // operator acts on, never a second spelling of the keys.
+            $lastError = FaultMarker::lastFault(RetentionGate::ERROR_KEY);
+            if ($lastError !== null) {
                 // Deliberately does NOT assert the stores are growing: on a since-quieted
                 // install nothing arrives, so nothing grows — the marker can outlive the
                 // condition (webhook-driven clear, ≤30d TTL). State the fact (last pass
                 // failed, nothing pruned since) and let the timestamp speak.
                 yield Finding::warn('retention: the LAST PASS FAILED and nothing has pruned since ('
-                    .($lastError['exception'] ?? 'error').': '.($lastError['error'] ?? '')
-                    .' at '.($lastError['at'] ?? '?').'). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).');
+                    .$lastError.'). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).');
             }
         } catch (Throwable $e) {
             yield Finding::unvalidated('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');

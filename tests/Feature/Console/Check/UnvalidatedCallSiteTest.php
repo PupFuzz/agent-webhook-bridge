@@ -182,6 +182,14 @@ class UnvalidatedCallSiteTest extends TestCase
         //      The same shape as RetentionPostureCheck's marker site, and for the same
         //      reason: an unreachable cache is not evidence that the last pass succeeded.
         'app/Bridge/Check/Checks/JobsPostureCheck.php' => 2,
+        // card#8683 / DL-345 — ONE site, the same shape as the two above and limb (a): the
+        // cache backend holding the standup gate's last-failure marker could not be READ.
+        // An unreachable cache is not evidence that the last digest pass succeeded, and this
+        // leg's whole reason for existing is that a wedged pass had no surface at all — so
+        // reporting a healthy posture off a read that never happened would rebuild the
+        // defect one level up. The MISCONFIGURED and OK arms are postures this process reads
+        // straight out of its own config, so neither is here.
+        'app/Bridge/Check/Checks/StandupPostureCheck.php' => 1,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
         // three incidental disclosures, so it is spelled out here where a maintainer will
