@@ -621,4 +621,102 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: promoted Shipped→Released'
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
+
+    // --- card#8787: the two SILENT return-false arms become three named causes, and the two
+    //     genuine negatives stay quiet. The CONTRAST is the finding, not either half.
+
+    /** A Shipped candidate row, shaped so PinGuard's unrelated pin_row_unreadable cannot pollute the counts. */
+    private function shippedRow(int $cardId, int $prNumber): array
+    {
+        return ['id' => $cardId, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => $prNumber]];
+    }
+
+    private function assertPromoteAlert(string $reason, int $cardId): void
+    {
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['outcome'] === 'promote_on_release'
+            && $r['reason'] === $reason
+            && $r['card_id'] === $cardId);
+    }
+
+    /**
+     * SIX candidates through ONE scan, differing only in what GitHub answered:
+     *
+     * | card | GitHub's answer                              | promoted | handler `reason`                    | client line |
+     * |------|----------------------------------------------|----------|-------------------------------------|-------------|
+     * | 5    | pull 200 with NO `merged` key                | no       | `promote_pr_merge_state_unreadable` | ✅ get-pull |
+     * | 6    | pull 200, honest `merged: false`             | no       | ❌ quiet                            | ❌ quiet    |
+     * | 7    | merged; compare 200 with NO `status` key     | no       | `promote_compare_status_unreadable` | ✅ compare  |
+     * | 8    | merged; compare `diverged`                   | no       | ❌ quiet                            | ❌ quiet    |
+     * | 9    | `merged: true` with NO `merge_commit_sha`    | no       | `promote_merged_without_merge_sha`  | ❌ quiet    |
+     * | 10   | merged; compare `identical`                  | **YES**  | ❌ quiet                            | ❌ quiet    |
+     *
+     * ⭐ ROW 10 IS THE REGRESSION WITNESS. Without it the five above are all satisfied by a
+     * change that stopped this leg promoting anything at all — which is the failure the card
+     * is about, arrived at from the other side. Rows 6 and 8 are the second witness: they are
+     * the ONLY thing separating "the leg now reports a degraded read" from "the leg now
+     * reports every card it did not promote", and the second is worthless — most Shipped
+     * candidates legitimately are not on `main` yet, so a line on them would bury the one that
+     * matters. `reason` is asserted BY VALUE for the same reason: a test happy with any reason
+     * would certify the very collapse it exists to detect.
+     *
+     * ⛔ NOTHING HERE ASSERTS A CHANGED PROMOTE. Every one of the five non-promotions was
+     * already a non-promotion before this change; only the saying-so is new.
+     */
+    public function test_a_github_answer_that_cannot_be_read_is_told_apart_from_a_genuine_negative_by_reason(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                $this->shippedRow(5, 100), $this->shippedRow(6, 101), $this->shippedRow(7, 102),
+                $this->shippedRow(8, 103), $this->shippedRow(9, 104), $this->shippedRow(10, 105),
+            ], 'links' => ['next' => null]]),
+            // A 200 whose body carries no `merged` at all — indistinguishable from `merged: false`
+            // before this change, and it carries a sha so nothing else could have caught it.
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['state' => 'closed', 'merge_commit_sha' => 'SHA100', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/pulls/101' => Http::response(['merged' => false, 'state' => 'open', 'merge_commit_sha' => 'TESTMERGE', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/pulls/102' => Http::response(['merged' => true, 'state' => 'closed', 'merge_commit_sha' => 'SHA102', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA102...main' => Http::response(['ahead_by' => 0]),   // no `status`
+            'https://api.github.com/repos/owner/repo/pulls/103' => Http::response(['merged' => true, 'state' => 'closed', 'merge_commit_sha' => 'SHA103', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA103...main' => Http::response(['status' => 'diverged']),
+            'https://api.github.com/repos/owner/repo/pulls/104' => Http::response(['merged' => true, 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/pulls/105' => Http::response(['merged' => true, 'state' => 'closed', 'merge_commit_sha' => 'SHA105', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA105...main' => Http::response(['status' => 'identical']),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
+        ]);
+        Log::spy();
+
+        $this->handle();
+
+        // ── The regression witness, first: promotion behaviour is byte-identical.
+        $this->assertMoved(10, 53);
+        foreach ([5, 6, 7, 8, 9] as $notPromoted) {
+            $this->assertNotMoved($notPromoted);
+        }
+
+        // ── The DECISION layer names which card and which cause, and pushes on each.
+        $this->assertPromoteAlert('promote_pr_merge_state_unreadable', 5);
+        $this->assertPromoteAlert('promote_compare_status_unreadable', 7);
+        $this->assertPromoteAlert('promote_merged_without_merge_sha', 9);
+        foreach ([[5, 100, 'promote_pr_merge_state_unreadable'], [7, 102, 'promote_compare_status_unreadable'], [9, 104, 'promote_merged_without_merge_sha']] as [$card, $pr, $reason]) {
+            Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => $m === 'kanban_promote_released: GitHub answered, but the answer does not say whether this card is released — skipping card (see `reason`)'
+                && $c['card_id'] === $card && $c['repo'] === 'owner/repo' && $c['pr'] === $pr && $c['reason'] === $reason)->once();
+        }
+
+        // ── The CAUSE layer names the read, once per unreadable body and only there — card 9's
+        //    body was perfectly readable, it just carried no sha, so the client stays out of it.
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'the pull read for owner/repo#100')
+            && str_contains($m, 'carries no readable `merged` flag') && $c['read'] === 'get-pull')->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'the compare read for owner/repo SHA102...main')
+            && str_contains($m, 'carries no readable `status`') && $c['read'] === 'compare')->once();
+
+        // ── THE CONTRAST. Exactly five warnings left the scan — the three decisions and the two
+        //    causes named above — so cards 6, 8 and 10 emitted NOTHING at either layer. This is
+        //    the assertion that makes the five above mean "a degraded read is loud" rather than
+        //    "everything is loud", and no push named a card that had a real answer.
+        Log::shouldHaveReceived('warning')->times(5);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && in_array($r['card_id'], [6, 8, 10], true));
+    }
 }
