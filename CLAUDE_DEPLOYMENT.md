@@ -280,13 +280,13 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | Per-target registry (`registry_append`) | `…/state/registry-<target>.jsonl` |
 | Detached-command logs (`spawn_detached`) | `…/state/spawn-<target>.log` |
 | Event / dispatch ledger | the DB (`webhook_events`, `agent_dispatches`) |
-| Writeback board divergences (DL-300) | the DB (`writeback_board_divergences`) — expected EMPTY; `bridge:stats` prints the counts on every run |
+| Writeback board divergences (DL-300) | the DB (`writeback_board_divergences`) — expected EMPTY; `bridge:stats` prints the counts on every run, and when there is anything to show, each divergence's first-seen / last-seen / observation count and its write site (DL-347) |
 
 ## Commands
 
 ```bash
 php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
-php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences
+php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences + per-divergence history
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
