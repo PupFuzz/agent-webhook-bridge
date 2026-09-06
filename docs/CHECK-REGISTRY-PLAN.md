@@ -800,8 +800,9 @@ plausibly "clean up" without noticing what it does.
 post-loop `consumedEventTypes()` block cited `line ~172` for where `for()` had already resolved the
 instance; that reference had been wrong for several stages. It is now described by condition — *"in
 `AgentClassifierResolvableCheck`, after its `probeLoadable` passed — a cache hit here, never a fresh
-load"* — because `bin/check-doc-refs.php` gates line-number citations in `CLAUDE_*.md` and the same
-reasoning applies to source comments, which nothing gates. A line number is a claim about state; it
+load"* — because `bin/check-doc-refs.php` gates offset citations of the file under migration and the
+same reasoning applies to source comments, which nothing gates. (That gate's scope is narrower than
+the whole repo; its rule 2 owns it, and the run prints it rather than this doc restating it.) A line number is a claim about state; it
 goes stale silently.
 
 **Operator-visible change: none.** Golden output byte-identical at 37 tests / 79 assertions with

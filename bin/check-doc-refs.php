@@ -1072,6 +1072,15 @@ foreach (scannedSources($root) as $rel) {
  * (DL-001), and `CLAUDE_GOTCHAS.md`'s cites into it have held for months. Banning those
  * too would trade a real defect for churn in docs that are not rotting.
  *
+ * AND THE SUCCESS LINE SAYS SO, DERIVED FROM THE CONSTANTS BELOW (card#8775). The narrowness was
+ * deliberate here and the closing line still read "no line-number citations" flat — a claim about
+ * every offset in the repo, printed by a rule that reads the offsets of ONE file name plus bare
+ * offsets under four roots. The predicate was right and the sentence was wrong, which is why
+ * nothing in this block moved: every scope word in that line is now printed FROM `$volatileFile`,
+ * `$volatileCitePattern`, `$bareOffsetPattern`, `$bareCiteSurface`, `$stableAnchors` and
+ * `$citeExcluded`, so widening or narrowing any of them rewrites the sentence with no edit to it.
+ * A hand-typed copy of this scope beside the message is the defect one level up, not a shortcut.
+ *
  * Name the construct instead — a method, a loop, or a message string. Construct names are
  * greppable and move with the code.
  */
@@ -1082,6 +1091,19 @@ $stableAnchors = [
 
 /** The file under active migration: any citation of ITS offsets is an error anywhere. */
 $volatileFile = 'CheckCommand';
+
+/**
+ * The first of the two rules above, as a pattern: the migrating file's name within a bounded
+ * window of an offset.
+ *
+ * ONE SPELLING, USED TWICE — by the scan below and by the success line, which has to name the
+ * form it rejects in order not to imply it rejects every offset in the repo. Building it here
+ * rather than inline in the loop is what makes those two the same string.
+ */
+$volatileCitePattern = '/'.$volatileFile.'[^\n]{0,24}?\b(L|:)\d{2,4}\b/';
+
+/** The second, as a pattern: an offset carrying no file name at all. Same one-spelling reason. */
+$bareOffsetPattern = '/\bL\d{2,4}\b/';
 
 /** Where a bare, unqualified `L<n>` can only mean the migrating file. */
 $bareCiteSurface = '#^(app/Bridge/Check/|tests/Support/CheckGolden/|tests/Feature/Console/Check/|docs/CHECK-REGISTRY-PLAN\.md)#';
@@ -1128,8 +1150,8 @@ foreach (scannedSources($root) as $rel) {
         // slipped a `[\s:]*` connector entirely, as did `CheckCommand::handle()` L240.
         // Enumerating quoting forms is the losing half of that trade; bounding the distance
         // is the winning one.
-        $namesVolatile = preg_match('/'.$volatileFile.'[^\n]{0,24}?\b(L|:)\d{2,4}\b/', $line) === 1;
-        $bareOffset = preg_match('/\bL\d{2,4}\b/', $line) === 1;
+        $namesVolatile = preg_match($volatileCitePattern, $line) === 1;
+        $bareOffset = preg_match($bareOffsetPattern, $line) === 1;
         if (! $namesVolatile && ! ($inBareSurface && $bareOffset)) {
             continue;
         }
@@ -1468,8 +1490,8 @@ if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
 }
 
 /**
- * THE SUCCESS LINE NAMES RULE 3'S SURFACE, because for three review rounds it did not and a green
- * run was read as covering prose it never opened (card#8601).
+ * THE SUCCESS LINE NAMES RULE 2'S AND RULE 3'S SURFACES, because for three review rounds it named
+ * neither and a green run was read as covering prose it never opened (card#8601, card#8775).
  *
  * "no unbounded coverage claims", unqualified, is a claim about every completeness sentence in the
  * repo. The predicate is four path prefixes, PHP comments only, and one trigger — so the identical
@@ -1484,17 +1506,37 @@ if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
  * measurement of the current-state doc list AGAINST the surface pattern, not an assertion about
  * it, so widening the rule to those docs flips the sentence with no edit here.
  *
- * ⚠ THE OTHER TWO CLAUSES ARE UNCHANGED AND BOTH STILL OVERCLAIM. Rule 1a reads the `$docs`
- * allow-list, not every `CLAUDE_*.md` on disk, and rule 2 bans offsets into `$volatileFile` plus
- * bare offsets under `$bareCiteSurface` — deliberately not a repo-wide ban, as its own docblock
- * says. Both are named by their CONSTANT rather than by a file list, so this warning cannot go
- * stale the way a copy of either scope would. They are their own decision, not an oversight of
- * this one.
+ * RULE 2'S CLAUSE IS DERIVED THE SAME WAY (card#8775), and it was the wider lie of the two:
+ * "no line-number citations", unqualified, speaks for every offset in the repo, while the rule
+ * reads the offsets of ONE file name plus bare offsets under four roots, minus an exclusion list.
+ * Its narrowness is deliberate and documented, so nothing about the predicate moved — what moved
+ * is that the run now prints the file name, both predicates, the roots, the anchor exemption and
+ * the exclusion pattern, every one of them out of the constant the scan itself uses. The closing
+ * measurement is the same shape as rule 3's: the current-state doc list filtered THROUGH
+ * `$bareCiteSurface`, so widening the surface to those docs flips the sentence with no edit here.
+ * The anchor clause disappears with `$stableAnchors` for the same reason: an exemption sentence
+ * naming an empty list is a false sentence, which is the thing being fixed rather than a state to
+ * defend against.
+ *
+ * ⚠ THE FIRST CLAUSE IS UNCHANGED AND STILL OVERCLAIMS. Rule 1a reads the `$docs` allow-list,
+ * not every `CLAUDE_*.md` on disk — `CLAUDE_DECISIONS.md` and `CLAUDE_AGENTBOARD.md` are outside
+ * it. Named by its CONSTANT rather than by a file list, so this warning cannot go stale the way a
+ * copy of that scope would. It is its own decision (card#8776), not an oversight of this one.
  */
 $claimDocsInSurface = array_values(array_filter($docs, static fn (string $d): bool => preg_match($claimSurface, $d) === 1));
+$citeDocsInBareSurface = array_values(array_filter($docs, static fn (string $d): bool => preg_match($bareCiteSurface, $d) === 1));
 
 fwrite(STDOUT, sprintf(
-    "doc-refs: all PHP references in CLAUDE_*.md resolve; no line-number citations; no unbounded coverage claims in PHP comments under %s, matched on %s. That rule reads nothing else — %s.\n",
+    "doc-refs: all PHP references in CLAUDE_*.md resolve; no citation of a `%s` offset (matched on %s) anywhere it scans, and no bare offset (%s) under %s%s. That rule reads no other file's offsets anywhere, skips paths matching %s, and %s; no unbounded coverage claims in PHP comments under %s, matched on %s. That rule reads nothing else — %s.\n",
+    $volatileFile,
+    $volatileCitePattern,
+    $bareOffsetPattern,
+    implode(', ', surfacePrefixes($bareCiteSurface)),
+    $stableAnchors === [] ? '' : ' (a bare offset on a line naming '.implode(' or ', $stableAnchors).' is exempt)',
+    $citeExcluded,
+    $citeDocsInBareSurface === []
+        ? 'no current-state CLAUDE_*.md is in that bare-offset surface, so a bare offset written in one passes unless its line also names `'.$volatileFile.'`'
+        : 'of the current-state docs its bare-offset surface covers '.implode(', ', $citeDocsInBareSurface),
     implode(', ', surfacePrefixes($claimSurface)),
     $claimTrigger,
     $claimDocsInSurface === []

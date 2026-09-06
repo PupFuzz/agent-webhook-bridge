@@ -280,8 +280,9 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         // Asserted on CONTENT, never on line offsets. An offset pin reds on an unrelated docblock
         // edit, and its only remediation — "re-derive the line numbers" — is the same action that
         // absorbs a real deletion without a second thought; this repo already treats that shape as
-        // a defect, which is why `bin/check-doc-refs.php` forbids line-number citations in the
-        // `CLAUDE_*.md` set. It also pins what it claims: the old offset form stayed green with
+        // a defect, which is why `bin/check-doc-refs.php` gates offset citations at all. What that
+        // gate's rule 2 actually reads is narrower than the whole repo and is not restated here —
+        // its own success line prints its scope, derived from the constants the scan uses. It also pins what it claims: the old offset form stayed green with
         // `is_numeric` deleted, because the line still contained `board_id`.
         $primitive = (string) file_get_contents(base_path('app/Bridge/Writeback/MappedBoardGuard.php'));
 
