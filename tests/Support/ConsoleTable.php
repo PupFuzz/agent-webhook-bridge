@@ -6,7 +6,7 @@ use PHPUnit\Framework\Assert;
 
 /**
  * Assert what a Symfony console table ACTUALLY PRINTS IN A CELL, for the commands whose
- * whole output is a metric/count table (`bridge:stats`).
+ * output is a table (`bridge:stats`).
  *
  * Extracted at the second real caller (canon #5): `BridgeCommandsTest` and
  * `WritebackBoardDivergenceLedgerTest` both needed it. An unanchored substring match on a
@@ -38,6 +38,29 @@ final class ConsoleTable
             '/^\|\s*'.preg_quote($metric, '/').'\s*\|\s*'.preg_quote($cell, '/').'\s*\|$/m',
             $output,
             $message !== '' ? $message : "no table row reads `{$metric}` = `{$cell}`",
+        );
+    }
+
+    /**
+     * The same claim over a row of MORE THAN TWO cells: every cell is pinned, in order, and
+     * the row is anchored at both ends — so a match cannot straddle two rows, and a cell that
+     * moved to a different column is a failure rather than a substring that still appears
+     * somewhere. `assertRow` is the two-cell case of this and is left alone: it is the shape
+     * every metric/count caller uses, and widening it would put a one-element array at each.
+     *
+     * @param  array<int, string>  $cells  each cell, in column order, exactly as rendered
+     */
+    public static function assertCells(string $output, array $cells, string $message = ''): void
+    {
+        $pattern = '/^\|'.implode('\|', array_map(
+            fn (string $cell): string => '\s*'.preg_quote($cell, '/').'\s*',
+            $cells,
+        )).'\|$/m';
+
+        Assert::assertMatchesRegularExpression(
+            $pattern,
+            $output,
+            $message !== '' ? $message : 'no table row reads `'.implode('` | `', $cells).'`',
         );
     }
 }

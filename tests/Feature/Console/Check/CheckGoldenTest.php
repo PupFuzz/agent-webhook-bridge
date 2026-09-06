@@ -134,7 +134,7 @@ class CheckGoldenTest extends TestCase
             case 'retention-payload-leg-off':
                 // THE ONE-LEG BRANCH of `RetentionConfig::summary()`'s
                 // `implode(' + ', $legs)`, which had no coverage at all. Since DL-315
-                // shipped the payload leg ON, all 36 posture-printing fixtures render TWO
+                // shipped the payload leg ON, every posture-printing fixture renders TWO
                 // legs, and every assertion over that line matched on the PREFIX
                 // `retention: on (delete >30d` — true of one leg and of two, so nothing
                 // discriminated them. This is the install an operator who takes DL-315's

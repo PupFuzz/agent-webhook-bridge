@@ -472,7 +472,8 @@ docker rm -f bridge-test-mariadb
 
 `tests/Feature/Console/Check/CheckGoldenTest.php` captures `bridge:check`'s exact stdout + exit
 code into `tests/Fixtures/check-golden/*.txt`, one file per install shape (the harness owns how
-many; a count restated here is a second copy that drifts on the next fixture). It exists because
+many; a count restated here is a second copy that drifts on the next fixture — the general rule
+is `CLAUDE_CONVENTIONS.md` § *Derived figures*, DL-350, and this is one application of it). It exists because
 the DL-242 Check-registry migration holds stages 0–7 to a byte-identical output contract; it is
 what turns that from an intention into a measurement.
 

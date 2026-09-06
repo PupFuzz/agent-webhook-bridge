@@ -3011,7 +3011,7 @@ class BridgeCommandsTest extends TestCase
         // guarantee. The old wording had to add "no tally line does NOT mean every
         // leg ran", because a missing tally was the operator's ONLY signal and it
         // could not speak for a check that never ran. The inventory line now always
-        // prints and accounts for all 40 registered checks, so that caveat is
+        // prints and accounts for every registered check, so that caveat is
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).

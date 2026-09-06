@@ -112,7 +112,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `database/migrations/..._create_board_tools_client_calls_table.php` | `board_tools_client_calls`: one row per agent recording the LAST SUCCESSFUL board-tools call made for that agent and its transport (DL-313) — the seat's report-by-calling that its CLIENT half works, which the bridge cannot observe any other way (it may not read the seat's own files). ⚠ The row names the agent the door opened FOR, never the caller: `--probe-tools`, `--self-cert` and a hand-run `bridge:tools-call` stamp it identically, and the reading leg states that bound. Written at `BoardToolDispatcher`'s success point, best-effort; read by `bridge:check`'s `board_tools.client_half` leg |
 | `app/Models/WebhookEvent.php` | Plain Eloquent model over `webhook_events` (the `UNIQUE(delivery_id)` constraint is the dedup gate) |
 | `app/Models/AgentDispatch.php` | Plain Eloquent model for the per-agent dispatch ledger |
-| `app/Models/WritebackBoardDivergence.php` | Plain Eloquent model over the board-divergence ledger (immutable rows: no `updated_at`) |
+| `app/Models/WritebackBoardDivergence.php` | Plain Eloquent model over the board-divergence ledger (what a row OBSERVED never changes, but a repeat of that observation bumps `observations` and `last_seen_at` — which IS the model's `UPDATED_AT`, so Eloquent maintains it; `created_at` is the first sighting and never moves) |
 | `app/Models/BoardToolsClientCall.php` | Plain Eloquent model over the per-agent client-half stamp (`created_at` is the first successful call ever and never moves; `last_success_at` is the freshest) |
 
 ### Classification + dispatch (the synchronous core)
@@ -179,7 +179,7 @@ migrated, and what each stage measured, is owned by
 | `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope); silent-when-empty |
 | `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
 | `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |
-| `bridge:stats` (`StatsCommand`) | Event / dispatch counts, plus the writeback board-divergence counts (DL-300 — printed every run, zero included) |
+| `bridge:stats` (`StatsCommand`) | Event / dispatch counts, plus the writeback board-divergence counts (DL-300 — printed every run, zero included) and, when the table is non-empty, a per-divergence first-seen / last-seen / observation-count detail (DL-347, capped at the 10 most recently seen with the total named) |
 | `bridge:sign` (`SignCommand`) | Print the `sha256=<hex>` signature for a raw body read from stdin, resolving the per-(provider, scope) secret from its FILE — so the deployment smoke test never puts the secret in argv (DL-322). Shares `WebhookSecretResolver` + `HmacSignature` with the receiver, so a producer cannot drift from the verifier |
 
 ## Multi-agent mental model

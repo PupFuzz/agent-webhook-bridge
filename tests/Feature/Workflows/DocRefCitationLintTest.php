@@ -193,16 +193,87 @@ class DocRefCitationLintTest extends TestCase
      * offsets have held for months, so a bare offset outside the surface is left alone.
      * Paired with the same line inside the surface — an acceptance that cannot be
      * distinguished from an unscanned file is not evidence.
+     *
+     * THE ACCEPTANCE IS ALSO WHAT card#8775 IS ABOUT, so the sentence the run prints over it is
+     * asserted here too. The pass is CORRECT and stays correct — widening this rule to a
+     * repo-wide offset ban changes what the repo refuses and is a separate, ungranted decision.
+     * What was wrong was the closing line, which read "no line-number citations" flat while this
+     * very vector was passing under it. A green run must say which offsets it read.
      */
-    public function test_a_bare_offset_outside_the_surface_is_accepted_and_the_same_line_inside_it_is_not(): void
+    public function test_a_bare_offset_outside_the_surface_is_accepted_and_the_success_line_says_which_roots_were_read(): void
     {
         $line = 'the receiver rejects an oversized envelope at L204';
 
-        $this->assertGateAccepts('docs/board-tools.md', $line,
-            'a bare offset outside the check-registry surface is out of scope by design');
+        [$rc, $out] = $this->runGate(['docs/board-tools.md' => $line."\n"]);
+        $this->assertSame(0, $rc,
+            "a bare offset outside the check-registry surface is out of scope by design:\n{$out}");
+        $this->assertStringContainsString('docs/CHECK-REGISTRY-PLAN.md (a bare offset on a line naming', $out,
+            "the success line must name the roots where a bare offset IS read — a bare pass reads as a repo carrying no offsets:\n{$out}");
+        $this->assertStringContainsString("reads no other file's offsets anywhere", $out,
+            "the success line must say the rule read no other file's offsets — the accepted line above is one of them:\n{$out}");
 
         $this->assertGateRejects('docs/CHECK-REGISTRY-PLAN.md', $line,
             'the witness: the identical line inside the surface must be rejected');
+    }
+
+    /**
+     * The printed scope must be READ OUT OF the predicate, never typed beside it — the same
+     * discipline card#8601 put on rule 3's clause, applied to rule 2's.
+     *
+     * A message that restates its rule is a second copy of the rule, and the next root added to
+     * the surface silently makes it a lie. So every needle here comes out of the script's own
+     * `$volatileFile`, `$bareCiteSurface` and `$citeExcluded` literals rather than from a list in
+     * this file: hand-type any of them into the message and change the constant, and this test is
+     * the thing that reds. The roots are asserted as SET EQUALITY rather than a contains-each
+     * loop, because a loop only catches understatement — it would pass a line naming the four
+     * roots plus a fifth the rule never reads, which overstates the scope in the same direction
+     * as the defect being fixed.
+     */
+    public function test_the_success_line_names_rule_2s_scope_exactly_as_the_predicate_spells_it(): void
+    {
+        $script = (string) file_get_contents(base_path('bin/check-doc-refs.php'));
+
+        $this->assertSame(1, preg_match("/^\\\$volatileFile = '(.+)';$/m", $script, $m),
+            'the migrating-file constant must be readable from the script, or this test is asserting nothing');
+        $volatileFile = $m[1];
+
+        $this->assertSame(1, preg_match("/^\\\$bareCiteSurface = '(.+)';$/m", $script, $m),
+            'the bare-offset surface constant must be readable from the script, or this test is asserting nothing');
+        $surface = $m[1];
+
+        $this->assertSame(1, preg_match("/^\\\$citeExcluded = '(.+)';$/m", $script, $m),
+            'the exclusion constant must be readable from the script, or this test is asserting nothing');
+        $excluded = $m[1];
+
+        $prefixes = explode('|', (string) preg_replace('#^\#\^\(?|\)?\#[a-z]*$#', '', $surface));
+        $this->assertNotEmpty($prefixes, 'the surface pattern must yield at least one root');
+
+        // The control on the extraction itself: a fragment this test mis-split would not be a path
+        // the predicate admits, and every needle below would then be asserting about noise.
+        foreach ($prefixes as $prefix) {
+            $this->assertSame(1, preg_match($surface, stripslashes($prefix).'Fixture.php'),
+                "`{$prefix}` was read out of {$surface} but the pattern does not admit a file under it — the extraction is wrong, not the message");
+        }
+
+        [$rc, $out] = $this->runGate([]);
+        $this->assertSame(0, $rc, "the empty-tree control must pass:\n{$out}");
+
+        $this->assertStringContainsString('no citation of a `'.$volatileFile.'` offset', $out,
+            "the success line must name the ONE file whose offsets the rule reads anywhere:\n{$out}");
+        $this->assertStringContainsString('skips paths matching '.$excluded, $out,
+            "the success line must print the exclusion pattern the scan actually skips on:\n{$out}");
+        $this->assertStringContainsString('a bare offset written in one passes unless its line also names `'.$volatileFile.'`', $out,
+            "no current-state doc is in the bare-offset surface, so the line must say a bare offset in one passes:\n{$out}");
+
+        $this->assertSame(1, preg_match('/no bare offset \([^)]+\) under (.+?)(?: \(a bare offset|\. That rule reads)/', $out, $printed),
+            "the success line must name the bare-offset surface in the form this test reads:\n{$out}");
+
+        $this->assertSame(
+            array_map(stripslashes(...), $prefixes),
+            explode(', ', $printed[1]),
+            'the printed scope must be the surface EXACTLY — a missing root understates the claim, an extra one '
+            ."overstates it, and only set equality catches both:\n{$out}"
+        );
     }
 
     /**
