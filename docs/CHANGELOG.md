@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.81.1] - 2026-09-06
+
 ### Fixed
 
 - **card#8825 (DL-346)** — **every PHP-written timestamp was being stored skewed by the host's UTC offset, and the column that looked wrong was the only correct one.** ⚠ **THIS UPGRADE REWRITES STORED DATA** — read `CLAUDE_DEPLOYMENT.md` § Update an existing install before merging, and back the database up first.
