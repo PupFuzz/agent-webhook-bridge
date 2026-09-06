@@ -85,3 +85,15 @@ _ide_helper.php
 *.save
 *.swo
 *.tmp
+
+# Per-agent staging directory, created inside the worktree by the dispatch
+# convention (a shared out-of-tree scratch path let one agent overwrite another's
+# PR body mid-task). Unanchored on purpose: the convention puts it at the worktree
+# root, but an agent staging next to the code it is editing gets covered too.
+#
+# `pint.json` carries a matching `_stage` entry and it is NOT redundant with this
+# one — measured: pint does not read .gitignore, so this line alone leaves
+# `vendor/bin/pint --test` scanning staged PHP scratch and failing on it, while
+# the pint.json entry alone leaves that scratch stageable. Two mechanisms, two
+# homes; removing either re-opens a different hole.
+_stage/
