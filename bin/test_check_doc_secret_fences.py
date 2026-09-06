@@ -36,6 +36,7 @@ at all about a member minted outside a markdown shell fence.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import re
@@ -90,9 +91,14 @@ def _fence(body: str, info: str = 'bash') -> str:
 def _rules(body: str) -> list[str]:
     """The rule ids a `bash` fence containing `body` reds under, sorted.
 
-    ONE module-level copy. The classes below that carry a byte-identical `_rules`
-    method predate it; that duplication is a filed class item, and a new case must
-    use this one rather than mint an eleventh."""
+    THE ONLY COPY, AND THAT IS ASSERTED RATHER THAN ASKED FOR (card#8526). Nine
+    classes below each carried a byte-identical `_rules` METHOD beside this one. A
+    change to what this returns that lands in nine of the ten and misses the tenth
+    leaves that class asserting against a rule set the tool no longer runs — the
+    control goes green while measuring nothing, which is a test of a guard silently
+    ceasing to test. The copies were measured identical before they were collapsed,
+    and `TheSuiteKeepsOneSPELLINGOfEachHelper` below reds if an eleventh appears; a
+    sentence here asking for one copy is what nine copies grew beside."""
     return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
 
 
@@ -349,47 +355,44 @@ class TheOtherSurfacesTheRuleNames(unittest.TestCase):
     population; they are here because the rule names the surface and a tool silent
     on a named surface reads as coverage of it."""
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_a_default_expansion_probe_prints_what_it_was_testing_for(self) -> None:
-        self.assertEqual(['probe'], self._rules('echo "token=${BRIDGE_CHANNEL_TOKEN:-unset}"\n'))
-        self.assertEqual(['probe'], self._rules('X="${SECRET-none}"\n'))
-        self.assertEqual(['probe'], self._rules('X="${SECRET:=fallback}"\n'))
+        self.assertEqual(['probe'], _rules('echo "token=${BRIDGE_CHANNEL_TOKEN:-unset}"\n'))
+        self.assertEqual(['probe'], _rules('X="${SECRET-none}"\n'))
+        self.assertEqual(['probe'], _rules('X="${SECRET:=fallback}"\n'))
 
     def test_the_alternative_expansion_is_the_prescribed_form_and_stays_green(self) -> None:
-        self.assertEqual([], self._rules('echo "${SECRET:+set}"\n'))
-        self.assertEqual([], self._rules('echo "${SECRET+set}"\n'))
+        self.assertEqual([], _rules('echo "${SECRET:+set}"\n'))
+        self.assertEqual([], _rules('echo "${SECRET+set}"\n'))
 
     def test_a_secret_redirected_into_a_log_is_a_log_leak(self) -> None:
-        self.assertIn('log', self._rules('printf \'%s\' "$SECRET" >> /var/log/provision.log\n'))
+        self.assertIn('log', _rules('printf \'%s\' "$SECRET" >> /var/log/provision.log\n'))
 
     def test_a_pipeline_carrying_a_secret_that_ends_at_a_pager_is_a_stdout_leak(self) -> None:
-        self.assertIn('stdout', self._rules('printf \'%s\' "$SECRET" | tee\n'))
+        self.assertIn('stdout', _rules('printf \'%s\' "$SECRET" | tee\n'))
 
     def test_reading_a_secret_file_back_onto_stdout(self) -> None:
-        self.assertEqual(['stdout'], self._rules('cat "$BRIDGE_DIR/kanban/writeback-token"\n'))
+        self.assertEqual(['stdout'], _rules('cat "$BRIDGE_DIR/kanban/writeback-token"\n'))
 
     def test_a_here_string_literal_into_a_secret_store_is_a_history_leak(self) -> None:
         self.assertEqual(
             ['history'],
-            self._rules('install -m 600 /dev/stdin "$D/kanban/writeback-token" <<<\'<the-token>\'\n'))
+            _rules('install -m 600 /dev/stdin "$D/kanban/writeback-token" <<<\'<the-token>\'\n'))
 
     def test_a_stderr_redirect_does_not_capture_stdout(self) -> None:
         """`2>` moves stderr. Reading it as "redirected, therefore captured" made
         `echo "$SECRET" 2>/dev/null` look safe — found by review, not by a report."""
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET" 2>/dev/null\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET" 2>/dev/null\n'))
 
     def test_a_redirect_to_stderr_is_still_a_readable_surface(self) -> None:
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET" >&2\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET" >&2\n'))
 
     def test_a_redirect_to_a_real_file_is_the_prescribed_form_and_stays_green(self) -> None:
-        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" > /run/secrets/x\n'))
-        self.assertEqual([], self._rules('echo "$SECRET" > /dev/null\n'))
+        self.assertEqual([], _rules('printf \'%s\' "$SECRET" > /run/secrets/x\n'))
+        self.assertEqual([], _rules('echo "$SECRET" > /dev/null\n'))
 
     def test_reading_a_secret_file_through_an_input_redirect(self) -> None:
-        self.assertEqual(['stdout'], self._rules('cat < "$TOKEN_FILE"\n'))
-        self.assertEqual([], self._rules('sha256sum < "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], _rules('cat < "$TOKEN_FILE"\n'))
+        self.assertEqual([], _rules('sha256sum < "$TOKEN_FILE"\n'))
 
 
 class ANameTakingPrinterResolvesTheValueFromABareNAME(unittest.TestCase):
@@ -407,9 +410,6 @@ class ANameTakingPrinterResolvesTheValueFromABareNAME(unittest.TestCase):
     name it was asked for.
     """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_printenv_and_declare_on_a_secret_name_are_stdout_leaks(self) -> None:
         self.assertTrue(lint._is_secret_value_name('BRIDGE_WEBHOOK_SECRET'))
         for body in (
@@ -418,7 +418,7 @@ class ANameTakingPrinterResolvesTheValueFromABareNAME(unittest.TestCase):
             'typeset -p BRIDGE_CHANNEL_TOKEN\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_the_name_is_not_reported_as_an_argv_leak(self) -> None:
         """`printenv` is not a shell builtin, so widening `arg_secrets` instead of
@@ -435,20 +435,20 @@ class ANameTakingPrinterResolvesTheValueFromABareNAME(unittest.TestCase):
         off within a day."""
         for body in ('printenv PATH\n', 'printenv HOME\n', 'declare -p BRIDGE_DIR\n'):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
+                self.assertEqual([], _rules(body))
 
     def test_a_name_ending_in_a_path_word_is_still_a_path(self) -> None:
         """The negative half of the vocabulary is not bypassed by this leg:
         `TOKEN_FILE` names where the value lives, not the value."""
-        self.assertEqual([], self._rules('printenv TOKEN_FILE\n'))
-        self.assertEqual([], self._rules('printenv BRIDGE_SECRET_DIR\n'))
+        self.assertEqual([], _rules('printenv TOKEN_FILE\n'))
+        self.assertEqual([], _rules('printenv BRIDGE_SECRET_DIR\n'))
 
     def test_a_pipe_stage_does_not_silence_it_either(self) -> None:
         """The same property the tail rule exists for: marking the pipeline from
         this leg is what keeps `printenv <secret> | base64` from being green while
         `printenv <secret>` reds."""
-        self.assertEqual(['stdout'], self._rules('printenv BRIDGE_WEBHOOK_SECRET | base64\n'))
-        self.assertEqual([], self._rules('printenv BRIDGE_WEBHOOK_SECRET | sha256sum\n'))
+        self.assertEqual(['stdout'], _rules('printenv BRIDGE_WEBHOOK_SECRET | base64\n'))
+        self.assertEqual([], _rules('printenv BRIDGE_WEBHOOK_SECRET | sha256sum\n'))
 
     def test_capturing_it_does_not_silence_it_either(self) -> None:
         """And nor does a command substitution: the pipeline reader and the
@@ -457,7 +457,7 @@ class ANameTakingPrinterResolvesTheValueFromABareNAME(unittest.TestCase):
         half of the same predicate."""
         self.assertEqual(
             ['argv'],
-            self._rules('curl -H "Authorization: Bearer $(printenv BRIDGE_CHANNEL_TOKEN)" '
+            _rules('curl -H "Authorization: Bearer $(printenv BRIDGE_CHANNEL_TOKEN)" '
                         'http://x/\n'))
 
     def test_every_name_taking_printer_is_reachable_from_the_stdout_arm(self) -> None:
@@ -490,9 +490,6 @@ class ASecretFileReachesStdoutHoweverItIsSPELLED(unittest.TestCase):
     all: the parsed command has an empty NAME and the path only in `input_paths()`.
     """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_all_three_spellings_of_a_captured_secret_read_are_an_argv_leak(self) -> None:
         """The twin of `TheFiveKnownMembers`' DL-321 bearer member, once per
         spelling. The first is the form that already reddened — it is the control:
@@ -503,7 +500,7 @@ class ASecretFileReachesStdoutHoweverItIsSPELLED(unittest.TestCase):
             'curl -H "Authorization: Bearer $(<"$TOKEN_FILE")" http://x/\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['argv'], self._rules(body))
+                self.assertEqual(['argv'], _rules(body))
 
     def test_a_captured_secret_read_printed_back_is_a_stdout_leak(self) -> None:
         """`echo "$(cat < f)"` — the same divergence seen through the printing arm
@@ -514,7 +511,7 @@ class ASecretFileReachesStdoutHoweverItIsSPELLED(unittest.TestCase):
             'echo "$(<"$TOKEN_FILE")"\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_the_finding_names_the_substitution_the_doc_actually_contains(self) -> None:
         findings = _scan('```bash\ncurl -H "Authorization: Bearer $(<"$TOKEN_FILE")" '
@@ -532,20 +529,20 @@ class ASecretFileReachesStdoutHoweverItIsSPELLED(unittest.TestCase):
             'export BRIDGE_CHANNEL_TOKEN="$(<"$TOKEN_FILE")"\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
+                self.assertEqual([], _rules(body))
 
     def test_a_captured_DIGEST_of_a_secret_file_stays_green(self) -> None:
         """The other green control, and it is the one that proves the predicate is
         about READERS and not about the redirect: `sha256sum` is not a reading
         command, so the same `< "$TOKEN_FILE"` is the form the rule PRESCRIBES —
         `docs/config-schema.md` says compare digests, never values."""
-        self.assertEqual([], self._rules('echo "$(sha256sum < "$TOKEN_FILE")"\n'))
+        self.assertEqual([], _rules('echo "$(sha256sum < "$TOKEN_FILE")"\n'))
 
     def test_a_bare_input_redirect_outside_a_substitution_prints_nothing(self) -> None:
         """`$(<f)` reads the file; a bare `< f` as a whole command opens it and
         prints nothing, so the empty-NAME leg must stay inside the substitution
         predicate. This is the case that says the leg is not a blanket widening."""
-        self.assertEqual([], self._rules('< "$TOKEN_FILE"\n'))
+        self.assertEqual([], _rules('< "$TOKEN_FILE"\n'))
 
 
 class RedirectionCannotBeFakedFromInsideAQuote(unittest.TestCase):
@@ -558,27 +555,24 @@ class RedirectionCannotBeFakedFromInsideAQuote(unittest.TestCase):
     therefore read off quote-aware TOKENS, never off the raw line.
     """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_a_gt_inside_a_single_quoted_payload_is_not_a_redirect(self) -> None:
         self.assertEqual(
             ['stdout'],
-            self._rules('echo "$SECRET" \'{"note":">not a redirect"}\'\n'))
+            _rules('echo "$SECRET" \'{"note":">not a redirect"}\'\n'))
 
     def test_a_gt_inside_a_double_quoted_payload_is_not_a_redirect(self) -> None:
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET is > nothing"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET is > nothing"\n'))
 
     def test_a_curl_payload_containing_a_gt_still_reds_on_its_bearer(self) -> None:
         self.assertEqual(
             ['argv'],
-            self._rules('curl -H "Authorization: Bearer $TOKEN" -d \'{"x":">"}\' http://x/\n'))
+            _rules('curl -H "Authorization: Bearer $TOKEN" -d \'{"x":">"}\' http://x/\n'))
 
     def test_a_stderr_dup_is_not_split_in_half(self) -> None:
         """`2>&1` was cut at the `&` by the segment splitter, dropping the redirect
         with it. Both of these are green ONLY if the `> f` survived the split."""
-        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" > f 2>&1\n'))
-        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" >> f 2>&1\n'))
+        self.assertEqual([], _rules('printf \'%s\' "$SECRET" > f 2>&1\n'))
+        self.assertEqual([], _rules('printf \'%s\' "$SECRET" >> f 2>&1\n'))
 
 
 class AnApostropheInsideDoubleQUOTESIsNotAQuote(unittest.TestCase):
@@ -600,22 +594,19 @@ class AnApostropheInsideDoubleQUOTESIsNotAQuote(unittest.TestCase):
     earlier command on the line turned off substitution masking for the rest of it.
     """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_the_apostrophe_is_the_only_variable_between_a_red_and_a_red(self) -> None:
         """The discriminator, pinned in BOTH directions on one payload: adding an
         apostrophe inside the double quotes must not change the verdict, and a
         genuinely single-quoted payload must still be green because the shell
         expands nothing there."""
-        self.assertEqual(['stdout'], self._rules('echo "it\'s $SECRET"\n'))
-        self.assertEqual(['stdout'], self._rules('echo "its $SECRET"\n'))
-        self.assertEqual([], self._rules('echo \'it"s $SECRET\'\n'))
+        self.assertEqual(['stdout'], _rules('echo "it\'s $SECRET"\n'))
+        self.assertEqual(['stdout'], _rules('echo "its $SECRET"\n'))
+        self.assertEqual([], _rules('echo \'it"s $SECRET\'\n'))
 
     def test_the_live_member_reds_with_an_apostrophe_in_the_message(self) -> None:
-        self.assertEqual(['stdout'], self._rules(
+        self.assertEqual(['stdout'], _rules(
             'echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"\n'))
-        self.assertEqual(['stdout'], self._rules(
+        self.assertEqual(['stdout'], _rules(
             'echo "Don\'t lose it — save this token: $BRIDGE_CHANNEL_TOKEN"\n'))
 
     def test_every_value_bearing_rule_survives_an_apostrophe(self) -> None:
@@ -628,7 +619,7 @@ class AnApostropheInsideDoubleQUOTESIsNotAQuote(unittest.TestCase):
             ('stdout', 'printf \'%s\' "don\'t: $SECRET" | base64\n'),
         ):
             with self.subTest(rule=rule, body=body.strip()):
-                self.assertEqual([rule], self._rules(body))
+                self.assertEqual([rule], _rules(body))
 
     def test_an_apostrophe_in_an_EARLIER_command_does_not_disarm_the_line(self) -> None:
         """The masker\'s copy ran over the whole logical line, so the damage was not
@@ -636,15 +627,15 @@ class AnApostropheInsideDoubleQUOTESIsNotAQuote(unittest.TestCase):
         `$( … )` is never masked, `_sub_is_secret_bearing` is never asked, and a
         captured secret READ stops being a secret anywhere on that line."""
         leak = 'curl -H "Bearer $(cat "$TOKEN_FILE")" http://x/\n'
-        self.assertEqual(['argv'], self._rules('echo "its hi" ; ' + leak))
-        self.assertEqual(['argv'], self._rules('echo "it\'s hi" ; ' + leak))
+        self.assertEqual(['argv'], _rules('echo "its hi" ; ' + leak))
+        self.assertEqual(['argv'], _rules('echo "it\'s hi" ; ' + leak))
 
     def test_single_quoting_still_suppresses_what_the_shell_suppresses(self) -> None:
         """The negative half, which is the reason the walk tracks quoting at all:
         inside `\'…\'` the shell expands nothing, and a tool that reddened there
         would red on `awk \'{print $NF}\'`."""
-        self.assertEqual([], self._rules("awk \'{print $NF}\' /etc/hosts\n"))
-        self.assertEqual([], self._rules("echo \'nothing $SECRET here\'\n"))
+        self.assertEqual([], _rules("awk \'{print $NF}\' /etc/hosts\n"))
+        self.assertEqual([], _rules("echo \'nothing $SECRET here\'\n"))
 
     def test_the_quote_state_toggle_exists_in_exactly_one_place(self) -> None:
         """The consolidation, asserted rather than described. There are no
@@ -667,27 +658,24 @@ class TheNegativeHalfOfTheVocabulary(unittest.TestCase):
     some point during construction; a lint that reds on ordinary text is one that
     gets switched off, which is the only failure mode worse than a silent one."""
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_a_word_that_merely_mentions_a_secret_is_not_a_path(self) -> None:
-        self.assertEqual([], self._rules('grep -rn token docs/\n'))
-        self.assertEqual([], self._rules('grep secret README.md\n'))
+        self.assertEqual([], _rules('grep -rn token docs/\n'))
+        self.assertEqual([], _rules('grep secret README.md\n'))
 
     def test_the_system_password_database_is_not_a_secret_store(self) -> None:
-        self.assertEqual([], self._rules('cat /etc/passwd\n'))
+        self.assertEqual([], _rules('cat /etc/passwd\n'))
 
     def test_a_name_ending_in_a_path_word_holds_a_path_not_a_value(self) -> None:
         for name in ('TOKEN_FILE', 'SECRET_PATH', 'BRIDGE_SECRET_DIR', 'TOKEN_URL'):
             with self.subTest(name=name):
-                self.assertEqual([], self._rules(f'dirname "${name}"\n'))
+                self.assertEqual([], _rules(f'dirname "${name}"\n'))
 
     def test_key_alone_is_too_common_a_word_to_mean_a_secret(self) -> None:
-        self.assertEqual([], self._rules('jq ".[$SORT_KEY]" <<<"$JSON"\n'))
-        self.assertEqual([], self._rules('echo "$CACHE_KEY"\n'))
+        self.assertEqual([], _rules('jq ".[$SORT_KEY]" <<<"$JSON"\n'))
+        self.assertEqual([], _rules('echo "$CACHE_KEY"\n'))
         # …but a QUALIFIED one is a secret, so the exclusion is narrow, not blanket.
-        self.assertEqual(['stdout'], self._rules('echo "$SSH_KEY"\n'))
-        self.assertEqual(['argv'], self._rules('openssl pkey -passin "pass:$API_KEY"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SSH_KEY"\n'))
+        self.assertEqual(['argv'], _rules('openssl pkey -passin "pass:$API_KEY"\n'))
 
 
 class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
@@ -1171,9 +1159,6 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
     next author will spell.
     """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     #: Every one of these was GREEN before the inversion.
     SILENCED_BY_ONE_PIPE = [
         'cat "$TOKEN_FILE" | base64\n',
@@ -1191,26 +1176,26 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
     def test_every_tail_that_a_pipe_used_to_silence_now_reds(self) -> None:
         for body in self.SILENCED_BY_ONE_PIPE:
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_the_pipe_is_the_only_variable_between_a_red_and_a_green(self) -> None:
         """The discriminator, pinned on one payload: piping `base64` instead of
         handing it the path must not change the verdict."""
-        self.assertEqual(['stdout'], self._rules('base64 "$TOKEN_FILE"\n'))
-        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE" | base64\n'))
+        self.assertEqual(['stdout'], _rules('base64 "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], _rules('cat "$TOKEN_FILE" | base64\n'))
 
     def test_a_tail_nobody_enumerated_reds_because_the_default_is_deny(self) -> None:
         """The PROPERTY, not the members. This name is on no list in the program —
         under the old positive enumeration that is exactly what made it safe."""
         self.assertNotIn('zzunlisted-filter', lint.STDIN_SINKS)
         self.assertNotIn('zzunlisted-filter', lint.SHELL_BUILTINS)
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET" | zzunlisted-filter\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET" | zzunlisted-filter\n'))
 
     def test_reading_a_secret_FILE_into_a_pipe_marks_the_pipeline(self) -> None:
         """`cat "$TOKEN_FILE"` carries no secret VALUE in its argv — what it is
         handed is a PATH — so nothing marked the pipeline and the tail rule read a
         secret-bearing pipeline as clean."""
-        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE" | tr -d "\\n"\n'))
+        self.assertEqual(['stdout'], _rules('cat "$TOKEN_FILE" | tr -d "\\n"\n'))
 
     def test_a_trailing_pipe_at_end_of_line_does_not_end_the_pipeline(self) -> None:
         """A pipeline continues on the next line. The splitter ended it there,
@@ -1237,7 +1222,7 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
             'printf \'%s\' "$SECRET" \\\n\n  | base64\n',
         ):
             with self.subTest(body=body):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_the_continuation_test_reads_the_BUFFER_so_it_covers_and_and(self) -> None:
         """`_CONTINUES_RE` matches `&&` as well as `|` and `\\`, so the same
@@ -1280,7 +1265,7 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
             'cat "$TOKEN_FILE" | xargs sha256sum\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_a_real_command_prefix_is_still_stripped(self) -> None:
         """The control for the line above: removing `xargs` must not have removed
@@ -1299,7 +1284,7 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
             'printf \'%s\' "$SECRET" | nohup sha256sum\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
+                self.assertEqual([], _rules(body))
 
     def test_the_finding_names_xargs_and_not_a_brace_placeholder(self) -> None:
         """`-I{}` is not a command group. The splitter treated every `{` and `}` as
@@ -1316,15 +1301,15 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
         the argv/stdout rules read carried no expansion at all and the line was
         GREEN — while its quoted twin `echo "${SECRET}"` reddened, the two spellings
         disagreeing for no reason a reader could see."""
-        self.assertEqual(['stdout'], self._rules('echo ${SECRET}\n'))
-        self.assertEqual(['stdout'], self._rules('echo "${SECRET}"\n'))
+        self.assertEqual(['stdout'], _rules('echo ${SECRET}\n'))
+        self.assertEqual(['stdout'], _rules('echo "${SECRET}"\n'))
 
     def test_the_prescribed_alternative_expansion_survives_the_narrowing(self) -> None:
         """The control in the other direction: `${VAR:+set}` is the form the rule
         PRESCRIBES for testing whether a secret is set, and reading its braces
         differently must not have made it a finding."""
-        self.assertEqual([], self._rules('if [ -n "${SECRET:+x}" ]; then echo ok; fi\n'))
-        self.assertEqual([], self._rules('cp "$D"/f{,.bak}\n'))
+        self.assertEqual([], _rules('if [ -n "${SECRET:+x}" ]; then echo ok; fi\n'))
+        self.assertEqual([], _rules('cp "$D"/f{,.bak}\n'))
 
     def test_a_real_brace_group_is_still_a_separator(self) -> None:
         """The control for the brace narrowing: a STANDALONE `{`/`}` is the shell's
@@ -1348,7 +1333,7 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
             'cat "$TOKEN_FILE" | grep -f /etc/bridge/webhook-secret-scope\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_a_reader_tail_holding_a_secret_file_still_reports_once(self) -> None:
         """ONE finding, and the one that is TRUE. `tee` is in READING_COMMANDS and
@@ -1390,7 +1375,7 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
             'printf \'%s\' "$SECRET" | ssh host cat\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_every_sink_is_admitted_by_the_rule_or_by_this_repo_s_own_docs(self) -> None:
         """The claim DL-324 makes about this list, asserted rather than restated:
@@ -1416,14 +1401,14 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
             'printf \'%s\' "$SECRET" | php artisan bridge:sign --scope=x\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
+                self.assertEqual([], _rules(body))
 
     def test_a_capturing_redirect_on_the_tail_is_still_green(self) -> None:
         """Deny-by-default is about the tail's IDENTITY; a tail whose stdout goes
         to a file captures the value however unknown the command is."""
-        self.assertEqual([], self._rules('cat "$TOKEN_FILE" | base64 > /run/secrets/x\n'))
+        self.assertEqual([], _rules('cat "$TOKEN_FILE" | base64 > /run/secrets/x\n'))
         self.assertEqual(
-            [], self._rules('echo "$SECRET" | zzunlisted-filter > /run/secrets/x\n'))
+            [], _rules('echo "$SECRET" | zzunlisted-filter > /run/secrets/x\n'))
 
     def test_the_finding_names_the_tail_that_leaked(self) -> None:
         findings = _scan('```bash\ncat "$TOKEN_FILE" | base64\n```\n')
@@ -1436,7 +1421,7 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
         log file is captured (so no `stdout` finding) and named no secret VALUE in
         its argv (so no `log` finding either) — it was green in both directions."""
         self.assertEqual(
-            ['log'], self._rules('cat "$TOKEN_FILE" >> /var/log/provision.log\n'))
+            ['log'], _rules('cat "$TOKEN_FILE" >> /var/log/provision.log\n'))
 
     def test_the_control_disabling_stdout_removes_exactly_this_finding(self) -> None:
         """Proof the red comes from the stdout rule and not from somewhere else:
@@ -1461,9 +1446,6 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
     drift.
     """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_a_here_string_onto_stdout_is_a_stdout_leak(self) -> None:
         for body in (
             'cat <<<"$BRIDGE_WEBHOOK_SECRET"\n',
@@ -1471,16 +1453,16 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
             'tr -d "\\n" <<<"$SECRET"\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_a_here_string_into_a_log_is_a_log_leak(self) -> None:
-        self.assertEqual(['log'], self._rules('cat <<<"$SECRET" >> /var/log/x.log\n'))
+        self.assertEqual(['log'], _rules('cat <<<"$SECRET" >> /var/log/x.log\n'))
 
     def test_a_captured_secret_READ_in_a_here_string_counts_too(self) -> None:
         """The value need not be spelled `$SECRET`: a substitution that puts a
         secret FILE on its stdout is the same act, and the pipeline mark already
         knew it — the here-string was simply never asked."""
-        self.assertEqual(['stdout'], self._rules('cat <<<"$(cat "$TOKEN_FILE")"\n'))
+        self.assertEqual(['stdout'], _rules('cat <<<"$(cat "$TOKEN_FILE")"\n'))
 
     def test_a_here_string_marks_the_pipeline_for_the_tail_rule(self) -> None:
         findings = _scan('```bash\ncat <<<"$SECRET" | base64\n```\n')
@@ -1493,20 +1475,20 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
         green before this leg existed and is green after it — measured, not
         assumed, because a leg that reddens a form the rule PRESCRIBES is how a
         lint gets switched off."""
-        self.assertEqual([], self._rules('sha256sum <<<"$SECRET"\n'))
-        self.assertEqual([], self._rules('sha256sum <<<"$(cat "$TOKEN_FILE")"\n'))
+        self.assertEqual([], _rules('sha256sum <<<"$SECRET"\n'))
+        self.assertEqual([], _rules('sha256sum <<<"$(cat "$TOKEN_FILE")"\n'))
 
     def test_a_here_string_holding_a_PATH_is_not_a_value(self) -> None:
-        self.assertEqual([], self._rules('cat <<<"$TOKEN_FILE"\n'))
+        self.assertEqual([], _rules('cat <<<"$TOKEN_FILE"\n'))
 
     def test_it_is_never_reported_as_an_argv_leak(self) -> None:
         """The reason the here-string is cut out before tokenizing, kept: the
         parent shell writes it to the child's STDIN, so /proc/<pid>/cmdline carries
         nothing. A message saying otherwise would be false."""
-        self.assertNotIn('argv', self._rules('cat <<<"$BRIDGE_WEBHOOK_SECRET"\n'))
-        self.assertEqual(['stdout'], self._rules('cat <<<"$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertNotIn('argv', _rules('cat <<<"$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertEqual(['stdout'], _rules('cat <<<"$BRIDGE_WEBHOOK_SECRET"\n'))
         # The same value handed over as an ARGUMENT does reach the argument list.
-        self.assertIn('argv', self._rules('cat "$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertIn('argv', _rules('cat "$BRIDGE_WEBHOOK_SECRET"\n'))
 
     def test_a_quoted_LITERAL_that_merely_SPELLS_one_is_not_a_here_string(self) -> None:
         """`<<<` was located by a regex over the raw text, which cannot tell a
@@ -1515,11 +1497,11 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
         the operand fed only the `history` rule, and a FINDING the moment it fed
         the value rules: both of these reddened on the intermediate build, against
         text the shell never expands."""
-        self.assertEqual([], self._rules(
+        self.assertEqual([], _rules(
             'echo \'a <<<"$SECRET" b\' >> /var/log/x.log\n'))
-        self.assertEqual([], self._rules('grep \'<<<"$SECRET"\' f\n'))
+        self.assertEqual([], _rules('grep \'<<<"$SECRET"\' f\n'))
         # The same operator UNQUOTED is a here-string, and does red.
-        self.assertEqual(['log'], self._rules('cat <<<"$SECRET" >> /var/log/x.log\n'))
+        self.assertEqual(['log'], _rules('cat <<<"$SECRET" >> /var/log/x.log\n'))
 
     def test_the_operand_runs_to_an_unquoted_space_and_the_LAST_one_wins(self) -> None:
         """Two bounds of the operand read. `<<<"one two $SECRET"` is ONE operand,
@@ -1527,9 +1509,9 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
         been read as ARGUMENTS and reported under `argv`, a surface a here-string
         never reaches. And where a command carries more than one, the shell feeds
         it the LAST, so that is the one read."""
-        self.assertEqual(['stdout'], self._rules('cat <<<"one two $SECRET"\n'))
-        self.assertEqual(['stdout'], self._rules('cat <<<"$A" <<<"$SECRET"\n'))
-        self.assertEqual([], self._rules('cat <<<"$SECRET" <<<"$A"\n'))
+        self.assertEqual(['stdout'], _rules('cat <<<"one two $SECRET"\n'))
+        self.assertEqual(['stdout'], _rules('cat <<<"$A" <<<"$SECRET"\n'))
+        self.assertEqual([], _rules('cat <<<"$SECRET" <<<"$A"\n'))
 
     def test_the_history_leg_still_owns_the_LITERAL_spelling(self) -> None:
         """The one leg that already read here-strings, unchanged: a LITERAL payload
@@ -1537,7 +1519,7 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
         both."""
         self.assertEqual(
             ['history'],
-            self._rules('install -m 600 /dev/stdin "$D/kanban/writeback-token" '
+            _rules('install -m 600 /dev/stdin "$D/kanban/writeback-token" '
                         "<<<'<the-token>'\n"))
 
 
@@ -1800,9 +1782,6 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
             )),
     }
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
-
     def test_the_bounds_NAMED_upstairs_are_exactly_the_bounds_pinned_here(self) -> None:
         """The drift guard the three counts should have been.
 
@@ -1955,37 +1934,37 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         third case is the red twin the bound is measured against — the same command
         on the populated file, which is the finding the marker exists to produce.
         """
-        self.assertEqual(['stdout'], self._rules('cat .env.example\n'))
-        self.assertEqual([], self._rules('cp .env.example .env\n'))
-        self.assertEqual(['stdout'], self._rules('cat .env\n'))
+        self.assertEqual(['stdout'], _rules('cat .env.example\n'))
+        self.assertEqual([], _rules('cp .env.example .env\n'))
+        self.assertEqual(['stdout'], _rules('cat .env\n'))
 
     def test_a_four_space_INDENTED_block_is_not_a_fence(self) -> None:
         """Only fences are found, so an indented block is invisible rather than
         merely unparsed. The same bytes inside a fence red."""
         self.assertEqual([], [f.rule for f in _scan(
             'Read it back yourself:\n\n    echo "$BRIDGE_WEBHOOK_SECRET"\n\ndone.\n')])
-        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
 
     def test_a_value_routed_through_several_VARIABLES_is_not_followed(self) -> None:
         """Only a NAME the vocabulary recognises is read as holding a secret, so one
         assignment is enough to lose the value."""
-        self.assertEqual([], self._rules('X="$SECRET"\necho "$X"\n'))
-        self.assertEqual([], self._rules('X="$SECRET"\nY="$X"\necho "$Y"\n'))
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET"\n'))
+        self.assertEqual([], _rules('X="$SECRET"\necho "$X"\n'))
+        self.assertEqual([], _rules('X="$SECRET"\nY="$X"\necho "$Y"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET"\n'))
 
     def test_a_value_routed_through_a_FUNCTION_parameter_is_not_followed(self) -> None:
         """A function BODY's commands are read as ordinary top-level commands — so a
         body that NAMES a secret still reds, and this bound is not "functions are
         invisible". What is lost is the value handed in as a PARAMETER."""
-        self.assertEqual([], self._rules('show() { cat "$1"; }\nshow "$TOKEN_FILE"\n'))
-        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE"\n'))
-        self.assertEqual(['stdout'], self._rules('show() { cat "$TOKEN_FILE"; }\nshow\n'))
+        self.assertEqual([], _rules('show() { cat "$1"; }\nshow "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], _rules('cat "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], _rules('show() { cat "$TOKEN_FILE"; }\nshow\n'))
 
     def test_a_value_routed_through_a_LOOP_variable_is_not_followed(self) -> None:
         """The same act through a loop variable rather than a parameter."""
-        self.assertEqual([], self._rules(
+        self.assertEqual([], _rules(
             'for f in "$TOKEN_FILE"; do cat "$f"; done\n'))
-        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], _rules('cat "$TOKEN_FILE"\n'))
 
     def test_an_ALIAS_body_is_never_resolved(self) -> None:
         """`alias` is a shell builtin, so the `argv` rule skips it, and it is not a
@@ -1994,8 +1973,8 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         for body in ('alias leak=\'echo "$SECRET"\'\nleak\n',
                      'alias leak="echo $SECRET"\nleak\n'):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET"\n'))
+                self.assertEqual([], _rules(body))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET"\n'))
 
     def test_an_eval_STRING_OPERAND_is_not_recursed_into(self) -> None:
         """Read as an ordinary argument, exactly as `sh -c`'s is — and because
@@ -2005,17 +1984,17 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                      'eval "echo \\$SECRET"\n',
                      "eval 'echo \"$SECRET\"'\n"):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET"\n'))
+                self.assertEqual([], _rules(body))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET"\n'))
 
     def test_a_pipeline_TAIL_that_is_a_GROUP_or_SUBSHELL_loses_the_mark(self) -> None:
         """`_split_segments` ends the pipeline at the standalone `{` / `(`, so the
         tail begins a pipeline of its own where `idx > 0` is false and the tail rule
         never runs. `|&` is a third spelling: it reads as `|` followed by a command
         named `&`, so the line reds naming text no doc contains."""
-        self.assertEqual([], self._rules('echo "$SECRET" | { base64; }\n'))
-        self.assertEqual([], self._rules('echo "$SECRET" | (base64)\n'))
-        self.assertEqual(['stdout'], self._rules('echo "$SECRET" | base64\n'))
+        self.assertEqual([], _rules('echo "$SECRET" | { base64; }\n'))
+        self.assertEqual([], _rules('echo "$SECRET" | (base64)\n'))
+        self.assertEqual(['stdout'], _rules('echo "$SECRET" | base64\n'))
         amp = _scan('```bash\necho "$SECRET" |& base64\n```\n')
         self.assertEqual(['stdout'], [f.rule for f in amp])
         self.assertIn('ends at `&`', amp[0].message)
@@ -2030,7 +2009,7 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         findings = _scan('```bash\nprintf \'%s\' "$SECRET" | timeout 5 sha256sum\n```\n')
         self.assertEqual(['stdout'], [f.rule for f in findings])
         self.assertIn('ends at `5`', findings[0].message)
-        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" | sudo sha256sum\n'))
+        self.assertEqual([], _rules('printf \'%s\' "$SECRET" | sudo sha256sum\n'))
 
     def test_a_WHOLE_ENVIRONMENT_dump_names_nothing_the_walk_can_find(self) -> None:
         """Bare `env` / `printenv` resolves every value while naming none, so there
@@ -2039,16 +2018,16 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         not a broken vocabulary."""
         for body in ('env\n', 'printenv\n', 'env | grep SECRET\n'):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
-        self.assertEqual(['stdout'], self._rules('printenv BRIDGE_WEBHOOK_SECRET\n'))
+                self.assertEqual([], _rules(body))
+        self.assertEqual(['stdout'], _rules('printenv BRIDGE_WEBHOOK_SECRET\n'))
 
     def test_a_bare_PRINTER_with_no_operand_is_the_same_bound(self) -> None:
         """`declare -p` and friends with no operand dump the whole set."""
         for body in ('declare -p\n', 'typeset -p\n', 'export -p\n', 'set\n'):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
+                self.assertEqual([], _rules(body))
         self.assertEqual(['stdout'],
-                         self._rules('declare -p BRIDGE_WEBHOOK_SECRET\n'))
+                         _rules('declare -p BRIDGE_WEBHOOK_SECRET\n'))
 
     def test_a_SINK_whose_stdout_is_its_stdin_in_another_MODE(self) -> None:
         """Membership in STDIN_SINKS is per-COMMAND, not per-mode. `openssl` is
@@ -2056,12 +2035,12 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         prints the value and is green. Its argv-borne twin — the DL-322 member — is
         caught by the `argv` rule and does not depend on this leg, which is what
         keeps the bound narrow."""
-        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" | openssl base64\n'))
-        self.assertEqual([], self._rules(
+        self.assertEqual([], _rules('printf \'%s\' "$SECRET" | openssl base64\n'))
+        self.assertEqual([], _rules(
             'printf \'%s\' "$SECRET" | openssl dgst -sha256\n'))
-        self.assertEqual(['stdout'], self._rules('printf \'%s\' "$SECRET" | base64\n'))
+        self.assertEqual(['stdout'], _rules('printf \'%s\' "$SECRET" | base64\n'))
         self.assertEqual(['argv'],
-                         self._rules('openssl dgst -sha256 -hmac "$SECRET" -hex\n'))
+                         _rules('openssl dgst -sha256 -hmac "$SECRET" -hex\n'))
 
     def test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction(self) -> None:
         """The second false positive, and the one whose MESSAGE is false: `tee <path>`
@@ -2097,7 +2076,7 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
             "cat <<'EOF' > /etc/bridge/app.conf\nsecret = \"$BRIDGE_SECRET\"\nEOF\n",
         ):
             with self.subTest(loud=body.strip()):
-                self.assertEqual(['argv'], self._rules(body))
+                self.assertEqual(['argv'], _rules(body))
         for body in (
             'cat <<EOF\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
             'cat <<EOF\nexport TOKEN=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
@@ -2106,14 +2085,14 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
             'cat <<EOF | base64\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
         ):
             with self.subTest(silent=body.strip()):
-                self.assertEqual([], self._rules(body))
+                self.assertEqual([], _rules(body))
         # The control the silent arm needs: the same expansions OUTSIDE a heredoc,
         # where the reader is quiet about two of them for the same reason and loud
         # about the third — so the greens above are the heredoc's shape and not a
         # vocabulary that never recognised `$BRIDGE_CHANNEL_TOKEN` at all.
-        self.assertEqual([], self._rules('token=$BRIDGE_CHANNEL_TOKEN\n'))
-        self.assertEqual([], self._rules('export TOKEN=$BRIDGE_CHANNEL_TOKEN\n'))
-        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_CHANNEL_TOKEN"\n'))
+        self.assertEqual([], _rules('token=$BRIDGE_CHANNEL_TOKEN\n'))
+        self.assertEqual([], _rules('export TOKEN=$BRIDGE_CHANNEL_TOKEN\n'))
+        self.assertEqual(['stdout'], _rules('echo "$BRIDGE_CHANNEL_TOKEN"\n'))
 
     def test_a_ROOT_PROMPT_line_in_a_prompt_style_fence_is_never_read(self) -> None:
         """`_strip_comment` runs BEFORE the prompt strip, and to it a `#` starting a
@@ -2159,7 +2138,7 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         the backticks makes the whole body invisible rather than merely unparsed."""
         self.assertEqual([], [f.rule for f in _scan(
             '> ```bash\n> echo "$BRIDGE_WEBHOOK_SECRET"\n> ```\n')])
-        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
 
     def test_a_pandoc_or_quarto_INFO_STRING_reads_as_a_non_shell_fence(self) -> None:
         """Braces around the language are not in SHELL_INFO."""
@@ -2167,15 +2146,15 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
             with self.subTest(info=info):
                 self.assertEqual([], [f.rule for f in _scan(
                     f'```{info}\necho "$BRIDGE_WEBHOOK_SECRET"\n```\n')])
-        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
 
     def test_there_is_no_fd_TABLE_so_an_opened_secret_file_is_lost(self) -> None:
         """`exec 3<` a secret file and the reading command's input path is `&3`;
         nothing carries the opener's path forward to it. Spelled without the fd —
         the same act — it reds."""
-        self.assertEqual([], self._rules(
+        self.assertEqual([], _rules(
             'exec 3< /etc/bridge/webhook-secret-scope\ncat <&3\n'))
-        self.assertEqual(['stdout'], self._rules(
+        self.assertEqual(['stdout'], _rules(
             'cat < /etc/bridge/webhook-secret-scope\n'))
 
     def test_a_single_quoted_sh_c_OPERAND_is_not_recursed_into(self) -> None:
@@ -2188,17 +2167,17 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
             'bash -c \'echo "$BRIDGE_WEBHOOK_SECRET"\'\n',
         ):
             with self.subTest(body=body.strip()):
-                self.assertEqual([], self._rules(body))
-        self.assertEqual(['argv'], self._rules('sh -c "echo $BRIDGE_WEBHOOK_SECRET"\n'))
+                self.assertEqual([], _rules(body))
+        self.assertEqual(['argv'], _rules('sh -c "echo $BRIDGE_WEBHOOK_SECRET"\n'))
 
     def test_a_NESTED_substitution_is_read_one_level_deep_on_the_FILE_leg(self) -> None:
         """`$(cat <secret file>)` marks its enclosing command; wrapped one level
         further it does not. A nested secret VALUE expansion is unaffected — the
         expansion walk is not depth-limited — which is what makes this a bound on
         the FILE leg specifically."""
-        self.assertEqual(['stdout'], self._rules('echo "$(cat "$TOKEN_FILE")"\n'))
-        self.assertEqual([], self._rules('echo "$(echo "$(cat "$TOKEN_FILE")")"\n'))
-        self.assertEqual(['stdout'], self._rules('echo "$(echo "$SECRET")"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$(cat "$TOKEN_FILE")"\n'))
+        self.assertEqual([], _rules('echo "$(echo "$(cat "$TOKEN_FILE")")"\n'))
+        self.assertEqual(['stdout'], _rules('echo "$(echo "$SECRET")"\n'))
 
 
 class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):
@@ -2296,6 +2275,129 @@ class TheCommandLineContract(unittest.TestCase):
         with open(os.path.join(_REPO, 'docs', 'config-schema.md'), encoding='utf-8') as fh:
             schema = fh.read()
         self.assertIn('### Handling a secret VALUE (not just its file)', schema)
+
+
+class _Alpha(ast.NodeTransformer):
+    """Rewrites a function's own PARAMETER names to positional placeholders.
+
+    Without this, `def _r(self, b): return sorted(b)` and `def _r(self, body):
+    return sorted(body)` are two shapes rather than one, and a copy that drifted
+    only in what it called its argument would be invisible to the guard below. Only
+    the parameters are renamed: everything a body reaches from outside — the module
+    helpers, the tool, the fixtures — keeps its name, because two helpers calling
+    DIFFERENT things are not copies of each other.
+
+    ⚠ A LEADING `self`/`cls` IS RENAMED APART FROM THE REST, NOT NUMBERED WITH IT.
+    Numbering it made a METHOD copy and the MODULE-LEVEL function it duplicates
+    differ by one position on every argument, which is precisely the pair this
+    guard exists to catch — measured, before it was fixed: re-minting one of the
+    nine `_rules` methods left the duplicate leg GREEN.
+    """
+
+    def __init__(self, fn: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        args = fn.args
+        names = [a.arg for a in (list(args.posonlyargs) + list(args.args)
+                                 + list(args.kwonlyargs))]
+        names += [a.arg for a in (args.vararg, args.kwarg) if a is not None]
+        self.rename: dict[str, str] = {}
+        if names and names[0] in ('self', 'cls'):
+            self.rename[names.pop(0)] = '_receiver'
+        self.rename.update({name: f'_a{i}' for i, name in enumerate(names)})
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        if node.id in self.rename:
+            return ast.Name(id=self.rename[node.id], ctx=node.ctx)
+        return node
+
+    def visit_arg(self, node: ast.arg) -> ast.arg:
+        return ast.arg(arg=self.rename.get(node.arg, node.arg))
+
+
+class TheSuiteKeepsOneSPELLINGOfEachHelper(unittest.TestCase):
+    """THE CONSOLIDATION, ASSERTED RATHER THAN DESCRIBED (card#8526).
+
+    Nine classes here each carried their own byte-identical `_rules`, and every one
+    of them was a place a rule change could fail to land. What makes that shape
+    dangerous rather than untidy is the DIRECTION it fails in: the copy left behind
+    keeps passing, because it is still asserting a true thing about a rule set
+    nothing runs any more. Nothing reds. `AnApostropheInsideDoubleQUOTESIsNotAQuote`
+    holds the same guard for the TOOL's quote walk, for the same reason and after
+    the same defect.
+
+    ⚠ SCOPE, STATED TO EQUAL THE PREDICATE. This reads the HELPERS of this module —
+    every module-level function and every method whose name does not start with
+    `test_` and is not a dunder — and requires no two of them to share a body. It
+    says nothing about the `test_` methods, two of which deliberately assert the
+    same thing from two different bounds' points of view, and nothing about any
+    other file.
+    """
+
+    @staticmethod
+    def _helper_bodies(source: str) -> dict[str, list[str]]:
+        """`{normalised body: [qualified names]}` for the helpers in `source`.
+
+        Normalised through `ast` and with docstrings dropped, because a literal-text
+        grep under-counts: a copy that drifted in whitespace, in a docstring or in
+        the name of its parameter is still a copy.
+        """
+        tree = ast.parse(source)
+        found: dict[str, list[str]] = {}
+        owners: list[tuple[str, ast.AST]] = [('', tree)]
+        owners += [(n.name, n) for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+        for owner, node in owners:
+            for fn in getattr(node, 'body', []):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if fn.name.startswith('test_') or fn.name.startswith('__'):
+                    continue
+                body = [st for st in fn.body if not (
+                    isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant)
+                    and isinstance(st.value.value, str))]
+                if not body:
+                    continue
+                key = ''.join(ast.dump(_Alpha(fn).visit(st)) for st in body)
+                found.setdefault(key, []).append(f'{owner or "<module>"}.{fn.name}')
+        return found
+
+    def setUp(self) -> None:
+        with open(os.path.abspath(__file__), encoding='utf-8') as fh:
+            self.helpers = self._helper_bodies(fh.read())
+
+    def test_no_two_helpers_in_this_module_share_a_body(self) -> None:
+        copies = {names[0]: names for names in self.helpers.values() if len(names) > 1}
+        self.assertEqual({}, copies,
+                         'hoist these to one definition — a copy left behind keeps '
+                         'passing against a rule set nothing runs')
+
+    def test_the_helper_this_was_filed_for_is_in_the_denominator(self) -> None:
+        """The leg that tests the guard's own premise: a green above means nothing
+        if the walk enumerated no helpers, and `_rules` is the one the class item
+        was filed about, so it is named here rather than counted."""
+        names = [n for names in self.helpers.values() for n in names]
+        self.assertEqual(['<module>._rules'], [n for n in names if n.endswith('._rules')])
+
+    def test_the_predicate_can_actually_SEE_a_duplicate(self) -> None:
+        """The control. Without it a walk that silently enumerated nothing would
+        report the same clean as a suite that really holds one spelling of each.
+
+        The sample is the shape card#8526 was filed on and not a convenient one: a
+        module-level helper, a METHOD duplicating it, and a second method that
+        renamed the argument and grew a docstring. All three must come back as one
+        group — the method/function pair is the leg that was measured GREEN before
+        `_Alpha` stopped numbering the receiver with the rest.
+        """
+        twins = self._helper_bodies(
+            'def _r(body):\n'
+            '    return sorted(body)\n'
+            'class A:\n'
+            '    def _r(self, body):\n'
+            '        return sorted(body)\n'
+            'class B:\n'
+            '    def _r(self, b):\n'
+            '        """one docstring"""\n'
+            '        return sorted(  b  )\n')
+        self.assertEqual([['<module>._r', 'A._r', 'B._r']],
+                         [n for n in twins.values() if len(n) > 1])
 
 
 if __name__ == '__main__':
