@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-09-06
+
 ### Added
 
 - **card#8784 (DL-347)** — **`bridge:stats` now answers the three questions the divergence ledger's docblock had been promising with no reader: when a divergence started, whether it is still happening, and how often.** DL-300 made a repeat of a divergence count on the row it already has rather than append one, and said so in as many words — *"the row still answers when it started, whether it is still happening, and how often"*. **No shipped surface answered any of the three.** `observations` and `last_seen_at` had a write site and no read site anywhere in `app/`; the only consumer of the table counted rows by `disposition` and projected neither field, nor `site`, `card_id`, `card_board` or `mapped_board`.
