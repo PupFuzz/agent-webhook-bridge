@@ -20,6 +20,11 @@ use Illuminate\Database\Eloquent\Model;
  * appending, which is what keeps a never-pruned table bounded by the number of distinct
  * divergences an install has ever had rather than by how often its cron runs (DL-300
  * Decision 4). `created_at` is the FIRST sighting and is never rewritten.
+ *
+ * ⚑ `observations` COUNTS EVERY SIGHTING, not the repeats: the insert takes the column
+ * default of 1 and each later sighting increments it, so a divergence seen once reads 1.
+ * `bridge:stats` renders the triple per divergence (card#8784 / DL-347) — until it did,
+ * both columns were written on every observation and read by nothing.
  */
 class WritebackBoardDivergence extends Model
 {

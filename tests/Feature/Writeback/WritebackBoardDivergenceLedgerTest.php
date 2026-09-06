@@ -364,6 +364,111 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
         ConsoleTable::assertRow($recorded, 'recorded (a divergent card reached a write site)', '1');
     }
 
+    public function test_bridge_stats_answers_when_it_started_still_happening_and_how_often(): void
+    {
+        // ⭐ THE THREE ANSWERS THE LEDGER'S DOCBLOCK PROMISES, ON A SURFACE (card#8784).
+        // `observations` and `last_seen_at` were written on every observation from the day
+        // DL-300 shipped and read by NOTHING: `bridge:stats` counted rows by disposition and
+        // projected no field, so the promise was true of the TABLE and false of every surface
+        // an operator has. This is the leg that makes it true; the alternative disposition
+        // (drop the two columns) was ruled against.
+        //
+        // ⛔ THE MOVEMENT IS THE ASSERTION, not the presence of the columns. A cell rendered
+        // once and never again is the same dead field wearing a table, and a hardcoded row
+        // would satisfy any single render. So the SAME divergence is observed twice, two hours
+        // apart, and the same row must keep its first-seen, move its last-seen, and count up.
+        $this->fakeArchive();
+        $first = CarbonImmutable::parse('2026-08-22T09:00:00+00:00');
+        $this->travelTo($first);
+        $this->observe(9);
+
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $once = Artisan::output();
+        // ONE sighting reads `1` — the insert takes the column's default and the first
+        // observation is counted, so a single-observation divergence is never blank and never
+        // `0`; both timestamps are the same instant, which is what "seen once" looks like.
+        ConsoleTable::assertCells($once, [
+            BoardDivergenceLedger::DISPOSITION_RECORDED, '9', '12 -> 8',
+            $first->toDateTimeString(), $first->toDateTimeString(), '1',
+        ]);
+        // The site, whole, on its own line — the field an operator acts on. Its line number
+        // moves with any edit above this call, so the assertion is on the part that names the
+        // site and not on the digits.
+        $this->assertStringContainsString('at '.self::class.'->observe (', $once);
+        // ⛔ THE CAPTION IS A CLAIM ABOUT WHICH ROWS ARE ON SCREEN, AND IT IS PINNED IN BOTH
+        // DIRECTIONS. The cap test can only watch the branch where the cap BITES; this is the
+        // other one, and it was a live hole — a caption that announced a cap unconditionally
+        // survived every other assertion here. One divergence is the WHOLE population, so
+        // saying "the 10 most recently seen of 1" would present a complete table as a
+        // truncated sample and send an operator looking for a tail that does not exist. That
+        // is the same defect as a silent cap, pointing the other way.
+        $this->assertStringContainsString(
+            'writeback board divergences — each distinct observation, most recently seen first:',
+            $once,
+        );
+        $this->assertStringNotContainsString('most recently seen of', $once);
+
+        $again = $first->addHours(2);
+        $this->travelTo($again);
+        $this->observe(9);
+        $this->travelBack();
+
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $twice = Artisan::output();
+        // ⭐ ONE ROW, THREE CELLS, EACH DOING WHAT ITS HEADING SAYS: `first seen` did not move,
+        // `last seen` did, `observations` counted. A row that rendered `last_seen_at` under
+        // both headings, or a count frozen at its default, reds here and nowhere else.
+        ConsoleTable::assertCells($twice, [
+            BoardDivergenceLedger::DISPOSITION_RECORDED, '9', '12 -> 8',
+            $first->toDateTimeString(), $again->toDateTimeString(), '2',
+        ]);
+        // …and still ONE row: the count moved because the observation repeated, not because a
+        // second row appeared, which is DL-300 Decision 4's whole claim about this table.
+        ConsoleTable::assertRow($twice, 'writeback board divergences', '1');
+    }
+
+    public function test_bridge_stats_details_no_divergence_when_there_is_none(): void
+    {
+        // PAIRED, because an absence alone certifies whatever replaces it: the always-printed
+        // count row is the presence witness, and the detail table is what must be absent. The
+        // zero is the reason it CAN be absent — an install that has never diverged still gets
+        // `0` and `NOT MEASURED` from the rows above, so a missing detail table is never the
+        // only signal an operator has (the defect DL-300 printed the zero to avoid).
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $out = Artisan::output();
+
+        ConsoleTable::assertRow($out, 'writeback board divergences', '0');
+        $this->assertStringNotContainsString('most recently seen', $out);
+        $this->assertStringNotContainsString('observations', $out);
+    }
+
+    public function test_bridge_stats_names_the_cap_and_shows_the_most_recent_when_it_bites(): void
+    {
+        // The cap is a claim about WHICH divergences are on screen, and a truncation that
+        // showed the wrong end of the population would be invisible without this: eleven
+        // distinct divergences, one per hour, and the surface must say `10 … of 11`, carry the
+        // NEWEST, and not carry the OLDEST. Presence and absence in one measurement, each
+        // bound to the hour that identifies it.
+        $this->fakeArchive();
+        $start = CarbonImmutable::parse('2026-08-22T09:00:00+00:00');
+
+        foreach (range(0, 10) as $n) {
+            $this->travelTo($start->addHours($n));
+            $this->observe(100 + $n);
+        }
+        $this->travelBack();
+
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('the 10 most recently seen of 11:', $out);
+        ConsoleTable::assertCells($out, [
+            BoardDivergenceLedger::DISPOSITION_RECORDED, '110', '12 -> 8',
+            $start->addHours(10)->toDateTimeString(), $start->addHours(10)->toDateTimeString(), '1',
+        ]);
+        $this->assertStringNotContainsString($start->toDateTimeString(), $out);
+    }
+
     // ------------------------------------------------------------------------------ helpers
 
     private function mapping(): WritebackMapping
@@ -375,6 +480,18 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
     private function card(int $id, mixed $board): array
     {
         return ['id' => $id, 'board_id' => $board, 'workflow_stage_id' => 50];
+    }
+
+    /**
+     * Observe ONE divergence on the record arm — from ONE call site, which is the point of
+     * the helper rather than a tidy-up: the stored `site` is part of the observation's
+     * identity, so two calls written on two LINES are two distinct observations and could
+     * never be a repeat. Production repeats arrive from the same code path (an hourly
+     * `bridge:reconcile`), and this is what models that.
+     */
+    private function observe(int $cardId): void
+    {
+        MappedBoardGuard::boardContext($this->card($cardId, self::FOREIGN_BOARD), $this->mapping());
     }
 
     /** Every archive answers "archived", so the collapse takes its success arm. */

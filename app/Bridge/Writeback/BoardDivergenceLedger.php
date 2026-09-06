@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Console\Commands\Bridge\StatsCommand;
 use App\Models\WritebackBoardDivergence;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -46,6 +47,13 @@ use Throwable;
  * `observations` and `last_seen_at`, so the row still answers when it started, whether it
  * is still happening, and how often — the three things N identical rows made the reader
  * count for themselves.
+ *
+ * ⚑ AND THE READER IS `bridge:stats` ({@see StatsCommand}), which prints those three per
+ * divergence. It is named here because from DL-300 until card#8784 it did NOT exist: the
+ * sentence above was true of the ROW and false of every surface an operator had, because
+ * the command counted rows by disposition and projected neither field (DL-347). A claim
+ * about what a reader can obtain is a claim about a READER; if this sentence ever outlives
+ * that command's detail table it is false again, and the two columns are dead weight.
  */
 final class BoardDivergenceLedger
 {
