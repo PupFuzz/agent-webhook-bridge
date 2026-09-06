@@ -12,7 +12,7 @@ use ReflectionMethod;
  * What `bridge:check`'s inventory prints, and on which channel (DL-242 stage 8).
  *
  * WHY IT IS A UNIT AND NOT MORE GOLDEN FIXTURES. The composition has five predicates and
- * ten arms; the 33-fixture corpus renders six of them and never the other four. It renders
+ * ten arms; the golden corpus renders six of them and never the other four. It renders
  * neither zero-arm (every fixture has both an un-requested opt-in probe and a not-run
  * plane), never a not-run population with no recorded reason, and never the
  * internal-defect disclosure — so before this file, DELETING the whole `bridge:check
@@ -42,7 +42,7 @@ use ReflectionMethod;
  * nothing"*, and the first half was FALSE in the direction that matters. `GoldenCapture`
  * reads an UNDECORATED `BufferedOutput`, where `line()` and `warn()` write identical bytes —
  * so the corpus witnesses NEITHER channel, and swapping the head line onto `warn` would have
- * painted a yellow warning across every healthy operator run with all 33 goldens unchanged.
+ * painted a yellow warning across every healthy operator run with every golden unchanged.
  * A residual stated narrower than the truth is worse than one left unstated: it reads as a
  * bound that was measured.
  *

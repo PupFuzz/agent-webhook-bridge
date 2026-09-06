@@ -20,9 +20,9 @@ use Tests\Support\FindingFactories;
  * WHY THE GOLDEN CORPUS CANNOT ANSWER THIS, and why believing it could was the defect this
  * file closes. `GoldenCapture` reads `Artisan::output()`, an UNDECORATED `BufferedOutput`:
  * the formatter strips `<warning>`/`<error>`/`<info>` to bare text, so `line()`, `warn()`,
- * `error()` and `info()` write BYTE-IDENTICAL output there. All 33 fixtures are therefore
+ * `error()` and `info()` write BYTE-IDENTICAL output there. EVERY fixture is therefore
  * blind to every channel choice, not merely to the rare ones — replacing the inventory
- * head's `$this->line(...)` with `$this->warn(...)` leaves all 33 goldens unchanged while
+ * head's `$this->line(...)` with `$this->warn(...)` leaves every golden unchanged while
  * rendering a yellow warning across every healthy operator run. An earlier revision of this
  * stage recorded the residual as *"the `line` channel is exercised by all 33 goldens; the
  * `warn` channel by none"*, which was narrower than the truth in the direction that matters:

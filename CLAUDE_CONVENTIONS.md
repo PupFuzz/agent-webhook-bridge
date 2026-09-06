@@ -142,6 +142,24 @@ The why (fail-closed, redelivery contract, crosstalk risk) is impossible to deri
 
 Class-level docblocks are used for shapes where the field semantics aren't obvious from names alone (`Actor`, `ReactionTarget`, `EventDto`). Method-level docblocks are used when the behaviour has a non-obvious invariant not captured by the PHPDoc type annotations. Trivially-named one-liners don't get docblocks.
 
+## Derived figures
+
+**A number a program can compute is never written down as a number.** Where a tool, a test or a command derives a figure — findings, files, tags, bounds, payloads, fixtures, registered checks, corpus size — that program owns it, and prose names the program instead of quoting its output. This holds on every prose surface an author writes: `docs/`, the root `CLAUDE_*.md`, PHP docblocks, workflow headers, and a tool's own module docstring. **No general check enforces it** (operator ruling, card#8555: no new gate, nothing new may block a merge). CI guards a few specific figures, where one earned it, and the shape of that guard is the point: the fence suite ties the bounds its docstring DISCLOSES to the bounds its `PINS` registry pins **by NAME and not by count** (`assertEqual(disclosed, set(PINS))`), and each pinned bound carries its payloads and their expected directions, so widening a marker reds the named arm rather than moving a total nobody re-reads. Nothing generic reads prose for figures, and DL-350 owns why the broad check was declined — this is a rule an author follows and a reviewer reads for.
+
+**What goes wrong is DRIFT, not invention.** The worked case in this repo was TRUE at the commit that wrote it and false a few commits later: the program recomputes, the sentence does not, and a reader who cannot see the program acts on the stale figure with no way to tell. ⛔ **So writing a FRESHER number is not the fix** — it is the same defect with a longer fuse, and it is the move that has re-minted this class in this repo more than once.
+
+**Two treatments. The first is preferred wherever a reader can follow a pointer:**
+
+- **DELETE it and name the owner.** Say what the figure MEANS and where it is derived — *"the harness owns how many"*, *"how many bounds and payloads there are is `PINS` in `bin/test_check_doc_secret_fences.py`"*. Where a figure must be re-derivable inline, give the **recipe** (`python3 bin/doc-fence-census.py`), never one run's output.
+- **GUARD it** — a test that reds when the two copies diverge — only where the consumer genuinely cannot follow a pointer, such as a literal a workflow's shell has to carry inline. A guard is machinery that then needs maintaining itself; do not reach for one where a deletion would do.
+
+**Four things are NOT members, and reading them as members is how a fix round re-mints the class in fresh prose:**
+
+- **A figure checked by its own sentence.** *"Seen to fail four ways"* followed by the four arms is falsifiable without leaving the page. The discriminator is *can the reader falsify this here?* — never the presence of a numeral.
+- **A dated observation of a RUN.** A seen-to-fail sentence's count of reddened assertions, a suite baseline, a review round's finding tally: evidence that an experiment happened, not a property of the program. It does not drift, because it was never a claim about today.
+- **A record under a heading that dates it.** A released `docs/CHANGELOG.md` section and a merged `CLAUDE_DECISIONS.md` entry are the record of a moment — editing one falsifies history, and a released section is also the published GitHub Release body. Correct those **forward, at the site**: leave the wording exactly as it merged and append an annotation that names the owner and writes no new number.
+- **A figure inside a QUOTATION of a superseded claim.** A docblock that quotes what an earlier revision of itself wrongly said — *"an earlier revision stated the residual as `exercised on the line channel by all 33 golden fixtures`"* — is carrying the quote precisely because it was wrong. The number is part of the evidence, not a claim about today, and re-syncing it destroys the record of the defect. ⛔ This shape is easy to mistake for a member, because the quoted sentence reads in the present tense; the discriminator is whether the surrounding prose DISOWNS it.
+
 ## Logging
 
 Bridge code uses Laravel's `Log::warning(...)` / `Log::error(...)` facade for diagnostics. Library code (services, registries) never configures the log channel — that's Laravel's job via `.env LOG_CHANNEL`. Log messages follow the `bridge <subsystem>: <what happened>` prefix pattern (`bridge dispatch: classifier failed`, `bridge dispatch: handler failed`) so operators can grep by subsystem.
