@@ -33,7 +33,7 @@ use Tests\TestCase;
  *     `CheckCommand::handle()` and does not walk `catch` blocks — so without this test the
  *     arm is justified by reading alone.
  *  2. THE EARLY-FINISH LEG'S SEVERITY (card#5698 sub-shape (3) / DL-261). The golden
- *     suite DOES pin this leg's line, on 34 fixtures — but a golden capture is plain
+ *     suite DOES pin this leg's line, across the corpus — but a golden capture is plain
  *     text, so it witnesses a severity nowhere. `warn` and `unvalidated` differ only in
  *     the renderer's colour and the closing tally, which means this leg could be flipped
  *     back to convicting the receiver on a PATH read and every golden file would stay

@@ -36,7 +36,7 @@ use Tests\TestCase;
  * they are excluded from the contract by name, and pinning them here would re-create the
  * text coupling this whole surface exists to break.
  *
- * The corpus-wide properties — that every one of the 33 install shapes produces a
+ * The corpus-wide properties — that every one of the golden corpus' install shapes produces a
  * parseable document whose verdict and counts agree with the committed text capture —
  * live in {@see CheckGoldenTest}, which owns the install-shape corpus. Rebuilding that
  * corpus here would be the second copy this program keeps carding.

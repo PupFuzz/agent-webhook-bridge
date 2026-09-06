@@ -24,12 +24,14 @@ use App\Bridge\Support\Finding;
  *
  * ITS ONLY GOLDEN COVERAGE IS INCIDENTAL, AND THE DISTINCTION MATTERS. `GoldenInstall`
  * boots every fixture with `secret_dir` and `config_dir` at the same path, and exactly one
- * of the 33 diverges afterwards: `config-dir-missing` repoints `config_dir` at a path that
+ * of them diverges afterwards: `config-dir-missing` repoints `config_dir` at a path that
  * does not exist and leaves `secret_dir` at the install root, so the guard is TRUE there
  * and this warn renders as a side effect of a fixture built to exercise the OTHER
- * directory's failure. Measured over the corpus: 31 fixtures reach the guard and it is
- * false, that one reaches it true, and `secret-dir-unset` never reaches it at all — the
- * branch above returns first. Nothing exercises a DELIBERATE split layout, and nothing
+ * directory's failure. Measured over the corpus: every other fixture reaches the guard and
+ * finds it false, that one reaches it true, and `secret-dir-unset` never reaches it at all
+ * — the branch above returns first. (How many fixtures the corpus holds is
+ * `tests/Fixtures/check-golden/`; a count restated here is a second copy that drifts on the
+ * next fixture.) Nothing exercises a DELIBERATE split layout, and nothing
  * distinguishes the warn firing on one from firing on that accident.
  * `InstallSecretDirCheckTest` is what asserts the guard itself: the warn present when the
  * two dirs differ, and ABSENT when they are the same path and that path is insecure.

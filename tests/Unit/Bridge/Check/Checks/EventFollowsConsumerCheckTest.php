@@ -25,7 +25,7 @@ use Tests\TestCase;
  * stays here is every claim about the operator-facing sentences.
  *
  * THE UNIT TESTS ARE THE WHOLE PROOF FOR THREE OF THIS CHECK'S FOUR MESSAGE SHAPES.
- * Measured from the rendered golden files, exactly one of the 33 fixtures prints an
+ * Measured from the rendered golden files, exactly one fixture in the corpus prints an
  * `event-consumer:` line — `event-consumer-unconsumed-type`, which renders the
  * unconsumed-type warn for one type, one agent, with a pinned last-seen. The action
  * inventory, the undeclared-classifier warn, and the `unvalidated` skip line have NO
