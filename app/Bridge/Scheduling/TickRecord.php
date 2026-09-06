@@ -25,6 +25,10 @@ use Throwable;
  * no new infrastructure dependency. A DB column would survive a flush and buy a write on
  * every tick plus a schema for one timestamp.
  *
+ * ⚑ WHETHER ANYTHING READS THE ALARM IS A DIFFERENT RECORD — {@see TickAssertRecord}, written
+ * by `bridge:jobs --assert-tick` and kept deliberately apart from this one so the invariant
+ * below stays a plain sentence rather than a qualified one.
+ *
  * ⚠ IT IS STAMPED BY `bridge:tick` AND BY NOTHING ELSE. The event-gated pass deliberately
  * does NOT stamp it: the question this answers is *"is the clock alive?"*, and a busy
  * install stamping it from traffic would answer *"is anything arriving?"* — a different
