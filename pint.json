@@ -1,6 +1,7 @@
 {
     "preset": "laravel",
     "exclude": [
+        "_stage",
         "bin",
         "lib",
         "receiver",
