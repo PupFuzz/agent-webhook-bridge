@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Docs
+
+- **card#8822** — **`VERSIONING.md` prescribed a two-PR release flow that had never been executed and could not be; the two steps are DELETED rather than corrected, and § Release flow points at the framework template for the sequence.** Steps 7 and 9 described opening a `release/* → dev` release-prep PR and auto-merging it to `dev`, and core rule 2 said *"Version bumps happen on `dev` in a release-prep feature PR"*. **Measured:** zero `release/*` branches have ever merged to `dev` here — v0.76.0 → v0.81.1 were six single `release/vX.Y.Z → main` PRs — and with `delete_branch_on_merge=true` step 9 would have deleted the branch step 10 needed as its `→ main` head, the same setting step 10 itself warns about. Roundtable #412 measured zero `release/*` merges into an integration branch anywhere in the fleet and ruled the one-PR flow: the steps were a local restatement that had drifted from the coord plugin's `templates/doc-templates/VERSIONING.md`, and a corrected copy drifts again.
+  - **What § Release flow keeps is what is local to this repo** — bump sizing, `.release-pr.json`'s declared artifact set, the fold's relocation consequence for open branches, the release-branch-as-PR-head rule with its auto-delete reason, the four card-coverage states, the user-merge gate and merge-button rule, `auto-tag-version.yml` / `release-promote-cards.yml`, and the back-merge — with the sequence itself quoted from and pointed at the template (§ The Rule 2, § Post-merge) and the `release-pr` skill.
+  - **Core rule 2 is replaced by the template's, verbatim, not softened.** Core rule 4's *"(`dev` → `main`)"* is corrected to *"(`release/v<version>` → `main`)"* — the shape § Anti-patterns already required — and step 2 drops the `chore/release-v<version>` name alternative: `changelog-gate.yml` and `pr-title-lint.yml` exempt `release/*` and nothing else release-shaped.
+  - **The back-merge-promptly consequence is NOT copied in.** Roundtable #412 ruled it framework-owned and it is being built framework-side as `card#8824`; step 12 states the window's existence and points there rather than minting a fourth copy of the rule.
+  - **Docs only — no `app/`, `bin/`, config, workflow or test change**, and nothing CI accepts or rejects moves. Steps 1–6 keep their numbers, so `changelog-gate.yml`'s *"VERSIONING.md § Release flow step 4"* message and the DL-329 / CHANGELOG citations of step 4 still resolve; per DL-279's convention, frozen citations of the higher step numbers stay frozen.
+
 ## [0.81.1] - 2026-09-06
 
 ### Fixed
