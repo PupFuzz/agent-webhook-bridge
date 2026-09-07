@@ -236,6 +236,50 @@ class MergeMcpJson(unittest.TestCase):
         self.assertIn("kanbanboard-agent", out["mcpServers"])
 
     # --- M3 red-when-reverted case ---------------------------------------- #
+    def test_reprovision_without_the_port_flag_removes_a_previously_set_port(self):
+        # RED-when-reverted (update-only merge): `_PORT` is OPTIONAL, so it is written
+        # only when --ssh-port is passed — and an update()-only merge cannot express "this
+        # run has no port". A seat provisioned once with --ssh-port 2222 kept it forever
+        # and the channel server spawned `ssh -p 2222` on every real call, against an
+        # invocation that never mentioned a port.
+        existing = json.dumps({"mcpServers": {"chan": {"command": "node", "args": ["/x/" + pbt.CHANNEL_MJS_BASENAME],
+                              "env": {"BRIDGE_TOOLS_SSH_TARGET": "u@h", "BRIDGE_TOOLS_SSH_KEY": "/k",
+                                      "BRIDGE_TOOLS_SSH_PORT": "2222"}}}})
+        out = pbt.merge_mcp_json(
+            existing, "chan", "/x/" + pbt.CHANNEL_MJS_BASENAME,
+            {"BRIDGE_TOOLS_SSH_TARGET": "u@h", "BRIDGE_TOOLS_SSH_KEY": "/k"},
+            resolve=_IDENTITY,
+        )
+        self.assertNotIn("BRIDGE_TOOLS_SSH_PORT", out["mcpServers"]["chan"]["env"])
+
+    def test_a_port_the_run_DOES_declare_is_still_written(self):
+        # The control for the case above: without it, a merge that deleted the whole
+        # owned set unconditionally would pass.
+        out = pbt.merge_mcp_json(
+            None, "chan", "/x/" + pbt.CHANNEL_MJS_BASENAME,
+            {"BRIDGE_TOOLS_SSH_TARGET": "u@h", "BRIDGE_TOOLS_SSH_KEY": "/k",
+             "BRIDGE_TOOLS_SSH_PORT": "2222"},
+            resolve=_IDENTITY,
+        )
+        self.assertEqual(out["mcpServers"]["chan"]["env"]["BRIDGE_TOOLS_SSH_PORT"], "2222")
+
+    def test_the_owned_set_reconcile_leaves_seat_owned_channel_keys_alone(self):
+        # The removal is scoped to SSH_TOOLS_KEYS: a channel var the seat owns must not be
+        # collateral, or the fix re-mints the clobber the two env classes exist to prevent.
+        existing = json.dumps({"mcpServers": {"chan": {"command": "node", "args": ["/x/" + pbt.CHANNEL_MJS_BASENAME],
+                              "env": {"BRIDGE_TOOLS_SSH_PORT": "2222", "BRIDGE_CHANNEL_TRANSPORT": "http",
+                                      "BRIDGE_CHANNEL_TOKEN": "keep-me"}}}})
+        out = pbt.merge_mcp_json(
+            existing, "chan", "/x/" + pbt.CHANNEL_MJS_BASENAME,
+            {"BRIDGE_TOOLS_SSH_TARGET": "u@h", "BRIDGE_TOOLS_SSH_KEY": "/k"},
+            {"BRIDGE_CHANNEL_TRANSPORT": "unix"},
+            resolve=_IDENTITY,
+        )
+        env = out["mcpServers"]["chan"]["env"]
+        self.assertNotIn("BRIDGE_TOOLS_SSH_PORT", env)
+        self.assertEqual(env["BRIDGE_CHANNEL_TRANSPORT"], "http")
+        self.assertEqual(env["BRIDGE_CHANNEL_TOKEN"], "keep-me")
+
     def test_http_to_ssh_reprovision_deletes_sibling_transport_keys(self):
         existing = json.dumps({
             "mcpServers": {
@@ -1163,6 +1207,21 @@ class RoleBHostBLeg(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self._backups(), [], "an unchanged re-run must not churn backups")
         self.assertIn("unchanged", out)
+
+    def test_a_reprovision_without_ssh_port_drops_the_port_the_last_run_set(self):
+        # RED-when-reverted: the seat keeps `ssh -p 2222` on every board-tools call, from
+        # an invocation that never mentioned a port and printed nothing about one.
+        rc, _ = self._run(["--ssh-port", "2222"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._recorded_env()["BRIDGE_TOOLS_SSH_PORT"], "2222")
+
+        rc, _ = self._run()
+        self.assertEqual(rc, 0)
+        env = self._recorded_env()
+        self.assertNotIn("BRIDGE_TOOLS_SSH_PORT", env)
+        # The rest of the owned set is still fully written, not collaterally dropped.
+        self.assertEqual(env["BRIDGE_TOOLS_SSH_TARGET"], "bridge@127.0.0.1")
+        self.assertIn("BRIDGE_TOOLS_SSH_KEY", env)
 
     def test_a_fresh_mcp_json_is_created_0600(self):
         # It can carry BRIDGE_CHANNEL_TOKEN, so it must not inherit a permissive umask.

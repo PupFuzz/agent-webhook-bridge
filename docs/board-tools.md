@@ -587,8 +587,15 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     `/inheritance:r` in particular drops every inherited ACE and is not undoable from what
     this tool knows. On Windows the **`.ssh` directory decision runs before any file ACL is
     touched**, so a refusal never leaves a rewritten ACL behind.
-  The merge **force-sets the SSH tools transport keys** it owns
-  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
+  The merge treats the SSH tools transport keys it owns
+  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) as **ONE SET, reconciled** — every member the
+  run declared is force-set and **every member it did not declare is REMOVED**. ⚠ So
+  omitting `--ssh-port` on a re-provision **drops** a port an earlier run set, rather than
+  leaving it in place: pass `--ssh-port` every time you want one. (Before card#8972 the
+  merge only ever `update()`d, so `_PORT` survived every later run that omitted it and the
+  channel server kept spawning `ssh -p <old port>`.) The reconcile is scoped to that set,
+  so `BRIDGE_CHANNEL_TOKEN` and the channel vars below are never collateral. It only
+  **creates the live-wake channel
   vars (`BRIDGE_CHANNEL_TRANSPORT`/`_NAME`) if absent** — a re-provision never
   overwrites an existing seat's channel transport (e.g. an HTTP live-wake fallback),
   only bootstrapping the platform default on a fresh `.mcp.json`: **`unix` on POSIX,

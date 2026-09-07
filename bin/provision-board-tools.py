@@ -51,6 +51,20 @@ HTTP_SIBLING_TOOLS_KEYS = (
     "BRIDGE_TOOLS_TOKEN_FILE",
 )
 
+# The SSH transport keys this provisioner OWNS, as ONE SET rather than three
+# independently-written keys. Ownership is only meaningful at set granularity: a run that
+# writes two of them and leaves the third at whatever a PREVIOUS run happened to set does
+# not own the transport, it inherits half of it. `--ssh-port 2222` once, re-provisioned
+# without the flag, left `_PORT: 2222` in place forever and the channel server kept
+# spawning `ssh -p 2222` — a stale port nothing in the new invocation asked for and
+# nothing printed. Membership here is what makes "set it or remove it" enforceable in one
+# place, so a fourth key added later inherits the invariant instead of the defect.
+SSH_TOOLS_KEYS = (
+    "BRIDGE_TOOLS_SSH_TARGET",
+    "BRIDGE_TOOLS_SSH_KEY",
+    "BRIDGE_TOOLS_SSH_PORT",
+)
+
 # Well-known Windows SIDs (locale-independent) — the icacls ACL decision is pinned by
 # SID, not by the localized account name icacls prints.
 SYSTEM_SID = "S-1-5-18"
@@ -168,8 +182,13 @@ def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None
     Two env classes, kept explicit so this one merge site never re-clobbers a live
     channel config:
       - `env` (force-set): keys this provisioner OWNS — the SSH tools transport —
-        written UNCONDITIONALLY (overwrite). Setting BRIDGE_TOOLS_SSH_TARGET also
-        actively deletes the HTTP sibling tools keys (never BRIDGE_CHANNEL_TOKEN).
+        written UNCONDITIONALLY (overwrite). ⛔ OWNERSHIP IS AT SET GRANULARITY, NOT
+        PER KEY: when `env` declares the ssh transport (it carries
+        BRIDGE_TOOLS_SSH_TARGET), every member of SSH_TOOLS_KEYS the caller did NOT
+        supply is REMOVED from the merged env. An `update()`-only merge cannot express
+        "this run has no port", so an optional key survived every later run that
+        omitted it. Setting BRIDGE_TOOLS_SSH_TARGET also actively deletes the HTTP
+        sibling tools keys (never BRIDGE_CHANNEL_TOKEN).
       - `env_defaults` (create-if-absent): keys the SEAT owns — the live-wake channel
         config (BRIDGE_CHANNEL_TRANSPORT / _NAME) — written with setdefault, so a
         fresh seat is bootstrapped but an existing seat's channel transport is never
@@ -215,6 +234,13 @@ def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None
     env_block.update(env)
     for key, value in (env_defaults or {}).items():
         env_block.setdefault(key, value)
+    if "BRIDGE_TOOLS_SSH_TARGET" in env:
+        # Reconcile the OWNED SET against what THIS run declared — `env`, not `env_block`:
+        # the question is what this invocation asked for, and `env_block` already carries
+        # the previous run's answer by the time we get here.
+        for key in SSH_TOOLS_KEYS:
+            if key not in env:
+                env_block.pop(key, None)
     if "BRIDGE_TOOLS_SSH_TARGET" in env_block:
         for key in HTTP_SIBLING_TOOLS_KEYS:
             env_block.pop(key, None)
@@ -582,6 +608,10 @@ def run_role_b(args) -> int:
     }
     if args.ssh_port:
         force_env["BRIDGE_TOOLS_SSH_PORT"] = str(args.ssh_port)
+    # No `else` branch, and that is not an omission: `force_env` IS the whole declaration
+    # of the owned set for this run, and `merge_mcp_json` removes the members it does not
+    # carry. Omitting --ssh-port therefore means "no port", which is what the operator
+    # said, rather than "keep whatever the last run set".
 
     # Channel-governing keys the SEAT owns — create-if-absent only, so a board-tools
     # re-provision never rewrites a live-wake channel that already runs the HTTP
