@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import hmac
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -47,6 +49,20 @@ HTTP_SIBLING_TOOLS_KEYS = (
     "BRIDGE_TOOLS_ENDPOINT",
     "BRIDGE_TOOLS_TOKEN",
     "BRIDGE_TOOLS_TOKEN_FILE",
+)
+
+# The SSH transport keys this provisioner OWNS, as ONE SET rather than three
+# independently-written keys. Ownership is only meaningful at set granularity: a run that
+# writes two of them and leaves the third at whatever a PREVIOUS run happened to set does
+# not own the transport, it inherits half of it. `--ssh-port 2222` once, re-provisioned
+# without the flag, left `_PORT: 2222` in place forever and the channel server kept
+# spawning `ssh -p 2222` — a stale port nothing in the new invocation asked for and
+# nothing printed. Membership here is what makes "set it or remove it" enforceable in one
+# place, so a fourth key added later inherits the invariant instead of the defect.
+SSH_TOOLS_KEYS = (
+    "BRIDGE_TOOLS_SSH_TARGET",
+    "BRIDGE_TOOLS_SSH_KEY",
+    "BRIDGE_TOOLS_SSH_PORT",
 )
 
 # Well-known Windows SIDs (locale-independent) — the icacls ACL decision is pinned by
@@ -166,8 +182,13 @@ def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None
     Two env classes, kept explicit so this one merge site never re-clobbers a live
     channel config:
       - `env` (force-set): keys this provisioner OWNS — the SSH tools transport —
-        written UNCONDITIONALLY (overwrite). Setting BRIDGE_TOOLS_SSH_TARGET also
-        actively deletes the HTTP sibling tools keys (never BRIDGE_CHANNEL_TOKEN).
+        written UNCONDITIONALLY (overwrite). ⛔ OWNERSHIP IS AT SET GRANULARITY, NOT
+        PER KEY: when `env` declares the ssh transport (it carries
+        BRIDGE_TOOLS_SSH_TARGET), every member of SSH_TOOLS_KEYS the caller did NOT
+        supply is REMOVED from the merged env. An `update()`-only merge cannot express
+        "this run has no port", so an optional key survived every later run that
+        omitted it. Setting BRIDGE_TOOLS_SSH_TARGET also actively deletes the HTTP
+        sibling tools keys (never BRIDGE_CHANNEL_TOKEN).
       - `env_defaults` (create-if-absent): keys the SEAT owns — the live-wake channel
         config (BRIDGE_CHANNEL_TRANSPORT / _NAME) — written with setdefault, so a
         fresh seat is bootstrapped but an existing seat's channel transport is never
@@ -213,6 +234,13 @@ def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None
     env_block.update(env)
     for key, value in (env_defaults or {}).items():
         env_block.setdefault(key, value)
+    if "BRIDGE_TOOLS_SSH_TARGET" in env:
+        # Reconcile the OWNED SET against what THIS run declared — `env`, not `env_block`:
+        # the question is what this invocation asked for, and `env_block` already carries
+        # the previous run's answer by the time we get here.
+        for key in SSH_TOOLS_KEYS:
+            if key not in env:
+                env_block.pop(key, None)
     if "BRIDGE_TOOLS_SSH_TARGET" in env_block:
         for key in HTTP_SIBLING_TOOLS_KEYS:
             env_block.pop(key, None)
@@ -394,6 +422,21 @@ def _fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
     raise SystemExit(f"provision-board-tools: {message}")
 
 
+def _utc_stamp() -> str:
+    """UTC ISO-basic stamp for retained-artifact names (`.bak-`/`.stale-` suffixes)."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _path_safe(component: str) -> str:
+    """Make a filename component out of a value read from a file we do not own.
+
+    `deployed_version` comes from a `package.json` inside the seat's project dir; it
+    reaches a rename TARGET, so a separator or `..` in it would move the retained tree
+    somewhere other than beside the snapshot.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", component) or "unknown"
+
+
 def _read_pubkey(args) -> str:
     if args.pubkey_stdin and args.pubkey_from:
         _fail("give exactly one of --pubkey-stdin / --pubkey-from")
@@ -539,16 +582,17 @@ def run_role_b(args) -> int:
     home = _host_b_home()
     key_dir = os.path.join(home, ".ssh")
     os.makedirs(key_dir, exist_ok=True)
-    key_path = os.path.join(key_dir, f"{args.agent}-board-tools")
-    pub_path = key_path + ".pub"
-
-    _keygen(args.agent, key_path)
-    _harden_private_key_perms(key_path)
+    key_path, pub_path, operator_supplied = _resolve_host_b_key(args, key_dir)
+    # ORDER IS LOAD-BEARING. The permission check runs BEFORE the pair check because
+    # `ssh-keygen -y` refuses a group/world-readable key with `bad permissions` — leaving
+    # it second would report a correspondence failure for what is really a mode problem.
+    _harden_private_key_perms(key_path, rewrite=not operator_supplied)
+    _assert_key_pair_corresponds(key_path, pub_path)
 
     with open(pub_path, encoding="utf-8") as fh:
         pubkey = fh.read().strip("\n")
     if not is_authorized_key_shape(pubkey):
-        _fail(f"generated public key at {pub_path} failed the shape check — refusing to hand it off")
+        _fail(f"public key at {pub_path} failed the shape check — refusing to hand it off")
 
     deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
     mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
@@ -557,11 +601,17 @@ def run_role_b(args) -> int:
     # Tools transport keys this provisioner OWNS — force-set (overwrite) on every re-run.
     force_env = {
         "BRIDGE_TOOLS_SSH_TARGET": args.ssh_target,
+        # ALWAYS the key this run actually used — never the raw flag value. Recording an
+        # unrelated flag path while the leg keyed off a different file is what made the
+        # printed key, the pinned key and the recorded key three different things.
+        "BRIDGE_TOOLS_SSH_KEY": key_path,
     }
-    if args.ssh_key:
-        force_env["BRIDGE_TOOLS_SSH_KEY"] = args.ssh_key
     if args.ssh_port:
         force_env["BRIDGE_TOOLS_SSH_PORT"] = str(args.ssh_port)
+    # No `else` branch, and that is not an omission: `force_env` IS the whole declaration
+    # of the owned set for this run, and `merge_mcp_json` removes the members it does not
+    # carry. Omitting --ssh-port therefore means "no port", which is what the operator
+    # said, rather than "keep whatever the last run set".
 
     # Channel-governing keys the SEAT owns — create-if-absent only, so a board-tools
     # re-provision never rewrites a live-wake channel that already runs the HTTP
@@ -580,10 +630,7 @@ def run_role_b(args) -> int:
         merged = merge_mcp_json(existing_text, args.channel_name, mjs_path, force_env, channel_defaults)
     except ValueError as e:
         _fail(str(e))
-    with open(mcp_path, "w", encoding="utf-8") as fh:
-        json.dump(merged, fh, indent=2)
-        fh.write("\n")
-    print(f".mcp.json merged: {mcp_path}")
+    _install_mcp_json(mcp_path, merged, existing_text)
 
     # Seed known_hosts BEFORE any --self-cert so --self-cert is a real host-key
     # exercise. The .mjs ssh spawn is BatchMode with no StrictHostKeyChecking, so an
@@ -600,8 +647,161 @@ def run_role_b(args) -> int:
     print("(This flag is CLI-only every session — no .mcp.json/settings.json equivalent.)")
 
     if args.self_cert:
-        return _self_cert(args.ssh_target, args.ssh_key, args.ssh_port)
+        return _self_cert(args.ssh_target, key_path, args.ssh_port)
     return 0
+
+
+def _resolve_host_b_key(args, key_dir: str) -> tuple:
+    """The ONE derivation of the host-B key pair — every downstream consumer reads it.
+
+    Returns `(key_path, pub_path, operator_supplied)`. The third member is what the
+    permission leg keys off: the tool REWRITES the permissions of a key it generated
+    and only VERIFIES those of a key the operator named, so provisioning never silently
+    re-permissions a file it does not own. It is returned rather than re-derived from
+    `args.ssh_key` at the call site, because a second derivation of this condition is
+    the exact defect this function exists to remove.
+
+    Without `--ssh-key` the pair is derived from `--agent` and generated if absent.
+    With `--ssh-key` the flag NAMES AN EXISTING KEY: both halves must already be on
+    disk (no keygen), and that path is what is printed, pinned, self-certified and
+    recorded as BRIDGE_TOOLS_SSH_KEY.
+    """
+    default_key_path = os.path.join(key_dir, f"{args.agent}-board-tools")
+    if not args.ssh_key:
+        _keygen(args.agent, default_key_path)
+        return default_key_path, default_key_path + ".pub", False
+
+    key_path = os.path.abspath(os.path.expanduser(args.ssh_key))
+    pub_path = key_path + ".pub"
+    missing = [p for p in (key_path, pub_path) if not os.path.isfile(p)]
+    if missing:
+        hint = ""
+        if pub_path in missing and os.path.isfile(key_path):
+            # The common case: the private half is there and the public half was never
+            # kept. It is derivable from the private key, so say how rather than only
+            # that it is absent.
+            hint = f" The public half can be regenerated: `ssh-keygen -y -f {key_path} > {pub_path}`."
+        _fail(
+            f"--ssh-key {args.ssh_key} names an EXISTING key pair to use, and "
+            f"{' and '.join(missing)} {'do' if len(missing) > 1 else 'does'} not exist. "
+            f"This flag never generates a key.{hint} Drop it to generate + use the default "
+            f"pair at {default_key_path} (+ .pub), or point it at a key pair that is already "
+            f"on disk."
+        )
+    print(f"using the existing key named by --ssh-key: {key_path}")
+    return key_path, pub_path, True
+
+
+def _assert_key_pair_corresponds(key_path: str, pub_path: str) -> None:
+    """Refuse a `<key>` / `<key>.pub` that are not two halves of ONE key pair.
+
+    Both halves EXISTING is not the contract — the contract is that the public half
+    handed to host A unlocks with the private half the channel server presents. A
+    mismatched pair pins a key nothing can authenticate with, and the failure surfaces
+    later as `Permission denied (publickey)` on a pin the operator watched succeed.
+    This is reachable on both paths: `--ssh-key` invites naming arbitrary paths, and on
+    the derived path `_keygen` leaves an ALREADY-PRESENT pair untouched.
+
+    The private half must also be passphraseless: the `.mjs` ssh spawn is BatchMode with
+    no agent, so an encrypted key cannot be used at call time no matter what is pinned.
+    `ssh-keygen -y -P ''` answers both questions at once — it derives the public half
+    from the private one, and it fails on a key whose passphrase is not empty.
+    """
+    try:
+        proc = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", key_path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _fail(f"could not derive the public half of {key_path} with `ssh-keygen -y`: {e}")
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip() or "(no stderr)"
+        if "passphrase" in stderr.lower():
+            _fail(
+                f"private key {key_path} is PASSPHRASE-PROTECTED. The channel server spawns "
+                f"ssh in BatchMode with no agent, so it can never unlock this key — board "
+                f"tools would fail at call time however the pin is set up. Use a "
+                f"passphraseless key (drop --ssh-key to have one generated), or strip the "
+                f"passphrase with `ssh-keygen -p -f {key_path}`.\nssh-keygen: {stderr}"
+            )
+        _fail(
+            f"`ssh-keygen -y` could not read {key_path} as a private key (exit "
+            f"{proc.returncode}) — refusing to hand off a public half it cannot "
+            f"vouch for.\nssh-keygen: {stderr}"
+        )
+
+    derived = proc.stdout.split()
+    with open(pub_path, encoding="utf-8") as fh:
+        recorded = fh.read().split()
+    # Fields are `<type> <blob> [comment]`. The COMMENT is deliberately not compared:
+    # `-y` prints the comment stored in the PRIVATE key, which legitimately differs from
+    # the one in the .pub file; only the type and the blob are the key's identity.
+    if len(derived) < 2 or len(recorded) < 2 or derived[:2] != recorded[:2]:
+        _fail(
+            f"{pub_path} is NOT the public half of {key_path} — they are two different "
+            f"keys. Pinning it on host A would authorize a key this seat cannot present. "
+            f"Regenerate the public half from the private one: "
+            f"`ssh-keygen -y -f {key_path} > {pub_path}`."
+        )
+
+
+def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> None:
+    """Serialise + install `.mcp.json` without ever truncating the live file.
+
+    The merged config is serialised into a sibling `.tmp` and compared against what is
+    already there: identical content installs nothing (no backup churn on a re-run), a
+    difference is backed up to `.bak-<UTC>` before `os.replace` swaps the new file in.
+    A failure anywhere in serialise/write leaves the original untouched and removes the
+    temp file — the previous in-place `open(mcp_path, "w")` truncated the seat's live
+    `.mcp.json` before the first byte of the replacement was serialised.
+    """
+    # Resolve the link BEFORE anything is written: `os.replace` onto a SYMLINK replaces
+    # the link itself with a regular file, silently detaching a seat that keeps its
+    # `.mcp.json` in a dotfiles repo and links it into place. Writing through to the
+    # target keeps the link, and puts the temp file on the target's own filesystem,
+    # which is what makes the replace atomic.
+    mcp_path = os.path.realpath(mcp_path)
+
+    tmp_path = mcp_path + ".tmp"
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        with open(tmp_path, encoding="utf-8") as fh:
+            new_text = fh.read()
+        if existing_text is not None and new_text == existing_text:
+            print(f".mcp.json unchanged: {mcp_path}")
+            return
+
+        if existing_text is not None:
+            backup_path = f"{mcp_path}.bak-{_utc_stamp()}"
+            # O_EXCL|O_CREAT with the mode on the OPEN, not a chmod after it: these bytes
+            # can carry BRIDGE_CHANNEL_TOKEN, and a create-then-chmod is readable at the
+            # umask's mode for the window in between. O_EXCL also makes the same-second
+            # name collision a refusal rather than an overwrite of the earlier backup.
+            try:
+                fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                _fail(
+                    f"a backup already exists at {backup_path} — refusing to overwrite it. "
+                    f"Two changed writes landed inside the same second; move or remove that "
+                    f"file and re-run. Nothing has been changed."
+                )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(existing_text)
+            print(f".mcp.json backup of the previous file: {backup_path}")
+            # Keep the seat's own mode rather than imposing the temp file's 0600.
+            os.chmod(tmp_path, stat.S_IMODE(os.stat(mcp_path).st_mode))
+        os.replace(tmp_path, mcp_path)
+        print(f".mcp.json merged: {mcp_path}")
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def _host_b_home() -> str:
@@ -627,15 +827,31 @@ def _keygen(agent: str, key_path: str) -> None:
     print(f"generated FIPS ECDSA P-256 key: {key_path}")
 
 
-def _harden_private_key_perms(key_path: str) -> None:
-    if os.name == "nt":
-        _harden_private_key_perms_windows(key_path)
-        return
-    import stat
+def _harden_private_key_perms(key_path: str, rewrite: bool = True) -> None:
+    """Enforce chmod-600 semantics on the private key. `rewrite` decides HOW.
 
-    os.chmod(key_path, 0o600)
+    `rewrite=True` (a key this tool generated, at the path it owns): set the mode, then
+    assert it. `rewrite=False` (a key the operator named with `--ssh-key`): assert only.
+    Provisioning must not silently re-permission a file it does not own — that is the
+    same class of unasked mutation as the three this leg was just repaired for — and a
+    refusal that says `chmod 600` costs the operator one command while leaving the
+    decision theirs. The GUARD is identical in both modes: a group/world-accessible key
+    is refused either way, so this is a narrower blast radius, never a weaker check.
+    """
+    if os.name == "nt":
+        _harden_private_key_perms_windows(key_path, rewrite=rewrite)
+        return
+    if rewrite:
+        os.chmod(key_path, 0o600)
     mode = stat.S_IMODE(os.stat(key_path).st_mode)
     if mode & 0o077:
+        if not rewrite:
+            _fail(
+                f"private key {key_path} is group/world-accessible (mode {oct(mode)}) — refusing. "
+                f"It was named with --ssh-key, so this tool does not re-permission it: run "
+                f"`chmod 600 {key_path}` and re-run. (ssh itself also refuses a key with these "
+                f"permissions, so this is the failure you would hit at call time.)"
+            )
         _fail(
             f"private key {key_path} is group/world-accessible (mode {oct(mode)}) after chmod 600 — refusing"
         )
@@ -745,30 +961,28 @@ def _enumerate_icacls_aces(path: str, owner_name, owner_sid) -> list:
     return parse_icacls_aces(proc.stdout, path, _make_name_to_sid(owner_name, owner_sid))
 
 
-def _harden_private_key_perms_windows(key_path: str) -> None:
+def _harden_private_key_perms_windows(key_path: str, rewrite: bool = True) -> None:
     """AC-1: chmod-600 semantics on Windows via icacls, granting the owner by SID.
 
-    Grants read to the invoking user's SID (never `"%USERNAME%":R`, a cmd.exe-ism a
-    non-shell python passes literally), then enforces refuse-if-broader over the SID-based
-    ACL. The `ssh.exe -i` round-trip (--self-cert) stays the authoritative perm check;
-    this icacls assertion is defense-in-depth. No elevation — all under %USERPROFILE%.
+    `rewrite=True` (a key this tool generated): grant read to the invoking user's SID
+    (never `"%USERNAME%":R`, a cmd.exe-ism a non-shell python passes literally), then
+    enforce refuse-if-broader over the SID-based ACL. `rewrite=False` (a key named with
+    `--ssh-key`): run the SAME refuse-if-broader decisions and change NO ACL. An
+    `/inheritance:r` on a file the operator owns is destructive and not undoable from
+    what this tool knows — it drops every inherited ACE, including ones the operator's
+    own tooling depends on — so a key we were merely POINTED AT is judged, not rewritten.
+
+    ⚠ THE DIRECTORY DECISION RUNS FIRST, before any file ACL is touched. A world/Users
+    -writable `.ssh` lets a local attacker swap the key regardless of the file ACL, so
+    refusing after having already rewritten the file's ACL would leave the operator with
+    a mutated file AND a refusal — the worst of both, and the rewrite is what would have
+    to be undone by hand.
+
+    The `ssh.exe -i` round-trip (--self-cert) stays the authoritative perm check; this
+    icacls assertion is defense-in-depth. No elevation — all under %USERPROFILE%.
     """
     owner_name, owner_sid = _whoami_user()
 
-    # Break inheritance, then grant read to ONLY the invoking user, by SID.
-    _run_checked(["icacls", key_path, "/inheritance:r"], "icacls /inheritance:r failed")
-    _run_checked(["icacls", key_path, "/grant:r", f"*{owner_sid}:R"], "icacls /grant failed")
-
-    aces = _enumerate_icacls_aces(key_path, owner_name, owner_sid)
-    if evaluate_key_acl_decision(aces, owner_sid) == "refuse":
-        _fail(
-            f"private key {key_path} is readable by a principal beyond "
-            f"{{owner, SYSTEM, Administrators}} after the icacls grant — refusing "
-            f"(a world/Users-readable private key fails closed; the ssh -i round-trip is authoritative)."
-        )
-
-    # aimla Minor: a world/Users-writable key directory lets a local attacker swap the
-    # key regardless of the file ACL.
     key_dir = os.path.dirname(key_path)
     dir_aces = _enumerate_icacls_aces(key_dir, owner_name, owner_sid)
     if evaluate_key_dir_decision(dir_aces, owner_sid) == "refuse":
@@ -777,8 +991,29 @@ def _harden_private_key_perms_windows(key_path: str) -> None:
             f"(a writable key dir lets a local attacker swap the key regardless of the file ACL)."
         )
 
+    if rewrite:
+        # Break inheritance, then grant read to ONLY the invoking user, by SID.
+        _run_checked(["icacls", key_path, "/inheritance:r"], "icacls /inheritance:r failed")
+        _run_checked(["icacls", key_path, "/grant:r", f"*{owner_sid}:R"], "icacls /grant failed")
+
+    aces = _enumerate_icacls_aces(key_path, owner_name, owner_sid)
+    if evaluate_key_acl_decision(aces, owner_sid) == "refuse":
+        if not rewrite:
+            _fail(
+                f"private key {key_path} is readable by a principal beyond "
+                f"{{owner, SYSTEM, Administrators}} — refusing. It was named with --ssh-key, "
+                f"so this tool does not rewrite its ACL: restrict it yourself (e.g. "
+                f"`icacls \"{key_path}\" /inheritance:r /grant:r \"%USERNAME%\":R`) and re-run."
+            )
+        _fail(
+            f"private key {key_path} is readable by a principal beyond "
+            f"{{owner, SYSTEM, Administrators}} after the icacls grant — refusing "
+            f"(a world/Users-readable private key fails closed; the ssh -i round-trip is authoritative)."
+        )
+
+    verb = "restricted to" if rewrite else "verified as readable only by"
     print(
-        f"icacls: {key_path} restricted to owner {owner_name} (SID {owner_sid}); "
+        f"icacls: {key_path} {verb} owner {owner_name} (SID {owner_sid}); "
         f"SYSTEM/Administrators tolerated. The ssh -i round-trip (--self-cert) is the authoritative check."
     )
 
@@ -882,6 +1117,15 @@ def _deploy_snapshot(deploy_dir: str) -> None:
     source = _bundled_snapshot_dir()
     bundled_version = _package_version(os.path.join(source, "package.json"))
 
+    # ⛔ BEFORE ANY MUTATION, and that ordering is the whole point — not tidiness.
+    # This ran after the rename below, so a seat without Node 20 had its channel server
+    # renamed aside and THEN hit the precheck: `.mcp.json` still pointed at the original
+    # path, nothing was there any more, and the retention message told the operator the
+    # tree could be removed. The precheck cannot mutate, so running it first costs a
+    # `node --version` and buys a refusal that leaves the seat exactly as it was.
+    # `_npm_ci` calls it again on both paths out of here; it is idempotent.
+    _require_node_20()
+
     deployed_pkg = os.path.join(deploy_dir, "package.json")
     if os.path.isfile(deployed_pkg):
         deployed_version = _package_version(deployed_pkg)
@@ -890,9 +1134,17 @@ def _deploy_snapshot(deploy_dir: str) -> None:
             _npm_ci(deploy_dir)
             return
         print(f"replacing stale snapshot (deployed {deployed_version} < bundled {bundled_version}).")
-        shutil.rmtree(deploy_dir)
+        # RENAME, never rmtree: this tree is the seat's live channel server. If the
+        # copytree/npm-ci that follows fails, a deleted snapshot leaves the seat with no
+        # channel server at all and nothing to roll back to.
+        stale_dir = f"{deploy_dir}.stale-{_path_safe(deployed_version)}"
+        if os.path.exists(stale_dir):
+            stale_dir = f"{stale_dir}-{_utc_stamp()}"
+        os.rename(deploy_dir, stale_dir)
+        print(f"previous snapshot retained at {stale_dir} — nothing was deleted.")
+        print(f"  to ROLL BACK, move it back over the deploy dir (POSIX: mv {stale_dir} {deploy_dir})")
+        print("  to DISCARD it, delete that path — but only once the new snapshot is confirmed working.")
 
-    _require_node_20()
     shutil.copytree(
         source,
         deploy_dir,
@@ -1008,7 +1260,12 @@ def build_parser() -> argparse.ArgumentParser:
     # host B
     p.add_argument("--ssh-target", help="[role b] user@host of the bridge box")
     p.add_argument("--ssh-port", type=int, help="[role b] optional ssh port")
-    p.add_argument("--ssh-key", help="[role b] optional identity key path recorded as BRIDGE_TOOLS_SSH_KEY")
+    p.add_argument(
+        "--ssh-key",
+        help="[role b] use this EXISTING key pair instead of generating one from --agent; "
+        "both <path> and <path>.pub must already exist (this flag never generates a key). "
+        "BRIDGE_TOOLS_SSH_KEY always records the key the run actually used, flag or not",
+    )
     p.add_argument("--project-dir", help="[role b] the Claude project dir holding .mcp.json")
     p.add_argument("--channel-name", help="[role b] the mcpServers key / BRIDGE_CHANNEL_NAME")
     p.add_argument("--self-cert", action="store_true", help="[role b] fire one real ssh board_my_cards round-trip")

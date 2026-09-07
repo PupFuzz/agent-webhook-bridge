@@ -557,8 +557,45 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   hardening; see `docs/multi-host.md § 3`); `--role b` (the calling seat, cross-platform
   python) generates
   the FIPS ECDSA P-256 key, deploys the bundled channel-server snapshot, and merges
-  `.mcp.json`. The merge **force-sets the SSH tools transport keys** it owns
-  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
+  `.mcp.json`.
+  **The key is derived ONCE (card#8972):** without `--ssh-key`, `--role b` derives
+  `~/.ssh/<agent>-board-tools` from `--agent`, generates it if absent, and records it.
+  **`--ssh-key <path>` means "use THIS existing key"** — the flag never generates one, and
+  that path is then what is printed for the host-A handoff, what `--self-cert` probes, and
+  what is recorded. Either way **`BRIDGE_TOOLS_SSH_KEY` is always the key the run actually
+  used** — it is no longer possible to pin one key on host A and record another in
+  `.mcp.json`. What the flag asserts, and what is therefore **checked before anything is
+  handed off**:
+  - **both halves exist.** A missing half refuses, naming the given path and the default
+    it would otherwise use; when only the `.pub` is missing the refusal prints the
+    `ssh-keygen -y -f <key> > <key>.pub` that regenerates it.
+  - ⭐ **they are two halves of ONE pair.** Existence is not the contract — the public
+    half pinned on host A has to be the one this seat can present. `ssh-keygen -y` derives
+    the public half from the private one and the **type + blob** fields are compared (the
+    comment is not: `-y` prints the comment stored in the *private* key, which legitimately
+    differs). A mismatch refuses; without this check the pin succeeds and every later board
+    -tools call fails `Permission denied (publickey)`.
+  - **the private half is passphraseless.** The channel server spawns ssh in **BatchMode
+    with no agent**, so an encrypted key can never be unlocked at call time whatever the
+    pin says. The same `ssh-keygen -y -P ''` answers this, and the refusal names BatchMode
+    as the reason.
+  - ⚠ **its permissions are VERIFIED, not rewritten.** A key the tool generated is
+    hardened by the tool (`chmod 600`; on Windows `icacls /inheritance:r` + an owner-SID
+    grant). A key you *named* is only judged: the same refuse-if-broader decision runs and
+    a too-open key **refuses with the `chmod 600` / `icacls` command to run**, because
+    provisioning must not silently re-permission a file it does not own — an
+    `/inheritance:r` in particular drops every inherited ACE and is not undoable from what
+    this tool knows. On Windows the **`.ssh` directory decision runs before any file ACL is
+    touched**, so a refusal never leaves a rewritten ACL behind.
+  The merge treats the SSH tools transport keys it owns
+  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) as **ONE SET, reconciled** — every member the
+  run declared is force-set and **every member it did not declare is REMOVED**. ⚠ So
+  omitting `--ssh-port` on a re-provision **drops** a port an earlier run set, rather than
+  leaving it in place: pass `--ssh-port` every time you want one. (Before card#8972 the
+  merge only ever `update()`d, so `_PORT` survived every later run that omitted it and the
+  channel server kept spawning `ssh -p <old port>`.) The reconcile is scoped to that set,
+  so `BRIDGE_CHANNEL_TOKEN` and the channel vars below are never collateral. It only
+  **creates the live-wake channel
   vars (`BRIDGE_CHANNEL_TRANSPORT`/`_NAME`) if absent** — a re-provision never
   overwrites an existing seat's channel transport (e.g. an HTTP live-wake fallback),
   only bootstrapping the platform default on a fresh `.mcp.json`: **`unix` on POSIX,
@@ -567,6 +604,26 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   Its pubkey validator is
   a **full-line shape check** (rejects multi-line /
   CRLF pastes), superseding the prefix-only guard the old generated bash carried.
+  **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
+  `.tmp`, compared against what is there, and `os.replace`d in — an unchanged re-run
+  writes nothing (it prints `unchanged`), a changed one first copies the previous file to
+  `.mcp.json.bak-<UTC>` (0600) and prints that path, and a failure mid-write leaves the
+  seat's live `.mcp.json` byte-identical with no temp file behind.
+  A **stale channel-server snapshot is renamed aside, never deleted** — `.channel-server`
+  becomes `.channel-server.stale-<deployed version>` (suffixed with a UTC stamp if that
+  name is taken), and the printed message names **both** dispositions: how to roll back
+  (move that path back over `.channel-server`) and that it can be discarded *once the new
+  snapshot is confirmed working*. ⚠ **What is left behind on a mid-deploy failure is the
+  retained tree, not a running channel server:** if the copy or the `npm ci` fails after
+  the rename, `.channel-server` is absent or half-populated and `.mcp.json` still points at
+  it — the seat is **down until you roll back**, which is exactly why nothing is deleted
+  and why the rollback is printed. The Node ≥ 20 precheck runs **before** the rename, so
+  the most likely refusal on a fresh seat happens with the deployed tree still in place and
+  nothing to undo.
+  **`known_hosts` is seeded unconditionally** (an `ssh-keyscan` of the `--ssh-target`
+  host), with or without `--self-cert` — so **a successful keyscan is NOT evidence the
+  board-tools door is live**: it only proves the host answers on the ssh port. Only
+  `--self-cert`, run *after* host A has pinned the key, certifies that door.
   Run the host-A line as root on the bridge box and the host-B line on the calling seat;
   a same-box Linux run hands the `.pub` path to `--role a --pubkey-from` (no paste).
   Windows host B is supported: the host-B leg is cross-platform python and the Windows
@@ -577,13 +634,12 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   assertion (refuse if the private key is readable, or its `.ssh` dir writable, by any
   principal beyond `{owner, SYSTEM, Administrators}`) is defense-in-depth. Certify
   afterward with `bridge:check --probe-tools-ssh=<user@host>`.
-  **Known limitation (en-US only):** the icacls hardening matches Windows built-in
-  principals (`BUILTIN\Users`, `NT AUTHORITY\SYSTEM`, …) by their **en-US account
-  names**. On a **localized** Windows those print under localized names and do not
-  match, so the icacls decision **refuses** (fail-closed — a spurious refuse, never an
-  unsafe accept). A durable fix — resolving principals to their well-known SIDs directly
-  (`LookupAccountName` / `icacls /save`) rather than through the localized-name table —
-  is tracked separately.
+  **Locale-independent (card#5053).** The icacls decision is pinned by **well-known SID**,
+  not by the localized account name icacls prints: principals are resolved to their SIDs
+  through the OS (a `LookupAccountName`-equivalent), which returns the same fixed SIDs on
+  a localized Windows as on en-US. The en-US name table survives only as an offline
+  fallback when that lookup is unavailable, and an unresolvable principal is kept raw so
+  the decision still fails **closed** (a spurious refuse, never an unsafe accept).
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
   membership. For an **ssh** agent it also probes (offline) the pinned
