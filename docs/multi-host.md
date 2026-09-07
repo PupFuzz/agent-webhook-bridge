@@ -424,6 +424,13 @@ export BRIDGE_TOOLS_SSH_KEY=~/.ssh/<agent>-board-tools   # optional (-i)
 # export BRIDGE_TOOLS_SSH_PORT=22                        # optional (-p)
 ```
 
+> **If you later run `provision-board-tools.py --role b` on this seat, it FORCE-WRITES
+> `BRIDGE_TOOLS_SSH_KEY` into `.mcp.json`** (card#8972) — always to the key that run
+> actually used, overwriting whatever is there. That is deliberate: the recorded key and
+> the key pinned on host A must be the same file. This manual recipe and the provisioner
+> are two ways to reach the same state, not two states; see
+> [`docs/board-tools.md § Provisioning`](board-tools.md).
+
 The ssh transport carries **no bearer** — identity is the pinned `--agent`, so no
 `BRIDGE_TOOLS_TOKEN` is set. It **coexists** with the `-R` wake tunnel and the
 existing HTTP forward-leg seats (each seat picks exactly one board-tools
