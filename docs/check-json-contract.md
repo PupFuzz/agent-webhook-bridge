@@ -36,7 +36,7 @@ php artisan bridge:check                    # identical to --format=text
 | A **corrected verdict** — a leg reported the WRONG finding for an install state and now reports the right one | **No** | Not a shape change and not a meaning change: no key moves, no severity is invented, and what `fail`/`warn` MEAN is untouched — the leg's classification of one state was simply wrong and is now right. Like the two rows above it the direction is strictly *fewer false all-clears*, so a consumer keying on `severity` needs no new branch; it stops being told an install is fine when it is not. Distinct from re-assigning what a severity means (which bumps) and from the pre-disclosed row below (which is specifically the `unvalidated` precision landing). **First applied: DL-265**, where a `secret_dir` naming a non-directory moved `warn` → `fail`. |
 | A **pre-disclosed precision correction** to *which findings carry which severity* | **No** | Not a shape change and not a meaning change: §4's `severity` row **pre-disclosed** that the vocabulary was imprecise and named the landing that would fix it, so a consumer written against `schema: 1` was told in the contract not to read the absence of `unvalidated` as "measured". Delivering exactly the disclosed correction is the contract doing its job. This row does **not** cover an undisclosed re-assignment, which changes a key's meaning and bumps. |
 
-**`schema` is currently `1`.** It stayed `1` through DL-251 (stage 10), which re-assigned 21 findings from `warn` to `unvalidated` and added three: both rows above apply independently, and either alone is sufficient. It stayed `1` again through DL-255 (card#5698), which ADDED the top-level `agent_scope_coverage` key (§3a) and re-assigned three more findings to `unvalidated` — the added-key row and the pre-disclosed-precision row, again independently sufficient. It stays `1` through DL-259 (card#5698), the fail/ok severity audit, on the pre-disclosed-precision row alone: three findings move to `unvalidated` and one `ok` splits into `ok`/`warn`, adding no key and inventing no severity. Note for consumers keying on `severity`: like DL-258 before it, this moves findings OUT of `ok`, so a consumer treating `ok` as "everything this leg covers is fine" gets *fewer* false all-clears and no new shape. It stays `1` through DL-265 (card#5796) on the corrected-verdict row: one install state — a `secret_dir` that exists and is not a directory — moves `warn` → `fail`, adding no key and inventing no severity, and moving in that same direction. It stays `1` through DL-266 (card#5596) on the **added-key** row alone: `inventory.undeclared_silent` (§6) joins the document and nothing else moves — the four `disposition` values are untouched, no severity is invented, and no existing key changes type or meaning. The declaredness the new key exposes rides **alongside** the disposition exactly as `not_run_reasons` does, which is what keeps that true by construction rather than by inspection.
+**`schema` is currently `1`.** It stayed `1` through DL-251 (stage 10), which re-assigned 21 findings from `warn` to `unvalidated` and added three: both rows above apply independently, and either alone is sufficient. It stayed `1` again through DL-255 (card#5698), which ADDED the top-level `agent_scope_coverage` key (§3a) and re-assigned three more findings to `unvalidated` — the added-key row and the pre-disclosed-precision row, again independently sufficient. It stays `1` through DL-259 (card#5698), the fail/ok severity audit, on the pre-disclosed-precision row alone: three findings move to `unvalidated` and one `ok` splits into `ok`/`warn`, adding no key and inventing no severity. Note for consumers keying on `severity`: like DL-258 before it, this moves findings OUT of `ok`, so a consumer treating `ok` as "everything this leg covers is fine" gets *fewer* false all-clears and no new shape. It stays `1` through DL-265 (card#5796) on the corrected-verdict row: one install state — a `secret_dir` that exists and is not a directory — moves `warn` → `fail`, adding no key and inventing no severity, and moving in that same direction. It stays `1` through DL-266 (card#5596) on the **added-key** row alone: `inventory.undeclared_silent` (§6) joins the document and nothing else moves — the four `disposition` values are untouched, no severity is invented, and no existing key changes type or meaning. The declaredness the new key exposes rides **alongside** the disposition exactly as `not_run_reasons` does, which is what keeps that true by construction rather than by inspection. It stays `1` through DL-352 (card#8959) on the **added-key** row alone: the top-level `next_steps` array (§7a) joins the document and nothing else moves — no severity is invented, no `disposition` value is added, no existing key changes type or meaning, and the array is DERIVED from findings the document already carried rather than from a new measurement.
 
 **`message` strings are NOT part of the contract.** They are operator prose, carried so a document is diagnosable by a human reading it. They have been reworded before (DL-236) and will be again. **A consumer keying on message text has re-created the coupling this surface exists to break** — key on `severity`, `disposition`, check `id`, and the structured `event_consumers` fields instead. `CheckJsonContractTest` deliberately does not pin them.
 
@@ -50,7 +50,8 @@ php artisan bridge:check                    # identical to --format=text
   "checks": [ … ],                      // every REGISTERED check, in registration order
   "findings_outside_registry": [ … ],   // findings belonging to no check (see §5)
   "inventory": { … },                   // the run's account (see §6)
-  "event_consumers": { … }              // the observed-vs-consumed reconciliation (see §7)
+  "event_consumers": { … },             // the observed-vs-consumed reconciliation (see §7)
+  "next_steps": [ … ]                   // what an agent should RUN NEXT, per agent (see §7a)
 }
 ```
 
@@ -63,6 +64,7 @@ php artisan bridge:check                    # identical to --format=text
 | `findings_outside_registry` | array of findings | Findings the command's own fail-soft envelopes produced, which belong to no registered check — §5. |
 | `inventory` | object | The per-disposition account of the run — §6. |
 | `event_consumers` | object | The observed-vs-consumed reconciliation as data — §7. |
+| `next_steps` | array | One entry per agent whose board-tools enablement is incomplete, with the command to run next — §7a. **Empty means nothing is OUTSTANDING, never that every agent is enabled.** |
 
 ### 3a. `agent_scope_coverage` — read this before any scope-keyed negative
 
@@ -229,6 +231,36 @@ Per scope:
 - **The declaration half is computed even when nothing arrived** — `consumed` / `bare` / `qualified` are meaningful on a scope with zero arrivals, which is the half a config-auditing consumer reads. (The text renderer stays silent for such a scope; the data does not inherit that bound.)
 - **Every possibly-empty map is encoded as a JSON object, never `[]`** (`observed`, `observed_actions`, `qualified`, `unlisted_actions`). This is asserted on the encoded bytes, so a consumer indexing them never has to handle two types for one field. The nested maps inside them cannot be empty by construction.
 
+### 7a. `next_steps` — what to run next, per agent
+
+Added in **DL-352** (card#8959) on the **added-key** row of §2, so `schema` stays `1`: nothing else moves, no severity is invented, and no existing key changes type or meaning.
+
+```jsonc
+"next_steps": [
+  {
+    "agent": "dev-agent",
+    "state": "no_block",
+    "command": "php artisan bridge:provision-tools --agent=dev-agent",
+    "doc": "docs/board-tools.md § Same-box enablement (Apache/FPM)"
+  }
+]
+```
+
+One entry per agent whose **board-tools** enablement (DL-217) is incomplete, in config order, each naming the ONE command to run next. It is the machine half of the operator report's **NEXT STEPS** block; both are rendered from the same value, so the command a consumer runs is the command the report printed.
+
+| `state` | Meaning | `command` |
+| --- | --- | --- |
+| `no_block` | The agent's YAML carries no `board_tools:` block at all. | `bridge:provision-tools --agent=<name>` (prints a paste-ready skeleton; it never edits YAML) |
+| `bridge_side_incomplete` | A block is present and **this bridge's** half is not usable yet — a default-on block that could not satisfy itself, an http bearer that did not resolve, or an ssh pinned forced-command line that is absent, wrong or unreadable by this run. The specific fault is a `checks[]` finding with its own cause and cure. | `bridge:provision-tools --agent=<name>` |
+| `seat_side_unreported` | The bridge half is complete and no successful board-tools call has ever been observed for this agent. | `bridge:check` (after the seat has called) |
+
+**Bounds:**
+
+- **It is a POINTER TO WORK, never an inventory of the install.** Its population is the agents whose YAML **parsed** — an agent that failed to load is absent here while being present in `findings_outside_registry` — and an agent that deliberately opted out (`board_tools.enabled: false`) is absent because it owes nothing. **An empty list means nothing is outstanding.**
+- **`seat_side_unreported` is an ABSENCE OF EVIDENCE, not a claim the seat is broken.** The bridge may not read the seat's own `.mcp.json` or keypair (DL-229), so *never wired* and *wired and idle* are the same absence from here — the bound `board_tools.client_half` states for the finding it derives from. ⛔ **It must not be cleared with `--probe-tools`**: that probe stamps the same ledger row *from the bridge box*, so it would empty this list without the seat ever having called.
+- **It cannot move `ok` or the exit code.** The derivation yields values, not findings, and only a `fail` finding moves the verdict.
+- **The `state` values ARE part of the contract; the report's sentences are not.** Key on `state` and `command`, never on the operator prose that wraps them.
+
 ## 8. Where the guard lives
 
 | Surface | File |
@@ -237,6 +269,8 @@ Per scope:
 | The shape guard (exact key sets, every level) | `tests/Feature/Console/Check/CheckJsonContractTest.php` |
 | Cross-renderer agreement over all install shapes (verdict, exit, inventory counts vs. the committed text capture) | `tests/Feature/Console/Check/CheckGoldenTest.php` |
 | The reconciliation derivation | `app/Bridge/Check/EventConsumers/EventConsumerReconciler.php` |
+| The `next_steps` derivation (§7a) | `app/Bridge/Check/NextSteps.php` |
+| The `next_steps` guard (both renderers, all three states) | `tests/Feature/Console/Check/CheckNextStepsTest.php` |
 | Why the surface is shaped this way | [`CHECK-REGISTRY-PLAN.md`](CHECK-REGISTRY-PLAN.md) § Stage 9 result; **DL-249** |
 
 **Changing the shape:** update the literal key sets in `CheckJsonContractTest` in the **same commit** as the renderer, and decide deliberately whether the change is additive (no bump) or consumer-visible (bump `SCHEMA_VERSION` — and say so in `docs/CHANGELOG.md`). When that test reds, it is usually right.

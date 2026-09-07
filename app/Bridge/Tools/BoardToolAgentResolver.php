@@ -167,6 +167,31 @@ final class BoardToolAgentResolver
         return $this->problems;
     }
 
+    /**
+     * The agents this build actually INDEXED — the ones a presented bearer can resolve to.
+     *
+     * IT IS THE POSITIVE HALF OF {@see self::problems()}, and it exists because the
+     * negative half cannot be joined back to an agent (card#8959). A problem is a
+     * {@see Finding}: display-ready prose with the agent name inside the SENTENCE, which is
+     * deliberately not a contract — messages have been reworded before and will be again.
+     * So a consumer asking *"did agent X's bearer resolve"* had only the option of matching
+     * that prose. This answers it structurally, off the same build, with no second read of
+     * any token file.
+     *
+     * ⚠ ABSENCE HERE IS NOT ONE FAULT. An agent is missing because its token was
+     * unreadable, blank, insecure or shared with a sibling — AND because it is an `ssh`
+     * agent, which carries no bearer at all and is excluded from this index by design (the
+     * transport skip in the constructor). A consumer reading absence as a bearer fault must
+     * exclude the ssh transport itself; nothing here can, because that is a property of the
+     * roster and not of the index.
+     *
+     * @return list<string>
+     */
+    public function indexedAgents(): array
+    {
+        return array_column($this->entries, 'agent');
+    }
+
     private function readToken(string $agentName, string $path): ?string
     {
         try {

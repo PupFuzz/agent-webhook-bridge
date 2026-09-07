@@ -28,7 +28,9 @@ python3 bin/decision-log.py next                    # allocate the next DL-NNN b
 # Operator CLI (per-agent config under ~/.config/agent-webhook-bridge[-prod|-dev]/<agent>.yml)
 php artisan bridge:check                 # validate the install (dirs, DB connectivity, agent YAMLs)
 php artisan bridge:provision             # idempotent webhook subscription setup (--reconcile fixes drift)
-php artisan bridge:provision-tools       # mint per-agent board-tools bearers (DL-217; idempotent, collision-checked)
+php artisan bridge:provision-tools       # mint per-agent board-tools bearers (DL-217; idempotent, collision-checked). The
+                                         # command bridge:check's NEXT STEPS block names for an agent that is not wired
+                                         # end to end (DL-352) — docs/board-tools.md
 php artisan bridge:inbox                 # surface staged intents (Claude Code hook-aware)
 php artisan bridge:prune --older-than=30d # retention: prune old events/dispatches/inbox lines (manual/unbounded; the receiver self-prunes since DL-199)
 php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (report-only; --fix applies) — rerunnable writeback backstop
