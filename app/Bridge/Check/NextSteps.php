@@ -3,6 +3,7 @@
 namespace App\Bridge\Check;
 
 use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
+use App\Bridge\Check\Checks\SshPinnedLineCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
@@ -24,9 +25,10 @@ use App\Bridge\Support\Severity;
  * the prompt is a block the agent READS, on the command a fresh install already runs.
  *
  * ⭐ IT DERIVES, IT DOES NOT MEASURE. Every input is something this run already produced:
- * the parsed agent configs, the bearer index the command built once, the ssh
- * setup-incompleteness the command already reads back off the pinned-line findings, and
- * the client-half {@see CheckResult}s. It walks no directory, opens no token file and
+ * the parsed agent configs, the bearer index the command built once, and the pinned-line
+ * and client-half {@see CheckResult}s (read by check id, the way the command's own DL-225
+ * readback reads them — and NOT through {@see CheckContext::$sshSetupIncomplete}, which
+ * folds `unvalidated` into `true` and so cannot tell a blind read from a measured fault). It walks no directory, opens no token file and
  * issues no board read — a second walk would be a second answer able to disagree with the
  * lines printed above it, which is the defect this whole command's registry exists to
  * remove.
@@ -61,7 +63,15 @@ final class NextSteps
      * those lines; a second copy in this file would be the one that goes stale the next time
      * a `board_tools` key is added.
      */
-    private const PROVISION = 'php artisan bridge:provision-tools --agent=';
+    public const PROVISION = 'php artisan bridge:provision-tools --agent=';
+
+    /**
+     * The command for a bridge half this run COULD NOT MEASURE: the same check, as the
+     * account that can read what this one could not. Never `bridge:provision-tools` — that
+     * is the remedy for a measured fault, and running it on an unmeasured one is the
+     * re-provision-a-working-seat cost the split exists to prevent.
+     */
+    private const RERUN_PRIVILEGED = 'sudo php artisan bridge:check';
 
     /**
      * Derive one entry per agent whose board-tools enablement is incomplete, in config
@@ -77,24 +87,33 @@ final class NextSteps
      */
     public static function derive(CheckContext $ctx, array $results): array
     {
-        $indexed = $ctx->boardToolsResolver?->indexedAgents() ?? [];
-        $reported = self::clientHalfReported($results);
+        $pinnedLine = self::severitiesById($results, SshPinnedLineCheck::ID);
+        $clientHalf = self::severitiesById($results, BoardToolsClientHalfCheck::ID);
 
         $steps = [];
         foreach ($ctx->configs as $cfg) {
-            $state = self::stateOf($cfg, $ctx, $indexed, $reported);
+            $name = $cfg->agentName;
+            $state = self::stateOf(
+                $cfg,
+                $cfg->boardTools?->transport === 'ssh'
+                    ? self::worst($pinnedLine[$name] ?? [])
+                    : $ctx->boardToolsResolver?->bearerSeverity($name),
+                in_array(Severity::Ok, $clientHalf[$name] ?? [], true),
+            );
             if ($state === null) {
                 continue;
             }
             $steps[] = new NextStep(
-                agent: $cfg->agentName,
+                agent: $name,
                 state: $state,
-                command: $state === NextStepState::SeatSideUnreported
+                command: match ($state) {
+                    NextStepState::NoBlock, NextStepState::BridgeSideIncomplete => self::PROVISION.$name,
+                    NextStepState::BridgeSideUnverified => self::RERUN_PRIVILEGED,
                     // The seat's own wiring happens on the seat, which this box may not
                     // touch — so the command a BRIDGE reader can run is the one that
                     // re-asks the question once the seat has answered it by calling.
-                    ? 'php artisan bridge:check'
-                    : self::PROVISION.$cfg->agentName,
+                    NextStepState::SeatSideUnreported => 'php artisan bridge:check',
+                },
                 doc: self::DOC,
             );
         }
@@ -105,10 +124,13 @@ final class NextSteps
     /**
      * Which state this agent is in, or null when it owes nothing.
      *
-     * @param  list<string>  $indexed  agents whose bearer the resolver indexed
-     * @param  array<string, true>  $reported  agents whose client half this run observed
+     * @param  ?Severity  $bridgeHalf  what this run concluded about the BRIDGE half of the
+     *                                 door for this agent — the pinned-line probe's worst
+     *                                 severity for an ssh agent, the bearer index's verdict
+     *                                 for an http one; null where nothing was asked
+     * @param  bool  $seatReported  whether this run observed a successful call for it
      */
-    private static function stateOf(AgentConfig $cfg, CheckContext $ctx, array $indexed, array $reported): ?NextStepState
+    private static function stateOf(AgentConfig $cfg, ?Severity $bridgeHalf, bool $seatReported): ?NextStepState
     {
         $bt = $cfg->boardTools;
         if ($bt === null) {
@@ -122,49 +144,76 @@ final class NextSteps
             return $bt->suppressedReason !== null ? NextStepState::BridgeSideIncomplete : null;
         }
 
-        // The ssh door authenticates by the pinned forced-command `--agent` and carries no
-        // bearer, so the bearer index says nothing about it; its bridge-side completeness
-        // is the pinned line, which `CheckCommand` has already read back off the
-        // pinned-line findings by the time this runs.
-        $bridgeSideBroken = $bt->transport === 'ssh'
-            ? isset($ctx->sshSetupIncomplete[$cfg->agentName])
-            : ! in_array($cfg->agentName, $indexed, true);
-
-        if ($bridgeSideBroken) {
-            return NextStepState::BridgeSideIncomplete;
+        // ⭐ THE SPLIT THE STATE EXISTS FOR. `Unvalidated` is a leg that COULD NOT LOOK, and
+        // it must not be spent as a fault: the remedy for a fault is to re-provision, the
+        // remedy for a blind read is to re-run as the account that can read, and they are
+        // opposites. `Warn` is grouped with `Fail` because both are MEASURED conclusions
+        // (`CheckCommand::severityMeansSetupIncomplete()` draws the same line). `null` is
+        // an enabled agent nothing asked about — unreachable by construction, since the
+        // bearer index is built over every enabled http agent and the pinned-line slot runs
+        // for every enabled ssh one — and is grouped with the measured arm rather than the
+        // unverified one so that, if it ever fires, it sends the reader to a leg that
+        // prints its own diagnosis instead of to `sudo`.
+        $bridgeHalfState = match ($bridgeHalf) {
+            Severity::Ok => null,
+            Severity::Unvalidated => NextStepState::BridgeSideUnverified,
+            Severity::Warn, Severity::Fail, null => NextStepState::BridgeSideIncomplete,
+        };
+        if ($bridgeHalfState !== null) {
+            return $bridgeHalfState;
         }
 
-        return isset($reported[$cfg->agentName]) ? null : NextStepState::SeatSideUnreported;
+        return $seatReported ? null : NextStepState::SeatSideUnreported;
     }
 
     /**
-     * Agents this run OBSERVED a successful board-tools call for.
+     * The one severity a set of findings from one leg amounts to: the MEASURED verdict
+     * (`Fail`, then `Warn`) outranks a blind read (`Unvalidated`), which outranks `Ok` — a
+     * leg that measured a fault AND could not read something else has still measured a
+     * fault. Null for a leg that yielded nothing for this agent.
      *
-     * KEYED ON THE `ok` FINDING RATHER THAN ON THE ABSENCE OF AN `unvalidated` ONE, and the
-     * asymmetry is deliberate. {@see BoardToolsClientHalfCheck} yields `unvalidated` for
-     * two different reasons — no fresh record, and a ledger read that failed outright — and
-     * nothing in the severity separates them. Treating only a positive `ok` as *observed*
-     * means an unreadable ledger produces an entry that says the seat has not been observed,
-     * which is TRUE on both paths; the inverse rule would have produced a silent clean over
-     * a measurement that never happened.
-     *
-     * @param  list<CheckResult>  $results
-     * @return array<string, true>
+     * @param  list<Severity>  $severities
      */
-    private static function clientHalfReported(array $results): array
+    private static function worst(array $severities): ?Severity
     {
-        $reported = [];
-        foreach ($results as $result) {
-            if ($result->id !== BoardToolsClientHalfCheck::ID || $result->agent === null) {
-                continue;
-            }
-            foreach ($result->findings as $finding) {
-                if ($finding->severity === Severity::Ok) {
-                    $reported[$result->agent] = true;
-                }
+        foreach ([Severity::Fail, Severity::Warn, Severity::Unvalidated, Severity::Ok] as $rank) {
+            if (in_array($rank, $severities, true)) {
+                return $rank;
             }
         }
 
-        return $reported;
+        return null;
+    }
+
+    /**
+     * Every severity ONE per-agent check yielded, keyed by agent — selected BY ID, never by
+     * walking the whole report, so a second check later registered in the same slot cannot
+     * silently start feeding this derivation (the rule `CheckCommand`'s own pinned-line
+     * readback follows).
+     *
+     * FOR THE CLIENT HALF THE CONSUMER KEYS ON THE PRESENCE OF `Ok`, NOT ON THE ABSENCE OF
+     * `Unvalidated`, and the asymmetry is deliberate. {@see BoardToolsClientHalfCheck} yields
+     * `unvalidated` for two different reasons — no fresh record, and a ledger read that
+     * failed outright — and nothing in the severity separates them. Treating only a positive
+     * `ok` as *observed* means an unreadable ledger produces an entry that says the seat has
+     * not been observed, which is TRUE on both paths; the inverse rule would have produced a
+     * silent clean over a measurement that never happened.
+     *
+     * @param  list<CheckResult>  $results
+     * @return array<string, list<Severity>>
+     */
+    private static function severitiesById(array $results, string $id): array
+    {
+        $out = [];
+        foreach ($results as $result) {
+            if ($result->id !== $id || $result->agent === null) {
+                continue;
+            }
+            foreach ($result->findings as $finding) {
+                $out[$result->agent][] = $finding->severity;
+            }
+        }
+
+        return $out;
     }
 }

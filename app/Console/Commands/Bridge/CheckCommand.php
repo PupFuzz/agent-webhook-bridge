@@ -1046,8 +1046,9 @@ class CheckCommand extends BridgeCommand
 
     /**
      * The one sentence for one step — an exhaustive `match` over {@see NextStepState}, so a
-     * fourth state is a phpstan error here rather than an agent silently getting a command
-     * with no explanation.
+     * fifth state is a phpstan error here rather than an agent silently getting a command
+     * with no explanation. What each state MEANS is the enum's docblock to say, not this
+     * method's: the sentences render the definitions, they do not own them.
      */
     private function nextStepSentence(NextStep $step): string
     {
@@ -1061,7 +1062,13 @@ class CheckCommand extends BridgeCommand
             // is the shape `emitFinding()` refuses `warn` for, one level down.
             NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all. Run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. Not wanted for this agent? Put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. {$doc}",
 
-            NextStepState::BridgeSideIncomplete => "a `board_tools:` block is present, but THIS BRIDGE's half of the door is not usable yet — the leg that found it is one of the board_tools lines above, with its own cause and cure. Run `{$step->command}`: for an http agent it mints or names the bearer fault, for an ssh agent it prints the ready-to-run provisioning invocation for each leg. {$doc}",
+            // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
+            // PROVISION. This is the line that, before the split, told an install whose only
+            // problem was a non-root run to re-provision — the privileged-window cost
+            // card#7756 named.
+            NextStepState::BridgeSideUnverified => "a `board_tools:` block is present, and THIS BRIDGE's half of the door COULD NOT BE VERIFIED FROM HERE — a leg above says which read this run was refused (the pinned authorized_keys line, because this run was not root; or the bearer token file, which this process could not see or read). That is not a fault and this is not evidence the half is broken. Re-run as the account that can read it: `{$step->command}`. Do NOT re-provision on the strength of this line alone. {$doc}",
+
+            NextStepState::BridgeSideIncomplete => "a `board_tools:` block is present, but THIS BRIDGE's half of the door was MEASURED and is not usable yet — the leg that found it is one of the board_tools lines above, with its own cause and cure. Run `{$step->command}`: for an http agent it mints or names the bearer fault, for an ssh agent it prints the ready-to-run provisioning invocation for each leg. {$doc}",
 
             // The bound is PRINTED, not merely known, because this is the one state whose
             // remedy an operator can get wrong in a way that looks like success.

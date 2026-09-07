@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Check\NextSteps;
+use App\Bridge\Tools\SshProbeEnvironment;
 use App\Console\Commands\Bridge\CheckCommand;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -10,16 +11,19 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenInstall;
+use Tests\Support\CheckGolden\GoldenSshEnvironment;
 use Tests\TestCase;
 
 /**
  * `bridge:check`'s NEXT STEPS block (card#8959, DL-352).
  *
- * ONE INSTALL, THREE AGENTS, ONE PER STATE, because the block's whole claim is a
- * DISCRIMINATION: it names the agents that owe work and omits the one that does not. A
- * fixture with only incomplete agents would green on a derivation that named every agent
- * on the install, which is the version of this feature that is worse than no feature —
- * an agent told to re-provision a seat that is already working.
+ * ONE INSTALL, FIVE AGENTS: one per state (four), plus one that owes nothing — because the
+ * block's whole claim is a DISCRIMINATION, twice over. It names the agents that owe work and
+ * omits the one that does not (a fixture of only-incomplete agents would green on a
+ * derivation that named every agent), AND it tells a MEASURED bridge-side fault from a
+ * bridge half this run merely COULD NOT READ — the two take opposite remedies, and a
+ * fixture without both would green on a derivation that collapsed them (which the first
+ * cut did: a non-root run was told to re-provision a correctly wired ssh install).
  *
  * ⚠ WHAT "OMITS THE THIRD AGENT" IS ASSERTED OVER, stated because the obvious assertion is
  * wrong here: the finished agent's NAME appears all over the report (its own board-tools
@@ -62,29 +66,57 @@ class CheckNextStepsTest extends TestCase
 
         $this->assertNotSame([], $lines, 'the install has two incomplete agents and printed no NEXT STEPS block');
 
-        // The HEADING plus one line per incomplete agent, and nothing else: a fourth line
+        // The HEADING plus one line per incomplete agent, and nothing else: a sixth line
         // would mean an agent was named that owes nothing.
-        $this->assertCount(3, $lines);
+        $this->assertCount(5, $lines);
         $this->assertStringContainsString('NEXT STEPS', $lines[0]);
 
         // ORDER IS ASSERTED, not just membership. The block is a sequence of things to do,
         // and config order is the only order this run has; a set-wise assertion would green
         // on a derivation that emitted them in hash order.
-        $this->assertStringStartsWith('next step 1/2 — agent-a:', $lines[1]);
-        $this->assertStringStartsWith('next step 2/2 — agent-b:', $lines[2]);
+        $this->assertStringStartsWith('next step 1/4 — agent-a:', $lines[1]);
+        $this->assertStringStartsWith('next step 2/4 — agent-b:', $lines[2]);
+        $this->assertStringStartsWith('next step 3/4 — agent-d:', $lines[3]);
+        $this->assertStringStartsWith('next step 4/4 — agent-e:', $lines[4]);
 
         // The COMMAND is the payload of the whole block — an entry that named the right
         // agent and the wrong command is the failure mode a name-only assertion misses.
         $this->assertStringContainsString('php artisan bridge:provision-tools --agent=agent-a', $lines[1]);
         $this->assertStringContainsString('php artisan bridge:check', $lines[2]);
+        $this->assertStringContainsString('php artisan bridge:provision-tools --agent=agent-d', $lines[3]);
+        $this->assertStringContainsString('sudo php artisan bridge:check', $lines[4]);
 
         // The finished agent is absent FROM THE BLOCK (its name is legitimately elsewhere in
         // the report — see the class docblock).
         $this->assertStringNotContainsString('agent-c', implode("\n", $lines));
 
         // Every entry points at the runbook: a next step with no destination is a nag.
-        $this->assertStringContainsString(NextSteps::DOC, $lines[1]);
-        $this->assertStringContainsString(NextSteps::DOC, $lines[2]);
+        foreach (array_slice($lines, 1) as $line) {
+            $this->assertStringContainsString(NextSteps::DOC, $line);
+        }
+    }
+
+    public function test_a_default_suppressed_block_is_bridge_side_incomplete_and_a_blind_pinned_line_read_is_not(): void
+    {
+        // THE MEASURED / UNMEASURED SPLIT, asserted on the two lines that carry it, in BOTH
+        // directions on each — the positive wording present AND the other arm's wording
+        // absent, because an assertion that only checks presence certifies a renderer that
+        // printed both.
+        $lines = $this->nextStepLines($this->runCheck());
+
+        // agent-d: a default-on block that could not satisfy itself — `bridge:check` FAILs
+        // on it, so it is MEASURED, and the remedy is to fix the block.
+        $this->assertStringContainsString('MEASURED and is not usable yet', $lines[3]);
+        $this->assertStringNotContainsString('COULD NOT BE VERIFIED', $lines[3]);
+
+        // agent-e: an ssh agent whose pinned-line probe could not read authorized_keys (this
+        // run is not root, per the probe-environment fake). NOTHING was measured, and the
+        // line the first cut printed here — "not usable yet, run provision-tools" — is
+        // exactly the re-provision-a-working-seat cost card#7756 named.
+        $this->assertStringContainsString('COULD NOT BE VERIFIED FROM HERE', $lines[4]);
+        $this->assertStringContainsString('Do NOT re-provision on the strength of this line alone', $lines[4]);
+        $this->assertStringNotContainsString('provision-tools', $lines[4]);
+        $this->assertStringNotContainsString('not usable yet', $lines[4]);
     }
 
     public function test_the_seat_side_entry_states_the_bridge_cannot_verify_it_and_refuses_the_probe_shortcut(): void
@@ -95,7 +127,7 @@ class CheckNextStepsTest extends TestCase
         // spend a privileged remediation window on a seat that may be fine (card#7756).
         $lines = $this->nextStepLines($this->runCheck());
 
-        $this->assertStringContainsString('NOT VERIFIABLE FROM HERE', $lines[2]);
+        $this->assertStringContainsString("the CALLING SEAT's half is NOT VERIFIABLE FROM HERE", $lines[2]);
         $this->assertStringContainsString('DL-229', $lines[2]);
 
         // ⛔ AND THE SELF-FALSIFYING CURE IS NAMED AND REFUSED. `--probe-tools` reaches the
@@ -106,7 +138,7 @@ class CheckNextStepsTest extends TestCase
         $this->assertStringContainsString('Do NOT clear this line with --probe-tools', $lines[2]);
     }
 
-    public function test_the_json_document_carries_the_same_two_entries_with_their_states(): void
+    public function test_the_json_document_carries_the_same_four_entries_with_their_states(): void
     {
         $doc = $this->runCheckAsJson();
 
@@ -114,6 +146,8 @@ class CheckNextStepsTest extends TestCase
             [
                 ['agent' => 'agent-a', 'state' => 'no_block', 'command' => 'php artisan bridge:provision-tools --agent=agent-a', 'doc' => NextSteps::DOC],
                 ['agent' => 'agent-b', 'state' => 'seat_side_unreported', 'command' => 'php artisan bridge:check', 'doc' => NextSteps::DOC],
+                ['agent' => 'agent-d', 'state' => 'bridge_side_incomplete', 'command' => 'php artisan bridge:provision-tools --agent=agent-d', 'doc' => NextSteps::DOC],
+                ['agent' => 'agent-e', 'state' => 'bridge_side_unverified', 'command' => 'sudo php artisan bridge:check', 'doc' => NextSteps::DOC],
             ],
             $doc['next_steps'],
         );
@@ -170,7 +204,20 @@ class CheckNextStepsTest extends TestCase
 
     public function test_printing_the_block_does_not_move_the_exit_code(): void
     {
-        $exit = Artisan::call('bridge:check', $this->bootThreeAgentInstall());
+        // Agents a and b ONLY: the five-agent install carries a default-suppressed block,
+        // which `bridge:check` FAILs on by design (DL-217 v7), so its exit is 1 for a reason
+        // that has nothing to do with this block. This pair reaches the block on an install
+        // whose every leg is green-or-unvalidated, which is the only shape where "the block
+        // did not flip the exit" is a statement about the block.
+        $this->bootGoldenInstall('next-steps-exit-contract', function (GoldenInstall $i) {
+            $this->fakeBoard();
+            $i->boot()
+                ->agent('agent-a', $this->kanbanOnlyAgentYaml())
+                ->agent('agent-b', $this->boardToolsAgentYaml($i->path('bearer-b')))
+                ->secret('bearer-b', self::BEARER_B)
+                ->secret('kanban/writeback-token', 'wb-token');
+        });
+        $exit = Artisan::call('bridge:check');
         $output = Artisan::output();
 
         $this->assertStringContainsString('NEXT STEPS', $output, 'the fixture must reach the block for this to say anything');
@@ -195,21 +242,34 @@ class CheckNextStepsTest extends TestCase
     // ---- fixture plumbing ----
 
     /**
-     * Three agents, one per state, in the order `glob()` returns them:
-     *   agent-a — no `board_tools:` block at all;
-     *   agent-b — an enabled block with a readable bearer and NO recorded call;
-     *   agent-c — the same, WITH a fresh recorded call.
+     * Five agents, in the order `glob()` returns them:
+     *   agent-a — no `board_tools:` block at all                        → `no_block`;
+     *   agent-b — enabled http, readable bearer, NO recorded call       → `seat_side_unreported`;
+     *   agent-c — the same, WITH a fresh recorded call                  → owes nothing;
+     *   agent-d — a default-on block missing `swimlane_id`, so it could
+     *             not satisfy itself and SUPPRESSED (`bridge:check` FAILs
+     *             on it — a MEASURED fault)                             → `bridge_side_incomplete`;
+     *   agent-e — enabled ssh whose pinned-line probe could NOT READ
+     *             authorized_keys (the probe-environment fake is non-root
+     *             with no readable file — nothing measured)             → `bridge_side_unverified`.
      *
      * @return array<string, mixed> the args `bridge:check` should be called with
      */
-    private function bootThreeAgentInstall(): array
+    private function bootFiveAgentInstall(): array
     {
-        $this->bootGoldenInstall('next-steps-three-agents', function (GoldenInstall $i) {
+        $this->bootGoldenInstall('next-steps-five-agents', function (GoldenInstall $i) {
             $this->fakeBoard();
+            // The default fake: `readAuthorizedKeys()` answers null and `isRoot()` false, which
+            // is the probe's UNVERIFIED path — the same binding the golden corpus'
+            // `board-tools-ssh-default-transport-advisory` fixture uses to reach it.
+            $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
             $i->boot()
                 ->agent('agent-a', $this->kanbanOnlyAgentYaml())
                 ->agent('agent-b', $this->boardToolsAgentYaml($i->path('bearer-b')))
                 ->agent('agent-c', $this->boardToolsAgentYaml($i->path('bearer-c')))
+                ->agent('agent-d', $this->kanbanOnlyAgentYaml()."board_tools:\n  board_id: 10\n")
+                ->agent('agent-e', $this->kanbanOnlyAgentYaml()
+                    ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n")
                 ->secret('bearer-b', self::BEARER_B)
                 ->secret('bearer-c', self::BEARER_C)
                 ->secret('kanban/writeback-token', 'wb-token');
@@ -221,7 +281,7 @@ class CheckNextStepsTest extends TestCase
 
     private function runCheck(): string
     {
-        Artisan::call('bridge:check', $this->bootThreeAgentInstall());
+        Artisan::call('bridge:check', $this->bootFiveAgentInstall());
 
         return Artisan::output();
     }
@@ -229,7 +289,7 @@ class CheckNextStepsTest extends TestCase
     /** @return array<string, mixed> */
     private function runCheckAsJson(): array
     {
-        $args = $this->bootThreeAgentInstall();
+        $args = $this->bootFiveAgentInstall();
 
         return $this->decode($args);
     }

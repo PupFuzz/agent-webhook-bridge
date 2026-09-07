@@ -9,6 +9,7 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -53,6 +54,15 @@ final class BoardToolAgentResolver
     private array $problems = [];
 
     /**
+     * Agent name => the severity of this build's conclusion about its bearer — the
+     * structured twin of {@see self::$problems}, written at the same sites. Read through
+     * {@see self::bearerSeverity()}, whose docblock owns what each value means.
+     *
+     * @var array<string, Severity>
+     */
+    private array $bearerSeverity = [];
+
+    /**
      * @param  list<AgentConfig>  $configs
      */
     public function __construct(array $configs)
@@ -90,10 +100,13 @@ final class BoardToolAgentResolver
         foreach ($candidates as $c) {
             if (($countByToken[$c['token']] ?? 0) > 1) {
                 $collidedTokens[$c['token']] = true;
+                // A collision is MEASURED: two readable files, one value.
+                $this->bearerSeverity[$c['agent']] = Severity::Fail;
 
                 continue;
             }
             $this->entries[] = $c;
+            $this->bearerSeverity[$c['agent']] = Severity::Ok;
         }
         foreach (array_keys($collidedTokens) as $token) {
             $sharers = [];
@@ -168,28 +181,41 @@ final class BoardToolAgentResolver
     }
 
     /**
-     * The agents this build actually INDEXED — the ones a presented bearer can resolve to.
+     * What this build concluded about ONE agent's bearer, as the severity of that
+     * conclusion — or null for an agent this index never considered (an `ssh` agent, which
+     * carries no bearer, or a disabled block).
      *
-     * IT IS THE POSITIVE HALF OF {@see self::problems()}, and it exists because the
-     * negative half cannot be joined back to an agent (card#8959). A problem is a
-     * {@see Finding}: display-ready prose with the agent name inside the SENTENCE, which is
-     * deliberately not a contract — messages have been reworded before and will be again.
-     * So a consumer asking *"did agent X's bearer resolve"* had only the option of matching
-     * that prose. This answers it structurally, off the same build, with no second read of
-     * any token file.
+     * IT IS THE PER-AGENT HALF OF {@see self::problems()}, and it exists because that list
+     * cannot be joined back to an agent (card#8959). A problem is a {@see Finding}:
+     * display-ready prose with the agent name inside the SENTENCE, which is deliberately not
+     * a contract — messages have been reworded before and will be again. So a consumer
+     * asking *"did agent X's bearer resolve, and if not, was that MEASURED?"* had only the
+     * option of matching that prose. This answers it structurally, off the same build, with
+     * no second read of any token file.
      *
-     * ⚠ ABSENCE HERE IS NOT ONE FAULT. An agent is missing because its token was
-     * unreadable, blank, insecure or shared with a sibling — AND because it is an `ssh`
-     * agent, which carries no bearer at all and is excluded from this index by design (the
-     * transport skip in the constructor). A consumer reading absence as a bearer fault must
-     * exclude the ssh transport itself; nothing here can, because that is a property of the
-     * roster and not of the index.
-     *
-     * @return list<string>
+     * ⭐ THE SEVERITY IS THE POINT, NOT A BOOLEAN. `Ok` means indexed. `Fail` means a MEASURED
+     * fault — an insecure mode, a blank file, a value shared with a sibling. `Unvalidated`
+     * means THIS PROCESS COULD NOT SEE OR READ THE FILE (cards #5698 / #5778), which says
+     * nothing about the web user whose resolver actually serves the door — and a consumer
+     * that collapsed it into `Fail` would send the operator to re-provision a bearer that may
+     * be perfectly fine. The three are the same three the finding carries; this is that
+     * severity keyed by agent instead of buried in a sentence.
      */
-    public function indexedAgents(): array
+    public function bearerSeverity(string $agentName): ?Severity
     {
-        return array_column($this->entries, 'agent');
+        return $this->bearerSeverity[$agentName] ?? null;
+    }
+
+    /**
+     * Record a per-agent problem's severity beside the finding, at the ONE moment both are
+     * known — so the structured map and the prose list cannot disagree about what was
+     * measured.
+     */
+    private function recordProblem(string $agentName, Finding $finding): Finding
+    {
+        $this->bearerSeverity[$agentName] = $finding->severity;
+
+        return $finding;
     }
 
     private function readToken(string $agentName, string $path): ?string
@@ -197,7 +223,7 @@ final class BoardToolAgentResolver
         try {
             $token = SecretFile::read($path);
         } catch (InsecureSecretPermsException $e) {
-            $this->problems[] = Finding::fail("board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed');
+            $this->problems[] = $this->recordProblem($agentName, Finding::fail("board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed'));
 
             return null;
         } catch (UnreadableSecretException $e) {
@@ -206,15 +232,15 @@ final class BoardToolAgentResolver
             // class is built in both places — by `bridge:check` as the operator, and by
             // the controller as the web user. `unvalidated`, not `fail`, or the operator
             // is told an agent's tools are broken on a runtime this run never observed.
-            $this->problems[] = Finding::unvalidated("board_tools: agent {$agentName}: ".$e->getMessage());
+            $this->problems[] = $this->recordProblem($agentName, Finding::unvalidated("board_tools: agent {$agentName}: ".$e->getMessage()));
 
             return null;
         }
         if ($token === null || $token === '') {
             // A blank-but-readable file is MEASURED and keeps the definite claim; only an
             // unseeable one is unvalidated (card#5698).
-            $this->problems[] = PathVisibility::unverifiedUnlessVisible($path, "board_tools: agent {$agentName}: bearer token at {$path}")
-                ?? Finding::fail("board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed");
+            $this->problems[] = $this->recordProblem($agentName, PathVisibility::unverifiedUnlessVisible($path, "board_tools: agent {$agentName}: bearer token at {$path}")
+                ?? Finding::fail("board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed"));
 
             return null;
         }
