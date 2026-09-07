@@ -40,6 +40,11 @@ use JsonException;
  *    itself, and a per-agent check that ran for two of three agents is one entry.
  *  - `event_consumers.scopes[].observed` is bounded to events that were SUBSCRIBED and
  *    DELIVERED; it can never show an event the install is not subscribed to.
+ *  - `next_steps` is a POINTER TO WORK, NEVER AN INVENTORY OF THE INSTALL. Its population
+ *    is the agents whose YAML PARSED, so an agent that failed to load is absent from it
+ *    while being present in `findings_outside_registry`; and an agent that deliberately
+ *    opted out (`board_tools.enabled: false`) is absent because it owes nothing. An empty
+ *    list means nothing is OUTSTANDING — never that every agent is enabled.
  */
 final class CheckJsonRenderer
 {
@@ -60,6 +65,7 @@ final class CheckJsonRenderer
      * @param  bool  $ok  the run's verdict, the SAME variable that decides the exit code
      * @param  list<CheckResult>  $results
      * @param  list<Finding>  $unattributed  findings from `handle()`'s fail-soft envelopes, which belong to no registered check
+     * @param  list<NextStep>  $nextSteps
      * @return array<string, mixed>
      */
     public function document(
@@ -69,6 +75,7 @@ final class CheckJsonRenderer
         array $unattributed,
         EventConsumerReconciliation $eventConsumers,
         AgentScopeCoverage $agentScopeCoverage,
+        array $nextSteps,
     ): array {
         return [
             'schema' => self::SCHEMA_VERSION,
@@ -81,6 +88,12 @@ final class CheckJsonRenderer
             ),
             'inventory' => $this->inventory($inventory),
             'event_consumers' => $this->eventConsumers($eventConsumers),
+            // card#8959 (DL-352). AN ADDED KEY, SO THE SCHEMA VERSION DOES NOT MOVE — the
+            // rule is stated on the constant above and this is the case it was written for.
+            // ALWAYS PRESENT, and EMPTY where the text report prints no block: a consumer
+            // that had to distinguish an absent key from an empty list would be handling two
+            // types for one field, and `[]` already says "nothing outstanding" exactly.
+            'next_steps' => array_map($this->nextStep(...), $nextSteps),
         ];
     }
 
@@ -104,6 +117,7 @@ final class CheckJsonRenderer
      *
      * @param  list<CheckResult>  $results
      * @param  list<Finding>  $unattributed
+     * @param  list<NextStep>  $nextSteps
      */
     public function encode(
         bool $ok,
@@ -112,9 +126,10 @@ final class CheckJsonRenderer
         array $unattributed,
         EventConsumerReconciliation $eventConsumers,
         AgentScopeCoverage $agentScopeCoverage,
+        array $nextSteps,
     ): string {
         return json_encode(
-            $this->document($ok, $results, $inventory, $unattributed, $eventConsumers, $agentScopeCoverage),
+            $this->document($ok, $results, $inventory, $unattributed, $eventConsumers, $agentScopeCoverage, $nextSteps),
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
                 | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR,
         );
@@ -167,6 +182,27 @@ final class CheckJsonRenderer
         }
 
         return $out;
+    }
+
+    /**
+     * One agent's next board-tools enablement step (card#8959, DL-352).
+     *
+     * `command` AND `doc` ARE READ OFF THE VALUE, NEVER COMPOSED HERE, so the command a
+     * machine consumer runs is byte-identical to the one the operator report printed. The
+     * SENTENCE around it is `CheckCommand`'s and is deliberately absent: it is that
+     * renderer's voice, and a consumer keying on it would re-create the message-text
+     * coupling this whole surface exists to break.
+     *
+     * @return array<string, mixed>
+     */
+    private function nextStep(NextStep $step): array
+    {
+        return [
+            'agent' => $step->agent,
+            'state' => $step->state->value,
+            'command' => $step->command,
+            'doc' => $step->doc,
+        ];
     }
 
     /**

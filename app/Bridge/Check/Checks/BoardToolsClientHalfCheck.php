@@ -85,9 +85,18 @@ use Throwable;
  */
 final class BoardToolsClientHalfCheck implements PerAgentCheck
 {
+    /**
+     * The registry id, as a constant so a reader of this run's results can SELECT this
+     * check by id rather than by matching its prose (card#8959) — the same reason
+     * {@see SshPinnedLineCheck::ID} is one, and the same bound: selecting by id is what
+     * keeps a check later registered in the same slot from silently feeding a consumer
+     * that never asked for it.
+     */
+    public const ID = 'board_tools.client_half';
+
     public function id(): string
     {
-        return 'board_tools.client_half';
+        return self::ID;
     }
 
     /**

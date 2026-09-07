@@ -715,6 +715,28 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 
 ## Same-box enablement (Apache/FPM)
 
+> **⭐ You do not have to remember to come here — `bridge:check` sends you.** Since DL-352
+> the command a fresh install already runs ends with a **NEXT STEPS** block naming every
+> agent whose board-tools enablement is incomplete, the state it stopped in, and the ONE
+> command to run next; `--format=json` carries the same entries as `next_steps[]`
+> (`{agent, state, command, doc}`). An install with nothing outstanding prints no block at
+> all, and the block never moves the exit code — it is output, not a verdict. **That block
+> is this section's entry point**, so the normal way in is to run `php artisan bridge:check`
+> and follow the line for your agent rather than to read all seven steps first.
+>
+> What each `state` means is defined ONCE, in
+> [`docs/check-json-contract.md § 7a`](check-json-contract.md#7a-next_steps--what-to-run-next-per-agent)
+> (owner: `NextStepState`'s docblock) — not restated here. How they map onto the steps
+> below: `no_block` → steps 3–4; `bridge_side_incomplete` → the `bridge:provision-tools`
+> line the entry prints, then re-run; `bridge_side_unverified` → **re-run as the account
+> that can read** (`sudo`), and do **not** re-provision on that line alone — nothing was
+> measured; `seat_side_unreported` → steps 5 and 7, on the seat. ⛔ **The last one cannot
+> be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
+> ledger row the state is read from, *from this box*, so it would silence the line without
+> the seat ever having called. **An agent that does not want board tools declares
+> `board_tools:` with `enabled: false`**; a declined capability is a decision and the line
+> stops printing.
+
 The end-to-end runbook for the common topology: the bridge served by an Apache
 vhost (`*:443`/`*:80`) proxying to PHP-FPM, with the agent's channel server on
 the **same box**.
