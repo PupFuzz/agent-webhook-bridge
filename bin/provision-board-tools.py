@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import hmac
 import json
@@ -394,6 +395,21 @@ def _fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
     raise SystemExit(f"provision-board-tools: {message}")
 
 
+def _utc_stamp() -> str:
+    """UTC ISO-basic stamp for retained-artifact names (`.bak-`/`.stale-` suffixes)."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _path_safe(component: str) -> str:
+    """Make a filename component out of a value read from a file we do not own.
+
+    `deployed_version` comes from a `package.json` inside the seat's project dir; it
+    reaches a rename TARGET, so a separator or `..` in it would move the retained tree
+    somewhere other than beside the snapshot.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", component) or "unknown"
+
+
 def _read_pubkey(args) -> str:
     if args.pubkey_stdin and args.pubkey_from:
         _fail("give exactly one of --pubkey-stdin / --pubkey-from")
@@ -539,16 +555,13 @@ def run_role_b(args) -> int:
     home = _host_b_home()
     key_dir = os.path.join(home, ".ssh")
     os.makedirs(key_dir, exist_ok=True)
-    key_path = os.path.join(key_dir, f"{args.agent}-board-tools")
-    pub_path = key_path + ".pub"
-
-    _keygen(args.agent, key_path)
+    key_path, pub_path = _resolve_host_b_key(args, key_dir)
     _harden_private_key_perms(key_path)
 
     with open(pub_path, encoding="utf-8") as fh:
         pubkey = fh.read().strip("\n")
     if not is_authorized_key_shape(pubkey):
-        _fail(f"generated public key at {pub_path} failed the shape check — refusing to hand it off")
+        _fail(f"public key at {pub_path} failed the shape check — refusing to hand it off")
 
     deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
     mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
@@ -557,9 +570,11 @@ def run_role_b(args) -> int:
     # Tools transport keys this provisioner OWNS — force-set (overwrite) on every re-run.
     force_env = {
         "BRIDGE_TOOLS_SSH_TARGET": args.ssh_target,
+        # ALWAYS the key this run actually used — never the raw flag value. Recording an
+        # unrelated flag path while the leg keyed off a different file is what made the
+        # printed key, the pinned key and the recorded key three different things.
+        "BRIDGE_TOOLS_SSH_KEY": key_path,
     }
-    if args.ssh_key:
-        force_env["BRIDGE_TOOLS_SSH_KEY"] = args.ssh_key
     if args.ssh_port:
         force_env["BRIDGE_TOOLS_SSH_PORT"] = str(args.ssh_port)
 
@@ -580,10 +595,7 @@ def run_role_b(args) -> int:
         merged = merge_mcp_json(existing_text, args.channel_name, mjs_path, force_env, channel_defaults)
     except ValueError as e:
         _fail(str(e))
-    with open(mcp_path, "w", encoding="utf-8") as fh:
-        json.dump(merged, fh, indent=2)
-        fh.write("\n")
-    print(f".mcp.json merged: {mcp_path}")
+    _install_mcp_json(mcp_path, merged, existing_text)
 
     # Seed known_hosts BEFORE any --self-cert so --self-cert is a real host-key
     # exercise. The .mjs ssh spawn is BatchMode with no StrictHostKeyChecking, so an
@@ -600,8 +612,77 @@ def run_role_b(args) -> int:
     print("(This flag is CLI-only every session — no .mcp.json/settings.json equivalent.)")
 
     if args.self_cert:
-        return _self_cert(args.ssh_target, args.ssh_key, args.ssh_port)
+        return _self_cert(args.ssh_target, key_path, args.ssh_port)
     return 0
+
+
+def _resolve_host_b_key(args, key_dir: str) -> tuple:
+    """The ONE derivation of the host-B key pair — every downstream consumer reads it.
+
+    Without `--ssh-key` the pair is derived from `--agent` and generated if absent.
+    With `--ssh-key` the flag NAMES AN EXISTING KEY: both halves must already be on
+    disk (no keygen), and that path is what is printed, pinned, self-certified and
+    recorded as BRIDGE_TOOLS_SSH_KEY.
+    """
+    default_key_path = os.path.join(key_dir, f"{args.agent}-board-tools")
+    if not args.ssh_key:
+        _keygen(args.agent, default_key_path)
+        return default_key_path, default_key_path + ".pub"
+
+    key_path = os.path.abspath(os.path.expanduser(args.ssh_key))
+    pub_path = key_path + ".pub"
+    missing = [p for p in (key_path, pub_path) if not os.path.isfile(p)]
+    if missing:
+        _fail(
+            f"--ssh-key {args.ssh_key} names an EXISTING key pair to use, and "
+            f"{' and '.join(missing)} {'do' if len(missing) > 1 else 'does'} not exist. "
+            f"This flag never generates a key. Drop it to generate + use the default pair "
+            f"at {default_key_path} (+ .pub), or point it at a key pair that is already on disk."
+        )
+    print(f"using the existing key named by --ssh-key: {key_path}")
+    return key_path, pub_path
+
+
+def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> None:
+    """Serialise + install `.mcp.json` without ever truncating the live file.
+
+    The merged config is serialised into a sibling `.tmp` and compared against what is
+    already there: identical content installs nothing (no backup churn on a re-run), a
+    difference is backed up to `.bak-<UTC>` before `os.replace` swaps the new file in.
+    A failure anywhere in serialise/write leaves the original untouched and removes the
+    temp file — the previous in-place `open(mcp_path, "w")` truncated the seat's live
+    `.mcp.json` before the first byte of the replacement was serialised.
+    """
+    import stat
+
+    tmp_path = mcp_path + ".tmp"
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        with open(tmp_path, encoding="utf-8") as fh:
+            new_text = fh.read()
+        if existing_text is not None and new_text == existing_text:
+            print(f".mcp.json unchanged: {mcp_path}")
+            return
+
+        if existing_text is not None:
+            backup_path = f"{mcp_path}.bak-{_utc_stamp()}"
+            with open(backup_path, "x", encoding="utf-8") as fh:
+                fh.write(existing_text)
+            os.chmod(backup_path, 0o600)
+            print(f".mcp.json backup of the previous file: {backup_path}")
+            # Keep the seat's own mode rather than imposing the temp file's 0600.
+            os.chmod(tmp_path, stat.S_IMODE(os.stat(mcp_path).st_mode))
+        os.replace(tmp_path, mcp_path)
+        print(f".mcp.json merged: {mcp_path}")
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def _host_b_home() -> str:
@@ -890,7 +971,17 @@ def _deploy_snapshot(deploy_dir: str) -> None:
             _npm_ci(deploy_dir)
             return
         print(f"replacing stale snapshot (deployed {deployed_version} < bundled {bundled_version}).")
-        shutil.rmtree(deploy_dir)
+        # RENAME, never rmtree: this tree is the seat's live channel server. If the
+        # copytree/npm-ci that follows fails, a deleted snapshot leaves the seat with no
+        # channel server at all and nothing to roll back to.
+        stale_dir = f"{deploy_dir}.stale-{_path_safe(deployed_version)}"
+        if os.path.exists(stale_dir):
+            stale_dir = f"{stale_dir}-{_utc_stamp()}"
+        os.rename(deploy_dir, stale_dir)
+        print(
+            f"previous snapshot retained at {stale_dir} — nothing was deleted; "
+            f"remove it once the new snapshot is confirmed working."
+        )
 
     _require_node_20()
     shutil.copytree(
@@ -1008,7 +1099,12 @@ def build_parser() -> argparse.ArgumentParser:
     # host B
     p.add_argument("--ssh-target", help="[role b] user@host of the bridge box")
     p.add_argument("--ssh-port", type=int, help="[role b] optional ssh port")
-    p.add_argument("--ssh-key", help="[role b] optional identity key path recorded as BRIDGE_TOOLS_SSH_KEY")
+    p.add_argument(
+        "--ssh-key",
+        help="[role b] use this EXISTING key pair instead of generating one from --agent; "
+        "both <path> and <path>.pub must already exist (this flag never generates a key). "
+        "BRIDGE_TOOLS_SSH_KEY always records the key the run actually used, flag or not",
+    )
     p.add_argument("--project-dir", help="[role b] the Claude project dir holding .mcp.json")
     p.add_argument("--channel-name", help="[role b] the mcpServers key / BRIDGE_CHANNEL_NAME")
     p.add_argument("--self-cert", action="store_true", help="[role b] fire one real ssh board_my_cards round-trip")

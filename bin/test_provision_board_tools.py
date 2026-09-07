@@ -7,9 +7,12 @@ Each must-fix has at least one case that goes RED if the guard is reverted:
   - merge collision guard + refuse-on-unparseable + create-if-absent
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -20,6 +23,20 @@ _spec = importlib.util.spec_from_file_location(
 )
 pbt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pbt)
+
+# The same-box wrapper, loaded the same way: `RoleBHostBLeg` asserts that ITS parser
+# survives this leg's real stdout. Loaded by path rather than imported from the wrapper's
+# own test module, because bin/ is not a package — `python3 -m unittest
+# bin.test_provision_board_tools` (a documented way to run this file) puts the repo root
+# on sys.path, not bin/, so a sibling `import` works only under `unittest discover -s bin`.
+_sb_spec = importlib.util.spec_from_file_location(
+    "provision_board_tools_samebox", os.path.join(_HERE, "provision-board-tools-samebox.py")
+)
+sbx = importlib.util.module_from_spec(_sb_spec)
+# Register before exec so the wrapper's @dataclass can resolve its own module (string
+# annotations under `from __future__ import annotations` look the module up in sys.modules).
+sys.modules.setdefault("provision_board_tools_samebox", sbx)
+_sb_spec.loader.exec_module(sbx)
 
 # A real single-line ECDSA P-256 public key (blob is valid base64, arbitrary content).
 _REAL_ECDSA = (
@@ -822,6 +839,250 @@ class BuildForcedCommand(unittest.TestCase):
     def test_custom_timeout_value(self):
         line = pbt.build_forced_command("agent-1", self._ARTISAN, 45)
         self.assertIn("timeout -k 10 45 php", line)
+
+
+class RoleBHostBLeg(unittest.TestCase):
+    """card#8972: `--role b` mutates the seat's own state. Three of those mutations were
+    unsafe, and each of the cases below goes RED when its fix is reverted:
+
+      1. `--ssh-key` DIVERGED from the key the leg used: the key path was derived from
+         `--agent` and the FLAG's value was recorded as BRIDGE_TOOLS_SSH_KEY with no
+         compare, so the seat could be handed a config pointing at a key nothing pinned.
+      2. `.mcp.json` was written in place (`open(mcp_path, "w")` + `json.dump`), so any
+         failure mid-serialise left the seat's live channel config TRUNCATED.
+      3. see StaleSnapshotRetention below.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        os.makedirs(self.project)
+        self.mcp_path = os.path.join(self.project, ".mcp.json")
+
+    def _write_pair(self, key_path):
+        """A key pair already on disk (the shape of what `--ssh-key` may name)."""
+        with open(key_path, "w", encoding="utf-8") as fh:
+            fh.write("PRIVATE KEY BYTES\n")
+        os.chmod(key_path, 0o600)
+        with open(key_path + ".pub", "w", encoding="utf-8") as fh:
+            fh.write(_REAL_ECDSA + "\n")
+        return key_path
+
+    def _keygen_stub(self):
+        """Stands in for ssh-keygen: materialises the pair it would have generated."""
+        def _keygen(agent, key_path):
+            self._write_pair(key_path)
+        return _keygen
+
+    def _run(self, extra_argv=(), keygen=None):
+        argv = [
+            "--role", "b", "--agent", "kanban-solo",
+            "--ssh-target", "bridge@127.0.0.1",
+            "--project-dir", self.project,
+            "--channel-name", "kanbanboard-agent",
+            *extra_argv,
+        ]
+        args = pbt.build_parser().parse_args(argv)
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
+             mock.patch.object(pbt, "_keygen", side_effect=keygen or self._keygen_stub()), \
+             mock.patch.object(pbt, "_deploy_snapshot"), \
+             mock.patch.object(pbt, "_seed_known_hosts"), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.run_role_b(args)
+        return rc, buf.getvalue()
+
+    def _recorded_env(self):
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            return json.load(fh)["mcpServers"]["kanbanboard-agent"]["env"]
+
+    def _backups(self):
+        return sorted(n for n in os.listdir(self.project) if n.startswith(".mcp.json.bak-"))
+
+    # --- 1. --ssh-key names the key that is actually used ------------------- #
+
+    def test_ssh_key_pointing_at_a_missing_key_refuses_naming_both_paths(self):
+        # RED-when-reverted: pre-fix this ran to completion, generating + pinning
+        # ~/.ssh/kanban-solo-board-tools while recording the flag's path.
+        ghost = os.path.join(self.tmp.name, "not-there")
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--ssh-key", ghost])
+        msg = str(cm.exception)
+        self.assertIn(ghost, msg)                                              # the given path
+        self.assertIn(os.path.join(self.home, ".ssh", "kanban-solo-board-tools"), msg)  # the default
+        self.assertIn("EXISTING", msg)
+        self.assertFalse(os.path.exists(self.mcp_path), ".mcp.json must not be written on refusal")
+
+    def test_ssh_key_naming_an_existing_pair_is_used_verbatim_and_never_regenerated(self):
+        given = self._write_pair(os.path.join(self.tmp.name, "operator-key"))
+        keygen = mock.Mock()
+        rc, out = self._run(["--ssh-key", given], keygen=keygen)
+        self.assertEqual(rc, 0)
+        keygen.assert_not_called()
+        self.assertEqual(self._recorded_env()["BRIDGE_TOOLS_SSH_KEY"], given)
+        # The same path reaches the same-box handoff marker the samebox wrapper parses.
+        self.assertIn(
+            "Same-box: hand this path to `--role a --pubkey-from`:\n  " + given + ".pub", out
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.home, ".ssh", "kanban-solo-board-tools")),
+            "no key may be generated when --ssh-key names one",
+        )
+
+    def test_without_the_flag_the_recorded_key_is_the_derived_one(self):
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        derived = os.path.join(self.home, ".ssh", "kanban-solo-board-tools")
+        self.assertEqual(self._recorded_env()["BRIDGE_TOOLS_SSH_KEY"], derived)
+        self.assertIn("Same-box: hand this path to `--role a --pubkey-from`:\n  " + derived + ".pub", out)
+
+    def test_self_cert_probes_the_key_that_was_recorded(self):
+        # The recorded key is only meaningful if it is the one certified.
+        given = self._write_pair(os.path.join(self.tmp.name, "operator-key"))
+        with mock.patch.object(pbt, "_self_cert", return_value=0) as sc:
+            self._run(["--ssh-key", given, "--self-cert"], keygen=mock.Mock())
+        self.assertEqual(sc.call_args.args[1], given)
+
+    def test_self_cert_passes_i_derived_key_when_no_flag_was_given(self):
+        # RED-when-reverted: `-i` used to be passed only `if ssh_key`, so with no flag
+        # --self-cert probed the seat's DEFAULT ssh identity — a `Permission denied
+        # (publickey)` on a seat whose default identity is not the key role b just
+        # generated and host A just pinned, i.e. the check failing on the one arrangement
+        # it exists to certify.
+        derived = os.path.join(self.home, ".ssh", "kanban-solo-board-tools")
+        completed = mock.Mock(stdout=json.dumps({"ok": True}), stderr="", returncode=0)
+        with mock.patch.object(pbt.subprocess, "run", return_value=completed) as run:
+            rc, _ = self._run(["--self-cert"])
+        self.assertEqual(rc, 0)
+        argv = run.call_args.args[0]
+        self.assertIn("-i", argv)
+        self.assertEqual(argv[argv.index("-i") + 1], derived)
+        self.assertEqual(self._recorded_env()["BRIDGE_TOOLS_SSH_KEY"], derived)
+
+    def test_the_samebox_wrapper_parses_the_pub_path_out_of_this_legs_real_stdout(self):
+        # The same-box wrapper reads this leg's stdout for the handoff path: it finds the
+        # marker line and takes the NEXT NON-BLANK line. Every line this leg prints — the
+        # .mcp.json backup path, the retained .stale- snapshot path, `unchanged` — is
+        # printed at the merge/deploy step, BEFORE the handoff block, and this asserts
+        # that over the REAL captured stdout rather than a static fixture, so a line
+        # printed into the gap is caught here and not on a live same-box run.
+        original = json.dumps({"mcpServers": {}, "seatOwned": True}, indent=2) + "\n"
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            fh.write(original)  # forces a .bak- line into the captured output
+        _, out = self._run()
+        self.assertIn(".mcp.json.bak-", out)
+        self.assertEqual(
+            sbx.parse_pubkey_path(out),
+            os.path.join(self.home, ".ssh", "kanban-solo-board-tools.pub"),
+        )
+
+    # --- 2. .mcp.json is installed atomically, with a backup ---------------- #
+
+    def test_serialise_failure_leaves_the_original_intact_and_no_tmp_behind(self):
+        # RED-when-reverted: `open(mcp_path, "w")` truncates BEFORE json.dump runs, so
+        # the original bytes are gone by the time the fault fires.
+        original = json.dumps({"mcpServers": {}, "seatOwned": True}, indent=2) + "\n"
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            fh.write(original)
+        with mock.patch.object(pbt.json, "dump", side_effect=RuntimeError("disk full")):
+            with self.assertRaises(RuntimeError):
+                self._run()
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), original)
+        self.assertFalse(os.path.exists(self.mcp_path + ".tmp"))
+        self.assertEqual(self._backups(), [])
+
+    def test_changed_merge_backs_up_the_previous_file_before_replacing_it(self):
+        original = json.dumps({"mcpServers": {}, "seatOwned": True}, indent=2) + "\n"
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            fh.write(original)
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        backups = self._backups()
+        self.assertEqual(len(backups), 1, f"expected exactly one backup, got {backups}")
+        backup_path = os.path.join(self.project, backups[0])
+        with open(backup_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), original, "the backup must hold the PREVIOUS bytes")
+        self.assertIn(backup_path, out)
+        self.assertEqual(os.stat(backup_path).st_mode & 0o777, 0o600)
+        merged = self._recorded_env()
+        self.assertEqual(merged["BRIDGE_TOOLS_SSH_TARGET"], "bridge@127.0.0.1")
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertTrue(json.load(fh)["seatOwned"], "unrelated seat keys survive the replace")
+
+    def test_idempotent_reprovision_writes_no_second_backup(self):
+        self._run()
+        self.assertEqual(self._backups(), [])
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._backups(), [], "an unchanged re-run must not churn backups")
+        self.assertIn("unchanged", out)
+
+
+class StaleSnapshotRetention(unittest.TestCase):
+    """card#8972 (3): a stale channel-server snapshot was `shutil.rmtree`d before the
+    replacement was copied — if the copy or the `npm ci` that follows fails, the seat is
+    left with NO channel server and nothing to roll back to. It is renamed aside instead.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.source = os.path.join(self.tmp.name, "bundled")
+        os.makedirs(self.source)
+        self._pkg(self.source, "0.9.0")
+        with open(os.path.join(self.source, "new-file.mjs"), "w", encoding="utf-8") as fh:
+            fh.write("// bundled\n")
+        self.deploy = os.path.join(self.tmp.name, "project", ".channel-server")
+        os.makedirs(self.deploy)
+        self._pkg(self.deploy, "0.1.0")
+        with open(os.path.join(self.deploy, "operator-note.txt"), "w", encoding="utf-8") as fh:
+            fh.write("deployed content\n")
+
+    @staticmethod
+    def _pkg(d, version):
+        with open(os.path.join(d, "package.json"), "w", encoding="utf-8") as fh:
+            json.dump({"version": version}, fh)
+
+    def _deploy(self):
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_bundled_snapshot_dir", return_value=self.source), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt, "_npm_ci"), \
+             contextlib.redirect_stdout(buf):
+            pbt._deploy_snapshot(self.deploy)
+        return buf.getvalue()
+
+    def test_stale_snapshot_is_retained_not_deleted(self):
+        # RED-when-reverted: shutil.rmtree leaves no .stale- path at all.
+        out = self._deploy()
+        stale = self.deploy + ".stale-0.1.0"
+        self.assertTrue(os.path.isdir(stale), "the stale snapshot must be retained")
+        with open(os.path.join(stale, "operator-note.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "deployed content\n")
+        self.assertIn(stale, out)
+        self.assertTrue(os.path.isfile(os.path.join(self.deploy, "new-file.mjs")))
+        self.assertEqual(pbt._package_version(os.path.join(self.deploy, "package.json")), "0.9.0")
+
+    def test_collision_on_the_stale_path_suffixes_and_deletes_nothing(self):
+        stale = self.deploy + ".stale-0.1.0"
+        os.makedirs(stale)
+        with open(os.path.join(stale, "earlier.txt"), "w", encoding="utf-8") as fh:
+            fh.write("from an earlier replace\n")
+        self._deploy()
+        with open(os.path.join(stale, "earlier.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "from an earlier replace\n")
+        parent = os.path.dirname(self.deploy)
+        suffixed = [
+            n for n in os.listdir(parent)
+            if n.startswith(".channel-server.stale-0.1.0-")
+        ]
+        self.assertEqual(len(suffixed), 1, f"expected one suffixed retention, got {suffixed}")
+        with open(os.path.join(parent, suffixed[0], "operator-note.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "deployed content\n")
 
 
 class VersionComparatorLockstep(unittest.TestCase):

@@ -557,7 +557,16 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   hardening; see `docs/multi-host.md § 3`); `--role b` (the calling seat, cross-platform
   python) generates
   the FIPS ECDSA P-256 key, deploys the bundled channel-server snapshot, and merges
-  `.mcp.json`. The merge **force-sets the SSH tools transport keys** it owns
+  `.mcp.json`.
+  **The key is derived ONCE (card#8972):** without `--ssh-key`, `--role b` derives
+  `~/.ssh/<agent>-board-tools` from `--agent`, generates it if absent, and records it.
+  **`--ssh-key <path>` means "use THIS existing key"** — both `<path>` and `<path>.pub`
+  must already be on disk (the flag never generates one; a missing half **refuses**,
+  naming the given path and the default), and that path is then what is printed for the
+  host-A handoff, what `--self-cert` probes, and what is recorded. Either way
+  **`BRIDGE_TOOLS_SSH_KEY` is always the key the run actually used** — it is no longer
+  possible to pin one key on host A and record another in `.mcp.json`.
+  The merge **force-sets the SSH tools transport keys** it owns
   (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
   vars (`BRIDGE_CHANNEL_TRANSPORT`/`_NAME`) if absent** — a re-provision never
   overwrites an existing seat's channel transport (e.g. an HTTP live-wake fallback),
@@ -567,6 +576,20 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   Its pubkey validator is
   a **full-line shape check** (rejects multi-line /
   CRLF pastes), superseding the prefix-only guard the old generated bash carried.
+  **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
+  `.tmp`, compared against what is there, and `os.replace`d in — an unchanged re-run
+  writes nothing (it prints `unchanged`), a changed one first copies the previous file to
+  `.mcp.json.bak-<UTC>` (0600) and prints that path, and a failure mid-write leaves the
+  seat's live `.mcp.json` byte-identical with no temp file behind.
+  A **stale channel-server snapshot is renamed aside, never deleted** — `.channel-server`
+  becomes `.channel-server.stale-<deployed version>` (suffixed with a UTC stamp if that
+  name is taken) and the path is printed; delete it yourself once the new snapshot is
+  confirmed working. If the copy or the `npm ci` behind it fails, the seat still has a
+  channel server to fall back to.
+  **`known_hosts` is seeded unconditionally** (an `ssh-keyscan` of the `--ssh-target`
+  host), with or without `--self-cert` — so **a successful keyscan is NOT evidence the
+  board-tools door is live**: it only proves the host answers on the ssh port. Only
+  `--self-cert`, run *after* host A has pinned the key, certifies that door.
   Run the host-A line as root on the bridge box and the host-B line on the calling seat;
   a same-box Linux run hands the `.pub` path to `--role a --pubkey-from` (no paste).
   Windows host B is supported: the host-B leg is cross-platform python and the Windows
@@ -577,13 +600,12 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   assertion (refuse if the private key is readable, or its `.ssh` dir writable, by any
   principal beyond `{owner, SYSTEM, Administrators}`) is defense-in-depth. Certify
   afterward with `bridge:check --probe-tools-ssh=<user@host>`.
-  **Known limitation (en-US only):** the icacls hardening matches Windows built-in
-  principals (`BUILTIN\Users`, `NT AUTHORITY\SYSTEM`, …) by their **en-US account
-  names**. On a **localized** Windows those print under localized names and do not
-  match, so the icacls decision **refuses** (fail-closed — a spurious refuse, never an
-  unsafe accept). A durable fix — resolving principals to their well-known SIDs directly
-  (`LookupAccountName` / `icacls /save`) rather than through the localized-name table —
-  is tracked separately.
+  **Locale-independent (card#5053).** The icacls decision is pinned by **well-known SID**,
+  not by the localized account name icacls prints: principals are resolved to their SIDs
+  through the OS (a `LookupAccountName`-equivalent), which returns the same fixed SIDs on
+  a localized Windows as on en-US. The en-US name table survives only as an offline
+  fallback when that lookup is unavailable, and an unresolvable principal is kept raw so
+  the decision still fails **closed** (a spurious refuse, never an unsafe accept).
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
   membership. For an **ssh** agent it also probes (offline) the pinned
