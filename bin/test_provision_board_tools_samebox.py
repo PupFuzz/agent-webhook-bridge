@@ -131,6 +131,12 @@ class ParsePubkeyPath(unittest.TestCase):
         "\n"
         "Public key for the host-A handoff (paste into `--role a --pubkey-stdin`):\n"
         "  ecdsa-sha2-nistp256 AAAAdummy kanban-solo-board-tools\n"
+        # card#8971 §1.2: --role b now prints the fingerprint on its own line INSIDE the
+        # handoff block, before the marker this parser anchors on. The fixture carries it
+        # because a fixture that did not would stop being this leg's real output — and
+        # `RoleBFingerprintLine` in test_provision_board_tools.py asserts the real output
+        # against the real parser, so the two cannot drift apart silently.
+        "Fingerprint: SHA256:AAAAdummyfingerprintvalue0123456789abcdef012\n"
         "Same-box: hand this path to `--role a --pubkey-from`:\n"
         "  /home/kanban-solo/.ssh/kanban-solo-board-tools.pub\n"
     )

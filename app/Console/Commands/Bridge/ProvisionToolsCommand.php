@@ -7,6 +7,11 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Tools\BoardToolsSetupPacket;
+use App\Bridge\Tools\GitRefProbe;
+use App\Bridge\Tools\PublicKeyLineShape;
+use App\Bridge\Tools\SshProbeEnvironment;
+use App\Bridge\Tools\SshTransportProbe;
 use Throwable;
 
 /**
@@ -31,11 +36,16 @@ use Throwable;
  */
 class ProvisionToolsCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:provision-tools {--agent= : limit to one agent} {--dry-run : preview, change nothing}';
+    protected $signature = 'bridge:provision-tools
+        {--agent= : limit to one agent}
+        {--dry-run : preview, change nothing}
+        {--host-a= : ssh transport only; the host the seat will ssh to, filled into the setup packet}
+        {--ssh-port= : ssh transport only; the ssh port the seat should use}
+        {--pubkey-from= : ssh transport only; the .pub file holding the key line the seat posted}';
 
-    protected $description = 'Mint the per-agent board-tools Bearer token(s) for agents with a DEDICATED board_tools.auth.token_path (DL-217; channel-token-reuse agents need no mint)';
+    protected $description = 'Mint the per-agent board-tools Bearer token(s) for agents with a DEDICATED board_tools.auth.token_path (DL-217; channel-token-reuse agents need no mint), and print the ssh-transport SETUP PACKET (DL-357)';
 
-    public function handle(): int
+    public function handle(SshProbeEnvironment $sshEnv, GitRefProbe $gitRef): int
     {
         $configDir = (string) config('bridge.config_dir');
         if ($configDir === '') {
@@ -52,6 +62,20 @@ class ProvisionToolsCommand extends BridgeCommand
 
         if ($only !== null && $targets === []) {
             $this->error("no agent config named '{$only}' in {$configDir}");
+
+            return self::FAILURE;
+        }
+
+        // The three packet options describe ONE agent's exchange with ONE seat, so they
+        // are meaningless over the whole roster — a --host-a applied to every ssh agent
+        // would print each of them a packet naming a host only one of them talks to.
+        $packetOptions = array_keys(array_filter([
+            '--host-a' => $this->strOption('host-a'),
+            '--ssh-port' => $this->strOption('ssh-port'),
+            '--pubkey-from' => $this->strOption('pubkey-from'),
+        ], fn (?string $v) => $v !== null));
+        if ($packetOptions !== [] && $only === null) {
+            $this->error(implode(' / ', $packetOptions).' fill ONE agent\'s setup packet — pass --agent=<name> too.');
 
             return self::FAILURE;
         }
@@ -95,10 +119,21 @@ class ProvisionToolsCommand extends BridgeCommand
             if ($bt->transport === 'ssh') {
                 // ssh agents mint NO bridge-side secret (the private key is host-B's, and
                 // this command never edits authorized_keys). Provisioning for this transport
-                // is PRINTING the ready-to-run `provision-board-tools.py --role a|b`
-                // invocation for each leg with this agent's params filled in (FR #5010 §2).
-                // Informational, exit 0.
-                $this->printSshProvisionGuidance($cfg->agentName, $bt->sshAccount);
+                // is PRINTING the per-agent SETUP PACKET (card#8971 / DL-357) — the whole
+                // three-actor exchange, not the two invocations that used to stand for it.
+                // ⚠ --dry-run does not change it: the packet mutates nothing, so a
+                // preview of it and the thing itself are the same bytes.
+                if (! $this->printSetupPacket($cfg->agentName, $bt->sshAccount, $sshEnv, $gitRef)) {
+                    $rc = self::FAILURE;
+                }
+
+                continue;
+            }
+            if ($packetOptions !== []) {
+                // Reached only via --agent, so this is the named agent and the operator
+                // asked for a packet the http door has no steps for.
+                $this->error("{$label} ".implode(' / ', $packetOptions).' are ssh-transport options and this agent is on the http transport (board_tools.transport: http) — it has no key to pin and no packet to print.');
+                $rc = self::FAILURE;
 
                 continue;
             }
@@ -224,44 +259,108 @@ class ProvisionToolsCommand extends BridgeCommand
     }
 
     /**
-     * Print the ready-to-run `provision-board-tools.py --role a|b` invocations for an
-     * ssh-transport agent (FR #5010 §2). This command mints no bridge-side secret for
-     * ssh (the private key lives on host B; it never edits authorized_keys) — so
-     * provisioning is emitting the exact two-leg invocation with this agent's params
-     * filled in (`--agent` from the config, `--artisan` from base_path, `--ssh-account`
-     * from board_tools.ssh_account). The static python program owns both legs:
-     * `--role a` (root, Linux) pins the forced-command key (the sole board-tools security
-     * boundary — no account-level sshd hardening, card 5091); `--role b`
-     * (the calling seat, cross-platform) generates the FIPS key, deploys the channel
-     * snapshot, and merges `.mcp.json`. A single source cannot drift, and its full-line
-     * pubkey validator supersedes the prefix-only guard the old generated bash carried
-     * (#5033). Same-box hands the `.pub` path to `--role a --pubkey-from` (§6).
+     * Print the BOARD-TOOLS SETUP PACKET for one ssh-transport agent (card#8971,
+     * DL-357). Returns false when the packet could not be rendered honestly.
+     *
+     * This command mints no bridge-side secret for ssh (the private key lives on the
+     * seat; it never edits `authorized_keys`), so provisioning for this transport IS the
+     * packet. {@see BoardToolsSetupPacket} owns every word of it; this method is the
+     * boundary layer that resolves the host facts and refuses the inputs that would make
+     * a step wrong.
+     *
+     * ⛔ THE ACCOUNT IS NOT RE-DERIVED HERE. `board_tools.ssh_account ?? runUser()` is
+     * {@see SshTransportProbe::forcedCommandAccount()}'s rule, and it is the rule
+     * `bridge:check` certifies against — a second copy in this command is a second answer
+     * able to disagree with the line the operator reads two commands later. (The old
+     * guidance printer had exactly that copy, spelled `getenv('USER') ?: '<bridge-user>'`,
+     * which resolves the LOGIN user rather than the effective one and answered
+     * `<bridge-user>` on any host that does not export `USER`.)
      *
      * @param  ?string  $sshAccount  board_tools.ssh_account (null ⇒ the invoking run-user)
      */
-    private function printSshProvisionGuidance(string $agentName, ?string $sshAccount = null): void
+    private function printSetupPacket(string $agentName, ?string $sshAccount, SshProbeEnvironment $sshEnv, GitRefProbe $gitRef): bool
     {
-        $account = $sshAccount ?? (string) (getenv('USER') ?: '<bridge-user>');
-        $script = base_path('bin/provision-board-tools.py');
-        $artisan = base_path('artisan');
+        $account = (new SshTransportProbe($sshEnv, $sshAccount))->forcedCommandAccount();
+        $pubkeyDir = storage_path('app/board-tools');
 
-        $this->info("[{$agentName}] ssh transport — no bridge-side secret is minted (the private key lives on host B). Run the two ready-to-run provisioning invocations below: the host-A line as ROOT on THIS (bridge) box, the host-B line on the calling seat. Both legs are idempotent and fail-closed.");
+        $pubkeyPath = $this->strOption('pubkey-from');
+        if ($pubkeyPath !== null && ! $this->pubkeyFileIsUsable($agentName, $pubkeyPath)) {
+            return false;
+        }
+
+        // uid == euid ⇒ the pin writes THIS account's own authorized_keys, which it can
+        // already do. Anything else — including either fact being unmeasurable — takes
+        // the `sudo` form: an unnecessary sudo costs a prompt, a missing one costs a
+        // failed pin, so the unmeasured case belongs on the safe side of the compare.
+        $accountUid = $sshEnv->uidForUser($account);
+        $euid = $sshEnv->euid();
+        $pinNeedsSudo = ! ($accountUid !== null && $euid !== null && $accountUid === $euid);
+
+        $this->info("[{$agentName}] ssh transport — no bridge-side secret is minted (the private key lives on the agent's own seat). The setup packet below is the whole enablement exchange; hand each step to the actor it names.");
         $this->line('');
-        foreach ([
-            '# host A — run as ROOT on this (bridge) box (pins the forced-command key — the sole board-tools boundary; no sshd drop-in):',
-            "sudo python3 {$script} --role a --agent {$agentName} \\",
-            "     --artisan {$artisan} --ssh-account {$account} --pubkey-stdin",
-            "#   (paste host B's PUBLIC key on stdin; same-box instead: --pubkey-from <path-to-.pub>)",
-            '',
-            '# host B — run on the CALLING seat (generates the FIPS key, deploys the channel snapshot, merges .mcp.json):',
-            "python3 provision-board-tools.py --role b --agent {$agentName} \\",
-            "     --ssh-target {$account}@<host-A> [--ssh-port 22] --project-dir <abs-claude-project> --channel-name <name>",
-            '#   Host B is cross-platform (Linux now; Windows host-B is spec-complete, gated pending a Windows-seat certification).',
-            '',
-            "# Then certify from host B: bridge:check --probe-tools-ssh={$account}@<host-A>",
-        ] as $line) {
+        foreach ((new BoardToolsSetupPacket(
+            agent: $agentName,
+            account: $account,
+            accountConfigured: $sshAccount !== null,
+            artisan: base_path('artisan'),
+            script: base_path('bin/provision-board-tools.py'),
+            pubkeyDir: $pubkeyDir,
+            hostA: $this->strOption('host-a'),
+            sshPort: $this->strOption('ssh-port'),
+            pubkeyPath: $pubkeyPath,
+            gitRef: $gitRef->headOnPushedBranch(base_path()),
+            version: $this->installVersion(),
+            pinNeedsSudo: $pinNeedsSudo,
+        ))->lines() as $line) {
             $this->line($line);
         }
+
+        // A packet whose STEP 3 says "not rendered" is a packet the PM cannot finish, so
+        // it does not exit 0 — the two remedies are printed inside the step.
+        return $account !== 'root';
+    }
+
+    /**
+     * Is `--pubkey-from` a file this command may name in a pin command? Reports the
+     * cause and returns false when not.
+     *
+     * ⛔ IT VALIDATES THE CONTENT, NOT ONLY THE PATH, and the reason is who wrote it: the
+     * bytes came from an agent on ANOTHER box, through a PM that pastes mechanically.
+     * The shape check is {@see PublicKeyLineShape}, which is the same positive allowlist
+     * `bin/provision-board-tools.py --role a` will apply — checking here means the
+     * operator is never handed a pin command that is going to be refused after they have
+     * spent a privileged window on it, and a two-line paste is refused before the second
+     * line can become an UNRESTRICTED key.
+     */
+    private function pubkeyFileIsUsable(string $agentName, string $path): bool
+    {
+        $label = "[{$agentName}]";
+        if (! is_file($path)) {
+            $this->error("{$label} --pubkey-from {$path} is not a regular file — save the key line the seat posted there first (STEP 2), then re-run.");
+
+            return false;
+        }
+        $content = @file_get_contents($path);
+        if (! is_string($content)) {
+            $this->error("{$label} --pubkey-from {$path} could not be read by this process — fix its permissions and re-run.");
+
+            return false;
+        }
+        if (! PublicKeyLineShape::isSingleAuthorizedKeyLine(rtrim($content, "\n"))) {
+            $this->error("{$label} --pubkey-from {$path} does not hold exactly ONE well-formed public-key line (rejected: unknown key type / non-base64 blob / more than one line). This is what the seat pastes into a file, so a bad one is refused HERE rather than at the pin. Re-save just the single `<keytype> <base64> [comment]` line the seat printed.");
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /** This install's `VERSION`, or `unknown` — only ever printed, never compared. */
+    private function installVersion(): string
+    {
+        $raw = @file_get_contents(base_path('VERSION'));
+
+        return is_string($raw) && trim($raw) !== '' ? trim($raw) : 'unknown';
     }
 
     private function printSkeleton(string $agentName): void

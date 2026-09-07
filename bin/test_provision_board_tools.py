@@ -1419,3 +1419,548 @@ class VersionComparatorLockstep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExpectFingerprintParsing(unittest.TestCase):
+    """`--expect-fingerprint` accepts two shapes an operator plausibly has in hand."""
+
+    def test_a_bare_fingerprint_is_taken_whole(self):
+        # ⭐ THE ONE-FIELD ARM IS NOT A CONVENIENCE. Slicing field 2 out of a one-field
+        # input yields nothing, and a comparison against nothing is a guard that passes.
+        self.assertEqual(pbt.parse_expected_fingerprint("SHA256:abc+def/123="), "SHA256:abc+def/123=")
+
+    def test_a_whole_ssh_keygen_line_yields_its_second_field(self):
+        self.assertEqual(
+            pbt.parse_expected_fingerprint("256 SHA256:abc+def/123= agent-board-tools (ECDSA)"),
+            "SHA256:abc+def/123=",
+        )
+
+    def test_surrounding_whitespace_is_not_a_second_field(self):
+        self.assertEqual(pbt.parse_expected_fingerprint("  SHA256:xyz=\n"), "SHA256:xyz=")
+
+
+class WeakAgentPattern(unittest.TestCase):
+    """The duplicate-line heuristic, over its OWN bounds rather than over a hope."""
+
+    def test_it_matches_the_bare_spelling_before_a_quote_a_space_or_the_line_end(self):
+        p = pbt.weak_agent_pattern("impl")
+        self.assertTrue(p.search('command="php artisan bridge:tools-call --agent=impl",no-pty k b'))
+        self.assertTrue(p.search('command="wrapper --agent=impl -v",no-pty k b'))
+        self.assertTrue(p.search("# note: --agent=impl"))
+
+    def test_it_does_not_match_a_longer_agent_name_that_starts_the_same(self):
+        # `--agent=impl2` is another agent's line and refusing on it would be a refusal
+        # nobody can act on.
+        self.assertIsNone(pbt.weak_agent_pattern("impl").search('command="x --agent=impl2",no-pty k b'))
+
+    def test_the_quoted_forms_are_a_DECLARED_blind_spot_not_an_accident(self):
+        # ⚠ Asserted so the bound is visible rather than folded into prose: a hand line
+        # spelled --agent="impl" is NOT seen. The miss direction is safe (today's
+        # behaviour), and a reader who widens the heuristic will find this case.
+        self.assertIsNone(pbt.weak_agent_pattern("impl").search('command="x --agent=\\"impl\\"",no-pty k b'))
+
+
+class SignificantAuthorizedKeysLines(unittest.TestCase):
+    def test_blank_and_comment_lines_are_dropped_by_the_one_helper_both_scans_use(self):
+        text = "\n# an old commented-out line for --agent=impl\n   \nssh-rsa AAAA= me\n"
+        self.assertEqual(pbt.significant_authorized_keys_lines(text), ["ssh-rsa AAAA= me"])
+
+
+class _PwEntry:
+    def __init__(self, home, uid, gid=None):
+        self.pw_dir = home
+        self.pw_uid = uid
+        self.pw_gid = uid if gid is None else gid
+
+
+class RoleASelfAccountArm(unittest.TestCase):
+    """`--role a` (card#8971): the non-root self-account arm, the symlink defence, the
+    duplicate-line detector and `--expect-fingerprint`.
+
+    ⛔ NOTHING HERE TOUCHES THE RUNNER'S REAL `~/.ssh`. `pwd.getpwnam` is patched to a
+    temp home whose uid IS this process's euid — that is what makes the self-account arm
+    reachable at all without root — and `os.chown` is patched to a recorder, so a test
+    that started chowning would be caught rather than silently changing a file's owner.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if _SSH_KEYGEN is None:  # pragma: no cover
+            raise unittest.SkipTest("ssh-keygen not on PATH (banner printed at import)")
+        _KeyFixtures.build()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        os.makedirs(self.home)
+        self.authz = os.path.join(self.home, ".ssh", "authorized_keys")
+        with open(_KeyFixtures.plain + ".pub", encoding="utf-8") as fh:
+            self.pubkey = fh.read().strip("\n")
+        self.pub_path = os.path.join(self.tmp.name, "posted.pub")
+        with open(self.pub_path, "w", encoding="utf-8") as fh:
+            fh.write(self.pubkey + "\n")
+        self.chowns = []
+
+    def _run(self, extra_argv=(), uid_delta=0, pubkey_from=None):
+        argv = [
+            "--role", "a", "--agent", "impl",
+            "--artisan", "/opt/bridge/artisan",
+            "--ssh-account", "bridge",
+            "--pubkey-from", pubkey_from or self.pub_path,
+            *extra_argv,
+        ]
+        args = pbt.build_parser().parse_args(argv)
+        pw = _PwEntry(self.home, os.geteuid() + uid_delta)
+        buf = io.StringIO()
+        with mock.patch("pwd.getpwnam", return_value=pw), \
+             mock.patch.object(os, "chown", side_effect=lambda *a, **k: self.chowns.append((a, k))), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.run_role_a(args)
+        return rc, buf.getvalue()
+
+    def _authz_lines(self):
+        with open(self.authz, encoding="utf-8") as fh:
+            return fh.read().splitlines()
+
+    # --- the self-account arm ---------------------------------------------- #
+
+    def test_the_self_account_arm_writes_the_line_and_chowns_nothing(self):
+        # ⭐ RED-WHEN-REVERTED: before card#8971 this path exited with "run as root"
+        # having written nothing. The arm is not a privilege grant — the account can
+        # already write its own authorized_keys — it removes a sudo nobody needed.
+        rc, out = self._run()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self._authz_lines()), 1)
+        self.assertIn("bridge:tools-call --agent=impl", self._authz_lines()[0])
+        self.assertIn(self.pubkey, self._authz_lines()[0])
+        self.assertEqual(self.chowns, [], "the self-account arm must not chown anything")
+        self.assertEqual(oct(os.stat(self.authz).st_mode & 0o777), "0o600")
+        self.assertIn("default path; sshd's AuthorizedKeysFile is not resolved by this tool", out)
+
+    def test_a_non_root_run_against_another_account_is_refused_by_name(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run(uid_delta=1)
+        msg = str(cm.exception)
+        self.assertIn("may only pin into ITS OWN authorized_keys", msg)
+        self.assertIn("sudo -u bridge python3", msg)
+        self.assertFalse(os.path.exists(self.authz), "a refused run must write nothing")
+
+    def test_the_run_is_idempotent_for_the_same_key(self):
+        self._run()
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self._authz_lines()), 1)
+        self.assertIn("already present (same key)", out)
+
+    def test_a_different_key_for_the_same_agent_is_still_refused(self):
+        self._run()
+        other = os.path.join(self.tmp.name, "other.pub")
+        shutil.copyfile(_KeyFixtures.other + ".pub", other)
+        with self.assertRaises(SystemExit) as cm:
+            self._run(pubkey_from=other)
+        self.assertIn("already pins a DIFFERENT key", str(cm.exception))
+
+    # --- the symlink defence (F16) ------------------------------------------ #
+
+    def test_a_symlinked_authorized_keys_is_refused_and_its_target_is_untouched(self):
+        # ⭐ CONTROL: drop `os.O_NOFOLLOW` from `_append_authorized_key_line` and this
+        # reds — the append then writes an ssh key line straight into the link's TARGET,
+        # which under the root arm is an arbitrary root-owned file gaining a key.
+        target = os.path.join(self.tmp.name, "victim")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("root-owned content\n")
+        os.makedirs(os.path.dirname(self.authz))
+        os.symlink(target, self.authz)
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+
+        self.assertIn("SYMLINK", str(cm.exception))
+        with open(target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "root-owned content\n")
+
+    def test_a_symlinked_ssh_directory_stays_legal(self):
+        # ⛔ THE OTHER HALF OF F16, AND THE REASON THE DEFENCE IS NOT A BLANKET REFUSAL:
+        # a dotfiles repo symlinking ~/.ssh is ordinary, and refusing it would break
+        # working installs to defend against a hazard that lives in the chown, which
+        # runs follow_symlinks=False.
+        real = os.path.join(self.tmp.name, "real-ssh")
+        os.makedirs(real)
+        os.symlink(real, os.path.join(self.home, ".ssh"))
+
+        rc, _ = self._run()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self._authz_lines()), 1)
+
+    # --- the duplicate-line detector (§1.3 / F9) ---------------------------- #
+
+    def test_a_hand_pinned_line_with_different_options_is_refused_not_appended_to(self):
+        # ⭐ CONTROL: delete the `hand_lines` refusal and this reds twice — the run
+        # reaches the append branch, prints "appended", and the account ends up with TWO
+        # lines for one agent. sshd honours whichever matches first and `bridge:check`
+        # FAILs on the ambiguity, from the other side of the box and one step too late.
+        hand = 'command="/usr/local/bin/wrapper --agent=impl",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 impl'
+        os.makedirs(os.path.dirname(self.authz))
+        with open(self.authz, "w", encoding="utf-8") as fh:
+            fh.write(hand + "\n")
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+
+        msg = str(cm.exception)
+        self.assertIn("a hand-pinned line for agent impl exists", msg)
+        self.assertIn(hand, msg, "the offending line is named, not merely counted")
+        self.assertEqual(self._authz_lines(), [hand], "nothing may be appended")
+
+    def test_the_mixed_state_is_reported_rather_than_read_as_already_present(self):
+        # A line this tool wrote AND a hand-edited one. "already present (same key)" is a
+        # true sentence about the wrong thing, and it would leave the extra line standing.
+        self._run()
+        hand = 'command="/usr/local/bin/wrapper --agent=impl",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 impl'
+        with open(self.authz, "a", encoding="utf-8") as fh:
+            fh.write(hand + "\n")
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+
+        self.assertIn("a hand-pinned line for agent impl exists", str(cm.exception))
+
+    def test_a_commented_out_line_naming_the_agent_is_not_a_hand_pinned_line(self):
+        os.makedirs(os.path.dirname(self.authz))
+        with open(self.authz, "w", encoding="utf-8") as fh:
+            fh.write("# retired: command=\"old --agent=impl\"\n\n")
+
+        rc, out = self._run()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("appended the forced-command line", out)
+
+    # --- --expect-fingerprint ------------------------------------------------ #
+
+    def test_a_matching_fingerprint_pins_and_prints_it(self):
+        fp = pbt.fingerprint_of_pubkey_file(self.pub_path)
+        rc, out = self._run(["--expect-fingerprint", fp])
+        self.assertEqual(rc, 0)
+        self.assertIn(f"Pinned fingerprint: {fp}", out)
+
+    def test_a_whole_ssh_keygen_line_is_accepted_as_the_expected_value(self):
+        line = subprocess.run(
+            ["ssh-keygen", "-E", "sha256", "-lf", self.pub_path],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertGreater(len(line.split()), 1, "fixture must be the multi-field form")
+        self.assertEqual(self._run(["--expect-fingerprint", line])[0], 0)
+
+    def test_a_mismatched_fingerprint_refuses_and_prints_BOTH_values(self):
+        # ⭐ CONTROL: weaken the equality in `_assert_expected_fingerprint` to
+        # `actual.startswith(expected)` and this reds — the near-miss below is the true
+        # fingerprint with its last four characters removed, which is exactly what a
+        # truncated copy-paste looks like and exactly what a prefix compare accepts.
+        actual = pbt.fingerprint_of_pubkey_file(self.pub_path)
+        near_miss = actual[:-4]
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--expect-fingerprint", near_miss])
+
+        msg = str(cm.exception)
+        self.assertIn("MISMATCH", msg)
+        self.assertIn(near_miss, msg)
+        self.assertIn(actual, msg)
+        self.assertFalse(os.path.exists(self.authz), "a mismatched run must write nothing")
+
+    def test_expect_fingerprint_works_against_a_key_read_from_stdin(self):
+        # F11: `ssh-keygen -lf` needs a file and --pubkey-stdin has none, so the stdin
+        # arm temp-files the key. The temp file must not survive the run.
+        fp = pbt.fingerprint_of_pubkey_file(self.pub_path)
+        before = set(os.listdir(tempfile.gettempdir()))
+        args = pbt.build_parser().parse_args([
+            "--role", "a", "--agent", "impl", "--artisan", "/opt/bridge/artisan",
+            "--ssh-account", "bridge", "--pubkey-stdin", "--expect-fingerprint", fp,
+        ])
+        pw = _PwEntry(self.home, os.geteuid())
+        buf = io.StringIO()
+        with mock.patch("pwd.getpwnam", return_value=pw), \
+             mock.patch.object(sys, "stdin", io.StringIO(self.pubkey + "\n")), \
+             mock.patch.object(os, "chown", side_effect=lambda *a, **k: self.chowns.append((a, k))), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.run_role_a(args)
+
+        self.assertEqual(rc, 0)
+        self.assertIn(f"Pinned fingerprint: {fp}", buf.getvalue())
+        leaked = [n for n in set(os.listdir(tempfile.gettempdir())) - before
+                  if n.startswith("provision-board-tools-")]
+        self.assertEqual(leaked, [], "the stdin temp key file must be unlinked")
+
+    def test_the_closing_line_sends_the_seat_to_certify_only(self):
+        # §1.5 — the old line sent the operator to `bridge:check --probe-tools-ssh` FROM
+        # HOST A, which stamps the client-half ledger row from the wrong box (DL-229).
+        _rc, out = self._run()
+        self.assertIn("--role b --certify-only --agent impl", out)
+        self.assertNotIn("--probe-tools-ssh", out)
+
+
+class ReadRecordedSshTransport(unittest.TestCase):
+    """The pure reader behind `--certify-only`, over its own refusals."""
+
+    def _text(self, doc):
+        return json.dumps(doc)
+
+    def test_it_returns_the_env_block_of_the_named_channel(self):
+        env = pbt.read_recorded_ssh_transport(
+            self._text({"mcpServers": {"chan": {"env": {"BRIDGE_TOOLS_SSH_TARGET": "b@h"}}}}), "chan"
+        )
+        self.assertEqual(env["BRIDGE_TOOLS_SSH_TARGET"], "b@h")
+
+    def test_unparseable_json_names_the_cause(self):
+        with self.assertRaises(ValueError) as cm:
+            pbt.read_recorded_ssh_transport("{not json", "chan")
+        self.assertIn("could not be parsed as JSON", str(cm.exception))
+
+    def test_a_missing_channel_entry_names_the_channel(self):
+        with self.assertRaises(ValueError) as cm:
+            pbt.read_recorded_ssh_transport(self._text({"mcpServers": {"other": {}}}), "chan")
+        self.assertIn("`mcpServers.chan` entry", str(cm.exception))
+
+    def test_an_entry_with_no_env_block_is_not_an_empty_env(self):
+        with self.assertRaises(ValueError) as cm:
+            pbt.read_recorded_ssh_transport(self._text({"mcpServers": {"chan": {}}}), "chan")
+        self.assertIn("no `env` block", str(cm.exception))
+
+
+class CertifyOnly(unittest.TestCase):
+    """`--role b --certify-only` (card#8971 §1.4): certify the transport THIS SEAT
+    RECORDED, without re-deploying anything.
+
+    ⭐ THE KEY PATH IN THESE FIXTURES IS DELIBERATELY NOT THE DERIVED DEFAULT
+    (`~/.ssh/<agent>-board-tools`). A fixture that recorded the default would pass
+    identically whether the code read the record or re-derived the path from `--agent`,
+    which is the one thing these tests exist to tell apart.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if _SSH_KEYGEN is None:  # pragma: no cover
+            raise unittest.SkipTest("ssh-keygen not on PATH (banner printed at import)")
+        _KeyFixtures.build()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(self.project)
+        self.mcp_path = os.path.join(self.project, ".mcp.json")
+        # NOT <home>/.ssh/kanban-solo-board-tools — see the class docstring.
+        self.key_dir = os.path.join(self.tmp.name, "elsewhere")
+        os.makedirs(self.key_dir)
+        self.key_path = os.path.join(self.key_dir, "a-key-with-another-name")
+        shutil.copyfile(_KeyFixtures.plain, self.key_path)
+        os.chmod(self.key_path, 0o600)
+        shutil.copyfile(_KeyFixtures.plain + ".pub", self.key_path + ".pub")
+
+    def _write_mcp(self, env=None, channel="kanbanboard-agent", entry_present=True):
+        env = {
+            "BRIDGE_TOOLS_SSH_TARGET": "bridge@hostA.example",
+            "BRIDGE_TOOLS_SSH_KEY": self.key_path,
+            "BRIDGE_TOOLS_SSH_PORT": "2222",
+        } if env is None else env
+        entry = {"command": "node", "env": env} if entry_present else {}
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {channel: entry}}, fh)
+
+    def _run(self, extra_argv=()):
+        argv = [
+            "--role", "b", "--certify-only", "--agent", "kanban-solo",
+            "--project-dir", self.project, "--channel-name", "kanbanboard-agent",
+            *extra_argv,
+        ]
+        args = pbt.build_parser().parse_args(argv)
+        calls = {"self_cert": [], "known_hosts": [], "keygen": [], "deploy": []}
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_self_cert",
+                               side_effect=lambda *a: calls["self_cert"].append(a) or 0), \
+             mock.patch.object(pbt, "_seed_known_hosts",
+                               side_effect=lambda *a: calls["known_hosts"].append(a)), \
+             mock.patch.object(pbt, "_keygen", side_effect=lambda *a: calls["keygen"].append(a)), \
+             mock.patch.object(pbt, "_deploy_snapshot", side_effect=lambda *a: calls["deploy"].append(a)), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.main(argv)
+        return rc, calls, buf.getvalue()
+
+    def test_it_certifies_with_the_RECORDED_key_and_target(self):
+        self._write_mcp()
+
+        rc, calls, out = self._run()
+
+        self.assertEqual(rc, 0)
+        # PRESENCE witness: the exact recorded triple reached _self_cert.
+        self.assertEqual(calls["self_cert"], [("bridge@hostA.example", self.key_path, "2222")])
+        self.assertEqual(calls["known_hosts"], [("hostA.example", "2222")])
+        self.assertIn("recorded in this seat's .mcp.json", out)
+
+    def test_it_neither_generates_a_key_nor_deploys_a_snapshot(self):
+        # ABSENCE witnesses, paired with the presence one above so a run that did
+        # nothing at all cannot pass this class.
+        self._write_mcp()
+
+        _rc, calls, _out = self._run()
+
+        self.assertEqual(calls["keygen"], [])
+        self.assertEqual(calls["deploy"], [])
+
+    def test_it_does_not_rewrite_the_seats_mcp_json(self):
+        self._write_mcp()
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            before = fh.read()
+
+        self._run()
+
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_an_absent_mcp_json_says_provision_first(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        self.assertIn("provision first", str(cm.exception))
+
+    def test_an_absent_channel_entry_says_provision_first(self):
+        self._write_mcp(channel="some-other-channel")
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        self.assertIn("provision first", str(cm.exception))
+
+    def test_a_recorded_env_missing_the_KEY_refuses(self):
+        # ⛔ Without it the round-trip would fall back to the seat's DEFAULT ssh
+        # identity and print a green line for a door this key never opened.
+        self._write_mcp(env={"BRIDGE_TOOLS_SSH_TARGET": "bridge@hostA.example"})
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        self.assertIn("BRIDGE_TOOLS_SSH_KEY", str(cm.exception))
+
+    def test_a_recorded_env_missing_the_TARGET_refuses(self):
+        self._write_mcp(env={"BRIDGE_TOOLS_SSH_KEY": self.key_path})
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        self.assertIn("BRIDGE_TOOLS_SSH_TARGET", str(cm.exception))
+
+    def test_a_recorded_key_that_is_no_longer_on_disk_refuses_naming_the_record(self):
+        self._write_mcp()
+        os.unlink(self.key_path)
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        msg = str(cm.exception)
+        self.assertIn("records BRIDGE_TOOLS_SSH_KEY", msg)
+        self.assertNotIn("--ssh-key", msg.split("Re-run")[0])
+
+    def test_ssh_target_together_with_certify_only_is_refused(self):
+        self._write_mcp()
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--ssh-target", "someone@elsewhere"])
+        self.assertIn("cannot be given with --certify-only", str(cm.exception))
+
+    def test_ssh_key_together_with_certify_only_is_refused(self):
+        self._write_mcp()
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--ssh-key", self.key_path])
+        self.assertIn("cannot be given with --certify-only", str(cm.exception))
+
+    def test_self_cert_and_certify_only_together_exit_2(self):
+        # argparse owns the exclusion, so the conflict is rc 2 and one message.
+        with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+            pbt.build_parser().parse_args([
+                "--role", "b", "--agent", "a", "--certify-only", "--self-cert",
+                "--project-dir", "/p", "--channel-name", "c",
+            ])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_certify_only_without_project_dir_or_channel_name_refuses(self):
+        with self.assertRaises(SystemExit) as cm:
+            pbt.main(["--role", "b", "--certify-only", "--agent", "kanban-solo"])
+        msg = str(cm.exception)
+        self.assertIn("--project-dir", msg)
+        self.assertIn("--channel-name", msg)
+        # ⭐ AND NOT --ssh-target: that relaxation is the whole point of the mode.
+        self.assertNotIn("--ssh-target", msg)
+
+
+class RoleBFingerprintLine(unittest.TestCase):
+    """The `Fingerprint:` line `--role b` prints for the operator (card#8971 §1.2).
+
+    ⭐ ASSERTED OVER REAL STDOUT, THROUGH THE WRAPPER'S OWN PARSER. The same-box wrapper
+    reads the pubkey path out of this leg's output by anchoring on the `Same-box:` marker
+    (`parse_pubkey_path`); inserting a line ANYWHERE near it is exactly the change that
+    silently breaks that parser. Running the real leg and feeding its real stdout to the
+    real parser is the only version of this test that could catch it.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if _SSH_KEYGEN is None:  # pragma: no cover
+            raise unittest.SkipTest("ssh-keygen not on PATH (banner printed at import)")
+        _KeyFixtures.build()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        os.makedirs(self.project)
+
+    def _run(self, extra_argv=()):
+        argv = [
+            "--role", "b", "--agent", "kanban-solo",
+            "--ssh-target", "bridge@127.0.0.1",
+            "--project-dir", self.project,
+            "--channel-name", "kanbanboard-agent",
+            *extra_argv,
+        ]
+        args = pbt.build_parser().parse_args(argv)
+
+        def _keygen(agent, key_path):
+            shutil.copyfile(_KeyFixtures.plain, key_path)
+            os.chmod(key_path, 0o600)
+            shutil.copyfile(_KeyFixtures.plain + ".pub", key_path + ".pub")
+
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
+             mock.patch.object(pbt, "_keygen", side_effect=_keygen), \
+             mock.patch.object(pbt, "_deploy_snapshot"), \
+             mock.patch.object(pbt, "_seed_known_hosts"), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.run_role_b(args)
+        return rc, buf.getvalue()
+
+    def test_the_fingerprint_line_is_its_own_line_between_the_key_and_the_marker(self):
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+
+        pub_path = os.path.join(self.home, ".ssh", "kanban-solo-board-tools.pub")
+        expected = pbt.fingerprint_of_pubkey_file(pub_path)
+        lines = out.splitlines()
+        fp_line = next(ln for ln in lines if ln.startswith("Fingerprint: "))
+
+        # The whole line is the label and the value: no size, no comment, no key type.
+        # The operator retypes this into --expect-fingerprint.
+        self.assertEqual(fp_line, f"Fingerprint: {expected}")
+        self.assertLess(
+            lines.index(fp_line),
+            lines.index("Same-box: hand this path to `--role a --pubkey-from`:"),
+            "the fingerprint belongs inside the handoff block, before the same-box marker",
+        )
+
+    def test_the_same_box_wrappers_parser_still_finds_the_pub_path_in_this_output(self):
+        # F18 — the wrapper's fixture and this leg's real output are the same shape, and
+        # this is the assertion that keeps them so.
+        _rc, out = self._run()
+        self.assertEqual(
+            sbx.parse_pubkey_path(out),
+            os.path.join(self.home, ".ssh", "kanban-solo-board-tools.pub"),
+        )
+
+    def test_expect_fingerprint_refuses_before_the_key_is_handed_off(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run(["--expect-fingerprint", "SHA256:definitely-not-this-key"])
+        self.assertIn("MISMATCH", str(cm.exception))

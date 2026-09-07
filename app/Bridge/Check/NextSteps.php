@@ -56,8 +56,9 @@ final class NextSteps
     /**
      * The command that acts on every bridge-side state — it is transport-aware, so one
      * spelling serves both doors: for an http agent it mints or names the bearer fault, for
-     * an ssh agent it prints the ready-to-run provisioning invocation for each leg, and for
-     * an agent with no block at all it prints the paste-ready skeleton.
+     * an ssh agent it prints the per-agent setup packet (card#8971 / DL-357 — the whole
+     * five-step, three-actor enablement exchange), and for an agent with no block at all it
+     * prints the paste-ready skeleton.
      *
      * ⛔ THE SKELETON IS NOT REPRODUCED HERE. `ProvisionToolsCommand::printSkeleton()` owns
      * those lines; a second copy in this file would be the one that goes stale the next time

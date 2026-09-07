@@ -546,10 +546,17 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
 - **Provisioning:** `bridge:provision-tools` mints each enabled **http** agent's
   bearer (0600, idempotent, collision-checked). It never edits agent YAML — for an
   agent without a `board_tools:` block it prints a paste-ready skeleton. For an
-  **ssh** agent it mints no secret (the private key is host B's) — it **prints the
-  ready-to-run `provision-board-tools.py --role a|b` invocation** for each leg
-  (FR #5010 §2), with this agent's params filled in (`--agent` from the config,
-  `--artisan` from the install path, `--ssh-account` from `board_tools.ssh_account`).
+  **ssh** agent it mints no secret (the private key is the seat's) — it **prints that
+  agent's BOARD-TOOLS SETUP PACKET** (card#8971 / DL-357): the five-step, three-actor
+  enablement exchange, with this install's own params filled in (`--agent` from the
+  config, `--artisan`/script/storage paths from the install, the forced-command account
+  from `board_tools.ssh_account`, and the git ref this box runs). ⛔ **Who runs which
+  step, why STEP 3 is a process control a HUMAN performs, and how the key line and
+  fingerprint are handed over are owned by
+  [`docs/board-tools-enablement.md`](board-tools-enablement.md)** — not restated here.
+  `--host-a=`, `--ssh-port=` and `--pubkey-from=` fill the packet in as those values
+  become known; each is refused without `--agent`, and a `--pubkey-from` file that is not
+  exactly one well-formed public-key line is refused before any pin command is printed.
   The static `bin/provision-board-tools.py` program owns both legs from a single
   source that cannot drift: `--role a` (root, Linux, on the bridge box) pins the
   forced-command `authorized_keys` line — the **sole** security boundary — and makes
@@ -604,6 +611,20 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   Its pubkey validator is
   a **full-line shape check** (rejects multi-line /
   CRLF pastes), superseding the prefix-only guard the old generated bash carried.
+  **`--role a` needs root only to write ANOTHER account's `authorized_keys`** (card#8971):
+  where the forced-command account is the one running the command it pins with **no
+  `sudo`** — that account can already write its own file — and every other non-root
+  combination is refused by name. Both arms print the path they wrote and note that
+  **sshd's `AuthorizedKeysFile` is not resolved by this tool**. `--expect-fingerprint`
+  (optional, both roles; bare `SHA256:…` or a whole `ssh-keygen -lf` line) refuses on a
+  mismatch printing both values — ⛔ a **transcription** guard, never a checkpoint, since
+  any holder of the `.pub` can compute it. A hand-edited `authorized_keys` line naming the
+  same agent with different options is **refused rather than appended beside**.
+  **`--role b --certify-only`** fires just the ssh round-trip using the target and key the
+  seat already recorded in its own `.mcp.json` — no keygen, no snapshot deploy, no
+  `.mcp.json` write; it needs `--agent --project-dir --channel-name` and refuses
+  `--ssh-target`/`--ssh-key`, because the recorded values are the ones the channel server
+  will actually use.
   **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
   `.tmp`, compared against what is there, and `os.replace`d in — an unchanged re-run
   writes nothing (it prints `unchanged`), a changed one first copies the previous file to
@@ -624,16 +645,19 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   host), with or without `--self-cert` — so **a successful keyscan is NOT evidence the
   board-tools door is live**: it only proves the host answers on the ssh port. Only
   `--self-cert`, run *after* host A has pinned the key, certifies that door.
-  Run the host-A line as root on the bridge box and the host-B line on the calling seat;
-  a same-box Linux run hands the `.pub` path to `--role a --pubkey-from` (no paste).
+  Which line runs where, and in what order, is the packet's job to say — a same-box Linux
+  run hands the `.pub` path to `--role a --pubkey-from` (no paste) and collapses further
+  still into the wrapper below.
   Windows host B is supported: the host-B leg is cross-platform python and the Windows
   path (`%USERPROFILE%\.ssh`, icacls-based key hardening in lieu of `chmod 600`, and a
   Win32-OpenSSH precheck that fails closed if `ssh.exe`/`ssh-keygen.exe`/`ssh-keyscan`
   are absent) was validated on a real en-US Windows 11 seat. The `ssh -i` round-trip
   (`--self-cert`) is the authoritative permission check; the icacls SID-based ACL
   assertion (refuse if the private key is readable, or its `.ssh` dir writable, by any
-  principal beyond `{owner, SYSTEM, Administrators}`) is defense-in-depth. Certify
-  afterward with `bridge:check --probe-tools-ssh=<user@host>`.
+  principal beyond `{owner, SYSTEM, Administrators}`) is defense-in-depth. The seat
+  certifies itself with the packet's STEP 4 (`--role b --certify-only`); ⛔ a
+  `--probe-tools-ssh` run from the BRIDGE box stamps the same ledger row and is not
+  evidence about the seat (DL-229).
   **Locale-independent (card#5053).** The icacls decision is pinned by **well-known SID**,
   not by the localized account name icacls prints: principals are resolved to their SIDs
   through the OS (a `LookupAccountName`-equivalent), which returns the same fixed SIDs on
@@ -770,6 +794,11 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 `tool_calls` ledger table is the named v2 upgrade if operators want it.
 
 ## Same-box enablement (Apache/FPM)
+
+> **Wiring an SSH-transport agent, or a seat on another box?** This section is the HTTP
+> door's runbook. Who does what for the ssh door — and why one of its steps is a human's —
+> is [`docs/board-tools-enablement.md`](board-tools-enablement.md); the steps themselves
+> come from `bridge:provision-tools --agent=<name>`.
 
 > **⭐ You do not have to remember to come here — `bridge:check` sends you.** Since DL-352
 > the command a fresh install already runs ends with a **NEXT STEPS** block naming every
