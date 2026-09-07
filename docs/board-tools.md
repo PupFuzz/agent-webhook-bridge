@@ -619,7 +619,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   (optional, both roles; bare `SHA256:…` or a whole `ssh-keygen -lf` line) refuses on a
   mismatch printing both values — ⛔ a **transcription** guard, never a checkpoint, since
   any holder of the `.pub` can compute it. A hand-edited `authorized_keys` line naming the
-  same agent with different options is **refused rather than appended beside**.
+  same agent with different options is **refused rather than appended beside**, and a
+  tool-shaped line for that agent whose forced command differs (another checkout's
+  `artisan`, another timeout, extra options) is **refused rather than reported as
+  *already present (same key)*** — sshd runs what that line says.
   **`--role b --certify-only`** fires just the ssh round-trip using the target and key the
   seat already recorded in its own `.mcp.json` — no keygen, no snapshot deploy, no
   `.mcp.json` write; it needs `--agent --project-dir --channel-name` and refuses

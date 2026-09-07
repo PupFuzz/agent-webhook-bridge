@@ -2,8 +2,10 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Tools\AgentNameShape;
 use App\Bridge\Tools\GitRefProbe;
 use App\Bridge\Tools\PublicKeyLineShape;
+use App\Bridge\Tools\SafePathShape;
 use App\Bridge\Tools\SshProbeEnvironment;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
@@ -73,7 +75,7 @@ class ProvisionToolsPacketTest extends TestCase
         $this->writeSshAgent(sshAccount: 'bridge-user');
 
         $this->assertStringContainsString(
-            'bridge-user must be able to run `php '.base_path('artisan').' bridge:tools-call` — bridge storage/ writable by it',
+            'bridge-user must be able to run `php '.base_path('artisan')." bridge:tools-call` — the bridge's own storage/ writable by it",
             $this->runPacket(),
         );
     }
@@ -151,7 +153,7 @@ class ProvisionToolsPacketTest extends TestCase
         $this->assertStringContainsString('STEP 1 — IMPL AGENT impl', $out);
     }
 
-    public function test_a_configured_ssh_account_of_root_names_itsel_f_as_the_cause(): void
+    public function test_a_configured_ssh_account_of_root_names_itself_as_the_cause(): void
     {
         // ⛔ BOTH ROUTES TO `root` ARE REAL, and naming the wrong one sends the operator
         // to edit a file that is already correct. This install did NOT run under sudo —
@@ -292,18 +294,32 @@ class ProvisionToolsPacketTest extends TestCase
 
         $this->assertSame($types[1], PublicKeyLineShape::KEY_TYPES);
 
-        // The body half of the pattern, compared character for character against the
-        // literal tail of the python's `_KEY_LINE_RE`.
-        $this->assertStringContainsString(
-            'r") [A-Za-z0-9+/]+={0,2}(?: .*)?"',
-            $python,
-        );
-        $this->assertSame(' [A-Za-z0-9+/]+={0,2}(?: .*)?', PublicKeyLineShape::BODY_PATTERN);
+        // ⭐ THE BODY HALF IS READ OUT OF THE CONSTANT, NOT GREPPED FOR ANYWHERE IN THE
+        // FILE. A `assertStringContainsString('…the tail…', $python)` would go on passing
+        // over a rewritten `_KEY_LINE_RE` as long as the old tail survived somewhere — a
+        // docstring, a second regex — which is a lockstep test that has stopped reading
+        // the thing it is in lockstep with.
+        preg_match('/_KEY_LINE_RE = re\.compile\(\n(.*?)\n\)/s', $python, $line);
+        $this->assertNotEmpty($line, 'could not locate _KEY_LINE_RE in bin/provision-board-tools.py');
+        // The python expression is `r"(?:" + <joined types> + r") <body>"`; its LAST raw
+        // string closes the type group and then carries the body half verbatim.
+        preg_match_all('/r"([^"]*)"/', $line[1], $frags);
+        $tail = (string) end($frags[1]);
+        $this->assertStringStartsWith(')', $tail, "_KEY_LINE_RE's last fragment should close the key-type group");
+        $this->assertSame(substr($tail, 1), PublicKeyLineShape::BODY_PATTERN);
 
         // And the composed matcher behaves: the allowlist accepts, a CR does not.
         $this->assertTrue(PublicKeyLineShape::isSingleAuthorizedKeyLine(self::PUBKEY));
         $this->assertFalse(PublicKeyLineShape::isSingleAuthorizedKeyLine(self::PUBKEY."\rssh-rsa AAAA= x"));
         $this->assertFalse(PublicKeyLineShape::isSingleAuthorizedKeyLine('ssh-dss AAAAB3NzaC1kc3M= x'));
+
+        // ⚑ ONE DELIBERATE ASYMMETRY, DECLARED RATHER THAN DRIFTED INTO. The caller here
+        // trims the file with `rtrim($content, "\n")`; the python trims it with
+        // `raw.strip("\n")`, which also drops LEADING newlines. So a file that begins
+        // with a blank line is accepted by the python and refused here — the PHP side is
+        // a strict SUBSET, which is the safe direction for a pre-check whose whole job is
+        // never to offer a pin the python will refuse.
+        $this->assertStringContainsString('key = raw.strip("\n")', $python);
     }
 
     // ─── the ref line ─────────────────────────────────────────────────────────
@@ -413,6 +429,18 @@ class ProvisionToolsPacketTest extends TestCase
             $out,
         );
         $this->assertStringContainsString('claude --dangerously-load-development-channels server:<its-mcp-servers-key>', $out);
+        // Measured on three live seats (roundtable #419): STEP 1 repoints the channel
+        // server's `args` and leaves the previous copy on disk, so a seat that reads
+        // STEP 4 as "nothing moved" deletes the wrong tree or debugs the wrong one.
+        // ⚑ IT DOES NOT OPEN ON `STEP 1`, and that is not a style choice: `laravel/pao`
+        // deletes the glyph and collapses the indent for an AI-agent reader (the packet's
+        // actual audience), and this line would then begin `STEP 1 repointed …` INSIDE the
+        // STEP 4 block — a step heading, to the one reader who cannot see it is not one.
+        $this->assertStringContainsString(
+            "⚠ the channel server's `args` in this seat's .mcp.json were repointed by STEP 1 at <its-claude-project-dir>/.channel-server/… — a copy it deploys there.",
+            $out,
+        );
+        $this->assertStringContainsString('delete it only once this seat is certified.', $out);
     }
 
     public function test_the_header_says_when_host_a_has_not_been_supplied(): void
@@ -431,6 +459,137 @@ class ProvisionToolsPacketTest extends TestCase
 
         $this->assertStringContainsString('roles and handoff: docs/board-tools-enablement.md', $out);
         $this->assertStringContainsString('docs/board-tools.md § Same-box SSH enablement — the one-shot wrapper (card 5090)', $out);
+    }
+
+    // ─── the values that reach a rendered command line ────────────────────────
+
+    public function test_a_host_a_that_is_not_a_host_is_refused_before_any_packet_is_printed(): void
+    {
+        // ⭐ CONTROL: drop the `\z` anchor from SshEndpointShape::isHost() and this reds —
+        // the value then matches on its leading label and the packet renders STEP 1 as
+        // `--ssh-target bridge-user@hostA.example; rm -rf ~ ` for an impl agent to paste
+        // into its own shell. The whole packet is text somebody else executes, which is
+        // why a value that is not what it claims to be is refused rather than escaped.
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl', '--host-a' => 'hostA.example; rm -rf ~']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('is not a host name, an IPv4 address or a [IPv6] literal', $out);
+        $this->assertStringContainsString('refused rather than escaped', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_the_host_forms_ssh_itself_takes_still_render(): void
+    {
+        // ⛔ THE OTHER HALF OF THE CONTROL. A guard that refused everything would pass the
+        // test above and be a defect — so the three forms an operator legitimately has
+        // are asserted to reach the packet, bracketed IPv6 included (a bare one is
+        // ambiguous with `host:port`, which is why ssh requires the brackets).
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+
+        foreach (['hostA.example', 'host-a1.sub.example.com.', '10.0.0.7', '[2001:db8::1]'] as $host) {
+            $out = $this->runPacket(['--host-a' => $host]);
+            $this->assertStringContainsString("--ssh-target bridge-user@{$host} ", $out, "expected {$host} to render");
+        }
+    }
+
+    public function test_an_ssh_port_that_is_not_a_port_is_refused_before_any_packet_is_printed(): void
+    {
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+
+        foreach (['2222; id', '0', '70000', ' 22'] as $port) {
+            $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl', '--host-a' => 'hostA.example', '--ssh-port' => $port]);
+            $out = Artisan::output();
+
+            $this->assertSame(1, $exit, "expected rc 1 for --ssh-port {$port}");
+            $this->assertStringContainsString('is not a port number 1-65535', $out);
+            $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+        }
+    }
+
+    public function test_a_pubkey_path_carrying_shell_metacharacters_is_refused_before_the_pin_is_rendered(): void
+    {
+        // The path is rendered into STEP 3 — the one command in the packet an operator
+        // runs privileged — so it is refused for its SHAPE before the file is even looked
+        // for. The character class is the python's `_ARTISAN_RE`, which is what `--role a`
+        // will apply to the same value.
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl', '--pubkey-from' => $this->dir.'/impl.pub; cat /etc/shadow']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('is outside the character class the pin command accepts', $out);
+        $this->assertStringContainsString('an operator runs as a privileged command', $out);
+        // The SHAPE refusal, not the missing-file one — a bad path must not be reported
+        // as merely absent, or the operator re-saves the file and hits the same wall.
+        $this->assertStringNotContainsString('is not a regular file', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_an_agent_name_outside_the_python_class_is_refused(): void
+    {
+        // ⚠ THE NAME IS A FILE NAME, AND NOTHING VALIDATES IT ON THE WAY IN. It becomes
+        // `bridge:tools-call --agent=<name>` inside the pinned forced command's double
+        // quotes and `<dir>/<name>.pub` in STEP 2's heredoc, so `--role a` refuses
+        // anything outside `_AGENT_RE` — and a packet that rendered it anyway would be
+        // handing over a STEP 3 guaranteed to be refused after the sudo.
+        File::put($this->dir.'/im$(id)pl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+            ."board_tools:\n  transport: ssh\n  ssh_account: bridge-user\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'im$(id)pl']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('refuses any name outside ^[a-z0-9_-]+$', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_an_artisan_path_the_python_would_refuse_stops_the_packet_here(): void
+    {
+        // ⛔ THE VALUE IS NOT AN OPTION OF THIS COMMAND — it is `base_path('artisan')`,
+        // this install's own path, rendered into STEP 3. An install whose checkout sits
+        // under a directory with a space produced a packet whose pin was going to be
+        // refused by `--role a` AFTER the operator had spent the privileged window on it.
+        // That is the F17 residue, closed at the only point that can still decline.
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+        $this->app->setBasePath($this->dir.'/checkout with a space');
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString("this install's artisan path", $out);
+        $this->assertStringContainsString('its STEP 3 would be refused after the operator had already run it', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_the_php_path_and_agent_shapes_are_in_lockstep_with_the_python_owner(): void
+    {
+        // ⛔ ONE RULE, TWO IMPLEMENTATIONS, SO THE DRIFT IS GUARDED — the same arrangement
+        // PublicKeyLineShape is under, and for the same reason: the python is what
+        // actually refuses the pin, and this copy only decides what the packet will offer
+        // to pin. Widening either regex alone reds here.
+        $python = (string) file_get_contents(base_path('bin/provision-board-tools.py'));
+
+        preg_match('/^_ARTISAN_RE = re\.compile\(r"\^(.*)\$"\)$/m', $python, $artisan);
+        $this->assertNotEmpty($artisan, 'could not locate _ARTISAN_RE in bin/provision-board-tools.py');
+        $this->assertSame($artisan[1], SafePathShape::BODY_PATTERN);
+
+        preg_match('/^_AGENT_RE = re\.compile\(r"\^(.*)\$"\)$/m', $python, $agent);
+        $this->assertNotEmpty($agent, 'could not locate _AGENT_RE in bin/provision-board-tools.py');
+        $this->assertSame($agent[1], AgentNameShape::BODY_PATTERN);
+
+        // ⚑ AND THE ANCHORS ARE THIS SIDE'S, NOT THE PATTERN'S. The python applies its
+        // `^…$` through `fullmatch`; PHP's `$` would accept a trailing newline, so both
+        // classes compose `\A…\z` around the shared body — asserted, because a newline
+        // riding into a rendered command line is exactly what these shapes exist to stop.
+        $this->assertFalse(SafePathShape::isSafePath("/opt/bridge/artisan\n"));
+        $this->assertFalse(AgentNameShape::isAgentName("impl\n"));
+        $this->assertTrue(SafePathShape::isSafePath('/opt/bridge/artisan'));
+        $this->assertTrue(AgentNameShape::isAgentName('impl'));
     }
 
     // ─── helpers ──────────────────────────────────────────────────────────────

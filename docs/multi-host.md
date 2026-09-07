@@ -437,17 +437,29 @@ BOTH values (they are public). ⛔ **It does not make the pin safe** — anyone 
 `.pub` can compute it. What makes the pin safe is a person deciding the key is that seat's;
 [`docs/board-tools-enablement.md`](board-tools-enablement.md) states that plainly.
 
-**Symlinks.** A symlinked `~/.ssh` is legal (dotfiles repos do it); the root arm's `chown`
-runs `follow_symlinks=False`, so it can never hand a link's target to the account. A
-symlinked `authorized_keys` is **refused** — the append opens `O_NOFOLLOW`, because writing
-through it would put an ssh key line into whatever the link points at.
+**Symlinks.** `--role a` opens the account's `.ssh` **once**, `O_NOFOLLOW`, and does every
+later `chmod`/`chown`/`open` through that one descriptor — so no syscall re-resolves a name
+whoever controls `~<account>` could move underneath it. A symlinked `~/.ssh` therefore
+fails that open, and the two arms answer differently on purpose: the **root arm refuses**
+it by name (root acting through a link a lower-trust account controls is the hazard — pin
+into the real directory, or make `~/.ssh` a real directory owned by the account), while the
+**self-account arm resolves the link first** and keeps working, because there the process
+IS the account and following its own link is its own choice. Dotfiles topologies stay legal
+on the self-account arm. A symlinked `authorized_keys` is **refused in both arms** — the
+open is `O_NOFOLLOW`, because writing through it would put an ssh key line into whatever
+the link points at. ⚠ The root arm also refuses to CREATE a missing `~/.ssh` unless
+`~<account>` is itself a real directory owned by that account.
 
 **A hand-edited line for the same agent is refused, not appended beside.** If a line
 already mentions `--agent=<agent>` but is not the line this tool writes, `--role a` names
 it and stops rather than adding a second one — two lines for one agent is an ambiguity
 sshd resolves by first match and `bridge:check` FAILs on, from the other side of the box.
 ⚠ The detector is a **heuristic** over the bare `--agent=<name>` spelling; a hand line
-written `--agent="<name>"` is not covered.
+written `--agent="<name>"` is not covered. ⛔ A line that IS tool-shaped for this agent but
+whose forced command differs — another checkout's `artisan`, another `timeout`, extra
+options — is **refused too, and never reported as *already present***: sshd runs what THAT
+line says, so certifying it would certify a forced command nobody asked for. The refusal
+quotes both prefixes and tells you to remove or rewrite the line by hand.
 
 > **No account-level sshd hardening (card 5091).** Earlier releases had `--role a`
 > write a `Match User <bridge-user>` sshd drop-in (`PasswordAuthentication no` +

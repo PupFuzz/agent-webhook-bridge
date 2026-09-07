@@ -30,6 +30,16 @@ namespace App\Bridge\Tools;
  * reads a file, runs a process or looks an account up — the caller does that through
  * {@see SshProbeEnvironment} / {@see GitRefProbe} — so a test drives every arm (root
  * account, no-sudo pin, unresolvable uid, git-ref known or not) without a real host.
+ *
+ * ⚑ ITS READER IS AN AGENT, AND THAT READER RECEIVES NEITHER THE GLYPHS NOR THE INDENT.
+ * `laravel/pao` binds its own `OutputStyle` when an AI agent runs the command (never
+ * under `runningUnitTests()`, so a test reads the uncleaned bytes), and its
+ * `OutputCleaner` DELETES a fixed glyph set and COLLAPSES runs of spaces. So no line may
+ * OPEN on a word the cleaned text would read as structure — `⚠ STEP 1 …` inside STEP 4
+ * arrives as `STEP 1 …`, a step heading to the one reader who cannot see it is not one —
+ * and STEP 2's heredoc body and terminator are flush-left for a second reason besides the
+ * shell's: a flush-left line has no leading run to collapse. `CheckCommand`'s NEXT STEPS
+ * block states the same constraint over the same reader.
  */
 final class BoardToolsSetupPacket
 {
@@ -118,7 +128,7 @@ final class BoardToolsSetupPacket
             'roles and handoff: docs/board-tools-enablement.md',
             $this->refLine(),
             "forced command runs as: {$this->account} ({$accountNote}); {$this->account} must be able to run "
-                ."`php {$this->artisan} bridge:tools-call` — bridge storage/ writable by it",
+                ."`php {$this->artisan} bridge:tools-call` — the bridge's own storage/ writable by it",
             'values only the seat knows: '.self::CHECKOUT.' '.self::PROJECT_DIR.' '.self::CHANNEL_KEY
                 .' — '.self::CHANNEL_KEY.' is your `.mcp.json` `mcpServers` key if you have one; on a fresh seat, '
                 .'the key you will pass to --dangerously-load-development-channels server:<key>',
@@ -271,6 +281,10 @@ final class BoardToolsSetupPacket
             '    python3 '.self::CHECKOUT."/bin/provision-board-tools.py --role b --certify-only --agent {$this->agent}"
                 .' --project-dir '.self::PROJECT_DIR.' --channel-name '.self::CHANNEL_KEY,
             '  then start its session: claude --dangerously-load-development-channels server:'.self::CHANNEL_KEY,
+            '  ⚠ the channel server\'s `args` in this seat\'s .mcp.json were repointed by STEP 1 at '
+                .self::PROJECT_DIR.'/.channel-server/… — a copy it deploys there. Any previous copy '
+                .'is left on disk untouched and is no longer what the session runs; delete it only '
+                .'once this seat is certified.',
         ];
     }
 

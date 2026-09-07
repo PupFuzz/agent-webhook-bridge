@@ -449,6 +449,24 @@ def significant_authorized_keys_lines(text: str) -> list:
     return [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
 
 
+def authorized_key_line_prefix(line: str) -> str:
+    """Everything in one `authorized_keys` line BEFORE the key type — options + command.
+
+    ⭐ THIS IS WHAT "THE SAME LINE" HAS TO MEAN. The strict guard anchors on
+    `bridge:tools-call --agent=<name>"`, which answers *is there a line for this agent*
+    and NOT *is it the line this run would write*: the same agent behind a different
+    `--artisan`, a different `timeout`, or extra options passes that guard while sshd goes
+    on running something else entirely. Comparing this prefix against the freshly built
+    forced command is the question the caller actually has.
+
+    A line with no key type from the allowlist yields ITSELF, so it compares unequal and
+    is refused — which is the safe direction for a line this tool cannot parse.
+    """
+    starts = [line.find(f" {t} ") for t in _KEY_TYPES]
+    found = [i for i in starts if i != -1]
+    return line[:min(found)] if found else line
+
+
 def weak_agent_pattern(agent: str):
     """A HEURISTIC for "some line here already mentions this agent".
 
@@ -642,55 +660,73 @@ def run_role_a(args) -> int:
     # somewhere else entirely and this tool does not read sshd's config, so the path is
     # PRINTED rather than assumed to be the one sshd will read.
     ssh_dir = os.path.join(pw.pw_dir, ".ssh")
-    os.makedirs(ssh_dir, exist_ok=True)
-    os.chmod(ssh_dir, 0o700)
-    if not self_account:
-        # ⛔ follow_symlinks=False IS THE DEFENCE, and it is why a symlinked `~/.ssh`
-        # stays legal here (dotfiles repos do this routinely). A path-following chown
-        # run by ROOT hands ownership of whatever the link points at — /etc/shadow, say
-        # — to the account. Chowning the LINK ITSELF gives the same result for every
-        # honest topology and nothing at all for the dishonest one.
-        os.chown(ssh_dir, pw.pw_uid, pw.pw_gid, follow_symlinks=False)
+    if self_account:
+        # ⭐ THE PROCESS IS THE ACCOUNT, so following the account's own link is the
+        # account's own choice — a dotfiles topology that symlinks ~/.ssh keeps working.
+        # Resolving it HERE, once, is what lets the same descriptor primitive serve both
+        # arms: everything below then operates on a real directory.
+        ssh_dir = os.path.realpath(ssh_dir)
     authz = os.path.join(ssh_dir, "authorized_keys")
 
-    existing_lines = []
-    if os.path.isfile(authz):
-        with open(authz, encoding="utf-8") as fh:
-            existing_lines = significant_authorized_keys_lines(fh.read())
+    dfd = _open_ssh_dir(ssh_dir, pw, root_arm=not self_account)
+    try:
+        os.fchmod(dfd, 0o700)
+        if not self_account:
+            os.fchown(dfd, pw.pw_uid, pw.pw_gid)
 
-    weak = weak_agent_pattern(agent)
-    strict_lines = [ln for ln in existing_lines if guard in ln]
-    hand_lines = [ln for ln in existing_lines if weak.search(ln) and ln not in strict_lines]
-    if hand_lines:
-        # ⛔ REPORTED, NEVER SILENTLY APPENDED TO. This fires on the MIXED state too (a
-        # line this tool wrote AND a hand-edited one): "already present" would be a true
-        # sentence about the wrong thing, and appending would leave the account with two
-        # lines for one agent — which `bridge:check` FAILs on, one step too late and from
-        # the other side of the box.
-        _fail(
-            f"a hand-pinned line for agent {agent} exists in {authz} with different "
-            f"options; remove it or make it match, then re-run. Refusing to add a second "
-            f"line for one agent — sshd would honour whichever matched first, and "
-            f"`bridge:check` FAILs on the ambiguity.\n  " + "\n  ".join(hand_lines)
-        )
+        existing_lines = significant_authorized_keys_lines(_read_authorized_keys(dfd, authz))
 
-    guard_line = strict_lines[0] if strict_lines else None
-    if guard_line is not None:
-        if supplied_core in guard_line:
-            print(f"authorized_keys: forced-command line for agent {agent} already present (same key) — no change.")
-        else:
-            # Rotation / compromise signal: the guard anchors on the agent, not the key,
-            # so a re-run with a NEW key would leave the OLD one authorized. Refuse loudly.
+        weak = weak_agent_pattern(agent)
+        strict_lines = [ln for ln in existing_lines if guard in ln]
+        hand_lines = [ln for ln in existing_lines if weak.search(ln) and ln not in strict_lines]
+        if hand_lines:
+            # ⛔ REPORTED, NEVER SILENTLY APPENDED TO. This fires on the MIXED state too (a
+            # line this tool wrote AND a hand-edited one): "already present" would be a true
+            # sentence about the wrong thing, and appending would leave the account with two
+            # lines for one agent — which `bridge:check` FAILs on, one step too late and from
+            # the other side of the box.
             _fail(
-                f"authorized_keys already pins a DIFFERENT key for agent {agent}. "
-                f"This is a key rotation/compromise signal — remove the old line + old key "
-                f"from {authz}, then re-run. Refusing to silently leave the old key authorized."
+                f"a hand-pinned line for agent {agent} exists in {authz} with different "
+                f"options; remove it or make it match, then re-run. Refusing to add a second "
+                f"line for one agent — sshd would honour whichever matched first, and "
+                f"`bridge:check` FAILs on the ambiguity.\n  " + "\n  ".join(hand_lines)
             )
-    else:
-        _append_authorized_key_line(authz, f"{forced} {pubkey}\n")
-        print(f"authorized_keys: appended the forced-command line for agent {agent}.")
 
-    _pin_authorized_keys_perms(authz, pw.pw_uid, pw.pw_gid, chown=not self_account)
+        guard_line = strict_lines[0] if strict_lines else None
+        if guard_line is not None:
+            present_prefix = authorized_key_line_prefix(guard_line)
+            if present_prefix != forced:
+                # ⛔ THE GUARD ANCHORS ON THE AGENT NAME, WHICH IS NOT THE SAME QUESTION AS
+                # "is this the line I would write". A line naming this agent behind a
+                # DIFFERENT artisan, a different timeout or different options is the line
+                # sshd will actually run, so reporting it as "already present" would certify
+                # a forced command nobody asked for — and re-running with the right --artisan
+                # would keep certifying it forever.
+                _fail(
+                    f"the line pinned for agent {agent} in {authz} runs a DIFFERENT forced "
+                    f"command or carries different options than this run would write; remove it "
+                    f"or rewrite it by hand to match, then re-run. Refusing to report it as "
+                    f"already present — sshd runs what THAT line says.\n"
+                    f"  in the file: {present_prefix}\n"
+                    f"  this run:    {forced}"
+                )
+            if supplied_core in guard_line:
+                print(f"authorized_keys: forced-command line for agent {agent} already present (same key) — no change.")
+            else:
+                # Rotation / compromise signal: the guard anchors on the agent, not the key,
+                # so a re-run with a NEW key would leave the OLD one authorized. Refuse loudly.
+                _fail(
+                    f"authorized_keys already pins a DIFFERENT key for agent {agent}. "
+                    f"This is a key rotation/compromise signal — remove the old line + old key "
+                    f"from {authz}, then re-run. Refusing to silently leave the old key authorized."
+                )
+        else:
+            _append_authorized_key_line(dfd, authz, f"{forced} {pubkey}\n")
+            print(f"authorized_keys: appended the forced-command line for agent {agent}.")
+
+        _pin_authorized_keys_perms(dfd, authz, pw.pw_uid, pw.pw_gid, chown=not self_account)
+    finally:
+        os.close(dfd)
     print(f"authorized_keys: {authz} (default path; sshd's AuthorizedKeysFile is not resolved by this tool)")
     print(f"Pinned fingerprint: {fingerprint}")
 
@@ -708,39 +744,143 @@ def run_role_a(args) -> int:
     return 0
 
 
-def _append_authorized_key_line(authz: str, line: str) -> None:
-    """Append ONE line to `authorized_keys` through an O_NOFOLLOW open.
+def _open_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> int:
+    """A descriptor for the account's `.ssh`, created if absent, opened `O_NOFOLLOW`.
 
-    ⛔ THE WRITE IS THE HAZARD THIS CLOSES. A path-following append run by root through
-    an `authorized_keys` that is a SYMLINK writes the line into whatever it points at —
-    an arbitrary root-owned file gaining an ssh key line. There is no way to both refuse
-    that and write through the link, so a symlinked `authorized_keys` is the one
-    topology this refuses (a symlinked `~/.ssh` is not; see the chown above).
+    ⛔ THE DESCRIPTOR IS THE DEFENCE, AND IT IS WHY THERE IS ONLY ONE OF THEM. Every
+    path-based `chmod`/`chown`/`open` re-resolves the name at the moment it runs, so
+    whoever controls `~<account>` picks what each syscall lands on — and under the root
+    arm that is a lower-trust account choosing what ROOT chmods, chowns and writes into.
+    Resolving the directory ONCE here and handing the fd to `fchmod`/`fchown`/`dir_fd=`
+    removes the re-resolution entirely: the directory this returns is the directory every
+    later call acts on, whatever the name does afterwards.
+
+    ⚠ A symlinked `.ssh` fails this open (ELOOP), and the two arms answer differently on
+    purpose. The ROOT arm REFUSES: root acting through a link a lower-trust account
+    controls is the hazard, and there is no way to both decline to follow it and follow
+    it. The SELF-ACCOUNT arm never reaches that refusal — its caller has already resolved
+    the link, because the process IS the account and following its own link is its own
+    choice (DL-357 Decision 6, as amended by this round) — so when ITS open fails, it is
+    told what is actually there instead.
     """
     try:
-        fd = os.open(authz, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        pass
     except OSError as e:
+        # The two arms reach this for different reasons, so they are told different
+        # things: only the root arm can be standing in front of a SYMLINK here (the
+        # self-account caller resolved its own), and naming the wrong cause sends the
+        # reader to fix a topology that is not what stopped the run.
+        if root_arm:
+            _fail(
+                f"could not open {ssh_dir} as a directory: {e}. If it is a SYMLINK this is "
+                f"deliberate — this run would be root acting through a link the account "
+                f"controls, and a chmod/chown/write through it lands wherever the link points. "
+                f"Point the pin at the real directory, or make {ssh_dir} a real directory owned "
+                f"by the account, and re-run."
+            )
         _fail(
-            f"could not open {authz} to append the forced-command line: {e}. If it is a "
-            f"SYMLINK this is deliberate — writing through it would put an ssh key line "
-            f"into the link's target. Replace it with a regular file and re-run."
+            f"could not open {ssh_dir} as a directory: {e}. Any symlink was already resolved "
+            f"on this arm, so what is at that path is not a directory this account can open — "
+            f"a regular file there is the usual cause. Fix it and re-run."
         )
+    _create_ssh_dir(ssh_dir, pw, root_arm=root_arm)
+    try:
+        return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        _fail(f"created {ssh_dir} but could not open it: {e}")
+
+
+def _create_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> None:
+    """`mkdir` the missing `.ssh` — never `makedirs`, and never into a home root can't trust.
+
+    ⛔ `makedirs` WOULD CREATE THE PARENTS TOO, and a home directory this tool invented is
+    a home the account's sshd was never told about. The parent must already be the
+    account's own real directory: under the root arm, a `~<account>` that is a symlink, or
+    a directory owned by somebody else, means the entry root is about to create belongs to
+    that somebody — so it is refused by name rather than created.
+    """
+    if root_arm:
+        try:
+            st = os.lstat(pw.pw_dir)
+        except OSError as e:
+            _fail(f"{pw.pw_dir} (the home of the account being pinned) cannot be examined: {e}")
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != pw.pw_uid:
+            owner = "a symlink" if stat.S_ISLNK(st.st_mode) else (
+                "not a directory" if not stat.S_ISDIR(st.st_mode) else f"owned by uid {st.st_uid}"
+            )
+            _fail(
+                f"refusing to create {ssh_dir}: {pw.pw_dir} is {owner}, not a real directory "
+                f"owned by uid {pw.pw_uid}. Creating .ssh under it would put the account's "
+                f"authorized_keys somewhere the account does not own. Fix the home directory, "
+                f"or create {ssh_dir} by hand as the account, then re-run."
+            )
+    try:
+        os.mkdir(ssh_dir, 0o700)
+    except OSError as e:
+        _fail(f"could not create {ssh_dir}: {e}")
+
+
+def _open_authorized_keys(dfd: int, authz: str, flags: int, *, missing_ok: bool = False):
+    """`authorized_keys` opened RELATIVE TO the `.ssh` descriptor, never through its name.
+
+    `dir_fd=` is the second half of `_open_ssh_dir`'s defence — the name resolves inside
+    the directory that was already proved, not from the account's home again — and
+    `O_NOFOLLOW` closes the last component: a symlinked `authorized_keys` is the one
+    topology this refuses, because reading through it discloses the link's target into a
+    refusal message and writing through it puts an ssh key line into that target.
+
+    `missing_ok` is the READ call site, where "the account has no authorized_keys yet" is
+    the ordinary first run and not a fault; it returns None there. Every other OSError is
+    the refusal above, worded once for all three call sites.
+    """
+    try:
+        return os.open("authorized_keys", flags | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+    except OSError as e:
+        if missing_ok and isinstance(e, FileNotFoundError):
+            return None
+        _fail(
+            f"could not open {authz}: {e}. If it is a SYMLINK this is deliberate — reading "
+            f"through it would leak the link's target into this tool's output, and writing "
+            f"through it would put an ssh key line into that target. Replace it with a "
+            f"regular file and re-run."
+        )
+
+
+def _read_authorized_keys(dfd: int, authz: str) -> str:
+    """The file's text, or `""` when the account has no `authorized_keys` yet."""
+    fd = _open_authorized_keys(dfd, authz, os.O_RDONLY, missing_ok=True)
+    if fd is None:
+        return ""
+    with os.fdopen(fd, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _append_authorized_key_line(dfd: int, authz: str, line: str) -> None:
+    """Append ONE line to `authorized_keys` through {@see _open_authorized_keys}.
+
+    ⛔ THE WRITE IS THE HAZARD THAT PRIMITIVE CLOSES. A path-following append run by root
+    through an `authorized_keys` that is a SYMLINK writes the line into whatever it points
+    at — an arbitrary root-owned file gaining an ssh key line — and a path-following one
+    through a symlinked `.ssh` lands the whole file wherever that link points. Both are
+    resolved once, in `_open_ssh_dir`, and this write happens inside that descriptor.
+    """
+    fd = _open_authorized_keys(dfd, authz, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(line)
 
 
-def _pin_authorized_keys_perms(authz: str, uid: int, gid: int, *, chown: bool) -> None:
-    """0600 + (root arm only) ownership, both through one O_NOFOLLOW descriptor.
+def _pin_authorized_keys_perms(dfd: int, authz: str, uid: int, gid: int, *, chown: bool) -> None:
+    """0600 + (root arm only) ownership, both through one descriptor.
 
-    `fchmod`/`fchown` on a descriptor opened O_NOFOLLOW cannot reach a link's target,
-    which is the same defence the append uses. `chown=False` is the self-account arm:
-    the file is already the account's, so there is nothing to give it, and a chmod that
-    fails there is a real fault rather than something to shrug at — it is named.
+    `fchmod`/`fchown` on a descriptor from {@see _open_authorized_keys} cannot reach a
+    link's target, which is the same defence the append uses. `chown=False` is the
+    self-account arm: the file is already the account's, so there is nothing to give it,
+    and a chmod that fails there is a real fault rather than something to shrug at — it is
+    named.
     """
-    try:
-        fd = os.open(authz, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError as e:
-        _fail(f"could not open {authz} to set its permissions: {e}")
+    fd = _open_authorized_keys(dfd, authz, os.O_RDONLY)
     try:
         try:
             os.fchmod(fd, 0o600)
@@ -791,6 +931,17 @@ def read_recorded_ssh_transport(existing_text, channel_name: str) -> dict:
     return env
 
 
+def is_ssh_port(value) -> bool:
+    """Is `value` a TCP port sshd could be listening on? (1-65535, digits only.)
+
+    The bound is the port space's, not this tool's — which is why it is not a lockstep
+    copy of anything: `ssh -p 0` and `ssh -p 2222x` are wrong for the same reason
+    everywhere, and no repo owns that fact.
+    """
+    text = str(value)
+    return text.isascii() and text.isdigit() and 1 <= int(text) <= 65535
+
+
 def run_certify_only(args) -> int:
     """`--role b --certify-only`: one real ssh round-trip, using what THIS SEAT recorded.
 
@@ -839,8 +990,23 @@ def run_certify_only(args) -> int:
             f"{' or '.join(absent)} — provision first (`--role b` without --certify-only)."
         )
     port = env.get("BRIDGE_TOOLS_SSH_PORT")
+    if port not in (None, "") and not is_ssh_port(port):
+        # The recorded value reaches `ssh-keyscan -p` and `ssh -p` as an int() — a record
+        # holding "2222 " or "0" is a malformed record, and a traceback out of int() is a
+        # worse answer to it than the same "provision first" the other malformed records get.
+        _fail(
+            f"{mcp_path} `mcpServers.{args.channel_name}.env` records "
+            f"BRIDGE_TOOLS_SSH_PORT={port!r}, which is not a port number 1-65535 — this "
+            f"record is malformed. Re-run a full `--role b` with the right --ssh-port "
+            f"(provision first), or remove the key to use the default port 22."
+        )
 
-    key_path, _pub_path, _supplied = _resolve_host_b_key(args, os.path.dirname(str(key)), key_path=str(key))
+    key_path, pub_path, _supplied = _resolve_host_b_key(args, os.path.dirname(str(key)), key_path=str(key))
+    # ⚑ HONOURED HERE TOO, AND IT ASKS THE SAME QUESTION: is the key this seat RECORDED the
+    # key the operator pinned? A seat that regenerated its pair after the pin certifies a
+    # door it can no longer open, and the round-trip's `Permission denied` names neither key.
+    if args.expect_fingerprint is not None:
+        _assert_expected_fingerprint(args.expect_fingerprint, pub_path)
     _seed_known_hosts(str(target).rsplit("@", 1)[-1], port)
     return _self_cert(str(target), key_path, port)
 
@@ -910,6 +1076,12 @@ def run_role_b(args) -> int:
     # unseeded host (incl. the same-box 127.0.0.1) fails closed on the first call.
     _seed_known_hosts(args.ssh_target.rsplit("@", 1)[-1], args.ssh_port)
 
+    # ⛔ EVALUATED BEFORE THE HANDOFF BLOCK IS PRINTED, NOT INSIDE IT. A mismatch means
+    # this is not the key the operator was told to expect, and a refusal that has already
+    # printed the key line has handed off the very thing it is refusing to hand off — the
+    # seat's transcript then carries a public key line under a step that failed.
+    fingerprint = _assert_expected_fingerprint(args.expect_fingerprint, pub_path)
+
     print()
     print("Public key for the host-A handoff (paste into `--role a --pubkey-stdin`):")
     print(f"  {pubkey}")
@@ -918,7 +1090,7 @@ def run_role_b(args) -> int:
     # the SEAT and types it into `--expect-fingerprint`, so it has to be the whole line
     # and nothing else — a fingerprint buried in `ssh-keygen -lf` output next to a size
     # and a comment is a value somebody re-types wrong.
-    print(f"Fingerprint: {_assert_expected_fingerprint(args.expect_fingerprint, pub_path)}")
+    print(f"Fingerprint: {fingerprint}")
     print(f"Same-box: hand this path to `--role a --pubkey-from`:\n  {pub_path}")
     print()
     print("Launch Claude Code with the mandatory per-session dev-channel flag:")
@@ -1589,6 +1761,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.role == "a":
+        if args.certify_only:
+            # Silently ignoring it would let an operator believe host A had certified the
+            # transport, which is the one thing this box cannot do — the round-trip is the
+            # SEAT's proof (DL-229).
+            _fail(
+                "--certify-only is a --role b flag: it certifies the transport the SEAT "
+                "recorded, from the seat. Run it there, or drop it to pin from here."
+            )
         return run_role_a(args)
     if args.certify_only:
         # ⭐ THE REQUIRED-ARG SET IS DELIBERATELY NARROWER HERE (card#8971): --ssh-target

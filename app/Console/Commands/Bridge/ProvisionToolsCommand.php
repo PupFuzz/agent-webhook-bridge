@@ -7,9 +7,12 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Tools\AgentNameShape;
 use App\Bridge\Tools\BoardToolsSetupPacket;
 use App\Bridge\Tools\GitRefProbe;
 use App\Bridge\Tools\PublicKeyLineShape;
+use App\Bridge\Tools\SafePathShape;
+use App\Bridge\Tools\SshEndpointShape;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Tools\SshTransportProbe;
 use Throwable;
@@ -266,7 +269,8 @@ class ProvisionToolsCommand extends BridgeCommand
      * seat; it never edits `authorized_keys`), so provisioning for this transport IS the
      * packet. {@see BoardToolsSetupPacket} owns every word of it; this method is the
      * boundary layer that resolves the host facts and refuses the inputs that would make
-     * a step wrong.
+     * a step wrong — {@see packetValuesAreRenderable} for the values that reach a rendered
+     * command line, {@see pubkeyFileIsUsable} for the file whose CONTENT reaches one.
      *
      * ⛔ THE ACCOUNT IS NOT RE-DERIVED HERE. `board_tools.ssh_account ?? runUser()` is
      * {@see SshTransportProbe::forcedCommandAccount()}'s rule, and it is the rule
@@ -282,8 +286,12 @@ class ProvisionToolsCommand extends BridgeCommand
     {
         $account = (new SshTransportProbe($sshEnv, $sshAccount))->forcedCommandAccount();
         $pubkeyDir = storage_path('app/board-tools');
+        $artisan = base_path('artisan');
 
         $pubkeyPath = $this->strOption('pubkey-from');
+        if (! $this->packetValuesAreRenderable($agentName, $artisan, $pubkeyPath)) {
+            return false;
+        }
         if ($pubkeyPath !== null && ! $this->pubkeyFileIsUsable($agentName, $pubkeyPath)) {
             return false;
         }
@@ -302,7 +310,7 @@ class ProvisionToolsCommand extends BridgeCommand
             agent: $agentName,
             account: $account,
             accountConfigured: $sshAccount !== null,
-            artisan: base_path('artisan'),
+            artisan: $artisan,
             script: base_path('bin/provision-board-tools.py'),
             pubkeyDir: $pubkeyDir,
             hostA: $this->strOption('host-a'),
@@ -318,6 +326,62 @@ class ProvisionToolsCommand extends BridgeCommand
         // A packet whose STEP 3 says "not rendered" is a packet the PM cannot finish, so
         // it does not exit 0 — the two remedies are printed inside the step.
         return $account !== 'root';
+    }
+
+    /**
+     * Every value the packet INTERPOLATES into a command, checked before it renders one.
+     * Reports the cause and returns false at the first bad value.
+     *
+     * ⛔ THE PACKET IS PASTE-READY TEXT, AND THAT IS EXACTLY WHY THE VALUES ARE CHECKED
+     * HERE. Its steps are commands an impl agent and an operator paste into their own
+     * shells, so an unvalidated `--host-a`, `--ssh-port` or path does not stay a bad
+     * option — it becomes a shell fragment on somebody else's box, one of them at a `sudo`
+     * prompt. Refusing is not a courtesy to the parser; it is the only point at which this
+     * command is still the party that can decline.
+     *
+     * ⚑ `--artisan` IS CHECKED HERE TOO EVEN THOUGH THIS COMMAND DOES NOT TAKE IT AS A
+     * FLAG. `base_path('artisan')` is rendered into STEP 3's pin command, and
+     * `provision-board-tools.py --role a` refuses it against `_ARTISAN_RE` — so an install
+     * whose checkout path falls outside that class produced a packet whose STEP 3 was
+     * guaranteed to be refused AFTER the operator had spent the privileged window on it.
+     * {@see SafePathShape} is the same rule, read from the python by a lockstep test.
+     */
+    private function packetValuesAreRenderable(string $agentName, string $artisan, ?string $pubkeyPath): bool
+    {
+        $label = "[{$agentName}]";
+
+        if (! AgentNameShape::isAgentName($agentName)) {
+            $this->error("{$label} the agent name is rendered into the pinned forced command and into a .pub file name, and `provision-board-tools.py --role a` refuses any name outside ^".AgentNameShape::BODY_PATTERN.'$ — rename the agent config, then re-run.');
+
+            return false;
+        }
+        if (! SafePathShape::isSafePath($artisan)) {
+            $this->error("{$label} this install's artisan path ({$artisan}) is outside the character class `provision-board-tools.py --role a` accepts (^".SafePathShape::BODY_PATTERN.'$), so its STEP 3 would be refused after the operator had already run it. Move the checkout to a path without spaces or shell metacharacters, then re-run.');
+
+            return false;
+        }
+
+        $hostA = $this->strOption('host-a');
+        if ($hostA !== null && ! SshEndpointShape::isHost($hostA)) {
+            $this->error("{$label} --host-a {$hostA} is not a host name, an IPv4 address or a [IPv6] literal. It is rendered into an ssh target the seat pastes into its own shell, so it is refused rather than escaped — pass the host the seat will ssh to.");
+
+            return false;
+        }
+
+        $sshPort = $this->strOption('ssh-port');
+        if ($sshPort !== null && ! SshEndpointShape::isPort($sshPort)) {
+            $this->error("{$label} --ssh-port {$sshPort} is not a port number 1-65535. It is rendered into the seat's `--ssh-port` argument, so it is refused rather than escaped.");
+
+            return false;
+        }
+
+        if ($pubkeyPath !== null && ! SafePathShape::isSafePath($pubkeyPath)) {
+            $this->error("{$label} --pubkey-from {$pubkeyPath} is outside the character class the pin command accepts (^".SafePathShape::BODY_PATTERN.'$). The path is rendered into STEP 3, which an operator runs as a privileged command — save the key under a path without spaces or shell metacharacters (the packet suggests one), then re-run.');
+
+            return false;
+        }
+
+        return true;
     }
 
     /**

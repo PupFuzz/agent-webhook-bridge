@@ -40,13 +40,27 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
 - **The `Fingerprint:` line stays on the seat.** `--role b` prints it next to the public
   key; the operator reads it *there* when they run STEP 3. It is what
   `--expect-fingerprint` is compared against.
+- ⛔ **`grep <host> ~/.ssh/known_hosts` is the wrong instrument for "is the host pinned?"**
+  `HashKnownHosts` is on by default on most seats, so the host field is a salted hash and
+  the grep finds nothing on a seat that IS pinned — an absence that reads as *no pin* and
+  sends someone to re-pin a host that was fine. **`ssh-keygen -F <host>`** is the
+  instrument: it hashes the query the same way and prints the matching line.
 - **`--expect-fingerprint` is a transcription guard.** It catches the wrong file and the
   wrong seat. It does not, and cannot, establish that a human chose the key — see the
   security statement above.
 - **ECDSA P-256, not ed25519.** A FIPS sshd **rejects** ed25519, so `--role b` generates a
   P-256 key and `bridge:check` FAILs a pinned ed25519 key on a FIPS seat.
+- ⚠ **On a FIPS-restricted seat, a stale host pin reads like a rebuilt host.** Where
+  `HostKeyAlgorithms` excludes ed25519 the host offers no ED25519 host key at all, so the
+  *"host key verification failed / host key has changed"* refusal looks like the ED25519
+  line having **gone entirely** rather than a key that moved. That is a stale pin against a
+  narrowed algorithm list, not a rebuilt host: `ssh-keygen -R <host>` and let the next
+  `--role b` / `--certify-only` run re-pin it.
 - **After STEP 4, the seat's session must pick the merged `.mcp.json` up.** Restarting the
-  Claude session does it. ⚠ `/mcp reconnect` is **not** a verified substitute: it is
+  Claude session does it. ⚠ **The channel server's `args` in that seat's `.mcp.json` were
+  repointed by STEP 1 at `<project-dir>/.channel-server/…`, a copy it deploys there** — any
+  previous copy is left on disk untouched and is no longer what the session runs; delete it
+  only once the seat is certified. ⚠ `/mcp reconnect` is **not** a verified substitute: it is
   reported (roundtable #420) to fail on a live seat while the previous channel server still
   holds the port. That report has not been reproduced here, so this page claims neither
   that it works nor that it always fails — restart the session.
@@ -79,8 +93,13 @@ The packet prints a pointer to it too.
   the bridge box are not the seat's proof.
 - **The pin is not computed, it is decided.** See the security statement.
 - **The written path is the account's DEFAULT `~/.ssh/authorized_keys`.** `--role a` prints
-  the path it wrote; it does **not** resolve sshd's `AuthorizedKeysFile`, so an install
-  that relocated it must point the pin at the right file itself.
+  the path it wrote; it does **not** resolve sshd's `AuthorizedKeysFile`, and ⛔ **it has no
+  flag that redirects the write.** On an install that relocated the file, the two things an
+  operator can do are: move the written line **by hand** into the file `AuthorizedKeysFile`
+  names, or point `AuthorizedKeysFile` back at the default and re-run. ⚠ `bridge:check`
+  resolves the relocated path — but only when it runs **as root** (it reads sshd's
+  Match-resolved effective config); unprivileged, it reads the same default this tool wrote
+  and reports the pinned line `unvalidated` rather than confirmed.
 
 ## For the coord plugin
 
