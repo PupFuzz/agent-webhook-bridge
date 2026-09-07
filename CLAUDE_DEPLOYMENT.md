@@ -73,6 +73,13 @@ php artisan bridge:check                          # validate .env, dirs, DB conn
 php artisan migrate --force
 php artisan optimize                              # config/route cache
 php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent)
+php artisan bridge:provision-tools --agent=<name>  # OPTIONAL, per agent: the two-way board window (read/file/correct
+                                                  # your own cards from the agent's session). `bridge:check` above
+                                                  # prints a NEXT STEPS line naming this command for every agent that
+                                                  # is not wired end to end, and that block is the entry point.
+                                                  # Runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
+                                                  # Not wanted for an agent? Declare `board_tools:` with
+                                                  # `enabled: false` in its YAML and the line goes away.
 sudo systemctl reload apache2 php8.5-fpm
 ```
 
@@ -298,7 +305,12 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 ## Commands
 
 ```bash
-php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
+php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220).
+                                                      # Ends with a NEXT STEPS block naming each agent whose board-tools enablement is
+                                                      # incomplete and the ONE command to run next (DL-352) — output only, exit unchanged,
+                                                      # silent when nothing is outstanding. --format=json carries it as next_steps[].
+                                                      # ⛔ --probe-tools does NOT verify a seat's half: it stamps the same ledger row from
+                                                      # this box (docs/board-tools.md step 6), so it clears the line without the seat calling.
 php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences + per-divergence history
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event

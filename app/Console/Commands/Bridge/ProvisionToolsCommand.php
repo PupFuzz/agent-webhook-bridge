@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Check\NextSteps;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SecretFile;
@@ -73,7 +74,7 @@ class ProvisionToolsCommand extends BridgeCommand
                     $this->printSkeleton($cfg->agentName);
                     $rc = self::FAILURE;
                 } else {
-                    $this->info("{$label} SKIP — no board_tools block; run bridge:provision-tools --agent={$cfg->agentName} for a paste-ready skeleton, then re-run to mint the bearer");
+                    $this->info("{$label} SKIP — no board_tools block; run `".NextSteps::PROVISION."{$cfg->agentName}` for a paste-ready skeleton, then re-run to mint the bearer");
                 }
 
                 continue;

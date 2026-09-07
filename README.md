@@ -66,10 +66,11 @@ Don't use the bridge when:
 3. **Configure your agent identity**: copy `examples/sample-config/agent.yml.example` to `~/.config/agent-webhook-bridge/<your-agent-name>/<agent>.yml` and fill in your kanban API token, user_id, and webhook secret paths.
 4. **Validate the install**: `php artisan bridge:check`
 5. **Provision subscriptions**: `php artisan bridge:provision`
-6. **Deploy the app**: point Apache + PHP-FPM at `public/`; no worker, no daemon, and no cron is required — the one OPT-IN crontab line an install may add is `bridge:tick` over the periodic-job registry (`docs/periodic-jobs.md`), and an install that adds nothing runs the registry off the inbound webhook.
-7. **Wire your agent hooks** (Claude Code example): see `examples/claude-code/settings.json.example`.
+6. **Enable the two-way board tools (optional, per agent)**: `php artisan bridge:provision-tools --agent=<name>` prints a paste-ready `board_tools:` block, and step 4's `bridge:check` prints a **NEXT STEPS** line per agent that is not wired end to end — that block is the entry point, and it names the one command to run next. This is what lets an agent read, file and correct its own cards from its session; an agent that does not want it declares `board_tools:` with `enabled: false` and the line goes away. Runbook: [`docs/board-tools.md § Same-box enablement (Apache/FPM)`](docs/board-tools.md#same-box-enablement-apachefpm).
+7. **Deploy the app**: point Apache + PHP-FPM at `public/`; no worker, no daemon, and no cron is required — the one OPT-IN crontab line an install may add is `bridge:tick` over the periodic-job registry (`docs/periodic-jobs.md`), and an install that adds nothing runs the registry off the inbound webhook.
+8. **Wire your agent hooks** (Claude Code example): see `examples/claude-code/settings.json.example`.
 
-After step 7, kanban activity reaches your agent's session-start and mid-session surfaces within seconds of the webhook arriving. Edit a card via the kanban UI, start a new Claude session, see the event in your context.
+After step 8, kanban activity reaches your agent's session-start and mid-session surfaces within seconds of the webhook arriving. Edit a card via the kanban UI, start a new Claude session, see the event in your context.
 
 ## Multi-agent support
 
@@ -89,6 +90,7 @@ Adding a new provider means one new `WebhookAdapter` implementation and registra
 ```bash
 php artisan bridge:check        # validate install: dirs, DB, agent YAMLs
 php artisan bridge:provision    # idempotent webhook subscription setup (--reconcile fixes drift)
+php artisan bridge:provision-tools  # per-agent board-tools enablement (skeleton / bearer / ssh legs) — docs/board-tools.md
 php artisan bridge:inbox        # surface staged intents (Claude Code hook-aware)
 php artisan bridge:replay       # re-dispatch a stored event (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>  # pretty-print one event + its dispatch ledger

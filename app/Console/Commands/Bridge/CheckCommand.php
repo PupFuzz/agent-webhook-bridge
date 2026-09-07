@@ -51,6 +51,9 @@ use App\Bridge\Check\Checks\WritebackSourceCoverageCheck;
 use App\Bridge\Check\Checks\WritebackTokenCheck;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
+use App\Bridge\Check\NextStep;
+use App\Bridge\Check\NextSteps;
+use App\Bridge\Check\NextStepState;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Retention\RetentionStoreProbe;
@@ -676,6 +679,19 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // card#8959 (DL-352): what an agent should RUN NEXT to finish enabling board tools,
+        // per agent. DERIVED, NOT MEASURED — {@see NextSteps} reads the configs this run
+        // parsed, the bearer index it built once, the ssh readback above and the
+        // client-half results, and walks nothing. Hoisted ABOVE the json branch for the
+        // same reason the event-consumer reconciliation is: TWO renderers read it, and a
+        // second derivation could disagree with the first.
+        //
+        // NOTHING HERE TOUCHES `$ok`. The block yields values, not findings, so it cannot
+        // reach the one arm ({@see self::emitFinding()}'s `fail`) that moves the exit code
+        // — the enablement gaps it points at are already reported, at their own severities,
+        // by the legs above.
+        $nextSteps = NextSteps::derive($ctx, $runner->results());
+
         // DL-249 STAGE 9: the machine document, and the ONLY thing this run writes to
         // stdout when it was asked for — every other emitter in this method is gated on
         // the format, so nothing can land beside it and make the stream unparseable.
@@ -692,6 +708,7 @@ class CheckCommand extends BridgeCommand
                 $this->unattributed,
                 $eventConsumers,
                 $ctx->agentScopeCoverage,
+                $nextSteps,
             ));
 
             return $ok ? self::SUCCESS : self::FAILURE;
@@ -741,6 +758,12 @@ class CheckCommand extends BridgeCommand
         // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
             $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.");
+        }
+
+        // LAST, after the account of what this run covered, because it is the only thing
+        // here addressed to the READER rather than about the run.
+        foreach ($this->nextStepsOutput($nextSteps) as $line) {
+            $this->line($line);
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
@@ -976,6 +999,81 @@ class CheckCommand extends BridgeCommand
     {
         $this->unattributed[] = $finding;
         $this->emitFinding($finding);
+    }
+
+    /**
+     * The NEXT STEPS block, in emission order, as plain lines (card#8959, DL-352).
+     *
+     * ⛔ AN INSTALL WITH NOTHING OUTSTANDING PRINTS NOTHING AT ALL — not an empty heading,
+     * not a reassurance. A block that appears on every run is one an operator learns to
+     * scroll past, and this one exists to be READ on the run where it has something to say.
+     * Returning a list rather than printing is what lets that decision be a property of a
+     * value a test can hold, which is the seam `emitInventory()` was split at for the same
+     * reason.
+     *
+     * ⛔ PLAIN TEXT, NO GLYPHS, NO LEADING INDENT, NO RUNS OF SPACES, and not as a style
+     * preference: `laravel/pao` binds its own `OutputStyle` when it detects an AI AGENT
+     * running the command (never under `runningUnitTests()`), and its `OutputCleaner`
+     * DELETES a fixed glyph set, COLLAPSES runs of spaces and rewrites `...` to `..`. This
+     * block's whole audience is that reader, so a golden capture taken under the test path
+     * would otherwise assert emphasis and structure the agent never receives. Uppercase and
+     * the `next step N/M` prefix survive both readers.
+     *
+     * THE SENTENCES LIVE HERE AND THE COMMAND/DOC DO NOT, which is the split
+     * {@see self::inventoryOutput()} makes against {@see CheckInventory}: the prose is this
+     * renderer's voice, and the two fields both renderers must agree on are read off
+     * {@see NextStep} so the printed command and the JSON one cannot diverge.
+     *
+     * @param  list<NextStep>  $steps
+     * @return list<string>
+     */
+    private function nextStepsOutput(array $steps): array
+    {
+        if ($steps === []) {
+            return [];
+        }
+
+        $total = count($steps);
+        $out = ["NEXT STEPS — board tools (the two-way board window: read, file and correct your own cards from your agent session) are not wired end to end for {$total} of this install's agents. One line each, naming the ONE command to run next. This changes nothing about the run above: no exit code, no check, no verdict."];
+
+        foreach ($steps as $i => $step) {
+            $n = $i + 1;
+            $out[] = "next step {$n}/{$total} — {$step->agent}: ".$this->nextStepSentence($step);
+        }
+
+        return $out;
+    }
+
+    /**
+     * The one sentence for one step — an exhaustive `match` over {@see NextStepState}, so a
+     * fifth state is a phpstan error here rather than an agent silently getting a command
+     * with no explanation. What each state MEANS is the enum's docblock to say, not this
+     * method's: the sentences render the definitions, they do not own them.
+     */
+    private function nextStepSentence(NextStep $step): string
+    {
+        $doc = "See {$step->doc}.";
+
+        return match ($step->state) {
+            // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
+            // the only state a correctly-configured install can sit in forever — an agent
+            // that is deliberately notification-only owes nothing and would otherwise be
+            // told to provision on every run, with no action available to silence it. That
+            // is the shape `emitFinding()` refuses `warn` for, one level down.
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all. Run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. Not wanted for this agent? Put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. {$doc}",
+
+            // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
+            // PROVISION. This is the line that, before the split, told an install whose only
+            // problem was a non-root run to re-provision — the privileged-window cost
+            // card#7756 named.
+            NextStepState::BridgeSideUnverified => "a `board_tools:` block is present, and THIS BRIDGE's half of the door COULD NOT BE VERIFIED FROM HERE — a leg above says which read this run was refused (the pinned authorized_keys line, because this run was not root; or the bearer token file, which this process could not see or read). That is not a fault and this is not evidence the half is broken. Re-run as the account that can read it: `{$step->command}`. Do NOT re-provision on the strength of this line alone. {$doc}",
+
+            NextStepState::BridgeSideIncomplete => "a `board_tools:` block is present, but THIS BRIDGE's half of the door was MEASURED and is not usable yet — the leg that found it is one of the board_tools lines above, with its own cause and cure. Run `{$step->command}`: for an http agent it mints or names the bearer fault, for an ssh agent it prints the ready-to-run provisioning invocation for each leg. {$doc}",
+
+            // The bound is PRINTED, not merely known, because this is the one state whose
+            // remedy an operator can get wrong in a way that looks like success.
+            NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
+        };
     }
 
     /**
