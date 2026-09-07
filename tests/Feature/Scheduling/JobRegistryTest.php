@@ -140,9 +140,14 @@ class JobRegistryTest extends TestCase
     }
 
     /**
-     * ⭐ The operator's anti-proliferation rule, mechanised. A missing justification is a
+     * ⭐ The operator's anti-proliferation rule, DOCUMENTED. A missing justification is a
      * refused insert — not a warning, not a default, and not an approval gate: the friction
      * is one sentence and nobody is consulted.
+     *
+     * ⛔ AND THE REFUSAL IS A LENGTH TEST, WHICH IS WHY THE LAST FIXTURE IS `'because'`. The
+     * floor stops an empty answer and stops nothing else: it cannot tell a good reason from a
+     * bad one, and a fluent sentence that is wrong passes it. This case pins what the field
+     * refuses, never that anything vetted what it accepts.
      */
     public function test_an_instance_with_no_justification_is_refused(): void
     {

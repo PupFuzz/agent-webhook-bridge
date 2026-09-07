@@ -8,6 +8,23 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#8425 (DL-351)** — **`bridge:check` now reports whether the tick freshness alarm has a READER.** An install could set `BRIDGE_JOBS_TICK_EXPECTED_EVERY`, wire **no consumer of `bridge:jobs --assert-tick` at all**, and every part of DL-325's alarm still worked — the horizon declared, all four states resolved, `stale` computed exactly, **and nothing ever asking**. That is indistinguishable from having declared no horizon, and worse than it, because the declaration reads as *coverage* to whoever audits the config. Same class as DL-345's marker with no reader, with the ends swapped: there the marker had no reader, here the **verdict** had none.
+  - **What prints:** on an install that DECLARED a horizon, one extra `jobs.posture` line — `warn` while nothing has ever run `--assert-tick` here (naming the declared interval and the never-asserted state), and `ok` with the age once something has. ⛔ **An install that declared no horizon is silent, exactly as before** — declaring nothing is not a defect, and every committed golden capture is such an install, so **no golden fixture moves**.
+  - **`--assert-tick` is the only writer, and `bridge:check` deliberately never writes it** — a preflight that stamped the record while reading it would extinguish its own warn on the first run. The fact recorded is that the assert **ran**, never that it passed: a hook that fires and reds is a watched install.
+  - ⚑ **Never-asserted and asserted-long-ago are different states, so the record does not expire.** A TTL would silently turn *asserted last month* into *nothing has ever asked*. A cleared or unreadable cache store reads as **no record** and therefore warns — loud, and never a false claim that somebody is watching.
+  - ⚠ **No verdict is claimed on the age.** Nothing declares how often a seat's hook should fire, and inventing a cadence here would be the fleet-wide constant the tick horizon itself refuses.
+  - **No exit code moves on any install shape** (the leg emits only `warn`/`ok`, and only `fail` flips `bridge:check`); no migration, no new or changed config key, no `.env` key, nothing the receiver accepts or rejects.
+
+### Changed
+
+- **card#8425 (DL-351)** — **the `stale` tick message now prints the jitter grace it applied and the resulting threshold, both DERIVED from the constant the verdict itself uses.** The grace (one extra interval + a fixed allowance) is a judgement, and a reader seeing `stale` should not have to open the source to learn what was assumed on their behalf — otherwise the number stops being examined the moment the person who chose it stops reading the thread. ⛔ **It is not restated in the sentence:** `TickPosture::graceS()` is one derivation with two consumers, the threshold and the message, so the line cannot describe a threshold the code no longer applies. **The threshold expression is algebraically identical to the one it replaces, so no verdict moves on any input** — proved by moving the constant and watching every printed figure follow it. `docs/periodic-jobs.md`'s prose restatement of the same number is retired rather than re-synced.
+
+### Docs
+
+- **card#8425 (DL-351)** — **`justification` is now described as a required DOCUMENTATION SLOT rather than as a control, on every surface that describes it.** The length floor stops an empty answer and stops nothing else: a fluent sentence that is wrong, or a constant from a generic caller, passes it. That bound was recorded in DL-325 and nowhere an operator reads, so the enumerated population could be read as *vetted* when it is only *documented*. ⛔ **Nothing about the mechanism moved** — the floor, the refusal at insert and the ungated programmatic runtime insert/remove are byte-unchanged; this is wording in `JobSpec` (docblock + refusal message), `ScheduledJob`, `config/bridge.php`, `.env.example`, `docs/periodic-jobs.md`, `docs/config-schema.md`, `CLAUDE_DEPLOYMENT.md` and `CLAUDE.md`, plus two additive annotations on DL-325.
+
 ## [0.82.0] - 2026-09-06
 
 ### Added

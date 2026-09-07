@@ -360,7 +360,7 @@ A misconfigured posture pushes **nothing** and warns once per day, never per del
 
 ⛔ **Read `docs/periodic-jobs.md` before adding a job. A periodic job is the LAST resort here** — the event gate is the first answer, and the registry refuses an instance that does not say, in one sentence, why the work cannot be event-driven.
 
-Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, handler, interval, owner, docs-ref, justification, enabled}`. Handlers are **code** — a job may only reference a handler that exists in this build, so what a job *can do* is fixed at code-review time; a row naming an unknown handler is a **loud refusal**, never a silent skip. Any code path may insert or remove an instance at runtime; `bridge:jobs` enumerates the whole periodic population.
+Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, handler, interval, owner, docs-ref, justification, enabled}` — where `justification` is a required **documentation slot**, not a gate: the insert refuses an empty answer on length and judges nothing about the one it accepts. Handlers are **code** — a job may only reference a handler that exists in this build, so what a job *can do* is fixed at code-review time; a row naming an unknown handler is a **loud refusal**, never a silent skip. Any code path may insert or remove an instance at runtime; `bridge:jobs` enumerates the whole periodic population.
 
 **Two ingresses, and the second is opt-in per install:**
 
@@ -371,7 +371,7 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
   ```
   then declare the interval so a dead line goes loud: `BRIDGE_JOBS_TICK_EXPECTED_EVERY=600`. ⚠ A `.env` edit is inert under `config:cache` — rebuild it.
 
-**Death is the alarm.** The bridge records the last tick it received and reports its freshness against **this install's own declaration**, never a fleet constant. `php artisan bridge:jobs --assert-tick` exits non-zero **only** when a DECLARED tick is not fresh, which is what a session-start hook should run; `bridge:check`'s `jobs.posture` leg discloses the same fact at preflight. An **absent** record is reported as `unmeasured`, never as death, and an install that declared nothing is never reported as failing.
+**Death is the alarm.** The bridge records the last tick it received and reports its freshness against **this install's own declaration**, never a fleet constant. `php artisan bridge:jobs --assert-tick` exits non-zero **only** when a DECLARED tick is not fresh, which is what a session-start hook should run; `bridge:check`'s `jobs.posture` leg discloses the same fact at preflight. An **absent** record is reported as `unmeasured`, never as death, and an install that declared nothing is never reported as failing. ⛔ **And declaring the horizon is only half of it — wire the assert.** A declared horizon nothing ever asserts reads as coverage while reporting to nobody, so `--assert-tick` records that it ran and the `jobs.posture` leg **warns** until it has run here at least once (an install that declared no horizon stays silent). The `stale` message prints the jitter grace and the resulting threshold, both derived from the constant the verdict itself uses.
 
 | Key | Env | Default | Meaning |
 | --- | --- | --- | --- |

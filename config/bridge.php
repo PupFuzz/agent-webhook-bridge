@@ -232,8 +232,11 @@ return [
     | the thing that can evaluate the gate (DL-199's symmetry argument: webhook_events
     | grows only on arrival, and the gate is evaluated on arrival). Reach for a job
     | only when no such symmetry exists — and say why, in one sentence, at insert
-    | time: `justification` is a REQUIRED field, and every enumeration prints it. The
-    | full decision order is in docs/periodic-jobs.md.
+    | time: `justification` is a REQUIRED DOCUMENTATION SLOT — NOT a gate — and every
+    | enumeration prints it. Nothing judges the answer: the insert refuses an empty one
+    | on length and filters nothing else, so a stored justification means somebody wrote
+    | a reason and never that anything checked it. The full decision order is in
+    | docs/periodic-jobs.md.
     |
     | WHAT THE REGISTRY IS. One row per job INSTANCE, carrying
     | {name, handler, interval, owner, docs-ref, justification, enabled}. The HANDLER
@@ -281,6 +284,11 @@ return [
     | its crontab says. UNSET (the default) means the tick was not adopted, and then
     | no absence of a tick is ever reported as a fault. An ABSENT record reads as
     | UNMEASURED, never as death.
+    | ⛔ DECLARING IT IS HALF THE ALARM. A horizon nothing ever asserts is a dead alarm
+    | that READS AS COVERAGE to whoever audits this file, so `bridge:jobs --assert-tick`
+    | records that it ran and `bridge:check` warns while a declared horizon has never
+    | been asserted here. Wire the assert into a session-start hook; an install that
+    | declares nothing is never asked to.
     |
     */
 

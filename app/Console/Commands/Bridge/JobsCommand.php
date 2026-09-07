@@ -7,6 +7,7 @@ use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Scheduling\JobSpecException;
+use App\Bridge\Scheduling\TickAssertRecord;
 use App\Bridge\Scheduling\TickRecord;
 use App\Models\ScheduledJob;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
@@ -33,6 +34,12 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   bridge:jobs add <name> --handler= --interval= --owner= --docs-ref= --justification=
  *   bridge:jobs remove|enable|disable <name>
  *   bridge:jobs run                      one pass now (an operator asking, not a clock)
+ *
+ * ⭐ `--assert-tick` IS ALSO THE WRITE SITE for {@see TickAssertRecord}
+ * (card#8425 / DL-351): this command is where the tick horizon is READ, so it is the only
+ * place the bridge can observe that anything reads it. Without that record a declared horizon
+ * with no hook behind it is indistinguishable from an install that declared nothing, while
+ * reading as coverage to whoever audits the config.
  *
  * ⚑ `add` IS AN UPSERT and refuses loudly: an unknown handler, a state-mutating handler
  * this install has not armed, or a missing justification all throw rather than storing a
@@ -90,6 +97,16 @@ class JobsCommand extends BridgeCommand
 
     private function list(): int
     {
+        // ⭐ THE ASSERTION RECORDS THAT IT WAS ASKED, BEFORE IT ANSWERS (card#8425 / DL-351).
+        // A declared horizon nothing ever asserts is a dead alarm that reads as coverage, and
+        // this entry point is the only place that fact is observable — `bridge:check` reports
+        // it and deliberately does not write it, or the preflight would extinguish its own
+        // warn on first run. The fact recorded is that the assert RAN, never that it passed:
+        // a hook that fires and reds is a watched install, which is the whole point.
+        if ($this->option('assert-tick')) {
+            TickAssertRecord::stamp();
+        }
+
         $posture = TickRecord::posture();
         $jobs = $this->registry->all();
 

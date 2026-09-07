@@ -12,24 +12,30 @@ namespace App\Bridge\Scheduling;
  * there) puts the rules one layer away from the type that represents the thing, which is
  * how a second caller ends up bypassing half of them.
  *
- * ⭐⛔ THE `justification` FIELD IS THE OPERATOR'S ANTI-PROLIFERATION RULE, MECHANISED, and
- * it is worth being exact about what it is and is not.
+ * ⭐⛔ THE `justification` FIELD IS A REQUIRED DOCUMENTATION SLOT, NOT A GATE — and the
+ * distinction is the point of this paragraph, not a hedge at the end of it (rt#341,
+ * sola-pm). **It filters nothing.** Nobody is consulted, nothing queues, insertion stays
+ * programmatic and runtime, and the answer is never judged — by a human or by this class.
+ * {@see self::JUSTIFICATION_FLOOR} is a LENGTH floor and that is its entire reach: it stops
+ * an empty string, a dash and an `n/a`, and it stops nothing else. A fluent sentence that is
+ * wrong, copy-pasted, or a constant supplied by a generic caller passes it, and passing it
+ * establishes only that some text of that length was supplied.
  *
- * The rule it serves: *a periodic job is the last resort; consider a non-cron solution
- * first*. That rule is in direct tension with "instances are free", and the resolution is
- * that this is NOT an approval gate — no human is consulted, nothing queues, insertion
- * stays programmatic and runtime, and the answer is never judged. It is a REQUIRED
- * ARGUMENT: the inserter pays exactly one sentence, and the registry's enumeration can then
- * answer *"why is this periodic?"* for every row instead of only *"what runs?"*. A periodic
- * population that grew for bad reasons is visible at a glance rather than by archaeology.
+ * The rule it serves is *a periodic job is the last resort; consider a non-cron solution
+ * first*, which is in direct tension with "instances are free" — and the tension is resolved
+ * by DOCUMENTING rather than by gating. What the field buys is at REVIEW time, over a
+ * population of ~1–3 rows per install: the inserter pays exactly one sentence, and the
+ * registry's enumeration then answers *"why is this periodic?"* for every row instead of only
+ * *"what runs?"*. A periodic population that grew for bad reasons is visible at a glance
+ * rather than by archaeology. That is the same thing `App\Bridge\Check\Silence` buys one
+ * subsystem over: a required sentence cannot be added across N call sites without somebody
+ * writing N sentences.
  *
- * ⛔ WHAT THE FIELD CANNOT DO, stated because an unstated bound reads as a guarantee: it
- * cannot tell a good reason from a bad one. {@see self::JUSTIFICATION_FLOOR} refuses a
- * blank, a dash and an `n/a`; it cannot refuse a fluent sentence that is wrong. What the
- * mechanism buys is that the reason EXISTS, is attributable to the inserter, and is read
- * back by every audit of the registry — the same thing `App\Bridge\Check\Silence` buys one
- * subsystem over, and for the same reason: a required sentence cannot be added across N
- * call sites without somebody writing N sentences.
+ * ⛔ WHY THE BOUND IS STATED THIS LOUDLY. A field described as a check is one a future reader
+ * trusts to have filtered something, and this one has filtered nothing — so the population it
+ * enumerates would be read as vetted when it is only DOCUMENTED. A field whose limits are
+ * stated is honest; the same field described as a control is the decoration this design
+ * refuses everywhere else.
  */
 final class JobSpec
 {
@@ -52,9 +58,13 @@ final class JobSpec
     public const MAX_INTERVAL_S = 2678400;
 
     /**
-     * The shortest thing that can be a reason. Deliberately small: the friction is meant to
-     * be one sentence, not an essay, and a large floor would buy padding rather than
-     * thought. See this class's docblock for what it does and does not filter.
+     * The shortest thing that can be a reason, in characters. Deliberately small: the
+     * friction is meant to be one sentence, not an essay, and a large floor would buy padding
+     * rather than thought.
+     *
+     * ⛔ IT IS A LENGTH TEST AND NOTHING MORE. It refuses an empty answer; it does not, and
+     * cannot, tell a good reason from a bad one — see this class's docblock, which states
+     * that bound rather than leaving a reader to assume this number filtered something.
      */
     public const JUSTIFICATION_FLOOR = 20;
 
@@ -96,8 +106,8 @@ final class JobSpec
         if (mb_strlen(trim($justification)) < self::JUSTIFICATION_FLOOR) {
             throw new JobSpecException(
                 "job '{$name}' carries no justification. A periodic job is the LAST resort in this design: say, in one sentence, why this cannot run "
-                .'off the after-response event gate (see docs/periodic-jobs.md). This is a required argument, not an approval gate — nobody is consulted, '
-                .'and the answer is stored and printed by `bridge:jobs`.'
+                .'off the after-response event gate (see docs/periodic-jobs.md). This is a required DOCUMENTATION SLOT, not an approval gate — nobody is '
+                .'consulted, nothing judges the answer, and it is stored and printed by `bridge:jobs`.'
             );
         }
     }
