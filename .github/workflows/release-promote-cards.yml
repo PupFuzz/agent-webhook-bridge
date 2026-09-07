@@ -85,7 +85,7 @@ jobs:
         # is not a refused release. ⇒ Do not tighten this from a figure written here — read the
         # worst case in `bin/release-tag-check`'s own header first.
         timeout-minutes: 10
-        uses: PupFuzz/agent-board-toolkit/release-tag-check@d792a821537a3fbdd05a54357c2669626b1d627a  # v0.31.0
+        uses: PupFuzz/agent-board-toolkit/release-tag-check@475592f2c354f6a22240902468da937b6fcd3674  # v0.31.1
         with:
           before-sha: ${{ github.event.before }}
           after-sha: ${{ github.sha }}
