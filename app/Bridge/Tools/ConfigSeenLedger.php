@@ -110,6 +110,27 @@ final class ConfigSeenLedger
      * under `SQLiteGrammar`, so a raw expression would be correct on the driver it was
      * written for and a syntax error on the other. This UPDATE compiles identically on both.
      *
+     * ⛔ THE TWO STATEMENTS ARE NOT ONE TRANSACTION, AND THAT — NOT AN OLDER RELEASE — IS THE
+     * ONLY THING THAT STILL PRODUCES A ROW WITH A RIGHT EDGE AND NO LEFT ONE. This is the one
+     * place that fact is written down; `BoardToolsLostCheck`'s null-left-edge render arm and
+     * DL-360 Decision 1 point HERE rather than restating it. **No shipped release can have
+     * written such a row** — `board_tools_config_seen` is created by DL-360's own migration and
+     * no tag carries it — so "a row an older release wrote" is not a reachability argument for
+     * that arm. The reachable window is INSIDE THIS CALL, on the revive path and only there:
+     * the upsert commits its update of a RETIREMENT-BORN row — whose `first_seen_at` is NULL by
+     * {@see recordRetired()} and is not in the update list — and the guarded UPDATE beneath it
+     * then throws (connection loss, lock-wait timeout, deadlock), leaving the row carrying
+     * `last_seen_at` with `first_seen_at` still NULL. (An INSERT writes both edges in the one
+     * statement, so a first sighting cannot produce that row at all.) ⚑ It is deliberately NOT wrapped
+     * in a transaction — the window is SELF-HEALING, since the next enabled sighting's UPDATE
+     * finds the column still NULL and stamps it, and this writer is best-effort on a live
+     * tool-call path, so a transaction would buy atomicity for a fact the next run re-establishes.
+     *
+     * ⚑ ONE `$now` FEEDS BOTH STATEMENTS, resolved once. Both bind at SECOND precision, so
+     * reading the clock twice let a revive that straddled a second boundary stamp a
+     * `first_seen_at` one second AFTER the `last_seen_at` written beside it — an INVERTED
+     * window, rendered to the operator as *"was seen from 12:00:19 to 12:00:18"*.
+     *
      * ⭐ AN ENABLED SIGHTING CLEARS A TOMBSTONE, and the two NULLs are written EXPLICITLY into
      * the INSERT row rather than being left off it. `MySqlGrammar::compileUpsert()` compiles a
      * list-style update column to `col = values(col)`, which reads the value from the INSERT
@@ -120,6 +141,8 @@ final class ConfigSeenLedger
      */
     public static function recordEnabled(string $agent, BoardToolsConfig $bt): void
     {
+        $now = now();
+
         try {
             BoardToolsConfigSeen::query()->upsert(
                 [[
@@ -127,8 +150,8 @@ final class ConfigSeenLedger
                     'transport' => $bt->transport,
                     'board_id' => $bt->boardId,
                     'swimlane_id' => $bt->swimlaneId,
-                    'first_seen_at' => now(),
-                    'last_seen_at' => now(),
+                    'first_seen_at' => $now,
+                    'last_seen_at' => $now,
                     'retired_seen_at' => null,
                     'retired_reason' => null,
                 ]],
@@ -139,10 +162,10 @@ final class ConfigSeenLedger
             BoardToolsConfigSeen::query()
                 ->where('agent', $agent)
                 ->whereNull('first_seen_at')
-                ->update(['first_seen_at' => now()]);
+                ->update(['first_seen_at' => $now]);
         } catch (Throwable $e) {
             Log::warning(
-                'agent-tools: the board_tools block sighting could not be recorded — bridge:check cannot report this seat\'s block as LOST if it later disappears',
+                'agent-tools: recording the board_tools block sighting failed part-way — if the sighting row itself did not land, bridge:check cannot report this seat\'s block as LOST if it later disappears; if only the first_seen_at stamp did not, the sighting STANDS and the LOST line prints "was seen at" until a later sighting stamps the left edge',
                 ['agent' => $agent, 'transport' => $bt->transport, 'error' => $e->getMessage()],
             );
         }

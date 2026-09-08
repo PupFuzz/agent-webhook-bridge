@@ -105,13 +105,13 @@ class BoardToolsLostCheckTest extends TestCase
     }
 
     /**
-     * ⭐ THE RENDER FLOOR ON A HEADLESS WINDOW. A row can reach this line with a NULL
-     * `first_seen_at` — one born by a retirement of a never-seen seat, revived by an enabled
-     * sighting written before {@see ConfigSeenLedger::recordEnabled()} stamped the left edge —
-     * and the interpolated form then prints *"was seen from  to <last>"*, a sentence with a
-     * hole in it. The ledger no longer produces such a row; this
-     * arm is the floor that keeps a malformed sentence off an operator's screen whatever
-     * wrote the row, including a row written by an older release.
+     * ⭐ THE RENDER FLOOR ON A HEADLESS WINDOW. A row whose `first_seen_at` is NULL and whose
+     * `last_seen_at` is not renders *"was seen from  to <last>"* through the window form — a
+     * sentence with a hole in it — and this arm prints *"was seen at <last>"* instead. ⚑ WHY
+     * SUCH A ROW IS REACHABLE at all is stated ONCE, on
+     * {@see ConfigSeenLedger::recordEnabled()} (the intra-call window between that writer's two
+     * non-transactional statements), and is not restated here: this case asserts the RENDER,
+     * whatever wrote the row.
      */
     public function test_a_row_with_no_left_edge_renders_seen_at_rather_than_a_headless_window(): void
     {

@@ -2813,12 +2813,18 @@ the work distinguishes those.
   false reassurance. Capture MODIFICATION and DELETION carry no such argument and are the
   directions to distrust. What ships in place of the declined instrument is the disclosure now in
   the artifact's own header.
-  ⛔ **STALE — THIS NOTE'S FIGURES ARE NOT THE ARTIFACTS' (measured 2026-09-08, card#8973):
-  `docs/check-golden-coverage.json` holds 49 entries split 44 observed · 5 UNOBSERVED, its `.md`
-  header states 49, and the live enumeration is 53 (`php bin/check-golden-predicates.php --json`)
-  — read those, not the 56 / 49 · 0 · 7 below, before deciding whether the mutation pass needs
-  re-running. Whether the regeneration this note describes ever landed is an open question and a
-  card exists for it; this line marks the contradiction rather than resolving it.**
+  ⛔ **SUPERSEDED, NOT CONTRADICTED — THE FIGURES BELOW ARE THIS RUN'S OWN AND ARE NO LONGER
+  THE ARTIFACTS' (checked 2026-09-08, card#8973 / card#9042).** The regeneration this note
+  describes DID land: `5574e34` (PR #601) rewrote `docs/check-golden-coverage.json`, its `.md`
+  and this note in ONE commit, so the note and the artifacts it describes were written together
+  and agreed — at that commit the json holds exactly the 56 / 49 · 0 · 7 split recorded below
+  and the `.md` header states 56. It was then SUPERSEDED by `0d59e61` (PR #621, closes card#8304),
+  which regenerated both artifacts after the scope-map consolidation hoisted predicates OUT of
+  `handle()`, taking it 56 → 49. That is a refactor moving the population, not two measurements
+  disagreeing, and nothing about it is open. ⚑ **For the CURRENT split, and for the live
+  enumeration's delta from it, read `docs/check-golden-coverage.md`'s own banner** — that banner
+  owns the currency fact and names the predicates the delta consists of; restating its figures
+  here would be a second copy with nothing to red when the two drift.
   **[REGENERATED — card#7835. The deferred run has been done, on a throwaway worktree, and the
   banner is gone because the generator rewrites the whole file.** `handle()` now holds **56**
   predicates and the measured split is **49 observed · 0 observed-via-abort · 7 UNOBSERVED**, against

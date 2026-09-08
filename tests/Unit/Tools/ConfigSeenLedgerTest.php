@@ -7,6 +7,7 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\ConfigSeenLedger;
 use App\Models\BoardToolsConfigSeen;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
@@ -129,6 +130,40 @@ class ConfigSeenLedgerTest extends TestCase
     }
 
     /**
+     * ⛔ ONE READING OF THE CLOCK, NOT TWO, AND THE INVERSION IT PREVENTS IS ONE SECOND WIDE.
+     * The two edges are written by two different statements — the upsert's `last_seen_at` and
+     * the guarded UPDATE's `first_seen_at` — and both bind at SECOND precision on every
+     * supported driver (`Illuminate\Database\Grammar::getDateFormat()` is `Y-m-d H:i:s`). When
+     * each statement read the clock for itself, a revive that crossed a second boundary between
+     * them stamped a left edge one second AFTER the right edge beside it, and the LOST line
+     * rendered *"was seen from …:19 to …:18"*: a window running backwards, on the screen of an
+     * operator being told their install is broken.
+     *
+     * ⚑ THE CLOCK TICKS PER READ, WHICH IS THE ONLY WAY THIS CASE CAN FAIL. `travelTo` FREEZES
+     * `now()`, so under it two reads are equal and the defect passes — a frozen clock cannot
+     * measure how many times a writer reads it. Here every read advances one second, so the
+     * READ COUNT is exactly what is asserted. Watched red against the two-read writer before
+     * being kept.
+     */
+    public function test_a_revive_stamps_one_instant_into_both_edges_of_the_window(): void
+    {
+        ConfigSeenLedger::recordRetired('impl', '2026-09-08 — decommissioned');
+
+        $this->tickingClock();
+        ConfigSeenLedger::recordEnabled('impl', $this->enabled());
+
+        $row = BoardToolsConfigSeen::query()->where('agent', 'impl')->sole();
+        $this->assertFalse(
+            $row->first_seen_at->greaterThan($row->last_seen_at),
+            'first_seen_at is AFTER last_seen_at — the sighting read the clock once per statement, so the LOST line prints a window running backwards',
+        );
+        $this->assertTrue(
+            $row->first_seen_at->equalTo($row->last_seen_at),
+            'the two edges of a SINGLE sighting are not the same instant, so something other than one resolved $now wrote them',
+        );
+    }
+
+    /**
      * ⛔ THE CONTROL ON THE TEST ABOVE, and the half a write that simply stamped
      * `first_seen_at` on every sighting would fail. Retiring and re-adding a seat this
      * install DID see enabled must keep the original left edge: the window's whole job is to
@@ -236,6 +271,21 @@ class ConfigSeenLedgerTest extends TestCase
         Log::shouldHaveReceived('warning')
             ->withArgs(fn (string $message) => str_contains($message, 'cannot report this seat\'s block as LOST'))
             ->twice();
+    }
+
+    /**
+     * A clock that advances one second per READ, so a writer that reads it twice is
+     * measurable. ⚑ The base instant is built BEFORE the closure is installed: `now()` inside
+     * the closure would evaluate the closure being defined.
+     */
+    private function tickingClock(): void
+    {
+        $base = Carbon::parse('2026-09-08 12:00:00');
+        $tick = 0;
+
+        Carbon::setTestNow(function () use ($base, &$tick): Carbon {
+            return $base->copy()->addSeconds($tick++);
+        });
     }
 
     private function enabled(int $boardId = 10): BoardToolsConfig

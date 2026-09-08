@@ -235,12 +235,13 @@ final class BoardToolsLostCheck implements Check
      * front door served the call, not about how the serving process was started.
      *
      * ⛔ A NULL LEFT EDGE PRINTS "seen at", NOT A WINDOW WITH A HOLE IN IT, and this arm stays
-     * even though {@see ConfigSeenLedger::recordEnabled()} now stamps the column. A row whose
-     * `first_seen_at` is NULL and whose `last_seen_at` is not can still reach this line —
-     * written by a release before that fix, on the retire-then-revive path — and interpolating
-     * it produces *"was seen from  to <last>"*, a malformed sentence on an operator's screen
-     * at the exact moment they are being told their install is broken. This is the render
-     * floor, not the cure; the cure is at the write site.
+     * even though {@see ConfigSeenLedger::recordEnabled()} now stamps the column. Interpolating
+     * a row whose `first_seen_at` is NULL and whose `last_seen_at` is not produces *"was seen
+     * from  to <last>"*, a malformed sentence on an operator's screen at the exact moment they
+     * are being told their install is broken. ⚑ WHY SUCH A ROW IS STILL REACHABLE IS STATED
+     * ONCE — on {@see ConfigSeenLedger::recordEnabled()}, the intra-call window between that
+     * writer's two non-transactional statements — and is deliberately not restated here. This
+     * is the render floor, not the cure; the cure is at the write site.
      *
      * @param  array{first: ?string, last: ?string, transport: ?string, board: ?int, swimlane: ?int, retired_reason: ?string}  $row
      */
