@@ -68,6 +68,21 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
         return is_array($pw) && $pw['dir'] !== '' ? $pw['dir'] : '';
     }
 
+    public function uidForUser(string $user): ?int
+    {
+        if (! function_exists('posix_getpwnam')) {
+            return null;
+        }
+        $pw = posix_getpwnam($user);
+
+        return is_array($pw) ? $pw['uid'] : null;
+    }
+
+    public function euid(): ?int
+    {
+        return function_exists('posix_geteuid') ? posix_geteuid() : null;
+    }
+
     public function sshdEffectiveConfig(?string $forUser = null): ?string
     {
         if (! $this->isRoot()) {

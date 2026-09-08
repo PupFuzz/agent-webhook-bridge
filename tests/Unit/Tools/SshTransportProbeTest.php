@@ -411,6 +411,9 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         private string $runUserHome = '/home/bridge',
         /** @var array<string, ?string> */
         private array $userHomes = [],
+        /** @var array<string, ?int> */
+        private array $userUids = [],
+        private ?int $euid = null,
     ) {}
 
     public function isRoot(): bool
@@ -437,6 +440,16 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
     {
         // A null entry models a host with no posix_getpwnam — the lookup never happened.
         return array_key_exists($user, $this->userHomes) ? $this->userHomes[$user] : "/home/{$user}";
+    }
+
+    public function uidForUser(string $user): ?int
+    {
+        return array_key_exists($user, $this->userUids) ? $this->userUids[$user] : null;
+    }
+
+    public function euid(): ?int
+    {
+        return $this->euid;
     }
 
     public function sshdEffectiveConfig(?string $forUser = null): ?string

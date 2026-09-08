@@ -53,6 +53,21 @@ final class GoldenSshEnvironment implements SshProbeEnvironment
         return "/home/{$user}";
     }
 
+    /**
+     * Pinned, like every other host fact here: the golden corpus never renders the setup
+     * packet (that is `bridge:provision-tools`, not `bridge:check`), so these two answer
+     * the interface without introducing a runner-dependent input.
+     */
+    public function uidForUser(string $user): ?int
+    {
+        return null;
+    }
+
+    public function euid(): ?int
+    {
+        return null;
+    }
+
     public function sshdEffectiveConfig(?string $forUser = null): ?string
     {
         // Non-root cannot run `sshd -T` (it loads host private keys), and the probe

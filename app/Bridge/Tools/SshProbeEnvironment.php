@@ -42,6 +42,31 @@ interface SshProbeEnvironment
     public function homeForUser(string $user): ?string;
 
     /**
+     * The numeric uid of a NAMED OS account, or null when this run did not establish
+     * one — either because the account database has no such account, or because this
+     * process cannot look OS accounts up at all (no `posix_getpwnam`).
+     *
+     * ⛔ THE TWO NON-ANSWERS ARE DELIBERATELY COLLAPSED HERE, unlike
+     * {@see self::homeForUser()}, and the reason is the consumer rather than economy.
+     * The only reader is the setup packet's *does the pin need `sudo`* decision, which
+     * compares this against {@see self::euid()}: a non-null EQUAL pair prints the
+     * self-account form, and EVERY other combination prints the `sudo` form. Both
+     * non-answers therefore reach the same, SAFER, branch — an unnecessary `sudo` costs
+     * the operator a password prompt, a missing one costs them a failed pin — so a third
+     * state would be a distinction no caller could spend. Nothing here accuses an
+     * account of not existing.
+     */
+    public function uidForUser(string $user): ?int;
+
+    /**
+     * This process's EFFECTIVE uid, or null when it cannot be read (no `posix_geteuid`
+     * — the extension is optional and commonly absent on hardened hosts). Null is
+     * UNMEASURED, never 0: see {@see self::uidForUser()} for what the one consumer does
+     * with it.
+     */
+    public function euid(): ?int;
+
+    /**
      * The EFFECTIVE (Match-resolved) sshd config text from `sshd -T [-C user=<user>]`,
      * or null when it cannot be run (not root — `sshd -T` loads host private keys — or
      * no sshd binary). Null means UNVERIFIED, never "posture is fine".

@@ -260,6 +260,18 @@ class BridgeCommandsTest extends TestCase
                 return "/home/{$user}";
             }
 
+            // bridge:check never renders the setup packet, so the packet's uid compare has
+            // no reader on this fake — both legs answer UNMEASURED, which is the safe arm.
+            public function uidForUser(string $user): ?int
+            {
+                return null;
+            }
+
+            public function euid(): ?int
+            {
+                return null;
+            }
+
             public function sshdEffectiveConfig(?string $forUser = null): ?string
             {
                 return $this->root ? $this->sshd : null;
@@ -3717,37 +3729,39 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(64, strlen(trim((string) file_get_contents($tokenPath))));   // bin2hex(32) = 64 hex chars
     }
 
-    public function test_provision_tools_prints_the_ssh_role_invocations(): void
+    public function test_provision_tools_prints_the_ssh_setup_packet(): void
     {
-        // FR #5010 §2: an ssh-transport agent mints NO bridge-side secret. provision-tools
-        // now PRINTS the ready-to-run `provision-board-tools.py --role a|b` invocations
-        // with this agent's params filled in (--agent from config, --artisan from
-        // base_path, --ssh-account from board_tools.ssh_account) — replacing the old
-        // generated root-run bash script. The static python program owns both legs; its
-        // full-line pubkey validator supersedes the prefix-only generated-bash guard
-        // (#5033), so no `HOST_B_PUBKEY`/`case … ecdsa-*` scaffold appears at all.
+        // card#8971 / DL-357: the ssh branch prints the per-agent SETUP PACKET, not the
+        // two `--role a|b` invocations it grew from. This is the REGRESSION half — that
+        // the ssh transport still mints no bridge-side secret, still exits 0, and still
+        // carries both role invocations somewhere in what it prints. Every branch of the
+        // packet itself (sudo-or-not, the root refusal, the ref line, --pubkey-from) is
+        // driven through the bound seams in ProvisionToolsPacketTest; this test
+        // deliberately binds nothing, so it also witnesses that the real
+        // SystemSshProbeEnvironment / SystemGitRefProbe pair renders SOMETHING rather
+        // than throwing on a host where neither answer is knowable.
         File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
             ."board_tools:\n  transport: ssh\n  ssh_account: bridge-user\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
-        $artisan = base_path('artisan');
         $script = base_path('bin/provision-board-tools.py');
 
-        $this->artisan('bridge:provision-tools')
-            // host-A leg: run as root, --role a with agent filled in + the python path
-            ->expectsOutputToContain("sudo python3 {$script} --role a --agent impl")
-            // --artisan + --ssh-account resolved from base_path + the configured account
-            ->expectsOutputToContain("--artisan {$artisan} --ssh-account bridge-user --pubkey-stdin")
-            // same-box hint (§6): hand the .pub path to --role a --pubkey-from
-            ->expectsOutputToContain('--pubkey-from')
-            // host-B leg: --role b on the calling seat, ssh-target user from ssh_account
-            ->expectsOutputToContain('python3 provision-board-tools.py --role b --agent impl')
-            ->expectsOutputToContain('--ssh-target bridge-user@<host-A>')
-            // cert hint retained
-            ->expectsOutputToContain('bridge:check --probe-tools-ssh=bridge-user@<host-A>')
-            // the old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone
-            ->doesntExpectOutputToContain('HOST_B_PUBKEY')
-            ->doesntExpectOutputToContain('ecdsa-*|ssh-*|sk-*')
-            ->assertExitCode(0);
+        Artisan::call('bridge:provision-tools');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('BOARD-TOOLS SETUP PACKET — agent impl (ssh transport)', $out);
+        $this->assertStringContainsString('forced command runs as: bridge-user', $out);
+        // Both legs are still named — the seat's --role b, and the operator's --role a.
+        $this->assertStringContainsString('--role b --agent impl --ssh-target bridge-user@<host-A>', $out);
+        $this->assertStringContainsString("python3 {$script} --role a --agent impl", $out);
+        // The five actors-and-steps spine.
+        foreach (['STEP 1 — IMPL AGENT impl', 'STEP 2 — PM', 'STEP 4 — IMPL AGENT impl', 'STEP 5 — PM'] as $step) {
+            $this->assertStringContainsString($step, $out);
+        }
+        // The old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone.
+        $this->assertStringNotContainsString('HOST_B_PUBKEY', $out);
+        $this->assertStringNotContainsString('ecdsa-*|ssh-*|sk-*', $out);
+        // And so is the stale Windows-gating claim the old guidance printed (card#8971).
+        $this->assertStringNotContainsString('Windows host-B is spec-complete', $out);
 
         // No bridge-side token file was created for the ssh agent.
         $this->assertFileDoesNotExist($this->dir.'/impl-board-tools-token');

@@ -73,13 +73,17 @@ php artisan bridge:check                          # validate .env, dirs, DB conn
 php artisan migrate --force
 php artisan optimize                              # config/route cache
 php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent)
-php artisan bridge:provision-tools --agent=<name>  # OPTIONAL, per agent: the two-way board window (read/file/correct
-                                                  # your own cards from the agent's session). `bridge:check` above
-                                                  # prints a NEXT STEPS line naming this command for every agent that
-                                                  # is not wired end to end, and that block is the entry point.
-                                                  # Runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
-                                                  # Not wanted for an agent? Declare `board_tools:` with
-                                                  # `enabled: false` in its YAML and the line goes away.
+php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
+                                                  # this agent read, file and correct its own cards from inside its
+                                                  # session? YES -> run this; it prints a paste-ready board_tools:
+                                                  # block, and for an ssh-transport agent the whole SETUP PACKET
+                                                  # (five steps, three actors — one of them a human).
+                                                  # NO -> declare `board_tools:` with `enabled: false` in its YAML;
+                                                  # a declined capability is a decision. Either answer finishes it.
+                                                  # `bridge:check` above prints a NEXT STEPS line for every agent
+                                                  # that has answered neither way, and that block is the entry point.
+                                                  # Roles/handoff (ssh door): docs/board-tools-enablement.md
+                                                  # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 sudo systemctl reload apache2 php8.5-fpm
 ```
 
@@ -316,7 +320,12 @@ php artisan bridge:inspect {id}                       # one webhook event + its 
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
 php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
-php artisan bridge:provision-tools [--dry-run] [--agent=]                    # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked)
+php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
+                                                      # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
+                                                      # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
+                                                      # instead (DL-357) — five steps, three actors; STEP 3 is the OPERATOR's pin and
+                                                      # is emitted inside a USER ACTION REQUIRED banner. The three packet options are
+                                                      # ssh-only and each is refused without --agent. docs/board-tools-enablement.md
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing

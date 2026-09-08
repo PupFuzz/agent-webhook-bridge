@@ -1060,7 +1060,7 @@ class CheckCommand extends BridgeCommand
             // that is deliberately notification-only owes nothing and would otherwise be
             // told to provision on every run, with no action available to silence it. That
             // is the shape `emitFinding()` refuses `warn` for, one level down.
-            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all. Run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. Not wanted for this agent? Put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. {$doc}",
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — and that is a QUESTION FOR YOU, not a defect this run found: should {$step->agent} be able to read, file and correct its own cards from inside its session? YES ⇒ run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. NO ⇒ put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. Either answer finishes it; leaving it unanswered is the only outcome that does not. {$doc}",
 
             // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
             // PROVISION. This is the line that, before the split, told an install whose only
@@ -1068,7 +1068,7 @@ class CheckCommand extends BridgeCommand
             // card#7756 named.
             NextStepState::BridgeSideUnverified => "a `board_tools:` block is present, and THIS BRIDGE's half of the door COULD NOT BE VERIFIED FROM HERE — a leg above says which read this run was refused (the pinned authorized_keys line, because this run was not root; or the bearer token file, which this process could not see or read). That is not a fault and this is not evidence the half is broken. Re-run as the account that can read it: `{$step->command}`. Do NOT re-provision on the strength of this line alone. {$doc}",
 
-            NextStepState::BridgeSideIncomplete => "a `board_tools:` block is present, but THIS BRIDGE's half of the door was MEASURED and is not usable yet — the leg that found it is one of the board_tools lines above, with its own cause and cure. Run `{$step->command}`: for an http agent it mints or names the bearer fault, for an ssh agent it prints the ready-to-run provisioning invocation for each leg. {$doc}",
+            NextStepState::BridgeSideIncomplete => "a `board_tools:` block is present, but THIS BRIDGE's half of the door was MEASURED and is not usable yet — the leg that found it is one of the board_tools lines above, with its own cause and cure. Run `{$step->command}`: for an http agent it mints or names the bearer fault, for an ssh agent it prints the per-agent setup packet. {$doc}",
 
             // The bound is PRINTED, not merely known, because this is the one state whose
             // remedy an operator can get wrong in a way that looks like success.
