@@ -2212,8 +2212,11 @@ built**, deliberately.
 
 > ⚠ **THE PREDICTED CASE HAS ARRIVED (card#8976, DL-359) — recorded here because the paragraph above
 > forecast it, and a forecast nobody comes back to reads as a hazard that never materialised.**
-> `probePinnedLine()` now emits `unvalidated` from three arms that are NOT one claim, and only the
-> first is the "could not read `authorized_keys`" the sentence above describes:
+> `probePinnedLine()` now emits `unvalidated` from SEVERAL arms that are NOT one claim, and only the
+> first is the "could not read `authorized_keys`" the sentence above describes. **The number is
+> deliberately not spelled here.** It was written as *three*, and r3's disclosure arm (item 4) made
+> that false inside the same card — a bare count beside an enumeration that already carries the
+> meaning is a second copy of one fact with nothing holding it to the code (canon #16). The arms:
 > 1. **the read was refused** — a named file this run could not open (setup IS, on the evidence,
 >    unverifiable from here; this is the original reading and it is unchanged);
 > 2. **the file could not be NAMED** — an `AuthorizedKeysFile` entry whose `%U` this run cannot
@@ -2222,7 +2225,13 @@ built**, deliberately.
 > 3. **the population was only PARTLY consulted** — some files read, at least one not, and no pinned
 >    line among the ones that were. This fires on a CORRECTLY WIRED install whenever the pin sits in
 >    the file this run could not open, which on a two-file `AuthorizedKeysFile` is an ordinary state
->    rather than a corner.
+>    rather than a corner;
+> 4. **the population was only PARTLY consulted, and the pinned line WAS among the ones that were**
+>    (card#8976 r3, DL-359 Decision 8) — item 3's sibling on the other side of the match. ⛔ **No
+>    verdict is withdrawn.** The `ok`/`fail` for the found line stands beside this one and this one
+>    moves no exit code; what it adds is the BOUND of what that verdict covers, because sshd reads
+>    every file it names and a second forced-command line for this agent may sit in the one that was
+>    refused, granting what the found line denies.
 >
 > **What tells them apart is the finding's TEXT, and nothing else** — each arm names what went
 > unconsulted, by path or by raw entry (`unconsulted()` renders it for the root-resolved arms; the
@@ -2231,11 +2240,14 @@ built**, deliberately.
 > moved into the set; it can only red when the set moves.
 >
 > ⚑ **The DOWNSTREAM behaviour is fine and is deliberately not changed here.**
-> `severityMeansSetupIncomplete()` reads all three as *incomplete*, and
+> `severityMeansSetupIncomplete()` reads every one of them as *incomplete*, and
 > `BoardToolsSshDefaultAdvisoryCheck` prints *"its ssh setup is incomplete **or could not be verified
-> from here**"* — a disjunction that is TRUE of all three arms, so the advisory does not assert the
+> from here**"* — a disjunction that is TRUE of every arm, so the advisory does not assert the
 > conflated reading even though the predicate it reads cannot separate them. Its action (*pin
-> `transport: http`*) is also the safe one under every arm. **What arrived is a documentation debt,
+> `transport: http`*) is also the safe one under every arm. ⚠ **Arm 4 is the first that can raise the
+> advisory beside a pinned line this run certified `ok`** — it is the disjunction's SECOND limb that
+> carries it there, and pinning `transport: http` is still the safe action while a file this run
+> could not open may hold a second line for the same agent. **What arrived is a documentation debt,
 > not a behaviour defect**, and the root-cause fix stays the one already named above: have the
 > pinned-line leg report the install FACT rather than have this infer it from a severity.
 
