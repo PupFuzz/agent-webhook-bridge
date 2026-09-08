@@ -143,6 +143,29 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
         return $text === null ? AuthorizedKeysRead::absent() : AuthorizedKeysRead::text($text);
     }
 
+    /**
+     * ⭐ THE INODE IS THE ANSWER WHEN THERE IS ONE, and `realpath()` alone is not it: it
+     * resolves symlinks and spellings, and a HARD link has neither — two names of one inode
+     * would still compare unequal, and one physical `authorized_keys` line would still be
+     * counted twice (card#8976 r2). `stat()` follows symlinks, so `dev:ino` answers for the
+     * symlinked, hard-linked and re-spelled cases in one measurement.
+     *
+     * The fallback is for a path that names no file THIS PROCESS CAN STAT — it does not
+     * exist, or an ancestor is not traversable — where there is no inode to compare and the
+     * normalised path is the most that can be said. Runs of `/` inside the path collapse
+     * (POSIX: `/a//b` and `/a/b` are the same file) while a LEADING `//` is left alone,
+     * because that one is implementation-defined and is not ours to normalise away.
+     */
+    public function fileIdentity(string $path): string
+    {
+        $stat = @stat($path);
+        if (is_array($stat)) {
+            return 'inode:'.$stat['dev'].':'.$stat['ino'];
+        }
+
+        return 'path:'.preg_replace('#(?<=.)/{2,}#', '/', $path);
+    }
+
     public function sshRoundTrip(string $target, string $stdin): array
     {
         $ssh = (new ExecutableFinder)->find('ssh', '/usr/bin/ssh');

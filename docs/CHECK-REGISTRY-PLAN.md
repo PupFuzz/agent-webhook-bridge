@@ -2210,6 +2210,35 @@ tell them apart. The root cause is that the advisory infers an install FACT from
 `probePinnedLine()` returning the fact directly removes the coupling — and that is **named and not
 built**, deliberately.
 
+> ⚠ **THE PREDICTED CASE HAS ARRIVED (card#8976, DL-359) — recorded here because the paragraph above
+> forecast it, and a forecast nobody comes back to reads as a hazard that never materialised.**
+> `probePinnedLine()` now emits `unvalidated` from three arms that are NOT one claim, and only the
+> first is the "could not read `authorized_keys`" the sentence above describes:
+> 1. **the read was refused** — a named file this run could not open (setup IS, on the evidence,
+>    unverifiable from here; this is the original reading and it is unchanged);
+> 2. **the file could not be NAMED** — an `AuthorizedKeysFile` entry whose `%U` this run cannot
+>    expand (no `posix_getpwnam`, or no such account). ⛔ **NOTHING was unreadable.** The run never
+>    reached a file at all, and the install may be perfectly wired;
+> 3. **the population was only PARTLY consulted** — some files read, at least one not, and no pinned
+>    line among the ones that were. This fires on a CORRECTLY WIRED install whenever the pin sits in
+>    the file this run could not open, which on a two-file `AuthorizedKeysFile` is an ordinary state
+>    rather than a corner.
+>
+> **What tells them apart is the finding's TEXT, and nothing else** — each arm names what went
+> unconsulted, by path or by raw entry (`unconsulted()` renders it for the root-resolved arms; the
+> assumed-default arm spells its own, which is one rendering rule in two places). **No
+> severity assertion can, exactly as forecast**, and the tripwire above still cannot classify what
+> moved into the set; it can only red when the set moves.
+>
+> ⚑ **The DOWNSTREAM behaviour is fine and is deliberately not changed here.**
+> `severityMeansSetupIncomplete()` reads all three as *incomplete*, and
+> `BoardToolsSshDefaultAdvisoryCheck` prints *"its ssh setup is incomplete **or could not be verified
+> from here**"* — a disjunction that is TRUE of all three arms, so the advisory does not assert the
+> conflated reading even though the predicate it reads cannot separate them. Its action (*pin
+> `transport: http`*) is also the safe one under every arm. **What arrived is a documentation debt,
+> not a behaviour defect**, and the root-cause fix stays the one already named above: have the
+> pinned-line leg report the install FACT rather than have this infer it from a severity.
+
 **THE GOLDEN CORPUS CANNOT SEE A SEVERITY, AND THE MEASUREMENT SAYS SO.** All 33 fixtures are
 captured from an undecorated buffer, so `line()`, `warn()`, `error()` and `info()` write identical
 bytes (DL-248). **Not one message line changed in the regeneration.** What moved is the closing tally

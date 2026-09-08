@@ -287,6 +287,14 @@ class BridgeCommandsTest extends TestCase
                     : AuthorizedKeysRead::text($this->keys);
             }
 
+            // These cases state ONE authorized_keys file, so no two paths name one file
+            // and a path is its own identity. The aliased shape is covered where it can
+            // be measured rather than stated: SystemSshProbeEnvironmentTest.
+            public function fileIdentity(string $path): string
+            {
+                return $path;
+            }
+
             public function sshRoundTrip(string $target, string $stdin): array
             {
                 return ['exit' => 1, 'stdout' => '', 'stderr' => 'not used'];

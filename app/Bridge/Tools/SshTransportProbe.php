@@ -30,6 +30,12 @@ use App\Bridge\Support\Severity;
  *    RESOLVE or could not LOOK AT ({@see AuthorizedKeysRead}). Reading a missing file as an
  *    unread one made the FAIL unreachable on the OpenSSH default, whose second file is
  *    absent on essentially every host.
+ *    ⭐ FILES, not path strings: two entries can name ONE file (a symlinked or hard-linked
+ *    `authorized_keys2`, or one file spelled two ways), and every claim here — the
+ *    population, the list printed, the COUNT the ambiguity FAIL is taken on — is about
+ *    files, so they are deduplicated by {@see SshProbeEnvironment::fileIdentity()} before
+ *    anything is read. Keyed by the string, one physical line counted once per spelling and
+ *    the ambiguity FAIL fired on an install that had exactly one (card#8976 r2).
  *    (THERE IS NO sshd-POSTURE LEG. An earlier revision of this docblock described a
  *    required `PasswordAuthentication no` check; card#5091 RETIRED that leg — the
  *    account-level drop-in it certified locked out an operator sharing the ssh account —
@@ -273,6 +279,7 @@ final class SshTransportProbe
 
     /**
      * Every file sshd consults for this account, and whether that set is authoritative.
+     * ⭐ Once each: it is a set of FILES, not of entries — {@see self::oneEntryPerFile()}.
      *
      * `AuthorizedKeysFile` names a LIST (`man 5 sshd_config`: *"Multiple files may be
      * listed, separated by whitespace"*, and the OpenSSH DEFAULT is the two-file
@@ -296,12 +303,70 @@ final class SshTransportProbe
             if ($cfg !== null) {
                 $resolved = $this->extractAuthorizedKeysFiles($cfg);
                 if ($resolved !== null) {
-                    return [$resolved[0], true, $resolved[1]];
+                    return [$this->oneEntryPerFile($resolved[0]), true, $resolved[1]];
                 }
             }
         }
 
-        return [[rtrim($this->forcedCommandHome(), '/').'/.ssh/authorized_keys'], false, []];
+        return [[$this->homePrefix().'/.ssh/authorized_keys'], false, []];
+    }
+
+    /**
+     * ⭐ ONE ENTRY PER FILE, NOT PER SPELLING (card#8976 r2). Two `AuthorizedKeysFile`
+     * entries may name ONE file — `.ssh/authorized_keys2` symlinked or hard-linked to
+     * `.ssh/authorized_keys`, or the same file spelled two ways — and every claim below
+     * this line is a claim about FILES: the population the absent-line FAIL is drawn over,
+     * the list it prints, and above all the count the ambiguity FAIL is taken on. Left
+     * keyed by the path string, ONE physical line was counted once per spelling and
+     * *"more than one authorized_keys line forces …; leave exactly one"* failed, exit 1,
+     * an install that has exactly one — the very false-FAIL class this card exists to
+     * remove, minted by its own fix, with a remedy the operator cannot follow.
+     *
+     * The RAW spelling of the first entry naming each file survives, because it is what the
+     * operator has to go and edit; {@see SshProbeEnvironment::fileIdentity()} is compared
+     * and never printed. Entries this run cannot resolve to a file compare by their
+     * normalised path, so two spellings of one ABSENT file can survive as two — harmless
+     * (an absent file contributes no line to count), and the arm that would print both
+     * names one file that is not there twice rather than accusing over a line that exists.
+     *
+     * @param  list<string>  $paths
+     * @return list<string>
+     */
+    private function oneEntryPerFile(array $paths): array
+    {
+        $seen = [];
+        $perFile = [];
+        foreach ($paths as $path) {
+            $identity = $this->env->fileIdentity($path);
+            if (isset($seen[$identity])) {
+                continue;
+            }
+            $seen[$identity] = true;
+            $perFile[] = $path;
+        }
+
+        return $perFile;
+    }
+
+    /**
+     * The forced-command account's home AS A PATH PREFIX — trailing slashes stripped, so a
+     * `pw_dir` carrying one (`/home/agent/`) yields one spelling and not two.
+     *
+     * ⛔ IT IS ONE PRIMITIVE BECAUSE BOTH ARMS ASK ONE QUESTION (card#8976 r2): what does
+     * this home JOIN to a separator. The relative-entry arm stripped and the `%h` expansion
+     * did not, so on such an account `%h/.ssh/authorized_keys` and `.ssh/authorized_keys` —
+     * the same file, and a spelling pair the OpenSSH default and a hand-written config
+     * commonly mix — resolved to two different strings for it.
+     * {@see self::oneEntryPerFile()} makes that harmless where it lands; two arms
+     * disagreeing about one home directory is the defect underneath, and it would have kept
+     * minting spellings for anything else that compares them. ⚠ It is the JOIN that is
+     * normalised and never the home itself — `{@see self::expandTokens()}` uses this only
+     * where the entry supplies the separator, because `%h` followed by anything else is a
+     * concatenation and stripping there would name a DIFFERENT file.
+     */
+    private function homePrefix(): string
+    {
+        return rtrim($this->forcedCommandHome(), '/');
     }
 
     /**
@@ -333,7 +398,7 @@ final class SshTransportProbe
                 // path or one relative to the user's home directory." `~` is NOT a token.
                 $paths[] = str_starts_with($expanded, '/')
                     ? $expanded
-                    : rtrim($this->forcedCommandHome(), '/').'/'.$expanded;
+                    : $this->homePrefix().'/'.$expanded;
             }
 
             return [$paths, $unresolvable];
@@ -371,7 +436,20 @@ final class SshTransportProbe
                     $out .= '%';
                     break;
                 case 'h':
-                    $out .= $this->forcedCommandHome();
+                    // ⚠ THE STRIP IS THE JOIN'S, NOT THE HOME'S, and the condition is the
+                    // difference between a spelling and a FILE. `%h/` + a home ending in
+                    // `/` is one file spelled with a doubled slash, so the entry's own `/`
+                    // is the separator and the home's is dropped — which is exactly what
+                    // the relative-entry arm does with the same home. `%h` followed by
+                    // anything else is a CONCATENATION (sshd substitutes `pw_dir`
+                    // verbatim): stripping there would resolve `%hfoo` under `/home/a/` to
+                    // `/homefoo` instead of `/home/a/foo` — a different file, read as
+                    // absent, and an authoritative "not wired" FAIL over a file sshd never
+                    // consults. That is the defect class this card exists to remove, so
+                    // the normalisation stops where it stops being one.
+                    $out .= ($entry[$i + 2] ?? '') === '/'
+                        ? $this->homePrefix()
+                        : $this->forcedCommandHome();
                     break;
                 case 'u':
                     $out .= $this->forcedCommandAccount();

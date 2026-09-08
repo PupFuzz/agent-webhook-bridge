@@ -574,6 +574,22 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'board-tools-ssh-keys-file-absent':
+                // ⭐ THE COMMONEST REAL SHAPE, and until card#8976 r2 the corpus had no
+                // capture of it: the same non-root install as the advisory above with
+                // `~/.ssh/authorized_keys` simply NOT THERE, rather than present-and-
+                // unreadable. Same severity, same exit code — and a DIFFERENT sentence
+                // (an absence over an assumed path, not a read that was refused), which is
+                // exactly the kind of move a corpus holding only the unreadable rendering
+                // cannot see. `absentPaths` names the assumed default the non-root
+                // resolver builds from `runUserHome()`.
+                $this->sshInstall($i, transport: '');
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment(
+                    absentPaths: ['/home/bridge/.ssh/authorized_keys'],
+                ));
+
+                return $default;
+
             case 'board-tools-ssh-live-probe':
                 // The opt-in live round trip, certified: a clean envelope whose scope
                 // header identifies the configured agent. No fixture reached this leg before.
@@ -708,6 +724,7 @@ class CheckGoldenTest extends TestCase
             'board-tools-ssh-pinned-line',
             'board-tools-client-half-ssh-proven',
             'board-tools-ssh-default-transport-advisory',
+            'board-tools-ssh-keys-file-absent',
             'board-tools-ssh-live-probe',
             'probe-tools-ssh-with-no-ssh-agent',
             'probe-tools-with-no-enabled-agent',
@@ -871,6 +888,13 @@ class CheckGoldenTest extends TestCase
             ],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
             'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
+            // Both halves, because the fixture's whole subject is WHICH of the two
+            // unvalidated renderings it reaches: the absent-line sentence, and the
+            // advisory downstream of it that reads the severity back off the report.
+            'board-tools-ssh-keys-file-absent' => [
+                'no authorized_keys line forces bridge:tools-call --agent=prod-agent at /home/bridge/.ssh/authorized_keys (assumed default',
+                'is on ssh by the v0.68.0 default',
+            ],
             'board-tools-ssh-live-probe' => ['board_my_cards ok; window scoped to board 10 / swimlane 4'],
             'probe-tools-ssh-with-no-ssh-agent' => ['--probe-tools-ssh was given but no agent has an enabled ssh-transport board_tools block'],
             'probe-tools-with-no-enabled-agent' => ['--probe-tools was given but no agent has an enabled board_tools block'],
@@ -911,6 +935,11 @@ class CheckGoldenTest extends TestCase
             'no-opt-in-probes-requested' => ['board_tools probe:'],
             // A consumer with nothing to report is silent, not reassuring.
             'event-consumer-nothing-arrived' => ['event-consumer:'],
+            // The half that makes this fixture a MEASUREMENT rather than a second copy of
+            // `board-tools-ssh-default-transport-advisory`: an ABSENT file must not render
+            // that fixture's `could not read` sentence. Without it the two captures could
+            // silently converge and nothing would red.
+            'board-tools-ssh-keys-file-absent' => ['could not read'],
             // Paired with that fixture's exact-line subject: the positive pins the one-leg
             // rendering, this pins that the payload leg contributed nothing to it. Without
             // it a summary() that appended an empty leg (`delete >30d + `) would be caught,

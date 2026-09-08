@@ -334,6 +334,119 @@ class SshTransportProbeTest extends TestCase
         $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $ambiguous->message);
     }
 
+    // ─── two entries, ONE file (card#8976 r2) ─────────────────────────────────
+    // Nothing stops two AuthorizedKeysFile entries resolving to the same file: a symlinked
+    // or hard-linked `.ssh/authorized_keys2`, or one file spelled two ways. Every claim the
+    // probe draws is about FILES, so keying them by the path STRING counts one physical
+    // line once per spelling — and the ambiguity FAIL then fires, exit 1, on an install
+    // that has exactly one, with a remedy ("leave exactly one") the operator cannot follow.
+
+    public function test_two_entries_naming_one_file_are_read_once_and_are_not_ambiguous(): void
+    {
+        // ⭐ THE FALSE exit-1. Both entries answer the same text because they ARE the same
+        // file — which is what makes the string-keyed count read one line as two.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: [
+                '/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE,
+                '/home/bridge/.ssh/authorized_keys2' => self::GOOD_LINE,
+            ],
+            fileIdentities: [
+                '/home/bridge/.ssh/authorized_keys' => 'inode:1',
+                '/home/bridge/.ssh/authorized_keys2' => 'inode:1',
+            ],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        $this->assertNull($this->firstMatching($findings, 'more than one authorized_keys line'));
+        // Read ONCE, under the spelling sshd lists first — which is the one an operator
+        // sent to edit it has to open.
+        $this->assertSame(['/home/bridge/.ssh/authorized_keys'], $env->readPaths);
+        // Closing paren included: without it this needle is a PREFIX of the alias spelling
+        // and would pass on the very message it exists to rule out.
+        $this->assertNotNull($this->firstMatching($findings, 'found in /home/bridge/.ssh/authorized_keys)'));
+        // ⛔ ITS DISCRIMINATING CONTROL IS
+        // test_the_same_pin_in_both_default_files_is_ambiguous_and_fails, directly above:
+        // the SAME fixture — same config, same two paths, the same line in both — differing
+        // ONLY in whether those paths name one file, and it must still FAIL. The pair is
+        // what proves this arm now asks about file identity rather than being switched off.
+    }
+
+    public function test_an_absent_line_over_two_entries_naming_one_file_names_that_file_once(): void
+    {
+        // The FAIL is authoritative, so it prints the population it searched — and one file
+        // listed under two spellings is ONE file to go and look at. Printing both names
+        // sends an operator to a second file that does not exist.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: [
+                '/home/bridge/.ssh/authorized_keys' => "# no pin here\n",
+                '/home/bridge/.ssh/authorized_keys2' => "# no pin here\n",
+            ],
+            fileIdentities: [
+                '/home/bridge/.ssh/authorized_keys' => 'inode:1',
+                '/home/bridge/.ssh/authorized_keys2' => 'inode:1',
+            ],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        // The verdict is unchanged — one file, searched, with no pinned line in it.
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $fail = $this->firstMatching($findings, 'not wired');
+        $this->assertNotNull($fail);
+        $this->assertSame(1, substr_count($fail->message, '/home/bridge/.ssh/authorized_keys'));
+        $this->assertStringNotContainsString('authorized_keys2', $fail->message);
+    }
+
+    public function test_a_home_with_a_trailing_slash_yields_one_spelling_for_one_file(): void
+    {
+        // ⛔ NEEDS NO ODD CONFIG — the OpenSSH default's own two spellings. `%h/.ssh/…`
+        // interpolated the home RAW while a relative entry stripped its trailing slash, so
+        // an account whose pw_dir carries one produced `/home/agent//.ssh/authorized_keys`
+        // and `/home/agent/.ssh/authorized_keys` for ONE file. Both arms take the home from
+        // one primitive now, so the two entries collapse before any identity is consulted —
+        // asserted on readPaths, which is what the fake can see.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys .ssh/authorized_keys\n",
+            userHomes: ['device' => '/home/device/'],
+            keysByPath: ['/home/device/.ssh/authorized_keys' => self::GOOD_LINE],
+        );
+
+        $findings = (new SshTransportProbe($env, 'device'))->probePinnedLine('me');
+
+        $this->assertSame(['/home/device/.ssh/authorized_keys'], $env->readPaths);
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
+    public function test_percent_h_not_followed_by_a_separator_stays_a_concatenation(): void
+    {
+        // ⛔ THE BOUND ON THE STRIP ABOVE. sshd substitutes `pw_dir` verbatim, so `%hfoo`
+        // under a home of `/home/device/` is `/home/device/foo`. Stripping the home's
+        // trailing slash unconditionally would send this probe at `/home/devicefoo` — a
+        // file sshd never consults, read as absent, and an authoritative "not wired" FAIL
+        // over a correctly wired account. Normalising a JOIN is not licence to rewrite a
+        // concatenation.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile %hfoo\n",
+            userHomes: ['device' => '/home/device/'],
+            keysByPath: ['/home/device/foo' => self::GOOD_LINE],
+        );
+
+        $findings = (new SshTransportProbe($env, 'device'))->probePinnedLine('me');
+
+        $this->assertSame(['/home/device/foo'], $env->readPaths);
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
     // ─── FIPS ─────────────────────────────────────────────────────────────────
 
     public function test_fips_mode_with_ed25519_key_fails(): void
@@ -643,6 +756,18 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
      *                                     was consulted and contributes nothing, so an
      *                                     absence drawn over it is established. It wins over
      *                                     $keysByPath so a case cannot state both.
+     * @param  array<string, string>  $fileIdentities  the paths that name the SAME PHYSICAL
+     *                                                 FILE, as path => shared identity token (a path
+     *                                                 absent from the map is its own identity, i.e. its
+     *                                                 own file). This is the ALIASED shape — one file
+     *                                                 reachable under two `AuthorizedKeysFile` entries,
+     *                                                 by symlink, hard link or a second spelling.
+     *                                                 ⚑ STATED, not measured: what the real filesystem
+     *                                                 answers for a symlink, a hard link and a `//`
+     *                                                 spelling is measured in
+     *                                                 SystemSshProbeEnvironmentTest (NAMED rather than
+     *                                                 `{@see}`-linked; pint would import it), and this
+     *                                                 map is what the PROBE does with that answer.
      */
     public function __construct(
         private string $authorizedKeys = '',
@@ -663,6 +788,8 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         private array $keysByPath = [],
         /** @var list<string> */
         private array $absentPaths = [],
+        /** @var array<string, string> */
+        private array $fileIdentities = [],
     ) {}
 
     public function isRoot(): bool
@@ -727,6 +854,11 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         return $this->authorizedKeys === ''
             ? AuthorizedKeysRead::unreadable()
             : AuthorizedKeysRead::text($this->authorizedKeys);
+    }
+
+    public function fileIdentity(string $path): string
+    {
+        return $this->fileIdentities[$path] ?? $path;
     }
 
     public function sshRoundTrip(string $target, string $stdin): array

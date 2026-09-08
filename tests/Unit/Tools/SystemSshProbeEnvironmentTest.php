@@ -102,6 +102,78 @@ class SystemSshProbeEnvironmentTest extends TestCase
         $this->assertSame("# secret\n", (new SystemSshProbeEnvironment)->readAuthorizedKeys($path)->text);
     }
 
+    // ─── file IDENTITY (card#8976 r2) ─────────────────────────────────────────
+    // Two AuthorizedKeysFile entries can name ONE file, and the probe counts LINES over
+    // them: keyed by the path string, one physical line is counted once per spelling and
+    // the ambiguity FAIL fires on an install that has exactly one. What the filesystem
+    // actually answers for each way of aliasing a file is measured HERE; what the probe
+    // does with those answers is stated in SshTransportProbeTest.
+
+    public function test_a_symlinked_second_file_shares_the_target_s_identity(): void
+    {
+        // `.ssh/authorized_keys2` pointing at `.ssh/authorized_keys` — one file, two names,
+        // and the shape an operator produces by linking rather than copying a pin.
+        $target = $this->dir.'/.ssh/authorized_keys';
+        $link = $this->dir.'/.ssh/authorized_keys2';
+        file_put_contents($target, "# a comment\n");
+        symlink($target, $link);
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertSame($env->fileIdentity($target), $env->fileIdentity($link));
+
+        // ⛔ THE CONTROL, and it is what stops this method answering "same" to everything:
+        // a REAL second file in the same directory must not share the identity.
+        file_put_contents($this->dir.'/.ssh/other_keys', "# a comment\n");
+        $this->assertNotSame($env->fileIdentity($target), $env->fileIdentity($this->dir.'/.ssh/other_keys'));
+    }
+
+    public function test_a_hard_link_shares_the_identity_where_realpath_alone_would_not(): void
+    {
+        // ⭐ WHY THIS IS NOT `realpath()`. A hard link has no symlink to resolve: both names
+        // are the file. `realpath()` answers each name with ITSELF, so a probe deduplicating
+        // on it would still count one physical line twice.
+        $target = $this->dir.'/.ssh/authorized_keys';
+        $link = $this->dir.'/.ssh/authorized_keys2';
+        file_put_contents($target, "# a comment\n");
+        link($target, $link);
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertSame($env->fileIdentity($target), $env->fileIdentity($link));
+        // The pinned negative that makes the line above a measurement of the INODE and not
+        // of a path rule: realpath disagrees on exactly this input.
+        $this->assertNotSame(realpath($target), realpath($link));
+    }
+
+    public function test_two_spellings_of_one_path_share_an_identity_present_or_absent(): void
+    {
+        // `%h//.ssh/authorized_keys` beside `.ssh/authorized_keys` is one file spelled
+        // twice — POSIX collapses the inner slashes. Asserted in BOTH states, because the
+        // two are answered by different halves of the method: an existing file compares by
+        // inode, and one that is not there has no inode to compare, so the fallback has to
+        // normalise the spelling itself.
+        $path = $this->dir.'/.ssh/authorized_keys';
+        $doubled = $this->dir.'/.ssh//authorized_keys';
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertSame($env->fileIdentity($path), $env->fileIdentity($doubled), 'absent, so this is the normalised-path fallback');
+
+        file_put_contents($path, "# a comment\n");
+        $this->assertSame($env->fileIdentity($path), $env->fileIdentity($doubled), 'present, so this is the inode');
+    }
+
+    public function test_two_paths_with_no_file_at_them_stay_distinct(): void
+    {
+        // The fallback's other direction: nothing to stat is not a licence to call two
+        // different absent paths one file. (Two SPELLINGS of one absent path are the case
+        // above; these are two paths.)
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertNotSame(
+            $env->fileIdentity($this->dir.'/.ssh/authorized_keys'),
+            $env->fileIdentity($this->dir.'/.ssh/authorized_keys2'),
+        );
+    }
+
     /**
      * A mode is only evidence if the kernel enforced it for THIS uid — root, and some
      * container uids, read straight through 0000. Asked with a real open rather than by

@@ -783,6 +783,15 @@ final class PacketSshEnvironment implements SshProbeEnvironment
         return AuthorizedKeysRead::unreadable();
     }
 
+    /**
+     * No entry here resolves two paths to one file, and the packet reads no
+     * authorized_keys at all — the identity of a path this fake never opens is the path.
+     */
+    public function fileIdentity(string $path): string
+    {
+        return $path;
+    }
+
     /** @return array{exit: int, stdout: string, stderr: string} */
     public function sshRoundTrip(string $target, string $stdin): array
     {

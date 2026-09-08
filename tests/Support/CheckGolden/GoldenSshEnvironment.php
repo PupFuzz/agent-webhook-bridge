@@ -20,13 +20,20 @@ use App\Bridge\Tools\SshProbeEnvironment;
  */
 final class GoldenSshEnvironment implements SshProbeEnvironment
 {
-    /** @param array{exit: int, stdout: string, stderr: string} $roundTrip */
+    /**
+     * @param  array{exit: int, stdout: string, stderr: string}  $roundTrip
+     * @param  list<string>  $absentPaths  the paths with NO FILE at them. Distinct from the
+     *                                     empty `$authorizedKeys` default, which models a
+     *                                     file this run could not READ — see
+     *                                     {@see self::readAuthorizedKeys()}.
+     */
     public function __construct(
         private readonly string $authorizedKeys = '',
         private readonly bool $root = false,
         private readonly bool $fips = false,
         private readonly ?string $sshdConfig = null,
         private readonly array $roundTrip = ['exit' => 255, 'stdout' => '', 'stderr' => 'no fixture round trip configured'],
+        private readonly array $absentPaths = [],
     ) {}
 
     public function isRoot(): bool
@@ -83,12 +90,35 @@ final class GoldenSshEnvironment implements SshProbeEnvironment
      * setup, which is what an unreadable file produces. An absent file is a CONSULTED
      * file — over a root-resolved path it earns the authoritative FAIL — and no golden
      * fixture is root, so none of them can reach that arm to capture it.
+     *
+     * ⭐ `$absentPaths` IS THE COMMONEST REAL SHAPE, and until card#8976 r2 the corpus had
+     * no capture of it: a non-root install with no `~/.ssh/authorized_keys` at all. It
+     * carries the same severity and the same exit code as the unreadable default, and
+     * renders a DIFFERENT sentence — an absence over an assumed path rather than a read
+     * that was refused — which is precisely the kind of difference a fixture that pins
+     * only one of them cannot see move.
      */
     public function readAuthorizedKeys(string $path): AuthorizedKeysRead
     {
+        if (in_array($path, $this->absentPaths, true)) {
+            return AuthorizedKeysRead::absent();
+        }
+
         return $this->authorizedKeys === ''
             ? AuthorizedKeysRead::unreadable()
             : AuthorizedKeysRead::text($this->authorizedKeys);
+    }
+
+    /**
+     * No fixture here is root, so every one resolves exactly ONE assumed default path and
+     * no two paths can name one file. Stated rather than measured, like every other host
+     * fact on this pin — `SystemSshProbeEnvironment` (NAMED, not `{@see}`-linked: pint
+     * rewrites a docblock FQCN into a real `use`) is where the real symlink / hard-link /
+     * re-spelling answer is measured.
+     */
+    public function fileIdentity(string $path): string
+    {
+        return $path;
     }
 
     /** @return array{exit: int, stdout: string, stderr: string} */
