@@ -239,6 +239,80 @@ class SshTransportProbeTest extends TestCase
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
     }
 
+    // ─── the MATCH arms' population (card#8976 round 3) ───────────────────────
+    // Finding the line needs ONE file; concluding it is the ONLY line sshd honours needs
+    // the whole set. DL-359 Decision 4b's security argument is about the SECOND line — an
+    // `ok` for an account whose other file grants pty or forwarding for the same agent is
+    // WRONG, not merely incomplete — and it does not stop applying because the other file
+    // was UNREADABLE rather than unread. The first two cases below are the same disclosure
+    // over the two halves `unconsulted()` renders; the third is their discriminating
+    // control.
+
+    public function test_a_found_line_beside_an_unreadable_file_discloses_what_it_did_not_cover(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: ['/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE],   // file 2 unreadable
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        // The verdict itself is UNCHANGED — what was read was read, and this disclosure
+        // moves no exit code. That is the whole reason it may be added without re-opening
+        // the ratified exit-code table.
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+
+        $disclosure = $this->firstMatching($findings, 'The verdict above covers only what was read');
+        $this->assertNotNull($disclosure, 'the ok certified over a population this run did not consult, and said nothing about it');
+        $this->assertSame(Severity::Unvalidated, $disclosure->severity);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $disclosure->message);
+    }
+
+    public function test_a_found_line_beside_an_unresolvable_entry_names_that_entry(): void
+    {
+        // The other half of the same claim: an entry whose `%U` this run cannot expand is a
+        // file it never reached, so the set it certified over is short by one there too.
+        // Same install shape as test_an_unresolvable_entry_does_not_block_a_line_that_was_found
+        // and a DIFFERENT subject: that one pins that presence still certifies, this one that
+        // the refused entry is still named beside it. Both must hold; neither implies the other.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys /etc/ssh/keys/%U\n",
+            keysByPath: ['/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+
+        $disclosure = $this->firstMatching($findings, 'The verdict above covers only what was read');
+        $this->assertNotNull($disclosure, 'the refused entry was dropped from the certifying arm rather than named');
+        $this->assertSame(Severity::Unvalidated, $disclosure->severity);
+        $this->assertStringContainsString('/etc/ssh/keys/%U', $disclosure->message);
+    }
+
+    public function test_a_fully_consulted_population_adds_no_disclosure_to_the_ok(): void
+    {
+        // THE DISCRIMINATING CONTROL for the two cases above: with every named file
+        // accounted for, the certifying arm must stay a single clean line. Without it the
+        // pair would pass just as well against a leg that appended the disclosure always.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: ['/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE],
+            absentPaths: ['/home/bridge/.ssh/authorized_keys2'],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Unvalidated));
+        $this->assertNull($this->firstMatching($findings, 'The verdict above covers only what was read'));
+    }
+
     // ─── consulted vs unread (card#8976 round 2) ──────────────────────────────
     // A file that is NOT THERE gives sshd no keys, so it belongs to the population the
     // authoritative absent-line FAIL is a claim about. Reading it as a file that was not
@@ -464,6 +538,33 @@ class SshTransportProbeTest extends TestCase
         );
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+    }
+
+    public function test_the_fips_message_bounds_the_key_algorithm_field_it_echoes(): void
+    {
+        // ⛔ THE KEY-ALGORITHM FIELD IS FILE CONTENT, and it is not bounded at whitespace:
+        // AuthorizedKeysLine splits the first field on UNQUOTED whitespace, so a quoted
+        // field carries the rest of the line into the message. The echo is bounded so the
+        // record of what these arms print stays true under a hostile line.
+        $long = str_repeat('x', 200);
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: 'command="php artisan bridge:tools-call --agent=me",restrict "'.$long.' trailing-marker" AAAA me',
+            fips: true,
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $fail = $this->firstMatching($findings, 'a FIPS sshd rejects it');
+        $this->assertNotNull($fail);
+        $this->assertStringContainsString('(truncated)', $fail->message);
+        $this->assertStringNotContainsString('trailing-marker', $fail->message);
+        // The bound is on the ECHO, not on the sentence: everything after it survives, so
+        // an assertion on the length of the whole message would be measuring the wrong
+        // thing. What is measured is the quoted span itself.
+        $this->assertSame(1, preg_match('/is `([^`]*)`/', $fail->message, $m));
+        // 64 is SshTransportProbe::KEY_ALGORITHM_ECHO_MAX, which is private — spelled here
+        // deliberately, so moving the bound has to come through this assertion.
+        $this->assertLessThanOrEqual(64, strlen($m[1]));
     }
 
     // ─── retired: sshd account posture (card 5091) ────────────────────────────

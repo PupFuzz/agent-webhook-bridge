@@ -96,11 +96,12 @@ class UnvalidatedCallSiteTest extends TestCase
         // available to it — limb (a), a measurement that did not happen. Its SIBLING arm
         // (the database answered, and has no such account) is NOT here and must not be: it
         // stays `fail`, because that is a measured config fault.
-        // TWO MORE SINCE DL-359 (card#8976), and both are limb (a) — a measurement that did
-        // not happen — over a POPULATION rather than over one read: `AuthorizedKeysFile`
-        // names a LIST of files, so the absent-line verdict is a claim about all of them.
+        // THREE MORE SINCE DL-359 (card#8976), and all three are limb (a) — a measurement
+        // that did not happen — over a POPULATION rather than over one read:
+        // `AuthorizedKeysFile` names a LIST of files, so every verdict about which lines
+        // sshd honours is a claim about all of them.
         // ⛔ NOT limb (c), which is about a COMPARISON leg whose comparand does not resolve;
-        // neither of these legs compares anything.
+        // none of these legs compares anything.
         //   4. not ONE file could be consulted — every entry was unresolvable (a `%U` this
         //      run cannot expand, the DL-259 uid state one token over) or unreadable, so
         //      either no file was named or none of the named ones could be opened;
@@ -113,7 +114,14 @@ class UnvalidatedCallSiteTest extends TestCase
         //      NOT here and must not be: it stays `fail`, because that absence WAS
         //      established. ⭐ A file that is not THERE belongs to the sibling arm, not to
         //      this one (card#8976 r2): sshd takes no keys from it, so it was searched.
-        'app/Bridge/Tools/SshTransportProbe.php' => 5,
+        //   6. the line WAS found, and the population it was found in is incomplete
+        //      (card#8976 r3). Not a withheld verdict — the ok/fail beside it stands, and
+        //      this leg does not move an exit code — but a DISCLOSURE that the certifying
+        //      arm covers only the files this run read: sshd honours a second
+        //      forced-command line for the same agent in the file that was refused, which
+        //      is DL-359 Decision 4b's own security argument one coordinate over. Still
+        //      limb (a): what the disclosure names is a measurement that did not happen.
+        'app/Bridge/Tools/SshTransportProbe.php' => 6,
         // The command's own fail-soft envelope around the writeback board probe.
         'app/Console/Commands/Bridge/CheckCommand.php' => 1,
         // The event-consumer reconciliation could not be computed (DL-236), plus TWO

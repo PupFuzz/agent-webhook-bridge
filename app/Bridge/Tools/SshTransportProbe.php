@@ -25,6 +25,9 @@ use App\Bridge\Support\Severity;
  *    pinned line may sit in ANY of them, so all are read; an absent line is only the
  *    authoritative "not wired" FAIL when every one of them was actually consulted, and
  *    an entry this run cannot resolve or read is named rather than skipped (card#8976).
+ *    ⭐ AND THAT NAMING HAPPENS BESIDE A LINE THAT *WAS* FOUND TOO (card#8976 r3): finding
+ *    the line needs one file, concluding it is the only one sshd honours needs the set, so
+ *    the certifying arm keeps its verdict and discloses what it did not cover.
  *    ⭐ CONSULTED, not present: a file that is NOT THERE gives sshd no keys, so it counts
  *    toward that population — the FAIL is withheld only for an entry this run could not
  *    RESOLVE or could not LOOK AT ({@see AuthorizedKeysRead}). Reading a missing file as an
@@ -55,6 +58,16 @@ use App\Bridge\Support\Severity;
  */
 final class SshTransportProbe
 {
+    /**
+     * How many BYTES of the matched line's key-algorithm field an operator message may
+     * echo. {@see self::keyAlgorithmForMessage()} owns the reason it is bounded at all.
+     * The figure is DERIVED, not picked: the longest key type OpenSSH defines is
+     * `sk-ecdsa-sha2-nistp256-cert-v01@openssh.com` — 43 ASCII bytes (`ssh -Q key`,
+     * OpenSSH 9.6p1) — so 64 cannot truncate a real algorithm name, only a field that is
+     * carrying something else.
+     */
+    private const KEY_ALGORITHM_ECHO_MAX = 64;
+
     /**
      * @param  ?string  $sshAccount  the OS account the SSH forced command runs as
      *                               (board_tools.ssh_account). Null ⇒ the invoking
@@ -217,11 +230,26 @@ final class SshTransportProbe
             $findings[] = Finding::ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding (found in {$foundIn})");
         }
 
+        // ⭐ THE MATCH ARMS' POPULATION IS AS INCOMPLETE AS THE ABSENCE ARM'S (card#8976 r3).
+        // Finding the line needs ONE file; concluding it is the ONLY one sshd honours needs
+        // the set. Decision 4b's own security argument is about the SECOND line: an account
+        // whose other file carries a forced-command line for this agent granting pty or
+        // forwarding is a state sshd honours, and dropping `$unreadable`/`$unresolvable` here
+        // ships exactly the `ok` that argument calls WRONG — with the file unreadable rather
+        // than merely unread, which is less knowable, not more. It does NOT withhold the
+        // verdict (what was read WAS read, and `unvalidated` moves no exit code): it says,
+        // beside it, what the verdict does not cover.
+        if ($unreadable !== [] || $unresolvable !== []) {
+            $findings[] = Finding::unvalidated("the pinned line for agent {$agentName} was found in {$foundIn}, but this run "
+                .$this->unconsulted($unreadable, $unresolvable)
+                .' — sshd reads every file it names, so a second forced-command line for this agent may sit in one of those and grant what this one denies. The verdict above covers only what was read');
+        }
+
         if ($this->env->fipsEnabled()) {
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is `".($line->keyAlgorithm ?? 'unknown').'` — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
+                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is ".$this->keyAlgorithmForMessage($line->keyAlgorithm).' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
             } else {
-                $findings[] = Finding::ok("the pinned key for agent {$agentName} (`{$line->keyAlgorithm}`) is FIPS-approved");
+                $findings[] = Finding::ok("the pinned key for agent {$agentName} (".$this->keyAlgorithmForMessage($line->keyAlgorithm).') is FIPS-approved');
             }
         }
 
@@ -501,5 +529,34 @@ final class SshTransportProbe
         }
 
         return implode(', and ', $parts);
+    }
+
+    /**
+     * The matched line's key-algorithm field, QUOTED AND BOUNDED for an operator message.
+     *
+     * ⛔ THIS IS THE ONE PIECE OF `authorized_keys` CONTENT ANY MESSAGE HERE ECHOES, and it
+     * is NOT a whitespace-bounded token: {@see AuthorizedKeysLine} splits the first field on
+     * UNQUOTED whitespace, so a `"`-quoted field carries the rest of that line's text into
+     * this string at whatever length the file gives it. Every other value these findings
+     * print is a path, a raw `AuthorizedKeysFile` entry or a capability keyword. Bounding it
+     * is what keeps the FIPS sentence readable — and the stated scope of what these arms
+     * echo true — under a hostile line; a real algorithm name (`ssh-ed25519`,
+     * `ecdsa-sha2-nistp256`, `rsa-sha2-512`) is far inside the limit, so nothing an operator
+     * has to act on is ever cut.
+     *
+     * ⚠ `mb_strcut`, not `substr`, for the reason {@see BoardMyCardsTool} already states
+     * about its own byte cap: a raw byte cut can split a multi-byte character, and the
+     * invalid UTF-8 that produces would fail `json_encode` for the WHOLE `--format=json`
+     * document — one emoji at the cut point taking out every other check's finding with it.
+     */
+    private function keyAlgorithmForMessage(?string $algorithm): string
+    {
+        if ($algorithm === null) {
+            return '`unknown`';
+        }
+
+        $cut = mb_strcut($algorithm, 0, self::KEY_ALGORITHM_ECHO_MAX, 'UTF-8');
+
+        return $cut === $algorithm ? '`'.$algorithm.'`' : '`'.$cut.'` (truncated)';
     }
 }

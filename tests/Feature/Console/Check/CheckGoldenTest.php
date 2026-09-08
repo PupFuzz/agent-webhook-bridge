@@ -887,7 +887,19 @@ class CheckGoldenTest extends TestCase
                 'TWO THINGS IT DOES NOT RULE OUT',
             ],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
-            'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
+            // BOTH halves, exactly as its twin below carries both — and the pairing is the
+            // point rather than the thoroughness. These two fixtures render the two
+            // `unvalidated` sentences the non-root arm can reach, and they share the
+            // advisory line downstream of them. Declared on the shared line ALONE, this
+            // fixture pinned nothing of its own: the twin's notContains reds
+            // absent → unreadable-rendering, while unreadable → absent-rendering
+            // regenerated BOTH captures with nothing red — the dangerous direction, where
+            // a file this run never opened becomes an established absence and the
+            // authoritative FAIL is fired over it.
+            'board-tools-ssh-default-transport-advisory' => [
+                'could not read /home/bridge/.ssh/authorized_keys (assumed default',
+                'is on ssh by the v0.68.0 default',
+            ],
             // Both halves, because the fixture's whole subject is WHICH of the two
             // unvalidated renderings it reaches: the absent-line sentence, and the
             // advisory downstream of it that reads the severity back off the report.
@@ -916,7 +928,7 @@ class CheckGoldenTest extends TestCase
     /**
      * The fixtures whose subject is an ABSENCE, and the substring that must stay absent.
      *
-     * These three exist to pin a leg printing NOTHING, which a contains-assertion cannot
+     * They exist to pin a leg printing NOTHING, which a contains-assertion cannot
      * express. A notContains ALONE would be satisfied by an empty capture, so it never
      * stands on its own here: every fixture also carries a positive subject above, and the
      * pair is what makes silence asserted rather than assumed — the same shape
@@ -940,6 +952,11 @@ class CheckGoldenTest extends TestCase
             // that fixture's `could not read` sentence. Without it the two captures could
             // silently converge and nothing would red.
             'board-tools-ssh-keys-file-absent' => ['could not read'],
+            // The MIRROR of that entry, and the direction it cannot see: an UNREADABLE file
+            // must not render the absent-line sentence. Convergence is only pinned when
+            // both directions are, and this is the one that matters — an absence this run
+            // never established is what the authoritative FAIL is drawn over.
+            'board-tools-ssh-default-transport-advisory' => ['no authorized_keys line forces'],
             // Paired with that fixture's exact-line subject: the positive pins the one-leg
             // rendering, this pins that the payload leg contributed nothing to it. Without
             // it a summary() that appended an empty leg (`delete >30d + `) would be caught,
