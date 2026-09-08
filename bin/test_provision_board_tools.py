@@ -1497,8 +1497,11 @@ class RoleASelfAccountArm(unittest.TestCase):
 
     ⛔ NOTHING HERE TOUCHES THE RUNNER'S REAL `~/.ssh`. `pwd.getpwnam` is patched to a
     temp home whose uid IS this process's euid — that is what makes the self-account arm
-    reachable at all without root — and `os.chown` is patched to a recorder, so a test
-    that started chowning would be caught rather than silently changing a file's owner.
+    reachable at all without root — and `os.chown` AND `os.fchown` are BOTH patched to one
+    recorder, so a test that started chowning would be caught rather than silently changing
+    a file's owner. Naming only `os.chown` would have described a witness with a hole in
+    it: after the dir-fd primitive every ownership change on the root arm goes through
+    `os.fchown`, and a run that chowned through it would still read as *chowns nothing*.
     """
 
     @classmethod
@@ -1673,6 +1676,56 @@ class RoleASelfAccountArm(unittest.TestCase):
         self.assertIn("not a directory this account can open", msg)
         self.assertNotIn("root acting through a link", msg)
 
+    def test_the_root_arm_refuses_an_existing_ssh_dir_the_account_does_not_own(self):
+        # ⭐ CONTROL: delete the `_assert_root_arm_ssh_dir_owner` call and this reds — the
+        # run then fchmods 0700, fchowns the directory to the account and writes an
+        # authorized_keys inside it, over a directory chosen by whoever controls
+        # `~<account>`.
+        #
+        # ⛔ THE BRANCH `_create_ssh_dir`'s LSTAT NEVER SEES. That check runs only when
+        # `.ssh` is ABSENT; here it already exists, so nothing is created and nothing
+        # looked. `O_NOFOLLOW` constrains the LAST component, so a `pw_dir` that is a
+        # symlink to a directory the account does not own — with a real `.ssh` inside it —
+        # opens cleanly and used to take the whole write.
+        victim = os.path.join(self.tmp.name, "victim-home")
+        victim_ssh = os.path.join(victim, ".ssh")
+        os.makedirs(victim_ssh, mode=0o755)
+        with open(os.path.join(victim_ssh, "authorized_keys"), "w", encoding="utf-8") as fh:
+            fh.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 not-this-agents\n")
+        link_home = os.path.join(self.tmp.name, "home-link")
+        os.symlink(victim, link_home)
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run(root_arm=True, uid_delta=1, home=link_home)
+
+        msg = str(cm.exception)
+        self.assertIn(os.path.join(link_home, ".ssh"), msg, "the refusal names the resolved path")
+        self.assertIn(f"owned by uid {os.geteuid()}", msg, "and the uid it found")
+        self.assertIn(f"uid {os.geteuid() + 1}", msg, "and the uid it expected")
+        self.assertIn("StrictModes", msg)
+        self.assertEqual(oct(os.stat(victim_ssh).st_mode & 0o777), "0o755", "the target keeps its mode")
+        self.assertEqual(os.listdir(victim_ssh), ["authorized_keys"], "nothing may be written into it")
+        with open(os.path.join(victim_ssh, "authorized_keys"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 not-this-agents\n")
+        self.assertEqual(self.chowns, [], "a refused run chowns nothing — neither the dir nor the file")
+
+    def test_an_ssh_dir_the_account_cannot_chmod_is_named_rather_than_a_traceback(self):
+        # A `~/.ssh` created once under `sudo` is owned by root, which is ordinary — and
+        # the account's own later run cannot fchmod it. Unguarded, that surfaced as a
+        # `PermissionError` traceback out of a provisioning tool. The syscall failing IS
+        # the condition, so it is patched: building the fixture would need root.
+        os.makedirs(os.path.dirname(self.authz), mode=0o700)
+
+        with mock.patch.object(os, "fchmod", side_effect=PermissionError(1, "Operation not permitted")), \
+             self.assertRaises(SystemExit) as cm:
+            self._run()
+
+        msg = str(cm.exception)
+        self.assertIn("could not chmod 700", msg)
+        self.assertIn(os.path.join(self.home, ".ssh"), msg)
+        self.assertIn("must be owned by bridge", msg)
+        self.assertFalse(os.path.exists(self.authz), "a refused run writes nothing")
+
     def test_the_root_arm_refuses_to_create_ssh_under_a_home_the_account_does_not_own(self):
         # ⛔ `makedirs` WOULD HAVE INVENTED THE HOME TOO. Creating `.ssh` under a directory
         # somebody else owns puts the account's authorized_keys where that somebody can
@@ -1717,6 +1770,33 @@ class RoleASelfAccountArm(unittest.TestCase):
             self._run()
 
         self.assertIn("a hand-pinned line for agent impl exists", str(cm.exception))
+
+    def test_two_tool_shaped_lines_for_one_agent_are_refused_rather_than_read_off_line_zero(self):
+        # ⭐ CONTROL: delete the `len(strict_lines) > 1` refusal and this reds — the run
+        # then answers off `strict_lines[0]`, prints "already present (same key) — no
+        # change" and exits 0 while the SECOND line goes on authorizing another key.
+        # Neither existing guard sees it: `hand_lines` excludes everything already strict,
+        # and the different-key refusal only ever examines line 0.
+        self._run()
+        forced = pbt.build_forced_command("impl", "/opt/bridge/artisan", pbt.DEFAULT_FORCED_COMMAND_TIMEOUT)
+        with open(_KeyFixtures.other + ".pub", encoding="utf-8") as fh:
+            second_key = fh.read().strip("\n")
+        with open(self.authz, "a", encoding="utf-8") as fh:
+            fh.write(f"{forced} {second_key}\n")
+        with open(self.authz, "rb") as fh:
+            before = fh.read()
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+
+        msg = str(cm.exception)
+        self.assertIn("2 lines in", msg)
+        self.assertIn(self.authz, msg)
+        self.assertIn("line 1: ", msg, "every offending line is named by its position in the file")
+        self.assertIn("line 2: ", msg)
+        self.assertNotIn("already present", msg)
+        with open(self.authz, "rb") as fh:
+            self.assertEqual(fh.read(), before, "a refused run leaves the file byte-identical")
 
     def test_a_pinned_line_running_a_DIFFERENT_artisan_is_refused_not_called_already_present(self):
         # ⭐ CONTROL: delete the `authorized_key_line_prefix(guard_line) != forced` compare

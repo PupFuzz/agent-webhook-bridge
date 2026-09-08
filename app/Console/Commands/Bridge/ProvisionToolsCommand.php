@@ -12,6 +12,7 @@ use App\Bridge\Tools\BoardToolsSetupPacket;
 use App\Bridge\Tools\GitRefProbe;
 use App\Bridge\Tools\PublicKeyLineShape;
 use App\Bridge\Tools\SafePathShape;
+use App\Bridge\Tools\SshAccountShape;
 use App\Bridge\Tools\SshEndpointShape;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Tools\SshTransportProbe;
@@ -289,7 +290,7 @@ class ProvisionToolsCommand extends BridgeCommand
         $artisan = base_path('artisan');
 
         $pubkeyPath = $this->strOption('pubkey-from');
-        if (! $this->packetValuesAreRenderable($agentName, $artisan, $pubkeyPath)) {
+        if (! $this->packetValuesAreRenderable($agentName, $artisan, $account, $sshAccount, $pubkeyDir, $pubkeyPath)) {
             return false;
         }
         if ($pubkeyPath !== null && ! $this->pubkeyFileIsUsable($agentName, $pubkeyPath)) {
@@ -339,14 +340,34 @@ class ProvisionToolsCommand extends BridgeCommand
      * prompt. Refusing is not a courtesy to the parser; it is the only point at which this
      * command is still the party that can decline.
      *
-     * ⚑ `--artisan` IS CHECKED HERE TOO EVEN THOUGH THIS COMMAND DOES NOT TAKE IT AS A
-     * FLAG. `base_path('artisan')` is rendered into STEP 3's pin command, and
-     * `provision-board-tools.py --role a` refuses it against `_ARTISAN_RE` — so an install
-     * whose checkout path falls outside that class produced a packet whose STEP 3 was
-     * guaranteed to be refused AFTER the operator had spent the privileged window on it.
-     * {@see SafePathShape} is the same rule, read from the python by a lockstep test.
+     * ⭐ THE POPULATION IS THE VALUES {@see BoardToolsSetupPacket} INTERPOLATES, NOT THE
+     * OPTIONS THIS COMMAND TAKES — and the two are not the same list, which is how the
+     * first pass came to check the flags and miss half the install-derived values. Read in
+     * that direction there are EIGHT non-constant values reaching a command line: the
+     * AGENT name, the ACCOUNT, the `artisan` path, the `storage/app/board-tools` DIR, the
+     * SCRIPT path, `--host-a`, `--ssh-port` and the `--pubkey-from` path (whose CONTENT is
+     * a ninth question, and {@see pubkeyFileIsUsable}'s). Every one has a shape here
+     * except the SCRIPT path, which is `base_path('bin/provision-board-tools.py')` — the same
+     * `base_path()` the `artisan` leg below already proves, plus a suffix drawn entirely
+     * from the accepted class, so a check for it could not fail while that one passed.
+     * The seat-only placeholders (`<its-checkout>` and friends) are class constants.
+     *
+     * ⚑ `artisan`, the ACCOUNT and the STORAGE DIR ARE CHECKED HERE EVEN THOUGH THIS
+     * COMMAND TAKES NO FLAG FOR ANY OF THEM. `base_path('artisan')` and
+     * `storage_path('app/board-tools')` are this install's own paths and the account is
+     * `board_tools.ssh_account ?? runUser()` — none of them answered a shape question on
+     * the way in, and all three are rendered into STEP 3's pin command, which an operator
+     * runs privileged. `provision-board-tools.py --role a` refuses the first two against
+     * `_ARTISAN_RE` and the third against `_SSH_ACCOUNT_RE`, so an install outside those
+     * classes produced a packet whose STEP 3 was guaranteed to be refused AFTER the
+     * privileged window had been spent. {@see SafePathShape} / {@see SshAccountShape} are
+     * those same rules, read from the python by a lockstep test.
+     *
+     * @param  string  $account  the RESOLVED forced-command account
+     * @param  ?string  $sshAccount  `board_tools.ssh_account` as configured, or null — carried
+     *                               ONLY so a refusal can name which file to fix
      */
-    private function packetValuesAreRenderable(string $agentName, string $artisan, ?string $pubkeyPath): bool
+    private function packetValuesAreRenderable(string $agentName, string $artisan, string $account, ?string $sshAccount, string $pubkeyDir, ?string $pubkeyPath): bool
     {
         $label = "[{$agentName}]";
 
@@ -357,6 +378,27 @@ class ProvisionToolsCommand extends BridgeCommand
         }
         if (! SafePathShape::isSafePath($artisan)) {
             $this->error("{$label} this install's artisan path ({$artisan}) is outside the character class `provision-board-tools.py --role a` accepts (^".SafePathShape::BODY_PATTERN.'$), so its STEP 3 would be refused after the operator had already run it. Move the checkout to a path without spaces or shell metacharacters, then re-run.');
+
+            return false;
+        }
+
+        if (! SshAccountShape::isAccountName($account)) {
+            // ⛔ THE REFUSAL NAMES WHERE THE VALUE CAME FROM, because the two sources take
+            // opposite remedies: a bad `ssh_account` is one line in one YAML file, while a
+            // bad run user means this command is running as the wrong account entirely and
+            // editing the YAML would be editing a file that is already correct.
+            $source = $sshAccount !== null
+                ? "board_tools.ssh_account in {$agentName}.yml names it"
+                : "board_tools.ssh_account is unset, so it fell back to this process's own run user";
+            $fix = $sshAccount !== null
+                ? "Set board_tools.ssh_account in {$agentName}.yml to the account that should serve board tools, then re-run."
+                : "Set board_tools.ssh_account in {$agentName}.yml to the account that should serve board tools — left unset, this command answers with whatever user it happens to run as — then re-run.";
+            $this->error("{$label} the forced-command account `{$account}` ({$source}) is outside the character class `provision-board-tools.py --role a` accepts for --ssh-account (^".SshAccountShape::BODY_PATTERN.'$). It is rendered into STEP 1\'s ssh target and into the `sudo -u <account> python3 …` line an operator pastes at a ROOT prompt, so it is refused rather than escaped. '.$fix);
+
+            return false;
+        }
+        if (! SafePathShape::isSafePath($pubkeyDir)) {
+            $this->error("{$label} this install's board-tools storage path ({$pubkeyDir}) is outside the character class `provision-board-tools.py --role a` accepts (^".SafePathShape::BODY_PATTERN.'$). It is rendered into STEP 2\'s `mkdir -p` and `cat >` lines and into STEP 3\'s default --pubkey-from, so no path in this packet would be safe to paste. Move this install\'s storage/ to a path without spaces or shell metacharacters (it follows the checkout unless LARAVEL_STORAGE_PATH relocates it), then re-run.');
 
             return false;
         }

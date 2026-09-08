@@ -446,7 +446,20 @@ def significant_authorized_keys_lines(text: str) -> list:
     derivation — a comment that mentions the agent must not be reported as a
     hand-pinned line, and a commented-out old entry must not read as present.
     """
-    return [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    return [ln for _n, ln in numbered_authorized_keys_lines(text)]
+
+
+def numbered_authorized_keys_lines(text: str) -> list:
+    """The same lines, each paired with its 1-BASED position in the file.
+
+    ⭐ ONE SIGNIFICANCE PREDICATE, TWO VIEWS. A refusal that has to point an operator at
+    the offending lines needs the numbers they will scroll to, and the index within the
+    filtered list is not that number — blanks and comments are dropped, so it drifts by
+    however many the file happens to carry. Deriving the plain view from this one keeps
+    a single answer to *which lines can authorize anything*.
+    """
+    return [(n, ln) for n, ln in enumerate(text.splitlines(), 1)
+            if ln.strip() and not ln.lstrip().startswith("#")]
 
 
 def authorized_key_line_prefix(line: str) -> str:
@@ -670,11 +683,27 @@ def run_role_a(args) -> int:
 
     dfd = _open_ssh_dir(ssh_dir, pw, root_arm=not self_account)
     try:
-        os.fchmod(dfd, 0o700)
+        if not self_account:
+            _assert_root_arm_ssh_dir_owner(dfd, ssh_dir, account, pw)
+        try:
+            os.fchmod(dfd, 0o700)
+        except OSError as e:
+            # Reachable on the SELF-ACCOUNT arm as an ordinary topology: a `~/.ssh`
+            # created once under `sudo` belongs to root, and the account cannot chmod
+            # it. The root arm reaches this only for a real filesystem fault (the
+            # ownership question is already answered above).
+            _fail(
+                f"could not chmod 700 {ssh_dir}: {e}. sshd ignores an authorized_keys under "
+                f"a .ssh it considers unsafe, so this run will not pin into a directory it "
+                f"could not put at 0700 — the directory must be owned by {account} (a "
+                f"`~/.ssh` created once under sudo is owned by root). Fix its ownership by "
+                f"hand, then re-run."
+            )
         if not self_account:
             os.fchown(dfd, pw.pw_uid, pw.pw_gid)
 
-        existing_lines = significant_authorized_keys_lines(_read_authorized_keys(dfd, authz))
+        authz_text = _read_authorized_keys(dfd, authz)
+        existing_lines = significant_authorized_keys_lines(authz_text)
 
         weak = weak_agent_pattern(agent)
         strict_lines = [ln for ln in existing_lines if guard in ln]
@@ -690,6 +719,24 @@ def run_role_a(args) -> int:
                 f"options; remove it or make it match, then re-run. Refusing to add a second "
                 f"line for one agent — sshd would honour whichever matched first, and "
                 f"`bridge:check` FAILs on the ambiguity.\n  " + "\n  ".join(hand_lines)
+            )
+
+        if len(strict_lines) > 1:
+            # ⛔ ONE LINE IS EXAMINED BELOW, SO MORE THAN ONE IS A STATE, NOT A DETAIL.
+            # `strict_lines[0]` decides "same key" / "different key" for the whole file, and
+            # `hand_lines` excludes everything already strict — so two tool-shaped lines for
+            # one agent carrying DIFFERENT keys used to report "already present (same key)"
+            # off line 0 while the second key stayed authorized. sshd honours whichever
+            # matches first; `bridge:check` FAILs on the ambiguity from the other side of
+            # the box, one step too late (Decision 7).
+            dupes = [(n, ln) for n, ln in numbered_authorized_keys_lines(authz_text) if guard in ln]
+            _fail(
+                f"{len(dupes)} lines in {authz} pin agent {agent}, and sshd honours whichever "
+                f"matches first — so this run cannot say which one it would be certifying, and "
+                f"a second line may authorize a key nobody meant to leave standing. Leave "
+                f"exactly ONE by hand, then re-run.\n  " + "\n  ".join(
+                    f"line {n}: {authorized_key_line_prefix(ln)}" for n, ln in dupes
+                )
             )
 
         guard_line = strict_lines[0] if strict_lines else None
@@ -762,6 +809,12 @@ def _open_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> int:
     the link, because the process IS the account and following its own link is its own
     choice (DL-357 Decision 6, as amended by this round) — so when ITS open fails, it is
     told what is actually there instead.
+
+    ⚑ WHAT THIS OPEN PROVES IS ABOUT THE LAST COMPONENT ONLY. `O_NOFOLLOW` says `.ssh`
+    itself is not a link; it says nothing about `~<account>` and the components above it,
+    which this call resolved once. On the root arm that remaining question — whose
+    directory did the name land on — is {@see _assert_root_arm_ssh_dir_owner}'s, asked on
+    THIS descriptor before anything is chmodded, chowned or written.
     """
     try:
         return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -790,6 +843,35 @@ def _open_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> int:
         return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as e:
         _fail(f"created {ssh_dir} but could not open it: {e}")
+
+
+def _assert_root_arm_ssh_dir_owner(dfd: int, ssh_dir: str, account: str, pw) -> None:
+    """Root arm only: the `.ssh` this run OPENED must belong to the account (or to root).
+
+    ⛔ `O_NOFOLLOW` CONSTRAINS THE LAST COMPONENT, AND THE HAZARD LIVES IN THE PARENTS.
+    `_open_ssh_dir` proves that `.ssh` itself is not a symlink and hands back a descriptor
+    nothing re-resolves — but the path it resolved ONCE ran through `~<account>`, and a
+    `pw_dir` that is a symlink (or has a foreign-owned component) with a real `.ssh` inside
+    it opens cleanly. Root would then `fchmod` 0700, `fchown` to the account, and write an
+    ssh key line into a directory the account was handed rather than owns. Creating a
+    MISSING `.ssh` was already guarded (`_create_ssh_dir` lstats `~<account>`); this is the
+    branch where `.ssh` already exists, which is the ordinary one.
+
+    ⭐ IT ASKS THE DESCRIPTOR, NOT THE NAME, so there is no window between the check and
+    the syscalls it guards — the fd is the directory every later call acts on. `root` is
+    allowed alongside the account for the same reason sshd's StrictModes allows it: a
+    root-owned parent is not something a lower-trust account can redirect.
+    """
+    st = os.fstat(dfd)
+    if st.st_uid not in (0, pw.pw_uid):
+        _fail(
+            f"refusing to pin into {ssh_dir}: the directory this run opened is owned by uid "
+            f"{st.st_uid}, not by uid {pw.pw_uid} ({account}) or root. Whoever owns it — or "
+            f"owns a component of the path to it, a symlinked ~{account} being the usual way — "
+            f"chose the directory root would chmod, chown and write an ssh key line into. Make "
+            f"{ssh_dir} a real directory the account owns (this is sshd's StrictModes rule), "
+            f"then re-run."
+        )
 
 
 def _create_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> None:

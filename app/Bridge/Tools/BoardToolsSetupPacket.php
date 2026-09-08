@@ -57,15 +57,18 @@ final class BoardToolsSetupPacket
      * @param  string  $agent  the board-tools agent name (the pinned `--agent=`)
      * @param  string  $account  the forced-command account, resolved by
      *                           {@see SshTransportProbe::forcedCommandAccount()} — never
-     *                           re-derived here
+     *                           re-derived here — AND ALREADY SHAPE-CHECKED by the caller
+     *                           against {@see SshAccountShape}, which is what lets the
+     *                           `=== 'root'` branch below mean what it says
      * @param  bool  $accountConfigured  whether `board_tools.ssh_account` set it (false ⇒
      *                                   it fell back to this process's own user, which the
      *                                   header has to disclose)
      * @param  string  $artisan  absolute path to this install's `artisan`
      * @param  string  $script  absolute path to this install's `bin/provision-board-tools.py`
-     * @param  string  $pubkeyDir  absolute `storage_path('app/board-tools')` — where STEP 2
-     *                             writes the posted key line (F12: never a `<BRIDGE>` token
-     *                             the reader has to expand)
+     * @param  string  $pubkeyDir  absolute `storage_path('app/board-tools')`, ALREADY
+     *                             SHAPE-CHECKED by the caller against {@see SafePathShape} —
+     *                             where STEP 2 writes the posted key line (F12: never a
+     *                             `<BRIDGE>` token the reader has to expand)
      * @param  ?string  $hostA  `--host-a`, or null while the PM has not supplied it
      * @param  ?string  $sshPort  `--ssh-port`, verbatim, or null for the default
      * @param  ?string  $pubkeyPath  a `--pubkey-from` path THAT HAS ALREADY BEEN VALIDATED

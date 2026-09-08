@@ -622,7 +622,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   same agent with different options is **refused rather than appended beside**, and a
   tool-shaped line for that agent whose forced command differs (another checkout's
   `artisan`, another timeout, extra options) is **refused rather than reported as
-  *already present (same key)*** — sshd runs what that line says.
+  *already present (same key)*** — sshd runs what that line says. **TWO tool-shaped lines
+  for one agent are refused too**, naming each by its position in the file: only the first
+  was ever examined, so a duplicate carrying a SECOND key stayed authorized behind an
+  *already present* that was reading line one.
   **`--role b --certify-only`** fires just the ssh round-trip using the target and key the
   seat already recorded in its own `.mcp.json` — no keygen, no snapshot deploy, no
   `.mcp.json` write; it needs `--agent --project-dir --channel-name` and refuses

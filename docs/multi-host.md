@@ -437,18 +437,29 @@ BOTH values (they are public). ⛔ **It does not make the pin safe** — anyone 
 `.pub` can compute it. What makes the pin safe is a person deciding the key is that seat's;
 [`docs/board-tools-enablement.md`](board-tools-enablement.md) states that plainly.
 
-**Symlinks.** `--role a` opens the account's `.ssh` **once**, `O_NOFOLLOW`, and does every
-later `chmod`/`chown`/`open` through that one descriptor — so no syscall re-resolves a name
-whoever controls `~<account>` could move underneath it. A symlinked `~/.ssh` therefore
-fails that open, and the two arms answer differently on purpose: the **root arm refuses**
-it by name (root acting through a link a lower-trust account controls is the hazard — pin
-into the real directory, or make `~/.ssh` a real directory owned by the account), while the
-**self-account arm resolves the link first** and keeps working, because there the process
-IS the account and following its own link is its own choice. Dotfiles topologies stay legal
-on the self-account arm. A symlinked `authorized_keys` is **refused in both arms** — the
-open is `O_NOFOLLOW`, because writing through it would put an ssh key line into whatever
-the link points at. ⚠ The root arm also refuses to CREATE a missing `~/.ssh` unless
-`~<account>` is itself a real directory owned by that account.
+**Symlinks and ownership.** `--role a` opens the account's `.ssh` **once**, `O_NOFOLLOW`,
+and does every later `chmod`/`chown`/`open` through that one descriptor — so **nothing after
+that open re-resolves a name** whoever controls `~<account>` could move underneath it. A
+symlinked `~/.ssh` fails the open itself, and the two arms answer differently on purpose:
+the **root arm refuses** it by name (root acting through a link a lower-trust account
+controls is the hazard — pin into the real directory, or make `~/.ssh` a real directory
+owned by the account), while the **self-account arm resolves the link first** and keeps
+working, because there the process IS the account and following its own link is its own
+choice. Dotfiles topologies stay legal on the self-account arm. A symlinked
+`authorized_keys` is **refused in both arms** — the open is `O_NOFOLLOW`, because writing
+through it would put an ssh key line into whatever the link points at.
+
+⚠ **The open answers for the LAST component only, so the root arm asks a second question
+of the descriptor.** `O_NOFOLLOW` says `.ssh` is not itself a link; it says nothing about
+`~<account>` and the components above it, which the open resolved once. So the root arm
+`fstat`s the fd and **refuses unless the directory is owned by the account or by root**
+(sshd's own StrictModes rule), naming the path, the uid it found and the uid it expected.
+Without it, a `~<account>` that is a symlink — or carries a directory somebody else owns —
+with a real `.ssh` inside it opened cleanly and took the whole write. The root arm also
+refuses to CREATE a missing `~/.ssh` unless `~<account>` is itself a real directory owned by
+that account. ⚑ The self-account arm takes no ownership refusal, but a `~/.ssh` it cannot
+chmod (one created once under `sudo`, so root owns it) is **named** — fix the directory's
+ownership by hand and re-run.
 
 **A hand-edited line for the same agent is refused, not appended beside.** If a line
 already mentions `--agent=<agent>` but is not the line this tool writes, `--role a` names
