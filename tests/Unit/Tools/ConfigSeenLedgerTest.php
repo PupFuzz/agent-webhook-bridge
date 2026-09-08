@@ -19,7 +19,9 @@ use Tests\TestCase;
  * line makes to an operator:
  *   - `first_seen_at` must NOT move on a repeat sighting, or the window the line prints
  *     collapses to "just now" and stops distinguishing a seat that ran for a year from one
- *     configured this morning;
+ *     configured this morning — and it must BE STAMPED where it is still NULL, or a row born
+ *     by a retirement and revived by a later sighting keeps no left edge at all and the LOST
+ *     line prints a headless window;
  *   - `last_seen_at` MUST move, or the window's right edge is the install date;
  *   - the two tombstone columns must CLEAR on an enabled sighting and must NOT erase the seen
  *     window when a retirement lands.
@@ -95,6 +97,59 @@ class ConfigSeenLedgerTest extends TestCase
 
         $row = BoardToolsConfigSeen::query()->where('agent', 'impl')->sole();
         $this->assertNull($row->retired_seen_at);
+        $this->assertNull($row->retired_reason);
+    }
+
+    /**
+     * ⭐ THE REVIVED SEAT'S ROW MUST GAIN A LEFT EDGE, and this is the path where it was
+     * missing. A retirement can be the FIRST thing this install records (the operator
+     * retiring a seat whose block was already gone), and that INSERT writes `first_seen_at`
+     * as NULL — so if the enabled sighting that revives the seat does not write the column,
+     * NOTHING ever does, and the LOST line the seat later produces prints a HEADLESS window:
+     * *"was seen from  to <last>"*. The sequence is the one the product itself prescribes:
+     * retire a never-seen seat, then remove the `retired:` key and re-add the block, which
+     * is verbatim what the RETIRED line tells the operator to do.
+     */
+    public function test_an_enabled_sighting_stamps_the_left_edge_a_retirement_born_row_never_had(): void
+    {
+        ConfigSeenLedger::recordRetired('impl', '2026-09-08 — decommissioned');
+        $this->assertNull(
+            BoardToolsConfigSeen::query()->where('agent', 'impl')->sole()->first_seen_at,
+            'the fixture did not produce a NULL left edge, so this says nothing about stamping one',
+        );
+
+        ConfigSeenLedger::recordEnabled('impl', $this->enabled());
+
+        $row = BoardToolsConfigSeen::query()->where('agent', 'impl')->sole();
+        $this->assertNotNull(
+            $row->first_seen_at,
+            'the revived seat has no left edge, so its LOST line renders "was seen from  to <last>" — a malformed sentence to the operator',
+        );
+        $this->assertNotNull($row->last_seen_at);
+    }
+
+    /**
+     * ⛔ THE CONTROL ON THE TEST ABOVE, and the half a write that simply stamped
+     * `first_seen_at` on every sighting would fail. Retiring and re-adding a seat this
+     * install DID see enabled must keep the original left edge: the window's whole job is to
+     * distinguish a seat that ran for a month from one configured this morning, and a
+     * revive that reset it would answer "this morning" for both.
+     */
+    public function test_reviving_a_seat_that_was_seen_enabled_keeps_its_original_left_edge(): void
+    {
+        $this->travelTo(now()->subDays(30));
+        ConfigSeenLedger::recordEnabled('impl', $this->enabled());
+        $firstSeen = BoardToolsConfigSeen::query()->where('agent', 'impl')->sole()->first_seen_at;
+
+        $this->travelBack();
+        ConfigSeenLedger::recordRetired('impl', '2026-09-08 — decommissioned');
+        ConfigSeenLedger::recordEnabled('impl', $this->enabled());
+
+        $row = BoardToolsConfigSeen::query()->where('agent', 'impl')->sole();
+        $this->assertTrue(
+            $row->first_seen_at->equalTo($firstSeen),
+            'the revive moved first_seen_at — the window collapses to "just now" for a seat that ran for a month',
+        );
         $this->assertNull($row->retired_reason);
     }
 

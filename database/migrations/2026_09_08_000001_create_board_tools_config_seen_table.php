@@ -52,10 +52,12 @@ return new class extends Migration
             $table->string('transport', 16)->nullable();
             $table->unsignedInteger('board_id')->nullable();
             $table->unsignedInteger('swimlane_id')->nullable();
-            // The window the block was observed over. `first_seen_at` is set on INSERT and
-            // never moved — it is what makes the LOST line say "from X to Y" rather than
-            // "at Y", which is the difference between a seat that was briefly configured
-            // and one that ran for months.
+            // The window the block was observed over. `first_seen_at` is written by the
+            // first ENABLED sighting and never moved after that — it is what makes the LOST
+            // line say "from X to Y" rather than "at Y", which is the difference between a
+            // seat that was briefly configured and one that ran for months. It stays NULL
+            // on a row born by a RETIREMENT of a never-seen seat, until an enabled sighting
+            // revives that seat and stamps it.
             $table->timestamp('first_seen_at', 3)->nullable();
             $table->timestamp('last_seen_at', 3)->nullable();
             // The run that SAW the operator's `retired:` key, and the operator's own value

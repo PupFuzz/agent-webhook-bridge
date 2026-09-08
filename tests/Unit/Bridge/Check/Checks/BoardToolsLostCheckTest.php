@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ConfigSeenLedger;
 use App\Models\BoardToolsClientCall;
 use App\Models\BoardToolsConfigSeen;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -101,6 +102,37 @@ class BoardToolsLostCheckTest extends TestCase
         $this->assertStringContainsString(' over ssh', $findings[0]->message);
         $this->assertStringNotContainsString('sshd', $findings[0]->message);
         $this->assertStringNotContainsString('call_provenance', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE RENDER FLOOR ON A HEADLESS WINDOW. A row can reach this line with a NULL
+     * `first_seen_at` — one born by a retirement of a never-seen seat, revived by an enabled
+     * sighting written before {@see ConfigSeenLedger::recordEnabled()} stamped the left edge —
+     * and the interpolated form then prints *"was seen from  to <last>"*, a sentence with a
+     * hole in it. The ledger no longer produces such a row; this
+     * arm is the floor that keeps a malformed sentence off an operator's screen whatever
+     * wrote the row, including a row written by an older release.
+     */
+    public function test_a_row_with_no_left_edge_renders_seen_at_rather_than_a_headless_window(): void
+    {
+        BoardToolsConfigSeen::query()->create([
+            'agent' => 'impl',
+            'transport' => 'ssh',
+            'board_id' => 10,
+            'swimlane_id' => 4,
+            'first_seen_at' => null,
+            'last_seen_at' => now(),
+        ]);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', null)], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString(
+            'an enabled board_tools block was seen at '.now()->toIso8601String().' (transport ssh, board 10, swimlane 4)',
+            $findings[0]->message,
+        );
+        $this->assertStringNotContainsString('seen from', $findings[0]->message);
     }
 
     // ─── the four shapes that must NOT fail ───────────────────────────────────

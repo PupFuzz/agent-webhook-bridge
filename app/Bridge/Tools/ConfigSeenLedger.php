@@ -41,10 +41,12 @@ use Throwable;
  * goes blind for that seat) rather than the exception, because the consequence is what the
  * operator has to act on.
  *
- * ⛔ ONE STATEMENT PER WRITE, NOT read-then-write. Two doors can serve one agent
- * concurrently and a check can run beside them, so a `SELECT` followed by an `INSERT` races
- * into a unique violation that costs the very sighting this exists to keep. `upsert()` is a
- * single INSERT … ON CONFLICT on both supported drivers.
+ * ⛔ NEVER read-then-write. Two doors can serve one agent concurrently and a check can run
+ * beside them, so a `SELECT` followed by an `INSERT` races into a unique violation that costs
+ * the very sighting this exists to keep. `upsert()` is a single INSERT … ON CONFLICT on both
+ * supported drivers. {@see recordEnabled()} follows it with ONE more statement — a blind,
+ * `WHERE first_seen_at IS NULL` UPDATE — which is not a read: the condition is evaluated by
+ * the database inside the write, so concurrent runs cannot disagree about it.
  */
 final class ConfigSeenLedger
 {
@@ -92,6 +94,22 @@ final class ConfigSeenLedger
      * window — it collapses to "just now" and stops telling the operator whether the seat ran
      * for a day or for a year.
      *
+     * ⭐ AND THAT IS WHY A SECOND, GUARDED STATEMENT WRITES IT WHEN IT IS STILL NULL. Absent
+     * from the update list, the column is never written on ANY conflict path — so a row born
+     * by {@see recordRetired()}, which INSERTs `first_seen_at` as NULL, kept a NULL left edge
+     * forever, and the LOST line that seat later produced printed a HEADLESS window: *"was
+     * seen from  to <last>"*. The sequence is the one the product prescribes (retire a
+     * never-seen seat, then remove the key and re-add the block, which is verbatim what the
+     * RETIRED line says to do), so it is reached, not theoretical. ⛔ THE `whereNull` IS WHAT
+     * MAKES IT UNABLE TO MOVE AN EXISTING VALUE: a row that already carries a left edge is
+     * not in the UPDATE's population at all, on either driver — the guard is the WHERE clause
+     * rather than a value comparison, so there is no arm in which an older stamp is
+     * overwritten by a newer one. ⚑ IT IS A SECOND STATEMENT RATHER THAN A `COALESCE` IN THE
+     * UPSERT BECAUSE ONE STATEMENT CANNOT BE WRITTEN PORTABLY HERE: naming the incoming row
+     * inside the update list spells `values(col)` under `MySqlGrammar` and `excluded.col`
+     * under `SQLiteGrammar`, so a raw expression would be correct on the driver it was
+     * written for and a syntax error on the other. This UPDATE compiles identically on both.
+     *
      * ⭐ AN ENABLED SIGHTING CLEARS A TOMBSTONE, and the two NULLs are written EXPLICITLY into
      * the INSERT row rather than being left off it. `MySqlGrammar::compileUpsert()` compiles a
      * list-style update column to `col = values(col)`, which reads the value from the INSERT
@@ -117,6 +135,11 @@ final class ConfigSeenLedger
                 ['agent'],
                 ['transport', 'board_id', 'swimlane_id', 'last_seen_at', 'retired_seen_at', 'retired_reason'],
             );
+
+            BoardToolsConfigSeen::query()
+                ->where('agent', $agent)
+                ->whereNull('first_seen_at')
+                ->update(['first_seen_at' => now()]);
         } catch (Throwable $e) {
             Log::warning(
                 'agent-tools: the board_tools block sighting could not be recorded — bridge:check cannot report this seat\'s block as LOST if it later disappears',
@@ -132,7 +155,11 @@ final class ConfigSeenLedger
      * list, so retiring a seat does not erase the record that it once ran. On INSERT they are
      * written as NULL, because a retirement can legitimately be the FIRST thing this install
      * ever recorded for an agent — the operator retiring a seat whose block was already gone,
-     * which is the very cure the LOST line prescribes.
+     * which is the very cure the LOST line prescribes. ⭐ A ROW BORN THAT WAY GETS ITS LEFT
+     * EDGE FROM THE SIGHTING THAT REVIVES IT, never from here: see
+     * {@see recordEnabled()}'s guarded UPDATE. Stamping one here would put a seat this
+     * install never saw enabled into the lost leg's population, which reads a non-NULL
+     * `last_seen_at` as "seen enabled".
      *
      * ⛔ CALLED ONLY FOR A NON-NULL `retiredReason`. The reason is the operator's own sentence
      * stored VERBATIM, and it is printed back to them: a row with an empty reason would be a

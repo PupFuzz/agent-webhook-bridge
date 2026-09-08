@@ -234,11 +234,23 @@ final class BoardToolsLostCheck implements Check
      * and it prints the TRANSPORT rather than the provenance: the sentence is about which
      * front door served the call, not about how the serving process was started.
      *
+     * ⛔ A NULL LEFT EDGE PRINTS "seen at", NOT A WINDOW WITH A HOLE IN IT, and this arm stays
+     * even though {@see ConfigSeenLedger::recordEnabled()} now stamps the column. A row whose
+     * `first_seen_at` is NULL and whose `last_seen_at` is not can still reach this line —
+     * written by a release before that fix, on the retire-then-revive path — and interpolating
+     * it produces *"was seen from  to <last>"*, a malformed sentence on an operator's screen
+     * at the exact moment they are being told their install is broken. This is the render
+     * floor, not the cure; the cure is at the write site.
+     *
      * @param  array{first: ?string, last: ?string, transport: ?string, board: ?int, swimlane: ?int, retired_reason: ?string}  $row
      */
     private function lostMessage(string $name, array $row, ?ClientHalfRecord $call, bool $yamlAbsent): string
     {
-        $message = "board_tools: agent {$name}: block LOST — an enabled board_tools block was seen from {$row['first']} to {$row['last']} (transport {$row['transport']}, board {$row['board']}, swimlane {$row['swimlane']})";
+        $window = $row['first'] === null
+            ? "was seen at {$row['last']}"
+            : "was seen from {$row['first']} to {$row['last']}";
+
+        $message = "board_tools: agent {$name}: block LOST — an enabled board_tools block {$window} (transport {$row['transport']}, board {$row['board']}, swimlane {$row['swimlane']})";
 
         if ($call !== null) {
             $message .= '; last successful tools call '.$call->lastSuccessAt->toIso8601String().' over '.$call->transport;

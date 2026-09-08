@@ -2813,6 +2813,12 @@ the work distinguishes those.
   false reassurance. Capture MODIFICATION and DELETION carry no such argument and are the
   directions to distrust. What ships in place of the declined instrument is the disclosure now in
   the artifact's own header.
+  ⛔ **STALE — THIS NOTE'S FIGURES ARE NOT THE ARTIFACTS' (measured 2026-09-08, card#8973):
+  `docs/check-golden-coverage.json` holds 49 entries split 44 observed · 5 UNOBSERVED, its `.md`
+  header states 49, and the live enumeration is 53 (`php bin/check-golden-predicates.php --json`)
+  — read those, not the 56 / 49 · 0 · 7 below, before deciding whether the mutation pass needs
+  re-running. Whether the regeneration this note describes ever landed is an open question and a
+  card exists for it; this line marks the contradiction rather than resolving it.**
   **[REGENERATED — card#7835. The deferred run has been done, on a throwaway worktree, and the
   banner is gone because the generator rewrites the whole file.** `handle()` now holds **56**
   predicates and the measured split is **49 observed · 0 observed-via-abort · 7 UNOBSERVED**, against
