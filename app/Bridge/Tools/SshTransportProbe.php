@@ -544,10 +544,15 @@ final class SshTransportProbe
      * `ecdsa-sha2-nistp256`, `rsa-sha2-512`) is far inside the limit, so nothing an operator
      * has to act on is ever cut.
      *
-     * ⚠ `mb_strcut`, not `substr`, for the reason {@see BoardMyCardsTool} already states
-     * about its own byte cap: a raw byte cut can split a multi-byte character, and the
-     * invalid UTF-8 that produces would fail `json_encode` for the WHOLE `--format=json`
-     * document — one emoji at the cut point taking out every other check's finding with it.
+     * ⚠ `mb_strcut`, not `substr`: the bound is a BYTE budget, and a raw byte cut can split
+     * a multi-byte character. ⛔ THE CONSEQUENCE HERE IS QUIET CORRUPTION, NOT A FAILED
+     * RENDER, and the difference is which renderer receives it — `CheckJsonRenderer`
+     * (NAMED rather than `{@see}`-linked; pint would import it) encodes with
+     * `JSON_INVALID_UTF8_SUBSTITUTE`, so a split character is replaced with U+FFFD, in
+     * silence, inside the one field an operator is being asked to act on.
+     * {@see BoardMyCardsTool} states the LOUDER version of this for its own byte cap — a
+     * failed encode for the whole response — and that consequence belongs to ITS renderer,
+     * which sets no substitute flag. It is not this one's, and reading it across was wrong.
      */
     private function keyAlgorithmForMessage(?string $algorithm): string
     {
