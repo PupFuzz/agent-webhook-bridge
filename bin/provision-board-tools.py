@@ -685,10 +685,11 @@ def run_role_a(args) -> int:
     ssh_parent, ssh_name = os.path.split(ssh_dir)
     authz = os.path.join(ssh_dir, "authorized_keys")
 
-    hfd = _open_home_dir(ssh_parent, ssh_dir, account, pw, root_arm=not self_account)
-    dfd = _open_ssh_dir(hfd, ssh_name, ssh_dir, root_arm=not self_account)
+    root_arm = not self_account
+    hfd = _open_home_dir(ssh_parent, ssh_dir, account, pw, root_arm=root_arm)
+    dfd = _open_ssh_dir(hfd, ssh_name, ssh_dir, root_arm=root_arm)
     try:
-        if not self_account:
+        if root_arm:
             _assert_root_arm_ssh_dir_owner(dfd, ssh_dir, account, pw)
         try:
             os.fchmod(dfd, 0o700)
@@ -704,10 +705,10 @@ def run_role_a(args) -> int:
                 f"`~/.ssh` created once under sudo is owned by root). Fix its ownership by "
                 f"hand, then re-run."
             )
-        if not self_account:
+        if root_arm:
             os.fchown(dfd, pw.pw_uid, pw.pw_gid)
 
-        authz_text = _read_authorized_keys(dfd, authz, root_arm=not self_account)
+        authz_text = _read_authorized_keys(dfd, authz, root_arm=root_arm)
         existing_lines = significant_authorized_keys_lines(authz_text)
 
         weak = weak_agent_pattern(agent)
@@ -773,10 +774,10 @@ def run_role_a(args) -> int:
                     f"from {authz}, then re-run. Refusing to silently leave the old key authorized."
                 )
         else:
-            _append_authorized_key_line(dfd, authz, f"{forced} {pubkey}\n", root_arm=not self_account)
+            _append_authorized_key_line(dfd, authz, f"{forced} {pubkey}\n", root_arm=root_arm)
             print(f"authorized_keys: appended the forced-command line for agent {agent}.")
 
-        _pin_authorized_keys_perms(dfd, authz, pw.pw_uid, pw.pw_gid, root_arm=not self_account)
+        _pin_authorized_keys_perms(dfd, authz, pw.pw_uid, pw.pw_gid, root_arm=root_arm)
     finally:
         os.close(dfd)
         os.close(hfd)
@@ -965,8 +966,11 @@ def _open_authorized_keys(dfd: int, authz: str, flags: int, *, root_arm: bool, m
     the account and append an ssh key line to it, every one of which lands on the other
     name too. ⚑ The refusal does NOT read `fs.protected_hardlinks`: the systemd default
     would already prevent that link, but nothing in this tool establishes the sysctl is on,
-    so the check stands on its own. sshd does not care how many names a file has, so a
-    legitimate `authorized_keys` has one. ⚠ The SELF-ACCOUNT arm takes no such refusal —
+    so the check stands on its own. sshd does not care how many names a file has, and this
+    tool cannot tell a second name it cannot see from one an attacker placed, so it refuses
+    the topology rather than reason about it — a live-tree hardlink snapshot of `.ssh` trips
+    it too, and replacing the file with a fresh inode is the remedy either way. ⚠ The
+    SELF-ACCOUNT arm takes no such refusal —
     the file is the account's own and it can write it with a text editor.
 
     `missing_ok` is the READ call site, where "the account has no authorized_keys yet" is
@@ -994,9 +998,11 @@ def _open_authorized_keys(dfd: int, authz: str, flags: int, *, root_arm: bool, m
                 f"chown to the account and the appended key line all land on every name equally. "
                 f"`O_NOFOLLOW` does not answer a hard link (the open succeeds), and this refusal "
                 f"does not read `fs.protected_hardlinks`: it holds whether or not that sysctl is "
-                f"on. sshd does not care how many names a file has, so a legitimate "
-                f"authorized_keys does not have a second one — remove the extra link, or replace "
-                f"the file with a fresh regular one, then re-run."
+                f"on. This run cannot tell a second name it cannot see from one an attacker "
+                f"placed, so it refuses the topology rather than reason about it. Replace the "
+                f"file with a fresh regular copy (copy it, then move the copy over it, which gives "
+                f"it a new inode) and re-run; removing the other name alone is not a fix when a "
+                f"hardlink snapshot outside .ssh will mint it again."
             )
     return fd
 
