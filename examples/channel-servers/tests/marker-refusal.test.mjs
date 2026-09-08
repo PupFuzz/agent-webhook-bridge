@@ -88,6 +88,119 @@ test('unix transport bind collision writes the marker as <socket>.FAILED', () =>
   assert.equal(res.status, 2, `expected exit 2, got ${res.status} (stderr: ${res.stderr})`);
   const marker = `${sock}.FAILED`;
   assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+  // This fixture is CAUSE 3's state exactly: a regular file occupying the path with no
+  // listener behind it. The body must still carry all three causes — see assertBody.
+  assertBody(fs.readFileSync(marker, 'utf8'), res.stderr);
+});
+
+// ── The EADDRINUSE body (card#8984, roundtable #420) ──────────────────────────────────
+//
+// ⭐ THESE ARE TEXT PINS, AND THAT IS THE DESIGN, NOT A SHORTCUT. The server measured one
+// thing — the address would not bind — so it makes NO state-discriminating claim, and the
+// body is IDENTICAL whether a live server holds the address or a dead one left a file
+// behind. There is therefore no state-discriminating assertion to write. What the three
+// cases below establish is that the SAME enumeration reaches the marker from every state
+// that produces it, on both transports.
+//
+// THE CONTROL IS REVERT-THE-TEXT: restore either EADDRINUSE site to its pre-8984 body
+// ("another session already holds the channel" / "another process holds the port") and
+// every assertion in `assertBody` fails. Verified red once, per site, on the build.
+function assertBody(body, stderr) {
+  const ctx = `body was:\n${body}\nstderr was:\n${stderr}`;
+  // The load-bearing phrase, verbatim — `ActivationPhraseLockstepTest` owns it across the
+  // repo; this pins that the RUNTIME actually emits it.
+  assert.match(
+    body,
+    /\/mcp reconnect does not stop the previous channel server — restart the session/,
+    `marker must carry the activation phrase; ${ctx}`,
+  );
+  assert.match(body, /Causes include:/, `marker must ENUMERATE, not pick one cause; ${ctx}`);
+  assert.match(body, /another Claude Code session or another process/, `cause 2 missing; ${ctx}`);
+  assert.match(body, /rm it only if you are sure no server is running/, `cause 3's remedy missing; ${ctx}`);
+  assert.match(body, /BRIDGE_CHANNEL_PORT \/ BRIDGE_CHANNEL_SOCKET/, `the move-the-address remedy is missing; ${ctx}`);
+  assert.match(body, /deaf to live-wake/, `the consequence line is missing; ${ctx}`);
+  // ⚠ ONE LINE. `bridge:check` interpolates this body into a single finding and the
+  // launcher seds it into a warning block; a second line orphans there. The marker file
+  // itself ends with exactly one trailing newline (writeFailureMarker adds it).
+  assert.equal(
+    body.trimEnd().includes('\n'),
+    false,
+    `the marker body must be ONE line with no embedded newline; ${ctx}`,
+  );
+}
+
+// Bind a real listener and hand back the address, so the server's bind is losing to a LIVE
+// holder — cause 1/2's state, and the shape roundtable #420 actually measured. The
+// previous unix case only ever exercised a leftover FILE.
+function withRealUnixListener(t, sock) {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(sock, () => {
+      t.after(() => new Promise((done) => srv.close(done)));
+      resolve();
+    });
+  });
+}
+
+function withRealTcpListener(t) {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      t.after(() => new Promise((done) => srv.close(done)));
+      resolve(String(srv.address().port));
+    });
+  });
+}
+
+test('unix transport losing the bind to a LIVE listener refuses with the enumerated body', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-live-unix-'));
+  const sock = path.join(tmp, 'chan.sock');
+  await withRealUnixListener(t, sock);
+
+  const res = spawnSync(process.execPath, [SERVER], {
+    env: windowsShapedEnv(tmp, {
+      BRIDGE_CHANNEL_TRANSPORT: 'unix',
+      BRIDGE_CHANNEL_SOCKET: sock,
+      BRIDGE_CHANNEL_NAME: 'test-agent-live-unix',
+    }),
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+
+  assert.equal(res.status, 2, `expected exit 2, got ${res.status} (stderr: ${res.stderr})`);
+  const marker = `${sock}.FAILED`;
+  assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+  const body = fs.readFileSync(marker, 'utf8');
+  assertBody(body, res.stderr);
+  assert.match(body, new RegExp(`binding unix:${sock.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the body names the address it failed on');
+  // The stderr line and the marker carry the SAME body — one builder feeds both.
+  assert.ok(res.stderr.includes(body.replace(/^.*?test-agent-live-unix: /, '').trimEnd()),
+    `stderr must carry the same body as the marker; stderr:\n${res.stderr}`);
+});
+
+test('http transport losing the bind to a LIVE listener refuses with the enumerated body', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-live-http-'));
+  const port = await withRealTcpListener(t);
+  const name = 'test-agent-live-http';
+
+  const res = spawnSync(process.execPath, [SERVER], {
+    env: windowsShapedEnv(tmp, {
+      BRIDGE_CHANNEL_TRANSPORT: 'http',
+      BRIDGE_CHANNEL_NAME: name,
+      BRIDGE_CHANNEL_PORT: port,
+    }),
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+
+  assert.equal(res.status, 2, `expected exit 2, got ${res.status} (stderr: ${res.stderr})`);
+  const marker = path.join(tmp, `agent-webhook-bridge-channel-${name}.http-${port}.FAILED`);
+  assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+  const body = fs.readFileSync(marker, 'utf8');
+  assertBody(body, res.stderr);
+  assert.match(body, new RegExp(`binding http://127\\.0\\.0\\.1:${port}`), 'the body names the address it failed on');
 });
 
 // Consolidation (roundtable #145, canon #5/#7): every startup config-validation

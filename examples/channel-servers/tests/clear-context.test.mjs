@@ -174,5 +174,10 @@ test('calling clear_context when not armed returns a structured MCP error', asyn
   const res = await client.callTool({ name: 'clear_context', arguments: {} });
   assert.equal(res.isError, true, `expected an error result, got ${JSON.stringify(res)}`);
   assert.match(res.content[0].text, /not armed/);
+  // The GATE IS `$STY`, WHICH ONLY GNU SCREEN SETS — tmux sets `$TMUX` and is not
+  // covered. The refusal used to say "screen/tmux", which sent a tmux seat looking
+  // for a misconfiguration instead of telling it the tool does not apply there.
+  // Red-when-reverted: put "screen/tmux" back in the refusal and this pin fails.
+  assert.match(res.content[0].text, /GNU screen/);
   assert.equal(bridge.hits(), 0, 'a disarmed clear_context must not be proxied to the bridge either');
 });

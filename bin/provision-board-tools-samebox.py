@@ -12,7 +12,10 @@ machine, this wrapper:
      (`sudo -H -u <agent> python3 <agent-checkout>/bin/provision-board-tools.py`), captures
      the printed public-key path, and validates it.
   3. Runs `--role a` AS ROOT from the HOST-A checkout, pinning that captured key.
-  4. Prints the one unavoidable manual step (restart the agent's Claude session).
+  4. Prints the one unavoidable manual step: RESTART the agent's Claude session.
+     /mcp reconnect does not stop the previous channel server — restart the session, and
+     the restart is the operator's, not this script's (docs/board-tools-enablement.md
+     § Activating on a running seat owns why).
   5. Certifies with `php <host-A artisan> bridge:check`.
   6. `chown`s host-A `storage` back to the ssh-account (root-run artisan can leave root logs).
 
@@ -390,6 +393,15 @@ def execute(plan: Plan, fs) -> int:
     print("━━━ MANUAL STEP REQUIRED ━━━")
     print(f"  Restart agent {plan.agent!r}'s Claude session so the '{plan.channel_name}' channel")
     print("  re-spawns and picks up the merged .mcp.json (the SSH tools transport).")
+    # ⭐ NAMES THE NON-SUBSTITUTE, because this banner is read at a root terminal by
+    # whoever just ran the wrapper, and the obvious cheaper move — reconnect the channel
+    # instead of restarting — silently does not work: the old child keeps the address and
+    # the new one exits 2 (roundtable #420, measured on the port transport). Neutral
+    # wording on the addressee: this is echoed mid-run to root, who may or may not be the
+    # operator who owns the seat's session.
+    print("  /mcp reconnect does not stop the previous channel server — restart the session.")
+    print("  That restart is the operator's action (a seat without GNU screen cannot restart itself).")
+    print("  Details: docs/board-tools-enablement.md § Activating on a running seat")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print()
 

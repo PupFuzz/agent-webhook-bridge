@@ -284,6 +284,16 @@ final class BoardToolsSetupPacket
             '    python3 '.self::CHECKOUT."/bin/provision-board-tools.py --role b --certify-only --agent {$this->agent}"
                 .' --project-dir '.self::PROJECT_DIR.' --channel-name '.self::CHANNEL_KEY,
             '  then start its session: claude --dangerously-load-development-channels server:'.self::CHANNEL_KEY,
+            // NOT A BANNER, DELIBERATELY. The packet's one `USER ACTION REQUIRED` banner is
+            // STEP 3 (one per output, fixed labels — CLAUDE_AGENTBOARD.md). This line is
+            // addressed to the PM reading the packet: it tells them the restart is an ask
+            // they RAISE with the operator when the seat turns out to have a session
+            // already up, not something they or the seat can do on the seat's behalf.
+            // ⚠ THE PHRASE IS ONE UNBROKEN LITERAL. `ActivationPhraseLockstepTest` reads
+            // this FILE, and a phrase split over a `.` concatenation is invisible to it.
+            '  session already running on that seat? /mcp reconnect does not stop the previous channel server — restart the session: '
+                .'hand the restart to the OPERATOR as their action (a seat without GNU screen — Windows '
+                .'included — cannot restart itself). docs/board-tools-enablement.md § Activating on a running seat',
             '  ⚠ the channel server\'s `args` in this seat\'s .mcp.json were repointed by STEP 1 at '
                 .self::PROJECT_DIR.'/.channel-server/… — a copy it deploys there. Any previous copy '
                 .'is left on disk untouched and is no longer what the session runs; delete it only '

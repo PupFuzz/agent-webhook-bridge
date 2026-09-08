@@ -2387,5 +2387,155 @@ class RoleBFingerprintLine(unittest.TestCase):
         self.assertNotIn("Public key for the host-A handoff", out)
 
 
+class ActivationBlock(unittest.TestCase):
+    """The block `--role b` prints for a seat whose session is ALREADY RUNNING (card#8984).
+
+    ⭐ ASSERTED OVER REAL STDOUT FROM THE REAL LEG, for the same reason `RoleBFingerprintLine`
+    is: this text lands in the middle of an output the same-box wrapper parses and a seat
+    reads top-to-bottom, and its POSITION (after the launch line it refers back to) is part
+    of what makes it true.
+
+    ⭐ BOTH ARMS ARE COVERED, and the unchanged arm is the one that matters: telling a seat
+    its config just changed under a running session is FALSE when the merge was a no-op, and
+    an operator ask raised on a false premise is worse than none. `_install_mcp_json` already
+    decides that boolean for its own `.mcp.json unchanged` line; this is the same one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if _SSH_KEYGEN is None:  # pragma: no cover
+            raise unittest.SkipTest("ssh-keygen not on PATH (banner printed at import)")
+        _KeyFixtures.build()
+
+    PHRASE = "/mcp reconnect does not stop the previous channel server — restart the session"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        os.makedirs(self.project)
+
+    def _run(self):
+        argv = [
+            "--role", "b", "--agent", "kanban-solo",
+            "--ssh-target", "bridge@127.0.0.1",
+            "--project-dir", self.project,
+            "--channel-name", "kanbanboard-agent",
+        ]
+        args = pbt.build_parser().parse_args(argv)
+
+        def _keygen(agent, key_path):
+            shutil.copyfile(_KeyFixtures.plain, key_path)
+            os.chmod(key_path, 0o600)
+            shutil.copyfile(_KeyFixtures.plain + ".pub", key_path + ".pub")
+
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
+             mock.patch.object(pbt, "_keygen", side_effect=_keygen), \
+             mock.patch.object(pbt, "_deploy_snapshot"), \
+             mock.patch.object(pbt, "_seed_known_hosts"), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.run_role_b(args)
+        return rc, buf.getvalue()
+
+    def test_a_run_that_CHANGED_the_mcp_json_prints_the_activation_block(self):
+        rc, out = self._run()
+
+        self.assertEqual(rc, 0)
+        self.assertIn(".mcp.json merged:", out)
+        # The opening question is what makes every following sentence conditional: on a
+        # fresh seat (STEP 1) there is no session and none of it applies.
+        self.assertIn(
+            "Session already running on this seat WITH channel kanbanboard-agent loaded",
+            out,
+        )
+        self.assertIn(self.PHRASE, out)
+        self.assertIn("The restart is the operator's action", out)
+        self.assertIn("a seat without GNU screen", out)
+        self.assertIn("close the Claude Code session running channel kanbanboard-agent on", out)
+        self.assertIn("docs/board-tools-enablement.md § Activating on a running seat", out)
+        self.assertIn("No session yet? Start it with the launch line above.", out)
+
+    def test_the_block_lands_AFTER_the_launch_line_it_refers_back_to(self):
+        # "start it again with the launch line above" is only true if the launch line is
+        # above it. DL-347 Decision 4's same-box parser reads marker -> next non-blank
+        # line, and both the marker and its line are earlier still, so this is additive
+        # to that block rather than inside it.
+        _rc, out = self._run()
+        lines = out.splitlines()
+        launch = next(i for i, ln in enumerate(lines) if "--dangerously-load-development-channels" in ln)
+        phrase = next(i for i, ln in enumerate(lines) if self.PHRASE in ln)
+        marker = next(i for i, ln in enumerate(lines) if ln.startswith("Same-box: hand this path"))
+        self.assertLess(marker, launch)
+        self.assertLess(launch, phrase)
+
+    def test_a_run_that_changed_NOTHING_prints_no_activation_block(self):
+        # ⛔ THE ABSENCE ARM. First run writes the file; the second merges to byte-identical
+        # content and installs nothing, so there is no new config for a running session to
+        # pick up and nothing to ask an operator for.
+        rc1, out1 = self._run()
+        self.assertEqual(rc1, 0)
+        self.assertIn(self.PHRASE, out1)
+
+        rc2, out2 = self._run()
+
+        self.assertEqual(rc2, 0)
+        self.assertIn(".mcp.json unchanged:", out2)
+        self.assertNotIn(self.PHRASE, out2)
+        self.assertNotIn("Session already running on this seat", out2)
+
+
+class CertifyOnlyPrintsNoActivationBlock(unittest.TestCase):
+    """`--certify-only` is dispatched to `run_certify_only` BEFORE `run_role_b` and never
+    reaches it — so it rewrites no `.mcp.json` and must raise no restart ask.
+
+    Stated as what it is: REGRESSION COVER FOR THE DISPATCH ORDER, not a second policy. If
+    `--certify-only` ever started falling through into `run_role_b`, the visible symptom
+    would be a seat being told to hand its operator a restart for a merge that never
+    happened.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if _SSH_KEYGEN is None:  # pragma: no cover
+            raise unittest.SkipTest("ssh-keygen not on PATH (banner printed at import)")
+        _KeyFixtures.build()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(self.project)
+        self.key_path = os.path.join(self.tmp.name, "a-key-with-another-name")
+        shutil.copyfile(_KeyFixtures.plain, self.key_path)
+        os.chmod(self.key_path, 0o600)
+        shutil.copyfile(_KeyFixtures.plain + ".pub", self.key_path + ".pub")
+        with open(os.path.join(self.project, ".mcp.json"), "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"kanbanboard-agent": {"command": "node", "env": {
+                "BRIDGE_TOOLS_SSH_TARGET": "bridge@hostA.example",
+                "BRIDGE_TOOLS_SSH_KEY": self.key_path,
+            }}}}, fh)
+
+    def test_certify_only_output_carries_no_activation_phrase(self):
+        argv = [
+            "--role", "b", "--certify-only", "--agent", "kanban-solo",
+            "--project-dir", self.project, "--channel-name", "kanbanboard-agent",
+        ]
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_self_cert", return_value=0), \
+             mock.patch.object(pbt, "_seed_known_hosts"), \
+             mock.patch.object(pbt, "_deploy_snapshot"), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.main(argv)
+        out = buf.getvalue()
+
+        self.assertEqual(rc, 0)
+        # PRESENCE witness first, so a run that printed nothing cannot pass this.
+        self.assertIn("recorded in this seat's .mcp.json", out)
+        self.assertNotIn(ActivationBlock.PHRASE, out)
+
+
 if __name__ == "__main__":
     unittest.main()

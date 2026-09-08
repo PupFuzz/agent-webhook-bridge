@@ -140,7 +140,7 @@ const TOOLS_ENABLED = shouldAdvertiseTools();
 // clear_context is a LOCAL-EXEC self-management tool (card 5089), advertised on a gate
 // that is ORTHOGONAL to the board tools above: it NEVER proxies to the bridge, so it has
 // no endpoint/bearer/transport term. It can be advertised when the board tools are not,
-// and vice versa. The helper it spawns clears THIS agent's own screen/tmux window.
+// and vice versa. The helper it spawns clears THIS agent's own GNU screen window.
 const CLEAR_AGENT_HELPER = 'clear-agent.sh';
 
 // Idiomatic PATH resolution: search $PATH left-to-right for an executable `name`, exactly
@@ -165,10 +165,12 @@ function resolveOnPath(name) {
   return null;
 }
 
-// Advertise clear_context IFF this seat is inside a screen/tmux session ($STY set) AND the
+// Advertise clear_context IFF this seat is inside a GNU screen session ($STY set) AND the
 // clear-agent.sh helper is resolvable on PATH. Mirrors shouldAdvertiseTools()'s env-reading
 // style but shares NONE of its terms — a bare-channel seat with tools off can still arm
 // clear_context, and a fully board-tools-wired seat with no $STY/helper does not.
+// ⚠ $STY IS GNU SCREEN ONLY — tmux sets $TMUX and is NOT covered by this gate; the
+// refusal text says so, and README's own wording already did.
 function shouldAdvertiseClearContext() {
   return Boolean(process.env.STY) && resolveOnPath(CLEAR_AGENT_HELPER) !== null;
 }
@@ -404,6 +406,38 @@ function refuseDeaf(reason, { advice } = {}) {
   process.exit(2);
 }
 
+// THE ONE EADDRINUSE BODY — both transports, the marker AND the stderr line.
+//
+// ⭐ IT ENUMERATES; IT DOES NOT PICK. All this process measured is that the address
+// would not bind. Naming one cause ("another session holds the channel") is a claim
+// it cannot establish, and it was wrong on the case that was actually measured
+// (roundtable #420: the holder was THIS session's own previous channel server, still
+// running after `provision-board-tools.py --role b` rewrote `.mcp.json`). Telling
+// that operator to "close the duplicate session" sends them after a session that
+// does not exist. A bind-time connect-probe could discriminate (1) from (2) from
+// (3); it is deliberately not here, so the honest form is the list plus every
+// remedy, and the reader decides which one they are in.
+//
+// ⚠ ONE LINE, NO EMBEDDED NEWLINE. `bridge:check` interpolates this body into a
+// single check finding (`ChannelTransportCheck`), and the launcher `sed`s it into
+// its own warning block — a second line renders as an orphan there.
+//
+// No `transport` parameter, by design: the body is identical for unix and http, and
+// `addr` already says which one this is. Cause (3) is marked `[unix only]` in the
+// text rather than branched, so the two transports cannot drift apart.
+function unbindableReason(addr) {
+  return (
+    `EADDRINUSE binding ${addr} — not bindable. Causes include: ` +
+    `(1) this session's previous channel server after re-provisioning ` +
+    `(/mcp reconnect does not stop the previous channel server — restart the session); ` +
+    `(2) another Claude Code session or another process holding it ` +
+    `(close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); ` +
+    `(3) [unix only] a leaked socket file — or any other file — occupying the path, ` +
+    `with no listener (rm it only if you are sure no server is running). ` +
+    `THIS Claude Code session is deaf to live-wake until then.`
+  );
+}
+
 if (TRANSPORT === 'unix' && !SOCKET_PATH) {
   // markerPath() falls to its non-unix branch here (SOCKET_PATH is falsy), and
   // XDG_RUNTIME_DIR is necessarily unset in this state (it's the only reason
@@ -606,7 +640,7 @@ function handleClearContext() {
   const helper = resolveOnPath(CLEAR_AGENT_HELPER);
   if (!process.env.STY || !helper) {
     const missing = [
-      process.env.STY ? null : '$STY is unset (no screen/tmux session detected)',
+      process.env.STY ? null : '$STY is unset (no GNU screen session detected)',
       helper ? null : `${CLEAR_AGENT_HELPER} is not on PATH`,
     ].filter(Boolean);
     return {
@@ -820,22 +854,12 @@ function shutdown(code) {
 
 if (TRANSPORT === 'unix') {
   // Bind directly. On EADDRINUSE, refuse to start with an operator-actionable
-  // message — no auto-unlink, no liveness-probe race.
-  // The "two concurrent Claude Code sessions on the same path" case is
-  // operator error per the README "One server per UDS path" note.
+  // message — no auto-unlink, no liveness-probe race. The message ENUMERATES the
+  // causes rather than naming one — see unbindableReason(); "two concurrent
+  // sessions on the same path" is only one of them, and not the measured one.
   server.on('error', (err) => {
     if (err && err.code === 'EADDRINUSE') {
-      writeFailureMarker(
-        `EADDRINUSE binding unix:${SOCKET_PATH} — another session already holds ` +
-          `the channel, so THIS Claude Code session is deaf to live-wake`,
-      );
-      console.error(
-        `[${SERVER_NAME}] socket file already exists at ${SOCKET_PATH}; ` +
-          `another Claude Code session may have it bound. Close the other ` +
-          `session, or rm the stale socket file if you're sure no server is ` +
-          `running, or set BRIDGE_CHANNEL_SOCKET to a different path.`,
-      );
-      process.exit(2);
+      refuseDeaf(unbindableReason(`unix:${SOCKET_PATH}`));
     }
     // Any other bind error (notably the EACCES Win32 throws for a filesystem
     // socket path) would otherwise die on the bare throw below with no marker,
@@ -888,15 +912,7 @@ if (TRANSPORT === 'unix') {
 } else {
   server.on('error', (err) => {
     if (err && err.code === 'EADDRINUSE') {
-      writeFailureMarker(
-        `EADDRINUSE binding http://${SERVER_HOST}:${SERVER_PORT} — another process ` +
-          `holds the port, so THIS Claude Code session is deaf to live-wake`,
-      );
-      console.error(
-        `[${SERVER_NAME}] port ${SERVER_PORT} already in use; another Claude Code ` +
-          `session may have it bound. Close it, or set BRIDGE_CHANNEL_PORT to a different port.`,
-      );
-      process.exit(2);
+      refuseDeaf(unbindableReason(`http://${SERVER_HOST}:${SERVER_PORT}`));
     }
     // Any other bind error would otherwise die on the bare throw below with no
     // marker, leaving the seat silently deaf to live-wake. Capture err.code +

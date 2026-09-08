@@ -160,6 +160,38 @@ class ChannelTransportCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertStringContainsString("channel bind-FAILURE marker at {$socket}.FAILED (EADDRINUSE)", $findings[0]->message);
         $this->assertStringContainsString('came up DEAF', $findings[0]->message);
+        $this->assertSame($this->markerTail(), $this->tailOf($findings[0]->message));
+    }
+
+    /**
+     * THE TAIL IS THE SAME SENTENCE ON BOTH LEGS, AND IT ASSERTS NOTHING ABOUT WHO HOLDS
+     * THE ADDRESS (card#8984). The unix leg used to add "so another session holds the
+     * channel … Close the duplicate session"; the http leg, "a TCP-port bind race". Both
+     * were claims this process cannot establish — it reads a file another account's
+     * process wrote — and on the case roundtable #420 measured, the holder was the seat's
+     * OWN previous channel server, so both tails sent the reader after a session that did
+     * not exist.
+     *
+     * ⭐ IT ALSO DOES NOT SUMMARISE THE MARKER. The connector that wrote it may be an older
+     * snapshot whose body names only "another session" (DL-237: snapshots reconcile only
+     * on a role-b run, and only upward), so the tail points at the doc that owns the cause
+     * list rather than restating a list that may contradict the body beside it.
+     *
+     * Seen red: put either old tail back on either leg and this exact-match fails.
+     */
+    private function markerTail(): string
+    {
+        return ' — a Claude Code session came up DEAF: its connector could not bind the channel. '
+            .'Causes and remedies: docs/board-tools-enablement.md § Activating on a running seat. '
+            .'rm the marker once resolved.';
+    }
+
+    /** Everything from the tail's opening em dash on — the part this card owns. */
+    private function tailOf(string $message): string
+    {
+        $at = strpos($message, ' — a Claude Code session came up DEAF');
+
+        return $at === false ? "[no tail found in: {$message}]" : substr($message, $at);
     }
 
     /** The detail is optional, and an empty marker must not print an empty parenthetical. */
@@ -172,6 +204,9 @@ class ChannelTransportCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertStringContainsString("marker at {$socket}.FAILED — a Claude Code session", $findings[0]->message);
+        // The tail is a sentence about the marker EXISTING, not about its contents, so it
+        // has to read correctly with nothing interpolated in front of it.
+        $this->assertSame($this->markerTail(), $this->tailOf($findings[0]->message));
     }
 
     /** No fixture creates a real socket file, so neither arm is golden-measured. */
@@ -308,7 +343,8 @@ class ChannelTransportCheckTest extends TestCase
 
         $this->assertCount(2, $findings);
         $this->assertStringContainsString("channel bind-FAILURE marker at {$marker} (EADDRINUSE)", $findings[0]->message);
-        $this->assertStringContainsString('a TCP-port bind race', $findings[0]->message);
+        // The SAME tail as the unix leg, character for character — see markerTail().
+        $this->assertSame($this->markerTail(), $this->tailOf($findings[0]->message));
         // The marker does not short-circuit the probe: a deaf connector and a dead
         // endpoint are different diagnoses and the operator gets both.
         $this->assertStringContainsString('not answering', $findings[1]->message);
