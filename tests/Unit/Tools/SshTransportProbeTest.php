@@ -4,6 +4,7 @@ namespace Tests\Unit\Tools;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Tools\SshTransportProbe;
 use PHPUnit\Framework\TestCase;
@@ -236,6 +237,101 @@ class SshTransportProbeTest extends TestCase
 
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+    }
+
+    // ─── consulted vs unread (card#8976 round 2) ──────────────────────────────
+    // A file that is NOT THERE gives sshd no keys, so it belongs to the population the
+    // authoritative absent-line FAIL is a claim about. Reading it as a file that was not
+    // CONSULTED withheld that FAIL on the OpenSSH default — two files, of which
+    // `.ssh/authorized_keys2` is absent on essentially every host — so `sudo bridge:check`
+    // exited 0 over a genuinely unwired agent.
+
+    public function test_the_default_two_file_shape_with_a_missing_second_file_still_fails(): void
+    {
+        // THE DEFAULT INSTALL: a real `.ssh/authorized_keys` carrying no pin, and no
+        // `.ssh/authorized_keys2` at all. Nothing was withheld from this run — it saw both
+        // answers — so the absence is ESTABLISHED and the exit-code-bearing FAIL is earned.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: ['/home/bridge/.ssh/authorized_keys' => "# no pin here\n"],
+            absentPaths: ['/home/bridge/.ssh/authorized_keys2'],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Unvalidated));
+        $fail = $this->firstMatching($findings, 'not wired');
+        $this->assertNotNull($fail);
+        // Its DISCRIMINATING CONTROL is one line up:
+        // test_an_unreadable_second_file_blocks_the_authoritative_absent_claim states the
+        // SAME two-file shape with the second file UNREADABLE instead of absent, and gets
+        // `unvalidated`. One input differs, and it is the one this pair is about.
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $fail->message);
+    }
+
+    public function test_every_named_file_absent_is_an_established_absence(): void
+    {
+        // No authorized_keys anywhere the root-resolved config names. sshd would take no
+        // key from any of them, which is the whole content of "not wired".
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            absentPaths: ['/home/bridge/.ssh/authorized_keys', '/home/bridge/.ssh/authorized_keys2'],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $this->assertNotNull($this->firstMatching($findings, 'not wired'));
+    }
+
+    public function test_every_named_file_unreadable_withholds_the_fail(): void
+    {
+        // The control for the case above, and a verdict that MOVED: this shape used to
+        // FAIL ("no readable authorized_keys at …"), which is the same conflation one
+        // coordinate over — a root run that could not open the file (a squashed NFS root,
+        // an ACL, SELinux) measured nothing, and nothing is not an absence.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: ['/some/other/path' => self::GOOD_LINE],   // neither named path is in the map
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $unverified = $this->firstMatching($findings, 'could not read');
+        $this->assertNotNull($unverified);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys ', $unverified->message);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $unverified->message);
+    }
+
+    public function test_the_same_pin_in_both_default_files_is_ambiguous_and_fails(): void
+    {
+        // ⚠ THE ONE SHAPE THAT STARTS FAILING (DL-359 Decision 4): an operator who copied
+        // the pinned line into BOTH default files was exit-0 while only the first file was
+        // read, and is exit-1 now that both are. sshd reads both, so two lines really do
+        // force the command and the ambiguity is real — the same verdict a duplicate
+        // WITHIN one file has always drawn.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: [
+                '/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE,
+                '/home/bridge/.ssh/authorized_keys2' => self::GOOD_LINE,
+            ],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $ambiguous = $this->firstMatching($findings, 'more than one authorized_keys line');
+        $this->assertNotNull($ambiguous);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys ', $ambiguous->message);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $ambiguous->message);
     }
 
     // ─── FIPS ─────────────────────────────────────────────────────────────────
@@ -541,6 +637,12 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
      *                                              map (or maps to null/'') reads as
      *                                              UNREADABLE, which is how a 0600 file this
      *                                              run may not open is modelled.
+     * @param  list<string>  $absentPaths  the paths with NO FILE at them — the third state
+     *                                     {@see AuthorizedKeysRead} exists for, and NOT the
+     *                                     same fixture as an unreadable one: an absent file
+     *                                     was consulted and contributes nothing, so an
+     *                                     absence drawn over it is established. It wins over
+     *                                     $keysByPath so a case cannot state both.
      */
     public function __construct(
         private string $authorizedKeys = '',
@@ -559,6 +661,8 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         private ?int $euid = null,
         /** @var array<string, ?string> */
         private array $keysByPath = [],
+        /** @var list<string> */
+        private array $absentPaths = [],
     ) {}
 
     public function isRoot(): bool
@@ -605,17 +709,24 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         return $this->isRoot ? $this->sshdConfig : null;
     }
 
-    public function readAuthorizedKeys(string $path): ?string
+    public function readAuthorizedKeys(string $path): AuthorizedKeysRead
     {
         $this->readPaths[] = $path;
 
+        if (in_array($path, $this->absentPaths, true)) {
+            return AuthorizedKeysRead::absent();
+        }
         if ($this->keysByPath !== []) {
             $text = $this->keysByPath[$path] ?? null;
 
-            return ($text === null || $text === '') ? null : $text;
+            return ($text === null || $text === '')
+                ? AuthorizedKeysRead::unreadable()
+                : AuthorizedKeysRead::text($text);
         }
 
-        return $this->authorizedKeys === '' ? null : $this->authorizedKeys;
+        return $this->authorizedKeys === ''
+            ? AuthorizedKeysRead::unreadable()
+            : AuthorizedKeysRead::text($this->authorizedKeys);
     }
 
     public function sshRoundTrip(string $target, string $stdin): array

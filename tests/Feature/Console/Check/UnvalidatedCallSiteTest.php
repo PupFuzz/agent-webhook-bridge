@@ -96,19 +96,23 @@ class UnvalidatedCallSiteTest extends TestCase
         // available to it — limb (a), a measurement that did not happen. Its SIBLING arm
         // (the database answered, and has no such account) is NOT here and must not be: it
         // stays `fail`, because that is a measured config fault.
-        // TWO MORE SINCE DL-359 (card#8976), and they are the same limb over a POPULATION
-        // rather than over one read: `AuthorizedKeysFile` names a LIST of files, so the
-        // absent-line verdict is a claim about all of them.
-        //   4. nothing at all could be consulted because every entry was unresolvable (a
-        //      `%U` this run cannot expand — the DL-259 uid state one token over), so no
-        //      file was even named, let alone read;
-        //   5. PART of the population was consulted — one file readable, another not, or a
-        //      sibling entry unresolvable — and the pinned line may be in exactly the one
-        //      that was not. The line found NOTHING in what it read and still may not say
-        //      the line is absent, which is limb (c): a negative over an incomplete
-        //      population is not evidence. Its SIBLING arm (every named file was read and
-        //      none carried the line, at a root-resolved path) is NOT here and must not
-        //      be: it stays `fail`, because that absence WAS measured.
+        // TWO MORE SINCE DL-359 (card#8976), and both are limb (a) — a measurement that did
+        // not happen — over a POPULATION rather than over one read: `AuthorizedKeysFile`
+        // names a LIST of files, so the absent-line verdict is a claim about all of them.
+        // ⛔ NOT limb (c), which is about a COMPARISON leg whose comparand does not resolve;
+        // neither of these legs compares anything.
+        //   4. not ONE file could be consulted — every entry was unresolvable (a `%U` this
+        //      run cannot expand, the DL-259 uid state one token over) or unreadable, so
+        //      either no file was named or none of the named ones could be opened;
+        //   5. PART of the population was consulted — one file opened, another refused, or
+        //      a sibling entry unresolvable — and the pinned line may be in exactly the one
+        //      that was not. The leg found NOTHING in what it read and still may not say
+        //      the line is absent: a negative over an incomplete population is not
+        //      evidence. Its SIBLING arm (every named file was ACCOUNTED FOR — read, or
+        //      found not to exist — and none carried the line, at a root-resolved path) is
+        //      NOT here and must not be: it stays `fail`, because that absence WAS
+        //      established. ⭐ A file that is not THERE belongs to the sibling arm, not to
+        //      this one (card#8976 r2): sshd takes no keys from it, so it was searched.
         'app/Bridge/Tools/SshTransportProbe.php' => 5,
         // The command's own fail-soft envelope around the writeback board probe.
         'app/Console/Commands/Bridge/CheckCommand.php' => 1,

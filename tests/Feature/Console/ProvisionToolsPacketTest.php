@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Bridge\Tools\AgentNameShape;
+use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\GitRefProbe;
 use App\Bridge\Tools\PublicKeyLineShape;
 use App\Bridge\Tools\SafePathShape;
@@ -775,9 +776,11 @@ final class PacketSshEnvironment implements SshProbeEnvironment
         return null;
     }
 
-    public function readAuthorizedKeys(string $path): ?string
+    public function readAuthorizedKeys(string $path): AuthorizedKeysRead
     {
-        return null;
+        // The packet renders no pinned-line verdict, so this leg has no reader here; the
+        // safe arm is the one that concludes nothing.
+        return AuthorizedKeysRead::unreadable();
     }
 
     /** @return array{exit: int, stdout: string, stderr: string} */

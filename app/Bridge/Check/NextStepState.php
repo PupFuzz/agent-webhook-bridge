@@ -53,6 +53,18 @@ enum NextStepState: string
      * ⛔ NOT A FAULT, AND THE REMEDY IS THE OPPOSITE OF ONE: re-run `bridge:check` as the
      * account that can read (`sudo`), and do not re-provision on this line alone. The leg
      * above names which read was blocked.
+     *
+     * ⚠ THE COMMAND IS THE REMEDY FOR THE COMMON CAUSE, NOT FOR EVERY CAUSE (card#8976,
+     * DL-359). Two of the ssh leg's `unvalidated` arms are reachable ONLY from a run that is
+     * ALREADY root — both need a root-resolved `AuthorizedKeysFile` to exist at all — so a
+     * privileged re-run cannot supply what they lacked: an entry this PHP process could not
+     * RESOLVE (`%U` on a host with no `posix_getpwnam`, an extension `sudo` does not
+     * install), and a file a root-resolved run could not OPEN. The state itself is still
+     * right on those arms — nothing was measured, and re-provisioning is still the wrong
+     * move — so this is a BOUND on the command, not a fifth state: `command` must name ONE
+     * command, no command supplies a missing PHP extension, and a state whose `command` had
+     * to be fabricated would put a FALSE instruction in the machine contract in place of a
+     * merely unhelpful one. The finding above names what went unconsulted; the fix is there.
      */
     case BridgeSideUnverified = 'bridge_side_unverified';
 

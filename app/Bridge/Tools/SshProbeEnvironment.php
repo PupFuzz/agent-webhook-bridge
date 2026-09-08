@@ -73,8 +73,16 @@ interface SshProbeEnvironment
      */
     public function sshdEffectiveConfig(?string $forUser = null): ?string;
 
-    /** The authorized_keys file text at $path, or null when absent/unreadable. */
-    public function readAuthorizedKeys(string $path): ?string;
+    /**
+     * One read of the `authorized_keys` file at $path.
+     *
+     * THREE STATES, and {@see AuthorizedKeysRead} owns why: a file that is NOT THERE was
+     * consulted and contributes nothing (so an absence drawn over it is established), while
+     * a file this process could not LOOK at establishes nothing at all. Returning null for
+     * both made the authoritative "not wired" FAIL unreachable on the OpenSSH default, whose
+     * second file is absent on essentially every host (card#8976).
+     */
+    public function readAuthorizedKeys(string $path): AuthorizedKeysRead;
 
     /**
      * Round-trip one board-tools call over ssh to $target (`user@host`), sending

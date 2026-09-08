@@ -506,9 +506,12 @@ drifts.
 > files, so a line in `authorized_keys2` certifies exactly like one in `authorized_keys`,
 > and the finding names which file carried it. The **authoritative** "not wired" FAIL is
 > only reached when every one of those files was actually consulted: an entry this run
-> could not read (another 0600 file) or could not resolve (`%U` with no uid lookup on a
+> could not OPEN (another 0600 file) or could not resolve (`%U` with no uid lookup on a
 > host without `posix_getpwnam`) is reported `unvalidated` and **named**, because the line
-> may be in exactly the file that was not read. If a
+> may be in exactly the file that was not read. A file that simply is **not there** is
+> consulted, not withheld — sshd takes no keys from it, so it counts toward the FAIL, which
+> is what makes the FAIL reachable at all on the two-file default (`authorized_keys2` does
+> not exist on most hosts). If a
 > **configured** `ssh_account` does not resolve to an OS account on the host, the
 > account-dependent legs **fail** honestly (*"…does not resolve to an OS account…"*)
 > rather than certify against a phantom `/.ssh/authorized_keys` built from an empty home.

@@ -25,6 +25,11 @@ use App\Bridge\Support\Severity;
  *    pinned line may sit in ANY of them, so all are read; an absent line is only the
  *    authoritative "not wired" FAIL when every one of them was actually consulted, and
  *    an entry this run cannot resolve or read is named rather than skipped (card#8976).
+ *    ⭐ CONSULTED, not present: a file that is NOT THERE gives sshd no keys, so it counts
+ *    toward that population — the FAIL is withheld only for an entry this run could not
+ *    RESOLVE or could not LOOK AT ({@see AuthorizedKeysRead}). Reading a missing file as an
+ *    unread one made the FAIL unreachable on the OpenSSH default, whose second file is
+ *    absent on essentially every host.
  *    (THERE IS NO sshd-POSTURE LEG. An earlier revision of this docblock described a
  *    required `PasswordAuthentication no` check; card#5091 RETIRED that leg — the
  *    account-level drop-in it certified locked out an operator sharing the ssh account —
@@ -37,7 +42,10 @@ use App\Bridge\Support\Severity;
  * it and swept them, because a leg that could not read the file, or read the wrong one,
  * did not answer its own question. ABSENT pinned line at an ASSUMED (non-authoritative)
  * path ⇒ `unvalidated` (the AuthorizedKeysFile may be relocated); a PRESENT-BUT-BAD line,
- * or an absent line at an AUTHORITATIVE (root-resolved) path, ⇒ `fail` (DR2-3b).
+ * or an absent line at an AUTHORITATIVE (root-resolved) path THE RUN CONSULTED IN FULL,
+ * ⇒ `fail` (DR2-3b — the qualification is the paragraph above, and it is not a footnote:
+ * an authoritative path whose population this run only PARTLY consulted reports
+ * `unvalidated`, because the line may be in the part it never saw).
  */
 final class SshTransportProbe
 {
@@ -117,31 +125,40 @@ final class SshTransportProbe
         $findings = [];
         [$paths, $authoritative, $unresolvable] = $this->authorizedKeysPaths();
 
-        /** @var array<string, string> $read  path => text, for the files this run consulted */
+        // ⭐ THREE OUTCOMES PER FILE, NOT TWO (card#8976 r2). A file that is NOT THERE was
+        // consulted — it supplies sshd no keys, so the absence it leaves is ESTABLISHED and
+        // the authoritative FAIL below is earned. Only a file this run could not LOOK at
+        // leaves the population incomplete. {@see AuthorizedKeysRead} owns the distinction;
+        // collapsing it made `$unreadable` non-empty on every OpenSSH default install
+        // (`.ssh/authorized_keys2` is absent on essentially every host), which put the
+        // exit-code-bearing FAIL out of reach exactly where it was needed.
+        /** @var array<string, string> $read  path => text, for the files that carried one */
         $read = [];
+        /** @var list<string> $consulted every path whose contribution this run established */
+        $consulted = [];
+        /** @var list<string> $unreadable every path this run could not look at at all */
         $unreadable = [];
         foreach ($paths as $path) {
-            $content = $this->env->readAuthorizedKeys($path);
-            if ($content === null) {
+            $result = $this->env->readAuthorizedKeys($path);
+            if (! $result->consulted) {
                 $unreadable[] = $path;
 
                 continue;
             }
-            $read[$path] = $content;
+            $consulted[] = $path;
+            if ($result->text !== null) {
+                $read[$path] = $result->text;
+            }
         }
 
-        if ($read === []) {
-            // Nothing was consulted. An UNRESOLVABLE entry is not a file this run may
-            // report on at all (it does not know its path), so it can never carry the
-            // authoritative "not wired" accusation the unreadable-file arm carries.
-            if ($unresolvable !== []) {
-                $findings[] = Finding::unvalidated("no authorized_keys file could be consulted for agent {$agentName}: this run ".$this->unconsulted($unreadable, $unresolvable).' — the pinned line is UNVERIFIED, and its absence is NOT a conclusion this run may draw');
-
-                return $findings;
-            }
-
+        if ($consulted === []) {
+            // NOT ONE FILE ANSWERED, so there is no population to draw an absence over at
+            // all — this arm reports the READ, where every arm below reports the LINE. An
+            // UNRESOLVABLE entry is not a file this run may report on (it does not know its
+            // path), and `$unresolvable` is non-empty only on the root-resolved branch, so
+            // the non-authoritative arm is always the one assumed default path.
             $findings[] = $authoritative
-                ? Finding::fail('no readable authorized_keys at '.implode(' ', $unreadable)." (resolved from sshd -T) — no pinned line for agent {$agentName}")
+                ? Finding::unvalidated("no authorized_keys file could be consulted for agent {$agentName}: this run ".$this->unconsulted($unreadable, $unresolvable).' — the pinned line is UNVERIFIED, and its absence is NOT a conclusion this run may draw')
                 : Finding::unvalidated('could not read '.implode(' ', $unreadable)." (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
 
             return $findings;
@@ -159,11 +176,15 @@ final class SshTransportProbe
 
         if ($matches === []) {
             // ABSENCE is a claim about the WHOLE set of files sshd consults for this
-            // account, so one file this run could not read (or an entry it could not
+            // account, so one file this run could not LOOK AT (or an entry it could not
             // resolve) unmakes it — the line may be in exactly that one. Root-ness makes
             // the PATHS authoritative; it does not make a partial search complete.
+            // ⛔ A file that was not THERE does not unmake it, and reading it as though it
+            // did is what put this FAIL out of reach on the two-file OpenSSH default: sshd
+            // takes no keys from a file that does not exist, so that file is searched, and
+            // the search over it came back empty.
             if ($unreadable !== [] || $unresolvable !== []) {
-                $findings[] = Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} in ".implode(' ', array_keys($read)).' — but this run did not consult every file sshd names for that account: it '.$this->unconsulted($unreadable, $unresolvable).'. The line may be in one of those, so this is UNVERIFIED, not absent');
+                $findings[] = Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} — this run consulted ".implode(' ', $consulted).' and did NOT consult every file sshd names for that account: it '.$this->unconsulted($unreadable, $unresolvable).'. The line may be in one of those, so this is UNVERIFIED, not absent');
 
                 return $findings;
             }

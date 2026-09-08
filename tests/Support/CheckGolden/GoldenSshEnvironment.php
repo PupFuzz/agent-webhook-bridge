@@ -2,6 +2,7 @@
 
 namespace Tests\Support\CheckGolden;
 
+use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\SshProbeEnvironment;
 
 /**
@@ -75,9 +76,19 @@ final class GoldenSshEnvironment implements SshProbeEnvironment
         return $this->root ? $this->sshdConfig : null;
     }
 
-    public function readAuthorizedKeys(string $path): ?string
+    /**
+     * The empty default models a file this run COULD NOT READ, not an absent one, and the
+     * distinction is load-bearing since card#8976: the fixtures that pass no keys
+     * (`board-tools-ssh-default-transport-advisory`) exist to render the UNVERIFIABLE
+     * setup, which is what an unreadable file produces. An absent file is a CONSULTED
+     * file — over a root-resolved path it earns the authoritative FAIL — and no golden
+     * fixture is root, so none of them can reach that arm to capture it.
+     */
+    public function readAuthorizedKeys(string $path): AuthorizedKeysRead
     {
-        return $this->authorizedKeys === '' ? null : $this->authorizedKeys;
+        return $this->authorizedKeys === ''
+            ? AuthorizedKeysRead::unreadable()
+            : AuthorizedKeysRead::text($this->authorizedKeys);
     }
 
     /** @return array{exit: int, stdout: string, stderr: string} */
