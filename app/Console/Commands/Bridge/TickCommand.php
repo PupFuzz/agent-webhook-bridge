@@ -11,7 +11,12 @@ use App\Bridge\Scheduling\TickRecord;
  * THE TICK — the second, opt-in ingress into the periodic-job registry
  * (card#8425 / DL-325). ONE crontab line drives every periodic job this install has.
  *
- *     0,10,20,30,40,50 * * * * cd /path/to/bridge && php artisan bridge:tick
+ * ⛔ THE LINE IS NOT RESTATED HERE (card#9058 / DL-361). It lived in five places and the two
+ * defects it carried — a bare `php` that assumes cron's `PATH`, and an APPENDED `tick.log` that
+ * nothing rotates — were in all of them. `App\Bridge\Scheduling\TickAdoptionNotice` is now its
+ * single owner: it renders the line for THIS install (absolute interpreter, absolute paths) and
+ * `bridge:provision-tools` prints it at enablement time until the install adopts a tick.
+ * `docs/periodic-jobs.md` § *Adopting the tick* is the template and the explanation.
  *
  * ⛔ ADOPTING IT IS OPT-IN, AND NOTHING BREAKS WITHOUT IT. The registry also runs from
  * the inbound webhook's after-response gate (`App\Bridge\Scheduling\JobSchedulerGate`,
