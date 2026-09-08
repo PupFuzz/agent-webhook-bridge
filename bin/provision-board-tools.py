@@ -35,6 +35,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -1196,7 +1197,7 @@ def run_role_b(args) -> int:
 
     deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
     mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
-    _deploy_snapshot(deploy_dir)
+    snapshot_replaced = _deploy_snapshot(deploy_dir)
 
     # Tools transport keys this provisioner OWNS — force-set (overwrite) on every re-run.
     force_env = {
@@ -1230,7 +1231,7 @@ def run_role_b(args) -> int:
         merged = merge_mcp_json(existing_text, args.channel_name, mjs_path, force_env, channel_defaults)
     except ValueError as e:
         _fail(str(e))
-    _install_mcp_json(mcp_path, merged, existing_text)
+    mcp_changed = _install_mcp_json(mcp_path, merged, existing_text)
 
     # Seed known_hosts BEFORE any --self-cert so --self-cert is a real host-key
     # exercise. The .mjs ssh spawn is BatchMode with no StrictHostKeyChecking, so an
@@ -1258,9 +1259,68 @@ def run_role_b(args) -> int:
     print(f"  claude --dangerously-load-development-channels server:{args.channel_name}")
     print("(This flag is CLI-only every session — no .mcp.json/settings.json equivalent.)")
 
+    # EITHER write leaves the running child stale: the merged `.mcp.json` and the
+    # deployed connector are two independent things this run can replace, and the
+    # snapshot one moves without `.mcp.json` moving at all (it holds args, ssh target
+    # and channel name — nothing version-derived), so gating on the merge alone left
+    # the seat that got a NEW connector with `.mcp.json unchanged:` and silence.
+    if mcp_changed or snapshot_replaced:
+        _print_activation_block(args.channel_name)
+
     if args.self_cert:
         return _self_cert(args.ssh_target, key_path, args.ssh_port)
     return 0
+
+
+def _print_activation_block(channel_name: str) -> None:
+    """What a seat whose session is ALREADY RUNNING has to do to pick this merge up.
+
+    ⭐ EVERY SENTENCE IS UNDER THE OPENING QUESTION. On a fresh seat (STEP 1 of the setup
+    packet) there is no session and nothing here applies, so the block opens by asking
+    and closes by naming the fresh-seat path — nothing addressed to an operator fires at
+    someone who has not started a session yet.
+
+    ⭐ IT MAKES NO CLAIM THIS PROCESS CANNOT ESTABLISH. It does not probe the address, does
+    not name a holder, and does not say the session IS running: it cannot see the seat's
+    session, and the env it reads is its own, not that session's. Measured on the HTTP/port
+    transport by roundtable #420 across three seats; the unix leg is the same
+    already-held-address mechanism this repo documents, not a second measurement.
+
+    ⭐ THE RESTART IS THE OPERATOR'S, NOT THE AGENT'S (operator ruling 2026-09-07). A seat
+    with no GNU screen — Windows, a plain terminal — has no way to restart itself, so the
+    agent's job is to hand the ask over in words the operator can act on. Printed when
+    EITHER of the two things this run can write actually moved — the merged `.mcp.json`
+    (`_install_mcp_json`'s return) or the deployed connector (`_deploy_snapshot`'s) — each
+    read from the boolean that function already decided its own print on.
+
+    The doc pointer is the owner of the explanation (canon #16 DELETE-and-point): this block
+    carries ONE load-bearing phrase and the pointer, and `ActivationPhraseLockstepTest`
+    reds if that phrase drifts from any of its copies.
+    """
+    host = socket.gethostname()
+    print()
+    print(
+        f"Session already running on this seat WITH channel {channel_name} loaded (it was "
+        f"started with --dangerously-load-development-channels server:{channel_name})?"
+    )
+    print("  Then its channel server still runs what was on disk BEFORE this run, so what")
+    print("  this run wrote — the merged .mcp.json and/or the deployed connector — takes")
+    print("  effect only at the next channel-server start:")
+    # ⚠ KEEP THE TOKEN `/mcp reconnect` IN ONE LITERAL: splitting it drops this file out
+    # of `ActivationPhraseLockstepTest`'s census SILENTLY. Splitting the REST of the
+    # phrase is safe — it reds. That bound is stated in that test's docblock.
+    print("  /mcp reconnect does not stop the previous channel server — restart the session.")
+    print(
+        "  The restart is the operator's action (an agent hands it over in these words; a "
+        "seat without GNU screen"
+    )
+    print(
+        f'  cannot restart itself): "close the Claude Code session running channel '
+        f'{channel_name} on {host}, then'
+    )
+    print('  start it again with the launch line above."')
+    print("  Details: docs/board-tools-enablement.md § Activating on a running seat")
+    print("No session yet? Start it with the launch line above.")
 
 
 def _resolve_host_b_key(args, key_dir: str, key_path=None) -> tuple:
@@ -1377,7 +1437,7 @@ def _assert_key_pair_corresponds(key_path: str, pub_path: str) -> None:
         )
 
 
-def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> None:
+def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> bool:
     """Serialise + install `.mcp.json` without ever truncating the live file.
 
     The merged config is serialised into a sibling `.tmp` and compared against what is
@@ -1386,6 +1446,13 @@ def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> None:
     A failure anywhere in serialise/write leaves the original untouched and removes the
     temp file — the previous in-place `open(mcp_path, "w")` truncated the seat's live
     `.mcp.json` before the first byte of the replacement was serialised.
+
+    Returns True when the file on disk CHANGED (a fresh write or a replace), False when
+    the merge was a no-op. ⭐ THIS IS THE SAME BOOLEAN THE `.mcp.json unchanged` PRINT
+    ALREADY DECIDES ON — it is returned rather than recomputed by the caller, because a
+    second derivation of "did anything move?" is exactly the drift this returns to avoid.
+    `run_role_b` gates its activation block on it: telling a seat its config just changed
+    under a running session is false when nothing changed.
     """
     # Resolve the link BEFORE anything is written: `os.replace` onto a SYMLINK replaces
     # the link itself with a regular file, silently detaching a seat that keeps its
@@ -1407,7 +1474,7 @@ def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> None:
             new_text = fh.read()
         if existing_text is not None and new_text == existing_text:
             print(f".mcp.json unchanged: {mcp_path}")
-            return
+            return False
 
         if existing_text is not None:
             backup_path = f"{mcp_path}.bak-{_utc_stamp()}"
@@ -1430,6 +1497,7 @@ def _install_mcp_json(mcp_path: str, merged: dict, existing_text) -> None:
             os.chmod(tmp_path, stat.S_IMODE(os.stat(mcp_path).st_mode))
         os.replace(tmp_path, mcp_path)
         print(f".mcp.json merged: {mcp_path}")
+        return True
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -1744,7 +1812,15 @@ def _print_scanned_fingerprints(scanned, host: str) -> None:
         print(f"  {line}")
 
 
-def _deploy_snapshot(deploy_dir: str) -> None:
+def _deploy_snapshot(deploy_dir: str) -> bool:
+    """Put the bundled channel-server snapshot at `deploy_dir`.
+
+    Returns True when THIS run wrote the connector the seat will next start (first
+    deploy, or a stale one replaced), False when the deployed snapshot was already
+    equal-or-newer and nothing on disk moved. That boolean is the one this function
+    already decides its own prints on — `run_role_b` reads it rather than
+    recomputing a version compare that could disagree with the line printed here.
+    """
     source = _bundled_snapshot_dir()
     bundled_version = _package_version(os.path.join(source, "package.json"))
 
@@ -1763,7 +1839,7 @@ def _deploy_snapshot(deploy_dir: str) -> None:
         if _version_tuple(deployed_version) >= _version_tuple(bundled_version):
             print(f"channel-server snapshot up to date (deployed {deployed_version} >= bundled {bundled_version}).")
             _npm_ci(deploy_dir)
-            return
+            return False
         print(f"replacing stale snapshot (deployed {deployed_version} < bundled {bundled_version}).")
         # RENAME, never rmtree: this tree is the seat's live channel server. If the
         # copytree/npm-ci that follows fails, a deleted snapshot leaves the seat with no
@@ -1784,6 +1860,7 @@ def _deploy_snapshot(deploy_dir: str) -> None:
     )
     print(f"deployed channel-server snapshot {bundled_version} to {deploy_dir}.")
     _npm_ci(deploy_dir)
+    return True
 
 
 def _require_node_20() -> None:

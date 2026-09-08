@@ -445,6 +445,33 @@ class ProvisionToolsPacketTest extends TestCase
         $this->assertStringContainsString('delete it only once this seat is certified.', $out);
     }
 
+    /**
+     * STEP 4's activation line (card#8984, roundtable #420).
+     *
+     * ⭐ IT IS NOT A BANNER, AND THAT IS THE ASSERTION AT THE BOTTOM. The packet carries
+     * exactly ONE `USER ACTION REQUIRED` banner — STEP 3, the pin — and a second one would
+     * blunt the shape an operator scans for. This line is addressed to the PM: it tells
+     * them to RAISE the restart with the operator when the seat turns out to have a
+     * session already up, which is a different act from the packet demanding one.
+     *
+     * Seen red: reword the phrase here (or drop the line) and this fails; the same phrase
+     * across every other surface is `ActivationPhraseLockstepTest`'s subject.
+     */
+    public function test_step_four_names_the_running_seat_case_and_hands_the_restart_to_the_operator(): void
+    {
+        $this->writeSshAgent(sshAccount: 'bridge-user');
+
+        $out = $this->runPacket(['--host-a' => 'hostA.example']);
+
+        $this->assertStringContainsString(
+            'session already running on that seat? /mcp reconnect does not stop the previous channel server — restart the session: '
+                .'hand the restart to the OPERATOR as their action (a seat without GNU screen — Windows included — cannot restart itself). '
+                .'docs/board-tools-enablement.md § Activating on a running seat',
+            $out,
+        );
+        $this->assertSame(1, substr_count($out, 'USER ACTION REQUIRED'), 'the packet has exactly one banner, and it is STEP 3');
+    }
+
     public function test_the_header_says_when_host_a_has_not_been_supplied(): void
     {
         $this->writeSshAgent(sshAccount: 'bridge-user');
