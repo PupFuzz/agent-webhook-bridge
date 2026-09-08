@@ -266,11 +266,17 @@ class ConfigSeenLedgerTest extends TestCase
             ConfigSeenLedger::recordRetired('impl', '2026-09-08 — decommissioned');
         });
 
-        // The CONSEQUENCE, not the exception: what the operator loses is the ability to be
-        // told this seat's block went missing.
+        // ⛔ THE CONSEQUENCE, NOT THE EXCEPTION — AND ONE MATCHER FOR BOTH WRITERS WOULD BE THE
+        // DEFECT THIS ASSERTS AGAINST. A lost SIGHTING blinds the lost check for that seat; a
+        // lost RETIREMENT blinds nothing and instead leaves the decision undurable. A single
+        // substring both messages satisfy is how one writer's line came to carry the other's
+        // claim, so each is matched on the claim only IT can truthfully make.
         Log::shouldHaveReceived('warning')
             ->withArgs(fn (string $message) => str_contains($message, 'cannot report this seat\'s block as LOST'))
-            ->twice();
+            ->once();
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message) => str_contains($message, 'the lost-block check is NOT silenced for it'))
+            ->once();
     }
 
     /**

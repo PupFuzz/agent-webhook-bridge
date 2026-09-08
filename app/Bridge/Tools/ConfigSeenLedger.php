@@ -37,9 +37,12 @@ use Throwable;
  * three callers are a DIAGNOSTIC COMMAND and a live tool call: neither may fail because an
  * audit row could not be written, and `bridge:check` in particular must never abort — a
  * command that dies while reporting on an install is worse than one that reports a gap. So
- * every throw is caught and logged, and the log line names the CONSEQUENCE (the lost check
- * goes blind for that seat) rather than the exception, because the consequence is what the
- * operator has to act on.
+ * every throw is caught and logged, and the log line names the CONSEQUENCE rather than the
+ * exception, because the consequence is what the operator has to act on. ⛔ THE TWO WRITERS LOSE
+ * DIFFERENT THINGS AND NEITHER LINE MAY BORROW THE OTHER'S: a lost SIGHTING blinds the lost
+ * check for that seat, while a lost RETIREMENT blinds nothing — it leaves the operator's
+ * decision undurable, so the lost-block check is not silenced for it and the RETIRED line
+ * reports `unvalidated` instead. One message standing for both is specific and wrong, which is worse than generic.
  *
  * ⛔ NEVER read-then-write. Two doors can serve one agent concurrently and a check can run
  * beside them, so a `SELECT` followed by an `INSERT` races into a unique violation that costs
@@ -207,7 +210,7 @@ final class ConfigSeenLedger
             );
         } catch (Throwable $e) {
             Log::warning(
-                'agent-tools: the board_tools retirement could not be recorded — bridge:check cannot report this seat\'s block as LOST if it later disappears',
+                'agent-tools: the board_tools retirement could not be recorded — the operator\'s decision is NOT durable, so bridge:check reports this seat as "retired in config but the tombstone could NOT be recorded" instead of RETIRED, the lost-block check is NOT silenced for it, and deleting the YAML of a seat this install HAS recorded, before a run prints RETIRED, brings it back as a LOST fail with nothing left to retire it with',
                 ['agent' => $agent, 'error' => $e->getMessage()],
             );
         }
