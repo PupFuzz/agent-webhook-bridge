@@ -27,8 +27,17 @@ abstract class TestCase extends BaseTestCase
      * envelope, and leave the run green while the same inserts COMMIT on a shared MariaDB.
      * A primitive that starts writing a row is the trigger to add its table here AND to give
      * its callers an isolation trait, in that same change.
+     *
+     * ⚑ THE THIRD (card#8973 / DL-360) WIDENS THE REACH RATHER THAN REPEATING IT: the
+     * config-seen ledger writes from the SAME dispatcher success path AND from `bridge:check`
+     * itself, so a test that merely RUNS the command against a config carrying an enabled
+     * `board_tools` block now leaves a row. The un-isolated population was re-derived at that
+     * change — three test classes run `bridge:check` without `RefreshDatabase` and none of
+     * them writes a board_tools block — but the derivation is the reason this member is here,
+     * not a substitute for it: the guard `continue`s when the table is absent, so a SQLite
+     * `:memory:` run cannot see the class at all and only the MariaDB legs enforce it.
      */
-    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls'];
+    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen'];
 
     /**
      * A path that must not exist, so an install-reading check finds nothing rather than

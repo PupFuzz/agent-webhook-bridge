@@ -348,6 +348,26 @@ final class CheckContext
     public ?string $configDir = null;
 
     /**
+     * Whether THE SCAN of the config dir actually happened this run — true when the dir was
+     * read, false when it was not, and null until the scan has had its chance to say.
+     *
+     * ⛔ IT IS PUBLISHED BY THE SCAN AND MUST NOT BE RE-DERIVED, and the reason is measured
+     * rather than defensive. A directory at mode `0400` passes `is_dir()` AND `is_readable()`
+     * and then globs EMPTY, because listing a directory's contents needs the EXECUTE
+     * (search) bit, not the read bit — so any check re-deriving "was the dir read" from
+     * `is_readable` alone concludes YES on exactly the shape where the answer is NO, and
+     * then reads the empty result as "this install has no agent configs". That is the
+     * confidently-false claim the not-run reason beside it already exists to avoid; both now
+     * read this one field.
+     *
+     * ⚠ THE ROOT BEHAVIOUR IS INFERRED, NOT MEASURED. `CAP_DAC_READ_SEARCH` bypasses the
+     * directory search permission, so a root run should read `true` on a dir an unprivileged
+     * run cannot traverse. That was not executed here, and the test covering the arm is
+     * skipped as root, so CI does not measure it either.
+     */
+    public ?bool $configDirScanned = null;
+
+    /**
      * The agent roster built from every config that parsed, or null when there was
      * nothing to build one from.
      *
@@ -460,4 +480,25 @@ final class CheckContext
      * @var array<string, true>
      */
     public array $sshSetupIncomplete = [];
+
+    /**
+     * The agents this run reported as having a LOST `board_tools` block (card#8973 /
+     * DL-360), in the order the leg reported them.
+     *
+     * THE SECOND FIELD HERE THAT IS A FACT ABOUT WHAT ANOTHER CHECK REPORTED rather than
+     * about the install — {@see self::$sshSetupIncomplete} is the first — and it carries the
+     * same coupling: it exists only after {@see CheckSlot::BoardToolsLost} has run, and it
+     * changes meaning if that leg's verdicts move.
+     *
+     * ⚑ IT IS A CONTEXT FIELD RATHER THAN A BY-ID READBACK, WHICH REVERSES
+     * {@see NextSteps}' OWN RULE, and the reversal is stated where the rule is stated rather
+     * than left to be discovered. `NextSteps::severitiesById()` skips every result whose
+     * `agent` is null, and a run-once {@see Check} always has a null agent
+     * ({@see CheckResult::$agent}) — so the by-id route cannot carry a per-agent fact out of
+     * a run-once leg at all. The seat is named in the leg's PROSE and nowhere in its
+     * structure; this field is how the name reaches the consumer.
+     *
+     * @var list<string>
+     */
+    public array $boardToolsLost = [];
 }

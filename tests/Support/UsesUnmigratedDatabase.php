@@ -24,11 +24,19 @@ use Illuminate\Database\DatabaseManager;
  * than `{@see}`-linked, as {@see SkipsAsRoot} records: pint rewrites a docblock FQCN into a
  * real `use`, and a consumer of this trait must not become its import.
  *
- * ⚑ IT IS SCOPED TO THE ONE MODEL ON PURPOSE. `RefreshDatabase`'s transaction resolves the
- * connection through the CONTAINER while Eloquent resolves it through the static resolver
- * swapped here, so the surrounding test's own database is untouched — and swapping every
- * model would take the harness's own tables with it. The swap is undone in a `finally`
- * whatever the body does.
+ * ⛔ IT REDIRECTS EVERY ELOQUENT MODEL, NOT ONE — and this docblock claimed the opposite
+ * until card#8973 measured it. `Model::$resolver` is a single `protected static` slot
+ * declared on the base `Illuminate\Database\Eloquent\Model`, and no model here re-declares
+ * it, so `BoardToolsClientCall::setConnectionResolver()` writes THE slot: measured, an
+ * unrelated `WebhookEvent` query resolves `unmigrated` inside the body and `sqlite` again
+ * after it. The one model named below is therefore the HANDLE on a global swap, not its
+ * scope — which is what makes the trait usable for a check that reads two tables, and what
+ * makes an unrelated model query inside the body a `no such table` rather than a puzzle.
+ *
+ * ⚑ WHAT DOES STAY ISOLATED IS THE SURROUNDING TEST'S TRANSACTION: `RefreshDatabase`
+ * resolves its connection through the CONTAINER, not through this static slot, so its
+ * rollback is unaffected. The swap is undone in a `finally` whatever the body does — so the
+ * redirection lasts exactly as long as the body, which is what keeps a global swap safe.
  */
 trait UsesUnmigratedDatabase
 {

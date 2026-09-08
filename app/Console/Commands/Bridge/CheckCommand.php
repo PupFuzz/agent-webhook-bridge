@@ -19,6 +19,7 @@ use App\Bridge\Check\Checks\BoardToolsBearerCheck;
 use App\Bridge\Check\Checks\BoardToolsBoardStateCheck;
 use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
 use App\Bridge\Check\Checks\BoardToolsHttpProbeCheck;
+use App\Bridge\Check\Checks\BoardToolsLostCheck;
 use App\Bridge\Check\Checks\BoardToolsSshDefaultAdvisoryCheck;
 use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
@@ -64,6 +65,7 @@ use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolAgentResolver;
+use App\Bridge\Tools\ConfigSeenLedger;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -197,6 +199,17 @@ class CheckCommand extends BridgeCommand
         // reported by its own leg above.
         $ctx->configDir = is_string($configDir) ? $configDir : null;
         if (is_string($configDir) && is_dir($configDir)) {
+            // PUBLISHED BY THE SCAN, because only the scan is entitled to say whether it
+            // happened (card#8973 / DL-360). ⛔ THE EXECUTE BIT IS IN THE PREDICATE AND
+            // `is_readable` ALONE IS NOT ENOUGH: a directory at mode 0400 passes both
+            // `is_dir()` and `is_readable()` and then globs EMPTY, because LISTING a
+            // directory needs the search (execute) bit. A reader re-deriving this from
+            // `is_readable` therefore concludes the scan succeeded on exactly the shape
+            // where it did not, and then reads the empty result as "this install has no
+            // agent configs" — a confidently false claim about an install that may hold a
+            // dozen. The 0400 case asserts both halves as preconditions before it runs, so
+            // the trap is measured on whatever host runs the suite rather than recalled.
+            $ctx->configDirScanned = is_readable($configDir) && is_executable($configDir);
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
                 $name = basename($file, '.yml');
                 $agentNames[] = $name;
@@ -352,11 +365,15 @@ class CheckCommand extends BridgeCommand
             // NOT "unreadable" any more: the arm below owns that case, so naming it here
             // would name a cause this arm no longer covers.
             ! is_string($configDir) || ! is_dir($configDir) => 'the config dir is unset or is not a directory, so no agent config was loaded',
-            // A dir that EXISTS but the bridge user cannot read passes the arm above,
-            // and its glob() comes back empty — so without this arm the next one would
-            // tell the operator the install has no agent config files, which is a
-            // confidently false claim about an install that may hold a dozen.
-            ! is_readable($configDir) => 'the config dir could not be read, so no agent config was loaded',
+            // A dir that EXISTS but this run cannot LIST passes the arm above, and its
+            // glob() comes back empty — so without this arm the next one would tell the
+            // operator the install has no agent config files, which is a confidently false
+            // claim about an install that may hold a dozen. ⚑ IT READS THE SCAN'S OWN
+            // VERDICT rather than re-deriving one (card#8973 / DL-360): this arm used
+            // `is_readable($configDir)`, which answers YES for a 0400 directory that globs
+            // empty because LISTING needs the search bit — so the arm written to prevent
+            // the false claim did not fire on the one mode that produces it.
+            $ctx->configDirScanned !== true => 'the config dir could not be read, so no agent config was loaded',
             $agentNames === [] => 'this install has no agent config files (no *.yml in the config dir)',
             $configs === [] => 'no agent config parsed (see the errors above)',
             default => 'every parsed agent aborted before this leg (see the errors above)',
@@ -519,10 +536,30 @@ class CheckCommand extends BridgeCommand
             fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
         ));
 
+        // ⚑ A WRITE, INSIDE A CHECK COMMAND, ON PURPOSE (card#8973 / DL-360). `bridge:check`
+        // is the one path that already parses every agent's block AND touches this bridge's
+        // database, and the fact being recorded — "this install saw an enabled block for
+        // this agent" — is exactly the one the CURRENT config can no longer supply once the
+        // block is gone. Recording it from every config load instead would be a database
+        // write on the request-parsing path. It runs BEFORE the legs that read it so the run
+        // sees its own sightings, and it is best-effort by construction: the ledger swallows
+        // and logs its own failures rather than letting an audit row abort a diagnostic.
+        ConfigSeenLedger::recordSightings($configs);
+
         // FIRST, and OUTSIDE the enabled-subset guard below: a suppressed block is
         // enabled=false, so a fleet whose only board_tools agent is suppressed has an
         // EMPTY subset and this is the only place its failure surfaces.
         if (! $this->emitReport($runner->run(CheckSlot::BoardToolsSuppression, $ctx))) {
+            $ok = false;
+        }
+
+        // OUTSIDE THE GUARD FOR A STRONGER REASON THAN THE SUPPRESSION SCAN'S: this leg's
+        // subject is an agent that is NOT in the enabled subset at all, and the install it
+        // was written for had lost EVERY block — so an empty subset is precisely the state
+        // it must speak in. It also populates `$ctx->boardToolsLost`, which the NEXT STEPS
+        // derivation below reads to withhold the `no_block` question for a seat just
+        // reported LOST.
+        if (! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))) {
             $ok = false;
         }
 
@@ -840,6 +877,7 @@ class CheckCommand extends BridgeCommand
             )
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
+            ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
             ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
             ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck)

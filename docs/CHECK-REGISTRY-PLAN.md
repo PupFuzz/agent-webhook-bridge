@@ -2864,3 +2864,23 @@ the work distinguishes those.
   nothing from the start — while run 1's single iteration is the residue the in-loop refusal now
   refuses rather than renders. That closes the publication path, not the diagnosis: what killed run 1's iteration
   remains unrecoverable, and the general "was this iteration real" term stays open on the card.]
+
+  **Worked example 3 — `board_tools.lost` (card#8973 / DL-360), 2026-09-08.** A GLOBAL `Check`
+  in a new `CheckSlot::BoardToolsLost`, ordered between `BoardToolsSuppression` and
+  `BoardToolsBearer`. ⭐ **IT SITS OUTSIDE THE ENABLED-SUBSET GUARD, and for a STRONGER reason
+  than the suppression scan beside it.** That scan is outside because a suppressed block is
+  `enabled === false` and would otherwise be invisible; this leg's subject is an agent with no
+  block AT ALL — the install it was written for had lost every block, so the enabled subset was
+  EMPTY and every slot inside the guard was skipped in silence. A leg that can only speak while
+  the thing it looks for is present is a decoration. It also runs BEFORE `NextSteps::derive()`,
+  because it populates `CheckContext::$boardToolsLost`, which that derivation reads to withhold
+  the `no_block` question for a seat just reported LOST. Cost, against the prices quoted above:
+  one class, one slot, ONE `emitReport` arm in `handle()` (the global shape) plus one
+  non-predicate statement (the sighting write, whose LOOP deliberately lives in the ledger so
+  `handle()` gains no `foreach`), the pinned id list, both registered-total literals, and the
+  whole golden corpus — every capture moved its inventory line and NOT ONE line of content,
+  because the leg is silent on every committed shape. `UnvalidatedCallSiteTest` reds as designed
+  (three new sites, argued in place). ⚑ `docs/check-golden-coverage.{md,json}` were NOT
+  regenerated: both banners were already up, and this adds a fourth predicate they now name —
+  re-derived live with `php bin/check-golden-predicates.php --json`, which reports exactly one
+  ARRIVED and none DEPARTED.

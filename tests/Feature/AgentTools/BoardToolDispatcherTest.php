@@ -7,6 +7,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
 use App\Models\BoardToolsClientCall;
+use App\Models\BoardToolsConfigSeen;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -217,5 +218,35 @@ class BoardToolDispatcherTest extends TestCase
         // …and nothing was recorded, which is what makes the sabotage the cause rather
         // than something the harness merely hoped for.
         $this->assertSame(0, BoardToolsClientCall::query()->count());
+        $this->assertSame(0, BoardToolsConfigSeen::query()->count());
+    }
+
+    // ─── card#8973 / DL-360: the config-seen row ──────────────────────────────
+
+    /**
+     * ⭐ THE TWO ROWS ARE STAMPED AT DIFFERENT POINTS BECAUSE THEY ANSWER DIFFERENT
+     * QUESTIONS, and a failing tool is the input that separates them. The client-half row
+     * records that the door OPENED, so it belongs to the success — the three arms above pin
+     * that it stays absent here. The config-seen row records that an ENABLED BLOCK EXISTS
+     * for this agent, which is true the moment a door hands one over: a tool that then fails
+     * must not leave the install looking un-provisioned, or the LOST leg would start
+     * reporting on whichever seat last had a bad call.
+     *
+     * Both rows are asserted together on purpose: a writer that moved the new call down to
+     * the success point would satisfy an assertion about the row's EXISTENCE and fail this
+     * one, and that is the mistake worth catching.
+     */
+    public function test_a_dispatch_whose_tool_fails_still_records_the_block_sighting(): void
+    {
+        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd);
+
+        $this->assertFalse($outcome->ok);
+        $this->assertSame(0, BoardToolsClientCall::query()->count(), 'a refused call recorded a successful one');
+
+        $row = BoardToolsConfigSeen::query()->where('agent', 'prod-agent')->sole();
+        $this->assertNotNull($row->last_seen_at);
+        $this->assertSame('ssh', $row->transport);
+        $this->assertSame(10, $row->board_id);
+        $this->assertSame(4, $row->swimlane_id);
     }
 }

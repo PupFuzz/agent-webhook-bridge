@@ -209,6 +209,25 @@ class UnvalidatedCallSiteTest extends TestCase
         // client chain. `BoardToolsClientHalfCheckTest` pins the two-severity set from the
         // source, so a fourth factory appearing here reds there first.
         'app/Bridge/Check/Checks/BoardToolsClientHalfCheck.php' => 3,
+        // card#8973 / DL-360 — THREE legs, and every one of them is limb (a): a read that did
+        // not complete, never a fault the leg measured. Spelled out because this comment is
+        // what a maintainer reads when the count moves:
+        //   1. the config-seen ledger could not be READ (an unmigrated install, or the
+        //      client-half reader hitting a `call_provenance` value this build cannot
+        //      interpret). Without it, the absence of a LOST verdict would be this run's own
+        //      failure wearing the install's silence — the exact shape the leg exists to end.
+        //   2. a config carries a `retired:` key and NO tombstone row is on record. The write
+        //      is best-effort, so it CAN have failed; the leg's own cure ends "run bridge:check
+        //      once, then delete the YAML", so it may not confirm a decision off the config
+        //      that requested it. This is NOT a `fail`: nothing about the install is broken,
+        //      the run simply cannot promise the decision will outlive the file stating it.
+        //   3. the config dir was not SCANNED this run while recorded seats exist. The
+        //      subject is present and could not be looked at — reporting nothing there would
+        //      be indistinguishable from reporting every recorded seat present.
+        // The three verdicts this leg CAN measure are deliberately absent from this list: the
+        // LOST `fail` (a measured config fault that must flip the exit code), the RETIRED `ok`
+        // (the row was read and it is there), and its silences.
+        'app/Bridge/Check/Checks/BoardToolsLostCheck.php' => 3,
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.
