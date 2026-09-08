@@ -408,6 +408,37 @@ class SshTransportProbeTest extends TestCase
         $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $ambiguous->message);
     }
 
+    public function test_a_correct_pin_beside_a_permissive_line_for_the_same_agent_fails(): void
+    {
+        // ⭐ THE CELL DL-359 DECISION 4b CALLS ITS SECURITY JUSTIFICATION (`root|pinned|bad`):
+        // file 1 carries the correct pin, file 2 a forced-command line for the SAME agent
+        // granting pty and forwarding. sshd honours what is in file 2, so `origin/dev`'s `ok`
+        // — taken after reading only file 1 — was WRONG, not merely incomplete. Its ratified
+        // outcome is the ambiguity FAIL, the same one the case above draws; what this case
+        // adds is the shape the record calls load-bearing, which is NOT the same install:
+        // there, both lines are good and the FAIL is over-strict on its own terms.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: [
+                '/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE,
+                '/home/bridge/.ssh/authorized_keys2' => 'command="php artisan bridge:tools-call --agent=me",restrict,pty,port-forwarding ssh-ed25519 AAAAOTHERBLOB me',
+            ],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $ambiguous = $this->firstMatching($findings, 'more than one authorized_keys line');
+        $this->assertNotNull($ambiguous, 'the permissive second line was not counted, so the good pin certified over a file sshd honours');
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys ', $ambiguous->message);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $ambiguous->message);
+        // ⛔ The verdict must be the AMBIGUITY, not the capability grant: two lines force the
+        // command, so which one sshd applies is not this run's to decide, and the remedy is
+        // "leave exactly one" rather than "fix the flags on the one I picked".
+        $this->assertNull($this->firstMatching($findings, 'still grants'));
+    }
+
     // ─── two entries, ONE file (card#8976 r2) ─────────────────────────────────
     // Nothing stops two AuthorizedKeysFile entries resolving to the same file: a symlinked
     // or hard-linked `.ssh/authorized_keys2`, or one file spelled two ways. Every claim the
