@@ -1676,38 +1676,107 @@ class RoleASelfAccountArm(unittest.TestCase):
         self.assertIn("not a directory this account can open", msg)
         self.assertNotIn("root acting through a link", msg)
 
-    def test_the_root_arm_refuses_an_existing_ssh_dir_the_account_does_not_own(self):
-        # ⭐ CONTROL: delete the `_assert_root_arm_ssh_dir_owner` call and this reds — the
-        # run then fchmods 0700, fchowns the directory to the account and writes an
-        # authorized_keys inside it, over a directory chosen by whoever controls
-        # `~<account>`.
+    @staticmethod
+    def _fstat_reporting_uid(path, uid):
+        """`os.fstat` that lies about ONE directory's owner, keyed on its inode.
+
+        ⛔ A BLANKET PATCH WOULD ANSWER FOR THE HOME TOO, which is the other descriptor
+        under test here — the whole point of these cases is that the two are asked
+        separately. Keying on the inode leaves every other `fstat` in the run real.
+        """
+        ino = os.stat(path).st_ino
+        real = os.fstat
+
+        def fake(fd):
+            st = real(fd)
+            if st.st_ino != ino:
+                return st
+            fields = list(st)
+            fields[4] = uid
+            return os.stat_result(tuple(fields))
+
+        return fake
+
+    def test_the_root_arm_refuses_a_symlinked_home_even_with_a_real_ssh_inside_it(self):
+        # ⭐ CONTROL, MEASURED IN BOTH DIRECTIONS AND REPORTED AS IT MEASURED. Dropping
+        # `os.O_NOFOLLOW` from the HOME open reds this case on its MESSAGE — the run is
+        # still refused, by the uid clause below it, so what that mutant proves is that a
+        # symlinked home is refused AS a symlink and not by luck of where it pointed.
+        # Dropping the uid clause reds the two siblings below. ⛔ Removing BOTH — which is
+        # exactly what this branch had before this round — takes the write: this case then
+        # fails with `SystemExit not raised` and the line lands in the target. The home
+        # check is one question in two clauses, and neither clause alone is the guard.
         #
-        # ⛔ THE BRANCH `_create_ssh_dir`'s LSTAT NEVER SEES. That check runs only when
-        # `.ssh` is ABSENT; here it already exists, so nothing is created and nothing
-        # looked. `O_NOFOLLOW` constrains the LAST component, so a `pw_dir` that is a
-        # symlink to a directory the account does not own — with a real `.ssh` inside it —
-        # opens cleanly and used to take the whole write.
+        # ⛔ THIS IS THE REDIRECT THE `.ssh` OWNER CHECK CANNOT SEE, and the fixture says
+        # so out loud: `os.fstat` reports the target's `.ssh` as ROOT-owned, which is what
+        # `/root/.ssh` really reports, so `st_uid in (0, pw_uid)` ALLOWS it. The account
+        # points `~<account>` at `/root`, the operator runs the root arm, and root pins the
+        # seat's key into its own authorized_keys. Only asking the HOME refuses it.
         victim = os.path.join(self.tmp.name, "victim-home")
         victim_ssh = os.path.join(victim, ".ssh")
-        os.makedirs(victim_ssh, mode=0o755)
+        os.makedirs(victim_ssh, mode=0o700)
         with open(os.path.join(victim_ssh, "authorized_keys"), "w", encoding="utf-8") as fh:
-            fh.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 not-this-agents\n")
+            fh.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 roots-own-key\n")
         link_home = os.path.join(self.tmp.name, "home-link")
         os.symlink(victim, link_home)
 
-        with self.assertRaises(SystemExit) as cm:
+        with mock.patch.object(os, "fstat", side_effect=self._fstat_reporting_uid(victim_ssh, 0)), \
+             self.assertRaises(SystemExit) as cm:
             self._run(root_arm=True, uid_delta=1, home=link_home)
 
         msg = str(cm.exception)
-        self.assertIn(os.path.join(link_home, ".ssh"), msg, "the refusal names the resolved path")
-        self.assertIn(f"owned by uid {os.geteuid()}", msg, "and the uid it found")
-        self.assertIn(f"uid {os.geteuid() + 1}", msg, "and the uid it expected")
-        self.assertIn("StrictModes", msg)
-        self.assertEqual(oct(os.stat(victim_ssh).st_mode & 0o777), "0o755", "the target keeps its mode")
+        self.assertIn(link_home, msg, "the refusal names the HOME, which is what was redirected")
+        self.assertIn("SYMLINKED home is refused BY DESIGN", msg)
+        self.assertEqual(oct(os.stat(victim_ssh).st_mode & 0o777), "0o700", "the target keeps its mode")
         self.assertEqual(os.listdir(victim_ssh), ["authorized_keys"], "nothing may be written into it")
         with open(os.path.join(victim_ssh, "authorized_keys"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 roots-own-key\n")
+        self.assertEqual(self.chowns, [], "a refused run chowns nothing — neither the dir nor the file")
+
+    def test_the_root_arm_refuses_an_existing_ssh_dir_under_a_home_the_account_does_not_own(self):
+        # ⭐ CONTROL: delete the `st.st_uid != pw.pw_uid` refusal in `_open_home_dir` and
+        # this reds — a REAL home somebody else owns is the same redirect without the
+        # symlink, since its owner can replace the `.ssh` inside it at will.
+        #
+        # ⛔ THE BRANCH THE OLD `lstat` NEVER SAW: it ran only when `.ssh` was ABSENT.
+        # Here it already exists — the ordinary case — so nothing was created and, before
+        # the home became a descriptor of its own, nothing looked at the home at all.
+        foreign_home = os.path.join(self.tmp.name, "foreign-home")   # owned by THIS uid…
+        foreign_ssh = os.path.join(foreign_home, ".ssh")
+        os.makedirs(foreign_ssh, mode=0o755)
+        with open(os.path.join(foreign_ssh, "authorized_keys"), "w", encoding="utf-8") as fh:
+            fh.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 not-this-agents\n")
+
+        # …while the account being pinned is uid+1, so the home is foreign for real — no
+        # `fstat` patch, the kernel's own answer.
+        with self.assertRaises(SystemExit) as cm:
+            self._run(root_arm=True, uid_delta=1, home=foreign_home)
+
+        msg = str(cm.exception)
+        self.assertIn(foreign_home, msg, "the refusal names the home")
+        self.assertIn(f"owned by uid {os.geteuid()}", msg, "and the uid it found")
+        self.assertIn(f"uid {os.geteuid() + 1}", msg, "and the uid it expected")
+        self.assertIn("root-owned is not accepted for it either", msg, "the home rule is stricter than .ssh's")
+        self.assertEqual(os.listdir(foreign_ssh), ["authorized_keys"], "nothing may be written into it")
+        with open(os.path.join(foreign_ssh, "authorized_keys"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 not-this-agents\n")
         self.assertEqual(self.chowns, [], "a refused run chowns nothing — neither the dir nor the file")
+
+    def test_the_root_arm_still_pins_into_a_root_owned_ssh_inside_the_accounts_own_home(self):
+        # ⭐ THE POSITIVE CONTROL FOR THE ALLOWANCE THE TWO REFUSALS ABOVE MUST NOT EAT. A
+        # `~/.ssh` created once under `sudo` is owned by root and is ordinary, so
+        # `_assert_root_arm_ssh_dir_owner` still accepts uid 0 — and with the HOME pinned
+        # to the account's own real directory, a root-owned `.ssh` can only be one that
+        # lives there. Delete that `0` from the allowed set and this reds.
+        os.makedirs(os.path.dirname(self.authz), mode=0o700)
+
+        with mock.patch.object(os, "fstat", side_effect=self._fstat_reporting_uid(os.path.dirname(self.authz), 0)):
+            rc, _ = self._run(root_arm=True)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self._authz_lines()), 1)
+        self.assertIn("bridge:tools-call --agent=impl", self._authz_lines()[0])
+        self.assertEqual(len(self.chowns), 2, "the root arm chowns the dir and the file it wrote")
 
     def test_an_ssh_dir_the_account_cannot_chmod_is_named_rather_than_a_traceback(self):
         # A `~/.ssh` created once under `sudo` is owned by root, which is ordinary — and
@@ -1729,7 +1798,10 @@ class RoleASelfAccountArm(unittest.TestCase):
     def test_the_root_arm_refuses_to_create_ssh_under_a_home_the_account_does_not_own(self):
         # ⛔ `makedirs` WOULD HAVE INVENTED THE HOME TOO. Creating `.ssh` under a directory
         # somebody else owns puts the account's authorized_keys where that somebody can
-        # rewrite it — so the root arm looks (lstat, no following) before it creates.
+        # rewrite it. ⭐ THE SAME REFUSAL AS THE SIBLING ABOVE, ON THE OTHER BRANCH: the
+        # home is one descriptor and `.ssh` is opened or created inside it, so the create
+        # path and the existing-`.ssh` path are guarded by ONE check rather than by an
+        # `lstat` that only the create path ever reached.
         with self.assertRaises(SystemExit) as cm:
             self._run(root_arm=True, uid_delta=1)
 

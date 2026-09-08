@@ -437,40 +437,41 @@ BOTH values (they are public). ⛔ **It does not make the pin safe** — anyone 
 `.pub` can compute it. What makes the pin safe is a person deciding the key is that seat's;
 [`docs/board-tools-enablement.md`](board-tools-enablement.md) states that plainly.
 
-**Symlinks and ownership.** `--role a` opens the account's `.ssh` **once**, `O_NOFOLLOW`,
-and does every later `chmod`/`chown`/`open` through that one descriptor — so **nothing after
-that open re-resolves a name** whoever controls `~<account>` could move underneath it. A
-symlinked `~/.ssh` fails the open itself, and the two arms answer differently on purpose:
-the **root arm refuses** it by name (root acting through a link a lower-trust account
-controls is the hazard — pin into the real directory, or make `~/.ssh` a real directory
-owned by the account), while the **self-account arm resolves the link first** and keeps
-working, because there the process IS the account and following its own link is its own
-choice. Dotfiles topologies stay legal on the self-account arm. A symlinked
+**Symlinks and ownership.** `--role a` opens **two** directories — `~<account>` and the
+`.ssh` inside it — each **once**, each `O_NOFOLLOW`, and does every later
+`chmod`/`chown`/`mkdir`/`open` through those descriptors: `.ssh` is opened or created
+*relative to* the home fd, and `authorized_keys` relative to the `.ssh` fd. So **no syscall
+after those two opens re-resolves a name** whoever controls `~<account>` could move
+underneath it. A symlinked `~/.ssh` fails its open, and the two arms answer differently on
+purpose: the **root arm refuses** it by name (root acting through a link a lower-trust
+account controls is the hazard — pin into the real directory, or make `~/.ssh` a real
+directory owned by the account), while the **self-account arm resolves the link first** and
+keeps working, because there the process IS the account and following its own link is its
+own choice. Dotfiles topologies stay legal on the self-account arm. A symlinked
 `authorized_keys` is **refused in both arms** — the open is `O_NOFOLLOW`, because writing
 through it would put an ssh key line into whatever the link points at.
 
-⚠ **The open answers for the LAST component only, so the root arm asks a second question
-of the descriptor.** `O_NOFOLLOW` says `.ssh` is not itself a link; it says nothing about
-`~<account>` and the components above it, which the open resolved once. So the root arm
-`fstat`s the fd and **refuses unless the directory is owned by the account or by root**
-(sshd's own StrictModes rule), naming the path, the uid it found and the uid it expected.
-Without it, a `~<account>` that is a symlink — or carries a directory somebody else owns —
-with a real `.ssh` inside it opened cleanly and took the whole write. The root arm also
-refuses to CREATE a missing `~/.ssh` unless `~<account>` is itself a real directory owned by
-that account. ⚑ The self-account arm takes no ownership refusal, but a `~/.ssh` it cannot
-chmod (one created once under `sudo`, so root owns it) is **named** — fix the directory's
-ownership by hand and re-run.
+⛔ **The two descriptors are asked DIFFERENT ownership questions, and the home's is the
+stricter one.** On the root arm the **home** must be the account's **own real directory**:
+`fstat` on the home fd, refuse unless it is owned by the account, and a symlinked, missing
+or non-directory home is one named refusal. **Root-owned is not accepted for the home** —
+unlike `.ssh`, where the root arm `fstat`s the fd and allows **the account or root** (sshd's
+own StrictModes rule), because a `~/.ssh` created once under `sudo` is ordinary and, with
+the home already pinned to the account's own directory, a root-owned `.ssh` can only be one
+that lives there. ⭐ **This is one rule over both branches** — `.ssh` absent (created with
+`mkdir` inside the home fd, never `makedirs`) and `.ssh` already present, the ordinary one.
+It was previously two: a create-time `lstat` of the home that the existing-`.ssh` branch
+never reached, and an owner check on `.ssh` that allows root — so a `~<account>` symlinked
+at `/root` opened cleanly, reported uid 0, and took the whole write. ⚑ The self-account arm
+takes no ownership refusal, but a `~/.ssh` it cannot chmod (one created once under `sudo`,
+so root owns it) is **named** — fix the directory's ownership by hand and re-run.
 
-**A hand-edited line for the same agent is refused, not appended beside.** If a line
-already mentions `--agent=<agent>` but is not the line this tool writes, `--role a` names
-it and stops rather than adding a second one — two lines for one agent is an ambiguity
-sshd resolves by first match and `bridge:check` FAILs on, from the other side of the box.
-⚠ The detector is a **heuristic** over the bare `--agent=<name>` spelling; a hand line
-written `--agent="<name>"` is not covered. ⛔ A line that IS tool-shaped for this agent but
-whose forced command differs — another checkout's `artisan`, another `timeout`, extra
-options — is **refused too, and never reported as *already present***: sshd runs what THAT
-line says, so certifying it would certify a forced command nobody asked for. The refusal
-quotes both prefixes and tells you to remove or rewrite the line by hand.
+**An `authorized_keys` line for this agent that is not the line this run would write is
+refused, never appended beside or reported as *already present*.** The three states it
+refuses on, and the heuristic's declared blind spot, are in
+[`docs/board-tools.md`](board-tools.md) § *How it is wired (operator view)*, in the
+**Provisioning** bullet — that paragraph owns them, and a second copy here is a copy that
+drifts.
 
 > **No account-level sshd hardening (card 5091).** Earlier releases had `--role a`
 > write a `Match User <bridge-user>` sshd drop-in (`PasswordAuthentication no` +

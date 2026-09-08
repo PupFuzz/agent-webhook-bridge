@@ -674,14 +674,19 @@ def run_role_a(args) -> int:
     # PRINTED rather than assumed to be the one sshd will read.
     ssh_dir = os.path.join(pw.pw_dir, ".ssh")
     if self_account:
-        # ⭐ THE PROCESS IS THE ACCOUNT, so following the account's own link is the
-        # account's own choice — a dotfiles topology that symlinks ~/.ssh keeps working.
-        # Resolving it HERE, once, is what lets the same descriptor primitive serve both
-        # arms: everything below then operates on a real directory.
+        # ⭐ THE PROCESS IS THE ACCOUNT, so following the account's own links is the
+        # account's own choice — a dotfiles topology that symlinks ~ or ~/.ssh keeps
+        # working. Resolving them HERE, once, is what lets the same two-descriptor
+        # primitive serve both arms: everything below then operates on real directories.
         ssh_dir = os.path.realpath(ssh_dir)
+    # ⚑ On the ROOT arm this parent IS `pw.pw_dir`. On the self-account arm it is
+    # wherever the account's own `realpath` landed, which is the same thing unless the
+    # account symlinked its own `~/.ssh` elsewhere — its own choice, and unchecked here.
+    ssh_parent, ssh_name = os.path.split(ssh_dir)
     authz = os.path.join(ssh_dir, "authorized_keys")
 
-    dfd = _open_ssh_dir(ssh_dir, pw, root_arm=not self_account)
+    hfd = _open_home_dir(ssh_parent, ssh_dir, account, pw, root_arm=not self_account)
+    dfd = _open_ssh_dir(hfd, ssh_name, ssh_dir, root_arm=not self_account)
     try:
         if not self_account:
             _assert_root_arm_ssh_dir_owner(dfd, ssh_dir, account, pw)
@@ -774,6 +779,7 @@ def run_role_a(args) -> int:
         _pin_authorized_keys_perms(dfd, authz, pw.pw_uid, pw.pw_gid, chown=not self_account)
     finally:
         os.close(dfd)
+        os.close(hfd)
     print(f"authorized_keys: {authz} (default path; sshd's AuthorizedKeysFile is not resolved by this tool)")
     print(f"Pinned fingerprint: {fingerprint}")
 
@@ -791,33 +797,96 @@ def run_role_a(args) -> int:
     return 0
 
 
-def _open_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> int:
-    """A descriptor for the account's `.ssh`, created if absent, opened `O_NOFOLLOW`.
+def _open_home_dir(parent_dir: str, ssh_dir: str, account: str, pw, *, root_arm: bool) -> int:
+    """A descriptor for the directory `.ssh` lives in, opened `O_NOFOLLOW` — the FIRST half.
 
-    ⛔ THE DESCRIPTOR IS THE DEFENCE, AND IT IS WHY THERE IS ONLY ONE OF THEM. Every
-    path-based `chmod`/`chown`/`open` re-resolves the name at the moment it runs, so
+    ⛔ `O_NOFOLLOW` ON `.ssh` ANSWERS FOR THE LAST COMPONENT AND THE HAZARD IS THE PARENT.
+    `~<account>` is resolved by the kernel every time a path names it, and on the root arm
+    the account — not root — decides what it resolves to. A `pw_dir` that is a symlink to
+    `/root` with a real `.ssh` inside it satisfies an `O_NOFOLLOW` open of the last
+    component perfectly: root then chmods, chowns and appends a forced-command line to
+    `/root/.ssh/authorized_keys`. So the home is opened as a descriptor of its own, and
+    `.ssh` is opened RELATIVE TO IT ({@see _open_ssh_dir}) — no later syscall re-resolves
+    either name.
+
+    ⛔ ON THE ROOT ARM THE HOME MUST BE THE ACCOUNT'S OWN REAL DIRECTORY — root-owned is
+    NOT acceptable here, unlike `.ssh` itself. A `.ssh` created once under `sudo` inside
+    the account's own home is an ordinary topology ({@see _assert_root_arm_ssh_dir_owner}
+    allows it); a HOME the account does not own is the redirect this whole primitive
+    exists to refuse, and allowing root there would leave it wide open. A symlinked home,
+    a missing home and a home that is not a directory all fail this open and are one
+    refusal, named.
+
+    ⚑ The SELF-ACCOUNT arm takes no ownership refusal and its caller has already
+    `realpath`ed the whole `~/.ssh` path: the process IS the account, so following its own
+    links is its own choice (DL-357 Decision 6). Its open can still fail, and it is then
+    told what is actually there rather than the root arm's cause.
+    """
+    try:
+        hfd = os.open(parent_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        if root_arm:
+            _fail(
+                f"could not open {parent_dir} — the home of account {account!r}, and the directory "
+                f"{ssh_dir} would be created or opened inside — as a directory: {e}. A SYMLINKED "
+                f"home is refused BY DESIGN on this arm: the account chooses where that link "
+                f"points and root would then chmod, chown and write an ssh key line into whatever "
+                f"it names. A missing home, or a home that is not a directory, is refused here "
+                f"too. Make {parent_dir} the account's own real directory, then re-run."
+            )
+        _fail(
+            f"could not open {parent_dir} (the directory {ssh_dir} sits in) as a directory: {e}. "
+            f"Any symlink was already resolved on this arm, so what is at that path is not a "
+            f"directory this account can open. Fix it and re-run."
+        )
+    if not root_arm:
+        return hfd
+    st = os.fstat(hfd)
+    if st.st_uid != pw.pw_uid:
+        os.close(hfd)
+        _fail(
+            f"refusing to pin into {ssh_dir}: its home {parent_dir} is owned by uid {st.st_uid}, "
+            f"not by uid {pw.pw_uid} ({account}). A home the account does not own is a home "
+            f"whose owner picks the `.ssh` root would chmod, chown and write an ssh key line "
+            f"into — so on this arm the home must be the account's OWN real directory, and "
+            f"root-owned is not accepted for it either. Fix the home's ownership, then re-run."
+        )
+    return hfd
+
+
+def _open_ssh_dir(hfd: int, ssh_name: str, ssh_dir: str, *, root_arm: bool) -> int:
+    """A descriptor for `.ssh`, created if absent, opened `O_NOFOLLOW` INSIDE the home fd.
+
+    ⛔ THE DESCRIPTORS ARE THE DEFENCE, AND IT IS WHY EVERY NAME IS RESOLVED ONCE. Every
+    path-based `chmod`/`chown`/`open` re-resolves the whole name at the moment it runs, so
     whoever controls `~<account>` picks what each syscall lands on — and under the root
     arm that is a lower-trust account choosing what ROOT chmods, chowns and writes into.
-    Resolving the directory ONCE here and handing the fd to `fchmod`/`fchown`/`dir_fd=`
-    removes the re-resolution entirely: the directory this returns is the directory every
-    later call acts on, whatever the name does afterwards.
+    This open names ONE component, resolved inside a home descriptor that was already
+    proved, and hands the fd to `fchmod`/`fchown`/`dir_fd=`: the directory this returns is
+    the directory every later call acts on, whatever either name does afterwards.
 
-    ⚠ A symlinked `.ssh` fails this open (ELOOP), and the two arms answer differently on
+    ⭐ CREATING A MISSING `.ssh` IS THE SAME TWO DESCRIPTORS, which is why there is no
+    separate check for it any more. `mkdir(..., dir_fd=hfd)` — never `makedirs`, which
+    would invent a home the account's sshd was never told about — creates it inside the
+    very directory {@see _open_home_dir} proved, so the old `lstat(pw_dir)` → `mkdir`
+    window is gone along with the second copy of the home check it used to be.
+
+    ⚠ A symlinked `.ssh` fails this open (ELOOP — `ENOTDIR` where `O_DIRECTORY` answers
+    first, as Linux does; the refusal names the topology rather than the errno), and the
+    two arms answer differently on
     purpose. The ROOT arm REFUSES: root acting through a link a lower-trust account
     controls is the hazard, and there is no way to both decline to follow it and follow
     it. The SELF-ACCOUNT arm never reaches that refusal — its caller has already resolved
     the link, because the process IS the account and following its own link is its own
-    choice (DL-357 Decision 6, as amended by this round) — so when ITS open fails, it is
-    told what is actually there instead.
+    choice — so when ITS open fails, it is told what is actually there instead.
 
-    ⚑ WHAT THIS OPEN PROVES IS ABOUT THE LAST COMPONENT ONLY. `O_NOFOLLOW` says `.ssh`
-    itself is not a link; it says nothing about `~<account>` and the components above it,
-    which this call resolved once. On the root arm that remaining question — whose
-    directory did the name land on — is {@see _assert_root_arm_ssh_dir_owner}'s, asked on
-    THIS descriptor before anything is chmodded, chowned or written.
+    ⚑ WHOSE DIRECTORY THE OPENED `.ssh` IS remains a separate question on the root arm,
+    because a home the account owns may legitimately contain a root-owned `.ssh`. That is
+    {@see _assert_root_arm_ssh_dir_owner}'s, asked on THIS descriptor before anything is
+    chmodded, chowned or written.
     """
     try:
-        return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        return os.open(ssh_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=hfd)
     except FileNotFoundError:
         pass
     except OSError as e:
@@ -838,9 +907,12 @@ def _open_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> int:
             f"on this arm, so what is at that path is not a directory this account can open — "
             f"a regular file there is the usual cause. Fix it and re-run."
         )
-    _create_ssh_dir(ssh_dir, pw, root_arm=root_arm)
     try:
-        return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        os.mkdir(ssh_name, 0o700, dir_fd=hfd)
+    except OSError as e:
+        _fail(f"could not create {ssh_dir}: {e}")
+    try:
+        return os.open(ssh_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=hfd)
     except OSError as e:
         _fail(f"created {ssh_dir} but could not open it: {e}")
 
@@ -848,19 +920,20 @@ def _open_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> int:
 def _assert_root_arm_ssh_dir_owner(dfd: int, ssh_dir: str, account: str, pw) -> None:
     """Root arm only: the `.ssh` this run OPENED must belong to the account (or to root).
 
-    ⛔ `O_NOFOLLOW` CONSTRAINS THE LAST COMPONENT, AND THE HAZARD LIVES IN THE PARENTS.
-    `_open_ssh_dir` proves that `.ssh` itself is not a symlink and hands back a descriptor
-    nothing re-resolves — but the path it resolved ONCE ran through `~<account>`, and a
-    `pw_dir` that is a symlink (or has a foreign-owned component) with a real `.ssh` inside
-    it opens cleanly. Root would then `fchmod` 0700, `fchown` to the account, and write an
-    ssh key line into a directory the account was handed rather than owns. Creating a
-    MISSING `.ssh` was already guarded (`_create_ssh_dir` lstats `~<account>`); this is the
-    branch where `.ssh` already exists, which is the ordinary one.
+    ⛔ THE HOME BEING THE ACCOUNT'S OWN IS NOT THE SAME QUESTION AS `.ssh` BEING IT.
+    {@see _open_home_dir} has already refused a home the account does not own, so nobody
+    else picked the directory this `.ssh` was looked up in — but inside a home the account
+    owns, `.ssh` may still belong to somebody else, and root would otherwise `fchmod` 0700,
+    `fchown` it to the account and write an ssh key line into it. Both branches reach this:
+    the one that opened an existing `.ssh` (the ordinary one) and the one that just created
+    it inside that same home descriptor.
 
     ⭐ IT ASKS THE DESCRIPTOR, NOT THE NAME, so there is no window between the check and
     the syscalls it guards — the fd is the directory every later call acts on. `root` is
-    allowed alongside the account for the same reason sshd's StrictModes allows it: a
-    root-owned parent is not something a lower-trust account can redirect.
+    allowed alongside the account for the same reason sshd's StrictModes allows it, and
+    with the home already pinned to the account's own real directory a root-owned `.ssh`
+    can only be one that lives there — a `~/.ssh` created once under `sudo`, which is
+    ordinary.
     """
     st = os.fstat(dfd)
     if st.st_uid not in (0, pw.pw_uid):
@@ -872,36 +945,6 @@ def _assert_root_arm_ssh_dir_owner(dfd: int, ssh_dir: str, account: str, pw) -> 
             f"{ssh_dir} a real directory the account owns (this is sshd's StrictModes rule), "
             f"then re-run."
         )
-
-
-def _create_ssh_dir(ssh_dir: str, pw, *, root_arm: bool) -> None:
-    """`mkdir` the missing `.ssh` — never `makedirs`, and never into a home root can't trust.
-
-    ⛔ `makedirs` WOULD CREATE THE PARENTS TOO, and a home directory this tool invented is
-    a home the account's sshd was never told about. The parent must already be the
-    account's own real directory: under the root arm, a `~<account>` that is a symlink, or
-    a directory owned by somebody else, means the entry root is about to create belongs to
-    that somebody — so it is refused by name rather than created.
-    """
-    if root_arm:
-        try:
-            st = os.lstat(pw.pw_dir)
-        except OSError as e:
-            _fail(f"{pw.pw_dir} (the home of the account being pinned) cannot be examined: {e}")
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != pw.pw_uid:
-            owner = "a symlink" if stat.S_ISLNK(st.st_mode) else (
-                "not a directory" if not stat.S_ISDIR(st.st_mode) else f"owned by uid {st.st_uid}"
-            )
-            _fail(
-                f"refusing to create {ssh_dir}: {pw.pw_dir} is {owner}, not a real directory "
-                f"owned by uid {pw.pw_uid}. Creating .ssh under it would put the account's "
-                f"authorized_keys somewhere the account does not own. Fix the home directory, "
-                f"or create {ssh_dir} by hand as the account, then re-run."
-            )
-    try:
-        os.mkdir(ssh_dir, 0o700)
-    except OSError as e:
-        _fail(f"could not create {ssh_dir}: {e}")
 
 
 def _open_authorized_keys(dfd: int, authz: str, flags: int, *, missing_ok: bool = False):
