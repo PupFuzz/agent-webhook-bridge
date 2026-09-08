@@ -425,6 +425,10 @@ function refuseDeaf(reason, { advice } = {}) {
 // No `transport` parameter, by design: the body is identical for unix and http, and
 // `addr` already says which one this is. Cause (3) is marked `[unix only]` in the
 // text rather than branched, so the two transports cannot drift apart.
+// ⛔ THE TOKEN `/mcp reconnect` MUST STAY IN ONE LITERAL. Splitting it across the `+`
+// boundary drops this file out of ActivationPhraseLockstepTest's census silently — the
+// phrase may then drift with nothing red. Splitting the rest of the phrase is safe (the
+// file stays a carrier and reds as an offender).
 function unbindableReason(addr) {
   return (
     `EADDRINUSE binding ${addr} — not bindable. Causes include: ` +

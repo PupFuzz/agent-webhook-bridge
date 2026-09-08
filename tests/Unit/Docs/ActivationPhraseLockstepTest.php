@@ -34,13 +34,35 @@ use Tests\TestCase;
  * still matches the token, so it is still in the denominator, and it reds as an offender.
  * ⛔ No fixture can cover the split-token direction at this level and none is written:
  * {@see self::isInLockstep()} takes an ALREADY-JOINED string, which is precisely why the
- * hazard exists at the literal boundary and not in the predicate. The mitigation is the
- * comment sitting beside each copy, not a test. Measured: splitting the phrase in
- * `provision-board-tools.py` names that file as an offender; splitting the TOKEN in the
- * connector's one occurrence passes green. ⚠ Two copies survive the second mutation only
- * because their own warning comment quotes the token, keeping the file in the denominator
- * — an accident of those comments, not a property of this guard, and false for any copy
- * whose surrounding text never spells the token out.
+ * hazard exists at the literal boundary and not in the predicate. The mitigation is a
+ * comment beside the copy, not a test — and it is on all four program-emitted copies
+ * (`provision-board-tools.py`, `BoardToolsSetupPacket.php`, the connector's
+ * `unbindableReason()`, `provision-board-tools-samebox.py`), because the first wording of
+ * this paragraph claimed a mitigation that sat on only two of them. ⭐ ADDING THOSE TWO
+ * COMMENTS CHANGED THE MEASUREMENT, because each one QUOTES the token in order to warn
+ * about it: all four program-emitted copies now hold the token twice, so a split of the
+ * printed literal leaves the other occurrence behind, the file stays in the denominator,
+ * and it reds as an offender. Measured both directions after the change: splitting the
+ * phrase in `provision-board-tools.py` names that file as an offender, and splitting the
+ * TOKEN in the connector's printed literal — which passed GREEN before the comment was
+ * added — now names the connector as an offender too. ⚠ That is a property of those
+ * comments, not of this guard: any FUTURE copy whose surrounding text never spells the
+ * token out still leaves silently, which is why the comment goes on the copy at the same
+ * time the copy does.
+ *
+ * ⚠ AND THE THIRD BOUND: THE PREDICATE IS PER-FILE, NOT PER-OCCURRENCE. `str_contains`
+ * asks only whether the phrase appears SOMEWHERE, so in a file holding it TWICE, rewording
+ * ONE copy is invisible here. Live as of this writing in three carriers —
+ * `provision-board-tools-samebox.py` (module docstring + the root-terminal banner),
+ * `docs/board-tools-enablement.md`, and `tests/Feature/Console/BridgeCommandsTest.php` —
+ * and nothing else pins the samebox banner, so drift there is caught by nothing.
+ * ⛔ A per-occurrence predicate (every TOKEN offset must begin a PHRASE occurrence) was
+ * MEASURED AND REJECTED, not overlooked: six carriers legitimately mention the token
+ * without quoting the phrase at that spot — prose in `CLAUDE_DEPLOYMENT.md`, the pointer
+ * sentences, the warning comments that quote the token in order to warn about it, and this
+ * file, which mentions it nine times and quotes it once. Tightening would red all six.
+ * What closes this bound is a second copy in one file EARNING its own assertion, not a
+ * stricter census.
  *
  * ⚠ IT LIVES IN THE PHP SUITE ON PURPOSE. `provision-tools-python.yml` path-filters to
  * `bin/** app/** examples/channel-servers/**`, so a docs-only edit of the owner doc never

@@ -399,6 +399,10 @@ def execute(plan: Plan, fs) -> int:
     # the new one exits 2 (roundtable #420, measured on the port transport). Neutral
     # wording on the addressee: this is echoed mid-run to root, who may or may not be the
     # operator who owns the seat's session.
+    # ⛔ The token `/mcp reconnect` must stay in ONE literal: split across two, this file
+    # leaves ActivationPhraseLockstepTest's census silently. ⚠ That guard is per-FILE, and
+    # the module docstring above already carries the phrase — so rewording THIS line alone
+    # reds nothing, and nothing else pins it. Change it only with the owner doc.
     print("  /mcp reconnect does not stop the previous channel server — restart the session.")
     print("  That restart is the operator's action (a seat without GNU screen cannot restart itself).")
     print("  Details: docs/board-tools-enablement.md § Activating on a running seat")
