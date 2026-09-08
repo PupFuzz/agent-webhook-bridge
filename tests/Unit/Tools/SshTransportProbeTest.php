@@ -102,6 +102,142 @@ class SshTransportProbeTest extends TestCase
         $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
+    // ─── AuthorizedKeysFile resolution (card#8976) ────────────────────────────
+    // `sshd -T` names a LIST of files and four expansion tokens. Resolving only the first
+    // file, or leaving a token unexpanded, makes the root run's AUTHORITATIVE absent-line
+    // FAIL a claim about a file sshd never consults — a false fail on a correctly-wired
+    // seat, and the OpenSSH DEFAULT is two files (`man 5 sshd_config`).
+
+    public function test_pinned_line_in_the_second_default_file_is_found_not_a_false_fail(): void
+    {
+        // The OpenSSH DEFAULT AuthorizedKeysFile is TWO files. A line pinned in the second
+        // is wired correctly; resolving only the first turned it into a root-run FAIL that
+        // sent the operator to re-pin a line already present.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: [
+                '/home/bridge/.ssh/authorized_keys' => "# no pin here\n",
+                '/home/bridge/.ssh/authorized_keys2' => self::GOOD_LINE,
+            ],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        $this->assertSame(
+            ['/home/bridge/.ssh/authorized_keys', '/home/bridge/.ssh/authorized_keys2'],
+            $env->readPaths,
+        );
+        // The finding names WHICH file carries the line — with more than one candidate,
+        // "the pinned line" alone does not tell an operator where to look.
+        $this->assertNotNull($this->firstMatching($findings, 'found in /home/bridge/.ssh/authorized_keys2'));
+    }
+
+    public function test_every_documented_token_expands_exactly_once(): void
+    {
+        // `man 5 sshd_config`: AuthorizedKeysFile accepts %%, %h, %U and %u, and a path
+        // that is not absolute after expansion is taken relative to the home directory.
+        // Expansion is SINGLE-PASS, so `%%h` is the literal `%h` and never the home.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile /etc/ssh/keys/%u-%U-%%.pub %h/.ssh/ak2 %%h\n",
+            userUids: ['bridge' => 1001],
+            keysByPath: ['/etc/ssh/keys/bridge-1001-%.pub' => self::GOOD_LINE],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertSame([
+            '/etc/ssh/keys/bridge-1001-%.pub',   // %u, %U and %% — absolute, taken as-is
+            '/home/bridge/.ssh/ak2',             // %h
+            '/home/bridge/%h',                   // %%h is a LITERAL %h, and is relative
+        ], $env->readPaths);
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
+    public function test_percent_u_with_no_numeric_uid_is_named_never_guessed(): void
+    {
+        // uidForUser ⇒ null is UNMEASURED (no posix_getpwnam, or no such account). A token
+        // this run cannot expand must not become a path it then certifies against: it is
+        // named, and the absence of a pinned line is not a conclusion the run may draw.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile /etc/ssh/keys/%U\n",
+            userUids: [],   // the interface's UNMEASURED state
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Ok));
+        $this->assertNotNull($this->firstMatching($findings, '/etc/ssh/keys/%U'));
+        // No guessed path was read — not the literal `%U`, not a stripped one.
+        $this->assertSame([], $env->readPaths);
+    }
+
+    public function test_absent_line_at_an_authoritative_path_names_every_file_it_read(): void
+    {
+        // The FAIL is authoritative, so it must account for its whole population: an
+        // operator told "not wired" has to know which files were searched.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: [
+                '/home/bridge/.ssh/authorized_keys' => "# no pin here\n",
+                '/home/bridge/.ssh/authorized_keys2' => "# nor here\n",
+            ],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $fail = $this->firstMatching($findings, 'not wired');
+        $this->assertNotNull($fail);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys ', $fail->message);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $fail->message);
+    }
+
+    public function test_an_unreadable_second_file_blocks_the_authoritative_absent_claim(): void
+    {
+        // One file readable, one not: the pinned line COULD be in the one that was not
+        // read, so "not wired" is not establishable. Root-ness makes the PATH authoritative,
+        // never the absence — the leg reports what it could not consult, by name.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n",
+            keysByPath: ['/home/bridge/.ssh/authorized_keys' => "# no pin here\n"],   // file 2 unreadable
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $unverified = $this->firstMatching($findings, 'UNVERIFIED');
+        $this->assertNotNull($unverified);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys ', $unverified->message);
+        $this->assertStringContainsString('/home/bridge/.ssh/authorized_keys2', $unverified->message);
+    }
+
+    public function test_an_unresolvable_entry_does_not_block_a_line_that_was_found(): void
+    {
+        // PRESENCE is establishable from one readable file even when a sibling entry is
+        // not resolvable; only the ABSENCE claim needs the whole population.
+        $env = new FakeSshProbeEnvironment(
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys /etc/ssh/keys/%U\n",
+            keysByPath: ['/home/bridge/.ssh/authorized_keys' => self::GOOD_LINE],
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+    }
+
     // ─── FIPS ─────────────────────────────────────────────────────────────────
 
     public function test_fips_mode_with_ed25519_key_fails(): void
@@ -398,6 +534,13 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
     /**
      * @param  array<string, ?string>  $userHomes  home dir per named account (homeForUser);
      *                                             '' = no such account, null = cannot look up
+     * @param  array<string, ?string>  $keysByPath  per-PATH authorized_keys text, for the
+     *                                              multi-file AuthorizedKeysFile cases. When
+     *                                              non-empty it REPLACES $authorizedKeys as
+     *                                              the answer: a path that is absent from the
+     *                                              map (or maps to null/'') reads as
+     *                                              UNREADABLE, which is how a 0600 file this
+     *                                              run may not open is modelled.
      */
     public function __construct(
         private string $authorizedKeys = '',
@@ -414,6 +557,8 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         /** @var array<string, ?int> */
         private array $userUids = [],
         private ?int $euid = null,
+        /** @var array<string, ?string> */
+        private array $keysByPath = [],
     ) {}
 
     public function isRoot(): bool
@@ -463,6 +608,12 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
     public function readAuthorizedKeys(string $path): ?string
     {
         $this->readPaths[] = $path;
+
+        if ($this->keysByPath !== []) {
+            $text = $this->keysByPath[$path] ?? null;
+
+            return ($text === null || $text === '') ? null : $text;
+        }
 
         return $this->authorizedKeys === '' ? null : $this->authorizedKeys;
     }

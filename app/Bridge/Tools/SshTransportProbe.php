@@ -14,12 +14,17 @@ use App\Bridge\Support\Severity;
  *    {@see AuthorizedKeysLine} last-writer-wins capability model, never a `restrict`
  *    keyword match). On a FIPS seat its key algorithm must be FIPS-approved (an
  *    ed25519 key would never authenticate ⇒ FAIL).
- *  - The `authorized_keys` PATH is resolved from the Match-resolved `sshd -T` when this
+ *  - The `authorized_keys` PATHS are resolved from the Match-resolved `sshd -T` when this
  *    process can run it. `sshd -T` needs root (it loads host private keys); run
  *    unprivileged, the path falls back to the account's assumed default, so any verdict
  *    drawn there may be about the WRONG FILE — it reports UNVERIFIED + the
  *    `sudo bridge:check` cert step (F1 + DR2-3), NEVER a false OK and NEVER a hard fail
  *    (new-surface installs stay exit-0 with a loud line, not a CI red).
+ *    PLURAL, and every token expanded: `AuthorizedKeysFile` names a whitespace-separated
+ *    LIST (the OpenSSH default is two files) and accepts `%%`, `%h`, `%u` and `%U`. The
+ *    pinned line may sit in ANY of them, so all are read; an absent line is only the
+ *    authoritative "not wired" FAIL when every one of them was actually consulted, and
+ *    an entry this run cannot resolve or read is named rather than skipped (card#8976).
  *    (THERE IS NO sshd-POSTURE LEG. An earlier revision of this docblock described a
  *    required `PasswordAuthentication no` check; card#5091 RETIRED that leg — the
  *    account-level drop-in it certified locked out an operator sharing the ssh account —
@@ -110,41 +115,79 @@ final class SshTransportProbe
         }
 
         $findings = [];
-        [$path, $authoritative] = $this->authorizedKeysPath();
-        $content = $this->env->readAuthorizedKeys($path);
+        [$paths, $authoritative, $unresolvable] = $this->authorizedKeysPaths();
 
-        if ($content === null) {
+        /** @var array<string, string> $read  path => text, for the files this run consulted */
+        $read = [];
+        $unreadable = [];
+        foreach ($paths as $path) {
+            $content = $this->env->readAuthorizedKeys($path);
+            if ($content === null) {
+                $unreadable[] = $path;
+
+                continue;
+            }
+            $read[$path] = $content;
+        }
+
+        if ($read === []) {
+            // Nothing was consulted. An UNRESOLVABLE entry is not a file this run may
+            // report on at all (it does not know its path), so it can never carry the
+            // authoritative "not wired" accusation the unreadable-file arm carries.
+            if ($unresolvable !== []) {
+                $findings[] = Finding::unvalidated("no authorized_keys file could be consulted for agent {$agentName}: this run ".$this->unconsulted($unreadable, $unresolvable).' — the pinned line is UNVERIFIED, and its absence is NOT a conclusion this run may draw');
+
+                return $findings;
+            }
+
             $findings[] = $authoritative
-                ? Finding::fail("no readable authorized_keys at {$path} (resolved from sshd -T) — no pinned line for agent {$agentName}")
-                : Finding::unvalidated("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
+                ? Finding::fail('no readable authorized_keys at '.implode(' ', $unreadable)." (resolved from sshd -T) — no pinned line for agent {$agentName}")
+                : Finding::unvalidated('could not read '.implode(' ', $unreadable)." (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
 
             return $findings;
         }
 
-        $matches = array_values(array_filter(
-            AuthorizedKeysLine::parseFile($content),
-            fn (AuthorizedKeysLine $l) => $l->forcesToolsCallFor($agentName),
-        ));
+        /** @var list<array{path: string, line: AuthorizedKeysLine}> $matches */
+        $matches = [];
+        foreach ($read as $path => $content) {
+            foreach (AuthorizedKeysLine::parseFile($content) as $l) {
+                if ($l->forcesToolsCallFor($agentName)) {
+                    $matches[] = ['path' => $path, 'line' => $l];
+                }
+            }
+        }
 
         if ($matches === []) {
+            // ABSENCE is a claim about the WHOLE set of files sshd consults for this
+            // account, so one file this run could not read (or an entry it could not
+            // resolve) unmakes it — the line may be in exactly that one. Root-ness makes
+            // the PATHS authoritative; it does not make a partial search complete.
+            if ($unreadable !== [] || $unresolvable !== []) {
+                $findings[] = Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} in ".implode(' ', array_keys($read)).' — but this run did not consult every file sshd names for that account: it '.$this->unconsulted($unreadable, $unresolvable).'. The line may be in one of those, so this is UNVERIFIED, not absent');
+
+                return $findings;
+            }
+
             $findings[] = $authoritative
-                ? Finding::fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} — the ssh transport for this agent is not wired")
-                : Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
+                ? Finding::fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at ".implode(' ', $paths).' — the ssh transport for this agent is not wired')
+                : Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} at ".implode(' ', $paths).' (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root');
 
             return $findings;
         }
         if (count($matches) > 1) {
-            $findings[] = Finding::fail("more than one authorized_keys line forces bridge:tools-call --agent={$agentName} — ambiguous; leave exactly one");
+            $in = implode(' ', array_values(array_unique(array_map(fn (array $m) => $m['path'], $matches))));
+            $findings[] = Finding::fail("more than one authorized_keys line forces bridge:tools-call --agent={$agentName} (in {$in}) — ambiguous; leave exactly one");
 
             return $findings;
         }
 
-        $line = $matches[0];
+        $line = $matches[0]['line'];
+        $foundIn = $matches[0]['path'];
         if (! $line->deniesShellAndForwarding()) {
             $granted = implode(', ', $line->grantedCapabilities());
-            $findings[] = Finding::fail("the pinned line for agent {$agentName} still grants: {$granted} — the forced command must deny pty + agent/X11/port-forwarding (use `restrict`, or the enumerated no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding form on a FIPS seat)");
+            $findings[] = Finding::fail("the pinned line for agent {$agentName} still grants: {$granted} — the forced command must deny pty + agent/X11/port-forwarding (use `restrict`, or the enumerated no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding form on a FIPS seat) (found in {$foundIn})");
         } else {
-            $findings[] = Finding::ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding");
+            $findings[] = Finding::ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding (found in {$foundIn})");
         }
 
         if ($this->env->fipsEnabled()) {
@@ -208,9 +251,21 @@ final class SshTransportProbe
     }
 
     /**
-     * @return array{0: string, 1: bool} [path, authoritative]
+     * Every file sshd consults for this account, and whether that set is authoritative.
+     *
+     * `AuthorizedKeysFile` names a LIST (`man 5 sshd_config`: *"Multiple files may be
+     * listed, separated by whitespace"*, and the OpenSSH DEFAULT is the two-file
+     * `.ssh/authorized_keys .ssh/authorized_keys2`), so the singular reading this
+     * replaced made the root run's authoritative absent-line FAIL a claim about a
+     * SUBSET — a line pinned in the second file was reported as "not wired" (card#8976).
+     *
+     * The third slot is the entries that could NOT be resolved to a path (see
+     * {@see self::expandTokens()}); each is already rendered with its reason, because
+     * the caller's only honest use for them is to name them.
+     *
+     * @return array{0: list<string>, 1: bool, 2: list<string>} [paths, authoritative, unresolvable entries]
      */
-    private function authorizedKeysPath(): array
+    private function authorizedKeysPaths(): array
     {
         if ($this->env->isRoot()) {
             // Resolve the AuthorizedKeysFile from the forced-command account's
@@ -218,33 +273,134 @@ final class SshTransportProbe
             // to pre-4977 which passed no -C).
             $cfg = $this->env->sshdEffectiveConfig($this->sshAccount);
             if ($cfg !== null) {
-                $resolved = $this->extractAuthorizedKeysFile($cfg);
+                $resolved = $this->extractAuthorizedKeysFiles($cfg);
                 if ($resolved !== null) {
-                    return [$resolved, true];
+                    return [$resolved[0], true, $resolved[1]];
                 }
             }
         }
 
-        return [rtrim($this->forcedCommandHome(), '/').'/.ssh/authorized_keys', false];
+        return [[rtrim($this->forcedCommandHome(), '/').'/.ssh/authorized_keys'], false, []];
     }
 
-    private function extractAuthorizedKeysFile(string $sshdConfig): ?string
+    /**
+     * @return ?array{0: list<string>, 1: list<string>} [paths, unresolvable entries], or
+     *                                                  null when the config names no directive
+     */
+    private function extractAuthorizedKeysFiles(string $sshdConfig): ?array
     {
         foreach (preg_split('/\n/', $sshdConfig) ?: [] as $line) {
-            if (preg_match('/^\s*authorizedkeysfile\s+(.+)$/i', $line, $m) === 1) {
-                $first = preg_split('/\s+/', trim($m[1]))[0] ?? '';
-                if ($first === '') {
-                    return null;
-                }
-                $first = str_replace(['%h', '%u'], [$this->forcedCommandHome(), $this->forcedCommandAccount()], $first);
-                if ($first[0] !== '/') {
-                    $first = rtrim($this->forcedCommandHome(), '/').'/'.$first;
-                }
-
-                return $first;
+            if (preg_match('/^\s*authorizedkeysfile\s+(.+)$/i', $line, $m) !== 1) {
+                continue;
             }
+
+            $entries = array_values(array_filter(preg_split('/\s+/', trim($m[1])) ?: [], fn (string $e) => $e !== ''));
+            if ($entries === []) {
+                return null;
+            }
+
+            $paths = [];
+            $unresolvable = [];
+            foreach ($entries as $entry) {
+                ['path' => $expanded, 'reason' => $reason] = $this->expandTokens($entry);
+                if ($expanded === null) {
+                    $unresolvable[] = "`{$entry}` ({$reason})";
+
+                    continue;
+                }
+                // sshd: "After expansion, AuthorizedKeysFile is taken to be an absolute
+                // path or one relative to the user's home directory." `~` is NOT a token.
+                $paths[] = str_starts_with($expanded, '/')
+                    ? $expanded
+                    : rtrim($this->forcedCommandHome(), '/').'/'.$expanded;
+            }
+
+            return [$paths, $unresolvable];
         }
 
         return null;
+    }
+
+    /**
+     * Expand the four tokens `man 5 sshd_config` documents for `AuthorizedKeysFile`
+     * (`%%`, `%h`, `%u`, `%U`) — or REFUSE, carrying the reason with it, when this run
+     * cannot. The refusal is the point: a token nobody expanded must not silently become
+     * part of a path this probe then certifies against, and the reason travels with it so
+     * the finding can name a specific cause instead of re-deriving a plausible one.
+     *
+     * SINGLE-PASS by construction (a scan, not `str_replace`): a chained replace expands
+     * the `%h` that `%%h` — a literal `%h` — leaves behind, and would send the probe at
+     * the home directory when sshd reads a file called `%h`.
+     *
+     * @return array{path: string, reason: null}|array{path: null, reason: string}
+     */
+    private function expandTokens(string $entry): array
+    {
+        $out = '';
+        for ($i = 0, $len = strlen($entry); $i < $len; $i++) {
+            if ($entry[$i] !== '%') {
+                $out .= $entry[$i];
+
+                continue;
+            }
+
+            $token = $i + 1 < $len ? $entry[$i + 1] : '';
+            switch ($token) {
+                case '%':
+                    $out .= '%';
+                    break;
+                case 'h':
+                    $out .= $this->forcedCommandHome();
+                    break;
+                case 'u':
+                    $out .= $this->forcedCommandAccount();
+                    break;
+                case 'U':
+                    $uid = $this->env->uidForUser($this->forcedCommandAccount());
+                    if ($uid === null) {
+                        return ['path' => null, 'reason' => 'the numeric uid of account `'.$this->forcedCommandAccount().'` could not be established here, so %U cannot be expanded'];
+                    }
+                    $out .= (string) $uid;
+                    break;
+                default:
+                    // A token this probe does not know, or a trailing bare `%`. sshd
+                    // refuses to start on one, so this is a shape that should not reach a
+                    // running host — but it is external input, and reading it as "probably
+                    // a literal" would build a path nobody verified.
+                    return ['path' => null, 'reason' => $token === ''
+                        ? 'it ends in a bare `%`, which names no token'
+                        : "`%{$token}` is not one of the %%, %h, %u and %U that sshd_config documents for AuthorizedKeysFile, so this run cannot say what path sshd resolves it to"];
+            }
+            $i++;
+        }
+
+        // Only reachable from a `%h`/`%u` that expanded to nothing — the unset-account
+        // fallback tolerates an empty run-user home (a CONFIGURED account that does not
+        // resolve is refused earlier, by configuredAccountUnresolved()). Prefixing an
+        // empty expansion would build `/` and certify against the filesystem root.
+        return $out === ''
+            ? ['path' => null, 'reason' => 'it expands to an empty path — the home directory of account `'.$this->forcedCommandAccount().'` is not known here']
+            : ['path' => $out, 'reason' => null];
+    }
+
+    /**
+     * The operator-facing account of what this run did NOT consult, by name. Both lists
+     * can be non-empty at once and they are different claims — one is a file whose path
+     * is known and whose contents are not, the other an entry whose path is not known.
+     *
+     * @param  list<string>  $unreadable
+     * @param  list<string>  $unresolvable
+     */
+    private function unconsulted(array $unreadable, array $unresolvable): string
+    {
+        $parts = [];
+        if ($unreadable !== []) {
+            $parts[] = 'could not read '.implode(' ', $unreadable);
+        }
+        if ($unresolvable !== []) {
+            $parts[] = 'could not resolve the AuthorizedKeysFile entry '.implode(', ', $unresolvable);
+        }
+
+        return implode(', and ', $parts);
     }
 }

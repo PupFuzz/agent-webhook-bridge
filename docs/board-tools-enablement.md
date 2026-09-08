@@ -97,9 +97,10 @@ The packet prints a pointer to it too.
   flag that redirects the write.** On an install that relocated the file, the two things an
   operator can do are: move the written line **by hand** into the file `AuthorizedKeysFile`
   names, or point `AuthorizedKeysFile` back at the default and re-run. ⚠ `bridge:check`
-  resolves the relocated path — but only when it runs **as root** (it reads sshd's
-  Match-resolved effective config); unprivileged, it reads the same default this tool wrote
-  and reports the pinned line `unvalidated` rather than confirmed.
+  resolves the relocated path**s** — every file the directive names, with `%%`/`%h`/`%u`/`%U`
+  expanded — but only when it runs **as root** (it reads sshd's Match-resolved effective
+  config); unprivileged, it reads the same default this tool wrote and reports the pinned
+  line `unvalidated` rather than confirmed.
 
 ## For the coord plugin
 

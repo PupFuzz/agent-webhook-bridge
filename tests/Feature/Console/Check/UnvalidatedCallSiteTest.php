@@ -96,7 +96,20 @@ class UnvalidatedCallSiteTest extends TestCase
         // available to it — limb (a), a measurement that did not happen. Its SIBLING arm
         // (the database answered, and has no such account) is NOT here and must not be: it
         // stays `fail`, because that is a measured config fault.
-        'app/Bridge/Tools/SshTransportProbe.php' => 3,
+        // TWO MORE SINCE DL-359 (card#8976), and they are the same limb over a POPULATION
+        // rather than over one read: `AuthorizedKeysFile` names a LIST of files, so the
+        // absent-line verdict is a claim about all of them.
+        //   4. nothing at all could be consulted because every entry was unresolvable (a
+        //      `%U` this run cannot expand — the DL-259 uid state one token over), so no
+        //      file was even named, let alone read;
+        //   5. PART of the population was consulted — one file readable, another not, or a
+        //      sibling entry unresolvable — and the pinned line may be in exactly the one
+        //      that was not. The line found NOTHING in what it read and still may not say
+        //      the line is absent, which is limb (c): a negative over an incomplete
+        //      population is not evidence. Its SIBLING arm (every named file was read and
+        //      none carried the line, at a root-resolved path) is NOT here and must not
+        //      be: it stays `fail`, because that absence WAS measured.
+        'app/Bridge/Tools/SshTransportProbe.php' => 5,
         // The command's own fail-soft envelope around the writeback board probe.
         'app/Console/Commands/Bridge/CheckCommand.php' => 1,
         // The event-consumer reconciliation could not be computed (DL-236), plus TWO
