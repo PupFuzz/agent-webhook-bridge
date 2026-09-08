@@ -2231,11 +2231,20 @@ built**, deliberately.
 >    verdict is withdrawn.** The `ok`/`fail` for the found line stands beside this one and this one
 >    moves no exit code; what it adds is the BOUND of what that verdict covers, because sshd reads
 >    every file it names and a second forced-command line for this agent may sit in the one that was
->    refused, granting what the found line denies.
+>    refused, granting what the found line denies;
+> 5. **the account was never LOOKED UP** — `board_tools.ssh_account` is set and this PHP process has
+>    no `posix_getpwnam` at all, so `configuredAccountUnresolved()` — `probePinnedLine()`'s FIRST
+>    statement — returns before an `AuthorizedKeysFile` is resolved, a path is named, or a file is
+>    attempted. ⛔ **There is no population here, partial or otherwise.** The account database was
+>    never consulted, so whether the configured account exists is UNKNOWN, its absence is not a
+>    conclusion this run may draw, and the install may be perfectly wired. ⚠ **Its MEASURED twin is
+>    a `fail` and is not an arm of this list** (DL-259): a database that ANSWERED *no such account*
+>    is a config fault this run established, and only the capability-less non-answer lands here.
 >
-> **What tells them apart is the finding's TEXT, and nothing else** — each arm names what went
-> unconsulted, by path or by raw entry (`unconsulted()` renders it for the root-resolved arms; the
-> assumed-default arm spells its own, which is one rendering rule in two places). **No
+> **What tells them apart is the finding's TEXT, and nothing else** — each arm names what it could
+> not consult: the configured ACCOUNT in the never-looked-up arm, and a path or a raw entry in the
+> rest (`unconsulted()` renders it for the root-resolved arms; the assumed-default arm spells its
+> own, which is one rendering rule in two places). **No
 > severity assertion can, exactly as forecast**, and the tripwire above still cannot classify what
 > moved into the set; it can only red when the set moves.
 >
