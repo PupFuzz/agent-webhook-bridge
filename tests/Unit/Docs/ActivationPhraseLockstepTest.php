@@ -27,6 +27,21 @@ use Tests\TestCase;
  * catches REWORDING, not MEANING. It is a lockstep check on a string, and the only thing
  * it establishes is that no copy drifted away from the owner's wording.
  *
+ * ⚠ AND THE SECOND BOUND, WHICH IS THE ONE THE COPIES' OWN COMMENTS POINT HERE FOR: a
+ * copy that splits the TOKEN across two string literals leaves the census SILENTLY —
+ * `str_contains` over the joined FILE stops matching, the file is never a carrier, and
+ * nothing reds. A copy that splits the rest of the PHRASE is the safe direction: the file
+ * still matches the token, so it is still in the denominator, and it reds as an offender.
+ * ⛔ No fixture can cover the split-token direction at this level and none is written:
+ * {@see self::isInLockstep()} takes an ALREADY-JOINED string, which is precisely why the
+ * hazard exists at the literal boundary and not in the predicate. The mitigation is the
+ * comment sitting beside each copy, not a test. Measured: splitting the phrase in
+ * `provision-board-tools.py` names that file as an offender; splitting the TOKEN in the
+ * connector's one occurrence passes green. ⚠ Two copies survive the second mutation only
+ * because their own warning comment quotes the token, keeping the file in the denominator
+ * — an accident of those comments, not a property of this guard, and false for any copy
+ * whose surrounding text never spells the token out.
+ *
  * ⚠ IT LIVES IN THE PHP SUITE ON PURPOSE. `provision-tools-python.yml` path-filters to
  * `bin/** app/** examples/channel-servers/**`, so a docs-only edit of the owner doc never
  * fires it — and a docs-only edit is precisely how the phrase would be reworded in the one

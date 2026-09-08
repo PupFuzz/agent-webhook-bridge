@@ -927,6 +927,19 @@ class BuildForcedCommand(unittest.TestCase):
         self.assertIn("timeout -k 10 45 php", line)
 
 
+def _fake_deploy(lines):
+    """Stand in for `_deploy_snapshot` and RETURN WHAT IT WOULD RETURN.
+
+    The real one answers True iff it wrote the connector this run, and `run_role_b` gates
+    the activation block on that answer, so a stub returning `None` (or, worse, a bare
+    `Mock`'s truthy sentinel) makes every caller's gate a different gate from production's.
+    Faking the retention lines IS faking a replacement, hence `bool(lines)`.
+    """
+    for line in lines:
+        print(line)
+    return bool(lines)
+
+
 class RoleBHostBLeg(unittest.TestCase):
     """card#8972: `--role b` mutates the seat's own state. Three of those mutations were
     unsafe, and each of the cases below goes RED when its fix is reverted:
@@ -985,7 +998,7 @@ class RoleBHostBLeg(unittest.TestCase):
         with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
              mock.patch.object(pbt, "_keygen", side_effect=keygen or self._keygen_stub()), \
              mock.patch.object(pbt, "_deploy_snapshot",
-                               side_effect=lambda _d: [print(line) for line in deploy_prints]), \
+                               side_effect=lambda _d: _fake_deploy(deploy_prints)), \
              mock.patch.object(pbt, "_seed_known_hosts"), \
              contextlib.redirect_stdout(buf):
             rc = pbt.run_role_b(args)
@@ -2338,7 +2351,7 @@ class RoleBFingerprintLine(unittest.TestCase):
         self.buf = io.StringIO()
         with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
              mock.patch.object(pbt, "_keygen", side_effect=_keygen), \
-             mock.patch.object(pbt, "_deploy_snapshot"), \
+             mock.patch.object(pbt, "_deploy_snapshot", return_value=False), \
              mock.patch.object(pbt, "_seed_known_hosts"), \
              contextlib.redirect_stdout(self.buf):
             rc = pbt.run_role_b(args)
@@ -2434,7 +2447,7 @@ class ActivationBlock(unittest.TestCase):
         buf = io.StringIO()
         with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
              mock.patch.object(pbt, "_keygen", side_effect=_keygen), \
-             mock.patch.object(pbt, "_deploy_snapshot"), \
+             mock.patch.object(pbt, "_deploy_snapshot", return_value=False), \
              mock.patch.object(pbt, "_seed_known_hosts"), \
              contextlib.redirect_stdout(buf):
             rc = pbt.run_role_b(args)
@@ -2487,6 +2500,128 @@ class ActivationBlock(unittest.TestCase):
         self.assertNotIn("Session already running on this seat", out2)
 
 
+class ActivationBlockOnSnapshotReplacement(unittest.TestCase):
+    """⛔ THE SECOND TRIGGER, and the one that arrived SILENTLY (card#8984 review r1).
+
+    `--role b` writes TWO things a running channel server would have to restart to pick
+    up: the merged `.mcp.json`, and the deployed connector under `.channel-server/`. They
+    move INDEPENDENTLY — the merged config holds args, the ssh target and the channel
+    name, nothing version-derived — so a version bump replaces the seat's live connector
+    while `.mcp.json` stays byte-identical. Gated on the merge alone, that seat was told
+    `.mcp.json unchanged:` and nothing else, while its running session went on executing
+    the connector that had just been renamed aside.
+
+    ⭐ THE REAL `_deploy_snapshot` RUNS HERE — that is the whole point of this class next
+    to `ActivationBlock`, which stubs it. The claim under test is that the bool the deploy
+    step already decides its own `replacing stale snapshot` line on is the bool the gate
+    reads; stubbing the step would test the stub's bool instead. `_require_node_20` and
+    `_npm_ci` are stubbed because a node runtime and a network `npm ci` are not the
+    subject (the same seam `StaleSnapshotRetention` uses).
+
+    ⭐ ARM (b) ASSERTS `.mcp.json unchanged:` BESIDE THE BLOCK. Without it the arm would
+    pass on a run where the merge happened to change too, proving the merge gate over
+    again rather than the snapshot one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if _SSH_KEYGEN is None:  # pragma: no cover
+            raise unittest.SkipTest("ssh-keygen not on PATH (banner printed at import)")
+        _KeyFixtures.build()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.join(self.tmp.name, "home")
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        os.makedirs(self.project)
+        self.deploy = os.path.join(self.project, ".channel-server")
+
+        # A stand-in for examples/channel-servers/: `_deploy_snapshot` reads only its
+        # package.json version and copytrees the rest, and copying the real tree would
+        # put its node_modules-less bulk in every run of this class.
+        self.bundled = os.path.join(self.tmp.name, "bundled")
+        os.makedirs(self.bundled)
+        self._write_version(self.bundled, "0.9.0")
+        with open(os.path.join(self.bundled, pbt.CHANNEL_MJS_BASENAME), "w", encoding="utf-8") as fh:
+            fh.write("// bundled connector\n")
+
+    @staticmethod
+    def _write_version(d, version):
+        with open(os.path.join(d, "package.json"), "w", encoding="utf-8") as fh:
+            json.dump({"version": version}, fh)
+
+    def _run(self):
+        argv = [
+            "--role", "b", "--agent", "kanban-solo",
+            "--ssh-target", "bridge@127.0.0.1",
+            "--project-dir", self.project,
+            "--channel-name", "kanbanboard-agent",
+        ]
+        args = pbt.build_parser().parse_args(argv)
+
+        def _keygen(agent, key_path):
+            shutil.copyfile(_KeyFixtures.plain, key_path)
+            os.chmod(key_path, 0o600)
+            shutil.copyfile(_KeyFixtures.plain + ".pub", key_path + ".pub")
+
+        buf = io.StringIO()
+        with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
+             mock.patch.object(pbt, "_keygen", side_effect=_keygen), \
+             mock.patch.object(pbt, "_bundled_snapshot_dir", return_value=self.bundled), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt, "_npm_ci"), \
+             mock.patch.object(pbt, "_seed_known_hosts"), \
+             contextlib.redirect_stdout(buf):
+            rc = pbt.run_role_b(args)
+        return rc, buf.getvalue()
+
+    def test_a_first_run_deploys_the_snapshot_and_prints_the_block(self):
+        rc, out = self._run()
+
+        self.assertEqual(rc, 0)
+        self.assertIn("deployed channel-server snapshot 0.9.0 to", out)
+        self.assertIn(ActivationBlock.PHRASE, out)
+
+    def test_a_REPLACED_snapshot_prints_the_block_even_though_the_mcp_json_did_not_move(self):
+        # RED-when-reverted: gate the block on `mcp_changed` alone and this run prints
+        # `replacing stale snapshot …` followed by `.mcp.json unchanged:` and silence —
+        # the reviewer's measured repro, and the seat's session is left running the
+        # connector that was just renamed aside.
+        rc1, _out1 = self._run()
+        self.assertEqual(rc1, 0)
+        # The deployed connector is now OLDER than the bundled one — the state a version
+        # bump puts a re-provisioned seat in.
+        self._write_version(self.deploy, "0.1.0")
+
+        rc2, out2 = self._run()
+
+        self.assertEqual(rc2, 0)
+        self.assertIn("replacing stale snapshot (deployed 0.1.0 < bundled 0.9.0).", out2)
+        # ⭐ The merge is a NO-OP on this run, so the block below can only have come from
+        # the snapshot derivation.
+        self.assertIn(".mcp.json unchanged:", out2)
+        self.assertNotIn(".mcp.json merged:", out2)
+        self.assertIn(ActivationBlock.PHRASE, out2)
+        self.assertIn("Session already running on this seat WITH channel kanbanboard-agent loaded", out2)
+
+    def test_neither_write_moving_prints_no_block(self):
+        # ⛔ THE CONTROL. Same two runs, minus the version skew: nothing this run wrote
+        # moved, so there is nothing for a running session to pick up and no operator ask
+        # to raise. Without this arm the two above would pass on a gate hard-wired True.
+        rc1, _out1 = self._run()
+        self.assertEqual(rc1, 0)
+
+        rc2, out2 = self._run()
+
+        self.assertEqual(rc2, 0)
+        self.assertIn("channel-server snapshot up to date (deployed 0.9.0 >= bundled 0.9.0).", out2)
+        self.assertIn(".mcp.json unchanged:", out2)
+        self.assertNotIn(ActivationBlock.PHRASE, out2)
+        self.assertNotIn("Session already running on this seat", out2)
+
+
 class CertifyOnlyPrintsNoActivationBlock(unittest.TestCase):
     """`--certify-only` is dispatched to `run_certify_only` BEFORE `run_role_b` and never
     reaches it — so it rewrites no `.mcp.json` and must raise no restart ask.
@@ -2526,7 +2661,7 @@ class CertifyOnlyPrintsNoActivationBlock(unittest.TestCase):
         buf = io.StringIO()
         with mock.patch.object(pbt, "_self_cert", return_value=0), \
              mock.patch.object(pbt, "_seed_known_hosts"), \
-             mock.patch.object(pbt, "_deploy_snapshot"), \
+             mock.patch.object(pbt, "_deploy_snapshot", return_value=False), \
              contextlib.redirect_stdout(buf):
             rc = pbt.main(argv)
         out = buf.getvalue()

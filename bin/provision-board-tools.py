@@ -1197,7 +1197,7 @@ def run_role_b(args) -> int:
 
     deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
     mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
-    _deploy_snapshot(deploy_dir)
+    snapshot_replaced = _deploy_snapshot(deploy_dir)
 
     # Tools transport keys this provisioner OWNS — force-set (overwrite) on every re-run.
     force_env = {
@@ -1259,7 +1259,12 @@ def run_role_b(args) -> int:
     print(f"  claude --dangerously-load-development-channels server:{args.channel_name}")
     print("(This flag is CLI-only every session — no .mcp.json/settings.json equivalent.)")
 
-    if mcp_changed:
+    # EITHER write leaves the running child stale: the merged `.mcp.json` and the
+    # deployed connector are two independent things this run can replace, and the
+    # snapshot one moves without `.mcp.json` moving at all (it holds args, ssh target
+    # and channel name — nothing version-derived), so gating on the merge alone left
+    # the seat that got a NEW connector with `.mcp.json unchanged:` and silence.
+    if mcp_changed or snapshot_replaced:
         _print_activation_block(args.channel_name)
 
     if args.self_cert:
@@ -1283,8 +1288,10 @@ def _print_activation_block(channel_name: str) -> None:
 
     ⭐ THE RESTART IS THE OPERATOR'S, NOT THE AGENT'S (operator ruling 2026-09-07). A seat
     with no GNU screen — Windows, a plain terminal — has no way to restart itself, so the
-    agent's job is to hand the ask over in words the operator can act on. Printed only when
-    the merge actually CHANGED `.mcp.json`; see `_install_mcp_json`'s return.
+    agent's job is to hand the ask over in words the operator can act on. Printed when
+    EITHER of the two things this run can write actually moved — the merged `.mcp.json`
+    (`_install_mcp_json`'s return) or the deployed connector (`_deploy_snapshot`'s) — each
+    read from the boolean that function already decided its own print on.
 
     The doc pointer is the owner of the explanation (canon #16 DELETE-and-point): this block
     carries ONE load-bearing phrase and the pointer, and `ActivationPhraseLockstepTest`
@@ -1296,11 +1303,12 @@ def _print_activation_block(channel_name: str) -> None:
         f"Session already running on this seat WITH channel {channel_name} loaded (it was "
         f"started with --dangerously-load-development-channels server:{channel_name})?"
     )
-    print("  Then its channel server holds the address, and the merged .mcp.json takes")
+    print("  Then its channel server still runs what was on disk BEFORE this run, so what")
+    print("  this run wrote — the merged .mcp.json and/or the deployed connector — takes")
     print("  effect only at the next channel-server start:")
-    # ⚠ ONE STRING LITERAL, NOT A CONCATENATION. `ActivationPhraseLockstepTest` reads the
-    # FILE, so a phrase split across two literals is invisible to the drift guard even
-    # though the printed line is identical.
+    # ⚠ KEEP THE TOKEN `/mcp reconnect` IN ONE LITERAL: splitting it drops this file out
+    # of `ActivationPhraseLockstepTest`'s census SILENTLY. Splitting the REST of the
+    # phrase is safe — it reds. That bound is stated in that test's docblock.
     print("  /mcp reconnect does not stop the previous channel server — restart the session.")
     print(
         "  The restart is the operator's action (an agent hands it over in these words; a "
@@ -1804,7 +1812,15 @@ def _print_scanned_fingerprints(scanned, host: str) -> None:
         print(f"  {line}")
 
 
-def _deploy_snapshot(deploy_dir: str) -> None:
+def _deploy_snapshot(deploy_dir: str) -> bool:
+    """Put the bundled channel-server snapshot at `deploy_dir`.
+
+    Returns True when THIS run wrote the connector the seat will next start (first
+    deploy, or a stale one replaced), False when the deployed snapshot was already
+    equal-or-newer and nothing on disk moved. That boolean is the one this function
+    already decides its own prints on — `run_role_b` reads it rather than
+    recomputing a version compare that could disagree with the line printed here.
+    """
     source = _bundled_snapshot_dir()
     bundled_version = _package_version(os.path.join(source, "package.json"))
 
@@ -1823,7 +1839,7 @@ def _deploy_snapshot(deploy_dir: str) -> None:
         if _version_tuple(deployed_version) >= _version_tuple(bundled_version):
             print(f"channel-server snapshot up to date (deployed {deployed_version} >= bundled {bundled_version}).")
             _npm_ci(deploy_dir)
-            return
+            return False
         print(f"replacing stale snapshot (deployed {deployed_version} < bundled {bundled_version}).")
         # RENAME, never rmtree: this tree is the seat's live channel server. If the
         # copytree/npm-ci that follows fails, a deleted snapshot leaves the seat with no
@@ -1844,6 +1860,7 @@ def _deploy_snapshot(deploy_dir: str) -> None:
     )
     print(f"deployed channel-server snapshot {bundled_version} to {deploy_dir}.")
     _npm_ci(deploy_dir)
+    return True
 
 
 def _require_node_20() -> None:

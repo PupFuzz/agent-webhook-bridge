@@ -289,8 +289,9 @@ final class BoardToolsSetupPacket
             // addressed to the PM reading the packet: it tells them the restart is an ask
             // they RAISE with the operator when the seat turns out to have a session
             // already up, not something they or the seat can do on the seat's behalf.
-            // ⚠ THE PHRASE IS ONE UNBROKEN LITERAL. `ActivationPhraseLockstepTest` reads
-            // this FILE, and a phrase split over a `.` concatenation is invisible to it.
+            // ⚠ KEEP THE TOKEN `/mcp reconnect` IN ONE LITERAL: splitting it drops this
+            // file out of `ActivationPhraseLockstepTest`'s census SILENTLY. Splitting the
+            // REST of the phrase is safe — it reds. That bound is in that test's docblock.
             '  session already running on that seat? /mcp reconnect does not stop the previous channel server — restart the session: '
                 .'hand the restart to the OPERATOR as their action (a seat without GNU screen — Windows '
                 .'included — cannot restart itself). docs/board-tools-enablement.md § Activating on a running seat',
