@@ -449,7 +449,13 @@ directory owned by the account), while the **self-account arm resolves the link 
 keeps working, because there the process IS the account and following its own link is its
 own choice. Dotfiles topologies stay legal on the self-account arm. A symlinked
 `authorized_keys` is **refused in both arms** — the open is `O_NOFOLLOW`, because writing
-through it would put an ssh key line into whatever the link points at.
+through it would put an ssh key line into whatever the link points at, **and a hardlinked
+`authorized_keys` is refused on the root arm**: `O_NOFOLLOW` has no link to decline to
+follow there, so the root arm `fstat`s the opened file and refuses a link count above one
+rather than chmodding, chowning and appending onto an inode that carries another name.
+⚑ That refusal does **not** read `fs.protected_hardlinks` — it holds whether or not the
+sysctl is on — and the self-account arm does not take it, since the file is the account's
+own.
 
 ⛔ **The two descriptors are asked DIFFERENT ownership questions, and the home's is the
 stricter one.** On the root arm the **home** must be the account's **own real directory**:

@@ -1762,6 +1762,87 @@ class RoleASelfAccountArm(unittest.TestCase):
             self.assertEqual(fh.read(), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 not-this-agents\n")
         self.assertEqual(self.chowns, [], "a refused run chowns nothing — neither the dir nor the file")
 
+    def test_the_root_arm_refuses_a_ssh_dir_a_third_user_created_inside_the_accounts_own_home(self):
+        # ⭐ CONTROL: delete the `_assert_root_arm_ssh_dir_owner(dfd, …)` call and this reds
+        # with *SystemExit not raised* — the run then fchmods 0700, fchowns to the account
+        # and appends the seat's key line to a `.ssh` a THIRD account owns.
+        #
+        # ⛔ THE HOME CHECK CANNOT ANSWER THIS ONE, which is the whole reason the two
+        # descriptors are asked separately. The home here IS the account's own real
+        # directory — no `fstat` patch on it, the kernel's own answer — and a home the
+        # account owns may still be one others can write into (sshd's StrictModes case), so
+        # a third uid gets to create the `.ssh` root would chmod, chown and write an ssh key
+        # line into. Only asking the `.ssh` descriptor refuses it.
+        third = os.geteuid() + 7   # neither the account (this euid) nor root
+        ssh_dir = os.path.dirname(self.authz)
+        os.makedirs(ssh_dir, mode=0o700)
+        with open(os.path.join(ssh_dir, "authorized_keys"), "w", encoding="utf-8") as fh:
+            fh.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a-third-users-key\n")
+
+        with mock.patch.object(os, "fstat", side_effect=self._fstat_reporting_uid(ssh_dir, third)), \
+             self.assertRaises(SystemExit) as cm:
+            self._run(root_arm=True)
+
+        msg = str(cm.exception)
+        self.assertIn(ssh_dir, msg, "the refusal names the .ssh it opened")
+        self.assertIn(f"owned by uid {third}", msg, "and the uid it found")
+        self.assertIn(f"uid {os.geteuid()} (bridge)", msg, "and the uid it expected")
+        self.assertIn("home OTHERS can write into", msg, "and a cause that can actually reach here")
+        with open(os.path.join(ssh_dir, "authorized_keys"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a-third-users-key\n")
+        self.assertEqual(self.chowns, [], "a refused run chowns nothing — neither the dir nor the file")
+
+    def test_the_root_arm_refuses_a_hardlinked_authorized_keys_and_leaves_the_other_name_untouched(self):
+        # ⭐ CONTROL: delete the `st_nlink > 1` refusal in `_open_authorized_keys` and this
+        # reds with *SystemExit not raised* — the run appends the forced-command line to
+        # that inode and chmods it 0600, i.e. root hands an ssh key line to a file the
+        # account merely LINKED. `O_NOFOLLOW` answers only for a symlink: a hard link has no
+        # target to decline to follow, so the open just succeeds on the same inode.
+        #
+        # ⛔ THE FIXTURE IS A REAL HARD LINK, NOTHING IS PATCHED, so what is exercised is
+        # the kernel's own `st_nlink`. Only `fs.protected_hardlinks` would otherwise stop
+        # this, and nothing in the tool reads that sysctl — the refusal does not depend on
+        # it.
+        target = os.path.join(self.tmp.name, "root-owned-file")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("root-owned content\n")
+        os.chmod(target, 0o644)
+        os.makedirs(os.path.dirname(self.authz), mode=0o700)
+        os.link(target, self.authz)
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run(root_arm=True)
+
+        msg = str(cm.exception)
+        self.assertIn(self.authz, msg, "the refusal names the path")
+        self.assertIn("2 hard links", msg, "and the link count it found")
+        self.assertIn("protected_hardlinks", msg, "and says it does not depend on the sysctl")
+        with open(target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "root-owned content\n", "no key line lands on the other name")
+        self.assertEqual(oct(os.stat(target).st_mode & 0o777), "0o644", "and it is not chmodded to 0600")
+        self.assertEqual(
+            len(self.chowns), 1,
+            "the `.ssh` dir is chowned before the file is ever opened; the LINKED file never is",
+        )
+
+    def test_the_self_account_arm_takes_no_hardlink_refusal(self):
+        # ⛔ THE SCOPE OF THE REFUSAL ABOVE, PINNED. On this arm the file is the account's
+        # own — it can hardlink and write it with a text editor — so refusing would buy no
+        # boundary and would break a legal topology. Widen the check to both arms and this
+        # reds.
+        target = os.path.join(self.tmp.name, "the-accounts-own-other-name")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("")
+        os.makedirs(os.path.dirname(self.authz), mode=0o700)
+        os.link(target, self.authz)
+
+        rc, _ = self._run()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self._authz_lines()), 1)
+        self.assertIn("bridge:tools-call --agent=impl", self._authz_lines()[0])
+        self.assertEqual(self.chowns, [], "the self-account arm still chowns nothing")
+
     def test_the_root_arm_still_pins_into_a_root_owned_ssh_inside_the_accounts_own_home(self):
         # ⭐ THE POSITIVE CONTROL FOR THE ALLOWANCE THE TWO REFUSALS ABOVE MUST NOT EAT. A
         # `~/.ssh` created once under `sudo` is owned by root and is ordinary, so

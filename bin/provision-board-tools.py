@@ -707,7 +707,7 @@ def run_role_a(args) -> int:
         if not self_account:
             os.fchown(dfd, pw.pw_uid, pw.pw_gid)
 
-        authz_text = _read_authorized_keys(dfd, authz)
+        authz_text = _read_authorized_keys(dfd, authz, root_arm=not self_account)
         existing_lines = significant_authorized_keys_lines(authz_text)
 
         weak = weak_agent_pattern(agent)
@@ -773,10 +773,10 @@ def run_role_a(args) -> int:
                     f"from {authz}, then re-run. Refusing to silently leave the old key authorized."
                 )
         else:
-            _append_authorized_key_line(dfd, authz, f"{forced} {pubkey}\n")
+            _append_authorized_key_line(dfd, authz, f"{forced} {pubkey}\n", root_arm=not self_account)
             print(f"authorized_keys: appended the forced-command line for agent {agent}.")
 
-        _pin_authorized_keys_perms(dfd, authz, pw.pw_uid, pw.pw_gid, chown=not self_account)
+        _pin_authorized_keys_perms(dfd, authz, pw.pw_uid, pw.pw_gid, root_arm=not self_account)
     finally:
         os.close(dfd)
         os.close(hfd)
@@ -873,12 +873,12 @@ def _open_ssh_dir(hfd: int, ssh_name: str, ssh_dir: str, *, root_arm: bool) -> i
 
     ⚠ A symlinked `.ssh` fails this open (ELOOP — `ENOTDIR` where `O_DIRECTORY` answers
     first, as Linux does; the refusal names the topology rather than the errno), and the
-    two arms answer differently on
-    purpose. The ROOT arm REFUSES: root acting through a link a lower-trust account
-    controls is the hazard, and there is no way to both decline to follow it and follow
-    it. The SELF-ACCOUNT arm never reaches that refusal — its caller has already resolved
-    the link, because the process IS the account and following its own link is its own
-    choice — so when ITS open fails, it is told what is actually there instead.
+    two arms answer differently on purpose. The ROOT arm REFUSES: root acting through a
+    link a lower-trust account controls is the hazard, and there is no way to both decline
+    to follow it and follow it. The SELF-ACCOUNT arm never reaches that refusal — its
+    caller has already resolved the link, because the process IS the account and following
+    its own link is its own choice — so when ITS open fails, it is told what is actually
+    there instead.
 
     ⚑ WHOSE DIRECTORY THE OPENED `.ssh` IS remains a separate question on the root arm,
     because a home the account owns may legitimately contain a root-owned `.ssh`. That is
@@ -939,15 +939,17 @@ def _assert_root_arm_ssh_dir_owner(dfd: int, ssh_dir: str, account: str, pw) -> 
     if st.st_uid not in (0, pw.pw_uid):
         _fail(
             f"refusing to pin into {ssh_dir}: the directory this run opened is owned by uid "
-            f"{st.st_uid}, not by uid {pw.pw_uid} ({account}) or root. Whoever owns it — or "
-            f"owns a component of the path to it, a symlinked ~{account} being the usual way — "
-            f"chose the directory root would chmod, chown and write an ssh key line into. Make "
-            f"{ssh_dir} a real directory the account owns (this is sshd's StrictModes rule), "
-            f"then re-run."
+            f"{st.st_uid}, not by uid {pw.pw_uid} ({account}) or root. Whoever owns it chose "
+            f"the directory root would chmod, chown and write an ssh key line into — and with "
+            f"~{account} already proved to be the account's own real directory, the usual way "
+            f"that happens is a home OTHERS can write into, a third account creating `.ssh` "
+            f"there first (sshd's StrictModes case); a `.ssh` chowned away from the account "
+            f"afterwards does it too. Make {ssh_dir} a real directory the account owns (this is "
+            f"sshd's StrictModes rule), then re-run."
         )
 
 
-def _open_authorized_keys(dfd: int, authz: str, flags: int, *, missing_ok: bool = False):
+def _open_authorized_keys(dfd: int, authz: str, flags: int, *, root_arm: bool, missing_ok: bool = False):
     """`authorized_keys` opened RELATIVE TO the `.ssh` descriptor, never through its name.
 
     `dir_fd=` is the second half of `_open_ssh_dir`'s defence — the name resolves inside
@@ -956,12 +958,23 @@ def _open_authorized_keys(dfd: int, authz: str, flags: int, *, missing_ok: bool 
     topology this refuses, because reading through it discloses the link's target into a
     refusal message and writing through it puts an ssh key line into that target.
 
+    ⛔ `O_NOFOLLOW` DOES NOT ANSWER A HARD LINK — there is no link to decline to follow,
+    the open simply succeeds on the same inode — so the ROOT arm asks the descriptor for
+    its link count as well. An account that owns its `.ssh` can hardlink `authorized_keys`
+    at a root-owned file, and this run would then `fchmod` 0600 that inode, `fchown` it to
+    the account and append an ssh key line to it, every one of which lands on the other
+    name too. ⚑ The refusal does NOT read `fs.protected_hardlinks`: the systemd default
+    would already prevent that link, but nothing in this tool establishes the sysctl is on,
+    so the check stands on its own. sshd does not care how many names a file has, so a
+    legitimate `authorized_keys` has one. ⚠ The SELF-ACCOUNT arm takes no such refusal —
+    the file is the account's own and it can write it with a text editor.
+
     `missing_ok` is the READ call site, where "the account has no authorized_keys yet" is
     the ordinary first run and not a fault; it returns None there. Every other OSError is
     the refusal above, worded once for all three call sites.
     """
     try:
-        return os.open("authorized_keys", flags | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        fd = os.open("authorized_keys", flags | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
     except OSError as e:
         if missing_ok and isinstance(e, FileNotFoundError):
             return None
@@ -971,18 +984,33 @@ def _open_authorized_keys(dfd: int, authz: str, flags: int, *, missing_ok: bool 
             f"through it would put an ssh key line into that target. Replace it with a "
             f"regular file and re-run."
         )
+    if root_arm:
+        st = os.fstat(fd)
+        if st.st_nlink > 1:
+            os.close(fd)
+            _fail(
+                f"refusing to pin into {authz}: it has {st.st_nlink} hard links, so that inode "
+                f"carries at least one other name this run cannot see — and the chmod 0600, the "
+                f"chown to the account and the appended key line all land on every name equally. "
+                f"`O_NOFOLLOW` does not answer a hard link (the open succeeds), and this refusal "
+                f"does not read `fs.protected_hardlinks`: it holds whether or not that sysctl is "
+                f"on. sshd does not care how many names a file has, so a legitimate "
+                f"authorized_keys does not have a second one — remove the extra link, or replace "
+                f"the file with a fresh regular one, then re-run."
+            )
+    return fd
 
 
-def _read_authorized_keys(dfd: int, authz: str) -> str:
+def _read_authorized_keys(dfd: int, authz: str, *, root_arm: bool) -> str:
     """The file's text, or `""` when the account has no `authorized_keys` yet."""
-    fd = _open_authorized_keys(dfd, authz, os.O_RDONLY, missing_ok=True)
+    fd = _open_authorized_keys(dfd, authz, os.O_RDONLY, root_arm=root_arm, missing_ok=True)
     if fd is None:
         return ""
     with os.fdopen(fd, encoding="utf-8") as fh:
         return fh.read()
 
 
-def _append_authorized_key_line(dfd: int, authz: str, line: str) -> None:
+def _append_authorized_key_line(dfd: int, authz: str, line: str, *, root_arm: bool) -> None:
     """Append ONE line to `authorized_keys` through {@see _open_authorized_keys}.
 
     ⛔ THE WRITE IS THE HAZARD THAT PRIMITIVE CLOSES. A path-following append run by root
@@ -991,27 +1019,29 @@ def _append_authorized_key_line(dfd: int, authz: str, line: str) -> None:
     through a symlinked `.ssh` lands the whole file wherever that link points. Both are
     resolved once, in `_open_ssh_dir`, and this write happens inside that descriptor.
     """
-    fd = _open_authorized_keys(dfd, authz, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    fd = _open_authorized_keys(dfd, authz, os.O_WRONLY | os.O_CREAT | os.O_APPEND, root_arm=root_arm)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(line)
 
 
-def _pin_authorized_keys_perms(dfd: int, authz: str, uid: int, gid: int, *, chown: bool) -> None:
+def _pin_authorized_keys_perms(dfd: int, authz: str, uid: int, gid: int, *, root_arm: bool) -> None:
     """0600 + (root arm only) ownership, both through one descriptor.
 
     `fchmod`/`fchown` on a descriptor from {@see _open_authorized_keys} cannot reach a
-    link's target, which is the same defence the append uses. `chown=False` is the
+    link's target, which is the same defence the append uses. `root_arm=False` is the
     self-account arm: the file is already the account's, so there is nothing to give it,
     and a chmod that fails there is a real fault rather than something to shrug at — it is
-    named.
+    named. ⚑ ONE flag, not two: the arm is also what decides whether the open refuses a
+    hardlinked file, and a second parameter saying the same thing could be passed a
+    different answer.
     """
-    fd = _open_authorized_keys(dfd, authz, os.O_RDONLY)
+    fd = _open_authorized_keys(dfd, authz, os.O_RDONLY, root_arm=root_arm)
     try:
         try:
             os.fchmod(fd, 0o600)
         except OSError as e:
             _fail(f"could not chmod 600 {authz}: {e}. Fix it by hand — an authorized_keys sshd rejects for permissions authorizes nothing.")
-        if chown:
+        if root_arm:
             os.fchown(fd, uid, gid)
     finally:
         os.close(fd)
