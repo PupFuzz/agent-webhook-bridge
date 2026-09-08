@@ -56,14 +56,73 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   line having **gone entirely** rather than a key that moved. That is a stale pin against a
   narrowed algorithm list, not a rebuilt host: `ssh-keygen -R <host>` and let the next
   `--role b` / `--certify-only` run re-pin it.
-- **After STEP 4, the seat's session must pick the merged `.mcp.json` up.** Restarting the
-  Claude session does it. ⚠ **The channel server's `args` in that seat's `.mcp.json` were
-  repointed by STEP 1 at `<project-dir>/.channel-server/…`, a copy it deploys there** — any
-  previous copy is left on disk untouched and is no longer what the session runs; delete it
-  only once the seat is certified. ⚠ `/mcp reconnect` is **not** a verified substitute: it is
-  reported (roundtable #420) to fail on a live seat while the previous channel server still
-  holds the port. That report has not been reproduced here, so this page claims neither
-  that it works nor that it always fails — restart the session.
+- **After STEP 4, the seat's session must pick the merged `.mcp.json` up.** ⚠ **The channel
+  server's `args` in that seat's `.mcp.json` were repointed by STEP 1 at
+  `<project-dir>/.channel-server/…`, a copy it deploys there** — any previous copy is left on
+  disk untouched and is no longer what the session runs; delete it only once the seat is
+  certified. If a session is **already running** on that seat, see
+  [§ Activating on a running seat](#activating-on-a-running-seat) — it owns what activation
+  takes and who does it.
+
+## Activating on a running seat
+
+**The merged `.mcp.json` takes effect only when a NEW channel server starts on that
+channel.** `provision-board-tools.py --role b` rewrites the file; it does not, and cannot,
+touch the child process a running Claude Code session already spawned. So on a seat whose
+session is up: **/mcp reconnect does not stop the previous channel server — restart the session.**
+`/mcp reconnect` spawns a *second* child while the first still holds the
+channel's address; the new one cannot bind it, exits 2, and the TUI reports
+`Failed to reconnect`.
+
+**What is measured, and what is not.** Roundtable #420 measured this on three seats on
+2026-09-07 **on the HTTP/port transport** (`BRIDGE_CHANNEL_PORT`; the connector's stderr
+was `port <P> already in use`). The **unix-socket** leg is **not measured by anyone** — it
+is inferred from the same mechanism this repo already documents for that transport (a held
+— or merely leftover — pathname makes the next `bind()` fail `EADDRINUSE`; see
+[`examples/channel-servers/README.md`](../examples/channel-servers/README.md) § Lifecycle
+notes). Nothing here rests on a claim that a probe was run against a unix seat.
+
+### Who restarts: the OPERATOR
+
+**The restart is the operator's action unless the operator has said otherwise** (ruling,
+2026-09-07). A seat with no GNU screen — Windows, a plain terminal — has **no mechanism to
+restart itself**, so an agent that "just restarts" is either impossible there or is doing
+something the operator did not sanction. The agent's job is to **hand the ask over**, in
+words that name the seat and the channel:
+
+> "close the Claude Code session running channel `<its-mcp-servers-key>` on `<hostname>`,
+> then start it again with `claude --dangerously-load-development-channels
+> server:<its-mcp-servers-key>`."
+
+It is **two steps, not one**, and the order matters: `examples/start-channel-session.sh`
+**refuses** to start a second session while one is running this channel, which is the same
+constraint stated by the launcher rather than by the connector.
+
+### The three causes of a bind failure, and their remedies
+
+When a connector refuses with `EADDRINUSE`, all it measured is *the address would not
+bind*. It does not know who holds it: the connector runs unprivileged, and an unprivileged
+process cannot read the owning PID of a socket held by another user. So the connector's
+marker and `bridge:check`'s rendering **enumerate**; this list is the authority:
+
+| cause | how it arises | remedy |
+| --- | --- | --- |
+| **1. this session's previous channel server** | you re-provisioned while the session was up (the measured case) | /mcp reconnect does not stop the previous channel server — restart the session |
+| **2. another Claude Code session, or another process** | a second session on the same channel; or an unrelated program on that port/path | close it, or move this seat's address: `BRIDGE_CHANNEL_PORT` (http) / `BRIDGE_CHANNEL_SOCKET` (unix) |
+| **3. (unix only) a file occupying the path, with no listener** | a `SIGKILL`ed or crashed server leaked its socket file — an ordinary quit unlinks it | `rm` it, **only** once you are sure no server is running |
+
+**Seeing the holder, where the platform allows it.** On Linux, `ss -lxp | grep <socket>`
+(unix) or `ss -ltnp | grep :<port>` (http). On Windows, `netstat -ano` plus the PID column.
+⚠ **The PID column is blank for a process owned by another user unless you have the
+privilege to see it** — an empty or PID-less result is "this account cannot see it", not
+"nothing holds it". ⚠ **These pages name no macOS instrument**, which is a statement about
+what has been verified here, not a claim that none exists.
+
+⚠ **A connector older than 0.9.13 writes a different marker body** — it names only
+"another session already holds the channel", which is cause 2 asserted as if it were the
+only one. The seat's deployed snapshot is reconciled only on a `--role b` run and only
+upward (DL-237), so an install can be running an older connector than this checkout ships.
+**This list is the authority for those bodies too.**
 
 ## Where the steps live
 

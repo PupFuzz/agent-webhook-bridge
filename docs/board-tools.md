@@ -975,6 +975,11 @@ confirm the seat by having the seat call.
 Restart the agent's channel MCP server so it re-reads its env; the tools are now
 advertised and live.
 
+⚠ **On a seat whose session is already running, that means restarting the SESSION** —
+/mcp reconnect does not stop the previous channel server — restart the session. See
+[`docs/board-tools-enablement.md` § Activating on a running seat](board-tools-enablement.md#activating-on-a-running-seat),
+which owns the mechanism, the causes of the bind failure, and who does the restart.
+
 ## Same-box SSH enablement — the one-shot wrapper (card 5090)
 
 The SSH transport (`board_tools.transport: ssh`, the default since v0.68.0) is the

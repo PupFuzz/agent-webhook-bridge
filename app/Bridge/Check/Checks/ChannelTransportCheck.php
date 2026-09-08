@@ -60,6 +60,31 @@ use App\Bridge\Support\PathVisibility;
  */
 final class ChannelTransportCheck implements PerAgentCheck
 {
+    /**
+     * ONE tail for BOTH transports' bind-FAILURE marker findings, and it adds NOTHING the
+     * marker did not say.
+     *
+     * ⭐ WHY IT NAMES NO CAUSE. The tails this replaced asserted one — "so another session
+     * holds the channel … Close the duplicate session" (unix) and "a TCP-port bind race"
+     * (http). The bridge cannot establish either: it reads a file another account's process
+     * wrote and has no way to see who holds the address. On the case roundtable #420
+     * actually measured the holder was the SEAT'S OWN previous channel server after a
+     * re-provision, so both tails sent the reader after a duplicate session that did not
+     * exist.
+     *
+     * ⭐ WHY IT DOES NOT SUMMARISE THE MARKER EITHER. The marker was written by whatever
+     * connector SNAPSHOT that seat is running, and this install cannot know which:
+     * `_deploy_snapshot` reconciles only on a role-b run and short-circuits at
+     * equal-or-newer (DL-237). A connector older than 0.9.13 writes a body naming only
+     * "another session". So the tail POINTS at the doc that owns the cause list — which is
+     * the authority for those older bodies too — rather than restating a list that may not
+     * match the body printed right beside it.
+     *
+     * Valid with an empty `$detail`: it is a sentence about the marker's existence, not
+     * about its contents.
+     */
+    private const MARKER_TAIL = ' — a Claude Code session came up DEAF: its connector could not bind the channel. Causes and remedies: docs/board-tools-enablement.md § Activating on a running seat. rm the marker once resolved.';
+
     public function __construct(private readonly ChannelProbeEnvironment $probe) {}
 
     public function id(): string
@@ -104,7 +129,7 @@ final class ChannelTransportCheck implements PerAgentCheck
         clearstatcache(true, $marker);
         if (is_file($marker)) {
             $detail = trim((string) @file_get_contents($marker));
-            yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').' — a Claude Code session came up DEAF: its connector could not bind, so another session holds the channel and this one receives nothing. Close the duplicate session, restart the intended one, then rm the marker.');
+            yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
         }
 
         // filetype() over a bare file_exists(): a path that is a regular file or a
@@ -147,7 +172,7 @@ final class ChannelTransportCheck implements PerAgentCheck
         clearstatcache(true, $httpMarker);
         if (is_file($httpMarker)) {
             $detail = trim((string) @file_get_contents($httpMarker));
-            yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$httpMarker}".($detail !== '' ? " ({$detail})" : '').' — a Claude Code session came up DEAF on the HTTP transport (a TCP-port bind race). Close the duplicate session, restart the intended one, then rm the marker.');
+            yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$httpMarker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
         }
 
         $result = $this->probe->probe("tcp://{$host}:{$port}");

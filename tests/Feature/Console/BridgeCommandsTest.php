@@ -2775,7 +2775,11 @@ class BridgeCommandsTest extends TestCase
         // .FAILED marker (the swallowed stderr never showed it). bridge:check
         // surfaces it loudly (warn, not fail).
         $sock = $this->dir.'/x.sock';
-        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — another session holds the channel\n");
+        // The connector's own body shape as of channel-server 0.9.13 (card#8984): it
+        // ENUMERATES the causes rather than naming one. A pre-0.9.13 seat still writes the
+        // old "another session holds the channel" body — which is why `bridge:check`'s own
+        // tail points at the doc instead of summarising whatever is in the file.
+        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — not bindable. Causes include: (1) this session's previous channel server after re-provisioning (/mcp reconnect does not stop the previous channel server — restart the session); (2) another Claude Code session or another process holding it (close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); (3) [unix only] a leaked socket file — or any other file — occupying the path, with no listener (rm it only if you are sure no server is running). THIS Claude Code session is deaf to live-wake until then.\n");
         $this->writeAgentWithChannelSocket($sock);
 
         $code = Artisan::call('bridge:check');
@@ -2875,7 +2879,7 @@ class BridgeCommandsTest extends TestCase
         try {
             $port = 8790;
             File::put($this->dir."/agent-webhook-bridge-channel-prod-agent.http-{$port}.FAILED",
-                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — another process holds the port\n");
+                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — not bindable. Causes include: (1) this session's previous channel server after re-provisioning (/mcp reconnect does not stop the previous channel server — restart the session); (2) another Claude Code session or another process holding it (close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); (3) [unix only] a leaked socket file — or any other file — occupying the path, with no listener (rm it only if you are sure no server is running). THIS Claude Code session is deaf to live-wake until then.\n");
             $this->writeAgentWithChannelUrl("http://127.0.0.1:{$port}/");
 
             $code = Artisan::call('bridge:check');
