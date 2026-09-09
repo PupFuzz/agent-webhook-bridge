@@ -390,9 +390,14 @@ final class ChannelSnapshotProbe
      * destructive re-copy. `version` is `''` when the file parses but declares none
      * (what the python authority's `_package_version` returns).
      *
+     * PUBLIC SINCE card#8974, at its second real caller: `BoardToolsClientHalfCheck` compares
+     * a SEAT-REPORTED version against this checkout's bundled manifest and needs the same
+     * four-way read — including the `''`-version case — rather than a second `file_get_contents`
+     * + `json_decode` that would collapse those causes back into one.
+     *
      * @return array{status: 'ok'|'absent'|'unreadable'|'malformed', version: string}
      */
-    private static function readManifest(string $path): array
+    public static function readManifest(string $path): array
     {
         if (! is_file($path)) {
             return ['status' => 'absent', 'version' => ''];
@@ -412,8 +417,12 @@ final class ChannelSnapshotProbe
 
     /**
      * How a non-`ok` {@see self::readManifest()} status reads in a message.
+     *
+     * Public for the same reason and at the same caller as {@see self::readManifest()}: the
+     * two travel together, and a second phrasing of "is not present" beside this one is how
+     * an operator ends up reading two different sentences for one file state.
      */
-    private static function manifestReason(string $status): string
+    public static function manifestReason(string $status): string
     {
         return match ($status) {
             'absent' => 'is not present',

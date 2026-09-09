@@ -140,6 +140,64 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame(CallProvenance::NotSshd, $row->call_provenance);
     }
 
+    // ─── the caller's own snapshot version (card#8974 / DL-364) ───────────────
+
+    /**
+     * The http door reads the same optional field the ssh door does, out of its own request
+     * shape, and records it on the same row. One primitive reduces it on both
+     * (`App\Bridge\Tools\ClientVersion`), so the two doors cannot come to disagree about
+     * what a version is.
+     */
+    public function test_a_reported_client_version_is_recorded_on_the_client_half_row(): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x'], 'client_version' => '0.9.14'])->assertStatus(200);
+
+        $this->assertSame('0.9.14', BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
+    }
+
+    /**
+     * ⛔ THE FIELD CANNOT REFUSE, AND THE ASSERTION IS THE FULL RESPONSE RATHER THAN THE
+     * STATUS. This is a NEW ingress key on a live door: if any of these shapes 4xx'd, every
+     * seat that had not been re-deployed would lose its board tools the moment the bridge
+     * upgraded — for an audit column. Both halves are pinned: the call succeeds identically,
+     * and the version is recorded as the honest NULL.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    #[DataProvider('unusableClientVersions')]
+    public function test_an_absent_or_unusable_client_version_is_accepted_exactly_as_before(array $extra): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $response = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']] + $extra);
+
+        $response->assertStatus(200);
+        $response->assertJsonPath('ok', true);
+        $response->assertJsonPath('result.card_id', 1);
+        $this->assertNull(BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
+    }
+
+    /** @return array<string, array{0: array<string, mixed>}> */
+    public static function unusableClientVersions(): array
+    {
+        return [
+            'no key at all (a client older than the first reporting snapshot)' => [[]],
+            'a number rather than a string' => [['client_version' => 9]],
+            'an object' => [['client_version' => ['0.9.14']]],
+            'an empty string' => [['client_version' => '']],
+            'a newline forging a second bridge:check line' => [['client_version' => "0.9.14\nboard_tools: ALL CLEAR"]],
+            'longer than the column' => [['client_version' => '1.0.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']],
+        ];
+    }
+
     // ─── loopback gate ───────────────────────────────────────────────────────
 
     public function test_non_loopback_peer_is_refused_and_creates_nothing(): void

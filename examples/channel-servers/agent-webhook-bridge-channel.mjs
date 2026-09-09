@@ -79,6 +79,34 @@ const SHARED_TOKEN = process.env.BRIDGE_CHANNEL_TOKEN || '';
 //                              command (sshd substitutes the pinned bridge:tools-call).
 //   BRIDGE_TOOLS_SSH_KEY     — optional path to the identity key (-i).
 //   BRIDGE_TOOLS_SSH_PORT    — optional ssh port (-p).
+// This server's OWN package version, sent on every board-tools call as `client_version`
+// (card#8974 / DL-364). WHY: `bridge:check` could see the version of the snapshot the
+// BRIDGE bundles and nothing whatever about the copy the seat actually runs, so a tool
+// missing from a stale seat copy was attributed to the bridge. Measured: a seat on 0.4.4
+// against a bridge bundling 0.9.12 reported `board_correct_card` "absent from my surface",
+// and nothing compared the two numbers because nothing carried the first one.
+//
+// READ FROM THE SIBLING MANIFEST, never written here as a literal. Consumers copy the
+// WHOLE directory, so `package.json` travels with this file — and a literal would be a
+// second copy of the one field the DL-038 bump guard already maintains, free to drift the
+// moment somebody bumps one and not the other.
+//
+// ⛔ FAIL-SOFT AND OPTIONAL, AT BOTH ENDS. An unreadable, absent or malformed manifest
+// yields null, the key is then OMITTED, and the call goes out exactly as it did before
+// this field existed. The bridge reads a missing key as "not reported" and MUST NOT refuse
+// a call over it — adding this field changed nothing about what the door accepts.
+function readClientVersion() {
+  try {
+    const version = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+
+    return typeof version === 'string' && version !== '' ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+const CLIENT_VERSION = readClientVersion();
+
 const CHANNEL_TOOLS_ENV = process.env.BRIDGE_CHANNEL_TOOLS;
 const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
 const TOOLS_SSH_TARGET = process.env.BRIDGE_TOOLS_SSH_TARGET || '';
@@ -710,7 +738,16 @@ if (ADVERTISE_ANY_TOOL) {
     }
 
     const args = request.params.arguments || {};
-    const payload = JSON.stringify({ tool: toolName, args });
+    // ⚑ THE KEY IS OMITTED, NEVER SENT AS null, when this server could not read its own
+    // manifest. "Not reported" is the ABSENCE of the key on the bridge side — every client
+    // predating this field produces exactly that shape — and a null would be a second
+    // spelling of one state, which is the read-time fork the bridge should never have to
+    // handle.
+    const payload = JSON.stringify(
+      CLIENT_VERSION === null
+        ? { tool: toolName, args }
+        : { tool: toolName, args, client_version: CLIENT_VERSION },
+    );
 
     // Guard branches on the TRANSPORT (DR2-5), not on a bearer: the ssh transport
     // carries no bearer, so `!token` must not gate it.

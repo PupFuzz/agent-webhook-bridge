@@ -707,8 +707,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   server** — so a `REPORTED` line straight after enablement may be the bridge's own call,
   for a seat that has no `.mcp.json` entry yet. Read it as *the door opened*, and confirm
   the seat by having the seat itself call.
-- **⭐ There are TWO green lines since DL-316, and the difference is what they CLAIM — the
-  severity is `ok` on both.** The ssh door records how the serving process was started, so a
+- **⭐ There are TWO REPORTED lines since DL-316, and the difference is what they CLAIM.**
+  (Both were `ok` until DL-364, which added the version clause below — either line reads
+  `warn` when the seat's reported snapshot version is older than the bundled one, and the
+  distinction drawn here is unaffected by that: it is about the CLAIM, not the severity.) The ssh door records how the serving process was started, so a
   call that arrived through the pinned forced command reports the stronger of the two:
   `board_tools: agent X: client half REPORTED **THROUGH THE SSH DOOR** — … the process that
   served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no
@@ -745,6 +747,34 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   remedy is to **ask the seat to make one call** (`board_my_cards`) and re-run
   `bridge:check` — **not** to re-provision it. Acting on a bridge-side absence as if it
   were a client-side fault is the incident this leg exists to prevent.
+- **⭐ The REPORTED line also carries the seat's own channel-server VERSION, and WARNS when
+  it is behind (card#8974 / DL-364).** Everything else `bridge:check` knows about the door
+  is the bridge's half; which snapshot the seat actually runs is a fact only the seat can
+  supply, so the channel server sends its own `package.json` version on every call and the
+  bridge records it beside the call. **Measured, and the reason this exists:** a seat on
+  **0.4.4** called a bridge bundling **0.9.12**, `board_correct_card` — a tool the older
+  snapshot never advertised — was reported *"absent from my surface"*, and it was
+  attributed to the **BRIDGE**, because nothing compared the two numbers. The line now
+  prints both.
+  - reported and **older** than the bundled snapshot ⇒ **`warn`**, naming both versions and
+    the remedy: re-copy this checkout's `examples/channel-servers` over the seat's deployed
+    directory, `npm ci`, and **restart that session** — the version is read when the channel
+    server starts, so a re-deploy alone does not change what the line reports.
+  - reported and **at or ahead of** the bundled snapshot ⇒ `ok`, both versions printed. A
+    seat AHEAD is not a fault: that is a rollout in progress, and the warn's remedy would be
+    a downgrade.
+  - **not reported** ⇒ `ok`, and the line says so — a client older than the first reporting
+    snapshot, or a caller that is not a channel server at all (`--probe-tools`,
+    `--self-cert`, a hand-run `bridge:tools-call`), sends no version. ⛔ **An absent report
+    is NOT a stale seat** and is never warned as one.
+  - ⚠ **The exit code does not move on any of these** (DL-037 #2 / DL-039: only `fail`
+    flips it), and **nothing about this field can refuse a call** — a call carrying no
+    version, or a value the bridge will not take, is accepted exactly as it was before the
+    field existed and records *no report*.
+  - ⚠ **A later call that reports NO version CLEARS the recorded one**, because it is the
+    last call that is being described. `--self-cert` and a hand-run `bridge:tools-call` are
+    the routine way that happens; the line then reads *not reported* until the seat calls
+    again.
 
 ### Which spelling the probe read — and when the version-skew fallback can go
 
@@ -966,6 +996,11 @@ an identity fault — see **Which spelling the probe read** above.
 **including for a seat whose channel server is not running and whose `.mcp.json` has no
 `BRIDGE_TOOLS_*` entry at all.** Do not read that line as the seat's half being wired until
 the seat has made a call of its own; the line states the bound itself.
+⚑ **It also stamps the version half as *not reported* (DL-364)** — `--probe-tools` is not a
+channel server and sends no `client_version` — so the line reads `CLIENT VERSION NOT
+REPORTED` until the SEAT calls. That is the honest reading of this step, not a fault, and it
+is the same reason a later `--self-cert` or hand-run `bridge:tools-call` CLEARS a version an
+earlier seat call recorded.
 ⚑ **DL-316 does not rescue this step**, and the reason is worth knowing: `--probe-tools` goes
 through the **HTTP** door, which cannot discriminate at all, so it stamps the weaker
 provenance and gets the weaker line. It is `--probe-tools-**ssh**` that reaches the ssh door

@@ -9,6 +9,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
+use App\Bridge\Tools\ClientVersion;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -50,6 +51,29 @@ class BoardToolsClientHalfCheckTest extends TestCase
     use MaterializesChecks;
     use RefreshDatabase;
     use UsesUnmigratedDatabase;
+
+    /**
+     * The version the stand-in bundled snapshot declares — the same one the incident was
+     * measured against (a 0.4.4 seat calling a bridge that bundled this).
+     */
+    private const BUNDLED_VERSION = '0.9.12';
+
+    private string $bundledDir;
+
+    /**
+     * ⚑ AFTER `parent::tearDown()`, never before. A throw in a tearDown that runs first
+     * cascades into every later test in the class and hides the real failure; nothing here
+     * is load-bearing enough to risk that, so the cleanup is last and best-effort.
+     */
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        if (isset($this->bundledDir)) {
+            @unlink($this->bundledDir.'/package.json');
+            @rmdir($this->bundledDir);
+        }
+    }
 
     public function test_a_fresh_call_reports_the_recorded_call_and_names_its_age(): void
     {
@@ -203,7 +227,7 @@ class BoardToolsClientHalfCheckTest extends TestCase
     {
         $config = AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
 
-        $this->assertSame([], $this->findingsOfFor(new BoardToolsClientHalfCheck, $config));
+        $this->assertSame([], $this->findingsOfFor(new BoardToolsClientHalfCheck($this->bundledDir()), $config));
     }
 
     public function test_the_report_is_per_agent_and_never_borrows_another_seats_call(): void
@@ -223,13 +247,21 @@ class BoardToolsClientHalfCheckTest extends TestCase
      * check is inline in the class, so the slice is the complete set — which is the whole
      * reason it is read here rather than unioned from the fixtures above.
      *
-     * WHY `fail` AND `warn` ARE BOTH FORBIDDEN: a `fail` flips `bridge:check`'s exit over a
-     * seat that is idle by choice, and a `warn` asserts something is wrong when the honest
-     * statement is that this run learned nothing. The rule that decides is prose in
-     * {@see Severity}; what this pins is that the set has not moved without someone
-     * revisiting it.
+     * WHY `fail` IS FORBIDDEN: it flips `bridge:check`'s exit over a seat that is idle by
+     * choice, or over a snapshot an operator has not re-deployed yet. ⭐ WHY `warn` IS NOW
+     * IN THE SET, having been forbidden by DL-313: card#8974 gave the leg its first MEASURED
+     * fault — a seat whose reported channel-server version is older than the one this bridge
+     * bundles. That is not "this run learned nothing" (the reason `warn` was excluded); it
+     * is a conclusion, reached from a comparison, with a remedy the operator can act on.
+     *
+     * ⛔ IT HAS EXACTLY ONE PRODUCER, and that is load-bearing rather than incidental:
+     * `NextSteps::seatReported()` reads a `Warn` here as "the seat DID report", so a second
+     * arm minting `warn` for some other reason would silently start clearing an agent's
+     * NEXT STEPS entry. This pin is what stops that arriving unnoticed; the consequence
+     * itself is pinned in `CheckNextStepsTest`. The rule that decides is prose in
+     * {@see Severity}.
      */
-    public function test_the_leg_can_construct_only_ok_and_unvalidated(): void
+    public function test_the_leg_can_construct_only_ok_unvalidated_and_warn(): void
     {
         $source = (string) file_get_contents((string) (new ReflectionMethod(BoardToolsClientHalfCheck::class, 'runFor'))->getFileName());
 
@@ -240,11 +272,14 @@ class BoardToolsClientHalfCheckTest extends TestCase
         // Non-vacuous: an empty match satisfies any assertSame against an empty list.
         $this->assertNotEmpty($emitted, 'the source scan found no Finding factory calls — it has broken');
         $this->assertSame(
-            ['ok', 'unvalidated'],
+            ['ok', 'unvalidated', 'warn'],
             $emitted,
-            'the severity set BoardToolsClientHalfCheck can emit has MOVED. DL-313 fixed it at two: '
-            .'`fail` would exit non-zero over an idle seat and `warn` would assert a fault this leg '
-            .'cannot establish. Re-read the DL before changing this pin.',
+            'the severity set BoardToolsClientHalfCheck can emit has MOVED. DL-313 fixed it at two and '
+            .'DL-364 added the third: `fail` would exit non-zero over an idle seat or an un-redeployed '
+            .'snapshot, and `warn` belongs to the ONE measured fault this leg can reach (a client older '
+            .'than the bundled one). NextSteps::seatReported() reads that warn as a positive report, so '
+            .'a second warn producer would clear an agent\'s NEXT STEPS entry silently. Re-read both DLs '
+            .'before changing this pin.',
         );
     }
 
@@ -456,6 +491,211 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertStringNotContainsString('THROUGH THE SSH DOOR', $findings[0]['message']);
     }
 
+    // ─── the seat's snapshot version (card#8974 / DL-364) ─────────────────────
+
+    /**
+     * ⭐ THE INCIDENT, REPRODUCED. A seat on 0.4.4 called a bridge bundling 0.9.12;
+     * `board_correct_card` — a tool the 0.4.4 snapshot never advertised — was reported
+     * "absent from my surface" and blamed on the BRIDGE, because nothing on either side
+     * compared the two numbers. The line now carries BOTH, so the reader can see which side
+     * is behind, and it WARNS: this is a measured conclusion with an actionable remedy, not
+     * a leg that could not look.
+     */
+    public function test_a_client_older_than_the_bundled_snapshot_warns_and_names_both_versions(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringContainsString('CLIENT VERSION 0.4.4 IS OLDER THAN THE 0.9.12 THIS BRIDGE BUNDLES', $findings[0]['message']);
+        // The misattribution the card exists to remove, named on the line itself: the
+        // absent tool may be missing from the SEAT's copy, not from this bridge.
+        $this->assertStringContainsString('missing from ITS copy rather than from this bridge', $findings[0]['message']);
+        // The remedy is BOTH halves. A re-deploy with no restart leaves the running server
+        // on the old files, so this line would still report the old version and an operator
+        // would conclude the re-deploy failed.
+        $this->assertStringContainsString('npm ci', $findings[0]['message']);
+        $this->assertStringContainsString('RESTART that session', $findings[0]['message']);
+        // It is still the same finding, so the seat's own report is not displaced by it.
+        $this->assertStringContainsString('client half REPORTED', $findings[0]['message']);
+    }
+
+    /**
+     * THE CONTROL FOR THE WARN. Same install, same row, one field different — a version
+     * EQUAL to the bundled one — and the severity goes green. Without this, a leg that
+     * warned on every recorded version would pass the test above.
+     */
+    public function test_a_client_at_the_bundled_snapshot_does_not_warn(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.12');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('Client version 0.9.12 is at or ahead of the 0.9.12 this bridge bundles', $findings[0]['message']);
+        $this->assertStringNotContainsString('OLDER THAN', $findings[0]['message']);
+    }
+
+    /**
+     * A seat AHEAD of the bridge is not a fault to warn about — it is what an operator sees
+     * mid-rollout, and the remedy the warn hands out (re-copy the bridge's snapshot over the
+     * seat) would be a DOWNGRADE. The comparison is `<`, not `!==`, and this is the arm that
+     * separates the two.
+     */
+    public function test_a_client_ahead_of_the_bundled_snapshot_does_not_warn(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.20');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('Client version 0.9.20 is at or ahead of the 0.9.12', $findings[0]['message']);
+    }
+
+    /**
+     * ⛔ AN ABSENT REPORT IS NOT A STALE SEAT. It is what every client older than
+     * `ClientVersion::FIRST_REPORTING_SNAPSHOT` sends, what `--probe-tools` / `--self-cert`
+     * / a hand-run `bridge:tools-call` send (none of them is a channel server), and what a
+     * value the bridge would not take is reduced to. Warning on it would put a re-deploy
+     * instruction in front of every operator on the fleet the day this shipped.
+     */
+    public function test_a_call_reporting_no_version_says_so_and_does_not_warn(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: null);
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.')', $findings[0]['message']);
+        // The bound in the text, not left to the severity — the same discipline the
+        // UNREPORTED arm follows one level up.
+        $this->assertStringContainsString('NOT EVIDENCE THE SEAT IS STALE', $findings[0]['message']);
+        $this->assertStringNotContainsString('OLDER THAN', $findings[0]['message']);
+    }
+
+    /**
+     * The three version inputs compared as a SET, for the reason the age and provenance sets
+     * exist: each assertion above passes against a leg stuck on its own arm, and only the
+     * comparison shows the leg DISCRIMINATES on the version rather than on the row.
+     */
+    public function test_the_three_version_inputs_produce_two_severities_and_three_distinct_lines(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+        [$staleSeverity, $stale] = array_values($this->findings()[0]);
+
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.12');
+        [$currentSeverity, $current] = array_values($this->findings()[0]);
+
+        $this->recordCall(ageSeconds: 60, clientVersion: null);
+        [$absentSeverity, $absent] = array_values($this->findings()[0]);
+
+        $this->assertSame(Severity::Warn, $staleSeverity);
+        $this->assertSame(Severity::Ok, $currentSeverity);
+        $this->assertSame(Severity::Ok, $absentSeverity);
+        $this->assertNotSame($stale, $current);
+        $this->assertNotSame($current, $absent, 'a reported CURRENT version and no report at all rendered identically — the line says nothing about which happened');
+    }
+
+    /**
+     * ⛔ THE FRESHNESS WINDOW DECIDES FIRST, exactly as it does for the provenance claim. A
+     * stale ROW carries a version that may be months out of date and says nothing about what
+     * the seat runs today, so the version clause must not be reached at all — otherwise the
+     * one arm reporting "this run learned nothing" would also be handing out a re-deploy
+     * instruction derived from a stamp it just declared too old to trust.
+     */
+    public function test_a_row_past_the_freshness_window_reports_no_version_verdict(): void
+    {
+        $this->recordCall(ageSeconds: 22 * 86400, clientVersion: '0.4.4');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('client half UNREPORTED', $findings[0]['message']);
+        $this->assertStringNotContainsString('0.4.4', $findings[0]['message']);
+    }
+
+    /**
+     * ⭐ THE CLAUSE IS ON BOTH GREEN LINES, and the ssh-proven arm is the one that could
+     * silently lose it: it is a separate `yield` with its own long enumeration, so a version
+     * clause appended to the weaker line alone would leave every ssh-door seat — the seats
+     * this whole feature is for — with no version reported at all, and nothing else in this
+     * class would notice.
+     */
+    public function test_the_stronger_ssh_line_carries_the_version_clause_and_warns_with_it(): void
+    {
+        $this->recordCall(ageSeconds: 60, provenance: CallProvenance::Sshd, clientVersion: '0.4.4');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringContainsString('client half REPORTED THROUGH THE SSH DOOR', $findings[0]['message']);
+        $this->assertStringContainsString('CLIENT VERSION 0.4.4 IS OLDER THAN THE 0.9.12', $findings[0]['message']);
+    }
+
+    /**
+     * ⭐ A BLIND READ OF THE BRIDGE'S OWN FILE IS NOT A SILENT SEAT. With no bundled manifest
+     * the comparison has no operand — but the SEAT's report was measured and is what this
+     * finding is about, so the line stays green, prints the reported version, and says the
+     * comparison was NOT MADE. Turning the whole finding `unvalidated` here would tell the
+     * operator their seat had gone quiet because a file in the BRIDGE's checkout is missing:
+     * the card's own misattribution, inverted.
+     */
+    public function test_an_unreadable_bundled_manifest_reports_the_version_and_says_it_was_not_compared(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+        $this->bundling(null);
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('client half REPORTED', $findings[0]['message']);
+        $this->assertStringContainsString('The seat reports client version 0.4.4, NOT COMPARED', $findings[0]['message']);
+        $this->assertStringContainsString('is not present', $findings[0]['message']);
+        // ⛔ The verdict it must NOT reach: the same input WITH a manifest warns, so a leg
+        // that fell back to comparing against nothing would warn here too.
+        $this->assertStringNotContainsString('OLDER THAN', $findings[0]['message']);
+    }
+
+    /**
+     * ⚑ THE FOURTH MANIFEST STATE, which the absent-file case above does not reach: a
+     * manifest that PARSES and declares no `version`. It renders a DIFFERENT sentence,
+     * because it is a different operator situation — nothing to restore, the file is there
+     * and wrong — and a leg that collapsed the four causes into "unreadable" would send this
+     * reader after a file they can see perfectly well.
+     */
+    public function test_a_bundled_manifest_declaring_no_version_says_so_rather_than_reading_as_absent(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+        $this->bundling('');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('The seat reports client version 0.4.4, NOT COMPARED', $findings[0]['message']);
+        $this->assertStringContainsString('declares no version', $findings[0]['message']);
+        $this->assertStringNotContainsString('is not present', $findings[0]['message']);
+    }
+
+    /**
+     * The control for the test above: it asserts an ABSENCE of the stale verdict, which any
+     * broken clause satisfies. This pins that the very same row, with the manifest restored,
+     * DOES reach it — so the not-compared arm is the manifest's doing and not the row's.
+     */
+    public function test_the_not_compared_arm_is_the_manifests_doing_not_the_rows(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+        $this->bundling(null);
+        $withoutManifest = $this->findings()[0]['severity'];
+
+        $this->bundling(self::BUNDLED_VERSION);
+        $withManifest = $this->findings()[0]['severity'];
+
+        $this->assertSame(Severity::Ok, $withoutManifest);
+        $this->assertSame(Severity::Warn, $withManifest);
+    }
+
     /** @param array<string, mixed> $extra */
     private function agent(array $extra = []): AgentConfig
     {
@@ -477,8 +717,47 @@ class BoardToolsClientHalfCheckTest extends TestCase
     {
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            $this->findingsOfFor(new BoardToolsClientHalfCheck, $this->agent()),
+            $this->findingsOfFor(new BoardToolsClientHalfCheck($this->bundledDir()), $this->agent()),
         );
+    }
+
+    /**
+     * A stand-in `examples/channel-servers` whose bundled version this class CHOOSES.
+     *
+     * ⛔ THE REAL CHECKOUT'S SNAPSHOT IS DELIBERATELY NOT USED. Every version assertion here
+     * would then be a function of whatever `examples/channel-servers/package.json` happens
+     * to say on the day the suite runs — so the STALE case would stop being reachable the
+     * moment the repo's own snapshot moved past the fixture, and the EQUAL case would red on
+     * every routine bump. The comparison is what is under test; the operands are fixtures.
+     */
+    private function bundledDir(): string
+    {
+        if (! isset($this->bundledDir)) {
+            $this->bundledDir = (string) tempnam(sys_get_temp_dir(), 'bundled-snap-');
+            unlink($this->bundledDir);
+            mkdir($this->bundledDir, 0o700);
+            $this->bundling(self::BUNDLED_VERSION);
+        }
+
+        return $this->bundledDir;
+    }
+
+    /**
+     * Write the stand-in manifest. `null` writes no manifest at all; `''` writes one that
+     * PARSES and declares no `version` — the fourth state `ChannelSnapshotProbe`'s reader
+     * keeps apart from the other three, and a different operator situation from an absent
+     * file (nothing to restore; the file is there and wrong).
+     */
+    private function bundling(?string $version): void
+    {
+        $path = $this->bundledDir().'/package.json';
+        if ($version === null) {
+            @unlink($path);
+
+            return;
+        }
+        $manifest = $version === '' ? ['name' => 'stand-in'] : ['name' => 'stand-in', 'version' => $version];
+        file_put_contents($path, (string) json_encode($manifest));
     }
 
     /**
@@ -489,11 +768,11 @@ class BoardToolsClientHalfCheckTest extends TestCase
      * age. The ledger's own write is asserted where it happens, in
      * `tests/Feature/AgentTools/BoardToolDispatcherTest.php`.
      */
-    private function recordCall(string $agent = 'prod-agent', string $transport = 'ssh', int $ageSeconds = 0, ?CallProvenance $provenance = null): void
+    private function recordCall(string $agent = 'prod-agent', string $transport = 'ssh', int $ageSeconds = 0, ?CallProvenance $provenance = null, ?string $clientVersion = null): void
     {
         BoardToolsClientCall::query()->updateOrCreate(
             ['agent' => $agent],
-            ['transport' => $transport, 'call_provenance' => $provenance, 'last_success_at' => now()->subSeconds($ageSeconds)],
+            ['transport' => $transport, 'call_provenance' => $provenance, 'client_version' => $clientVersion, 'last_success_at' => now()->subSeconds($ageSeconds)],
         );
     }
 

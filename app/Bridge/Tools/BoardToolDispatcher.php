@@ -48,6 +48,12 @@ use Illuminate\Support\Facades\Log;
  * reads sshd's session environment, the http door has nothing to read and says so as a
  * constant. Threading it keeps the fact next to the door that can establish it, rather than
  * having the shared body infer a door from `$cfg->transport`.
+ *
+ * ⭐ card#8974 THREADS A SECOND SUCH FACT — the CALLER's own snapshot version, which each
+ * door reads out of its own request shape ({@see ClientVersion}) and which this class only
+ * carries to the ledger. ⛔ It is an OBSERVATION and never a precondition: no branch here
+ * reads it, no refusal turns on it, and a call that reports no version dispatches exactly
+ * as one that reports a current one.
  */
 final class BoardToolDispatcher
 {
@@ -58,8 +64,12 @@ final class BoardToolDispatcher
      * @param  CallProvenance  $provenance  how the process serving this call was started, as
      *                                      the FRONT DOOR establishes it — required, never
      *                                      defaulted (see {@see ClientHalfLedger::record()})
+     * @param  ?string  $clientVersion  the calling channel server's own snapshot version as
+     *                                  its door read it off the wire, already reduced by
+     *                                  {@see ClientVersion}; null for a call that reported
+     *                                  none. Required for the same reason as above.
      */
-    public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance): DispatchOutcome
+    public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance, ?string $clientVersion): DispatchOutcome
     {
         $transport = $cfg->transport;
         // card#8973 / DL-360, AT ENTRY AND NOT AT THE SUCCESS POINT BELOW — the two rows
@@ -113,7 +123,7 @@ final class BoardToolDispatcher
         // and only to someone reading logs; `bridge:check` needs it as a fact. Best-effort by construction —
         // the ledger never throws, because the call has already happened and re-running it
         // to fix an audit row would re-do the board work.
-        ClientHalfLedger::record($agentName, $transport, $provenance);
+        ClientHalfLedger::record($agentName, $transport, $provenance, $clientVersion);
 
         return DispatchOutcome::success($toolName, $result);
     }

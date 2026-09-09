@@ -108,7 +108,7 @@ final class NextSteps
                 $cfg->boardTools?->transport === 'ssh'
                     ? self::worst($pinnedLine[$name] ?? [])
                     : $ctx->boardToolsResolver?->bearerSeverity($name),
-                in_array(Severity::Ok, $clientHalf[$name] ?? [], true),
+                self::seatReported($clientHalf[$name] ?? []),
             );
             if ($state === null) {
                 continue;
@@ -207,18 +207,45 @@ final class NextSteps
     }
 
     /**
+     * Did this run OBSERVE a successful board-tools call for the agent whose client-half
+     * severities these are?
+     *
+     * THE CONSUMER KEYS ON A POSITIVE REPORT, NOT ON THE ABSENCE OF `Unvalidated`, and the
+     * asymmetry is deliberate. {@see BoardToolsClientHalfCheck} yields `unvalidated` for two
+     * different reasons — no fresh record, and a ledger read that failed outright — and
+     * nothing in the severity separates them. Treating only a positive report as *observed*
+     * means an unreadable ledger produces an entry that says the seat has not been observed,
+     * which is TRUE on both paths; the inverse rule would have produced a silent clean over
+     * a measurement that never happened.
+     *
+     * ⭐ A POSITIVE REPORT IS `Ok` OR `Warn`, and the second is what card#8974 / DL-364
+     * added. Both are the SAME finding — the `client half REPORTED` line — and the severity
+     * between them turns on the seat's SNAPSHOT VERSION, not on whether it called: a seat
+     * running a stale channel server has still reported, and telling its operator to go ask
+     * it to call would send them after the one thing that already happened, while the actual
+     * remedy (re-deploy the snapshot) is printed on the line above. Keying on `Ok` alone did
+     * exactly that.
+     *
+     * ⛔ THIS IS STILL AN INSTALL FACT INFERRED FROM A SEVERITY — the coupling DL-238(g)
+     * names, here in its second instance. It is sound only while `Warn` has exactly one
+     * producer in that check; `BoardToolsClientHalfCheckTest` pins the severity set the check
+     * can emit and `CheckNextStepsTest` pins this consequence, so a third producer cannot
+     * arrive unnoticed. The root-cause fix is the one DL-251 already names: have the check
+     * report the fact rather than have this derive it from how the finding printed.
+     *
+     * @param  list<Severity>  $severities
+     */
+    private static function seatReported(array $severities): bool
+    {
+        return in_array(Severity::Ok, $severities, true)
+            || in_array(Severity::Warn, $severities, true);
+    }
+
+    /**
      * Every severity ONE per-agent check yielded, keyed by agent — selected BY ID, never by
      * walking the whole report, so a second check later registered in the same slot cannot
      * silently start feeding this derivation (the rule `CheckCommand`'s own pinned-line
      * readback follows).
-     *
-     * FOR THE CLIENT HALF THE CONSUMER KEYS ON THE PRESENCE OF `Ok`, NOT ON THE ABSENCE OF
-     * `Unvalidated`, and the asymmetry is deliberate. {@see BoardToolsClientHalfCheck} yields
-     * `unvalidated` for two different reasons — no fresh record, and a ledger read that
-     * failed outright — and nothing in the severity separates them. Treating only a positive
-     * `ok` as *observed* means an unreadable ledger produces an entry that says the seat has
-     * not been observed, which is TRUE on both paths; the inverse rule would have produced a
-     * silent clean over a measurement that never happened.
      *
      * @param  list<CheckResult>  $results
      * @return array<string, list<Severity>>
