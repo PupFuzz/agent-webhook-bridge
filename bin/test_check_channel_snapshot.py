@@ -100,12 +100,22 @@ _PROBE_COLLABORATORS = (
     # does not trip the scan for two independent reasons — the `_` before `exec` is in the
     # negative lookbehind, and `executable(` is not `exec\s*\(`.
     "app/Bridge/Support/PathVisibility.php",
-    # The manifest reader/comparator the drift leg delegates to (card#8974 r3). Reaches
-    # nothing else, so this is a leaf: it names no class IN CODE. A grep will show three
-    # `ChannelSnapshotProbe` hits in it — all docblock prose, which `_php_code_only` strips
-    # before the scan, so they are not hops. Said precisely because the looser claim ("names
-    # no class at all") reads as false to anyone who runs that grep.
+    # The manifest reader/comparator the drift leg delegates to (card#8974 r3). It was a
+    # LEAF until card#9121; it is not one now, and the three files below are the hop it
+    # gained. A grep will also show `ChannelSnapshotProbe` hits in it — all docblock prose,
+    # which `_php_code_only` strips before the scan, so those are not hops. Said precisely
+    # because the looser claim ("names no class at all") reads as false to anyone who runs
+    # that grep.
     "app/Bridge/Support/ChannelSnapshotManifest.php",
+    # card#9121: the manifest read is taken over a path under another OS user's home, so it
+    # goes through the guarded reader card#9037 shipped, and that reader plus the two refusal
+    # types it raises are now reachable FROM the probe through the manifest. Listed rather
+    # than assumed inert — the hop the scan does not follow is the hop nothing guards. The
+    # reader stats and opens files (`lstat`/`fopen`/`fstat`/`fread`); `PathVisibility`, the
+    # one class it calls, is already on this list.
+    "app/Bridge/Support/UntrustedPathContents.php",
+    "app/Bridge/Exceptions/UnreadableFileException.php",
+    "app/Bridge/Exceptions/PathResolvesToNoFileException.php",
 )
 
 # What may be passed INTO the probe: a variable, a property read chain, a quoted

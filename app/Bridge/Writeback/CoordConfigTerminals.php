@@ -2,6 +2,9 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Exceptions\UnreadableFileException;
+use App\Bridge\Support\UntrustedPathContents;
+
 /**
  * Resolve what the OTHER mover considers TERMINAL, from the coordination project's
  * `coordination.config.json` (`$COORD_CONFIG`) — the cross-config read `bridge:check`
@@ -46,15 +49,39 @@ final class CoordConfigTerminals
      * ask" apart from "asked, and the answer is no terminals". A missing input is not
      * evidence of agreement.
      *
+     * ⭐ THE READER IS {@see UntrustedPathContents} (card#9121, adopting card#9037's
+     * primitive). This is a CROSS-CONFIG read: the file belongs to the coordination
+     * project, is named by `$COORD_CONFIG` in the operator's environment, and lives under a
+     * directory this process does not own — while `bridge:check` reads it as the operator,
+     * routinely root. The shape this replaces was `is_file()` + `is_readable()` + an
+     * unbounded `@file_get_contents()`, which is the same read card#9037 found at the
+     * `authorized_keys` leg: `is_file()` follows the link and answers about the TARGET, so
+     * the path could name any regular file on the box, at any size. `is_readable()` is gone
+     * with it, for the reason `FileContents` already gives — it answers for the real uid and
+     * cannot see an ACL, so the open's own return is the only answer that is not a proxy.
+     *
+     * ⛔ BOTH REFUSAL KINDS COLLAPSE ONTO NULL HERE, and that is deliberate rather than
+     * unconsidered: this method's contract already models "could not ask" as ONE answer the
+     * caller reports as CANNOT-VERIFY, so the ESTABLISHING/WITHHOLDING split is a
+     * distinction no caller of this method could spend. The two checks that read it
+     * (`WritebackMappingConfigCheck` and `WritebackBoardStateCheck` — NAMED, never
+     * `{@see}`-linked: pint rewrites a docblock FQCN into a real `use`, and importing a
+     * Check into the Writeback layer would invert it) both depend on this never throwing,
+     * which the catch below preserves for every refusal the reader raises.
+     *
      * @return array<string, mixed>|null
      */
     public static function load(?string $path): ?array
     {
-        if ($path === null || $path === '' || ! is_file($path) || ! is_readable($path)) {
+        if ($path === null || $path === '') {
             return null;
         }
-        $raw = @file_get_contents($path);
-        if ($raw === false) {
+        try {
+            $raw = UntrustedPathContents::read($path, 'coordination.config.json');
+        } catch (UnreadableFileException) {
+            return null;
+        }
+        if ($raw === null) {
             return null;
         }
         $decoded = json_decode($raw, true);

@@ -8,6 +8,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -207,6 +208,74 @@ class ChannelTransportCheckTest extends TestCase
         // The tail is a sentence about the marker EXISTING, not about its contents, so it
         // has to read correctly with nothing interpolated in front of it.
         $this->assertSame($this->markerTail(), $this->tailOf($findings[0]->message));
+    }
+
+    /**
+     * ⭐ THE MARKER IS WRITTEN BY ANOTHER ACCOUNT AND READ BY THIS ONE, WHICH IS THE WHOLE
+     * REASON THE READ IS GUARDED (card#9121, adopting card#9037's reader). `bridge:check`
+     * runs as the operator — routinely root under `sudo` — while the marker lives beside the
+     * agent's socket in ITS runtime dir. Before this, `is_file()` followed the link and
+     * answered about the TARGET, so a marker that is a SYMLINK to any regular file root can
+     * read was read as the connector's own report and its bytes were printed verbatim into
+     * an operator-facing finding.
+     *
+     * The finding still fires — the tail is a sentence about the marker EXISTING and
+     * something IS at that path — and what it loses is the DETAIL, which is the one part
+     * this run cannot attribute to the connector.
+     */
+    public function test_a_symlinked_bind_failure_marker_is_reported_without_the_bytes_it_names(): void
+    {
+        $socket = $this->dir.'/agent.sock';
+        $elsewhere = $this->dir.'/not-the-connectors-file';
+        File::put($elsewhere, "PLANTED-BYTES-9121\n");
+        symlink($elsewhere, $socket.'.FAILED');
+
+        $findings = $this->socketFindings($socket, $this->probe(connected: false));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringNotContainsString('PLANTED-BYTES-9121', $findings[0]->message);
+        $this->assertStringContainsString("channel bind-FAILURE marker at {$socket}.FAILED was NOT read", $findings[0]->message);
+        // The marker still EXISTS, so the operator still gets the sentence about it.
+        $this->assertSame($this->markerTail(), $this->tailOf($findings[0]->message));
+    }
+
+    /**
+     * A path that RESOLVES TO NO FILE yields NOTHING, exactly as it did before the reader
+     * was adopted: `is_file()` was false for a directory too, so this pins that the
+     * migration mints no finding an operator did not already get. Route the establishing
+     * refusal to the warn arm instead and this reds.
+     */
+    public function test_a_directory_at_the_marker_path_surfaces_no_marker_finding(): void
+    {
+        $socket = $this->dir.'/agent.sock';
+        mkdir($socket.'.FAILED');
+
+        $findings = $this->socketFindings($socket, $this->probe(connected: false));
+
+        $this->assertSame([], $findings);
+    }
+
+    /**
+     * The HTTP marker is the WEAKEST path of the two: with `XDG_RUNTIME_DIR` unset the
+     * check composes it under `/tmp`, which every local account can write, and the name is
+     * derived from the agent name and the port. The read is bounded by the opened file's
+     * own `fstat`, so a marker sized past the reader's cap is not read at all.
+     */
+    public function test_an_oversize_http_bind_failure_marker_is_not_read_into_the_finding(): void
+    {
+        $marker = $this->dir.'/run/agent-webhook-bridge-channel-prod-agent.http-8765.FAILED';
+        File::put($marker, 'OVERSIZE-BYTES-9121'.str_repeat('E', UntrustedPathContents::MAX_BYTES));
+
+        $findings = $this->httpFindings('http://127.0.0.1:8765/push', $this->probe(connected: false));
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringNotContainsString('OVERSIZE-BYTES-9121', $findings[0]->message);
+        $this->assertStringContainsString("channel bind-FAILURE marker at {$marker} was NOT read", $findings[0]->message);
+        $this->assertSame($this->markerTail(), $this->tailOf($findings[0]->message));
+        // Unchanged: the marker never short-circuits the liveness probe.
+        $this->assertStringContainsString('not answering', $findings[1]->message);
     }
 
     /** No fixture creates a real socket file, so neither arm is golden-measured. */

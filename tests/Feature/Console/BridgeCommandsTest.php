@@ -3314,7 +3314,11 @@ class BridgeCommandsTest extends TestCase
         }
 
         $this->assertSame(0, $code);   // warn, never a fail
-        $this->assertStringContainsString('package.json exists but is not readable by this user', $out);
+        // card#9121: the sentence stopped naming permissions as the cause when the read
+        // moved onto the guarded reader — a permission denial is one of several refusals
+        // that reach this status, and the status establishes only that something is at the
+        // path and this run did not read it. The 0000 file below is still that case.
+        $this->assertStringContainsString('package.json exists but was NOT read by this process', $out);
         $this->assertStringNotContainsString('is not present', $out);
         $this->assertStringNotContainsString('cp -R', $out);
     }
