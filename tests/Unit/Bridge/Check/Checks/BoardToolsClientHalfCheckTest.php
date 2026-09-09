@@ -43,9 +43,17 @@ use Tests\TestCase;
  * ⛔ THE SEVERITY BOUND IS ASSERTED FROM THE SOURCE, not from the fixtures below. A
  * behavioural union over the inputs some test happens to construct is blind to an arm no
  * input reaches — which is the failure mode the whole `bridge:check` program exists to
- * remove — so `test_the_leg_can_construct_only_ok_and_unvalidated()` slices the class's own
- * code the way `CheckCommandSeverityContractTest` slices `probePinnedLine()`. That is what
- * makes "never `fail`, never `warn`" a property of the CLASS rather than of this corpus.
+ * remove — so `test_the_leg_can_construct_only_ok_unvalidated_and_warn()` slices the class's
+ * own code the way `CheckCommandSeverityContractTest` slices `probePinnedLine()`.
+ *
+ * ⭐ WHAT THAT PIN ESTABLISHES SINCE DL-364, stated as the property rather than the list: the
+ * class can construct `ok`, `unvalidated` and `warn`, and **cannot construct `fail`**. The
+ * second half is the load-bearing one — `fail` is the only severity that moves
+ * `bridge:check`'s exit code, so its absence FROM THE SOURCE is what makes "this leg cannot
+ * change the exit code" true by construction rather than by fixture coverage. (Until DL-364
+ * this sentence read *never `fail`, never `warn`*; the `warn` half stopped being true of the
+ * class when the version comparison gained the leg's one MEASURED fault, and the `fail` half
+ * is unchanged.)
  */
 class BoardToolsClientHalfCheckTest extends TestCase
 {
@@ -387,7 +395,8 @@ class BoardToolsClientHalfCheckTest extends TestCase
      * a bound and was measurably wrong.
      *
      * ⛔ THIS IS NOT A GUARD OVER AN UNREACHABLE STATE (canon #6): nothing is added to defend
-     * against the value, and the leg still has exactly two severities. What is asserted is
+     * against the value, and the leg gains no severity from it — the whole set is pinned from
+     * the source in `test_the_leg_can_construct_only_ok_unvalidated_and_warn()`. What is asserted is
      * that the read happens inside the envelope the leg ALREADY has, so the existing limb (a)
      * arm answers for it — which is what makes the refusal to guard correct rather than lucky.
      */
