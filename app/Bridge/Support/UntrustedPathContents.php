@@ -26,13 +26,28 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * ⭐ TWO KINDS OF REFUSAL, AND THE CALLER MUST BE ABLE TO TELL THEM APART. A refusal that
  * withholds a verdict is not the same as one that DELIVERS a measurement, and collapsing
  * them onto one answer is how a guard like this turns permissive:
- *  - **ESTABLISHING** — the path names a directory, FIFO, socket or device, or a symlink to
- *    one of those or to a target measured absent. No reader following this path gets bytes,
- *    and that is a FACT this run established. Raised as {@see PathResolvesToNoFileException}.
+ *  - **ESTABLISHING** — the path names a directory, FIFO, socket or device, or a symlink
+ *    whose chain resolves to NO BYTES EVER — because it ends at a target measured absent,
+ *    or because it LOOPS (a self-symlink, a mutual pair, or any chain the kernel itself
+ *    would refuse with `ELOOP`). No reader following this path gets bytes, at any uid,
+ *    under any permission, and that is a FACT this run established. Raised as
+ *    {@see PathResolvesToNoFileException}.
  *  - **WITHHOLDING** — a symlink to a regular file (we decline to attribute those bytes to
- *    the account), a resolution this process could not complete, an identity that changed
- *    under the open, an unmeasurable descriptor, or a file past the size bound. Nothing was
- *    established. Raised as the plain {@see UnreadableFileException}.
+ *    the account), a chain this process could not fully resolve (an ancestor along it may
+ *    deny traversal), an identity that changed under the open, an unmeasurable descriptor,
+ *    or a file past the size bound. Nothing was established. Raised as the plain
+ *    {@see UnreadableFileException}.
+ * ⚠ THE ESTABLISHING SET IS A SUBSET OF `is_file() === false`, and deliberately not its
+ * equal in either direction. It is never WIDER: by construction {@see self::nonRegularRefusal()}
+ * only ever calls something ESTABLISHING after failing to find a regular file at the end of
+ * the chain, so nothing this class establishes was ever a path `is_file()` would have called
+ * true — migrating a reader onto this class mints no new false FAIL over what `is_file()`
+ * used to certify. It is also not NARROWER by accident: `is_file()` itself commits
+ * card#5698's error for one shape — a chain blocked by an ancestor this process may not
+ * traverse reads `is_file()`-false (a confident "not a file"), and this class WITHHOLDS it
+ * instead, deliberately, because "cannot look" is not "confirmed absent" no matter what the
+ * older predicate concluded. Pinned as a SET property, not per-shape, so a shape neither
+ * side has been tested against yet cannot silently violate it.
  * The split is a property of the FILESYSTEM, not of any check: this class states which one
  * happened and never what a caller should do about it. A caller with no use for the
  * distinction catches the parent and treats both as "could not look" — understating what was
@@ -204,13 +219,19 @@ final class UntrustedPathContents
      * file is the accepted cost (the account really is wired and we decline to attribute
      * those bytes), while a link to a directory, a device or nothing at all is a file sshd —
      * or any other follower of that path — takes nothing from. A FOLLOWING `stat()` answers
-     * that, and it is a stat and never an open, so it neither reads the target nor blocks on
-     * one.
+     * that in ONE syscall, because `stat()` itself fully dereferences the chain; it is a stat
+     * and never an open, so it neither reads the target nor blocks on one.
      *
-     * ⛔ A FAILED `stat()` IS NOT EVIDENCE OF ABSENCE (card#5698's whole rule), so it does not
-     * reach the establishing arm on its own: a dangling link and a link into a directory this
-     * process may not traverse both answer false. Absence is confirmed POSITIVELY, one hop,
-     * by {@see self::targetIsConfirmedAbsent()}, and everything it cannot confirm withholds.
+     * ⛔ A FAILED `stat()` IS NOT EVIDENCE OF ABSENCE (card#5698's whole rule) — but it is
+     * not evidence of a LOOP either, and conflating "stat failed" with "the immediate target
+     * is absent" is exactly the bug card#9037 r2 found: `stat()` fails identically for a
+     * dangling chain, an `ELOOP` chain, and a chain blocked by a directory this process may
+     * not traverse, and a check that only re-tries the FIRST hop answers "cannot confirm" for
+     * all three — including the two that a kernel-following `is_file()` would have reported
+     * false for, which is a refusal this reader must not soften into `unvalidated`.
+     * {@see self::symlinkChainVerdict()} walks the WHOLE chain, hop by hop, exactly as the
+     * kernel does, so a loop and a multi-hop absence are each confirmed on their own terms —
+     * and a chain blocked by traversal still withholds, unchanged.
      */
     private static function nonRegularRefusal(string $path, string $subject, int $mode): UnreadableFileException
     {
@@ -237,38 +258,132 @@ final class UntrustedPathContents
                 .'following this path reads any bytes from it'
             ));
         }
-        if (self::targetIsConfirmedAbsent($path)) {
-            return new PathResolvesToNoFileException(self::refusal(
-                $subject, $path,
-                'the path is a symbolic link whose target does not exist, so nothing following '
-                .'this path reads any bytes from it'
-            ));
-        }
 
-        return new UnreadableFileException(self::refusal(
-            $subject, $path,
-            'the path is a symbolic link this process could not resolve — the target may be '
-            .'present behind a directory this process may not traverse'
-        ));
+        return match (self::symlinkChainVerdict($path)) {
+            self::CHAIN_LOOP => new PathResolvesToNoFileException(self::refusal(
+                $subject, $path,
+                'the path is a symbolic link whose chain LOOPS back on itself rather than '
+                .'resolving (the same condition a kernel open() refuses with ELOOP), so nothing '
+                .'following this path ever reads any bytes from it'
+            )),
+            self::CHAIN_ABSENT => new PathResolvesToNoFileException(self::refusal(
+                $subject, $path,
+                'the path is a symbolic link whose chain ends at a target that does not exist, '
+                .'so nothing following this path reads any bytes from it'
+            )),
+            default => new UnreadableFileException(self::refusal(
+                $subject, $path,
+                'the path is a symbolic link this process could not fully resolve — a directory '
+                .'along the chain may not be traversable, or the chain may exceed '
+                .self::MAX_SYMLINK_HOPS.' hops without this walk confirming either an absence or a loop'
+            )),
+        };
     }
 
     /**
-     * Can this process POSITIVELY establish that the link's target is not there? One hop, and
-     * deliberately not a walk: a target that is itself a symlink EXISTS, so `lstat` finds it
-     * and this answers false — the chain beyond it is unmeasured, and unmeasured withholds.
-     * `PathVisibility` is what separates "not there" from "not visible to me"; without it this
-     * would assert absence off a permission denial, which is the defect the whole family of
-     * these primitives exists to stop.
+     * The most hops this walk follows before treating an unresolved chain as a LOOP rather
+     * than merely long — the Linux kernel's own bound (`MAXSYMLINKS` / `SYMLOOP_MAX`, enforced
+     * in `namei.c` since 2.6.18). A chain that has not resolved in this many hops is a chain
+     * `open()` itself would refuse with `ELOOP` on this host, for ANY caller — so treating it
+     * as ESTABLISHING here is not a guess, it is the same fact the kernel would report.
      */
-    private static function targetIsConfirmedAbsent(string $path): bool
-    {
-        $raw = @readlink($path);
-        if (! is_string($raw)) {
-            return false;
-        }
-        $target = str_starts_with($raw, '/') ? $raw : dirname($path).'/'.$raw;
+    private const MAX_SYMLINK_HOPS = 40;
 
-        return @lstat($target) === false && PathVisibility::ancestorIsTraversable($target);
+    private const CHAIN_LOOP = 'loop';
+
+    private const CHAIN_ABSENT = 'absent';
+
+    private const CHAIN_UNRESOLVABLE = 'unresolvable';
+
+    /**
+     * card#9037 r2 — ONE HOP WAS NOT ENOUGH. `ln -s authorized_keys authorized_keys`
+     * (self-`ELOOP`), a two-file A↔B loop, and a target reached only through a SECOND
+     * symlink (`hop1 → hop2 → nowhere`) all defeated the single `readlink` + `lstat` this
+     * replaces: each one's IMMEDIATE target EXISTS (it is another symlink), so a check that
+     * inspects only that one hop answers "cannot confirm" and WITHHOLDS — the exact
+     * suppression this class exists to close, one `ln -s` away from the `mkdir` r1 closed.
+     * `is_file()` is false for every one of these (a kernel-following predicate correctly
+     * refuses to certify a chain it cannot resolve either), so `origin/dev` reported the
+     * earned FAIL; withholding here would have been a REGRESSION this branch introduced, not
+     * an inherited residual — caught before merge rather than shipped.
+     *
+     * ⭐ A LOOP AND A MULTI-HOP ABSENCE ARE BOTH ESTABLISHING, ON THE SAME GROUND AS THE
+     * SINGLE-HOP CASE: no follower of this path — at any uid, under any permission — EVER
+     * gets bytes from it. A loop is not "we could not attribute the bytes" (the accepted cost
+     * for a symlink to a regular file, where bytes genuinely exist and are genuinely
+     * reachable); it is "there are no bytes to attribute", a stronger and different claim,
+     * and the kernel itself is the authority for it.
+     *
+     * ⛔ THE ASYMMETRY THAT CLOSED card#5698 IS PRESERVED, NOT WIDENED — this walks toward a
+     * POSITIVE confirmation only, never infers one from a failure it cannot attribute. A hop
+     * this process cannot even `lstat` because an ANCESTOR directory denies traversal reaches
+     * {@see self::CHAIN_UNRESOLVABLE} exactly as the single-hop check withheld before —
+     * `PathVisibility::ancestorIsTraversable()` is consulted at the SAME hop the old check
+     * consulted it at, just carried forward through however many hops the chain has. The walk
+     * adds two more ESTABLISHING shapes; it does not touch what "cannot confirm" means.
+     *
+     * ⭐ EACH HOP RESOLVES A RELATIVE TARGET AGAINST THE DIRECTORY CONTAINING **THAT HOP'S
+     * OWN LINK** — never against the original `$path`. `hop1 → hop2` (relative) and
+     * `hop2 → nowhere` (relative) both resolve against the one directory both links happen to
+     * share in the deterministic reproduction, but nothing here assumes they share one: a
+     * chain crossing directories joins each `readlink()` against `dirname()` of the link that
+     * carried it, which is the only join a relative symlink target is ever specified against.
+     *
+     * ⭐ TERMINATION IS GUARANTEED BY THE HOP CAP ALONE, independent of whether this walk's
+     * own repeat-detection (a literal path string seen twice) fires first. A cycle built with
+     * `..` segments could in principle present a growing string that never repeats by literal
+     * comparison before the cap — the cap still ends the walk at {@see self::CHAIN_LOOP}, and
+     * correctly: a chain that has not resolved in `MAX_SYMLINK_HOPS` hops is one the kernel
+     * itself would refuse for every caller, looped or merely long, so classifying it
+     * ESTABLISHING misclaims nothing.
+     * ⚑ MEASURED, not assumed: deleting the repeat check outright (`$visited`, kept only
+     * for early exit) leaves every test in this tree green, because a self-symlink and an
+     * A↔B pair both still terminate at `self::CHAIN_LOOP` via the cap alone, just 38 hops
+     * later. The repeat check has no red-once witness for the same reason the `dev`/`ino`
+     * race guard elsewhere in this class does not — it is disclosed rather than removed,
+     * because it is what keeps a genuinely long (not looping) chain from being walked to
+     * `MAX_SYMLINK_HOPS` on every single call instead of returning at its own repeat.
+     */
+    private static function symlinkChainVerdict(string $path): string
+    {
+        $current = $path;
+        $visited = [];
+        for ($hop = 0; $hop < self::MAX_SYMLINK_HOPS; $hop++) {
+            if (isset($visited[$current])) {
+                return self::CHAIN_LOOP;
+            }
+            $visited[$current] = true;
+
+            $lstat = @lstat($current);
+            if ($lstat === false) {
+                // The chain ends here — nothing answers to this name. The SAME guard the
+                // single-hop check used decides whether that is a confirmed absence or an
+                // unmeasurable one: an ancestor this process cannot traverse makes "absent" a
+                // conclusion it is not entitled to draw (card#5698), at any hop.
+                return PathVisibility::ancestorIsTraversable($current)
+                    ? self::CHAIN_ABSENT
+                    : self::CHAIN_UNRESOLVABLE;
+            }
+            if (! self::isLink($lstat['mode'])) {
+                // Resolved to something real with no loop and no absence. Not reachable
+                // given the `@stat($path) === false` precondition the caller already
+                // established (a kernel `stat()` would have found this same node), but
+                // handled rather than assumed impossible: nothing here supports an
+                // ESTABLISHING claim, so withhold.
+                return self::CHAIN_UNRESOLVABLE;
+            }
+
+            $raw = @readlink($current);
+            if (! is_string($raw)) {
+                return self::CHAIN_UNRESOLVABLE;
+            }
+            $current = str_starts_with($raw, '/') ? $raw : dirname($current).'/'.$raw;
+        }
+
+        // The cap itself IS the kernel's own ELOOP bound (see the constant's docblock) — a
+        // chain that has not resolved in MAX_SYMLINK_HOPS hops loops, whether or not this
+        // walk's own string-based repeat detection happened to catch it sooner.
+        return self::CHAIN_LOOP;
     }
 
     private static function isRegular(int $mode): bool

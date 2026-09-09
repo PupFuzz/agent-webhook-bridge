@@ -345,7 +345,7 @@ class UntrustedPathContentsTest extends TestCase
             $this->fail('an unresolvable symlink was not refused');
         } catch (UnreadableFileException $e) {
             $this->assertNotInstanceOf(PathResolvesToNoFileException::class, $e);
-            $this->assertStringContainsString('could not resolve', $e->getMessage());
+            $this->assertStringContainsString('could not fully resolve', $e->getMessage());
         } finally {
             @chmod($this->dir.'/closed', 0o700);
         }
@@ -365,5 +365,159 @@ class UntrustedPathContentsTest extends TestCase
         } catch (UnreadableFileException $e) {
             $this->assertNotInstanceOf(PathResolvesToNoFileException::class, $e);
         }
+    }
+
+    // ---- the SYMLINK CHAIN WALK (card#9037 r2) — one hop was not enough --------------
+    // ⛔ THIS SECTION PINS THE BLOCKER ITSELF. `targetIsConfirmedAbsent()`'s one-hop check
+    // answered "cannot confirm" (WITHHOLD) for every case below, because each one's
+    // IMMEDIATE target EXISTS (it is another symlink) — defeating the establishing/
+    // withholding split with `ln -s authorized_keys authorized_keys`, one command away from
+    // the `mkdir` r1 closed. Each case here is `is_file()`-false (verified directly against
+    // the real filesystem, not assumed), so `origin/dev` reported the earned FAIL and
+    // withholding here would be a REGRESSION this branch introduces.
+
+    public function test_a_self_referential_symlink_establishes_rather_than_withholding(): void
+    {
+        // `ln -s authorized_keys authorized_keys` — the exact command named in the blocker.
+        // ELOOP at the FIRST redirection: `readlink` on this path returns ITS OWN name, so a
+        // one-hop check finds "the target exists" (it is the same symlink) and withholds.
+        symlink($this->dir.'/self', $this->dir.'/self');
+
+        try {
+            UntrustedPathContents::read($this->dir.'/self', 'authorized_keys');
+            $this->fail('a self-referential symlink was not refused');
+        } catch (PathResolvesToNoFileException $e) {
+            $this->assertStringContainsString('LOOPS', $e->getMessage());
+        }
+    }
+
+    public function test_a_mutual_symlink_pair_establishes_rather_than_withholding(): void
+    {
+        // a -> b -> a. Neither file's IMMEDIATE target is absent, so the one-hop check
+        // withheld both; the walk must detect the REPEAT on the third hop (a, b, a).
+        symlink($this->dir.'/b', $this->dir.'/a');
+        symlink($this->dir.'/a', $this->dir.'/b');
+
+        foreach (['a', 'b'] as $name) {
+            try {
+                UntrustedPathContents::read($this->dir.'/'.$name, 'authorized_keys');
+                $this->fail("a mutual symlink pair (entering at {$name}) was not refused");
+            } catch (PathResolvesToNoFileException $e) {
+                $this->assertStringContainsString('LOOPS', $e->getMessage());
+            }
+        }
+    }
+
+    public function test_a_multi_hop_dangling_chain_establishes_rather_than_withholding(): void
+    {
+        // hop1 -> hop2 -> nowhere. hop1's IMMEDIATE target (hop2) exists, so the one-hop
+        // check confirmed nothing and withheld — the walk must follow past hop2 to see that
+        // ITS target is genuinely absent.
+        symlink($this->dir.'/hop2', $this->dir.'/hop1');
+        symlink($this->dir.'/nowhere', $this->dir.'/hop2');
+
+        try {
+            UntrustedPathContents::read($this->dir.'/hop1', 'authorized_keys');
+            $this->fail('a multi-hop dangling chain was not refused');
+        } catch (PathResolvesToNoFileException $e) {
+            $this->assertStringContainsString('ends at a target that does not exist', $e->getMessage());
+        }
+    }
+
+    public function test_a_chain_that_would_loop_behind_an_untraversable_directory_still_withholds(): void
+    {
+        // ⛔ THE CARD#5698 ASYMMETRY MUST SURVIVE THE WALK. `entry` points INTO `closed`
+        // (0000), and what lives at that name inside `closed` — absent, a real file, or a
+        // link back out to `entry` closing a loop — this process genuinely cannot see. The
+        // walk must stop at "cannot look" and never guess ESTABLISHING from a permission
+        // denial, exactly as the single-hop check did before it became a walk.
+        mkdir($this->dir.'/closed', 0o700);
+        symlink($this->dir.'/entry', $this->dir.'/closed/inner');
+        symlink($this->dir.'/closed/inner', $this->dir.'/entry');
+        chmod($this->dir.'/closed', 0o000);
+        clearstatcache();
+        if (@lstat($this->dir.'/closed/inner') !== false) {
+            @chmod($this->dir.'/closed', 0o700);
+            $this->markTestSkipped('this uid traverses a 0000 directory (root?), so the arm has nothing to measure');
+        }
+
+        try {
+            UntrustedPathContents::read($this->dir.'/entry', 'authorized_keys');
+            $this->fail('a chain blocked by traversal was not refused');
+        } catch (UnreadableFileException $e) {
+            $this->assertNotInstanceOf(PathResolvesToNoFileException::class, $e);
+            $this->assertStringContainsString('could not fully resolve', $e->getMessage());
+        } finally {
+            @chmod($this->dir.'/closed', 0o700);
+        }
+    }
+
+    public function test_establishing_is_never_wider_than_is_file_false_across_a_shape_battery(): void
+    {
+        // ⭐ THE SET PROPERTY, ASSERTED DIRECTLY (card#9037 r2 review) — not per-shape, so a
+        // shape neither side of this test has been written against yet cannot silently
+        // violate it. Every shape this class can call ESTABLISHING must be one `is_file()`
+        // already called false: migrating a reader onto this class must never mint a FALSE
+        // FAIL that the old `is_file()`-gated reader would not also have produced (as
+        // `absent()`, in `AuthorizedKeysRead`'s vocabulary).
+        $battery = [];
+
+        symlink($this->dir.'/self', $this->dir.'/self');
+        $battery[] = 'self';
+
+        symlink($this->dir.'/b', $this->dir.'/a');
+        symlink($this->dir.'/a', $this->dir.'/b');
+        $battery[] = 'a';
+        $battery[] = 'b';
+
+        symlink($this->dir.'/hop2', $this->dir.'/hop1');
+        symlink($this->dir.'/nowhere', $this->dir.'/hop2');
+        $battery[] = 'hop1';
+
+        symlink($this->dir.'/nowhere2', $this->dir.'/plain1');
+        $battery[] = 'plain1';
+
+        mkdir($this->dir.'/adir', 0o700);
+        symlink($this->dir.'/adir', $this->dir.'/link-to-dir');
+        $battery[] = 'link-to-dir';
+        $battery[] = 'adir';
+
+        if (function_exists('posix_mkfifo')) {
+            posix_mkfifo($this->dir.'/fifo2', 0o600);
+            $battery[] = 'fifo2';
+        }
+
+        file_put_contents($this->dir.'/regular', 'x
+');
+        symlink($this->dir.'/regular', $this->dir.'/link-to-regular');
+        $battery[] = 'regular';
+        $battery[] = 'link-to-regular';
+
+        $checked = 0;
+        $establishedCount = 0;
+        foreach ($battery as $name) {
+            $path = $this->dir.'/'.$name;
+            $establishing = false;
+            try {
+                UntrustedPathContents::read($path, 'authorized_keys');
+            } catch (PathResolvesToNoFileException) {
+                $establishing = true;
+            } catch (UnreadableFileException) {
+                $establishing = false;
+            }
+            if ($establishing) {
+                $establishedCount++;
+                $this->assertFalse(
+                    is_file($path),
+                    "{$name} was called ESTABLISHING but is_file() is TRUE for it — this would mint a false FAIL"
+                );
+            }
+            $checked++;
+        }
+        // The battery itself must contain both an ESTABLISHING member and a non-vacuous
+        // check count — otherwise this test would pass against a primitive that never
+        // establishes anything, or against a battery that silently shrank to nothing.
+        $this->assertGreaterThanOrEqual(8, $checked, 'the battery shrank silently');
+        $this->assertGreaterThanOrEqual(5, $establishedCount, 'no ESTABLISHING verdict was observed — the subset assertion above never ran');
     }
 }

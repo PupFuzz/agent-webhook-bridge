@@ -126,6 +126,50 @@ class SshPinnedLineRefusalRoutingTest extends TestCase
         $this->assertNotContains(Severity::Fail, $severities);
         $this->assertNotContains(Severity::Ok, $severities);
     }
+
+    // ---- THE R2 BLOCKER, END TO END: `ln -s authorized_keys authorized_keys` ----------
+    // ⛔ Unit-level coverage of the walk lives in `UntrustedPathContentsTest`; these three
+    // pin that the walk's verdict actually REACHES this seam's `Severity` — the composition
+    // the r1 blocker was found in and the one no unit test alone can certify.
+
+    public function test_a_self_referential_symlink_at_the_authoritative_path_still_fails(): void
+    {
+        // THE EXACT COMMAND NAMED IN THE BLOCKER. `is_file()` is false for this path
+        // (verified directly against this fixture below), so `origin/dev` reported the
+        // earned FAIL — this must too.
+        symlink($this->keys, $this->keys);
+        $this->assertFalse(is_file($this->keys), 'fixture check: the control claim about is_file() does not hold here');
+
+        $severities = $this->severities();
+        $this->assertContains(Severity::Fail, $severities, 'a self-referential symlink at authorized_keys suppressed the not-wired FAIL');
+        $this->assertNotContains(Severity::Unvalidated, $severities);
+    }
+
+    public function test_a_mutual_symlink_pair_at_the_authoritative_path_still_fails(): void
+    {
+        // authorized_keys -> sibling -> authorized_keys. Neither file's IMMEDIATE target is
+        // absent, which is exactly the shape that defeated the one-hop check in r1.
+        symlink($this->dir.'/.ssh/sibling', $this->keys);
+        symlink($this->keys, $this->dir.'/.ssh/sibling');
+        $this->assertFalse(is_file($this->keys));
+
+        $severities = $this->severities();
+        $this->assertContains(Severity::Fail, $severities, 'a mutual symlink pair at authorized_keys suppressed the not-wired FAIL');
+        $this->assertNotContains(Severity::Unvalidated, $severities);
+    }
+
+    public function test_a_two_hop_dangling_chain_at_the_authoritative_path_still_fails(): void
+    {
+        // authorized_keys -> hop -> nowhere. The one-hop check confirmed only that `hop`
+        // exists and withheld; the walk must follow past it to the genuine absence.
+        symlink($this->dir.'/.ssh/hop', $this->keys);
+        symlink($this->dir.'/.ssh/nowhere', $this->dir.'/.ssh/hop');
+        $this->assertFalse(is_file($this->keys));
+
+        $severities = $this->severities();
+        $this->assertContains(Severity::Fail, $severities, 'a two-hop dangling chain at authorized_keys suppressed the not-wired FAIL');
+        $this->assertNotContains(Severity::Unvalidated, $severities);
+    }
 }
 
 /**
