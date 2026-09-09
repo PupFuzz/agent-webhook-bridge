@@ -269,6 +269,31 @@ class BoardToolsLostCheckTest extends TestCase
         $this->assertStringContainsString('do not delete impl.yml until a run prints RETIRED', $findings[0]->message);
     }
 
+    /**
+     * ⭐ THE CONTROL THAT MAKES THE `ok` CASE NON-VACUOUS. Its sibling above has NO ROW at
+     * all, so both tests pass under a leg that reads mere row EXISTENCE as the tombstone —
+     * the two arms sit at opposite corners and nothing occupies the one in between. This is
+     * that corner: the row IS there and the tombstone is measurably not ON it.
+     *
+     * ⛔ IT IS ALSO THE ARM'S ONLY REALISTIC PRODUCTION TRIGGER. `ConfigSeenLedger::recordRetired()`
+     * is best-effort and logs rather than throws, so a seat recorded by an earlier enabled
+     * sighting keeps a `retired_reason` of NULL when that upsert loses a race — and an
+     * operator at step 2 of the retirement runbook, told `(tombstone on record)` on the
+     * strength of the row alone, deletes the YAML and the seat returns as a LOST fail with
+     * nothing left to retire it with.
+     */
+    public function test_a_recorded_row_without_a_tombstone_warns_rather_than_reporting_it_retired(): void
+    {
+        $this->recordSeen('impl');
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('retired in config but the tombstone could NOT be recorded', $findings[0]->message);
+        $this->assertStringNotContainsString('tombstone on record', $findings[0]->message);
+    }
+
     // ─── the directory gate, and its ordering ─────────────────────────────────
 
     public function test_recorded_seats_and_an_unscanned_config_dir_report_one_unvalidated_and_no_fail(): void
@@ -329,7 +354,7 @@ class BoardToolsLostCheckTest extends TestCase
         $this->assertStringContainsString('could NOT read the config-seen ledger', $findings[0]->message);
         $this->assertStringContainsString('a LOST block cannot be detected on this run', $findings[0]->message);
         $this->assertStringContainsString('a retired: key in config cannot be confirmed against its tombstone', $findings[0]->message);
-        $this->assertStringContainsString('run migrations', $findings[0]->message);
+        $this->assertStringContainsString('has not run `php artisan migrate` since the upgrade that added board_tools_config_seen', $findings[0]->message);
     }
 
     /**
@@ -370,7 +395,11 @@ class BoardToolsLostCheckTest extends TestCase
         // THE WRONG SUBJECT AND THE REMEDY THAT CANNOT WORK, both pinned: this run read the
         // config-seen ledger and this install is fully migrated.
         $this->assertStringNotContainsString('config-seen ledger', $findings[0]->message);
-        $this->assertStringNotContainsString('run migrations', $findings[0]->message);
+        // ⛔ THE TABLE NAME, not the words "run migrations": the config-seen remedy is now
+        // spelled conditionally (`php artisan migrate` … board_tools_config_seen), and the
+        // old phrase appears nowhere in the build — so asserting ITS absence would pass over
+        // any replacement, including the wrong remedy landing here verbatim.
+        $this->assertStringNotContainsString('board_tools_config_seen', $findings[0]->message);
     }
 
     /**
