@@ -156,26 +156,19 @@ class ClientVersionTest extends TestCase
     }
 
     /**
-     * ⭐ THE LANDING-WINDOW LEG — the one that would have caught the collision outright.
-     * While this change is unmerged, the snapshot it bumps to IS the snapshot that first
-     * sends the field, so the two must be equal. That is what makes a rebase onto a `dev`
-     * that bumped the snapshot for some OTHER reason RED rather than green: the bump
-     * collapses, the pin stays, and equality breaks.
+     * ⛔ THE LANDING-WINDOW LEG WAS RETIRED HERE, AT THE FIRST POST-MERGE SNAPSHOT BUMP, ON
+     * ITS OWN WRITTEN INSTRUCTION (card#8985 / DL-365, retiring DL-364's leg). While DL-364
+     * was unmerged, the snapshot it bumped to WAS the snapshot that first sends
+     * `client_version`, so `FIRST_REPORTING_SNAPSHOT === package.json version` held and made a
+     * rebase-collapsed bump red. card#8985 bumped the bundled snapshot to 0.9.16 for an
+     * unrelated reason (the advertised `board_my_cards` schema), which is exactly the event
+     * that leg named as its expiry: the pin now legitimately falls behind the bundle.
      *
-     * ⚠ RELAX THIS AT THE FIRST POST-MERGE SNAPSHOT BUMP. Once a later release moves
-     * `package.json` for an unrelated reason the pin legitimately falls behind, and this leg
-     * must be deleted rather than re-synced — re-syncing it would silently re-point the pin
-     * at a release, which is the defect. The leg above is the durable one.
+     * ⛔ IT WAS DELETED RATHER THAN RE-SYNCED, which the leg itself demanded and is the whole
+     * point: re-syncing would have re-pointed the pin at whatever release happened to be
+     * bundled, and a pin that follows the bundle is not a pin — it is the `0.9.14` collision
+     * DL-364 exists to prevent, restored. The two legs above are the durable ones and are
+     * untouched: `FIRST_REPORTING_SNAPSHOT` may not be AHEAD of the bundled snapshot, and the
+     * bundled server must actually SEND the field.
      */
-    public function test_during_the_landing_window_the_pin_and_the_bundled_snapshot_are_the_same_release(): void
-    {
-        $bundled = ChannelSnapshotManifest::readManifest(base_path('examples/channel-servers/package.json'));
-
-        $this->assertSame('ok', $bundled['status'], 'the bundled manifest did not read, so this test measured nothing');
-        $this->assertSame(
-            ClientVersion::FIRST_REPORTING_SNAPSHOT,
-            $bundled['version'],
-            'the pin and the bundled snapshot have diverged. If this branch is UNMERGED, a rebase has collapsed its snapshot bump into one dev made for another reason: bump the snapshot again and move the pin with it. If a later release has legitimately moved the snapshot, DELETE this leg rather than re-syncing it.',
-        );
-    }
 }
