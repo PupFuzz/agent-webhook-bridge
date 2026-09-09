@@ -5,6 +5,7 @@ namespace Tests\Feature\Console;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
@@ -277,9 +278,21 @@ class BridgeCommandsTest extends TestCase
                 return $this->root ? $this->sshd : null;
             }
 
-            public function readAuthorizedKeys(string $path): ?string
+            public function readAuthorizedKeys(string $path): AuthorizedKeysRead
             {
-                return $this->keys === '' ? null : $this->keys;
+                // '' models a file this run could not READ (the unverifiable setup these
+                // cases assert), never an absent one — see AuthorizedKeysRead.
+                return $this->keys === ''
+                    ? AuthorizedKeysRead::unreadable()
+                    : AuthorizedKeysRead::text($this->keys);
+            }
+
+            // These cases state ONE authorized_keys file, so no two paths name one file
+            // and a path is its own identity. The aliased shape is covered where it can
+            // be measured rather than stated: SystemSshProbeEnvironmentTest.
+            public function fileIdentity(string $path): string
+            {
+                return $path;
             }
 
             public function sshRoundTrip(string $target, string $stdin): array
