@@ -242,9 +242,17 @@ class ChannelTransportCheckTest extends TestCase
 
     /**
      * A path that RESOLVES TO NO FILE yields NOTHING, exactly as it did before the reader
-     * was adopted: `is_file()` was false for a directory too, so this pins that the
-     * migration mints no finding an operator did not already get. Route the establishing
-     * refusal to the warn arm instead and this reds.
+     * was adopted: `is_file()` was false for a directory too, so this pins that THE
+     * ESTABLISHING ARM mints no finding an operator did not already get. Route the
+     * establishing refusal to the warn arm instead and this reds.
+     *
+     * ⛔ It pins that arm and no more. The WITHHOLDING arm is NOT verdict-neutral — a
+     * symlink whose chain this process cannot resolve `lstat`s fine and warns, where
+     * `is_file()` followed the link, failed, and yielded nothing. Nothing here covers that
+     * shape: the cheap way to build it is a `0000` ancestor, and root — the principal
+     * `bridge:check` actually runs as — traverses one anyway, so the fixture's verdict would
+     * depend on the uid running the suite rather than on the code. `ChannelTransportCheck`'s
+     * own docblock discloses the arm instead.
      */
     public function test_a_directory_at_the_marker_path_surfaces_no_marker_finding(): void
     {

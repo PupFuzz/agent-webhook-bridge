@@ -83,15 +83,28 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # probe's drift leg uses. It was hoisted OUT of the probe rather than shared FROM it, because
 # sharing from the probe widened the pinned call surface below from one entry point to four
 # — which is what this file's own `test_the_probe_call_site_hands_the_probe_only_strings`
-# caught. It is same-namespace (so the probe's no-import assertion still holds), it reads
-# files and parses JSON and integers and does nothing else, and it is on
-# `_PROBE_COLLABORATORS` so the no-exec scan covers it on the same terms as the probe.
+# caught. It is same-namespace (so the probe's no-import assertion still holds) and it reads
+# files and parses JSON and integers. ⛔ It is NOT a leaf — it was one until card#9121, and
+# the sentence here used to end "and does nothing else", which stopped being true the moment
+# it delegated its read to the guarded reader. What it now reaches is not restated here:
+# `_PROBE_COLLABORATORS` below owns the reach, and that list is DERIVED and asserted rather
+# than written down, so it cannot say something different from the code.
 _ALLOWED_PROBE_STATICS = {"self::", "Finding::", "PathVisibility::", "ChannelSnapshotManifest::"}
 
-# Every class REACHABLE from the probe through the allow-list, scanned for exec
-# primitives on the same terms as the probe itself. Wider than the set above by
-# design: `Severity` is never named in the probe, only in `Finding`'s constructors,
-# and a hop the scan skips is a hop nothing guards.
+# Every class REACHABLE from the probe, scanned for exec primitives on the same terms as
+# the probe itself. Wider than the set above by design: `Severity` is never named in the
+# probe, only in `Finding`'s constructors, and a hop the scan skips is a hop nothing guards.
+#
+# ⛔ THIS TUPLE IS AN EXPECTATION, NOT THE POPULATION. It was a hand-written allow-list
+# until card#9121 r2, and a hand-written list of a REACHABILITY closure cannot enforce
+# itself: review deleted the entries this card added and the scan stayed FULLY GREEN,
+# because the only thing asserted against the source was `ChannelSnapshotProbe.php`'s own
+# statics — so any collaborator could grow an arbitrary hop silently, and this card's diff
+# is the first collaborator->collaborator hop the list ever had to absorb. The closure is
+# now DERIVED from the tree by `_reachable_app_files()` and compared to this tuple by exact
+# equality in both directions, exactly as `_ALLOWED_PROBE_STATICS` is: a hop added anywhere
+# in the closure reds until it is listed AND scanned, and an entry that has stopped being
+# reachable reds too (a permission outlives its reason otherwise).
 _PROBE_COLLABORATORS = (
     "app/Bridge/Support/Finding.php",
     "app/Bridge/Support/Severity.php",
@@ -117,6 +130,13 @@ _PROBE_COLLABORATORS = (
     "app/Bridge/Exceptions/UnreadableFileException.php",
     "app/Bridge/Exceptions/PathResolvesToNoFileException.php",
 )
+
+# Classes the closure reaches that this repo does NOT declare, so no `app/` file can be
+# scanned for them. Today exactly one: `UnreadableFileException extends RuntimeException`,
+# a PHP global that launches nothing. Exact equality in both directions — the point of
+# surfacing these at all is that a vendored class arriving in the closure (a process
+# wrapper, an HTTP client) must red rather than be silently unscannable.
+_ALLOWED_FOREIGN_CLASSES = {"RuntimeException"}
 
 # What may be passed INTO the probe: a variable, a property read chain, a quoted
 # string, or a class constant — nothing that evaluates. Deliberately a grammar and
@@ -426,6 +446,105 @@ def _exec_primitives_in(php_source: str):
     if "`" in php_source:
         found.append("backtick operator")
     return found
+
+
+# `self`/`static`/`parent` name the file being scanned, not a hop out of it, and the `class`
+# in `new class {…}` is an anonymous declaration rather than a name to resolve.
+_PHP_NON_CLASS_NAMES = frozenset({"self", "static", "parent", "class"})
+
+# `use function foo;` / `use const BAR;` import a symbol, not a class.
+_PHP_USE_MODIFIERS = frozenset({"function", "const"})
+
+
+def _class_references_in(code: str) -> set:
+    """Every SHORT class name already-comment-stripped PHP source can reach.
+
+    ⛔ STATICS ALONE ARE NOT THE HOP SET, and scanning only `X::` is how the previous
+    revision of `_PROBE_COLLABORATORS` (below) stayed green with entries DELETED. The
+    reader this file now guards is reached by `UntrustedPathContents::` — a static — but
+    the two refusal types it raises are reached by `new`, by the `use` that imports them,
+    and by `catch`; a walk that follows statics only stops one hop short of exactly the
+    classes card#9121 added. So every spelling a maintainer writes by hand is followed:
+    `X::`, `new X`, `use X;` (a class import AND an indented `use SomeTrait;`, which is the
+    same shape the probe's own no-`use` assertion exists to catch), `extends`/`implements`,
+    and `catch (X)`.
+
+    HONEST BOUND, in the spirit of `_php_code_only`'s: this is a hand-rolled reference
+    scanner, not a resolver. It reads SHORT names — a namespace alias (`use A\\B as C;`)
+    would be followed under the wrong name — and it cannot see a hop that never spells a
+    class name: a computed class string, a callable in an array, a container `make()`.
+    What it makes self-enforcing is the ORDINARY hop a maintainer writes, which is the
+    regression this guards; it is a tripwire on the same terms as everything else here.
+    """
+    refs = set()
+    # The lookbehind keeps `$var::` out: it is a DYNAMIC static call, and capturing `var`
+    # as a class name would red under a name nothing declares — a confusing failure about
+    # the wrong thing. Dynamic dispatch is in the bound below, not in this set.
+    refs.update(re.findall(r"(?<![A-Za-z0-9_$])([A-Za-z_\\][A-Za-z0-9_\\]*)::", code))
+    refs.update(re.findall(r"\bnew\s+([A-Za-z_\\][A-Za-z0-9_\\]*)", code))
+    for imported in re.findall(r"\buse\s+([^;{()]+);", code):
+        for name in re.split(r"[,\s]+", imported.strip()):
+            if name and name not in _PHP_USE_MODIFIERS:
+                refs.add(name)
+    for inherited in re.findall(r"\b(?:extends|implements)\s+([^{;]+)", code):
+        refs.update(re.split(r"[,\s]+", inherited.strip()))
+    for caught in re.findall(r"\bcatch\s*\(([^)$]*)", code):
+        refs.update(re.split(r"[|\s]+", caught.strip()))
+
+    short = set()
+    for ref in refs:
+        name = ref.rsplit("\\", 1)[-1]
+        if name and name not in _PHP_NON_CLASS_NAMES:
+            short.add(name)
+    return short
+
+
+def _app_class_index() -> dict:
+    """Short class name -> every `app/` file declaring it (a set, so a COLLISION reds).
+
+    Derived from the tree on every run rather than written down: a name->path map that
+    is authored is a second copy of the file layout, and it goes stale silently.
+    """
+    index = {}
+    root = pathlib.Path(os.path.dirname(_HERE), "app")
+    declaration = re.compile(
+        r"(?:^|\n)\s*(?:final\s+|abstract\s+|readonly\s+)*(?:class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)"
+    )
+    for php in sorted(root.rglob("*.php")):
+        code = _php_code_only(php.read_text(encoding="utf-8"))
+        for name in declaration.findall(code):
+            index.setdefault(name, set()).add(str(php.relative_to(root.parent)))
+    return index
+
+
+def _reachable_app_files(entry_relative: str):
+    """Breadth-first closure of `app/` files reachable from one file by class reference.
+
+    Returns `(files, foreign)` — the app-relative paths reached (EXCLUDING the entry),
+    and the short names of every referenced class this repo does not declare (PHP's
+    globals and anything vendored). `foreign` is returned rather than dropped: silently
+    ignoring an unresolvable name is how a `use Symfony\\…\\Process;` would pass a scan
+    that only follows what it recognises.
+    """
+    index = _app_class_index()
+    root = os.path.dirname(_HERE)
+    files, foreign = set(), set()
+    frontier, seen = [entry_relative], {entry_relative}
+    while frontier:
+        current = frontier.pop()
+        code = _php_code_only(pathlib.Path(root, current).read_text(encoding="utf-8"))
+        for name in sorted(_class_references_in(code)):
+            declared = index.get(name)
+            if declared is None:
+                foreign.add(name)
+                continue
+            assert len(declared) == 1, f"{name} is declared in more than one app/ file: {sorted(declared)}"
+            target = next(iter(declared))
+            if target not in seen:
+                seen.add(target)
+                files.add(target)
+                frontier.append(target)
+    return files, foreign
 
 
 class _TreeCase(unittest.TestCase):
@@ -1344,12 +1463,34 @@ class ToolShape(unittest.TestCase):
             "to _PROBE_COLLABORATORS so the no-exec scan below covers it too",
         )
 
-        # ONE HOP, and only one — stated because the assertion above alone would have
-        # widened the trust boundary to a file this test does not read. Every
-        # allow-listed collaborator gets the SAME exec-primitive scan as the probe, so
-        # "no reachable way to execute" stays true THROUGH them. It is not a call-graph
-        # proof: a collaborator's own collaborators are covered only if they are
-        # themselves on the list (today `Finding` reaches `Severity`, and both are).
+        # THE CLOSURE, DERIVED — not one hop, and not a written-down list. Until
+        # card#9121 r2 this loop walked a hand-authored tuple and asserted it against
+        # nothing, so deleting entries from it left the scan green: it guarded whatever
+        # it still happened to name. `_reachable_app_files()` re-computes the reachable
+        # set from the tree on every run and it is compared BOTH ways, so a collaborator
+        # that grows a hop reds until the hop is listed and scanned, and an entry that
+        # has stopped being reachable reds too.
+        #
+        # POSITIVE CONTROL first, for the same reason the statics assertion has one: an
+        # empty closure would satisfy nothing here except a mistake in the walker.
+        closure, foreign = _reachable_app_files("app/Bridge/Support/ChannelSnapshotProbe.php")
+        self.assertNotEqual(set(), closure, "the reachability walk found no collaborator at all — it misfired")
+        self.assertEqual(
+            set(_PROBE_COLLABORATORS),
+            closure,
+            "the classes reachable from the snapshot probe are not the ones _PROBE_COLLABORATORS "
+            "names — add every newly reachable file to that tuple (the no-exec scan below then "
+            "covers it), or remove the entry that is no longer reachable",
+        )
+        self.assertEqual(
+            _ALLOWED_FOREIGN_CLASSES,
+            foreign,
+            "the snapshot probe's closure reaches a class this repo does not declare, so no "
+            "app/ file can be scanned for it — vet it and list it in _ALLOWED_FOREIGN_CLASSES",
+        )
+
+        # Every reachable collaborator gets the SAME exec-primitive scan as the probe, so
+        # "no reachable way to execute" stays true THROUGH them.
         for relative in _PROBE_COLLABORATORS:
             with open(os.path.join(os.path.dirname(_HERE), relative), encoding="utf-8") as fh:
                 collaborator = _php_code_only(fh.read())

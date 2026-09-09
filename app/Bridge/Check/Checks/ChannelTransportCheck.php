@@ -197,11 +197,27 @@ final class ChannelTransportCheck implements PerAgentCheck
      * ⛔ THE TWO REFUSALS DO NOT LAND ON ONE ARM, for the reason card#9037 states at the
      * `authorized_keys` leg. A path that RESOLVES TO NO FILE is ESTABLISHING, it is a strict
      * subset of `is_file() === false`, and `is_file()` false is exactly what used to yield
-     * NOTHING here — so it stays nothing, and this migration mints no finding an operator
+     * NOTHING here — so it stays nothing: THE ESTABLISHING ARM mints no finding an operator
      * did not already get. A refusal that established nothing still yields the warn, because
      * the finding is a sentence about the marker EXISTING (see self::MARKER_TAIL) and a
      * refusal is only ever raised after an `lstat` found something at the path — what it
      * loses is the DETAIL, which is the one part this run cannot attribute to the connector.
+     *
+     * ⚠ THE WITHHOLDING ARM IS NOT VERDICT-NEUTRAL, AND THE NARROWER CLAIM ABOVE IS THE ONLY
+     * ONE THIS MIGRATION SUPPORTS. `lstat` answers about the final component; `is_file()`
+     * FOLLOWED the link. So a marker that is a symlink whose chain this process cannot
+     * resolve — an ancestor of the target denying traversal, or a chain past
+     * `UntrustedPathContents::MAX_SYMLINK_HOPS` with neither an absence nor a loop confirmed —
+     * `lstat`s fine, reaches `CHAIN_UNRESOLVABLE`, and raises a plain
+     * {@see UnreadableFileException}, which yields the warn below. `is_file()` was FALSE for
+     * that shape and yielded nothing. MEASURED, not reasoned: a symlink to a file under a
+     * `0000` directory gives `is_file() === false` and the unresolvable-chain refusal.
+     * ⛔ That new warn carries self::MARKER_TAIL, which asserts a session came up DEAF — a
+     * bind failure this run has NOT established, because it never read a marker. It is
+     * DISCLOSED here rather than routed away: sending `CHAIN_UNRESOLVABLE` to the silent arm
+     * would soften a withholding refusal into a measurement, and re-wording or suppressing an
+     * operator-facing finding changes how errors are reported, which is not this change's to
+     * make. card#9121 carries it.
      *
      * ⚠ IT BOUNDS THE READ; IT DOES NOT SANITIZE THE BYTES. On the success arm the marker's
      * content is still interpolated verbatim into an operator-facing message that also
