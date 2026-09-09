@@ -101,7 +101,10 @@ _PROBE_COLLABORATORS = (
     # negative lookbehind, and `executable(` is not `exec\s*\(`.
     "app/Bridge/Support/PathVisibility.php",
     # The manifest reader/comparator the drift leg delegates to (card#8974 r3). Reaches
-    # nothing else: it names no class at all, so this is a leaf.
+    # nothing else, so this is a leaf: it names no class IN CODE. A grep will show three
+    # `ChannelSnapshotProbe` hits in it — all docblock prose, which `_php_code_only` strips
+    # before the scan, so they are not hops. Said precisely because the looser claim ("names
+    # no class at all") reads as false to anyone who runs that grep.
     "app/Bridge/Support/ChannelSnapshotManifest.php",
 )
 
