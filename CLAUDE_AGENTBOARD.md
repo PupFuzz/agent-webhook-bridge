@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.49.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.50.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **⚠ Only two sections of this file reach a session automatically: `## Who you are` and
@@ -61,15 +61,20 @@ call — requirements are the floor, not the ceiling.
 **Your session-state handoff is injected for you.** The framework's SessionStart hook
 (`session-state-load`) reads your machine-local handoff file
 `~/.cache/coord/<COORD_AGENT>-session-state.md` (written by the previous session's end
-ritual) and injects it as context at every session boundary so you resume **oriented, not
-cold**. It carries the single next action + where you left off; your open PRs remain the
-authoritative in-flight state. (If the hook is unavailable — new machine, misconfigured —
-read the file directly as a fallback.) **The injection is honest about its own gaps:** if
-that file is empty or whitespace-only you get a loud `⚠ NO HANDOFF INJECTED
-[coord-empty-handoff]` line instead of a confident header over nothing, and if it was longer
-than the hook injects you get `⚠ HANDOFF TRUNCATED [coord-truncation …]` at the exact cut.
-Either one means **go read the file before you act** — you are resuming colder than the
-header implies.
+ritual) and puts it in front of you so you resume **oriented, not cold**. It carries the
+single next action + where you left off; your open PRs remain the authoritative in-flight
+state. (If the hook is unavailable — new machine, misconfigured — read the file directly as
+a fallback.)
+
+⛔ **What was injected, and what was left behind, is stated IN the injection — read that,
+never a description of it here.** The header names which part of the file you were given,
+and any `⚠` line in it — an empty surface, a shape the hook did not recognise, or a cap that
+cut the text — carries the exact command that prints the rest. **An `⚠` line means go read
+the file before you act**: you are resuming colder than the header implies. This paragraph
+deliberately does not list those lines: nothing re-checks this doc against the hook at
+session start, so a second copy of them here would drift against the one you actually see.
+What you WRITE into that file at session end is owned by the session-end ritual below and by
+the handoff skeleton's own header, not by this section.
 
 **Then read all your boards.** There is no inbox (you have no counterparties sending you
 threads). Your source of truth at session start is the state of every board in
@@ -86,6 +91,8 @@ between sessions; verify the board state reflects actual PR state before proceed
   you run on your own plan before opening a non-trivial PR.
 - **`doc-sync.md`** — the standing rule that every code PR audits and updates affected docs
   in the same PR.
+- **`parallel-dispatch.md`** (plugin `docs/`, read in place) — the dispatch map you derive
+  before sending a batch of two or more tasks to your own subagents.
 - **`CONFIG.md`** — the `coordination.config.json` schema and the per-machine identity env.
 
 **Identity & config** come from env, set per-machine in `.claude/settings.local.json` by
@@ -100,8 +107,12 @@ skills read these.
 ⚠ **The block below is the ONE span of this doc that is BOTH auto-loaded AND preserved across
 `orientation-sync`.** Elsewhere inside the managed block a rule is ERASED by the next sync; below
 the `PROJECT ADDENDUM` divider it survives but NEVER loads. Write install rules between the
-markers — short (injected verbatim every session), and with no `#`/`##` heading, which would end
-this section and silently un-load the rest.
+markers — short, and with no `#`/`##` heading, which would end this section and silently un-load
+the rest. **Short is a real constraint, not a style note:** the block is injected verbatim at every
+session start, it is RESIDENT and re-billed on every turn, and it is inside the SessionStart byte
+ceiling like every other byte of content. It is cut LAST — after the section headings — but it IS
+cut, loudly, with a `sed` range that recovers the rest. An index that points at a normal section of
+this doc costs a session almost nothing; the section itself, in here, costs it every turn.
 
 <!-- BEGIN coord:install-rules -->
 _No install-specific standing rules recorded for this seat._
@@ -169,6 +180,30 @@ gotchas + the machine-read lines; self-review narration, the doc-sync audit trai
 on the item's tracking issue or card (your install has no coordination thread — that issue/card is
 its stand-in). Full IN/OUT tables: **`coord:release-pr` skill § PR body — write it like a senior
 dev**. Nothing is dropped; only the home moves.
+
+**Declare how you built it — the `Built:` line (card#4870).** Every PR body you open carries a
+REQUIRED one-line `Built:` field declaring how the work was produced — one of the legitimate values
+defined in `built-line.md`, which is **canonical for
+the value set and for the conditions on the restricted value**; read them there rather than
+restating them. It is one of the machine-read, process-native lines the senior-dev standard above
+explicitly preserves, so trimming a body never removes it. You are your own reviewer here, which is
+exactly why the field has to be right without one: nobody else will catch a wrong count.
+
+**Write the count when it is true, not when you open the PR** (the spec's *Durable store* rules).
+Put `Built: dispatched (coder ×N / mechanic ×M)` in the body **at PR creation**, and record any
+dispatch that lands before the PR exists on the **item's tracking issue or card** — the branch is
+pushed first and the PR opened after, so that issue/card (your install's stand-in for a coordination
+thread) is the store that exists when the count becomes true. Increment in the **same action** that
+records each later round of work. **Never reconstruct a count afterwards** from commits, worktrees,
+or transcripts: nothing in the tree records a dispatch — a worktree does not record how many
+contexts touched it, and a transcript is not the record for a branch — so a reassembled figure is a
+fabricated attestation, strictly worse than the gap it fills, because a gap is visible and a
+plausible number is not. You are the dispatching seat for everything you push and there is no other
+seat to ask, so record the count at the dispatch and no gap opens on a branch you built. The narrow
+conditions under which `Built: unattestable — <reason>` is legitimate at all are owned by the
+`built-line.md` — **read them there rather than from a copy here.** Note only that they are
+written for installs with several seats, so any of them that turn on a *different* seat simply never
+arise on yours.
 
 **Cut releases via the `coord:release-pr` skill** — it walks the release-pattern checklist
 (version bump, CHANGELOG entry, "recent changes" doc row, SBOM regeneration, PR title,
@@ -348,11 +383,19 @@ procedure), one-per-task so work never accretes onto your session. Inline is leg
 version bump, a one-line doc fix) — that trivial-tier carve-out is the *sole* exception **while
 dispatch is available** (the one other inline path, `inline (dispatch-prohibited: …)`, applies only
 when an operator/environment directive prohibits dispatch for the session up front — see the
-coord-thread `Built:` spec, card#5046).
+`built-line.md`, card#5046).
 "Context-heavy" or "needs tight mid-flight steering" is **not** a licence to absorb non-trivial
 work inline: a subagent runs to completion and returns one result, so you can't steer it
 partway — scope the dispatch so it doesn't need partway steering, or steer across successive
 dispatches.
+
+**One-per-task above means one TASK per subagent — never one subagent at a time.** You are both the
+seat that decides the batch and the seat that runs it, you can hold more than one in flight, and
+work that can run in parallel goes out in parallel: **before dispatching two or more tasks, derive
+the dispatch map first and dispatch from it.** The doctrine — footprints, named exclusions,
+merge-don't-split, sequencing, and why finished work sitting unpushed is a shadow queue — is stated
+once in **`parallel-dispatch.md`**, read in the plugin's own `docs/` directory. Apply it from there;
+nothing here restates it.
 
 **STOP-and-retry on API / limit termination (card#4870).** If a subagent you dispatched is
 terminated by an API error or a usage/spend limit, **STOP that work entirely — NO inline
@@ -365,15 +408,15 @@ pull only non-dispatch work (review, scoping) or idle-with-reason, and **retry t
 later**. An inline build to substitute for a **terminated** subagent is never a legitimate path.
 (Distinct, legitimate case — do not conflate: when an explicit operator/environment directive
 **prohibits dispatch for the session up front**, non-trivial work built inline is legitimate and
-carries the `inline (dispatch-prohibited: …)` `Built:` value — see the coord-thread `Built:` spec,
+carries the `inline (dispatch-prohibited: …)` `Built:` value — see `built-line.md`,
 card#5046. A *termination* is not that: it stays STOP-and-retry.)
 
-**You stay at spec/review altitude:** the
-dispatch prompt IS the spec — requirements, constraints, edge cases, and selftest expectations
-(including *prove-it-can-fail*: the check must red before it greens) — and you review the returned
-diff and merge it (your merge-authority model above). **The `coder`/`mechanic` defs are
-repo-agnostic and dispatched PER TASK:** the prompt names the target repo, so **any** repo you own
-is dispatchable with no def edit ever needed — one deployed def serves your whole `roster[0].repos`.
+**You stay at spec/review altitude**, and **what the dispatch prompt must carry is owned by
+`dispatching-briefs.md § What a dispatch carries`** (a canonical framework doc, in the plugin's
+`docs/`) — read it there; it is deliberately not restated here. That one section is carved out of
+that doc's "not applicable in solo mode" banner and says so: the rest of the file is `[BRIEF]`-path
+machinery a solo install has no use for, but a subagent dispatch is a subagent dispatch. Your
+merge-authority model above governs the review-and-merge half.
 
 ---
 
@@ -390,6 +433,9 @@ go, or the action is hard-gate, surface it and wait.
 - Production release / deploy.
 - Safety-critical or regulated surfaces.
 - Anything irreversible or outward-facing (external sends, force-push, permanent deletes).
+
+**Filing and capture are never gated** (canon #2 carves this out explicitly). Routing a capture
+to your human as a question is itself a defect — file it, then tell them what you filed.
 
 **What you do NOT gate on (obvious next step → just do it):**
 
@@ -459,6 +505,16 @@ genuine question / gate → banner. The banner spends your human's attention —
 - **`coord:release-pr`** — the release cutter described in § Your work loop. Use it when
   cutting a release PR on any owned repo.
 
+**Sprint burn-down (if this install declares a `sprint` block).** Your sprint plan is
+generated, not authored: lanes are declared once in the config, membership is a board query (a tag,
+a gate card's blockers, a swimlane, a filter), and one board read produces both the HTML page you
+read and the `lanes.definitions` the lane census reads — so they cannot drift. The default shape is
+one lane, `current`, holding every open card tagged `sprint:current`. A card leaves the plan by
+MOVING on the board, never by editing the page; re-render with `sprint-burndown.py --html <path>
+--write-config` instead. The SessionStart check reds when the committed page no longer matches the
+board, and its UNMEASURED verdict means a read did not happen, not that the sprint is finished.
+Vocabulary, worked configs, and the exit codes: **`docs/SPRINT.md`**.
+
 The **manual board-state check** is the documented fallback when the SessionStart hook is
 unavailable (new machine, hook misconfigured): query each board via the board API —
 `kanban.base_url` + each `kanban.boards[].board_id` from the config, with the `[kanban]
@@ -512,10 +568,11 @@ up.
    on a remote), and it prints the live facts to write your judgement AROUND. **A contradiction also
    REFUSES a self-clear** (`clear-agent.sh`). ⭐ **AND IT NOW RUNS ON THE WRITE WHETHER OR NOT YOU
    REMEMBER IT** — `hooks/bin/handoff-write-check.py` watches this file's content across the session
-   and fires on the tool call that changed it, whatever wrote it, injecting the verdict there and
-   then. Read that as an enforced CHECK and never as a refusal: the write has already landed when it
-   speaks, so correcting the line is still yours to do, and the line above is still the step. Claim classes, outcomes, `--control` and the honest
-   limits: **`docs/HANDOFF-VERIFICATION.md`** — not restated here.
+   and fires on the tool call that changed it, whatever wrote it. Read that as an enforced CHECK
+   and never as a refusal: the write has already landed when it speaks, so correcting the line is
+   still yours to do, and the line above is still the step. What it prints and when, claim
+   classes, outcomes, `--control` and the honest limits: **`docs/HANDOFF-VERIFICATION.md`** — not
+   restated here.
 
 5. **Save lessons learned to memory.** Durable takeaways from the session — a repo or tooling
    gotcha, a bridge or board mechanics quirk, a reusable pattern — go to your agent memory
