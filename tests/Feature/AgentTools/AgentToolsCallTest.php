@@ -1655,18 +1655,68 @@ class AgentToolsCallTest extends TestCase
         ], $result['cards_window']);
     }
 
-    public function test_my_cards_keeps_the_lowest_card_ids_in_their_original_order(): void
+    public function test_my_cards_keeps_the_seats_newest_work_when_it_cuts(): void
     {
-        // WHICH cards survive is a contract, not an accident: the same call twice must
-        // answer the same window, and a card created elsewhere in the lane must not
-        // shuffle what a seat is already looking at.
+        // ⛔ THE PROPERTY, NOT THE DIRECTION. Card ids are allocated globally and
+        // monotonically, so "oldest first" means a lane with a terminal column returns 52
+        // finished cards and the seat's live work is structurally invisible on the default
+        // call, permanently — a bounded response that answers the wrong question. The
+        // assertion is therefore about WHAT SURVIVES (the newest work), which reds on a
+        // silent flip in EITHER direction, not about the comparator's spelling.
         $this->fakeLaneOf(500);
 
         $cards = $this->callTool(['tool' => 'board_my_cards'])
             ->assertStatus(200)
             ->json('result.cards_by_stage.Backlog');
 
-        $this->assertSame(range(1, BoardMyCardsTool::DEFAULT_MAX_CARDS), array_column($cards, 'id'));
+        $ids = array_column($cards, 'id');
+        $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $ids);
+        $this->assertSame(500, max($ids), 'the newest card in the lane must survive the cut');
+        $this->assertSame(500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1, min($ids), 'the cut must take the newest N, contiguously');
+        // Emission still follows the board's own answer order, so an uncut list is
+        // byte-identical to what this tool has always returned.
+        $sorted = $ids;
+        sort($sorted);
+        $this->assertSame($sorted, $ids, 'the kept rows keep their original positions');
+    }
+
+    public function test_my_cards_default_read_shows_the_live_column_not_a_wall_of_done(): void
+    {
+        // ⭐ THIS IS THE CARD'S GOAL, ASSERTED DIRECTLY. A 60-card lane whose newest five
+        // are In Progress and whose rest are Done: a cut that kept the OLDEST cards
+        // returned 52 Done cards and `cards_by_stage` did not even carry the In Progress
+        // KEY — so the seat could not see its live work AND could not learn from the
+        // response that the column exists. The advertised remedy (`stage`) needs a name
+        // the truncated response no longer contained.
+        $live = [];
+        for ($id = 56; $id <= 60; $id++) {
+            $live[$id] = ['workflow_stage_id' => 51];
+        }
+        $this->fakeLaneOf(60, $live);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertArrayHasKey('In Review', $result['cards_by_stage'], 'the live column must be reachable from the DEFAULT call');
+        $this->assertSame([56, 57, 58, 59, 60], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertTrue($result['cards_window']['truncated']);
+    }
+
+    public function test_my_cards_names_every_column_of_the_board_even_when_it_truncates(): void
+    {
+        // ⛔ THE ESCAPE HATCH HAS TO BE REACHABLE FROM THE RESPONSE THAT ADVERTISES IT.
+        // `cards_by_stage` only carries the columns the RETURNED cards happen to sit in, so
+        // a truncated read could name a filter whose argument it had just hidden — leaving
+        // a caller to enumerate the board by provoking a 422. The board's own column list
+        // rides on every response instead.
+        $this->fakeLaneOf(500);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertSame(
+            [['id' => 50, 'name' => 'Backlog'], ['id' => 51, 'name' => 'In Review']],
+            $result['board_stages'],
+            'every column of the configured board is named, whether or not a card in it survived the cut'
+        );
     }
 
     public function test_my_cards_selection_is_by_card_id_not_by_the_order_the_board_answered_in(): void
@@ -1693,10 +1743,12 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)
             ->json('result.cards_by_stage.Backlog');
 
-        $this->assertSame(
-            range(BoardMyCardsTool::DEFAULT_MAX_CARDS, 1),
-            array_column($cards, 'id')
-        );
+        // The board answered 500..1, so "the first 52 rows it answered" would be 500..449
+        // in that order. The newest 52 ARE 500..449 — but emitted in the board's own order,
+        // which here is descending, so the two hypotheses are told apart by the SET being
+        // contiguous from 500 and by the order being the board's rather than re-sorted.
+        $ids = array_column($cards, 'id');
+        $this->assertSame(range(500, 500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1), $ids);
     }
 
     public function test_my_cards_never_lets_an_unidentifiable_row_displace_a_card_that_has_an_id(): void
@@ -1711,7 +1763,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)->json('result');
 
         $this->assertSame(
-            [1, 2, 4],
+            [2, 4, 6],
             array_map(static fn (array $card): mixed => $card['id'], $result['cards_by_stage']['Backlog'])
         );
         $this->assertSame(6, $result['cards_window']['total']);
@@ -1797,7 +1849,7 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame([
             'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
         ], $result['cards_window']);
-        $this->assertSame([1, 2, 3, 4], array_column($result['cards_by_stage']['Backlog'], 'id'));
+        $this->assertSame([497, 498, 499, 500], array_column($result['cards_by_stage']['Backlog'], 'id'));
     }
 
     public function test_my_cards_refuses_an_ambiguous_stage_name_rather_than_guessing(): void
@@ -1880,6 +1932,113 @@ class AgentToolsCallTest extends TestCase
         $refusal = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 'Backlog']])
             ->assertStatus(422);
         $this->assertStringContainsString('read no stages for board 10', (string) $refusal->getContent());
+    }
+
+    public function test_my_cards_reads_the_board_axis_over_every_row_it_read_not_only_the_ones_it_returned(): void
+    {
+        // ⛔ DL-302's BOARD AXIS IS A DEFENCE-IN-DEPTH REPORT, AND THE CAP MUST NOT NARROW
+        // ITS POPULATION (canon #3). The foreign row sits at the LOWEST id, so it is
+        // exactly what the cut hides: reading the axis over the RETURNED rows would assert
+        // board 10 as fact over a window whose hidden rows disagree, and would silence the
+        // multi-board warning for every row past the cut. Before the cap existed this
+        // board state answered null/false, and it still must.
+        $this->fakeLaneOf(60, [1 => ['board_id' => 999]]);
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m): bool => str_contains($m, 'spread across more than one board'));
+        Log::shouldReceive('warning')->zeroOrMoreTimes();
+        Log::shouldReceive('error', 'info', 'debug', 'notice')->zeroOrMoreTimes();
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertNull($result['board_id'], 'a foreign row the CUT hid still unobserves the window');
+        $this->assertFalse($result['board_observed']);
+        // The presence witness: the call really answered a window (60 rows read, 52 given).
+        $this->assertSame(60, $result['cards_window']['total']);
+        $this->assertSame(BoardMyCardsTool::DEFAULT_MAX_CARDS, $result['cards_window']['returned']);
+    }
+
+    public function test_my_cards_reads_the_coord_board_axis_over_every_coord_row_it_read(): void
+    {
+        // The same axis, the same cap, the other block — the two readings sit in different
+        // literals and a change can narrow one alone.
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/boards/12/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $url = urldecode($request->url());
+                $coord = str_contains($url, 'tags:"repo:me"');
+                $rows = [];
+                for ($id = 1; $id <= ($coord ? 10 : 2); $id++) {
+                    $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => $coord ? 70 : 50,
+                        'swimlane_id' => 4, 'tags' => $coord ? ['repo:me'] : [], 'payload' => [],
+                        'updated_at' => '2026-07-20', 'board_id' => $coord ? ($id === 1 ? 999 : 12) : 10];
+                }
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            },
+        ]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 4]])
+            ->assertStatus(200)->json('result');
+
+        $this->assertCount(4, $result['coord_cards']);
+        $this->assertNull($result['coord_board_id'], 'a foreign coord row the CUT hid still unobserves the coord window');
+        $this->assertFalse($result['coord_board_observed']);
+    }
+
+    /** @return array<string, array{0: mixed}> */
+    public static function emptyStageArguments(): array
+    {
+        return [
+            'an empty string' => [''],
+            'whitespace only' => ['   '],
+            'a non-breaking space only' => ["\u{00A0}"],
+            'an explicit null' => [null],
+        ];
+    }
+
+    /**
+     * ⛔ THE TWO DOORS MUST AGREE, and the HTTP door is the one that constrains the design:
+     * Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull` rewrite the argument
+     * BEFORE this tool sees it, so every shape below arrives as a present-and-NULL `stage`
+     * there and as its literal self on the ssh door. Folding present-null into "absent" is
+     * what made the HTTP door silently drop the filter and hand back the whole capped lane
+     * — MORE data than the caller asked for — while the ssh door refused the identical
+     * input. A present `stage` that names no column is a refusal on both.
+     *
+     * The ssh half of this pair lives in `ToolsCallCommandTest`; neither door's test can
+     * stand for the other, because the divergence IS the middleware only one of them has.
+     */
+    #[DataProvider('emptyStageArguments')]
+    public function test_my_cards_refuses_an_empty_stage_on_the_http_door(mixed $value): void
+    {
+        $this->fakeLaneOf(3);
+
+        $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => $value]])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'tasks/search.json'));
+    }
+
+    public function test_my_cards_resolves_a_stage_name_carrying_invisible_padding_on_the_http_door(): void
+    {
+        // The other side of the same rule: the doors must agree that a name is the name
+        // once its invisible padding is gone. `TrimStrings` strips a non-breaking space at
+        // the HTTP door and PHP's ASCII `trim()` does not, so the tool has to normalise
+        // with the SAME primitive the framework used or the two doors disagree here too.
+        $this->fakeLaneOf(6, [3 => ['workflow_stage_id' => 51]]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => "In Review\u{00A0}"]])
+            ->assertStatus(200)->json('result');
+
+        $this->assertSame(51, $result['cards_window']['stage_filter']);
     }
 
     public function test_my_cards_caps_the_shared_lane_on_its_own_window(): void

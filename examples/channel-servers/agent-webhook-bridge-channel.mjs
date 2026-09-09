@@ -245,7 +245,14 @@ const TOOL_DEFINITIONS = [
             'as the whole scope.',
         },
         stage: {
-          type: ['integer', 'string'],
+          // ⛔ `anyOf`, NOT `type: ['integer','string']` — MEASURED, not preferred. A
+          // strict JSON Schema validator REFUSES the array-valued form at COMPILE time
+          // ("strict mode: use allowUnionTypes to allow union type keyword"), and a client
+          // that cannot compile this schema drops board_my_cards entirely for every seat
+          // that re-copies this directory. The `anyOf` form compiles under the same strict
+          // validator and discriminates correctly (integer ok, string ok, boolean
+          // rejected). Measured against ajv in strict mode, which is in this very tree.
+          anyOf: [{ type: 'integer' }, { type: 'string' }],
           description:
             'Return only cards in ONE column of your product board. The NUMERIC stage id ' +
             'is the primary form (it is what each card reports under "stage" alongside ' +

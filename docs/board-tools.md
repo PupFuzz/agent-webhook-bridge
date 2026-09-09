@@ -47,7 +47,7 @@ never silently no-ops.
 | Arg | Required | Notes |
 | --- | --- | --- |
 | `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own lane, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
-| `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
+| `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **An EMPTY value is refused, not ignored** — `""`, whitespace, an invisible character, or an explicit `null`. Omit the argument entirely to read every column; a silently-dropped filter would hand you *more* cards than you asked for, and the two doors disagreed about it. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
 | `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
 
 **Returns:**
@@ -58,6 +58,10 @@ never silently no-ops.
   "board_observed": true,
   "configured_board_id": 10, // the board this agent is configured to read
   "swimlane_id": 4,
+  "board_stages": [          // EVERY column of your board, in the board's own order —
+    { "id": 50, "name": "Backlog" },      // present whether or not a card in it survived
+    { "id": 51, "name": "In Review" }     // the cut, so `stage` is always reachable
+  ],
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
                     "dl_number": "DL-1", "pr_number": null, "updated_at": "...",
@@ -115,12 +119,23 @@ for, and the old response gave no hint it was oversized or partial.
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller
   that genuinely needs a whole lane, not the routine path.
-- **Which cards you get is deterministic: the lowest card ids, emitted in the board's own
-  answer order.** Two properties are bought by that — polling twice shows you the same
-  window rather than a reshuffled one, and a card created elsewhere in the lane does not
-  move the window out from under you. A row carrying no readable id sorts **last** (it is
-  still counted in `total`). A list that was *not* cut is byte-identical to what this tool
-  returned before the cap existed.
+- **Which cards you get is deterministic: the NEWEST — the highest card ids — emitted in
+  the board's own answer order.** Card ids are allocated globally and monotonically, so
+  the highest ids are your most recent work. ⛔ **The first cut of this kept the OLDEST
+  and was wrong in a way worth stating**, because a bounded response that answers the
+  wrong question is still an unusable tool: on any board with a terminal column the
+  default read came back as 52 finished cards, with the live column absent from
+  `cards_by_stage` *entirely* — the seat could see neither its work nor the fact that the
+  column existed. Descending keeps every property that mattered: a total order over a
+  monotonic key, so two identical polls answer the same set and merely touching a card
+  never reshuffles it. A row carrying no readable id sorts **last** (it is still counted
+  in `total`). A list that was *not* cut is byte-identical to what this tool returned
+  before the cap existed.
+- **`board_stages` names every column of your board, on every response.** The escape hatch
+  has to be reachable from the response that advertises it: `cards_by_stage` carries only
+  the columns the *returned* cards sit in, so a cut can hide the very column name `stage`
+  needs. Without this list, enumerating your own board meant sending a deliberately
+  invalid `stage` and reading the refusal.
 - **The cap bounds the RESPONSE, not the bridge's reads.** The bridge still pages the whole
   lane out of kanban — `total` has to be the real size for `truncated` to mean anything.
 - **`stage` is refused rather than guessed.** An ambiguous name (two columns whose names
@@ -138,10 +153,14 @@ are configured to read (card#7295, DL-302).** Before this it was the configured
 value restated, for a row set whose own board nothing had checked, so a window of
 foreign rows would have reported this board's id as fact. What a caller gets now:
 
-- **`board_id` + `board_observed`** are the reading, taken over the rows you were
-  **returned** — so on a capped read it describes the cards you got, not the ones behind
-  the cut. `true` ⇒ every returned row
-  (your lane **and** the shared lane) reported that same board. `false` ⇒ **`board_id`
+- **`board_id` + `board_observed`** are the reading, taken over **every row this call
+  read** — before the `stage` filter and before the cap. That is deliberate and it is the
+  population this axis had before either existed: it is a defence-in-depth report against
+  a window of foreign rows being reported as your board, so narrowing it to the rows that
+  survived would assert your board as *fact* over a window whose hidden rows disagree,
+  and would silence the multi-board warning for everything past the cut. ⚠ A consequence
+  worth knowing: a foreign row you never see can still unobserve your window. `true` ⇒
+  every row read (your lane **and** the shared lane) reported that same board. `false` ⇒ **`board_id`
   is null and the response claims no board** — it never falls back to config. Three
   things unobserve it: **an empty window** (no rows read ⇒ no board read — the common
   case, and not an error), rows **spread across more than one board**, and a row

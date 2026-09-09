@@ -7,6 +7,7 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * board_my_cards (DL-217) — a READ-PROXY returning the calling agent's own cards
@@ -61,8 +62,23 @@ use Illuminate\Support\Facades\Log;
  * than the one asked for, and the answer would look exactly like a correct one.
  *
  * ⚠ The cap bounds the RESPONSE, not the upstream reads: `swimlaneCards()` still
- * paginates the whole lane, because `total` has to be the lane's real size for the
- * `truncated` flag to mean anything.
+ * paginates the whole lane, because `total` has to be the real size of THE POPULATION
+ * THE CALLER ASKED ABOUT for the `truncated` flag to mean anything — the whole lane on
+ * a plain call, and the named column when `stage` is passed, because `onStage()` runs
+ * before the cut.
+ *
+ * ⛔ THE CUT KEEPS THE NEWEST CARDS, AND THAT IS THE DIFFERENCE BETWEEN A BOUNDED
+ * RESPONSE AND A USEFUL ONE (r1). Card ids here are allocated globally and
+ * monotonically, so keeping the LOWEST ids returns a lane's first-created cards — on
+ * any board with a terminal column, 52 finished ones — and the seat's live work is
+ * structurally invisible on the default call, permanently, because the window is stable
+ * and never advances. See DEFAULT_MAX_CARDS and `cardWindow` for the ordering rule.
+ *
+ * ⛔ AND THE RESPONSE NAMES EVERY COLUMN OF THE BOARD (`board_stages`), whether or not a
+ * card in it survived the cut. `cards_by_stage` only carries the columns the RETURNED
+ * cards sit in, so a truncated read would otherwise advertise `stage` as the remedy
+ * while having just hidden the argument it needs — leaving a caller to enumerate the
+ * board by provoking a refusal.
  *
  * ⭐ A PERMANENT 4xx FROM THE BOARD IS A NAMED REFUSAL, NOT THE RETRYABLE 502 (card#8486)
  * — see {@see readRefusal}. Every read this tool makes is covered, on both the own/shared
@@ -92,6 +108,10 @@ final class BoardMyCardsTool implements Tool
      *
      * ⚠ It bounds ONE list. An install with a shared lane AND a coord leg can
      * return three saturated lists; that is a bound, not a promise of the budget.
+     *
+     * ⛔ WHICH 52 IS NOT A DETAIL — see `cardWindow`. A cap that kept the OLDEST cards
+     * bounds the response and answers the wrong question, which is the same defect this
+     * constant exists to fix wearing a smaller number.
      */
     public const DEFAULT_MAX_CARDS = 52;
 
@@ -125,39 +145,41 @@ final class BoardMyCardsTool implements Tool
         $stageFilter = $this->stageFilter($args, $stageNames, $boardId);
 
         try {
-            $ownRows = $this->onStage($this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own'), $stageFilter);
-            $sharedRows = $cfg->sharedSwimlaneId === null
+            $ownRead = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
+            $sharedRead = $cfg->sharedSwimlaneId === null
                 ? null
-                : $this->onStage($this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared'), $stageFilter);
+                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
         }
 
-        [$ownCards, $ownWindow] = $this->cardWindow($ownRows, $limit);
-        $ownWindow['stage_filter'] = $stageFilter;
-        $sharedCards = $sharedRows === null ? null : $this->cardWindow($sharedRows, $limit);
+        // ⛔ THE BOARD AXIS IS READ OVER EVERY ROW THIS CALL READ — before the stage filter
+        // and before the cut (r1). DL-302 built it as a defence-in-depth report against a
+        // window of foreign rows being reported as this board, and narrowing its population
+        // to the rows that survive would do two things at once: assert this board as FACT
+        // over a window whose hidden rows disagree, and silence `observedBoard`'s
+        // multi-board warning for every row past the cut. A caller-requested narrowing is
+        // no reason to stop looking at what was actually read, so this stays exactly the
+        // population it was before the cap existed. ⚑ Read isolation is a different axis
+        // and is unaffected: `filterSwimlane()` above still runs over every row.
+        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRead, $sharedRead ?? []), $boardId, $agentName, $sharedRead === null ? 'own' : 'own+shared');
 
-        // ⚠ THE BOARD READING IS OVER THE ROWS THE CALLER IS ACTUALLY HANDED, which is
-        // what `board_id`/`board_observed` have always claimed to be (DL-302: "every
-        // RETURNED row reported that same board"). Reading it over the pre-cap set
-        // would unobserve a window on account of a row the caller never sees — a null
-        // board for a window whose every visible card agrees.
-        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownCards, $sharedCards[0] ?? []), $boardId, $agentName, $sharedCards === null ? 'own' : 'own+shared');
+        [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($ownRead, $stageFilter), $limit, $stageFilter);
         $result = [
             'board_id' => $observedBoard,
             'board_observed' => $boardObserved,
             'configured_board_id' => $boardId,
             'swimlane_id' => $swimlaneId,
+            'board_stages' => $this->boardStages($stageNames),
             'cards_by_stage' => $this->groupByStage($ownCards, $stageNames, $descriptionCap),
             'cards_window' => $ownWindow,
         ];
 
-        if ($sharedCards !== null) {
-            $sharedWindow = $sharedCards[1];
-            $sharedWindow['stage_filter'] = $stageFilter;
+        if ($sharedRead !== null) {
+            [$sharedCards, $sharedWindow] = $this->filteredWindow($this->onStage($sharedRead, $stageFilter), $limit, $stageFilter);
             $result['shared_swimlane'] = [
                 'swimlane_id' => (int) $cfg->sharedSwimlaneId,
-                'cards_by_stage' => $this->groupByStage($sharedCards[0], $stageNames, $descriptionCap),
+                'cards_by_stage' => $this->groupByStage($sharedCards, $stageNames, $descriptionCap),
                 'cards_window' => $sharedWindow,
             ];
         }
@@ -278,6 +300,22 @@ final class BoardMyCardsTool implements Tool
      * about the other. The refusal names the board's stages so the caller can send an
      * id instead.
      *
+     * ⛔ A PRESENT `stage` THAT NAMES NO COLUMN IS REFUSED, INCLUDING A PRESENT NULL, AND
+     * THE HTTP DOOR IS WHY (r1). Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull`
+     * rewrite this argument before the tool sees it, so `""`, `"   "` and a lone
+     * non-breaking space all arrive there as a present-and-NULL `stage` while the ssh door
+     * hands over the literal string. Folding present-null into "absent" therefore made one
+     * door silently DROP the filter and return the whole capped lane — more data than the
+     * caller asked for — while the other refused the identical input. Only an ABSENT key
+     * means "no filter", and that is the same on both doors.
+     *
+     * ⚠ The trim is `Str::trim`, the framework's own, NOT PHP's ASCII `trim()`. That is
+     * the same lockstep in the other direction: `TrimStrings` strips a non-breaking space
+     * (it is in `Str::INVISIBLE_CHARACTERS`) and `trim()` does not, so a name carrying one
+     * resolved at the HTTP door and was refused at the ssh door. Reusing the primitive the
+     * middleware uses is what makes the two doors agree, rather than a hand-rolled
+     * character class that would drift from it.
+     *
      * ⚠ An id is checked against the board's stages ONLY when the stage read
      * produced any. `boardStageNames()` answers an empty map when the preload read
      * carried no stages (already logged upstream), and validating against an empty
@@ -290,10 +328,14 @@ final class BoardMyCardsTool implements Tool
      */
     private function stageFilter(array $args, array $stageNames, int $boardId): ?int
     {
-        if (! array_key_exists('stage', $args) || $args['stage'] === null) {
+        if (! array_key_exists('stage', $args)) {
             return null;
         }
         $stage = $args['stage'];
+
+        if ($stage === null) {
+            throw new ToolRefusalException("board_my_cards: `stage` was sent EMPTY. Omit the argument entirely to read every column of board {$boardId}; an empty value is not a filter and is refused rather than silently ignored, which would hand you more cards than you asked for.");
+        }
 
         if (is_int($stage)) {
             if ($stageNames !== [] && ! isset($stageNames[$stage])) {
@@ -311,10 +353,13 @@ final class BoardMyCardsTool implements Tool
             throw new ToolRefusalException("board_my_cards: `stage` was given as a NAME, but this bridge read no stages for board {$boardId}, so there is nothing to resolve it against. Pass the numeric stage id, and tell your operator the board structure read came back empty.");
         }
 
-        $wanted = mb_strtolower(trim($stage));
+        $wanted = mb_strtolower(Str::trim($stage));
+        if ($wanted === '') {
+            throw new ToolRefusalException("board_my_cards: `stage` was sent EMPTY (it contains nothing but invisible characters). Omit the argument entirely to read every column of board {$boardId}; an empty value is not a filter and is refused rather than silently ignored, which would hand you more cards than you asked for.");
+        }
         $matches = [];
         foreach ($stageNames as $id => $name) {
-            if (mb_strtolower(trim($name)) === $wanted) {
+            if (mb_strtolower(Str::trim($name)) === $wanted) {
                 $matches[$id] = $name;
             }
         }
@@ -327,6 +372,31 @@ final class BoardMyCardsTool implements Tool
         }
 
         throw new ToolRefusalException("board_my_cards: `stage` names MORE THAN ONE stage on board {$boardId} — ".$this->stageList($matches).'. The bridge does not guess which column you meant, because a guessed answer is indistinguishable from a correct one. Pass the numeric stage id.');
+    }
+
+    /**
+     * Every column of the configured board, in the board's own order, as
+     * `[{id, name}]` (r1). It rides on EVERY response rather than only a truncated one:
+     * `cards_by_stage` names only the columns the returned cards sit in, so a cut can
+     * hide a column entirely — and the `stage` remedy the window block points at needs
+     * exactly the name or id that was hidden. A conditional key would also make the
+     * envelope's shape depend on whether a cut happened, which is a second thing for a
+     * consumer to branch on for no gain.
+     *
+     * ⚑ It is the SAME map the refusals read, so a stage this list omits is a stage no
+     * refusal can name either — there is one source, not two.
+     *
+     * @param  array<int, string>  $stageNames
+     * @return list<array{id: int, name: string}>
+     */
+    private function boardStages(array $stageNames): array
+    {
+        $stages = [];
+        foreach ($stageNames as $id => $name) {
+            $stages[] = ['id' => $id, 'name' => $name];
+        }
+
+        return $stages;
     }
 
     /**
@@ -374,6 +444,30 @@ final class BoardMyCardsTool implements Tool
     }
 
     /**
+     * {@see cardWindow} for a list the `stage` filter CAN narrow, with the filter in
+     * effect stated on the window. It exists so the key is added in ONE place rather
+     * than at each call site: bolted on per-caller, the third filterable list added
+     * later is the one that quietly ships without it. The coord cards call
+     * `cardWindow` directly and carry no such key — `stage` cannot reach that board,
+     * and a key that could never be non-null is a claim the block does not support.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int}}
+     */
+    private function filteredWindow(array $rows, int $limit, ?int $stageFilter): array
+    {
+        [$cards, $window] = $this->cardWindow($rows, $limit);
+
+        return [$cards, [
+            'total' => $window['total'],
+            'returned' => $window['returned'],
+            'limit' => $window['limit'],
+            'truncated' => $window['truncated'],
+            'stage_filter' => $stageFilter,
+        ]];
+    }
+
+    /**
      * Cut one card list to the cap, and report the cut (card#8985). Returns
      * `[the rows the caller gets, the window block describing them]`.
      *
@@ -384,14 +478,23 @@ final class BoardMyCardsTool implements Tool
      * separately because they differ in the ordinary case — a list shorter than
      * the cap returns everything under a cap that never bit.
      *
-     * ⚠ WHICH cards survive is deterministic and is the LOWEST CARD IDS, not
-     * whatever order the upstream search happened to answer in. Two properties are
-     * being bought: a caller polling twice sees the same window rather than a
-     * reshuffled one, and the window does not move out from under it every time a
-     * card is created elsewhere in the lane. The rows are then emitted in their
-     * ORIGINAL order, so a list that was not cut is byte-identical to what this
-     * tool has always returned. A row carrying no numeric id sorts last (it cannot
-     * be placed, and it must not displace a card that can).
+     * ⛔ WHICH cards survive is deterministic and is the HIGHEST CARD IDS — the seat's
+     * NEWEST work — not whatever order the upstream search happened to answer in.
+     * ⚠ THE FIRST CUT OF THIS TOOK THE LOWEST IDS AND WAS WRONG IN A WAY THE CAP'S OWN
+     * GOAL DEFINES (r1): card ids here are allocated globally and monotonically, so the
+     * lowest ids are a lane's FIRST-CREATED cards, and on any board with a terminal
+     * column the default read came back as 52 finished ones with the seat's live work
+     * nowhere in it. Worse, `cards_by_stage` then did not carry the live column's KEY at
+     * all, so the response hid both the work and the fact that the column existed. The
+     * one property ascending bought — a window that does not move when a card is created
+     * elsewhere — is precisely the property that makes every NEW card invisible forever.
+     *
+     * Descending keeps everything that mattered: it is a TOTAL order over a
+     * monotonically-allocated key, so it is deterministic, it does not churn when a card
+     * is merely touched, and two identical polls answer the same set. The rows are then
+     * emitted in their ORIGINAL order, so a list that was not cut is byte-identical to
+     * what this tool has always returned. A row carrying no numeric id sorts last (it
+     * cannot be placed, and it must not displace a card that can).
      *
      * @param  list<array<string, mixed>>  $rows
      * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool}}
@@ -417,7 +520,7 @@ final class BoardMyCardsTool implements Tool
                 return -1;
             }
 
-            return $idA <=> $idB;
+            return $idB <=> $idA;
         });
 
         $keep = array_slice($order, 0, $limit);
@@ -603,8 +706,10 @@ final class BoardMyCardsTool implements Tool
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'coord stages', BoardReadRoute::BoardScoped, "the structure of the coordination board {$coordBoardId} your address tags are on");
         }
+        // Same rule as the top-level axis, and a SEPARATE call site: the two readings sit
+        // in different literals and a change can narrow one alone.
+        [$observedBoard, $boardObserved] = $this->observedBoard($rows, $coordBoardId, $agentName, 'coord');
         [$coordCards, $coordWindow] = $this->cardWindow($rows, $limit);
-        [$observedBoard, $boardObserved] = $this->observedBoard($coordCards, $coordBoardId, $agentName, 'coord');
 
         return [
             'coord_board_id' => $observedBoard,
