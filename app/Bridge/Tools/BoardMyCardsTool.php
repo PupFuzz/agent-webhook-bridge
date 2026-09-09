@@ -375,8 +375,25 @@ final class BoardMyCardsTool implements Tool
     }
 
     /**
-     * Every column of the configured board, in the board's own order, as
-     * `[{id, name}]` (r1). It rides on EVERY response rather than only a truncated one:
+     * Every column of the configured board, in the board's own COLUMN order, as
+     * `[{id, name}]` (r1). ⚠ The order is the map's, and the map is ordered by kanban's
+     * `position` inside `KanbanClient::boardStageNames()` — the only place that can see
+     * that field, because this projection discards it. This method must not re-sort:
+     * anything it could sort by here (id, name) is a different claim than the one the
+     * key makes. r2 found these four words asserting an order nothing established, over a
+     * bare `foreach` of payload-array order, which a two-workflow board reads out
+     * backwards.
+     *
+     * ⚠ AN EMPTY LIST DOES NOT DISTINGUISH "this board has no columns" FROM "the stage
+     * read degraded", and no flag here could. `boardStageNames()` answers `[]` for both,
+     * so a `board_stages_observed` computed at this level would be `count($stages) === 0`
+     * restated — an observation dressed as a measurement, which is precisely what DL-302
+     * built the board axis to avoid. The degraded read IS reported, on the bridge's own
+     * log (card#8761), and `docs/board-tools.md` names the state for the caller. Telling
+     * the two apart ON THE WIRE needs the client seam to stop conflating them, which is
+     * not this key's to fix.
+     *
+     * It rides on EVERY response rather than only a truncated one:
      * `cards_by_stage` names only the columns the returned cards sit in, so a cut can
      * hide a column entirely — and the `stage` remedy the window block points at needs
      * exactly the name or id that was hidden. A conditional key would also make the

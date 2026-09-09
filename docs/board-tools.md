@@ -61,7 +61,7 @@ never silently no-ops.
   "board_stages": [          // EVERY column of your board, in the board's own order —
     { "id": 50, "name": "Backlog" },      // present whether or not a card in it survived
     { "id": 51, "name": "In Review" }     // the cut, so `stage` is always reachable
-  ],
+  ],                       // ordered by kanban's own `position`, not the payload's order
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
                     "dl_number": "DL-1", "pr_number": null, "updated_at": "...",
@@ -131,11 +131,22 @@ for, and the old response gave no hint it was oversized or partial.
   never reshuffles it. A row carrying no readable id sorts **last** (it is still counted
   in `total`). A list that was *not* cut is byte-identical to what this tool returned
   before the cap existed.
-- **`board_stages` names every column of your board, on every response.** The escape hatch
-  has to be reachable from the response that advertises it: `cards_by_stage` carries only
-  the columns the *returned* cards sit in, so a cut can hide the very column name `stage`
-  needs. Without this list, enumerating your own board meant sending a deliberately
-  invalid `stage` and reading the refusal.
+- **`board_stages` names every column of your board, on every response, in the board's own
+  column order** (kanban's `position` — not the order the board's workflows happen to be
+  assembled in). The escape hatch has to be reachable from the response that advertises
+  it: `cards_by_stage` carries only the columns the *returned* cards sit in, so a cut can
+  hide the very column name `stage` needs. Without this list, enumerating your own board
+  meant sending a deliberately invalid `stage` and reading the refusal. A column whose
+  `position` the bridge could not read is listed **last**, never dropped.
+- ⚠ **An EMPTY `board_stages` does not mean your board has no columns.** It also happens
+  when the bridge's board-structure read degraded, and the tool cannot tell the two apart
+  — the same read that fills this list is the one Decision 9's *stage id taken unverified,
+  stage NAME refused* rule fires on, and the bridge logs the degradation on its own side
+  (a `Log::warning` naming the read and the board). ⛔ **So an empty list is not evidence
+  about your board**: if you see one, pass `stage` as a numeric id if you know it, and tell
+  your operator the structure read came back empty. There is deliberately no
+  `board_stages_observed` flag, because nothing this tool can see would distinguish the two
+  states — it would be the list's own emptiness restated as a measurement.
 - **The cap bounds the RESPONSE, not the bridge's reads.** The bridge still pages the whole
   lane out of kanban — `total` has to be the real size for `truncated` to mean anything.
 - **`stage` is refused rather than guessed.** An ambiguous name (two columns whose names

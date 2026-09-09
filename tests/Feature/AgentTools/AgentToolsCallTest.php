@@ -1719,16 +1719,57 @@ class AgentToolsCallTest extends TestCase
         );
     }
 
+    public function test_my_cards_lists_the_columns_in_the_boards_own_order_not_the_payloads(): void
+    {
+        // ⚠ THE TEST ABOVE CANNOT FAIL ON ORDER and must not be read as covering it: its
+        // fixture is one workflow whose array order already matches its column order, so
+        // "sorted by position" and "as the payload listed them" are the same answer there.
+        // This board answers `position` in the REVERSE of its array order, across TWO
+        // workflows — and `preloadStages()` CONCATENATES workflows, so payload order is a
+        // property of how the board's workflows were assembled, not of its columns.
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [
+                    ['id' => 52, 'name' => 'Done', 'position' => 3.0],
+                    ['id' => 51, 'name' => 'In Review', 'position' => 2.0],
+                ]],
+                ['stages' => [
+                    ['id' => 50, 'name' => 'Backlog', 'position' => 1.0],
+                ]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+            ], 'links' => ['next' => null]]),
+        ]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertSame([
+            ['id' => 50, 'name' => 'Backlog'],
+            ['id' => 51, 'name' => 'In Review'],
+            ['id' => 52, 'name' => 'Done'],
+        ], $result['board_stages']);
+    }
+
     public function test_my_cards_selection_is_by_card_id_not_by_the_order_the_board_answered_in(): void
     {
-        // ⛔ THE PRECEDING TEST CANNOT TELL THE TWO APART and must not be read as
-        // covering this: its lane arrives in ascending id order, so "the 52 lowest ids"
-        // and "the first 52 rows the search answered" are the SAME 52 rows there. This
-        // one answers the lane BACKWARDS, which is the only arrangement in which the
-        // rule is falsifiable — and it pins the emission order too: selection reorders
-        // nothing, so an uncut list stays byte-identical to what this tool always gave.
+        // ⛔ THE FIXTURE IS SHUFFLED, AND THAT IS THE WHOLE TEST. An ASCENDING lane cannot
+        // tell "highest 52 ids" from "last 52 as answered"; a DESCENDING one cannot tell it
+        // from "FIRST 52 as answered" — which is how this control quietly stopped
+        // controlling when the selection direction flipped (card#8985 r2: with the whole
+        // comparator replaced by take-first-N it still passed). This lane answers all the
+        // ODD ids and then all the EVEN ones, which separates three hypotheses at once:
+        //
+        //   selection by id (correct) => the ten highest are 51..60
+        //   take-first-N              => 1,3,5,…,19       — a different SET
+        //   emission re-sorted        => 51,52,…,60       — a different ORDER
+        //
+        // and pins that the kept rows keep the board's own positions, so an uncut list is
+        // byte-identical to what this tool has always returned.
+        $ids = array_merge(range(1, 59, 2), range(2, 60, 2));
         $rows = [];
-        for ($id = 500; $id >= 1; $id--) {
+        foreach ($ids as $id) {
             $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => 4,
                 'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10];
         }
@@ -1739,16 +1780,11 @@ class AgentToolsCallTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => $rows, 'links' => ['next' => null]]),
         ]);
 
-        $cards = $this->callTool(['tool' => 'board_my_cards'])
+        $cards = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 10]])
             ->assertStatus(200)
             ->json('result.cards_by_stage.Backlog');
 
-        // The board answered 500..1, so "the first 52 rows it answered" would be 500..449
-        // in that order. The newest 52 ARE 500..449 — but emitted in the board's own order,
-        // which here is descending, so the two hypotheses are told apart by the SET being
-        // contiguous from 500 and by the order being the board's rather than re-sorted.
-        $ids = array_column($cards, 'id');
-        $this->assertSame(range(500, 500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1), $ids);
+        $this->assertSame([51, 53, 55, 57, 59, 52, 54, 56, 58, 60], array_column($cards, 'id'));
     }
 
     public function test_my_cards_never_lets_an_unidentifiable_row_displace_a_card_that_has_an_id(): void
