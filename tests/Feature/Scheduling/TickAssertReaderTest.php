@@ -64,6 +64,18 @@ class TickAssertReaderTest extends TestCase
      */
     public function test_an_assertion_that_fails_still_records_that_something_asked(): void
     {
+        // ⛔ FREEZE FIRST, AND THE ASSERTION BELOW IS WHY. `ageS()` is an integer difference
+        // of unix timestamps, so its value depends on whether a SECOND BOUNDARY falls between
+        // the write and the read — not on how long the test took. Two microseconds either
+        // side of :44.000000 read as 1; 999 milliseconds inside one second read as 0. Left
+        // unfrozen this asserted the wall clock's phase, and it went red on `dev` at
+        // `cc99a70` having passed on the byte-identical tree at `e1eab8c`.
+        //
+        // The clock is frozen rather than the assertion widened: `assertLessThanOrEqual(1, …)`
+        // would go green for a record written a second late, which is the defect this test
+        // exists to catch.
+        $this->freezeTime();
+
         config(['bridge.jobs.tick_expected_every' => 600]);
 
         $this->artisan('bridge:jobs', ['--assert-tick' => true])->assertExitCode(1);
@@ -79,6 +91,13 @@ class TickAssertReaderTest extends TestCase
      */
     public function test_a_long_ago_assertion_is_still_an_assertion_and_never_reads_as_never(): void
     {
+        // Frozen BEFORE the write, for the reason the previous test states: the gap between an
+        // unfrozen `stamp()` and the `travel()` below is real elapsed time, so a second
+        // boundary crossing inside it made the exact assertion read `90 * 86400 + 1`. Same
+        // defect as the test above, found by auditing the file for the shape rather than by
+        // waiting for it to fire.
+        $this->freezeTime();
+
         TickAssertRecord::stamp();
 
         $this->travel(90 * 86400)->seconds();
