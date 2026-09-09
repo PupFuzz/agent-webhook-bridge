@@ -496,7 +496,29 @@ drifts.
 > `root`, set **`board_tools.ssh_account: <bridge-user>`** in the agent config. Absent
 > it, the probe resolves the *invoking* account (root under sudo) and would read
 > **`/root/.ssh/authorized_keys`** — false-negativing the very seat it targets. With it
-> set, the `authorized_keys` (`%h`/`%u`) pinned-line check resolves `<bridge-user>`. If a
+> set, the pinned-line check resolves `<bridge-user>`. It resolves that account's
+> `AuthorizedKeysFile` as sshd does, with the one documented exception named below:
+> **every** file the directive names (it is a
+> whitespace-separated LIST, and the OpenSSH default is the two-file
+> `.ssh/authorized_keys .ssh/authorized_keys2`), with all four tokens `man 5 sshd_config`
+> documents for it expanded — `%%` → a literal `%`, `%h` → the home, `%u` → the account
+> name, `%U` → its numeric uid — and a path that is not absolute after expansion taken
+> relative to the home (`~` is not a token). The pinned line may sit in **any** of those
+> files, so a line in `authorized_keys2` certifies exactly like one in `authorized_keys`,
+> and the finding names which file carried it. The **authoritative** "not wired" FAIL is
+> only reached when every one of those files was actually consulted: an entry this run
+> could not OPEN (another 0600 file) or could not resolve (`%U` with no uid lookup on a
+> host without `posix_getpwnam`) is reported `unvalidated` and **named**, because the line
+> may be in exactly the file that was not read. A file that simply is **not there** is
+> consulted, not withheld — sshd takes no keys from it, so it counts toward the FAIL, which
+> is what makes the FAIL reachable at all on the two-file default (`authorized_keys2` does
+> not exist on most hosts). ⚠ **The exception: `AuthorizedKeysFile none`**, which
+> `man 5 sshd_config` defines as *"skip checking for user keys in files"*, is **not**
+> special-cased — the probe resolves it as the relative filename `none` and reports the
+> authoritative "not wired" FAIL naming `<home>/none`. **The verdict is correct** (with
+> `none` set, no pinned key can authenticate at all, so board-tools over ssh is impossible
+> by construction) **but the path in it does not exist**: the remedy there is to stop
+> setting `none` for this account, not to go and edit that file. If a
 > **configured** `ssh_account` does not resolve to an OS account on the host, the
 > account-dependent legs **fail** honestly (*"…does not resolve to an OS account…"*)
 > rather than certify against a phantom `/.ssh/authorized_keys` built from an empty home.

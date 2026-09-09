@@ -979,6 +979,11 @@ confirm the seat by having the seat call.
 Restart the agent's channel MCP server so it re-reads its env; the tools are now
 advertised and live.
 
+⚠ **On a seat whose session is already running, that means restarting the SESSION** —
+/mcp reconnect does not stop the previous channel server — restart the session. See
+[`docs/board-tools-enablement.md` § Activating on a running seat](board-tools-enablement.md#activating-on-a-running-seat),
+which owns the mechanism, the causes of the bind failure, and who does the restart.
+
 ### A restored install
 
 **If `bridge:check` prints `board_tools: agent <name>: block LOST`, this install once had a

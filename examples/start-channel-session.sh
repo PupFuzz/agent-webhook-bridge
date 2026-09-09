@@ -91,6 +91,12 @@ fi
 # EADDRINUSE refusal + the visible marker (step 4) is the backstop.
 if pgrep -f -- "--dangerously-load-development-channels[[:space:]]+server:${CHANNEL}([[:space:]]|\$)" >/dev/null 2>&1; then
     echo "A Claude Code session is already running channel '${CHANNEL}'. Refusing to start a second — it would come up deaf to live-wake. Close the other session first." >&2
+    # Re-provisioning (`provision-board-tools.py --role b`) is the case that lands here
+    # most often: the running session's channel server still holds the address, so this
+    # launch would lose the bind. /mcp reconnect does not stop the previous channel
+    # server — restart the session. Details: docs/board-tools-enablement.md § Activating
+    # on a running seat.
+    echo "  If you just re-provisioned: /mcp reconnect does not stop the previous channel server — restart the session (close that session, then re-run this). Details: docs/board-tools-enablement.md § Activating on a running seat" >&2
     exit 1
 fi
 

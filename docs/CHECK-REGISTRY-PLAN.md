@@ -2210,6 +2210,76 @@ tell them apart. The root cause is that the advisory infers an install FACT from
 `probePinnedLine()` returning the fact directly removes the coupling — and that is **named and not
 built**, deliberately.
 
+> ⚠ **THE PREDICTED CASE HAS ARRIVED (card#8976, DL-359) — recorded here because the paragraph above
+> forecast it, and a forecast nobody comes back to reads as a hazard that never materialised.**
+> `probePinnedLine()` emits `unvalidated` from arms that are NOT one claim, so the "could not read
+> `authorized_keys`" reading the sentence above describes is right about one of them and wrong about
+> the others — and nothing a consumer of the SEVERITY can read tells it which one it has.
+>
+> ⛔ **WHAT FOLLOWS ARE EXAMPLES OF THAT CONFLATION, NOT A TAXONOMY OF THE ARMS. Do not complete the
+> list.** No count and no full enumeration is given here, and the omission IS the guard. The count was
+> written once (*three*) and r3's disclosure arm falsified it inside the same card; the list that
+> replaced it was then "completed" twice more, each time by a round that had just found an arm it did
+> not name — a prose enumeration asserting exhaustiveness over a population that lives in code is the
+> bare count in a longer form, with nothing holding either of them to the source (canon #16, canon
+> #18: the second instance is where the class gets fixed instead of the instance). **The population is
+> derived FROM the code by `tests/Feature/Console/Check/UnvalidatedCallSiteTest.php`**, which counts
+> the constructions per file out of the source, asserts `Finding::__construct` is private so
+> `Finding::unvalidated(` is the only door — exhaustive by construction rather than by grep — and reds
+> when an arm is added or removed; its own docblock owns what that pin does and does not cover. ⚠ It
+> pins CALL SITES, not claim classes, and those are not one population — which is also why no guard
+> tries to hold the prose below to a number. **A new arm gets RECORDED THERE**, not appended here; what
+> this callout is for is the hazard, and these illustrate it:
+>
+> - **the read was refused** — a named file this run could not open (setup IS, on the evidence,
+>   unverifiable from here; this is the original reading and it is unchanged);
+> - **the file could not be NAMED** — an `AuthorizedKeysFile` entry whose `%U` this run cannot
+>   expand (no `posix_getpwnam`, or no such account). ⛔ **NOTHING was unreadable.** The run never
+>   reached a file at all, and the install may be perfectly wired;
+> - **the population was only PARTLY consulted** — some files read, at least one not, and no pinned
+>   line among the ones that were. This fires on a CORRECTLY WIRED install whenever the pin sits in
+>   the file this run could not open, which on a two-file `AuthorizedKeysFile` is an ordinary state
+>   rather than a corner;
+> - **the population was only PARTLY consulted, and the pinned line WAS among the ones that were**
+>   (card#8976 r3, DL-359 Decision 8) — the previous example's sibling on the other side of the
+>   match. ⛔ **No verdict is withdrawn.** The `ok`/`fail` for the found line stands beside this one
+>   and this one moves no exit code; what it adds is the BOUND of what that verdict covers, because
+>   sshd reads every file it names and a second forced-command line for this agent may sit in the one
+>   that was refused, granting what the found line denies;
+> - **the account was never LOOKED UP** — `board_tools.ssh_account` is set and this PHP process has
+>   no `posix_getpwnam` at all, so `configuredAccountUnresolved()` — `probePinnedLine()`'s FIRST
+>   statement — returns before an `AuthorizedKeysFile` is resolved, a path is named, or a file is
+>   attempted. ⛔ **There is no population here, partial or otherwise.** The account database was
+>   never consulted, so whether the configured account exists is UNKNOWN, its absence is not a
+>   conclusion this run may draw, and the install may be perfectly wired. ⚠ **Its MEASURED twin is
+>   a `fail` and is not one of these** (DL-259): a database that ANSWERED *no such account*
+>   is a config fault this run established, and only the capability-less non-answer lands here.
+>
+> **What tells them apart is the finding's TEXT, and nothing else.** Most of them name what they could
+> not consult — the configured ACCOUNT in the never-looked-up one, and a path or a raw entry in the
+> root-resolved ones (`unconsulted()` renders those; the assumed-default arm that could not READ
+> spells its own, which is one rendering rule in two places). ⚠ **But "it names what it could not
+> consult" is a property of these examples, not of the class**, and the arm that shows it is one this
+> callout deliberately does not list: the assumed-default arm that consulted every path it knew and
+> found no line names NOTHING unconsulted — it is `unvalidated` because the PATHS were assumed rather
+> than root-resolved, which is a third unmeasured thing again. **No severity assertion can separate
+> any of them, exactly as forecast**, and the tripwire above still cannot classify what moved into the
+> set; it can only red when the set moves.
+>
+> ⚑ **The DOWNSTREAM behaviour is fine and is deliberately not changed here.**
+> `severityMeansSetupIncomplete()` reads ANY `unvalidated` as *incomplete* — these arms and every
+> later one, because the predicate is on the severity — and `BoardToolsSshDefaultAdvisoryCheck` prints
+> *"its ssh setup is incomplete **or could not be verified from here**"*, a disjunction that is true of
+> any arm by construction (`unvalidated` MEANS the leg could not answer its own question), so the
+> advisory does not assert the conflated reading even though the predicate it reads cannot separate
+> them. Its action (*pin `transport: http`*) is the safe one under each of the examples above.
+> ⚠ **The found-line disclosure is what first put that advisory beside a pinned line this run
+> certified `ok`** — it is the disjunction's SECOND limb that carries it there, and pinning
+> `transport: http` is still the safe action while a file this run could not open may hold a second
+> line for the same agent. **What arrived is a documentation debt, not a behaviour defect**, and the
+> root-cause fix stays the one already named above: have the pinned-line leg report the install FACT
+> rather than have this infer it from a severity.
+
 **THE GOLDEN CORPUS CANNOT SEE A SEVERITY, AND THE MEASUREMENT SAYS SO.** All 33 fixtures are
 captured from an undecorated buffer, so `line()`, `warn()`, `error()` and `info()` write identical
 bytes (DL-248). **Not one message line changed in the regeneration.** What moved is the closing tally

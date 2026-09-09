@@ -5,6 +5,7 @@ namespace Tests\Feature\Console;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\KanbanClient;
@@ -336,9 +337,21 @@ class BridgeCommandsTest extends TestCase
                 return $this->root ? $this->sshd : null;
             }
 
-            public function readAuthorizedKeys(string $path): ?string
+            public function readAuthorizedKeys(string $path): AuthorizedKeysRead
             {
-                return $this->keys === '' ? null : $this->keys;
+                // '' models a file this run could not READ (the unverifiable setup these
+                // cases assert), never an absent one — see AuthorizedKeysRead.
+                return $this->keys === ''
+                    ? AuthorizedKeysRead::unreadable()
+                    : AuthorizedKeysRead::text($this->keys);
+            }
+
+            // These cases state ONE authorized_keys file, so no two paths name one file
+            // and a path is its own identity. The aliased shape is covered where it can
+            // be measured rather than stated: SystemSshProbeEnvironmentTest.
+            public function fileIdentity(string $path): string
+            {
+                return $path;
             }
 
             public function sshRoundTrip(string $target, string $stdin): array
@@ -2834,7 +2847,11 @@ class BridgeCommandsTest extends TestCase
         // .FAILED marker (the swallowed stderr never showed it). bridge:check
         // surfaces it loudly (warn, not fail).
         $sock = $this->dir.'/x.sock';
-        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — another session holds the channel\n");
+        // The connector's own body shape as of channel-server 0.9.13 (card#8984): it
+        // ENUMERATES the causes rather than naming one. A pre-0.9.13 seat still writes the
+        // old "another session holds the channel" body — which is why `bridge:check`'s own
+        // tail points at the doc instead of summarising whatever is in the file.
+        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — not bindable. Causes include: (1) this session's previous channel server after re-provisioning (/mcp reconnect does not stop the previous channel server — restart the session); (2) another Claude Code session or another process holding it (close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); (3) [unix only] a leaked socket file — or any other file — occupying the path, with no listener (rm it only if you are sure no server is running). THIS Claude Code session is deaf to live-wake until then.\n");
         $this->writeAgentWithChannelSocket($sock);
 
         $code = Artisan::call('bridge:check');
@@ -2934,7 +2951,7 @@ class BridgeCommandsTest extends TestCase
         try {
             $port = 8790;
             File::put($this->dir."/agent-webhook-bridge-channel-prod-agent.http-{$port}.FAILED",
-                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — another process holds the port\n");
+                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — not bindable. Causes include: (1) this session's previous channel server after re-provisioning (/mcp reconnect does not stop the previous channel server — restart the session); (2) another Claude Code session or another process holding it (close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); (3) [unix only] a leaked socket file — or any other file — occupying the path, with no listener (rm it only if you are sure no server is running). THIS Claude Code session is deaf to live-wake until then.\n");
             $this->writeAgentWithChannelUrl("http://127.0.0.1:{$port}/");
 
             $code = Artisan::call('bridge:check');

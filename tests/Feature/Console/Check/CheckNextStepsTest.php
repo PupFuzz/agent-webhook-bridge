@@ -257,9 +257,12 @@ class CheckNextStepsTest extends TestCase
     {
         $this->bootGoldenInstall('next-steps-five-agents', function (GoldenInstall $i) {
             $this->fakeBoard();
-            // The default fake: `readAuthorizedKeys()` answers null and `isRoot()` false, which
-            // is the probe's UNVERIFIED path — the same binding the golden corpus'
-            // `board-tools-ssh-default-transport-advisory` fixture uses to reach it.
+            // The default fake: `readAuthorizedKeys()` answers `unreadable()` — a file this
+            // run could NOT LOOK AT, which since card#8976 is a different answer from an
+            // ABSENT one — and `isRoot()` false. That is the probe's UNVERIFIED path, the
+            // same binding the golden corpus' `board-tools-ssh-default-transport-advisory`
+            // fixture uses to reach it (its `…-keys-file-absent` twin passes `absentPaths`
+            // for the other answer, and reaches this same state by the other sentence).
             $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
             $i->boot()
                 ->agent('agent-a', $this->kanbanOnlyAgentYaml())
