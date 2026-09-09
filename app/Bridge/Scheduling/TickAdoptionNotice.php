@@ -84,6 +84,23 @@ final class TickAdoptionNotice
     ) {}
 
     /**
+     * The notice wired to THIS install — the four arguments above are one answer, not four
+     * choices, and every caller wants the same one (card#9099, at the second real caller).
+     * Hoisted rather than copied: a second site assembling `posture` from one source and
+     * `declarationProblem` from another is a notice able to disagree with itself about whether
+     * the declaration it is reporting on could be read.
+     */
+    public static function forThisInstall(): self
+    {
+        return new self(
+            posture: TickRecord::posture(),
+            basePath: base_path(),
+            phpBinary: PHP_BINARY,
+            declarationProblem: TickRecord::declarationProblem(),
+        );
+    }
+
+    /**
      * The notice, as lines — EMPTY when this install has already answered the question.
      *
      * @return list<string>

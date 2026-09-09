@@ -72,6 +72,27 @@ final class JobRegistry
             'payload' => $spec->payload === [] ? null : $spec->payload,
         ])->save();
 
+        // ⛔ A DECLARED JOB WITH NO CLOCK IS THE ONE STATE THIS SUBSYSTEM CANNOT REPORT LATER
+        // (card#9099). On an install that adopted no tick the only ingress is the inbound
+        // webhook's after-response gate, whose clock IS the traffic, so a quiet install runs
+        // this instance never — and every surface downstream keeps enumerating it as healthy.
+        // The moment of the declaration is the one place that fact is cheap to notice, which
+        // is the same argument the line below already makes about the population's shape.
+        //
+        // ⚑ IT LOGS AND DOES NOT ACT. `insert()` is callable at runtime from any subsystem,
+        // including inside a web request as the FPM user — an account that typically has no
+        // crontab, no TTY, and no business mutating host scheduling as the side effect of a
+        // data write. Adopting the tick is the operator's act (DL-361); `bridge:jobs
+        // install-tick` is where it is offered and confirmed.
+        if ($spec->enabled && ! TickRecord::posture()->adopted) {
+            Log::warning('scheduled job declared on an install with no adopted tick', [
+                'name' => $spec->name,
+                'interval_s' => $spec->intervalS,
+                'ingress' => 'after-response event gate only — a quiet install never fires this job',
+                'remedy' => 'php artisan bridge:jobs install-tick',
+            ]);
+        }
+
         // A periodic population that changed shape is a fact about the install, and the one
         // place it is cheap to notice is the moment it changed. The line carries the
         // justification for the same reason the enumeration does.

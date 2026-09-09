@@ -299,11 +299,27 @@ final class BoardCorrectCardTool implements Tool
      * `502 upstream board error`.
      *
      * ⭐ THE DESCRIPTION IS TRIMMED, AND THAT IS WHAT MAKES "CLEAR" MEAN THE SAME THING
-     * ON BOTH DOORS. `TrimStrings` runs ahead of `ConvertEmptyStringsToNull` on the HTTP
-     * door only, so `"   "` arrives as null there (⇒ clear) and as three spaces over
-     * ssh (⇒ a card whose body is whitespace). Trimming here converges them on the
-     * behaviour the HTTP door already has, rather than leaving one transport with a
-     * second meaning for the same call.
+     * ON BOTH DOORS FOR ASCII WHITESPACE. `TrimStrings` runs ahead of
+     * `ConvertEmptyStringsToNull` on the HTTP door only, so `"   "` arrives as null there
+     * (⇒ clear) and as three spaces over ssh (⇒ a card whose body is whitespace).
+     * Trimming here converges them for that class.
+     *
+     * ⛔ IT DOES NOT CONVERGE THEM IN GENERAL, AND AN EARLIER REVISION OF THIS DOCBLOCK
+     * CLAIMED IT DID (card#8985 r2). The middleware trims with `Str::trim`, whose
+     * `Str::INVISIBLE_CHARACTERS` set includes `\x{00A0}` and much else; PHP's `trim()`
+     * here strips ASCII whitespace only. **Measured:** a description of one non-breaking
+     * space arrives NULL at the HTTP door (⇒ clear) and survives `trim()` here, so over
+     * ssh it is WRITTEN as the card's body — the second meaning for one call that the
+     * paragraph above says is gone. `name` (and `board_create_card`'s `title`) have the
+     * same gap one step earlier: `trim($name) === ''` is FALSE for that value, so ssh
+     * accepts a visually blank title the HTTP door refuses.
+     *
+     * ⚠ NOT FIXED HERE, DELIBERATELY. Closing it makes this door REFUSE input it accepts
+     * today — a change to what the system accepts, which is operator-gated in this repo —
+     * so it is filed as its own card rather than folded into an unrelated branch.
+     * `BoardMyCardsTool` normalises with `Str::trim` for the same class on a READ
+     * argument; that is one site converged, not this one, and the two are deliberately
+     * not described as a shared rule until the gate is answered.
      *
      * @param  array<string, mixed>  $args
      * @return array<string, string>

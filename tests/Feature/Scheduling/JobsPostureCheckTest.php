@@ -69,8 +69,56 @@ class JobsPostureCheckTest extends TestCase
         return implode("\n", array_map(fn ($f): string => $f->message, $findings));
     }
 
-    public function test_an_install_that_adopted_nothing_says_nothing(): void
+    /**
+     * ⚑ THE REGISTRY IS EMPTY HERE, AND THAT IS THE WHOLE POINT OF THE FIXTURE (card#9099).
+     * An install with no instances and no tick runs no periodic work, which is the CORRECT
+     * outcome and not a gap — so silence is right. It is the CONTROL for
+     * {@see self::test_enabled_instances_with_no_adopted_tick_are_warned_about}: the two
+     * differ by the presence of a row and by nothing else, which is what pins the new leg to
+     * the population rather than to the tick state.
+     */
+    public function test_an_install_that_adopted_nothing_and_holds_no_instances_says_nothing(): void
     {
+        $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
+    }
+
+    /**
+     * ⛔ THE SILENT-JOB CASE. The arm this covers used to return before saying anything
+     * whenever no tick was adopted, on the reasoning that *an install that never added a
+     * crontab line is not missing one* — true of an EMPTY registry and false the moment an
+     * enabled instance exists, which the old early return could not see because it never
+     * looked at the population.
+     *
+     * ⚑ `warn`, and the exit code must NOT move: on a busy install the event gate really does
+     * run these, so the leg cannot tell a degraded install from a healthy one and must not
+     * claim it can.
+     */
+    public function test_enabled_instances_with_no_adopted_tick_are_warned_about(): void
+    {
+        $this->row(['name' => 'prune-somethings']);
+
+        $findings = $this->findingsOf(new JobsPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('1 ENABLED periodic instance(s)', $findings[0]->message);
+        $this->assertStringContainsString('prune-somethings', $findings[0]->message);
+        $this->assertStringContainsString('bridge:jobs install-tick', $findings[0]->message);
+        // The claim it must NOT make: that these jobs are dead. On a busy install they run.
+        $this->assertStringContainsString('after-response gate', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE DISCRIMINATOR, and it is what stops the new leg from being "warn whenever no tick
+     * is adopted" wearing a population's clothes. A DISABLED instance is a decision somebody
+     * made, not work silently not happening — nothing is waiting on it, so there is nothing to
+     * report. Without this case the leg would pass its own test while keying on the row COUNT
+     * rather than on the ENABLED count.
+     */
+    public function test_a_registry_holding_only_disabled_instances_with_no_tick_stays_silent(): void
+    {
+        $this->row(['name' => 'switched-off', 'enabled' => false]);
+
         $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
     }
 
@@ -200,8 +248,16 @@ class JobsPostureCheckTest extends TestCase
 
         $findings = $this->findingsOf(new JobsPostureCheck);
 
-        $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString("instance 'a-job' was REFUSED", $findings[0]->message);
+        // ⚑ TWO findings, and the second is not noise: this fixture IS a no-tick install
+        // holding an enabled instance, so the card#9099 population leg fires beside the
+        // refusal. Asserting the COMPLETE set keeps the test honest about the state it builds.
+        $this->assertCount(2, $findings);
+        // ⚑ ORDER IS THE CHECK'S, not this test's preference: `tickFindings()` runs before
+        // `instanceFindings()`, so the population warn leads and the refusal follows.
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('ENABLED periodic instance(s)', $findings[0]->message);
+        $this->assertSame(Severity::Fail, $findings[1]->severity);
+        $this->assertStringContainsString("instance 'a-job' was REFUSED", $findings[1]->message);
     }
 
     /**
@@ -237,14 +293,22 @@ class JobsPostureCheckTest extends TestCase
     public function test_a_single_failure_is_not_reported_but_a_streak_is(): void
     {
         $job = $this->row(['last_status' => ScheduledJob::STATUS_FAILED, 'last_error' => 'blip', 'consecutive_failures' => 1]);
-        $this->assertSame([], $this->findingsOf(new JobsPostureCheck), 'one failure is a blip, not a posture');
+
+        // ⚑ The blip yields EXACTLY ONE finding and it is the card#9099 population warn, never
+        // an instance-failure line. Asserting that rather than `[]` keeps the original claim —
+        // *one failure is a blip, not a posture* — exact instead of trading it for a filter.
+        $blip = $this->findingsOf(new JobsPostureCheck);
+        $this->assertCount(1, $blip);
+        $this->assertStringContainsString('ENABLED periodic instance(s)', $blip[0]->message);
+        $this->assertStringNotContainsString('in a row', $blip[0]->message, 'one failure is a blip, not a posture');
 
         $job->consecutive_failures = 3;
         $job->save();
 
         $findings = $this->findingsOf(new JobsPostureCheck);
-        $this->assertSame(Severity::Warn, $findings[0]->severity);
-        $this->assertStringContainsString('failed 3 times in a row', $findings[0]->message);
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Warn, $findings[1]->severity);
+        $this->assertStringContainsString('failed 3 times in a row', $findings[1]->message);
     }
 
     public function test_rows_that_nothing_will_ever_run_are_reported(): void

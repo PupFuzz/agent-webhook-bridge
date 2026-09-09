@@ -9,6 +9,7 @@ use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
@@ -245,6 +246,75 @@ class ToolsCallCommandTest extends TestCase
         ]);
     }
 
+    // ─── the caller's own snapshot version (card#8974 / DL-364) ───────────────
+
+    /**
+     * ⭐ THE FIELD IS READ AND RECORDED. Everything else the client-half row carries is
+     * established by the bridge; this is the seat's own report of which channel-server
+     * snapshot it runs, and it is the only way the bridge can learn it — it may not read the
+     * seat's deployed directory.
+     */
+    public function test_a_reported_client_version_is_recorded_on_the_client_half_row(): void
+    {
+        $this->fakeHealthyBoard();
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards', 'client_version' => '0.9.14']));
+
+        $this->assertSame(0, $r['exit']);
+        $this->assertSame('0.9.14', BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
+    }
+
+    /**
+     * ⛔ THE HARD REQUIREMENT: ADDING THIS FIELD CHANGED NOTHING ABOUT WHAT THE DOOR ACCEPTS.
+     * The three shapes below are what a real fleet sends — a client older than the first
+     * reporting snapshot (no key at all), a caller sending the wrong TYPE, and a caller
+     * sending something the bridge will not print — and all three must be accepted exactly
+     * as they were before the field existed, with the version recorded as NULL. A refusal
+     * here would take out every seat that had not been re-deployed, for an audit column.
+     *
+     * The response is compared to the shape of the healthy call, not merely checked for a
+     * zero exit: a door that accepted the call and then degraded the RESULT would pass a
+     * weaker test.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    #[DataProvider('unusableClientVersions')]
+    public function test_an_absent_or_unusable_client_version_is_accepted_exactly_as_before(array $extra): void
+    {
+        $this->fakeHealthyBoard();
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards'] + $extra));
+
+        $this->assertSame(0, $r['exit']);
+        $decoded = json_decode($r['stdout'], true);
+        $this->assertIsArray($decoded);
+        $this->assertTrue($decoded['ok']);
+        $this->assertSame('board_my_cards', $decoded['tool']);
+        $this->assertSame(10, $decoded['result']['configured_board_id']);
+        // The call is recorded — it succeeded — and the version is the honest absence.
+        $this->assertNull(BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
+    }
+
+    /** @return array<string, array{0: array<string, mixed>}> */
+    public static function unusableClientVersions(): array
+    {
+        return [
+            'no key at all (a client older than the first reporting snapshot)' => [[]],
+            'a number rather than a string' => [['client_version' => 9]],
+            'an object' => [['client_version' => ['0.9.14']]],
+            'an empty string' => [['client_version' => '']],
+            // ⛔ THE SHAPE THE ANCHOR WAS BLIND TO, and it strictly dominates the case
+            // above it: PCRE's `$` matches BEFORE a final newline, so `/^…+$/` ACCEPTED
+            // this while correctly rejecting a newline with content after it. Every test
+            // this class had used the second shape, so the guard had never been able to
+            // fail on the one it was weak against. Both are kept — the pair is what shows
+            // the anchor rather than the character class is doing the work.
+            'a TRAILING newline (the `$`-anchor hole)' => [['client_version' => "0.9.14\n"]],
+            'a newline forging a second bridge:check line' => [['client_version' => "0.9.14\nboard_tools: ALL CLEAR"]],
+            'longer than the column' => [['client_version' => '1.0.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']],
+        ];
+    }
+
     // ─── identity / SSH_ORIGINAL_COMMAND ──────────────────────────────────────
 
     public function test_ssh_original_command_junk_is_ignored(): void
@@ -351,6 +421,92 @@ class ToolsCallCommandTest extends TestCase
     }
 
     // ─── the cross-door contract (DL-326 Decision 7) ─────────────────────────
+
+    /**
+     * A two-column board plus one card in each, for the `stage` cross-door legs below.
+     */
+    private function fakeTwoColumnBoard(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [
+                    ['id' => 50, 'name' => 'Backlog', 'position' => 1],
+                    ['id' => 51, 'name' => 'In Review', 'position' => 2],
+                ]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'a', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+                ['id' => 2, 'name' => 'b', 'workflow_stage_id' => 51, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+            ], 'links' => ['next' => null]]),
+        ]);
+    }
+
+    /** @return array<string, array{0: mixed}> */
+    public static function emptyStageArguments(): array
+    {
+        return [
+            'an empty string' => [''],
+            'whitespace only' => ['   '],
+            'a non-breaking space only' => ["\u{00A0}"],
+            'an explicit null' => [null],
+        ];
+    }
+
+    /**
+     * ⭐ THE SSH HALF OF THE `stage` CROSS-DOOR CONTRACT (card#8985 r1), and neither half
+     * can stand for the other. Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull`
+     * run on the HTTP door and NOT here, so every shape below arrives at the tool as a
+     * present-and-NULL `stage` there and as its literal self here. While the tool folded
+     * present-null into "absent", the HTTP door silently DROPPED the filter and returned
+     * the whole capped lane — more cards than the caller asked for — and this door refused
+     * the identical input. Only an ABSENT key means "no filter", on both.
+     *
+     * ⚑ RED-WHEN-REVERTED: restore `|| $args['stage'] === null` to the absent-check in
+     * `BoardMyCardsTool::stageFilter()` and the HTTP leg goes green-but-wrong (200, whole
+     * lane) while this one stays red for `null`; drop the empty-after-trim check and the
+     * string shapes here return the whole lane too.
+     */
+    #[DataProvider('emptyStageArguments')]
+    public function test_an_empty_stage_is_refused_on_this_door_as_it_is_on_http(mixed $value): void
+    {
+        $this->writeSshAgent();
+        $this->fakeTwoColumnBoard();
+
+        $r = $this->runCommand('me', (string) json_encode([
+            'tool' => 'board_my_cards', 'args' => ['stage' => $value],
+        ]));
+
+        $this->assertSame(1, $r['exit'], 'stdout: '.$r['stdout']);
+        $body = json_decode($r['stdout'], true);
+        $this->assertFalse($body['ok']);
+        $this->assertStringContainsString('EMPTY', (string) json_encode($body));
+    }
+
+    /**
+     * The same rule from the other side, and the leg that pins WHICH trim. `Str::trim` —
+     * what `TrimStrings` uses — strips a non-breaking space; PHP's ASCII `trim()` does not.
+     * So a name carrying one resolved at the HTTP door and was refused here until the tool
+     * normalised with the framework's own primitive.
+     *
+     * ⚑ RED-WHEN-REVERTED: swap `Str::trim` back to `trim` in `stageFilter()` and this
+     * exits 1 while its HTTP twin still passes.
+     */
+    public function test_a_stage_name_with_invisible_padding_resolves_on_this_door_as_it_does_on_http(): void
+    {
+        $this->writeSshAgent();
+        $this->fakeTwoColumnBoard();
+
+        $r = $this->runCommand('me', (string) json_encode([
+            'tool' => 'board_my_cards', 'args' => ['stage' => "In Review\u{00A0}"],
+        ]));
+
+        $this->assertSame(0, $r['exit'], 'stdout: '.$r['stdout']);
+        $body = json_decode($r['stdout'], true);
+        $this->assertSame(51, $body['result']['cards_window']['stage_filter']);
+        $this->assertSame([2], array_column($body['result']['cards_by_stage']['In Review'], 'id'));
+    }
 
     /**
      * ⭐ THIS DOOR IS THE ONLY PLACE THE CLEAR-A-DESCRIPTION RULE CAN BE MEASURED. Laravel's

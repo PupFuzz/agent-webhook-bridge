@@ -886,7 +886,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
             ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
-            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck)
+            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')))
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
             ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($probeTools))

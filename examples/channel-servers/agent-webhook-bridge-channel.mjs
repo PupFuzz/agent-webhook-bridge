@@ -96,6 +96,34 @@ const TOOLS_SSH_DEADLINE_MS = 60000;
 // how much of it a caller finally sees.
 const SSH_STDERR_CAPTURE_LIMIT = 2000;
 
+// This server's OWN package version, sent on every board-tools call as `client_version`
+// (card#8974 / DL-364). WHY: `bridge:check` could see the version of the snapshot the
+// BRIDGE bundles and nothing whatever about the copy the seat actually runs, so a tool
+// missing from a stale seat copy was attributed to the bridge. Measured: a seat on 0.4.4
+// against a bridge bundling 0.9.12 reported `board_correct_card` "absent from my surface",
+// and nothing compared the two numbers because nothing carried the first one.
+//
+// READ FROM THE SIBLING MANIFEST, never written here as a literal. Consumers copy the
+// WHOLE directory, so `package.json` travels with this file — and a literal would be a
+// second copy of the one field the DL-038 bump guard already maintains, free to drift the
+// moment somebody bumps one and not the other.
+//
+// ⛔ FAIL-SOFT AND OPTIONAL, AT BOTH ENDS. An unreadable, absent or malformed manifest
+// yields null, the key is then OMITTED, and the call goes out exactly as it did before
+// this field existed. The bridge reads a missing key as "not reported" and MUST NOT refuse
+// a call over it — adding this field changed nothing about what the door accepts.
+function readClientVersion() {
+  try {
+    const version = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+
+    return typeof version === 'string' && version !== '' ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+const CLIENT_VERSION = readClientVersion();
+
 // Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
 // explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
 // FILE SHORT-CIRCUITS to '' (never silently falling through to the channel token),
@@ -193,7 +221,11 @@ const TOOL_DEFINITIONS = [
       'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
       'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
-      'include_description when you need the SCOPE written on a card. A board fault ' +
+      'include_description when you need the SCOPE written on a card. EACH card list is ' +
+      'CAPPED by default; every list carries a window block (total / returned / limit / ' +
+      'truncated) and truncated: true means there is more behind it — narrow with stage, ' +
+      'or raise limit deliberately. NEVER read a truncated list as the whole board. ' +
+      'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
       'window and never a retryable upstream error, so do not retry it: tell your ' +
@@ -205,11 +237,40 @@ const TOOL_DEFINITIONS = [
           type: 'boolean',
           description:
             "Include each card's body (default false). Opt-in because a body is ~2 KB " +
-            'and every card in your lane is returned, so this can multiply the response ' +
-            'size many times over — ask for it when starting work on a card, not when ' +
+            'and it is added to EVERY card the call returns, so it multiplies the ' +
+            'response size by the number of cards — ask for it when starting work on a ' +
+            'card, not when ' +
             'polling. A body longer than the bridge-configured per-card cap is cut and ' +
             'the card carries description_truncated: true; never read a truncated body ' +
             'as the whole scope.',
+        },
+        stage: {
+          // ⛔ `anyOf`, NOT `type: ['integer','string']` — MEASURED, not preferred. A
+          // strict JSON Schema validator REFUSES the array-valued form at COMPILE time
+          // ("strict mode: use allowUnionTypes to allow union type keyword"), and a client
+          // that cannot compile this schema drops board_my_cards entirely for every seat
+          // that re-copies this directory. The `anyOf` form compiles under the same strict
+          // validator and discriminates correctly (integer ok, string ok, boolean
+          // rejected). Measured against ajv in strict mode, which is in this very tree.
+          anyOf: [{ type: 'integer' }, { type: 'string' }],
+          description:
+            'Return only cards in ONE column of your product board. The NUMERIC stage id ' +
+            'is the primary form (it is what each card reports under "stage" alongside ' +
+            'the id the bridge groups by). A STRING is treated as a stage NAME, matched ' +
+            'case-insensitively, and is REFUSED if it names no stage or more than one — ' +
+            'the bridge never guesses which column you meant. Does not apply to the ' +
+            'coordination cards: those are on a different board, whose stage ids are ' +
+            'unrelated to yours.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'How many cards EACH list is cut to (the bridge default is deliberately ' +
+            'small — a whole board of titles overflows a context window). Raise it only ' +
+            'when you genuinely need a whole lane: the response grows in proportion. ' +
+            'Prefer narrowing with stage. Read the window block to see whether a cut ' +
+            'happened and how much is behind it.',
         },
       },
       additionalProperties: false,
@@ -523,7 +584,7 @@ const mcp = new Server(
 // are pure — they live in ./channel-lib.mjs and are imported at the top of this file.
 
 // SSH-forced-command transport: spawn `ssh [-i key] [-p port] <target>` with NO
-// command (sshd substitutes the pinned bridge:tools-call), write {tool, args} to the
+// command (sshd substitutes the pinned bridge:tools-call), write {tool, args, client_version} to the
 // child's stdin, and CAPTURE (never inherit) its stdout — so this server's OWN stdout
 // stays the MCP JSON-RPC frame channel. Accumulate the full child stdout, then relay.
 async function callToolOverSsh(payload) {
@@ -609,7 +670,7 @@ async function callToolOverSsh(payload) {
   });
 }
 
-// HTTP loopback transport: POST {tool, args} with the per-agent bearer.
+// HTTP loopback transport: POST {tool, args, client_version} with the per-agent bearer.
 async function callToolOverHttp(payload, token) {
   try {
     const res = await fetch(TOOLS_ENDPOINT, {
@@ -710,7 +771,16 @@ if (ADVERTISE_ANY_TOOL) {
     }
 
     const args = request.params.arguments || {};
-    const payload = JSON.stringify({ tool: toolName, args });
+    // ⚑ THE KEY IS OMITTED, NEVER SENT AS null, when this server could not read its own
+    // manifest. "Not reported" is the ABSENCE of the key on the bridge side — every client
+    // predating this field produces exactly that shape — and a null would be a second
+    // spelling of one state, which is the read-time fork the bridge should never have to
+    // handle.
+    const payload = JSON.stringify(
+      CLIENT_VERSION === null
+        ? { tool: toolName, args }
+        : { tool: toolName, args, client_version: CLIENT_VERSION },
+    );
 
     // Guard branches on the TRANSPORT (DR2-5), not on a bearer: the ssh transport
     // carries no bearer, so `!token` must not gate it.
@@ -737,7 +807,10 @@ if (ADVERTISE_ANY_TOOL) {
       };
     }
 
-    // Dumb pipe: forward {tool, args} verbatim, no retry, no board logic.
+    // Dumb pipe: forward {tool, args, client_version} verbatim, no retry, no board logic.
+    // Still a dumb pipe with the third key: `client_version` is this server's own manifest
+    // version (read once, above), NOT anything derived from the call — no board logic, no
+    // retry, and nothing about the request influences it.
     return await callToolOverHttp(payload, token);
   });
 }

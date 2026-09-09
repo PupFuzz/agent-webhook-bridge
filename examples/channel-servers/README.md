@@ -269,8 +269,13 @@ advertises three request/response MCP tools — `board_my_cards`,
 `board_create_card` and `board_correct_card` (DL-326: correct a card YOU filed,
 instead of minting a second card to say the first one is wrong) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
-forwards `{tool, args}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
-`Authorization: Bearer <token>` and returns the bridge's response verbatim. It
+forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
+`Authorization: Bearer <token>` and returns the bridge's response verbatim.
+`client_version` is this server's own `package.json` version, read at start-up and
+sent so the bridge can tell a tool missing from a STALE copy of THIS directory from
+one the bridge never shipped (DL-364) — ⛔ it is an **optional observation the bridge
+must never refuse a call over**, it is **omitted** when the manifest cannot be read,
+and it carries nothing about the seat but that version. It
 carries **no board logic, no kanban token, and no retry** — all validation,
 scoping, and idempotency live in the bridge. A bare channel agent with no tools
 wiring advertises no `tools` capability (nothing dead).

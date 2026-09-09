@@ -498,22 +498,61 @@ final class KanbanClient
     }
 
     /**
-     * Stage id → NAME for a board, off the same `preload.json` read as
-     * {@see boardStageIdsByName()} (the inverse direction). board_my_cards groups
-     * the agent's cards by stage NAME (DL-217), and the search rows carry only the
-     * numeric `workflow_stage_id`, so this resolves the display label. A stage
-     * lacking an id or name is skipped; empty when the read carries no stages
-     * (the caller then falls back to the raw id).
+     * Stage id → NAME for a board, IN THE BOARD'S OWN COLUMN ORDER, off the same
+     * `preload.json` read as {@see boardStageIdsByName()} (the inverse direction).
+     * board_my_cards groups the agent's cards by stage NAME (DL-217), and the search rows
+     * carry only the numeric `workflow_stage_id`, so this resolves the display label. A
+     * stage lacking an id or name is skipped; empty when the read carries no stages (the
+     * caller then falls back to the raw id).
+     *
+     * ⭐ THE ORDER IS `position`, NOT THE PAYLOAD'S ARRAY ORDER, and it is ordered HERE
+     * because this is the only place that can see the field (card#8985 r2). `position` is
+     * kanban's fractional ordering double — the same field {@see boardStageOrder()} exists
+     * to read — and it is DISCARDED by this projection, so a caller handed the map has no
+     * way to recover it and no way to sort by it without paying a second `preload.json`
+     * GET. `board_my_cards` publishes this map to seats as the board's column list, and a
+     * two-workflow board is enough to make array order disagree with column order:
+     * `preloadStages()` concatenates workflows, so a board whose second workflow holds its
+     * earlier columns reads out backwards.
+     *
+     * ⚠ A STAGE WITH NO READABLE `position` IS ORDERED LAST, NEVER DROPPED. Dropping it
+     * would hide a column from the one list a seat uses to discover its own board, which
+     * is a worse failure than an imperfect order; {@see boardStageOrder()} legitimately
+     * skips it because a stage with no position has no place in an ORDERING, while this
+     * method's subject is the stage SET. Ties keep their read order (PHP's sort is stable
+     * since 8.0, and the index tiebreak below does not depend on that).
      *
      * @return array<int, string>
      */
     public function boardStageNames(int $boardId): array
     {
-        $byId = [];
+        $rows = [];
         foreach ($this->preloadStages($boardId) as $s) {
             if (isset($s['id'], $s['name']) && is_numeric($s['id']) && is_string($s['name']) && $s['name'] !== '') {
-                $byId[(int) $s['id']] = $s['name'];
+                $rows[] = [
+                    'index' => count($rows),
+                    'id' => (int) $s['id'],
+                    'name' => $s['name'],
+                    'position' => is_numeric($s['position'] ?? null) ? (float) $s['position'] : null,
+                ];
             }
+        }
+
+        usort($rows, static function (array $a, array $b): int {
+            if ($a['position'] === $b['position']) {
+                return $a['index'] <=> $b['index'];
+            }
+
+            return match (true) {
+                $a['position'] === null => 1,
+                $b['position'] === null => -1,
+                default => $a['position'] <=> $b['position'],
+            };
+        });
+
+        $byId = [];
+        foreach ($rows as $row) {
+            $byId[$row['id']] = $row['name'];
         }
 
         return $byId;

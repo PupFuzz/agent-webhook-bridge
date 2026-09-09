@@ -28,4 +28,30 @@ use RuntimeException;
  * {@see UnreadableSecretException} is for, and why the subtype was kept rather than collapsed
  * into this one (card#5789).
  */
-class UnreadableFileException extends RuntimeException {}
+class UnreadableFileException extends RuntimeException
+{
+    /**
+     * THE PERMISSIONS-FAULT SENTENCE, owned here rather than at the throw sites — hoisted at
+     * its SECOND producer (card#9037). Two readers now raise this state (the ordinary one and
+     * the root-safe one for a path a lower-trust account controls), the wording is
+     * operator-facing and load-bearing — it says the file WAS THERE, so the operator looks at
+     * permissions and not at provisioning, and it says the reading is uid-relative — and two
+     * copies of one sentence are a sentence free to drift on one of them.
+     *
+     * `new self`, not `new static`: the ONE subtype re-types by wrapping this exception's
+     * MESSAGE (`TokenFile` — NAMED, not `{@see}`-linked, for the layer reason above), so no
+     * subtype calls this factory and a `static` here would only be an unenforceable promise
+     * about constructors this class does not own.
+     *
+     * @param  string  $subject  the noun the operator would recognize, which is not always
+     *                           the basename of $path.
+     */
+    public static function permissionsFault(string $subject, string $path): self
+    {
+        return new self(
+            "{$subject} at {$path} could not be read by this process (a regular file was "
+            .'found at the path, so this is a permissions fault rather than an absence) — '
+            .'ownership and mode are relative to the asking user, so another OS user may read it fine'
+        );
+    }
+}

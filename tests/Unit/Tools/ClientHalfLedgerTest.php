@@ -34,13 +34,13 @@ class ClientHalfLedgerTest extends TestCase
     public function test_a_repeat_call_advances_the_stamp_in_place_and_keeps_the_first_one(): void
     {
         $this->travelTo(now()->subDay());
-        ClientHalfLedger::record('prod-agent', 'http', CallProvenance::NotSshd);
+        ClientHalfLedger::record('prod-agent', 'http', CallProvenance::NotSshd, '0.9.14');
         $first = BoardToolsClientCall::query()->where('agent', 'prod-agent')->sole();
         $firstCreatedAt = $first->created_at;
         $firstSuccessAt = $first->last_success_at;
 
         $this->travelBack();
-        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::Sshd);
+        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::Sshd, null);
 
         $rows = BoardToolsClientCall::query()->where('agent', 'prod-agent')->get();
         $this->assertCount(1, $rows, 'the second call minted a second row instead of rewriting the first');
@@ -71,12 +71,35 @@ class ClientHalfLedgerTest extends TestCase
     {
         $this->assertSame(0, BoardToolsClientCall::query()->count());
 
-        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::Sshd);
+        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::Sshd, '0.9.14');
 
         $row = BoardToolsClientCall::query()->where('agent', 'prod-agent')->sole();
         $this->assertSame('ssh', $row->transport);
         $this->assertSame(CallProvenance::Sshd, $row->call_provenance);
+        $this->assertSame('0.9.14', $row->client_version);
         $this->assertTrue($row->last_success_at->greaterThan(now()->subMinute()));
+    }
+
+    /**
+     * ⭐ THE NULL DIRECTION IS THE ONE THAT CAN GO WRONG (card#8974 / DL-364). A version left
+     * out of the upsert's UPDATE list would be written once and then frozen — so a seat that
+     * was DOWNGRADED, or the far more routine case of `--self-cert` / a hand-run
+     * `bridge:tools-call` (neither is a channel server and neither reports a version),
+     * would leave the last reported version standing beside a call that never carried one,
+     * and `bridge:check` would print a version for a call that did not report it. Asserting
+     * only that the first version lands would pass against exactly that writer.
+     */
+    public function test_a_later_call_reporting_no_version_clears_the_recorded_one(): void
+    {
+        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::Sshd, '0.9.14');
+        $this->assertSame('0.9.14', BoardToolsClientCall::query()->where('agent', 'prod-agent')->sole()->client_version);
+
+        ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::Sshd, null);
+
+        $this->assertNull(
+            BoardToolsClientCall::query()->where('agent', 'prod-agent')->sole()->client_version,
+            'a call that reported no version left the previous one standing — bridge:check would print a version this call never carried',
+        );
     }
 
     /**
@@ -101,7 +124,7 @@ class ClientHalfLedgerTest extends TestCase
         try {
             ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::of(
                 new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false),
-            ));
+            ), '0.9.14');
         } finally {
             is_string($connection) ? putenv('SSH_CONNECTION='.$connection) : putenv('SSH_CONNECTION');
             is_string($tty) ? putenv('SSH_TTY='.$tty) : putenv('SSH_TTY');

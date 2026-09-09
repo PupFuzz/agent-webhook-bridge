@@ -230,12 +230,7 @@ class ProvisionToolsCommand extends BridgeCommand
      */
     private function printTickNotice(): void
     {
-        $lines = (new TickAdoptionNotice(
-            posture: TickRecord::posture(),
-            basePath: base_path(),
-            phpBinary: PHP_BINARY,
-            declarationProblem: TickRecord::declarationProblem(),
-        ))->lines();
+        $lines = TickAdoptionNotice::forThisInstall()->lines();
 
         if ($lines === []) {
             return;

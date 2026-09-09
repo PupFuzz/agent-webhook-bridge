@@ -7,6 +7,7 @@ use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ClientVersion;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -62,7 +63,12 @@ final class AgentToolsController
         // useless — the PHP process serving this request can inherit one legitimately (an
         // operator running `php artisan serve` inside an ssh session), which would mint the
         // STRONGER client-half verdict out of a variable that says nothing about the caller.
-        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd);
+        // ⛔ OPTIONAL, AND IT CANNOT REFUSE (card#8974 / DL-364) — the same contract the ssh
+        // door states. `input()` yields null for an absent key and this route validates
+        // nothing else about the body, so a caller predating the field, or one sending
+        // anything {@see ClientVersion} will not take, reaches the dispatcher unchanged with
+        // null recorded. The bearer is what authorizes this call; a version never is.
+        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd, ClientVersion::fromCall($request->input('client_version')));
 
         return response()->json($outcome->body(), $outcome->status);
     }
