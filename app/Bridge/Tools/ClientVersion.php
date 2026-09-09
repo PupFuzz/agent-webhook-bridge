@@ -21,11 +21,19 @@ namespace App\Bridge\Tools;
  * observation, not a credential.
  *
  * ⛔ THE OUTPUT IS PRINTED VERBATIM INTO A `bridge:check` LINE, so the shape is a
- * whitelist and not a sanitiser-by-removal. `[0-9A-Za-z.+-]` admits every version npm can
- * declare and admits no whitespace, no newline, no ANSI escape and no shell metacharacter,
- * so nothing a caller sends can rewrite an operator's terminal or forge a second finding
- * line. An over-long value is REFUSED rather than truncated: a truncated version is a
- * WRONG version, and it would be compared and reported as one.
+ * whitelist and not a sanitiser-by-removal. `[0-9A-Za-z.+-]`, anchored `^…\z`, admits every
+ * version npm can declare and admits no whitespace, no newline (INCLUDING A TRAILING ONE —
+ * see the anchor note on {@see self::fromCall()}), no ANSI escape and no shell
+ * metacharacter, so nothing a caller sends can rewrite an operator's terminal or split one
+ * finding across two lines. An over-long value is REFUSED rather than truncated: a truncated
+ * version is a WRONG version, and it would be compared and reported as one.
+ *
+ * ⚠ WHAT THE WHITELIST DOES NOT BUY, stated because the first cut of this class claimed it
+ * did: admitting only these characters is not the same as admitting only COMPARABLE
+ * versions. `v1.0.0`, `abc` and `release-3` all pass here, and the comparator the check uses
+ * coerces a segment with no leading digit to `0` — so the CHECK, not this class, is where an
+ * uncomparable-but-well-charactered value is kept out of a version verdict. This class
+ * answers "may this string be stored and printed", and only that.
  */
 final class ClientVersion
 {
@@ -66,6 +74,11 @@ final class ClientVersion
             return null;
         }
 
-        return preg_match('/^[0-9A-Za-z.+-]+$/', $raw) === 1 ? $raw : null;
+        // ⛔ `\z`, NEVER `$`. PCRE's `$` matches BEFORE a final newline, so `/^…+$/` ACCEPTS
+        // "0.9.15\n" — measured, not reasoned. That is the one shape this whitelist exists to
+        // stop and the one it was blind to: the value is printed verbatim into a `bridge:check`
+        // finding, and a trailing newline renders the leg's single line as TWO. `\z` is the
+        // absolute end of the subject and admits nothing after the last permitted character.
+        return preg_match('/^[0-9A-Za-z.+-]+\z/', $raw) === 1 ? $raw : null;
     }
 }

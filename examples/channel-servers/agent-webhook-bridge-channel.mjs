@@ -551,7 +551,7 @@ const mcp = new Server(
 // are pure — they live in ./channel-lib.mjs and are imported at the top of this file.
 
 // SSH-forced-command transport: spawn `ssh [-i key] [-p port] <target>` with NO
-// command (sshd substitutes the pinned bridge:tools-call), write {tool, args} to the
+// command (sshd substitutes the pinned bridge:tools-call), write {tool, args, client_version} to the
 // child's stdin, and CAPTURE (never inherit) its stdout — so this server's OWN stdout
 // stays the MCP JSON-RPC frame channel. Accumulate the full child stdout, then relay.
 async function callToolOverSsh(payload) {
@@ -637,7 +637,7 @@ async function callToolOverSsh(payload) {
   });
 }
 
-// HTTP loopback transport: POST {tool, args} with the per-agent bearer.
+// HTTP loopback transport: POST {tool, args, client_version} with the per-agent bearer.
 async function callToolOverHttp(payload, token) {
   try {
     const res = await fetch(TOOLS_ENDPOINT, {
@@ -774,7 +774,10 @@ if (ADVERTISE_ANY_TOOL) {
       };
     }
 
-    // Dumb pipe: forward {tool, args} verbatim, no retry, no board logic.
+    // Dumb pipe: forward {tool, args, client_version} verbatim, no retry, no board logic.
+    // Still a dumb pipe with the third key: `client_version` is this server's own manifest
+    // version (read once, above), NOT anything derived from the call — no board logic, no
+    // retry, and nothing about the request influences it.
     return await callToolOverHttp(payload, token);
   });
 }

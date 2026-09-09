@@ -250,13 +250,35 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
             return [false, 'CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.') — the reference channel server sends its own snapshot version from '.ClientVersion::FIRST_REPORTING_SNAPSHOT.' onward, so this call came from an older copy, or from a caller that is not a channel server at all (`bridge:check --probe-tools`, `provision-board-tools.py --self-cert`, a hand-run `bridge:tools-call`). THAT IS NOT EVIDENCE THE SEAT IS STALE — nothing was compared. Re-deploy the seat\'s channel server to get the comparison.'];
         }
 
+        // ⛔ THE SEAT'S OPERAND IS CHECKED FIRST, AND IT IS CHECKED AT ALL BECAUSE THE
+        // COMPARATOR COERCES RATHER THAN REFUSING. `ChannelSnapshotProbe::versionTuple()`
+        // takes each dot-separated chunk's LEADING DIGITS and yields 0 where there are none
+        // — deliberately, because it mirrors the declared authority — so a reported `v1.0.0`
+        // becomes [0,0,0] and compares OLDER than every real snapshot. The leg would then
+        // print "v1.0.0 IS OLDER THAN 0.9.15" and instruct a re-deploy: a DOWNGRADE
+        // instruction, derived from a fabricated zero, on the most actionable line this leg
+        // prints. A leading non-digit means the string is not in the comparator's grammar at
+        // all, so there is no comparable operand and this is `Severity` limb (c) — the same
+        // state the bundled-manifest arm below reports, which is why it routes to the same
+        // sentence rather than a second one.
+        //
+        // ⚠ THE PREDICATE IS THE FIRST CHUNK, and the remainder is disclosed rather than
+        // chased: `0.beta.1` still compares (to [0,0,1]) and can still warn. That is not the
+        // same defect — its first chunk IS a number, the authority reads it identically, and
+        // `bin/provision-board-tools.py` would itself replace that snapshot — so the warn
+        // agrees with the tool that acts on it and CLEARS when the operator follows it. A
+        // leading non-digit is the case where the whole tuple is a fabrication.
+        if (preg_match('/^[0-9]/', $reported) !== 1) {
+            return [false, self::notCompared($reported, "`{$reported}` does not begin with a digit, so it is not a version the staleness comparator can order — that comparator matches `bin/provision-board-tools.py`, the tool that actually decides whether a deployed snapshot is replaced, and it reads each dot-separated chunk's leading digits. Comparing it would rank a fabricated 0 rather than the seat's version. Ask that seat what it is running")];
+        }
+
         $bundled = ChannelSnapshotProbe::readManifest($this->bundledDir.'/package.json');
         if ($bundled['status'] !== 'ok' || $bundled['version'] === '') {
             $why = $bundled['status'] !== 'ok'
                 ? ChannelSnapshotProbe::manifestReason($bundled['status'])
                 : 'declares no version';
 
-            return [false, "The seat reports client version {$reported}, NOT COMPARED — this checkout's {$this->bundledDir}/package.json {$why}, so there was no bundled version to compare it against. That file is tracked in this checkout: restore or repair it, and check that this process can read it. The seat's own report above is unaffected."];
+            return [false, self::notCompared($reported, "this checkout's {$this->bundledDir}/package.json {$why}, so there was no bundled version to compare it against. That file is tracked in this checkout: restore or repair it, and check that this process can read it")];
         }
 
         if (ChannelSnapshotProbe::compareVersions($reported, $bundled['version']) < 0) {
@@ -264,6 +286,23 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         }
 
         return [false, "Client version {$reported} is at or ahead of the {$bundled['version']} this bridge bundles."];
+    }
+
+    /**
+     * The ONE sentence for "a version was reported and no comparison was made", with the
+     * cause named — two callers, one for each operand that can be missing (the SEAT's, when
+     * it is outside the comparator's grammar; the BRIDGE's, when its own manifest will not
+     * read).
+     *
+     * ⛔ ONE SENTENCE AND NOT TWO, because the two causes take different remedies but make
+     * the SAME claim — that the seat reported, and that this run did not rank it. Two
+     * separately-worded arms for one claim is how the pair drift into saying different
+     * things about the finding they both belong to, and the reader has to work out whether
+     * the difference is meaningful.
+     */
+    private static function notCompared(string $reported, string $cause): string
+    {
+        return "The seat reports client version {$reported}, NOT COMPARED — {$cause}. The seat's own report above is unaffected.";
     }
 
     /**

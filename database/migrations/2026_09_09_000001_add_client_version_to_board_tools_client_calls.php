@@ -24,7 +24,11 @@ return new class extends Migration
         // string the far end sends. The row is printed verbatim into a `bridge:check` line,
         // so `App\Bridge\Tools\ClientVersion` reduces it to a conservative version-shaped
         // token — or to NULL — before anything reaches this column, and 32 is that token's
-        // cap rather than a guess about npm.
+        // cap rather than a guess about npm. ⛔ THE REDUCTION IS ANCHORED `^…\z` AND NOT
+        // `^…$`: PCRE's `$` matches before a FINAL NEWLINE, so the first cut of that class
+        // stored "0.4.4\n" and the check printed one finding as two lines. The rule this
+        // column depends on is that nothing reaching it can contain a newline AT ANY
+        // POSITION, trailing included.
         //
         // ⚑ NULLABLE, ADDITIVE, NOT BACKFILLED, AND NULL IS A REAL STATE. It is what a
         // client older than the first reporting snapshot sends (nothing), what a garbage

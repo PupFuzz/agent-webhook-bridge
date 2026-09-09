@@ -15,7 +15,7 @@ use App\Bridge\Tools\ToolsCallStdio;
  * `bridge:tools-call` — the SSH-forced-command front door for board tools (Finding
  * C, card 4952). It is the exact dual of the loopback HTTP controller: it resolves
  * the caller's identity (from the PINNED `--agent`, never the wire), reads a
- * `{tool, args}` request from STDIN, and dispatches it through the SAME
+ * `{tool, args, client_version?}` request from STDIN, and dispatches it through the SAME
  * {@see BoardToolDispatcher} the HTTP door uses — so the response body is
  * byte-identical between transports.
  *
@@ -61,7 +61,7 @@ class ToolsCallCommand extends BridgeCommand
 {
     protected $signature = 'bridge:tools-call {--agent= : the identity, forced from the pinned authorized_keys command (trusted; NOT read from the caller)}';
 
-    protected $description = 'SSH-forced-command board-tools front door: read {tool, args} from STDIN, write one JSON envelope to STDOUT (card 4952)';
+    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?} from STDIN, write one JSON envelope to STDOUT (card 4952)';
 
     /** Refuse a stdin flood: a booted Laravel process must not buffer unbounded input. */
     private const MAX_STDIN_BYTES = 65536;   // 64 KiB
@@ -117,7 +117,7 @@ class ToolsCallCommand extends BridgeCommand
 
         $decoded = json_decode($raw, true);
         if (! is_array($decoded)) {
-            return $this->emit($io, ['ok' => false, 'error' => 'STDIN must be a JSON object {tool, args?}'], 1);
+            return $this->emit($io, ['ok' => false, 'error' => 'STDIN must be a JSON object {tool, args?, client_version?}'], 1);
         }
         $tool = $decoded['tool'] ?? null;
         if (! is_string($tool) || $tool === '') {

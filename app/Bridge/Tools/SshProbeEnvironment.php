@@ -108,7 +108,7 @@ interface SshProbeEnvironment
 
     /**
      * Round-trip one board-tools call over ssh to $target (`user@host`), sending
-     * $stdin (the `{tool, args}` JSON) — the client passes NO command (sshd
+     * $stdin (the `{tool, args, client_version?}` JSON) — the client passes NO command (sshd
      * substitutes the forced `bridge:tools-call`). Used only by the opt-in
      * `--probe-tools-ssh` live leg.
      *

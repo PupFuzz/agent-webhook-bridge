@@ -13,6 +13,7 @@ use App\Bridge\Tools\ClientVersion;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
 use Tests\Support\MaterializesChecks;
 use Tests\Support\UsesUnmigratedDatabase;
@@ -694,6 +695,85 @@ class BoardToolsClientHalfCheckTest extends TestCase
 
         $this->assertSame(Severity::Ok, $withoutManifest);
         $this->assertSame(Severity::Warn, $withManifest);
+    }
+
+    /**
+     * ⭐ AN UNORDERABLE REPORTED VERSION MUST NOT BECOME A STALE VERDICT. The comparator
+     * COERCES rather than refusing — `versionTuple()` takes each chunk's leading digits and
+     * yields 0 where there are none — so `v1.0.0` ranks as [0,0,0] and compares OLDER than
+     * every real snapshot. Unfixed, the leg printed "v1.0.0 IS OLDER THAN 0.9.12" and told
+     * the operator to re-copy the bridge's snapshot over that seat: a DOWNGRADE instruction
+     * for a NEWER client, derived from a fabricated zero, on the most actionable line this
+     * leg prints.
+     *
+     * The absence of the stale verdict is asserted WITH the presence of the not-compared
+     * one: an absence alone is satisfied by any breakage, including a leg that says nothing.
+     *
+     * @param  string  $reported  a value `ClientVersion` ADMITS (it is a storage whitelist,
+     *                            not a semver parser) and the comparator cannot order
+     */
+    #[DataProvider('unorderableReportedVersions')]
+    public function test_a_reported_version_the_comparator_cannot_order_is_not_compared(string $reported): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: $reported);
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString("The seat reports client version {$reported}, NOT COMPARED", $findings[0]['message']);
+        $this->assertStringContainsString('does not begin with a digit', $findings[0]['message']);
+        $this->assertStringNotContainsString('IS OLDER THAN', $findings[0]['message']);
+        // The remedy must not be the re-deploy one either — that is the downgrade.
+        $this->assertStringNotContainsString('over the seat\'s deployed directory', $findings[0]['message']);
+        $this->assertStringContainsString('Ask that seat what it is running', $findings[0]['message']);
+    }
+
+    /** @return array<string, array{0: string}> */
+    public static function unorderableReportedVersions(): array
+    {
+        return [
+            'a v-prefixed semver (NEWER than the bundle by any human reading)' => ['v1.0.0'],
+            'not a version at all' => ['abc'],
+            'a bare pre-release word' => ['beta2'],
+            'a channel name' => ['release-3'],
+        ];
+    }
+
+    /**
+     * ⚠ THE DISCLOSED REMAINDER, pinned so that narrowing the predicate later is a decision
+     * rather than an accident. `0.beta.1` has a NUMERIC first chunk, so it is ordered — as
+     * [0,0,1] — and warns. That is deliberately NOT treated as the defect above: the
+     * declared authority (`bin/provision-board-tools.py`, the tool that actually replaces a
+     * deployed snapshot) reads it identically and would itself replace that copy, so the
+     * warn agrees with the tool that acts on it and CLEARS when the operator follows it. The
+     * `v1.0.0` case is different in kind — there the WHOLE tuple is a fabrication.
+     */
+    public function test_a_numeric_first_chunk_is_still_ordered_even_with_a_word_after_it(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.beta.1');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringContainsString('CLIENT VERSION 0.beta.1 IS OLDER THAN THE 0.9.12', $findings[0]['message']);
+    }
+
+    /**
+     * The control for the routing above: the SAME install and the SAME bundled manifest, with
+     * only the reported string changed, DOES reach the stale warn. Without it, the
+     * not-compared assertions would pass against a leg that had stopped comparing anything.
+     */
+    public function test_the_not_compared_routing_is_the_reported_versions_doing_not_the_legs(): void
+    {
+        $this->recordCall(ageSeconds: 60, clientVersion: 'v1.0.0');
+        $unorderable = $this->findings()[0]['severity'];
+
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+        $orderable = $this->findings()[0]['severity'];
+
+        $this->assertSame(Severity::Ok, $unorderable);
+        $this->assertSame(Severity::Warn, $orderable);
     }
 
     /** @param array<string, mixed> $extra */

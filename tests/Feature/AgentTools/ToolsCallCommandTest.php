@@ -303,6 +303,13 @@ class ToolsCallCommandTest extends TestCase
             'a number rather than a string' => [['client_version' => 9]],
             'an object' => [['client_version' => ['0.9.14']]],
             'an empty string' => [['client_version' => '']],
+            // ⛔ THE SHAPE THE ANCHOR WAS BLIND TO, and it strictly dominates the case
+            // above it: PCRE's `$` matches BEFORE a final newline, so `/^…+$/` ACCEPTED
+            // this while correctly rejecting a newline with content after it. Every test
+            // this class had used the second shape, so the guard had never been able to
+            // fail on the one it was weak against. Both are kept — the pair is what shows
+            // the anchor rather than the character class is doing the work.
+            'a TRAILING newline (the `$`-anchor hole)' => [['client_version' => "0.9.14\n"]],
             'a newline forging a second bridge:check line' => [['client_version' => "0.9.14\nboard_tools: ALL CLEAR"]],
             'longer than the column' => [['client_version' => '1.0.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']],
         ];
