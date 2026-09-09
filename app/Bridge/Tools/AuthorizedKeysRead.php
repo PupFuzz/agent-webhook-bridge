@@ -19,11 +19,20 @@ namespace App\Bridge\Tools;
  * bearing FAIL was unreachable on the default install and a genuinely unwired agent exited
  * 0 under `sudo bridge:check`.
  *
- * IT IS `FileContents`'S DISCRIMINATION, carried as a VALUE rather than raised as a type.
- * (NAMED, never `{@see}`-linked: pint rewrites a docblock FQCN into a real `use`, and this
- * value object must not import the reader that happens to produce it.) That primitive owns
- * the read — {@see SystemSshProbeEnvironment} calls it — and signals the unreadable state by
- * THROWING, which every other adopter wants and this seam cannot have:
+ * IT IS THE READ PRIMITIVE'S DISCRIMINATION, carried as a VALUE rather than raised as a type.
+ * (Those primitives are NAMED, never `{@see}`-linked: pint rewrites a docblock FQCN into a
+ * real `use`, and this value object must not import the reader that happens to produce it.)
+ * `FileContents` first drew the absent/unreadable line; since card#9037 the reader behind
+ * {@see SystemSshProbeEnvironment::readAuthorizedKeys()} is `UntrustedPathContents`, which
+ * draws the same line and splits the refusal in two — a path that RESOLVES TO NO FILE is
+ * measured and lands on {@see self::absent()}, because sshd takes no keys from it exactly as
+ * it takes none from a path with no file; only a refusal that established nothing lands on
+ * {@see self::unreadable()}. WHICH SHAPES land on which side is `UntrustedPathContents`'s own
+ * docblock to own and not a count restated here — it grew a member between this class's own
+ * two review rounds (a symlink CHAIN that loops or resolves to absence through more than one
+ * hop, card#9037 r2) without this file changing at all, which is what a class-level split is
+ * for. Either primitive signals its unreadable state by THROWING,
+ * which every other adopter wants and this seam cannot have:
  * {@see SshProbeEnvironment} is a fails-safe seam whose every leg answers with a value and
  * never throws, so a throw would be one exception each of five implementations had to
  * re-derive a contract for.
@@ -46,7 +55,14 @@ final class AuthorizedKeysRead
         return new self($text, true);
     }
 
-    /** No file at the path: an ANSWER of "no keys from here", never a missing answer. */
+    /**
+     * An ANSWER of "no keys from here", never a missing answer — no file at the path, and
+     * equally a path that RESOLVES to no file, whatever shape that takes (`UntrustedPathContents`
+     * owns the enumeration — NAMED, not `{@see}`-linked, because this value object must not
+     * import the reader that produces it). sshd takes no keys from any of them, so the
+     * absence they leave is ESTABLISHED and the authoritative FAIL drawn over it is earned
+     * (card#9037).
+     */
     public static function absent(): self
     {
         return new self(null, true);
