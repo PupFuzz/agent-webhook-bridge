@@ -110,6 +110,80 @@ class UntrustedTextTest extends TestCase
         );
     }
 
+    /**
+     * ⭐ THE ATTACK THAT NEEDS NO CONTROL BYTE. `U+202E` RIGHT-TO-LEFT OVERRIDE is not in
+     * C0, not in C1, not `\s`, and is not stripped by anything above — it simply reorders
+     * the REST OF THE LINE on every bidi-aware terminal. On `bridge:check`'s output, which
+     * root reads to decide whether an install is compromised, that is line spoofing on the
+     * one surface this class exists to make trustworthy (Trojan Source, CVE-2021-42574).
+     *
+     * The isolates are here for the same reason and are the harder half: `U+2066`-`U+2068`
+     * OPEN a directional run that `U+2069` closes, so an UNCLOSED one carries past the span
+     * and reorders text this install wrote and vouches for.
+     */
+    public function test_bidi_overrides_and_isolates_are_escaped_rather_than_reordering_the_line(): void
+    {
+        $rendered = UntrustedText::forOperator("bind failed\u{202E}gpj.exe\u{202D}\u{2066}\u{2067}\u{2068}\u{2069}");
+
+        $this->assertSame('bind failed\\x{202E}gpj.exe\\x{202D}\\x{2066}\\x{2067}\\x{2068}\\x{2069}', $rendered);
+        // Spelled out beside the composed assertion above, because a reader skims a long
+        // literal: not one of these codepoints survives into the operator's line.
+        foreach (["\u{202E}", "\u{202D}", "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}"] as $codepoint) {
+            $this->assertStringNotContainsString($codepoint, $rendered);
+        }
+    }
+
+    /**
+     * The ZERO-WIDTH half of the same class: nothing about these is a control sequence, and
+     * their whole effect is that an operator cannot see them. A zero-width space inside a
+     * token an operator reads for IDENTITY — an agent name, a path, a version — forges a
+     * word break, and a soft hyphen forges one only when the line wraps, so the rendered
+     * text differs between two terminals looking at the same bytes.
+     */
+    public function test_zero_width_and_soft_hyphen_format_characters_are_escaped(): void
+    {
+        $rendered = UntrustedText::forOperator("prod\u{200B}agent\u{200C}x\u{200D}y\u{00AD}z\u{FEFF}");
+
+        $this->assertSame('prod\\x{200B}agent\\x{200C}x\\x{200D}y\\xADz\\x{FEFF}', $rendered);
+        $this->assertSame('prodagentxyz', preg_replace('/\\\\x\{?[0-9A-F]+\}?/', '', $rendered));
+    }
+
+    /**
+     * ⛔ THE WIDTH IS PART OF THE ESCAPE, not formatting. `sprintf('\x%02X', …)` does not
+     * TRUNCATE a value past `0xFF` — it widens the field — so `U+202E` came out as the bare
+     * `\x202E`, which reads as `\x20` (a space) followed by the literal text `2E`. An escape
+     * that renders a spoofing codepoint as a space and two digits is a wrong-but-specific
+     * diagnostic on exactly the codepoint an operator is trying to identify (canon #10).
+     */
+    public function test_a_codepoint_past_one_byte_renders_in_the_unambiguous_braced_form(): void
+    {
+        $rendered = UntrustedText::forOperator("\u{202E}");
+
+        $this->assertSame('\\x{202E}', $rendered);
+        $this->assertNotSame('\\x202E', $rendered);
+        // The boundary in both directions: at or below U+00FF the existing two-digit form is
+        // unchanged, so no C0/C1/DEL rendering moved when the class widened.
+        $this->assertSame('\\xAD', UntrustedText::forOperator("\u{00AD}"));
+        $this->assertSame('\\x9B', UntrustedText::forOperator("\u{009B}"));
+    }
+
+    /**
+     * THE CONTROL FOR THE THREE TESTS ABOVE. `\p{Cf}` is a narrow Unicode category, and a
+     * class that had widened to "anything non-ASCII" — or to `\p{C}`, which swallows
+     * unassigned and private-use codepoints — would satisfy every escape assertion above
+     * while mangling a legitimate non-English error line into unreadable hex. Ordinary
+     * letters, marks, symbols and CJK must come back character for character.
+     */
+    public function test_ordinary_non_ascii_text_is_not_touched_by_the_widened_class(): void
+    {
+        foreach (['é', 'ü', '日本語', 'Ω', '→', '—', 'café ☕', 'ß'] as $text) {
+            $this->assertSame($text, UntrustedText::forOperator($text));
+        }
+        // NBSP is the one that is NOT identity, and deliberately so: it IS `\s` under PCRE's
+        // UCP, so step 2 has already collapsed it to a plain space before the escape runs.
+        $this->assertSame('a b', UntrustedText::forOperator("a\u{00A0}b"));
+    }
+
     public function test_render_into_replaces_every_occurrence_of_a_declared_span(): void
     {
         $raw = "\x1b[2Jwiped";

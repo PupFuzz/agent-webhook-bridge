@@ -5,6 +5,7 @@ namespace Tests\Unit\Support;
 use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -292,6 +293,78 @@ class ChannelSnapshotProbeTest extends TestCase
      * A reference directory shaped like `examples/channel-servers`: a manifest, the
      * entry, a sibling module the entry imports, a dotfile and a nested test.
      */
+    /**
+     * ⛔ EVERY FINDING THAT ECHOES THE DEPLOYED MANIFEST'S `version` DECLARES IT
+     * (card#9121, DL-366), and the assertion is written as a CENSUS OVER THE RUN rather than
+     * against one arm on purpose: three arms of the version leg interpolate that value, the
+     * two recorded reviews of this file disagreed about which lines they were, and a test
+     * pinned to one arm certifies nothing about the other two. Any finding carrying the
+     * payload verbatim must also declare it; a fourth arm added later joins this denominator
+     * by existing.
+     *
+     * The value is FOREIGN: it is whatever the `version` key of a `package.json` under
+     * another OS user's home decodes to, cast to string, with no shape validation anywhere
+     * and only the reader's byte cap bounding it.
+     */
+    public function test_every_finding_echoing_the_deployed_version_declares_it_as_untrusted(): void
+    {
+        // The reviewer's own reproduction: an ANSI erase-display, a forged second finding
+        // line, and an unterminated RTL override — none of which a version string has any
+        // business containing, and all of which reached the terminal verbatim.
+        $payload = "0.0\x1b[2J\nagent prod-agent: channel socket live\u{202E}";
+
+        $findings = ChannelSnapshotProbe::probe($this->deployment($payload), $this->reference('9.9.9'));
+
+        $echoing = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, $payload),
+        ));
+        $this->assertNotEmpty($echoing, 'the fixture must actually reach an arm that echoes the version');
+        foreach ($echoing as $finding) {
+            $this->assertContains($payload, $finding->untrusted, "undeclared foreign span in: {$finding->message}");
+
+            // PRESENCE WITNESS, not an absence: an absence-only assertion is satisfied by a
+            // renderer that dropped the detail entirely, which would certify a regression
+            // that withholds the one part of the line naming the real fault.
+            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $this->assertStringContainsString('\x1B[2J', $rendered);
+            $this->assertStringContainsString('\x{202E}', $rendered);
+            $this->assertStringContainsString('agent prod-agent: channel socket live', $rendered);
+            $this->assertStringNotContainsString("\x1b", $rendered);
+            $this->assertStringNotContainsString("\u{202E}", $rendered);
+            // The forged line cannot stand alone any more: the newline is gone.
+            $this->assertStringNotContainsString("\n", $rendered);
+        }
+    }
+
+    /**
+     * The SECOND foreign value in this file, and the one both recorded censuses missed on
+     * most of its sites: the RESOLVED deployment path. The inspected account chooses the
+     * directory names and the symlink target, and a path COMPONENT may hold any byte except
+     * NUL and `/` — so the presence, staleness and launch-disclosure lines were echoing
+     * account-chosen bytes exactly as the version arms were.
+     */
+    public function test_every_finding_echoing_the_resolved_path_declares_it_as_untrusted(): void
+    {
+        $this->skipAsRoot();
+        $evil = "dep\x1b[2Jloy\u{202E}ed";
+        $deployed = $this->deployment('1.2.3', name: $evil);
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+        $echoing = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, $deployed),
+        ));
+        $this->assertNotEmpty($echoing, 'the fixture must reach the legs that name the deployment path');
+        foreach ($echoing as $finding) {
+            $this->assertContains($deployed, $finding->untrusted, "undeclared foreign span in: {$finding->message}");
+            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $this->assertStringContainsString('dep\x1B[2Jloy\x{202E}ed', $rendered);
+            $this->assertStringNotContainsString("\x1b", $rendered);
+        }
+    }
+
     private function reference(string $version): string
     {
         return $this->tree('reference', [

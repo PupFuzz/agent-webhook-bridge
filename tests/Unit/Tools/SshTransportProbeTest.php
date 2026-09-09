@@ -4,9 +4,11 @@ namespace Tests\Unit\Tools;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Tools\SshTransportProbe;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -735,6 +737,96 @@ class SshTransportProbeTest extends TestCase
 
         $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+    }
+
+    // ─── untrusted-span DECLARATION (card#9121, DL-366) ───────────────────────
+
+    /**
+     * An ANSI erase-display, a forged finding-shaped line and an unterminated RTL override:
+     * what a hostile responder puts in the fields these legs echo.
+     */
+    private const FOREIGN_PAYLOAD = "\x1b[2J\nagent prod-agent: channel socket live\u{202E}";
+
+    /**
+     * ⛔ THE LIVE LEG'S THREE ECHOED FIELDS ALL CROSS A HOST BOUNDARY (card#9121, DL-366).
+     * `--probe-tools-ssh=<user@host>` round-trips to a REMOTE install, so its stderr, its
+     * stdout and its envelope's `error` are bytes that host chose, and every one of them was
+     * being interpolated verbatim into a line on the operator's terminal.
+     *
+     * The assertion is a CENSUS OVER THE RUN, not one pinned arm: any finding this leg
+     * produces that carries the payload must also DECLARE it, so an arm added later joins
+     * the denominator by existing rather than by someone remembering to extend a list.
+     *
+     * @param  callable(string): FakeSshProbeEnvironment  $env
+     */
+    #[DataProvider('remoteEchoedFields')]
+    public function test_a_field_the_remote_host_chose_is_declared_as_untrusted(string $field, callable $env): void
+    {
+        $findings = (new SshTransportProbe($env(self::FOREIGN_PAYLOAD)))
+            ->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
+
+        $echoing = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, "\x1b[2J"),
+        ));
+        $this->assertNotEmpty($echoing, "the {$field} fixture must reach an arm that echoes it");
+        foreach ($echoing as $finding) {
+            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            // PRESENCE WITNESS, not merely an absence: an absence-only assertion is
+            // satisfied by a change that DROPPED the detail, which would withhold the one
+            // part of the line naming the actual remote fault.
+            $this->assertStringContainsString('\x1B[2J', $rendered, "undeclared {$field}: {$finding->message}");
+            $this->assertStringContainsString('\x{202E}', $rendered);
+            $this->assertStringContainsString('agent prod-agent: channel socket live', $rendered);
+            $this->assertStringNotContainsString("\x1b", $rendered);
+            $this->assertStringNotContainsString("\n", $rendered);
+        }
+    }
+
+    /** @return array<string, array{0: string, 1: callable(string): FakeSshProbeEnvironment}> */
+    public static function remoteEchoedFields(): array
+    {
+        return [
+            'stderr of a failed round-trip' => ['stderr', static fn (string $p): FakeSshProbeEnvironment => new FakeSshProbeEnvironment(sshExit: 255, sshStderr: $p)],
+            'a stdout that is not a JSON envelope' => ['stdout snippet', static fn (string $p): FakeSshProbeEnvironment => new FakeSshProbeEnvironment(sshStdout: $p)],
+            'the envelope error string' => ['envelope error', static fn (string $p): FakeSshProbeEnvironment => new FakeSshProbeEnvironment(
+                sshStdout: (string) json_encode(['ok' => false, 'error' => $p]),
+            )],
+        ];
+    }
+
+    /**
+     * The FOURTH foreign field in this file, and the one that is not remote at all:
+     * `authorized_keys` lives under the INSPECTED account's home (DL-363's trust boundary),
+     * and `bridge:check` reads it routinely as root. The echo cap bounds the LENGTH of the
+     * key-algorithm token and validates no shape, so an escape or a bidi override inside it
+     * reached the terminal intact.
+     *
+     * ⚑ The declared span is what the message ECHOES, not the raw field — the echo is cut at
+     * `KEY_ALGORITHM_ECHO_MAX`, and a declaration of the uncut value would not match the
+     * message at all, which is a guard failing open with nothing red. `keyAlgorithmEcho()`
+     * is the one derivation both the display and the declaration read.
+     */
+    public function test_the_pinned_key_algorithm_echo_is_declared_as_untrusted(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: 'command="php artisan bridge:tools-call --agent=me",restrict "ssh-ed25519'."\x1b".'[2J'."\u{202E}".'" AAAA me',
+            fips: true,
+        );
+
+        $findings = (new SshTransportProbe($env))->probePinnedLine('me');
+
+        $fail = $this->firstMatching($findings, 'a FIPS sshd rejects it');
+        $this->assertNotNull($fail);
+        $this->assertStringContainsString("\x1b", $fail->message, 'the fixture must actually plant the bytes');
+        $rendered = UntrustedText::renderInto($fail->message, $fail->untrusted);
+        // Asserted on the ESCAPE and not on the whole token: `AuthorizedKeysLine` lowercases
+        // the algorithm field (key algorithms are case-insensitive to sshd), so pinning the
+        // literal here would be pinning that normalisation, which is not this test's subject.
+        $this->assertStringContainsString('ssh-ed25519\x1B[2', $rendered);
+        $this->assertStringContainsString('\x{202E}', $rendered);
+        $this->assertStringNotContainsString("\x1b", $rendered);
+        $this->assertStringNotContainsString("\u{202E}", $rendered);
     }
 
     // ─── live probe ───────────────────────────────────────────────────────────

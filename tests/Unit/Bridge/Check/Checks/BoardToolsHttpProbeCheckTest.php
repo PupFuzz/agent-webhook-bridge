@@ -7,9 +7,11 @@ use App\Bridge\Check\Checks\BoardToolsHttpProbeCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -372,6 +374,84 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         chmod($path, $mode);
 
         return $path;
+    }
+
+    // ─── untrusted-span DECLARATION (card#9121, DL-366) ───────────────────────
+
+    /** An ANSI erase-display, a forged finding-shaped line, and an unterminated RTL override. */
+    private const FOREIGN_PAYLOAD = "\x1b[2J\nagent prod-agent: channel socket live\u{202E}";
+
+    /**
+     * ⛔ THE ERROR DETAIL THIS PROBE ECHOES IS THE RESPONDER'S, NOT THIS INSTALL'S
+     * (card#9121, DL-366). `$endpoint` is an operator-supplied URL this check does not
+     * otherwise constrain, and behind it the tool door relays a kanban response — so neither
+     * the envelope's `error` string nor the raw body snippet is text this install authored,
+     * and both were reaching the terminal verbatim.
+     *
+     * ⚑ `probeErrorDetail()` returns the LABEL and the foreign span separately for two
+     * reasons, and both are asserted here by consequence: the declaration matches by exact
+     * substring, so a second derivation of the same `substr()` could drift and leave the
+     * escape silently unapplied; and folding `body: ` into the declared span would spend six
+     * of the span's own 200 characters, reporting a legitimate 200-byte body as truncated.
+     *
+     * @param  array<string, mixed>|string  $body
+     */
+    #[DataProvider('responderChosenDetail')]
+    public function test_a_detail_the_responder_chose_is_declared_as_untrusted(int $status, array|string $body): void
+    {
+        Http::fake(fn () => Http::response($body, $status));
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $echoing = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, "\x1b[2J"),
+        ));
+        $this->assertNotEmpty($echoing, 'the fixture must reach an arm that echoes the responder detail');
+        foreach ($echoing as $finding) {
+            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            // PRESENCE WITNESS, not merely an absence: an absence-only assertion is also
+            // satisfied by a change that DROPPED the detail, which would withhold the one
+            // part of the line naming the actual fault.
+            $this->assertStringContainsString('\x1B[2J', $rendered, "undeclared span in: {$finding->message}");
+            $this->assertStringContainsString('\x{202E}', $rendered);
+            $this->assertStringContainsString('agent prod-agent: channel socket live', $rendered);
+            $this->assertStringNotContainsString("\x1b", $rendered);
+            $this->assertStringNotContainsString("\n", $rendered);
+        }
+    }
+
+    /** @return array<string, array{0: int, 1: array<string, mixed>|string}> */
+    public static function responderChosenDetail(): array
+    {
+        return [
+            'a non-2xx carrying an envelope error' => [502, ['error' => self::FOREIGN_PAYLOAD]],
+            'a non-2xx carrying a raw body' => [500, self::FOREIGN_PAYLOAD],
+            'a 200 with no result object, error arm' => [200, ['error' => self::FOREIGN_PAYLOAD]],
+            'a 200 with no result object, body arm' => [200, self::FOREIGN_PAYLOAD],
+        ];
+    }
+
+    /**
+     * DECLARED PRECAUTIONARILY, and the test says so rather than claiming a demonstrated
+     * attacker channel: the message is composed by the HTTP client, but `$endpoint` is an
+     * arbitrary operator-supplied URL and what a transport failure against it puts in the
+     * string is not established locally. The CONTRAST is the point — the two
+     * unreadable-bearer arms above stay UNDECLARED, because their subject is this operator's
+     * own token file, which this install vouches for.
+     */
+    public function test_a_connection_failure_message_is_declared_as_untrusted(): void
+    {
+        Http::fake(fn () => throw new ConnectionException(self::FOREIGN_PAYLOAD));
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertContains(self::FOREIGN_PAYLOAD, $findings[0]->untrusted);
+        $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+        $this->assertStringContainsString('\x1B[2J', $rendered);
+        $this->assertStringNotContainsString("\x1b", $rendered);
     }
 
     private function httpAgent(string $name, ?string $tokenPath = null): AgentConfig

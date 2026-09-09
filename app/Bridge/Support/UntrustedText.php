@@ -66,11 +66,23 @@ final class UntrustedText
      *     than on bytes that could split a multi-byte sequence at the cap;
      *  2. every WHITESPACE RUN — newlines included — collapses to one space, so a payload
      *     cannot forge a second finding-shaped line, and so the cap counts content;
-     *  3. what remains of C0 (`\x00`-`\x1F` less the whitespace already gone), DEL, and the
-     *     C1 range (U+0080 to U+009F) is escaped to a visible `\xNN`. ⭐ C1 MATTERS AS MUCH
-     *     AS `\x1B`: on a terminal decoding UTF-8, U+009B IS the Control Sequence Introducer
-     *     — dropping the ESC and keeping the single-codepoint C1 form is the obvious way
-     *     past a guard that only looks for `\x1B[`;
+     *  3. what remains of C0 (`\x00`-`\x1F` less the whitespace already gone), DEL, the
+     *     C1 range (U+0080 to U+009F) and EVERY Unicode FORMAT character (`\p{Cf}`) is
+     *     escaped to a visible form: `\xNN` at or below U+00FF, `\x{NNNN}` above it, so a
+     *     codepoint past one byte can never be read as a shorter one followed by digits.
+     *     ⭐ C1 MATTERS AS MUCH AS `\x1B`: on a terminal decoding UTF-8, U+009B IS the
+     *     Control Sequence Introducer — dropping the ESC and keeping the single-codepoint
+     *     C1 form is the obvious way past a guard that only looks for `\x1B[`.
+     *     ⭐ `\p{Cf}` MATTERS FOR THE SAME REASON ONE LEVEL UP, and it is what the first
+     *     cut of this class missed: the BIDI overrides and isolates (U+202A-U+202E,
+     *     U+2066-U+2069) reorder the REST OF THE LINE on every bidi-aware terminal without
+     *     emitting a control byte at all — Trojan-Source line spoofing, aimed here at
+     *     root's own security-diagnostic output — and the zero-width and soft-hyphen
+     *     members (U+200B, U+200C, U+200D, U+00AD, U+FEFF) let a payload hide a word break
+     *     or forge one inside a token an operator is reading for identity. MEASURED on this
+     *     build, not assumed: none of them is matched by step 2's `\s+` (PCRE's `/u` sets
+     *     UCP, and Cf is not Unicode whitespace), so the collapse never reached them;
+     *     U+00A0 IS `\s` under UCP and is therefore already a space by the time this runs;
      *  4. the cap, with a marker naming the FULL length, so a truncated line says it was
      *     truncated and by how much rather than silently ending.
      *
@@ -88,8 +100,20 @@ final class UntrustedText
         $collapsed = preg_replace('/\s+/u', ' ', mb_scrub($raw, 'UTF-8'));
         $escaped = is_string($collapsed)
             ? preg_replace_callback(
-                '/[\x00-\x1F\x7F]|[\x{0080}-\x{009F}]/u',
-                static fn (array $m): string => sprintf('\\x%02X', (int) mb_ord($m[0], 'UTF-8')),
+                '/[\x00-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u',
+                static function (array $m): string {
+                    $codepoint = (int) mb_ord($m[0], 'UTF-8');
+
+                    // TWO WIDTHS, and the wider one is not cosmetic. `%02X` does not
+                    // truncate a value past 0xFF — it WIDENS the field — so U+202E came
+                    // out as the bare `\x202E`, which reads as `\x20` followed by the
+                    // literal text `2E`: an escape that renders a spoofing codepoint as a
+                    // space and two digits is a wrong-but-specific diagnostic (canon #10)
+                    // on exactly the byte an operator is trying to identify.
+                    return $codepoint <= 0xFF
+                        ? sprintf('\\x%02X', $codepoint)
+                        : sprintf('\\x{%04X}', $codepoint);
+                },
                 $collapsed,
             )
             : null;

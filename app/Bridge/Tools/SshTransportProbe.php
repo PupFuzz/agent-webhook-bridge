@@ -246,10 +246,13 @@ final class SshTransportProbe
         }
 
         if ($this->env->fipsEnabled()) {
+            // An empty declaration is skipped by the renderer, so the `unknown` arm — where
+            // nothing foreign is echoed at all — needs no branch here.
+            $algorithmEcho = $this->keyAlgorithmEcho($line->keyAlgorithm) ?? '';
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is ".$this->keyAlgorithmForMessage($line->keyAlgorithm).' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
+                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is ".$this->keyAlgorithmForMessage($line->keyAlgorithm).' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)')->carryingUntrusted($algorithmEcho);
             } else {
-                $findings[] = Finding::ok("the pinned key for agent {$agentName} (".$this->keyAlgorithmForMessage($line->keyAlgorithm).') is FIPS-approved');
+                $findings[] = Finding::ok("the pinned key for agent {$agentName} (".$this->keyAlgorithmForMessage($line->keyAlgorithm).') is FIPS-approved')->carryingUntrusted($algorithmEcho);
             }
         }
 
@@ -275,17 +278,28 @@ final class SshTransportProbe
     {
         $r = $this->env->sshRoundTrip($target, (string) json_encode(['tool' => 'board_my_cards']));
         if ($r['exit'] !== 0) {
-            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".trim($r['stderr']).')')];
+            // DECLARED, NOT ESCAPED HERE (card#9121, DL-366). Everything this leg echoes
+            // below crossed the wire from a REMOTE host: its stderr, its stdout, and the
+            // `error` string inside its envelope are bytes THAT host chose, and each was
+            // being interpolated verbatim into a line on the operator's terminal. The rule
+            // that makes them safe there has one owner (App\Bridge\Support\UntrustedText) and the
+            // renderer applies it; these sites say only WHERE the foreign span is, which is
+            // the one fact no renderer can recover from a flat message string.
+            $stderr = trim($r['stderr']);
+
+            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".$stderr.')')->carryingUntrusted($stderr)];
         }
 
         $decoded = json_decode($r['stdout'], true);
         if (! is_array($decoded) || ! array_key_exists('ok', $decoded)) {
-            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".substr(trim($r['stdout']), 0, 200))];
+            $snippet = substr(trim($r['stdout']), 0, 200);
+
+            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".$snippet)->carryingUntrusted($snippet)];
         }
         if ($decoded['ok'] !== true) {
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
-            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")];
+            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")->carryingUntrusted($error)];
         }
 
         $result = $decoded['result'] ?? null;
@@ -556,12 +570,35 @@ final class SshTransportProbe
      */
     private function keyAlgorithmForMessage(?string $algorithm): string
     {
-        if ($algorithm === null) {
+        $cut = $this->keyAlgorithmEcho($algorithm);
+        if ($cut === null) {
             return '`unknown`';
         }
 
-        $cut = mb_strcut($algorithm, 0, self::KEY_ALGORITHM_ECHO_MAX, 'UTF-8');
-
         return $cut === $algorithm ? '`'.$algorithm.'`' : '`'.$cut.'` (truncated)';
+    }
+
+    /**
+     * The exact span of the key algorithm that reaches the operator's line, or null when
+     * nothing foreign does — what {@see Finding::carryingUntrusted()} declares at the two
+     * FIPS legs (card#9121, DL-366).
+     *
+     * ⭐ ONE DERIVATION, CALLED BY THE DISPLAY METHOD, never a second cut beside it. The
+     * declaration is matched by EXACT SUBSTRING at render time, so a sibling that re-derived
+     * the same `mb_strcut` could drift by one byte and the escape would then silently not
+     * apply — a guard that fails open with nothing red. This is the reader; the other method
+     * formats what it returns.
+     *
+     * The bytes are foreign for the reason DL-363 established about this file:
+     * `authorized_keys` lives under the INSPECTED account's home, so that account chose
+     * them, and `bridge:check` reads it routinely as root. The echo cap bounds the LENGTH;
+     * it validates no shape, so an ESC or a bidi override in the algorithm token reached the
+     * terminal intact.
+     */
+    private function keyAlgorithmEcho(?string $algorithm): ?string
+    {
+        return $algorithm === null
+            ? null
+            : mb_strcut($algorithm, 0, self::KEY_ALGORITHM_ECHO_MAX, 'UTF-8');
     }
 }
