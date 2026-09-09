@@ -32,6 +32,18 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * to treat its `false` as absence. The open's own return value is the only answer that is
  * never a proxy.
  *
+ * ⛔ WHAT THIS CLASS DOES NOT ASK, and the question a root-read leg has to ask INSTEAD.
+ * Everything above reasons about WHICH UID THE ANSWER IS FOR. None of it reasons about WHO
+ * CONTROLS THE PATH — and where the reader is more privileged than the account owning the
+ * directory (root reading `~agent/.ssh/…`), that account decides what this read opens:
+ * `is_file()` stats the TARGET, so a symlink to any file on the box passes it, and
+ * `file_get_contents()` then reads whatever it names with no bound (`/proc/kcore` is
+ * `is_file()`-true). This class is correct for a file the reader's own privilege level put
+ * there — the bridge's own state, config and secret files, which is what every remaining call
+ * site here reads. A leg reading a path a LOWER-TRUST
+ * principal controls wants {@see UntrustedPathContents} instead — it takes the same
+ * absent/unreadable discrimination and adds the guards this one has no reason to (card#9037).
+ *
  * ⚠ THE SUPPRESSION BELOW IS LOAD-BEARING AND MUST NOT BE COPIED OUT OF HERE. It is safe only
  * because the throw on the next line re-raises the state as something a caller can switch on.
  * An `@` at a call site with no throw behind it converts the third state into the "absent"
@@ -64,11 +76,7 @@ final class FileContents
             // file, and asserting it is still there would be a claim about a moment this
             // process never measured (the file can be unlinked in between). The permissions
             // reading is what the operator needs and it holds either way.
-            throw new UnreadableFileException(
-                "{$subject} at {$path} could not be read by this process (a regular file was "
-                .'found at the path, so this is a permissions fault rather than an absence) — '
-                .'ownership and mode are relative to the asking user, so another OS user may read it fine'
-            );
+            throw UnreadableFileException::permissionsFault($subject, $path);
         }
 
         return $raw;

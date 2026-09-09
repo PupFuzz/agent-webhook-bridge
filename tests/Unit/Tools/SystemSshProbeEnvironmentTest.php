@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\Tools;
 
+use App\Bridge\Support\UntrustedPathContents;
 use App\Bridge\Tools\SystemSshProbeEnvironment;
 use Tests\TestCase;
 
@@ -100,6 +101,52 @@ class SystemSshProbeEnvironmentTest extends TestCase
         // reads the same shape with the mode restored and gets the text back.
         chmod($this->dir.'/.ssh', 0o700);
         $this->assertSame("# secret\n", (new SystemSshProbeEnvironment)->readAuthorizedKeys($path)->text);
+    }
+
+    // ─── the ROOT-SAFE read is the one ADOPTED here (card#9037) ───────────────
+    // What the guards themselves refuse is measured in UntrustedPathContentsTest. These
+    // two cases measure the only thing that suite cannot: that THIS leg reads through
+    // that primitive, and that a refusal lands on the `unreadable()` arm the probe
+    // already has rather than on `absent()` — which is the arm the authoritative FAIL is
+    // drawn over.
+
+    public function test_a_symlinked_authorized_keys_reads_as_not_consulted(): void
+    {
+        // `bridge:check` runs this leg as ROOT over a path the inspected ACCOUNT owns, so
+        // a symlink here is that account naming a file for root to open. The leg must say
+        // it did not look — never read the target's bytes as the account's keys, and never
+        // report the absence that an authoritative FAIL is spent on.
+        $path = $this->dir.'/.ssh/authorized_keys';
+        $target = $this->dir.'/elsewhere';
+        file_put_contents($target, "# not this account's file\n");
+        symlink($target, $path);
+
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($path);
+
+        $this->assertFalse($read->consulted, 'a symlinked path was CONSULTED — its target is not the account\'s file');
+        $this->assertNull($read->text);
+
+        // ⛔ THE CONTROL: the same bytes at a path that is a real file ARE read, so the
+        // leg is refusing the indirection and has not simply stopped reading.
+        $this->assertSame("# not this account's file\n", (new SystemSshProbeEnvironment)->readAuthorizedKeys($target)->text);
+        @unlink($target);
+    }
+
+    public function test_an_authorized_keys_past_the_read_bound_is_not_consulted(): void
+    {
+        // The size half of the same adoption. The old reader had no bound at all, and
+        // `is_file()` is true for `/proc/kcore`.
+        $path = $this->dir.'/.ssh/authorized_keys';
+        file_put_contents($path, str_repeat('k', UntrustedPathContents::MAX_BYTES + 1));
+
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($path);
+
+        $this->assertFalse($read->consulted);
+        $this->assertNull($read->text);
+
+        // The control, at the same path: an ordinary file is still consulted and read.
+        file_put_contents($path, "# a comment\n");
+        $this->assertSame("# a comment\n", (new SystemSshProbeEnvironment)->readAuthorizedKeys($path)->text);
     }
 
     // ─── file IDENTITY (card#8976 r2) ─────────────────────────────────────────

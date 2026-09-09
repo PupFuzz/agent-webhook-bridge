@@ -3,8 +3,8 @@
 namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\UnreadableFileException;
-use App\Bridge\Support\FileContents;
 use App\Bridge\Support\PathVisibility;
+use App\Bridge\Support\UntrustedPathContents;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 
@@ -123,11 +123,30 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
      * a third time here.
      *
      * ORDERED AS `ChannelToken::unreadableFault()` ORDERS IT, and the order is
-     * load-bearing: without traversal `is_file()` cannot answer at all, and
-     * {@see FileContents} reads its false as ABSENT — so the visibility question is asked
-     * first, by the primitive that owns it. `is_readable()` is gone on purpose:
-     * {@see FileContents} states why the open's own return is the only answer that is not a
-     * proxy (it answers for the real uid, and cannot see an ACL).
+     * load-bearing: without traversal `lstat()` cannot answer at all, and the reader reads
+     * its false as ABSENT — so the visibility question is asked first, by the primitive that
+     * owns it. `is_readable()` is gone on purpose: {@see UntrustedPathContents} states why
+     * the open's own return is the only answer that is not a proxy (it answers for the real
+     * uid, and cannot see an ACL).
+     *
+     * ⭐ THE READER IS {@see UntrustedPathContents}, NOT `FileContents`, and this is the one
+     * leg in the tree where that choice matters (card#9037). `bridge:check` runs this leg AS
+     * ROOT over paths inside an UNPRIVILEGED ACCOUNT'S `.ssh/` — so the account being
+     * inspected chooses what root opens. `FileContents` is `is_file()` + an unbounded
+     * `file_get_contents()`: `is_file()` stats a symlink's TARGET, so `.ssh/authorized_keys`
+     * pointing at any file on the box was read as though it were the account's own, and
+     * `/proc/kcore` is `is_file()`-true with no size bound in front of it. The sibling reader
+     * refuses a symlinked or non-regular final component and bounds the read from the open
+     * file's own `fstat`; what it does NOT close (a racing redirect of a PARENT directory) is
+     * named in its docblock, and is not closable from PHP on this runtime.
+     *
+     * ⚠ A REFUSAL COSTS A READ THAT USED TO SUCCEED, and the cost is accepted rather than
+     * unnoticed: an operator who SYMLINKS `authorized_keys` (sshd follows it, so the account
+     * really is wired) now gets `unreadable()` for that path — the probe names it as
+     * unconsulted and reports `unvalidated`. That is the fails-safe direction and moves no
+     * exit code: the leg says it did not look, which is TRUE, instead of trusting bytes it
+     * cannot attribute. It is `fileIdentity()` — not this method — that dedupes a symlinked
+     * SPELLING of one file, and that is unaffected.
      */
     public function readAuthorizedKeys(string $path): AuthorizedKeysRead
     {
@@ -135,7 +154,7 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
             return AuthorizedKeysRead::unreadable();
         }
         try {
-            $text = FileContents::read($path, 'authorized_keys');
+            $text = UntrustedPathContents::read($path, 'authorized_keys');
         } catch (UnreadableFileException) {
             return AuthorizedKeysRead::unreadable();
         }
