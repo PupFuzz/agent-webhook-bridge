@@ -238,7 +238,12 @@ final class ChannelSnapshotProbe
             // overwrite the entry file and every other local edit on its way past.
             $advice = match ($deployed['status']) {
                 'absent' => $resync,
-                'unreadable' => "re-run bridge:check as the agent's user, or grant it read access to the file",
+                // ⚠ Widened from the permission remedy alone (card#9121): the guarded reader
+                // this status now comes from also withholds on a path whose bytes cannot be
+                // attributed to the deployment, so a remedy naming permissions as the only
+                // cause would be a wrong-but-specific instruction on the shapes it does not
+                // cover. Both remedies are stated; neither is asserted as the cause.
+                'unreadable' => "re-run bridge:check as the agent's user or grant it read access to the file — and if that package.json is not a plain regular file, replace it with one",
                 default => 'repair the manifest — its `version` field is what the staleness compare reads',
             };
 

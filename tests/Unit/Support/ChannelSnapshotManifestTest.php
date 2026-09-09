@@ -3,6 +3,7 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\ChannelSnapshotManifest;
+use App\Bridge\Support\UntrustedPathContents;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -111,5 +112,108 @@ class ChannelSnapshotManifestTest extends TestCase
         $this->assertSame([1, 0, 0], ChannelSnapshotManifest::versionTuple('1.0.0+build5'));
         $this->assertSame([0], ChannelSnapshotManifest::versionTuple(''));
         $this->assertSame([0, 0], ChannelSnapshotManifest::versionTuple('v1.x'));
+    }
+
+    // ---- reading the manifest off a path this process does not control (card#9121) ----
+    //
+    // The DEPLOYED manifest sits under another OS user's home and `bridge:check` reads it
+    // as the operator, so the account being inspected chooses what this process opens. The
+    // four statuses are unchanged; what changed is which read produces them. The
+    // command-level suite pins the OPERATOR-FACING text of each status
+    // (`BridgeCommandsTest::test_check_omits_destructive_advice_when_package_json_is_unreadable`
+    // and its siblings — named, never `{@see}`-linked, since pint rewrites a docblock FQCN
+    // into a real `use`); these cases pin the READ itself.
+
+    public function test_a_regular_manifest_is_read(): void
+    {
+        $path = $this->tmpDir().'/package.json';
+        file_put_contents($path, '{"name":"snap","version":"1.2.3"}');
+
+        $this->assertSame(['status' => 'ok', 'version' => '1.2.3'], ChannelSnapshotManifest::readManifest($path));
+    }
+
+    /**
+     * A SYMLINKED manifest is not followed: the bytes it names cannot be attributed to the
+     * deployment, and before the guarded reader `is_file()` followed the link and answered
+     * about the TARGET — so any regular file on the box could be read as the deployment's
+     * version, unboundedly.
+     */
+    public function test_a_symlinked_manifest_is_not_read_and_reports_unreadable(): void
+    {
+        $dir = $this->tmpDir();
+        file_put_contents($dir.'/elsewhere.json', '{"version":"9.9.9"}');
+        symlink($dir.'/elsewhere.json', $dir.'/package.json');
+
+        $read = ChannelSnapshotManifest::readManifest($dir.'/package.json');
+
+        $this->assertSame('unreadable', $read['status']);
+        $this->assertSame('', $read['version']);
+    }
+
+    /** The read is bounded by the opened file's own `fstat`, never by trust in the path. */
+    public function test_a_manifest_past_the_readers_bound_reports_unreadable(): void
+    {
+        $path = $this->tmpDir().'/package.json';
+        file_put_contents($path, '{"version":"1.0.0","pad":"'.str_repeat('p', UntrustedPathContents::MAX_BYTES).'"}');
+
+        $this->assertSame('unreadable', ChannelSnapshotManifest::readManifest($path)['status']);
+    }
+
+    /**
+     * A path that RESOLVES TO NO FILE is the `absent` operator situation — the one that
+     * carries the destructive re-copy advice — and it is exactly where `is_file()` put a
+     * directory before the migration. Route the establishing refusal to `unreadable` and
+     * this reds.
+     */
+    public function test_a_directory_at_the_manifest_path_reports_absent(): void
+    {
+        $dir = $this->tmpDir();
+        mkdir($dir.'/package.json');
+
+        $this->assertSame(['status' => 'absent', 'version' => ''], ChannelSnapshotManifest::readManifest($dir.'/package.json'));
+    }
+
+    public function test_an_absent_manifest_reports_absent(): void
+    {
+        $this->assertSame(
+            ['status' => 'absent', 'version' => ''],
+            ChannelSnapshotManifest::readManifest($this->tmpDir().'/package.json'),
+        );
+    }
+
+    /**
+     * ⚠ THE REASON SENTENCE NAMES NO CAUSE IT CANNOT ESTABLISH. It said "is not readable by
+     * this user" until card#9121, which is one of several causes now reaching this status —
+     * a wrong-but-specific cause is worse than an honest generic one.
+     */
+    public function test_the_unreadable_reason_states_only_that_the_file_was_not_read(): void
+    {
+        $this->assertSame('exists but was NOT read by this process', ChannelSnapshotManifest::manifestReason('unreadable'));
+        $this->assertSame('is not present', ChannelSnapshotManifest::manifestReason('absent'));
+        $this->assertSame('does not parse as a JSON object', ChannelSnapshotManifest::manifestReason('malformed'));
+    }
+
+    private function tmpDir(): string
+    {
+        $dir = sys_get_temp_dir().'/snap-manifest-'.uniqid();
+        mkdir($dir, 0o700, true);
+        $this->dirs[] = $dir;
+
+        return $dir;
+    }
+
+    /** @var list<string> */
+    private array $dirs = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->dirs as $dir) {
+            foreach ((array) glob($dir.'/*') as $entry) {
+                is_dir((string) $entry) && ! is_link((string) $entry) ? @rmdir((string) $entry) : @unlink((string) $entry);
+            }
+            @rmdir($dir);
+        }
+        $this->dirs = [];
+        parent::tearDown();
     }
 }

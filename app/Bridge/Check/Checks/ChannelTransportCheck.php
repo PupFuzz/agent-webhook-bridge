@@ -5,10 +5,13 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
+use App\Bridge\Exceptions\PathResolvesToNoFileException;
+use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
+use App\Bridge\Support\UntrustedPathContents;
 
 /**
  * Whether this agent's live-wake channel can actually be reached — the socket legs
@@ -125,12 +128,7 @@ final class ChannelTransportCheck implements PerAgentCheck
             yield Finding::warn("agent {$name}: channel.socket parent dir {$dir} is not writable by this user (uid {$uid}) — live-wake will fail. Likely a uid mismatch after a host restore.");
         }
 
-        $marker = $socket.'.FAILED';
-        clearstatcache(true, $marker);
-        if (is_file($marker)) {
-            $detail = trim((string) @file_get_contents($marker));
-            yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
-        }
+        yield from $this->markerLeg($name, $socket.'.FAILED');
 
         // filetype() over a bare file_exists(): a path that is a regular file or a
         // symlink is a misconfig, not a channel, and connecting to it would report a
@@ -168,12 +166,7 @@ final class ChannelTransportCheck implements PerAgentCheck
 
         $xdg = getenv('XDG_RUNTIME_DIR');
         $xdgDir = is_string($xdg) && $xdg !== '' ? $xdg : '/tmp';
-        $httpMarker = $xdgDir.'/agent-webhook-bridge-channel-'.$name.'.http-'.$port.'.FAILED';
-        clearstatcache(true, $httpMarker);
-        if (is_file($httpMarker)) {
-            $detail = trim((string) @file_get_contents($httpMarker));
-            yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$httpMarker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
-        }
+        yield from $this->markerLeg($name, $xdgDir.'/agent-webhook-bridge-channel-'.$name.'.http-'.$port.'.FAILED');
 
         $result = $this->probe->probe("tcp://{$host}:{$port}");
         if ($result['connected']) {
@@ -181,5 +174,84 @@ final class ChannelTransportCheck implements PerAgentCheck
         } else {
             yield Finding::warn("agent {$name}: channel HTTP endpoint {$host}:{$port} not answering".($result['error'] !== '' ? " ({$result['error']})" : '').' — no live session, or the reverse tunnel is down. live-wake no-ops until it is up.');
         }
+    }
+
+    /**
+     * ONE bind-FAILURE marker leg, for BOTH transports (card#9121). The two were
+     * character-identical apart from the path they compose, so the read, the refusal
+     * routing and the sentence live here once rather than in two copies free to drift
+     * (canon #5); each transport still composes its OWN path, which is the only part that
+     * differs between them.
+     *
+     * ⭐ THE READER IS {@see UntrustedPathContents}, NOT `FileContents` OR A BARE
+     * `file_get_contents()`, AND THE MARKER IS THE WEAKEST PATH IN THIS FILE. `bridge:check`
+     * runs as the operator — routinely root — while the marker is WRITTEN by the agent
+     * account's connector, so the path lives in a directory this process does not control:
+     * the socket marker sits beside the socket in the agent's runtime dir, and the HTTP
+     * marker sits under `XDG_RUNTIME_DIR` or, when that is unset, under `/tmp`, which every
+     * local account can write. The shape this replaces was `is_file()` plus an unbounded
+     * `@file_get_contents()`: `is_file()` follows the link and answers about the TARGET, so
+     * the marker could be a symlink to ANY regular file root can read, and the read had no
+     * size bound. What the reader does NOT close is its own docblock's to state.
+     *
+     * ⛔ THE TWO REFUSALS DO NOT LAND ON ONE ARM, for the reason card#9037 states at the
+     * `authorized_keys` leg. A path that RESOLVES TO NO FILE is ESTABLISHING, it is a strict
+     * subset of `is_file() === false`, and `is_file()` false is exactly what used to yield
+     * NOTHING here — so it stays nothing: THE ESTABLISHING ARM mints no finding an operator
+     * did not already get. A refusal that established nothing still yields the warn, because
+     * the finding is a sentence about the marker EXISTING (see self::MARKER_TAIL) and a
+     * refusal is only ever raised after an `lstat` found something at the path — what it
+     * loses is the DETAIL, which is the one part this run cannot attribute to the connector.
+     *
+     * ⚠ THE WITHHOLDING ARM IS NOT VERDICT-NEUTRAL, AND THE NARROWER CLAIM ABOVE IS THE ONLY
+     * ONE THIS MIGRATION SUPPORTS. `lstat` answers about the final component; `is_file()`
+     * FOLLOWED the link. So a marker that is a symlink whose chain this process cannot
+     * resolve — an ancestor of the target denying traversal, or a chain past
+     * `UntrustedPathContents::MAX_SYMLINK_HOPS` with neither an absence nor a loop confirmed —
+     * `lstat`s fine, reaches `CHAIN_UNRESOLVABLE`, and raises a plain
+     * {@see UnreadableFileException}, which yields the warn below. `is_file()` was FALSE for
+     * that shape and yielded nothing. MEASURED, not reasoned: a symlink to a file under a
+     * `0000` directory gives `is_file() === false` and the unresolvable-chain refusal.
+     * ⛔ That new warn carries self::MARKER_TAIL, which asserts a session came up DEAF — a
+     * bind failure this run has NOT established, because it never read a marker. It is
+     * DISCLOSED here rather than routed away: sending `CHAIN_UNRESOLVABLE` to the silent arm
+     * would soften a withholding refusal into a measurement, and re-wording or suppressing an
+     * operator-facing finding changes how errors are reported, which is not this change's to
+     * make. card#9121 carries it.
+     *
+     * ⚠ IT BOUNDS THE READ; IT DOES NOT SANITIZE THE BYTES. On the success arm the marker's
+     * content is still interpolated verbatim into an operator-facing message that also
+     * reaches `--format=json`, exactly as before. Escaping, capping or dropping that detail
+     * changes how findings are reported and is not this change's to make; card#9121 carries
+     * the recommendation.
+     *
+     * @return iterable<Finding>
+     */
+    private function markerLeg(string $name, string $marker): iterable
+    {
+        clearstatcache(true, $marker);
+
+        try {
+            $detail = UntrustedPathContents::read($marker, "agent {$name}: channel bind-FAILURE marker");
+        } catch (PathResolvesToNoFileException) {
+            // MEASURED: nothing following this path reads any bytes from it. `is_file()` was
+            // false for every one of these shapes too, so this arm reports what it always
+            // reported — no marker.
+            return;
+        } catch (UnreadableFileException $e) {
+            // The refusal sentence is the READER's, not a second phrasing minted here: it
+            // names the path, what was refused, and that nothing this process meant to read
+            // was read.
+            yield Finding::warn($e->getMessage().self::MARKER_TAIL);
+
+            return;
+        }
+
+        if ($detail === null) {
+            return;
+        }
+
+        $detail = trim($detail);
+        yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
     }
 }
