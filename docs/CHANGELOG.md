@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Security
+
+- **`hono` 4.13.0 -> 4.13.7 in `examples/channel-servers/` (transitive, via `@modelcontextprotocol/sdk`); channel-server snapshot `0.9.13` -> `0.9.14`.** Clears three moderate advisories — GHSA-gqvv-2mrq-wpjv (`toSSG()` writes outside the output directory), GHSA-g6gw-c38x-mqfc (unbounded dot-notation nesting in `parseBody()`), GHSA-crvj-82cr-hjcx (query parser reads parameters after the URL fragment).
+  - ⚑ **NONE OF THE THREE WAS REACHABLE HERE, and the bump is preventive rather than a fix for observed exposure.** `hono` is a transitive dependency the SDK pulls for its HTTP transports; `agent-webhook-bridge-channel.mjs` connects over `StdioServerTransport` only. Measured with an ESM resolve hook over the real dependency graph: the `server/stdio.js` entry resolves **no** `hono` module, while `server/streamableHttp.js` resolves both `hono` and `@hono/node-server` — so the probe discriminates rather than reporting a uniform absence. No vulnerable API (`toSSG`, `parseBody`, the query parser) is called from this tree at all.
+  - **Why bump rather than dismiss:** non-reachability is a property of the transport this server happens to use, not of the dependency. A dismissal would expire silently the first time anything here imports an HTTP transport, and the fix is a lockfile resolution the SDK's own `^4.11.4` range already admits.
+  - ⛔ **The snapshot version bump is NOT cosmetic.** Consumers COPY `examples/channel-servers/` into their own deployment, so `package.json` `version` is the one field a downstream snapshot compares to detect drift (DL-038), and `package-lock.json` must state the same version (DL-268). A transitive bump changes what `npm ci` installs, so downstream copies are stale until re-copied.
+  - No manifest dependency range changed, no source file changed, and nothing the door accepts or rejects moves.
+
 ### Added
 
 - **card#9099 (DL-362)** — **`bridge:check` now WARNS when this install holds enabled periodic instances and has adopted no tick, and `bridge:jobs install-tick` offers the line and installs it on an explicit yes.** A job added to the registry on a tick-less install could enumerate healthy in `bridge:jobs` and **never fire**, with nothing anywhere saying so: `JobsPostureCheck::tickFindings()` returned before speaking whenever no tick was adopted, on the reasoning that *an install that never added a crontab line is not missing one* — true of an EMPTY registry, false the moment an enabled instance exists, and the early return never looked at the population. On a quiet install the after-response event gate never evaluates (its clock IS the traffic, DL-306), so the work simply does not happen and the absence is the only signal.
