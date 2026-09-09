@@ -101,6 +101,12 @@ final class TickPosture
     }
 
     /**
+     * ⛔ AND THE REMEDIATION NAMES A CHANNEL THAT HAS SOMETHING IN IT. It used to end *"check the
+     * crontab line and its account's mail"* — but the line this repo now offers ends `2>&1` into a
+     * log file ({@see TickAdoptionNotice::crontabLine()}), so cron mails NOTHING, ever. A
+     * remediation step that sends the reader to a guaranteed-empty inbox spends the one action a
+     * `stale` verdict buys.
+     *
      * ⭐ THE GRACE IS PRINTED WHERE THE VERDICT IS READ (rt#341, sola-pm). A reader who sees
      * `stale` should not have to open this file to learn what was assumed on their behalf —
      * an assumption nobody can see is one nobody re-examines, and the slack is a judgement
@@ -117,7 +123,8 @@ final class TickPosture
             .'s interval, which this verdict allows '.$grace.'s of jitter grace on top of (one extra interval + '
             .self::GRACE_S.'s), so a tick older than '.($expected + $grace)
             .'s reads as stale. Every periodic job on this install has stopped running on the clock; '
-            ."check the crontab line and its account's mail.";
+            .'read `php artisan bridge:jobs` for what the registry last managed to do, then the crontab line itself '
+            .'and whatever its redirect writes (the offered line truncates storage/logs/tick.log on every run).';
     }
 
     /**

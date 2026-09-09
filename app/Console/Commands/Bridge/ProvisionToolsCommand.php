@@ -223,9 +223,10 @@ class ProvisionToolsCommand extends BridgeCommand
      * already decided; a periodic ingress this install has not adopted is not a provisioning
      * fault.
      *
-     * ⚠ THE IMPURITY IS HERE, NOT IN THE NOTICE. The posture comes from the cache and the config
-     * ({@see TickRecord::posture()}), the base path and `PHP_BINARY` from this process — so the
-     * renderer stays a pure function of them and every arm is drivable from a test.
+     * ⚠ THE IMPURITY IS HERE, NOT IN THE NOTICE. The posture and the reason a declaration cannot
+     * be read come from the cache and the config ({@see TickRecord::posture()},
+     * {@see TickRecord::declarationProblem()}), the base path and `PHP_BINARY` from this process —
+     * so the renderer stays a pure function of them and every arm is drivable from a test.
      */
     private function printTickNotice(): void
     {
@@ -233,6 +234,7 @@ class ProvisionToolsCommand extends BridgeCommand
             posture: TickRecord::posture(),
             basePath: base_path(),
             phpBinary: PHP_BINARY,
+            declarationProblem: TickRecord::declarationProblem(),
         ))->lines();
 
         if ($lines === []) {

@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Scheduling\TickAdoptionNotice;
 use App\Bridge\Scheduling\TickRecord;
+use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
@@ -58,12 +60,30 @@ class ProvisionToolsTickNoticeTest extends TestCase
         $out = $this->runFor('impl');
 
         $this->assertStringContainsString(self::HEADING, $out);
-        $this->assertStringContainsString(
-            '0,10,20,30,40,50 * * * * cd '.base_path().' && '.PHP_BINARY.' '.base_path('artisan')
-                .' bridge:tick > '.base_path('storage/logs/tick.log').' 2>&1',
-            $out,
-        );
-        $this->assertStringContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY=600', $out);
+
+        // ⚑ THE SUBJECT HERE IS THE WIRING, NOT THE STRING. The exact line is the unit test's
+        // subject, driven off fixed inputs; what only this test can answer is whether the command
+        // hands the renderer THIS install's own base path and interpreter and prints back every
+        // line it returns. Baking PHP_BINARY and base_path() into an expected string instead
+        // reds on a runner whose php path or checkout carries a space — SafePathShape sends the
+        // renderer down its fallback arm while the expectation is built from the raw values, so
+        // the test would be reporting an environment rather than a defect.
+        $rendered = (new TickAdoptionNotice(
+            posture: TickRecord::posture(),
+            basePath: base_path(),
+            phpBinary: PHP_BINARY,
+            declarationProblem: TickRecord::declarationProblem(),
+        ))->lines();
+
+        $this->assertNotSame([], $rendered);
+        foreach ($rendered as $line) {
+            $this->assertStringContainsString($line, $out);
+        }
+
+        // And this install's own values reached it: the base path is in the offer on BOTH arms —
+        // in the crontab line when it renders, and in the refusal naming it when it cannot.
+        $this->assertStringContainsString(base_path(), $out);
+        $this->assertStringContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS(), $out);
     }
 
     public function test_the_offer_is_transport_agnostic(): void
@@ -100,12 +120,12 @@ class ProvisionToolsTickNoticeTest extends TestCase
         // the staleness and whether anything reads the alarm. A step that came back for every
         // agent onboarded afterwards is exactly the nag this design refuses.
         $this->writeHttpAgent('impl');
-        config(['bridge.jobs.tick_expected_every' => 600]);
+        config(['bridge.jobs.tick_expected_every' => TickAdoptionNotice::horizonS()]);
 
         $out = $this->runFor('impl');
 
         $this->assertStringNotContainsString(self::HEADING, $out);
-        $this->assertStringNotContainsString('0,10,20,30,40,50', $out);
+        $this->assertStringNotContainsString(TickAdoptionNotice::schedule(), $out);
         // The command still did its own job — the absence above is the notice, not a dead run.
         $this->assertStringContainsString('[impl]', $out);
     }
@@ -119,7 +139,23 @@ class ProvisionToolsTickNoticeTest extends TestCase
 
         $this->assertStringContainsString('already running on this bridge INSTALL', $out);
         $this->assertStringContainsString('do NOT add a crontab line', $out);
-        $this->assertStringNotContainsString('0,10,20,30,40,50', $out);
+        $this->assertStringNotContainsString(TickAdoptionNotice::schedule(), $out);
+    }
+
+    public function test_an_install_whose_declaration_cannot_be_read_is_told_that_by_the_command(): void
+    {
+        // ⛔ THE WIRING OF THE THIRD INPUT. The renderer is pure, so the reason a declaration
+        // cannot be read has to be HANDED to it — and a command that forgot to pass it would
+        // print the ordinary ask, telling an operator to add a key their `.env` already assigns.
+        // Only a test at the command can see that argument arrive.
+        $this->writeHttpAgent('impl');
+        config(['bridge.jobs.tick_expected_every' => 'ten']);
+
+        $out = $this->runFor('impl');
+
+        $this->assertStringContainsString('ALREADY SETS THE KEY AND THE VALUE CANNOT BE READ', $out);
+        $this->assertStringContainsString((string) TickRecord::declarationProblem(), $out);
+        $this->assertStringNotContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS(), $out);
     }
 
     // ─── it never moves the verdict ───────────────────────────────────────────
@@ -134,11 +170,15 @@ class ProvisionToolsTickNoticeTest extends TestCase
         $unadopted = Artisan::call('bridge:provision-tools', ['--agent' => 'impl']);
         $this->assertStringContainsString(self::HEADING, Artisan::output());
 
-        config(['bridge.jobs.tick_expected_every' => 600]);
+        config(['bridge.jobs.tick_expected_every' => TickAdoptionNotice::horizonS()]);
         $adopted = Artisan::call('bridge:provision-tools', ['--agent' => 'impl']);
         $this->assertStringNotContainsString(self::HEADING, Artisan::output());
 
-        $this->assertSame($unadopted, $adopted);
+        // ⛔ PINNED TO SUCCESS, not merely to each other: `$unadopted === $adopted` also holds
+        // when BOTH runs fail, which would report "the offer moved nothing" about a command that
+        // was failing on both sides of the comparison.
+        $this->assertSame(Command::SUCCESS, $unadopted);
+        $this->assertSame(Command::SUCCESS, $adopted);
     }
 
     // ─── helpers ──────────────────────────────────────────────────────────────

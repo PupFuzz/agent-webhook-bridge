@@ -25,12 +25,18 @@ class TickAdoptionNoticeTest extends TestCase
 
     private const PHP = '/usr/bin/php8.5';
 
-    private function notice(?int $ageS, ?int $declared, string $base = self::BASE, string $php = self::PHP): TickAdoptionNotice
-    {
+    private function notice(
+        ?int $ageS,
+        ?int $declared,
+        string $base = self::BASE,
+        string $php = self::PHP,
+        ?string $problem = null,
+    ): TickAdoptionNotice {
         return new TickAdoptionNotice(
             posture: TickPosture::resolve($ageS === null ? null : Carbon::now()->subSeconds($ageS), $declared),
             basePath: $base,
             phpBinary: $php,
+            declarationProblem: $problem,
         );
     }
 
@@ -39,15 +45,32 @@ class TickAdoptionNoticeTest extends TestCase
     public function test_an_install_that_has_not_adopted_a_tick_is_offered_the_line(): void
     {
         $lines = $this->notice(ageS: null, declared: null)->lines();
+        $text = implode("\n", $lines);
 
         $this->assertNotSame([], $lines);
-        $this->assertStringContainsString('this bridge INSTALL runs no periodic tick', implode("\n", $lines));
         $this->assertContains(
-            '0,10,20,30,40,50 * * * * cd /srv/bridge && /usr/bin/php8.5 /srv/bridge/artisan bridge:tick'
+            TickAdoptionNotice::schedule().' cd /srv/bridge && /usr/bin/php8.5 /srv/bridge/artisan bridge:tick'
                 .' > /srv/bridge/storage/logs/tick.log 2>&1',
             $lines,
             'the crontab line is offered flush-left, as one whole pasteable line',
         );
+
+        // ⛔ A NO-RECORD CLAIM, NEVER A NO-TICK ONE. This arm is TickState::Unmeasured, whose own
+        // contract is *nothing measured*, never *dead* — an install with a WORKING crontab line
+        // lands here after a `cache:clear`, a 30-day TTL lapse, a CACHE_PREFIX/APP_NAME change or
+        // a CACHE_STORE switch. "runs no periodic tick" would convert that into a positive claim
+        // about the box, and the operator who believes it adds the duplicate line this notice's
+        // whole per-install scope exists to prevent.
+        $this->assertStringContainsString('the bridge has NO RECORD of a periodic tick', $text);
+        $this->assertStringNotContainsString('runs no periodic tick', $text);
+        $this->assertStringNotContainsString('never recorded a tick', $text);
+
+        // ⛔ AND THE MITIGATION IS ASSERTED, because DL-361 Decision 3 accepts a known wrong-arm
+        // state and hands the whole remedy to ONE SENTENCE. An unasserted sentence is the only
+        // thing between that state and a duplicate crontab line: delete it and the suite stays
+        // green, which is what makes it worth a test rather than a comment.
+        $this->assertStringContainsString('a line already in a crontab here?', $text);
+        $this->assertStringContainsString('investigate that line rather than adding a second one', $text);
     }
 
     public function test_an_install_that_declared_a_horizon_is_offered_nothing_at_all(): void
@@ -57,9 +80,11 @@ class TickAdoptionNoticeTest extends TestCase
         // agent onboarded afterwards would be a worse defect than the silence it replaces.
         // ⚑ Both DECLARED shapes are asserted, because they resolve to different TickStates and
         // only the `adopted` flag is common to them: a fresh tick, and one never observed at all.
-        $this->assertSame([], $this->notice(ageS: 42, declared: 600)->lines(), 'declared and ticking');
-        $this->assertSame([], $this->notice(ageS: null, declared: 600)->lines(), 'declared, never observed');
-        $this->assertSame([], $this->notice(ageS: 99_999, declared: 600)->lines(), 'declared and stale');
+        $horizon = TickAdoptionNotice::horizonS();
+
+        $this->assertSame([], $this->notice(ageS: 42, declared: $horizon)->lines(), 'declared and ticking');
+        $this->assertSame([], $this->notice(ageS: null, declared: $horizon)->lines(), 'declared, never observed');
+        $this->assertSame([], $this->notice(ageS: 99_999, declared: $horizon)->lines(), 'declared and stale');
     }
 
     public function test_an_install_already_ticking_is_asked_to_declare_and_offered_no_second_line(): void
@@ -72,11 +97,15 @@ class TickAdoptionNoticeTest extends TestCase
 
         $this->assertStringContainsString('already running on this bridge INSTALL (last tick recorded 42s ago)', $text);
         $this->assertStringContainsString('do NOT add a crontab line', $text);
-        $this->assertStringNotContainsString('0,10,20,30,40,50', $text);
+        $this->assertStringNotContainsString(TickAdoptionNotice::schedule(), $text);
         $this->assertStringContainsString("BRIDGE_JOBS_TICK_EXPECTED_EVERY=<seconds between that line's runs>", $text);
-        // ⛔ It must not guess the horizon. Only the operator knows what their line runs at,
-        // and a declared 600 against a line that runs hourly arms the alarm against a fiction.
-        $this->assertStringNotContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY=600', $text);
+        // ⛔ It must not guess the horizon. Only the operator knows what their line runs at, and
+        // the offered cadence declared against a line that runs hourly arms the alarm against a
+        // fiction.
+        $this->assertStringNotContainsString(
+            'BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS(),
+            $text,
+        );
     }
 
     // ─── the scope statement ──────────────────────────────────────────────────
@@ -168,9 +197,60 @@ class TickAdoptionNoticeTest extends TestCase
         $this->assertNull($this->notice(ageS: null, declared: null, base: '/opt/my bridge')->crontabLine());
         $this->assertStringContainsString('NO LINE IS RENDERED', $text);
         $this->assertStringContainsString('/opt/my bridge', $text);
-        $this->assertStringNotContainsString('0,10,20,30,40,50 * * * * cd', $text);
+        $this->assertStringNotContainsString(TickAdoptionNotice::schedule().' cd', $text);
         // The rest of the offer still prints — the declaration and the assert are still owed.
-        $this->assertStringContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY=600', $text);
+        $this->assertStringContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS(), $text);
+    }
+
+    // ─── a declaration that cannot be read ────────────────────────────────────
+
+    /**
+     * ⛔ A MALFORMED DECLARATION IS A DIFFERENT STATE FROM AN ABSENT ONE, AND THIS SURFACE USED
+     * TO ERASE THE DIFFERENCE. `BRIDGE_JOBS_TICK_EXPECTED_EVERY=ten` (or `0`, or `-5`) is not
+     * numeric, so `TickRecord::declaredHorizon()` returns null and the posture reads UNADOPTED —
+     * indistinguishable here from an install that never declared anything. The operator is then
+     * told to add a key their `.env` already assigns, which makes a DUPLICATE assignment, and
+     * nothing anywhere in the offer says the value is unreadable. `bridge:check` reports it, but
+     * this surface's entire premise is the operator who never read the docs.
+     */
+    public function test_a_declaration_that_cannot_be_read_is_named_instead_of_the_ordinary_ask(): void
+    {
+        $problem = 'BRIDGE_JOBS_TICK_EXPECTED_EVERY is set but is not a number of seconds — the alarm is OFF.';
+
+        // Arm one: nothing recorded, so the LINE is still offered — but the declaration ask is
+        // replaced, because this install already has the key.
+        $unmeasured = implode("\n", $this->notice(ageS: null, declared: null, problem: $problem)->lines());
+
+        $this->assertStringContainsString($problem, $unmeasured);
+        $this->assertStringContainsString('ALREADY SETS THE KEY AND THE VALUE CANNOT BE READ', $unmeasured);
+        $this->assertStringContainsString('FIX THAT VALUE IN PLACE', $unmeasured);
+        $this->assertStringNotContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS(), $unmeasured);
+        // The line itself is still the answer to the missing tick, and still offered.
+        $this->assertStringContainsString(TickAdoptionNotice::schedule().' cd', $unmeasured);
+
+        // Arm two: a tick IS arriving, so the operator is being asked to declare an interval
+        // they believe they DID declare. The ask alone would be the notice contradicting their
+        // own `.env` with no explanation.
+        $ticking = implode("\n", $this->notice(ageS: 42, declared: null, problem: $problem)->lines());
+
+        $this->assertStringContainsString($problem, $ticking);
+        $this->assertStringContainsString('do NOT add a crontab line', $ticking);
+        $this->assertStringNotContainsString('Declare the interval YOUR existing line runs at', $ticking);
+        $this->assertStringNotContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY=<seconds', $ticking);
+    }
+
+    public function test_a_readable_declaration_takes_the_ordinary_ask(): void
+    {
+        // ⛔ THE OTHER HALF OF THE CONTROL — without it the arm above passes for a notice that
+        // printed the problem sentence unconditionally, and no install would ever be given the
+        // pasteable declaration again.
+        $unmeasured = implode("\n", $this->notice(ageS: null, declared: null)->lines());
+        $ticking = implode("\n", $this->notice(ageS: 42, declared: null)->lines());
+
+        $this->assertStringContainsString('BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS(), $unmeasured);
+        $this->assertStringNotContainsString('CANNOT BE READ', $unmeasured);
+        $this->assertStringContainsString('Declare the interval YOUR existing line runs at', $ticking);
+        $this->assertStringNotContainsString('CANNOT BE READ', $ticking);
     }
 
     // ─── the agent reader ─────────────────────────────────────────────────────
@@ -179,11 +259,20 @@ class TickAdoptionNoticeTest extends TestCase
     {
         // `laravel/pao` collapses runs of spaces for an AI-agent reader, and a leading space on
         // a crontab or dotenv line is one more thing between the reader and a clean paste.
+        $copyable = 0;
+
         foreach ($this->notice(ageS: null, declared: null)->lines() as $line) {
-            if (str_starts_with($line, '0,') || str_starts_with($line, 'BRIDGE_JOBS_TICK_EXPECTED_EVERY')) {
+            if (str_starts_with($line, TickAdoptionNotice::schedule())
+                || str_starts_with($line, 'BRIDGE_JOBS_TICK_EXPECTED_EVERY')) {
                 $this->assertSame($line, ltrim($line));
+                $copyable++;
             }
         }
+
+        // ⛔ THE PRESENCE WITNESS. The loop body is conditional, so without this the test passes
+        // vacuously the moment the prefixes stop matching — a renamed key or a moved cadence
+        // would silently leave it asserting nothing at all.
+        $this->assertSame(2, $copyable, 'the offer must carry exactly two flush-left pasteable lines');
 
         $this->assertStringStartsWith('PERIODIC TICK — ', $this->notice(ageS: null, declared: null)->lines()[0]);
     }

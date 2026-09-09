@@ -8,9 +8,10 @@ use App\Bridge\Tools\SafePathShape;
  * The INSTALL-TIME notice that offers this install its `bridge:tick` crontab line
  * (card#9058 / DL-361) — printed by `bridge:provision-tools`, once per run.
  *
- * WHAT IT CLOSES. The crontab line was reachable only by READING: `README.md`,
- * `CLAUDE_DEPLOYMENT.md`, `.env.example` and `docs/periodic-jobs.md` all carry it, and every
- * MECHANIZED surface was silent. Worse, the freshness alarm cannot bootstrap itself —
+ * WHAT IT CLOSES. The crontab line was reachable only by READING — it stood, by hand, in
+ * `CLAUDE_DEPLOYMENT.md`, `.env.example`, `bridge:tick`'s own class docblock, a released changelog
+ * entry and `docs/periodic-jobs.md`, and every MECHANIZED surface was silent. Worse, the freshness
+ * alarm cannot bootstrap itself —
  * {@see TickPosture::resolve()} arms it off `BRIDGE_JOBS_TICK_EXPECTED_EVERY`, so it only ever
  * fires for an operator who already read the document. An operator who never read it gets no
  * alarm, ever. That is `bridge:prune`'s DL-012 failure one level earlier: not *scheduled
@@ -36,12 +37,14 @@ use App\Bridge\Tools\SafePathShape;
  * command. An install that DECLARED a horizon gets nothing at all — from then on the whole
  * subject belongs to `bridge:check`'s `jobs.posture` leg, which reports the state, the staleness
  * and whether anything reads the alarm. An install that is already TICKING with no declaration
- * gets the declaration ask and NO crontab line, because it does not need a second one. A step
- * that reappeared for every agent after it was already satisfied would be a worse defect than
- * the silence it replaces.
+ * gets the declaration ask and NO crontab line, because it does not need a second one — and an
+ * install whose declaration is SET BUT UNREADABLE is told that, rather than the ask, because it
+ * has already answered in a way nothing can read. A step that reappeared for every agent after it
+ * was already satisfied would be a worse defect than the silence it replaces.
  *
- * ⚠ IT IS PURE. The posture, the base path and the interpreter arrive as constructor arguments;
- * nothing here reads the cache, the config or the filesystem, so a test drives every arm.
+ * ⚠ IT IS PURE. The posture, the base path, the interpreter and the reason this install's own
+ * declaration cannot be read all arrive as constructor arguments; nothing here reads the cache,
+ * the config or the filesystem, so a test drives every arm.
  *
  * ⚑ ITS READER MAY BE AN AGENT. `laravel/pao` deletes a fixed glyph set and collapses runs of
  * spaces for an AI-agent reader, so no line opens on a word the cleaned text would read as
@@ -67,11 +70,17 @@ final class TickAdoptionNotice
      * @param  string  $basePath  this install's absolute base path (`base_path()`)
      * @param  string  $phpBinary  the absolute interpreter THIS process is running under
      *                             (`PHP_BINARY`), or an empty string when it cannot be named
+     * @param  string|null  $declarationProblem  why this install's existing
+     *                                           `BRIDGE_JOBS_TICK_EXPECTED_EVERY` cannot be
+     *                                           read ({@see TickRecord::declarationProblem()}),
+     *                                           or null when there is nothing wrong with it —
+     *                                           including the ordinary case of none at all
      */
     public function __construct(
         private readonly TickPosture $posture,
         private readonly string $basePath,
         private readonly string $phpBinary,
+        private readonly ?string $declarationProblem = null,
     ) {}
 
     /**
@@ -164,21 +173,60 @@ final class TickAdoptionNotice
     private function notAdopted(): array
     {
         return [
-            'PERIODIC TICK — this bridge INSTALL runs no periodic tick, and ONE crontab line adopts it.',
+            // ⛔ A NO-RECORD CLAIM, NEVER A NO-TICK ONE. This arm is reached from
+            // TickState::Unmeasured, whose own contract is *nothing measured*, never *dead* — a
+            // cleared cache, a lapsed TTL, a CACHE_PREFIX/APP_NAME change or a CACHE_STORE switch
+            // all land an install with a WORKING crontab line here. "runs no periodic tick" would
+            // convert an unmeasured state into a positive claim about the box, and the operator
+            // who believes it adds the duplicate line this notice's whole scope exists to prevent.
+            'PERIODIC TICK — the bridge has NO RECORD of a periodic tick on this INSTALL, and ONE crontab line adopts it.',
             '  ⛔ ONE LINE PER INSTALL, NEVER PER AGENT. The registry, the last-tick record and the horizon are all '
                 .'install-wide — no row and no key is scoped to an agent — so onboarding another agent here needs no '
                 .'second line, and a second line would lose the shared pass lock and skip.',
             "  OPERATOR — in the seat-owner account's OWN crontab (`crontab -e`), never root's:",
             ...$this->offeredLine(),
-            '  Then declare the interval it runs at, in seconds, so a dead line goes LOUD instead of sitting silent:',
-            'BRIDGE_JOBS_TICK_EXPECTED_EVERY='.self::horizonS(),
+            ...$this->declarationAsk(
+                '  Then declare the interval it runs at, in seconds, so a dead line goes LOUD instead of sitting silent:',
+                'BRIDGE_JOBS_TICK_EXPECTED_EVERY='.self::horizonS(),
+            ),
             '  ⚠ a .env edit is INERT under `php artisan config:cache` until the cache is rebuilt.',
             '  Then wire something that ASKS — `php artisan bridge:jobs --assert-tick`, from a session-start hook or '
                 .'any periodic runbook step. A declared horizon nothing ever reads is a dead alarm that reads as coverage.',
-            '  ⚠ a line already in a crontab here? Then this install has never recorded a tick from it. `php artisan '
-                .'bridge:jobs` shows what the bridge can see — fix that line rather than adding a second one.',
+            '  ⚠ a line already in a crontab here? Then the bridge has no record of a tick from it — which is not the '
+                .'same as no tick having run: a cleared cache store loses the record too. `php artisan bridge:jobs` '
+                .'shows what the bridge can see — investigate that line rather than adding a second one.',
             "  Never required: the registry also runs off the inbound webhook's after-response gate, so an install "
                 .'that adds nothing keeps working exactly as it does today. '.self::OWNER_DOC,
+        ];
+    }
+
+    /**
+     * The ask that turns a crontab line into an ALARM — or, when this install already sets
+     * `BRIDGE_JOBS_TICK_EXPECTED_EVERY` to something unreadable, the reason it is not one.
+     *
+     * ⛔ WITHOUT THIS ARM THE NOTICE CONTRADICTS THE OPERATOR'S OWN `.env`. A malformed
+     * declaration (`=ten`, `=0`, `=-5`) is not numeric, so {@see TickRecord::declaredHorizon()}
+     * returns null and the posture reads UNADOPTED — indistinguishable here from an install that
+     * never declared anything. Printed as the ordinary ask, this surface then tells an operator
+     * to add a key their `.env` already assigns (a duplicate assignment) or to declare an
+     * interval they believe they declared, and NOTHING says the value cannot be read.
+     * {@see TickRecord::declarationProblem()} is the sentence for exactly that state, and the
+     * reader this whole surface is built for is the one who never opened `bridge:check`.
+     *
+     * @param  string  $ask  the ordinary sentence, when the declaration is readable
+     * @param  string  $value  the flush-left, pasteable assignment that follows it
+     * @return list<string>
+     */
+    private function declarationAsk(string $ask, string $value): array
+    {
+        if ($this->declarationProblem === null) {
+            return [$ask, $value];
+        }
+
+        return [
+            '  ⛔ THIS INSTALL ALREADY SETS THE KEY AND THE VALUE CANNOT BE READ — '.$this->declarationProblem,
+            '  FIX THAT VALUE IN PLACE rather than adding the key again (a second assignment is not a second '
+                .'answer): it is the number of SECONDS between that crontab line\'s runs.',
         ];
     }
 
@@ -225,6 +273,10 @@ final class TickAdoptionNotice
      * ⛔ IT OFFERS NO CRONTAB LINE. Handing one to an install already ticking is handing it a
      * duplicate, which is the exact defect this notice's per-install scope exists to avoid.
      *
+     * ⚑ AND THE ASK IS {@see self::declarationAsk()}'S, not this method's, because THIS is the arm
+     * where an unreadable declaration is worst: the operator is being asked to declare an interval
+     * they believe they already declared.
+     *
      * @return list<string>
      */
     private function alreadyTicking(): array
@@ -232,9 +284,11 @@ final class TickAdoptionNotice
         return [
             'PERIODIC TICK — already running on this bridge INSTALL (last tick recorded '.(int) $this->posture->ageS
                 .'s ago), so do NOT add a crontab line: the tick is ONE line per install, never one per agent.',
-            '  What is missing is the ALARM. Declare the interval YOUR existing line runs at, in seconds, so a dead '
-                .'line goes LOUD instead of sitting silent:',
-            'BRIDGE_JOBS_TICK_EXPECTED_EVERY=<seconds between that line\'s runs>',
+            ...$this->declarationAsk(
+                '  What is missing is the ALARM. Declare the interval YOUR existing line runs at, in seconds, so a '
+                    .'dead line goes LOUD instead of sitting silent:',
+                'BRIDGE_JOBS_TICK_EXPECTED_EVERY=<seconds between that line\'s runs>',
+            ),
             '  ⚠ a .env edit is INERT under `php artisan config:cache` until the cache is rebuilt. Then wire something '
                 .'that ASKS — `php artisan bridge:jobs --assert-tick`. '.self::OWNER_DOC,
         ];

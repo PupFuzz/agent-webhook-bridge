@@ -1032,9 +1032,11 @@ Reconcile is **operator maintenance** (like `bridge:prune`), *not* an agent poll
 HOME=/home/<user>
 PATH=/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin
 BRIDGE_DIR=/home/<user>/.config/agent-webhook-bridge-prod
-17 * * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile           >> "$HOME/reconcile.log" 2>&1
-23 4 * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile --fix --max-moves=20 >> "$HOME/reconcile.log" 2>&1
+17 * * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile           > "$HOME/reconcile.log" 2>&1
+23 4 * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile --fix --max-moves=20 > "$HOME/reconcile-fix.log" 2>&1
 ```
+
+⚑ **`>` and not `>>`, and the two passes write SEPARATE files.** DL-361 Decision 5's ruling is repo-wide, not a property of `bridge:tick`: an appended log with nothing to rotate it grows without bound — 25 runs a day here, forever — and **there is no logrotate stanza anywhere in this repository**. Each file therefore holds the LAST run of its own pass, which needs no rotation at all; they are split because under `>` a shared file would be owned by whichever pass ran most recently. Nothing is lost by it: the durable account is the log entry the next paragraph describes. ⚠ Want the history instead? Use `>>` and rotate it yourself (a `logrotate` stanza, or a dated filename), knowing that nothing in this repo will do it for you.
 
 **What an applied move records.** Each move logs `bridge_reconcile: moved` with the card id, the target stage, the PR outcome and the **`card_board` + `mapped_board` pair** (card#7212) — the board the moved card was actually on, beside the one config aimed at. That record is durable and independent of where you send the command's stdout; the `MOVED` console line above it is the operator's live view, not the record.
 
