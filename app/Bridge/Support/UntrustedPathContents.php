@@ -46,8 +46,11 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * card#5698's error for one shape — a chain blocked by an ancestor this process may not
  * traverse reads `is_file()`-false (a confident "not a file"), and this class WITHHOLDS it
  * instead, deliberately, because "cannot look" is not "confirmed absent" no matter what the
- * older predicate concluded. Pinned as a SET property, not per-shape, so a shape neither
- * side has been tested against yet cannot silently violate it.
+ * older predicate concluded. Checked as a SET property rather than per-shape — every
+ * ESTABLISHING verdict observed is asserted against `is_file()` on the SAME path, instead of
+ * a fixed list of shapes each asserted by name — over the battery of shapes
+ * `UntrustedPathContentsTest` builds; a shape that battery does not construct is not covered
+ * by this, or by anything else in this file.
  * The split is a property of the FILESYSTEM, not of any check: this class states which one
  * happened and never what a caller should do about it. A caller with no use for the
  * distinction catches the parent and treats both as "could not look" — understating what was
@@ -58,14 +61,27 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * worse than no guard; it is not claimed exhaustive because the fourth item below was found
  * by a reviewer AFTER the first three were published as "the residue, in full", and the
  * fifth will be found the same way:
- *  - **A RACING PARENT-DIRECTORY REDIRECT.** The guards below are taken on the FINAL
- *    component. Every directory above it is resolved by the kernel, twice — once for the
- *    `lstat`, once for the `open` — and the account owns those directories. It can swap
- *    `.ssh` for a symlink between the two calls, and it can do so between any two of the
- *    path components. The `dev`/`ino` comparison catches the ordinary form of that race
- *    (the two calls then land on different inodes and the read is refused), but it
- *    establishes only that ONE INODE ANSWERED BOTH CALLS — never that the inode is the
- *    file that lives under the home directory this leg meant to inspect.
+ *  - **A RACING PARENT-DIRECTORY REDIRECT.** The final READ (the `fopen`/`fstat`/`fread` in
+ *    {@see self::read()}) is taken on the FINAL component of the ORIGINAL path — that claim
+ *    is unchanged from r1. It is no longer the whole story: a symlink CHAIN needing
+ *    {@see self::symlinkChainVerdict()} makes up to `MAX_SYMLINK_HOPS + 1` `lstat`/`readlink`
+ *    measurements over up to that many OTHER paths, each with its own window between being
+ *    named and being measured, and the account can own any directory along that chain too.
+ *    ⚑ TRACED, not merely disclaimed: the walk never OPENS or READS a byte at any hop — it
+ *    only `lstat`s and `readlink`s, metadata calls a race can steer but cannot use to leak
+ *    file CONTENT through — and every hop's outcome (LOOP, ABSENT, real, or unresolvable)
+ *    steers the verdict toward WITHHOLDING or a correctly-earned ESTABLISHING, never toward
+ *    treating attacker-controlled bytes as this account's own; the one outcome a race
+ *    inside the walk can cause is an UNEARNED `fail` — the account defeating its OWN
+ *    interest, the safe direction, and the same failure mode the `dev`/`ino` check below
+ *    already accepts for the single-hop case. Below the walk, the ordinary single-`lstat`
+ *    final-component race is unchanged: every directory above the CONFIRMED regular file is
+ *    resolved by the kernel twice — once for the `lstat`, once for the `open` — and the
+ *    account owns those directories. It can swap the confirmed name for a symlink between
+ *    the two calls. The `dev`/`ino` comparison catches the ordinary form of that race (the
+ *    two calls then land on different inodes and the read is refused), but it establishes
+ *    only that ONE INODE ANSWERED BOTH CALLS — never that the inode is the file that lives
+ *    under the home directory this leg meant to inspect.
  *  - **A RACING FIFO WEDGES THE READER, INDEFINITELY** — worse in kind than the others,
  *    because the process does not get a wrong answer, it gets NO answer. `fopen($p, 'rb')`
  *    on a FIFO with no writer BLOCKS, and the block is INSIDE the open: `fstat` never runs,
@@ -281,13 +297,19 @@ final class UntrustedPathContents
     }
 
     /**
-     * The most hops this walk follows before treating an unresolved chain as a LOOP rather
-     * than merely long — the Linux kernel's own bound (`MAXSYMLINKS` / `SYMLOOP_MAX`, enforced
-     * in `namei.c` since 2.6.18). A chain that has not resolved in this many hops is a chain
-     * `open()` itself would refuse with `ELOOP` on this host, for ANY caller — so treating it
-     * as ESTABLISHING here is not a guess, it is the same fact the kernel would report.
+     * The number of symlinks the kernel FOLLOWS before refusing the next one with `ELOOP` —
+     * the Linux kernel's own bound (`MAXSYMLINKS` / `SYMLOOP_MAX`, enforced in `namei.c`
+     * since 2.6.18: `if (nd->total_link_count++ >= MAXSYMLINKS) return -ELOOP;`, checked
+     * BEFORE each follow, so a chain of exactly this many links is followed in full and a
+     * chain one link longer is refused before its terminal is ever examined). This is the
+     * count of LINKS, not of `lstat` calls the walk makes: reaching the chain's terminal
+     * after exactly this many follows still needs ONE MORE `lstat` — on the terminal itself
+     * — to learn what that resolution actually finds (a real file, an absence, or a
+     * permission fault), which is why the loop bound below is `<=`, not `<` (card#9037 r3;
+     * see {@see self::symlinkChainVerdict()}'s docblock for the boundary this closed).
+     * Public so a test can build the one chain length that crosses it, as `MAX_BYTES` is.
      */
-    private const MAX_SYMLINK_HOPS = 40;
+    public const MAX_SYMLINK_HOPS = 40;
 
     private const CHAIN_LOOP = 'loop';
 
@@ -330,25 +352,33 @@ final class UntrustedPathContents
      * carried it, which is the only join a relative symlink target is ever specified against.
      *
      * ⭐ TERMINATION IS GUARANTEED BY THE HOP CAP ALONE, independent of whether this walk's
-     * own repeat-detection (a literal path string seen twice) fires first. A cycle built with
-     * `..` segments could in principle present a growing string that never repeats by literal
-     * comparison before the cap — the cap still ends the walk at {@see self::CHAIN_LOOP}, and
-     * correctly: a chain that has not resolved in `MAX_SYMLINK_HOPS` hops is one the kernel
-     * itself would refuse for every caller, looped or merely long, so classifying it
-     * ESTABLISHING misclaims nothing.
-     * ⚑ MEASURED, not assumed: deleting the repeat check outright (`$visited`, kept only
-     * for early exit) leaves every test in this tree green, because a self-symlink and an
-     * A↔B pair both still terminate at `self::CHAIN_LOOP` via the cap alone, just 38 hops
-     * later. The repeat check has no red-once witness for the same reason the `dev`/`ino`
-     * race guard elsewhere in this class does not — it is disclosed rather than removed,
-     * because it is what keeps a genuinely long (not looping) chain from being walked to
-     * `MAX_SYMLINK_HOPS` on every single call instead of returning at its own repeat.
+     * own repeat-detection (`$visited`, a literal path string seen twice) fires first. A
+     * cycle built with `..` segments could in principle present a growing string that never
+     * repeats by literal comparison before the cap — the cap still ends the walk at
+     * {@see self::CHAIN_LOOP}, and correctly: a chain that has not resolved in
+     * `MAX_SYMLINK_HOPS` hops is one the kernel itself would refuse for every caller, looped
+     * or merely long, so classifying it ESTABLISHING misclaims nothing.
+     * ⚑ `$visited` IS VERDICT-NEUTRAL BY CONSTRUCTION, which is a NARROWER and STRONGER
+     * claim than "no witness" — stated precisely because the two are not the same shape and
+     * flattening them into one sentence was itself a defect an earlier draft of this
+     * docblock shipped (card#9037 r3). Every repeated path IS a cycle, and every cycle ALSO
+     * hits the hop cap on its own (a cycle of length k repeats at hop k, well before
+     * `MAX_SYMLINK_HOPS` on any chain short enough to appear in this codebase's own tests) —
+     * so removing `$visited` can only ever change WHICH of two paths to the SAME verdict a
+     * cyclic chain takes, never the verdict itself. This is unlike the `dev`/`ino` race guard
+     * elsewhere in this class, whose absent witness is an EPISTEMIC gap (the race is hard to
+     * stage, and IF staged it could flip a verdict) rather than a structural one. What
+     * `$visited` buys, kept for exactly this and disclosed rather than removed, is COST: a
+     * self-symlink or an A↔B pair returns at hop 1 or hop 2 instead of walking all the way to
+     * the cap on every single call. It is NOT what stands between a genuinely long,
+     * non-looping chain and the cap — such a chain has no repeat to detect by definition, so
+     * `$visited` can never fire on one; only the cap itself bounds that case.
      */
     private static function symlinkChainVerdict(string $path): string
     {
         $current = $path;
         $visited = [];
-        for ($hop = 0; $hop < self::MAX_SYMLINK_HOPS; $hop++) {
+        for ($hop = 0; $hop <= self::MAX_SYMLINK_HOPS; $hop++) {
             if (isset($visited[$current])) {
                 return self::CHAIN_LOOP;
             }

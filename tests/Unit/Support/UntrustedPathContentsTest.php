@@ -454,12 +454,14 @@ class UntrustedPathContentsTest extends TestCase
 
     public function test_establishing_is_never_wider_than_is_file_false_across_a_shape_battery(): void
     {
-        // ⭐ THE SET PROPERTY, ASSERTED DIRECTLY (card#9037 r2 review) — not per-shape, so a
-        // shape neither side of this test has been written against yet cannot silently
-        // violate it. Every shape this class can call ESTABLISHING must be one `is_file()`
-        // already called false: migrating a reader onto this class must never mint a FALSE
-        // FAIL that the old `is_file()`-gated reader would not also have produced (as
-        // `absent()`, in `AuthorizedKeysRead`'s vocabulary).
+        // ⭐ THE SET PROPERTY, ASSERTED DIRECTLY (card#9037 r2 review) — not per-shape, so
+        // it holds over the WHOLE battery below rather than being satisfiable by getting each
+        // named case right in isolation (r3 review: this is a claim about how the property is
+        // CHECKED, not a claim that every possible shape is covered — a shape this battery
+        // does not construct is not exercised by this test). Every shape this class can call
+        // ESTABLISHING must be one `is_file()` already called false: migrating a reader onto
+        // this class must never mint a FALSE FAIL that the old `is_file()`-gated reader would
+        // not also have produced (as `absent()`, in `AuthorizedKeysRead`'s vocabulary).
         $battery = [];
 
         symlink($this->dir.'/self', $this->dir.'/self');
@@ -519,5 +521,80 @@ class UntrustedPathContentsTest extends TestCase
         // establishes anything, or against a battery that silently shrank to nothing.
         $this->assertGreaterThanOrEqual(8, $checked, 'the battery shrank silently');
         $this->assertGreaterThanOrEqual(5, $establishedCount, 'no ESTABLISHING verdict was observed — the subset assertion above never ran');
+    }
+
+    // ---- THE HOP-CAP BOUNDARY (card#9037 r3) --------------------------------------
+    // ⛔ THIS SECTION PINS THE OFF-BY-ONE ITSELF. `MAX_SYMLINK_HOPS` names the kernel's
+    // own limit — the number of symlinks the kernel will FOLLOW before refusing the next
+    // one with ELOOP — and the walk must examine the TERMINAL node reached after exactly
+    // that many follows, not give up one node short of it. Both cases below need the
+    // terminal to be a permission fault (not a plain absence), because a genuinely absent
+    // or genuinely readable terminal makes `@stat($path)` in `nonRegularRefusal()` decide
+    // the whole question before the walk ever runs — the boundary is invisible on those
+    // inputs and only shows up on the EACCES axis, which is exactly why it shipped once.
+
+    /** Builds link_1 -> link_2 -> … -> link_n -> $terminal, all inside $this->dir. */
+    private function buildSymlinkChain(int $n, string $terminal): void
+    {
+        for ($i = 1; $i <= $n; $i++) {
+            $target = $i < $n ? $this->dir.'/link_'.($i + 1) : $terminal;
+            symlink($target, $this->dir.'/link_'.$i);
+        }
+    }
+
+    public function test_a_forty_link_chain_behind_an_untraversable_directory_still_withholds(): void
+    {
+        // THE BLOCKER ITSELF. The kernel follows exactly 40 links and then attempts to
+        // resolve the 40th target — here, a name inside a directory this process may not
+        // traverse — and gets EACCES, not ELOOP. `MAX_SYMLINK_HOPS` is 40 for exactly this
+        // reason; a walk that gives up one node short of it misreports a real permission
+        // fault as a confirmed loop.
+        mkdir($this->dir.'/closed', 0o700);
+        $this->buildSymlinkChain(UntrustedPathContents::MAX_SYMLINK_HOPS, $this->dir.'/closed/hidden');
+        chmod($this->dir.'/closed', 0o000);
+        clearstatcache();
+        if (@lstat($this->dir.'/closed/hidden') !== false) {
+            @chmod($this->dir.'/closed', 0o700);
+            $this->markTestSkipped('this uid traverses a 0000 directory (root?), so the arm has nothing to measure');
+        }
+
+        try {
+            UntrustedPathContents::read($this->dir.'/link_1', 'authorized_keys');
+            $this->fail('a 40-link chain behind an untraversable directory was not refused');
+        } catch (UnreadableFileException $e) {
+            $this->assertNotInstanceOf(
+                PathResolvesToNoFileException::class,
+                $e,
+                'a chain of exactly MAX_SYMLINK_HOPS links was called an unearned ESTABLISH instead of withholding on the blocked terminal'
+            );
+        } finally {
+            @chmod($this->dir.'/closed', 0o700);
+        }
+    }
+
+    public function test_a_forty_one_link_chain_establishes_as_a_loop(): void
+    {
+        // THE OTHER SIDE OF THE SAME BOUNDARY, in the SAME shape. One link past the cap,
+        // the kernel refuses to follow it at all and never reaches the terminal (real
+        // ELOOP) — so this must establish regardless of what the terminal is or whether
+        // it is even reachable. The control that a fix satisfying the case above cannot
+        // satisfy by simply widening the bound without limit.
+        mkdir($this->dir.'/closed', 0o700);
+        $this->buildSymlinkChain(UntrustedPathContents::MAX_SYMLINK_HOPS + 1, $this->dir.'/closed/hidden');
+        chmod($this->dir.'/closed', 0o000);
+        clearstatcache();
+        if (@lstat($this->dir.'/closed/hidden') !== false) {
+            @chmod($this->dir.'/closed', 0o700);
+            $this->markTestSkipped('this uid traverses a 0000 directory (root?), so the arm has nothing to measure');
+        }
+
+        try {
+            UntrustedPathContents::read($this->dir.'/link_1', 'authorized_keys');
+            $this->fail('a 41-link chain was not refused');
+        } catch (PathResolvesToNoFileException $e) {
+            $this->assertStringContainsString('LOOPS', $e->getMessage());
+        } finally {
+            @chmod($this->dir.'/closed', 0o700);
+        }
     }
 }

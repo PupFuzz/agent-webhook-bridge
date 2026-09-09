@@ -145,28 +145,31 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
      * ⛔ THE TWO REFUSALS LAND ON DIFFERENT ARMS, AND ROUTING BOTH TO `unreadable()` WOULD
      * HAND THE INSPECTED ACCOUNT A WAY TO SUPPRESS ROOT'S OWN FAIL. `unreadable()` unmakes the
      * authoritative *not wired* FAIL in {@see SshTransportProbe::probePinnedLine()} — that is
-     * its entire purpose — so a refusal routed there is an exit code that stops firing. A
-     * directory, FIFO, socket, device or dangling symlink at `authorized_keys` is a path sshd
-     * takes NO KEYS from; `is_file()` answered false for exactly those and the leg reported
-     * `absent()`, so the FAIL was earned and MUST remain earned. Measured on the tree this
-     * change branched from: `mkdir ~/.ssh/authorized_keys` and a dangling symlink each
-     * produced `fail`, and collapsing them onto `unreadable()` turned both into
-     * `unvalidated` — `sudo bridge:check` going non-zero → 0 on a genuinely unwired account,
-     * at the choice of the very principal this reader defends against. So the ESTABLISHING
-     * refusal ({@see PathResolvesToNoFileException}) is caught FIRST and answers `absent()`,
-     * which is what it means: consulted, no keys, nothing withheld.
+     * its entire purpose — so a refusal routed there is an exit code that stops firing. A path
+     * sshd takes NO KEYS from — WHICH SHAPES that covers is `UntrustedPathContents`'s own
+     * docblock to own and not a count restated here (it grew members TWICE within this same
+     * branch without this file changing: a symlink chain that loops or resolves to absence
+     * through more than one hop, card#9037 r2, then a chain exhausted at exactly the kernel's
+     * own hop limit, r3) — is CONSULTED and the leg reports `absent()`, so the FAIL was earned
+     * and MUST remain earned. Measured on the tree this change branched from: `mkdir
+     * ~/.ssh/authorized_keys` and a dangling symlink each produced `fail`, and collapsing them
+     * onto `unreadable()` turned both into `unvalidated` — `sudo bridge:check` going non-zero
+     * → 0 on a genuinely unwired account, at the choice of the very principal this reader
+     * defends against. So the ESTABLISHING refusal ({@see PathResolvesToNoFileException}) is
+     * caught FIRST and answers `absent()`, which is what it means: consulted, no keys,
+     * nothing withheld.
      *
-     * ⚠ ONE READ THAT USED TO SUCCEED NOW WITHHOLDS, and the cost is accepted rather than
-     * unnoticed: an operator who SYMLINKS `authorized_keys` to a regular file (sshd follows
-     * it, so the account really is wired) now gets `unreadable()` for that path — the probe
-     * names it as unconsulted and reports `unvalidated` where it might have reported `ok` or
-     * `fail`. That is the fails-safe direction: the leg says it did not look, which is TRUE,
-     * instead of trusting bytes it cannot attribute. ⚠ A file past the reader's size bound
-     * withholds for the same reason and with the same consequence — an account CAN convert
-     * its own earned FAIL into `unvalidated` by making `authorized_keys` enormous, and that is
-     * the honest answer rather than a defect: this run did not read it, so it knows nothing
-     * about what is in it. It is `fileIdentity()` — not this method — that dedupes a symlinked
-     * SPELLING of one file, and that is unaffected.
+     * ⚠ ANY REFUSAL `UntrustedPathContents` CLASSIFIES AS WITHHOLDING costs a read that used
+     * to succeed, and the cost is accepted rather than unnoticed — a count is not restated
+     * here for the same reason as above. One worked example: an operator who SYMLINKS
+     * `authorized_keys` to a regular file (sshd follows it, so the account really is wired)
+     * now gets `unreadable()` for that path — the probe names it as unconsulted and reports
+     * `unvalidated` where it might have reported `ok` or `fail`. That is the fails-safe
+     * direction: the leg says it did not look, which is TRUE, instead of trusting bytes it
+     * cannot attribute — and it holds for every WITHHOLDING shape alike, not only this one:
+     * an account CAN convert its own earned FAIL into `unvalidated` by constructing any of
+     * them, and that is the honest answer rather than a defect. It is `fileIdentity()` — not
+     * this method — that dedupes a symlinked SPELLING of one file, and that is unaffected.
      */
     public function readAuthorizedKeys(string $path): AuthorizedKeysRead
     {
