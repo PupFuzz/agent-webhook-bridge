@@ -38,8 +38,15 @@ final class ClientVersion
      * say what an ABSENT report means (a client older than this) instead of leaving the
      * operator to guess. `ClientVersionTest` pins it at or below the bundled version, which
      * is the one way it could become false.
+     *
+     * ⛔ FROZEN IS NOT THE SAME AS WRITE-ONCE, and this constant had to MOVE before it ever
+     * shipped: the branch that introduced it bumped the snapshot 0.9.13 → 0.9.14, and while
+     * it was open `dev` shipped 0.9.14 for an unrelated dependency bump — a release that
+     * reports NO version. Left at 0.9.14 the check would have told an operator running that
+     * release that their client was older than it. The rule is that this names the snapshot
+     * that FIRST SENDS the field, which is only knowable once the branch lands its own bump.
      */
-    public const FIRST_REPORTING_SNAPSHOT = '0.9.14';
+    public const FIRST_REPORTING_SNAPSHOT = '0.9.15';
 
     /** The column's width, and therefore the longest value that can be recorded whole. */
     private const MAX_LENGTH = 32;
