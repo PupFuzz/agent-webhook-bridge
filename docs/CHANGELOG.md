@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-09-09
+
 ### Added
 
 - **card#9058 (DL-361)** — **`bridge:provision-tools` now hands the operator this install's `bridge:tick` crontab line — once, at enablement, and never again once the install has adopted a tick.** The line stood, by hand, in **five** places — `.env.example`, `CLAUDE_DEPLOYMENT.md`, `bridge:tick`'s own class docblock, a released `docs/CHANGELOG.md` entry and `docs/periodic-jobs.md` — every one of them **passive**, every one carrying both of the defects fixed below, and it was **absent from every mechanized surface**: no `tick` / `cron` / `periodic` token in the setup packet, in `bridge:provision-tools`, or in `bridge:check`'s NEXT STEPS block. And the freshness alarm cannot bootstrap itself — it arms off `BRIDGE_JOBS_TICK_EXPECTED_EVERY`, so it only ever fires for an operator who had already read the document. *Documented* was standing in for *delivered*, which is DL-012's `bridge:prune` failure one level earlier: not **scheduled nowhere and nothing said so** but **never discovered and nothing said so**.
