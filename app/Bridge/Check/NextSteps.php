@@ -33,6 +33,15 @@ use App\Bridge\Support\Severity;
  * lines printed above it, which is the defect this whole command's registry exists to
  * remove.
  *
+ * ⚠ THAT BY-ID RULE HAS EXACTLY ONE DELIBERATE REVERSAL, AND IT IS NAMED HERE RATHER THAN
+ * LEFT TO BE FOUND (card#8973 / DL-360). The lost-block suppression below reads
+ * {@see CheckContext::$boardToolsLost}, a context field, because the by-id route CANNOT
+ * carry that fact: {@see self::severitiesById()} skips every result whose `agent` is null,
+ * and a run-once {@see Check} always has a null agent ({@see CheckResult::$agent}), so
+ * `board_tools.lost` — which names its seats in PROSE — is invisible to it in principle
+ * rather than by accident. This is a stated exception, not a precedent: a PER-AGENT leg has
+ * no such excuse and still reads by id.
+ *
  * ⚠ ITS POPULATION IS THE AGENTS WHOSE YAML PARSED ({@see CheckContext::$configs}), which
  * is narrower than the agents on disk. An agent whose config did not parse is already a
  * `fail` with its own line, and this run knows nothing about its board_tools block — so it
@@ -102,6 +111,17 @@ final class NextSteps
                 in_array(Severity::Ok, $clientHalf[$name] ?? [], true),
             );
             if ($state === null) {
+                continue;
+            }
+            // ⛔ ONE VOICE PER AGENT, AND THIS IS THE ONE STATE THAT CAN CONTRADICT A
+            // FINDING ABOVE IT (card#8973 / DL-360). DL-357 Decision 8 ratified the
+            // `no_block` wording on the premise that it is "the one state a
+            // correctly-configured install can sit in forever" — a QUESTION for the
+            // operator, never a defect this run found. A LOST FAIL two lines above breaks
+            // that premise outright, and the advice underneath it ("NO ⇒ put board_tools:
+            // with enabled: false") would MUTE the failure rather than answer it. The
+            // remedy for a lost block is in the FAIL line; this block stays quiet about it.
+            if ($state === NextStepState::NoBlock && in_array($name, $ctx->boardToolsLost, true)) {
                 continue;
             }
             $steps[] = new NextStep(

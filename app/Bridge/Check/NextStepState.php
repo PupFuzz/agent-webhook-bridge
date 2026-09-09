@@ -39,6 +39,16 @@ enum NextStepState: string
      * The agent's YAML carries no `board_tools:` block at all, so this agent has no board
      * window — the state every install starts in. Command: `bridge:provision-tools
      * --agent=<name>` (prints a paste-ready skeleton; never edits YAML).
+     *
+     * ⛔ AN ABSENT BLOCK IS NECESSARY FOR THIS STATE AND, SINCE card#8973 / DL-360, NO
+     * LONGER SUFFICIENT — an agent whose block this install has RECORDED as enabled and
+     * whose config now has none is reported as LOST by `board_tools.lost`, and gets NO entry
+     * here. The two would otherwise contradict each other on one screen: this state's whole
+     * premise (DL-357 Decision 8) is that it is a QUESTION for the operator, the one state a
+     * correctly-configured install can sit in forever, and its own "NO ⇒ set `enabled:
+     * false`" answer would MUTE a FAIL printed two lines above. So the population is now
+     * *no block AND no record of one* — `next_steps` being empty still means nothing is
+     * OUTSTANDING, never that every agent has a window.
      */
     case NoBlock = 'no_block';
 

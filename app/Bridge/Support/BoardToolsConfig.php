@@ -26,6 +26,12 @@ use App\Bridge\Tools\BoardToolsRegistry;
  *      malformed config; loud-at-load stands.
  *   3. DISABLED (`enabled: false`, strict bool) ⇒ well-formed no-op (staging /
  *      opt-out); the rest of the block is not parsed.
+ *   3a. RETIRED (`retired: "<date> — <reason>"`, card#8973 / DL-360) ⇒ a well-formed
+ *      no-op that also carries the operator's DECISION, which is the only thing that
+ *      silences the lost-block leg. Read only where `enabled` is ABSENT or explicitly
+ *      `false`: beside `enabled: true` it is a contradiction and THROWS like every other
+ *      explicit-assertion malformation, and beside a NON-BOOL `enabled` it is ignored so
+ *      that the typo below keeps suppressing rather than minting a durable tombstone.
  *   4. EVERYTHING ELSE PRESENT ⇒ DEFAULT-CLASS, and it NEVER throws: a non-array
  *      block, a non-bool `enabled` (incl. bare `enabled:` → null — array_key_exists
  *      discriminates absent from null), or `enabled` absent with an unsatisfiable
@@ -76,6 +82,10 @@ use App\Bridge\Tools\BoardToolsRegistry;
  *  - suppressedReason  non-null ONLY on the default-suppressed path (always null
  *                    when enabled or explicitly disabled); the message bridge:check
  *                    renders as a FAIL.
+ *  - retiredReason   non-null ONLY on the retired path (always null when enabled,
+ *                    plainly disabled, or suppressed) — the operator's own sentence
+ *                    VERBATIM, recorded as a durable tombstone and printed back to
+ *                    them by bridge:check's lost-block leg.
  *  - sshAccount      optional OS account name the SSH forced command runs as. Only
  *                    meaningful for transport 'ssh' — it tells the bridge:check probe
  *                    which account's sshd posture / authorized_keys to certify
@@ -120,6 +130,13 @@ final class BoardToolsConfig
         // default rather than by an explicit operator choice.
         public readonly bool $transportExplicit = false,
         public readonly int $descriptionMaxBytes = self::DEFAULT_DESCRIPTION_MAX_BYTES,
+        // The operator's own `retired:` sentence, VERBATIM, or null. Non-null ONLY on the
+        // retired path — never beside `enabled: true` (that contradiction throws) and never
+        // beside a `suppressedReason`, so the discriminator `NextSteps::stateOf()` draws
+        // between "a default-on block that could not satisfy itself" and "a decision" is
+        // untouched: a retired block reaches it as enabled=false with no suppressedReason
+        // and correctly owes no next step.
+        public readonly ?string $retiredReason = null,
     ) {}
 
     /**
@@ -139,6 +156,46 @@ final class BoardToolsConfig
         $block = $raw['board_tools'];
         $isArray = is_array($block);
         $enabledKeyPresent = $isArray && array_key_exists('enabled', $block);
+        // The `$isArray` conjunct is what makes this safe on a non-mapping block, exactly as
+        // it does one line above — `array_key_exists` on a non-array is fatal, and the
+        // idiom that already guards `enabled` guards this too, so the classification below
+        // needs no reordering and the non-mapping branch stays where it is.
+        $retiredKeyPresent = $isArray && array_key_exists('retired', $block);
+
+        // (3a) RETIRED (card#8973 / DL-360): the operator's explicit statement that this
+        // seat is decommissioned, which is the ONE thing that silences the lost-block leg.
+        // It is CLASS 3a — a well-formed no-op, like (3) — and it is TESTED first because
+        // its two guards are about `enabled`: the contradiction has to throw before (2)
+        // enables the block, and the honouring arm has to run before (3) disables it and
+        // drops the reason on the floor.
+        //
+        // ⛔ IT IS HONOURED ONLY WHERE `enabled` IS ABSENT OR EXPLICITLY `false`, and the
+        // non-bool case is the reason the guard is written this way rather than as a strict
+        // `enabled !== true`. `board_tools: {enabled: yes, retired: "…"}` is the exact typo
+        // the non-bool arm below exists to catch — `symfony/yaml` does not booleanize `yes`
+        // — and letting it reach this arm would turn a malformed block into a DURABLE
+        // tombstone silencing that seat forever, where today it suppresses and FAILs. A
+        // malformed `enabled` keeps suppressing whatever else the block carries.
+        if ($retiredKeyPresent) {
+            if ($enabledKeyPresent && $block['enabled'] === true) {
+                // Consistent with every other explicit-assertion malformation in this file:
+                // an operator asserting both "this seat is live" and "this seat is retired"
+                // has written config that cannot be satisfied, and guessing which half they
+                // meant is how a decommission silently un-decommissions itself.
+                throw new ConfigException('board_tools.retired contradicts enabled: true — remove one');
+            }
+            if (! $enabledKeyPresent || $block['enabled'] === false) {
+                $reason = $block['retired'];
+                if (is_string($reason) && trim($reason) !== '') {
+                    return self::retired($reason);
+                }
+
+                // Fail-closed, and the block is still PRESENT — so the lost-block leg stays
+                // silent for this agent and the operator gets ONE failure to fix rather
+                // than a suppression FAIL plus a LOST FAIL for one defect.
+                return self::suppressed('board_tools.retired must be a non-empty string naming the date and reason, e.g. "2026-09-08 — seat decommissioned" — default-on suppressed');
+            }
+        }
 
         // (2) EXPLICIT: is_array AND enabled === true (strict) — fail-loud on any
         // malformation (require*/parse* throw; an unsatisfiable explicit assertion
@@ -183,6 +240,29 @@ final class BoardToolsConfig
             sharedSwimlaneId: null,
             coordBoardId: null,
             addressTags: [],
+        );
+    }
+
+    /**
+     * An explicitly RETIRED seat: a well-formed no-op that also carries the operator's
+     * decision, so the lost-block leg can say WHY it is silent instead of merely being it.
+     *
+     * `suppressedReason` stays null on purpose — a retirement is a decision, not a
+     * default-on block that could not satisfy itself, and collapsing the two would put the
+     * seat back in `BoardToolsSuppressedCheck`'s FAIL population.
+     */
+    private static function retired(string $reason): self
+    {
+        return new self(
+            enabled: false,
+            tokenPath: null,
+            boardId: null,
+            swimlaneId: null,
+            createStageId: null,
+            sharedSwimlaneId: null,
+            coordBoardId: null,
+            addressTags: [],
+            retiredReason: $reason,
         );
     }
 

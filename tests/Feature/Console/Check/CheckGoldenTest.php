@@ -1183,7 +1183,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(40, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame(41, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,

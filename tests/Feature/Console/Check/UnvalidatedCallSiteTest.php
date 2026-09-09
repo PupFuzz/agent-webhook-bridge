@@ -234,6 +234,32 @@ class UnvalidatedCallSiteTest extends TestCase
         // client chain. `BoardToolsClientHalfCheckTest` pins the two-severity set from the
         // source, so a fourth factory appearing here reds there first.
         'app/Bridge/Check/Checks/BoardToolsClientHalfCheck.php' => 3,
+        // card#8973 / DL-360 — TWO legs, and both are limb (a): a read that did not complete,
+        // never a fault the leg measured. Spelled out because this comment is what a
+        // maintainer reads when the count moves:
+        //   1. the config-seen ledger could not be READ — an unmigrated install. Without it,
+        //      the absence of a LOST verdict would be this run's own failure wearing the
+        //      install's silence (the exact shape the leg exists to end), AND a `retired:` key
+        //      goes unanswered, so the line names both losses.
+        //   2. the config dir was not SCANNED this run while recorded seats exist. The
+        //      subject is present and could not be looked at — reporting nothing there would
+        //      be indistinguishable from reporting every recorded seat present.
+        // ⛔ WHAT LEFT THIS LIST, AND WHY (r5): the *retired in config, no tombstone on record*
+        // line, which was `unvalidated` and is now `warn`. That leg's question is "is the
+        // tombstone ON RECORD?" — the row was READ, the answer is NO, and this same run had
+        // already tried to write it, so the measurement completed. What is uncertain is the
+        // FUTURE (will the decision outlive the file that states it), and `Severity` excludes
+        // world-ambiguity from this severity by name. Not `fail` either: nothing is broken
+        // yet, and a best-effort audit row that lost a race must not flip the exit code.
+        // ⛔ AND A SITE THAT WAS NEVER HERE: a `call_provenance` value this build cannot
+        // interpret now degrades the LOST line's EVIDENCE clause in place instead of blinding
+        // the leg. It mints no finding at all — a separate `unvalidated` line would claim the
+        // install stopped a measurement the verdict never needed, on runs with no LOST line
+        // to decorate.
+        // The verdicts this leg CAN measure are deliberately absent: the LOST `fail` (a
+        // measured config fault that must flip the exit code), the RETIRED `ok` (the row was
+        // read and it is there), the `warn` above, and its silences.
+        'app/Bridge/Check/Checks/BoardToolsLostCheck.php' => 2,
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.
