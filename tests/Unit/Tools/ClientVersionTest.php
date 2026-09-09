@@ -2,7 +2,7 @@
 
 namespace Tests\Unit\Tools;
 
-use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Tools\ClientVersion;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -118,13 +118,13 @@ class ClientVersionTest extends TestCase
      */
     public function test_the_first_reporting_snapshot_is_not_ahead_of_the_bundled_one(): void
     {
-        $bundled = ChannelSnapshotProbe::readManifest(base_path('examples/channel-servers/package.json'));
+        $bundled = ChannelSnapshotManifest::readManifest(base_path('examples/channel-servers/package.json'));
 
         $this->assertSame('ok', $bundled['status'], 'the bundled manifest did not read, so this test measured nothing');
         $this->assertNotSame('', $bundled['version']);
         $this->assertLessThanOrEqual(
             0,
-            ChannelSnapshotProbe::compareVersions(ClientVersion::FIRST_REPORTING_SNAPSHOT, $bundled['version']),
+            ChannelSnapshotManifest::compareVersions(ClientVersion::FIRST_REPORTING_SNAPSHOT, $bundled['version']),
             'ClientVersion::FIRST_REPORTING_SNAPSHOT is AHEAD of the snapshot this checkout bundles, so bridge:check tells operators their client is older than a release that does not exist',
         );
     }
@@ -169,7 +169,7 @@ class ClientVersionTest extends TestCase
      */
     public function test_during_the_landing_window_the_pin_and_the_bundled_snapshot_are_the_same_release(): void
     {
-        $bundled = ChannelSnapshotProbe::readManifest(base_path('examples/channel-servers/package.json'));
+        $bundled = ChannelSnapshotManifest::readManifest(base_path('examples/channel-servers/package.json'));
 
         $this->assertSame('ok', $bundled['status'], 'the bundled manifest did not read, so this test measured nothing');
         $this->assertSame(

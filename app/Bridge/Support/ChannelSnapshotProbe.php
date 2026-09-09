@@ -37,7 +37,17 @@ namespace App\Bridge\Support;
  * here stats below a direct child any more. The ONE deliberately unguarded stat is this
  * CHECKOUT's own bundled `package.json` ({@see self::versionLeg()}), which lands on its
  * own accurate, non-destructive finding naming that file rather than the agent's
- * directory. These legs are therefore CONCLUSIVE ONLY when the bridge can traverse to the
+ * directory.
+ *
+ * ⭐ MANIFEST READING AND VERSION ORDERING LIVE IN {@see ChannelSnapshotManifest}, NOT HERE,
+ * and the reason is this class's own trust boundary rather than tidiness: every
+ * `ChannelSnapshotProbe::` call in `app/` is pinned by `bin/test_check_channel_snapshot.py`
+ * to exactly ONE entry point, `probe()`, taking only inert arguments — so nothing executable
+ * can be smuggled into the untrusted-directory walk. A utility hoisted onto this class to
+ * share it with a second caller widens that surface by one entry point per utility, which is
+ * exactly what card#8974's first cut did and what the guard caught. This class DELEGATES;
+ * the collaborator is same-namespace (so this file still imports nothing) and is covered by
+ * the same no-exec scan through `_PROBE_COLLABORATORS`. These legs are therefore CONCLUSIVE ONLY when the bridge can traverse to the
  * deployed directory — said plainly in `docs/config-schema.md`. The guard itself was
  * private to this class until card#5698 hoisted it; that class docs the reasoning.
  */
@@ -195,70 +205,6 @@ final class ChannelSnapshotProbe
     }
 
     /**
-     * Compare two channel-server `package.json` versions the way the DECLARED
-     * AUTHORITY does — `_version_tuple` in `bin/provision-board-tools.py`, the shipped
-     * provisioner that decides whether a deployed snapshot gets replaced. Split on
-     * `.`, take each chunk's LEADING digits (0 when it has none), compare element-wise
-     * as integers; a shorter tuple sorts lower.
-     *
-     * DO NOT USE PHP's `version_compare()` HERE. It is the obvious reach and it is
-     * wrong: it honors the pre-release/build tags the authority deliberately DROPS, so
-     * it disagrees on 3 of the 7 pinned vectors (`0.8.0-rc1` vs `0.8.0`, `0.8.0` vs
-     * `0.8.0+build5`, `1.0.0-alpha` vs `1.0.0`) — `bridge:check` would report "stale"
-     * on a snapshot `bin/provision-board-tools.py` calls up to date, and re-syncing
-     * would never clear the warning.
-     *
-     * The vector table is asserted in BOTH suites, in lockstep:
-     * `tests/Unit/Support/ChannelSnapshotProbeTest.php` and
-     * `bin/test_provision_board_tools.py` (class `VersionComparatorLockstep`).
-     *
-     * CONFORMANCE BOUND (measured, not assumed): the two agree for ASCII-digit
-     * versions whose numeric chunks fit PHP's integer range. Outside that they
-     * cannot: python's `\d` is Unicode-aware and its ints are arbitrary-precision,
-     * while PHP saturates at PHP_INT_MAX and does not match non-ASCII digits at
-     * all (they read as 0). Neither class is reachable through an npm `version`
-     * field, so the divergence is documented rather than chased — and `/u` on the
-     * pattern below does NOT close it: `[0-9]` is an ASCII class with or without
-     * the modifier (`preg_match('/^[0-9]+/u', '٣٢')` matches nothing, exactly as
-     * it does unmodified). Reaching those digits would take `\d` + `/u`, which
-     * then matches `٣٢` and casts it to 0 — still not python's 32 — while `/u`
-     * alone newly breaks on invalid UTF-8, where `preg_match` returns false and
-     * the chunk collapses to 0 (`2\xff` reads as 2 today).
-     *
-     * @return int negative when $a is older, 0 when equal, positive when $a is newer
-     */
-    public static function compareVersions(string $a, string $b): int
-    {
-        $ta = self::versionTuple($a);
-        $tb = self::versionTuple($b);
-        $shared = min(count($ta), count($tb));
-        for ($i = 0; $i < $shared; $i++) {
-            if ($ta[$i] !== $tb[$i]) {
-                return $ta[$i] <=> $tb[$i];
-            }
-        }
-
-        return count($ta) <=> count($tb);
-    }
-
-    /**
-     * @return list<int>
-     */
-    public static function versionTuple(string $version): array
-    {
-        $parts = [];
-        foreach (explode('.', $version) as $chunk) {
-            // [0-9], not \d: the ASCII scope is deliberate and is the bound the
-            // lockstep with the python authority actually holds over (see
-            // {@see self::compareVersions()}), so it is spelled out rather than
-            // left to whether the /u modifier happens to be present.
-            $parts[] = preg_match('/^[0-9]+/', $chunk, $m) === 1 ? (int) $m[0] : 0;
-        }
-
-        return $parts;
-    }
-
-    /**
      * THE DRIFT LEG: is the deployed copy older than the one this checkout ships? Never a
      * fail — a stale snapshot still launches, it just lacks newer fixes. It answers with
      * `warn` (stale) or `ok` (current), and reports `unvalidated` on the two arms where a
@@ -282,7 +228,7 @@ final class ChannelSnapshotProbe
     private static function versionLeg(string $deployedDir, string $bundledDir): array
     {
         $resync = self::resyncCommand($deployedDir, $bundledDir);
-        $deployed = self::readManifest($deployedDir.'/package.json');
+        $deployed = ChannelSnapshotManifest::readManifest($deployedDir.'/package.json');
         if ($deployed['status'] !== 'ok') {
             // ONE cause per message, and the destructive advice ONLY where it is the
             // answer. "missing or unreadable … cp -R" was false for three of these
@@ -296,7 +242,7 @@ final class ChannelSnapshotProbe
                 default => 'repair the manifest — its `version` field is what the staleness compare reads',
             };
 
-            return [Finding::unvalidated("channel server snapshot at {$deployedDir}: package.json ".self::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")];
+            return [Finding::unvalidated("channel server snapshot at {$deployedDir}: package.json ".ChannelSnapshotManifest::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")];
         }
 
         // The BUNDLED manifest is this checkout's own file and deliberately does NOT
@@ -304,7 +250,7 @@ final class ChannelSnapshotProbe
         // already lands on the `unvalidated` finding below, which names its own cause
         // and carries no destructive remediation — whereas the guard's message would
         // talk about the AGENT's deployed directory while naming a checkout file.
-        $bundled = self::readManifest($bundledDir.'/package.json');
+        $bundled = ChannelSnapshotManifest::readManifest($bundledDir.'/package.json');
         if ($bundled['status'] !== 'ok') {
             // The action is SPELLED OUT. It was found silent while its sibling — the
             // unenumerable-reference warn the completeness leg carried — named its
@@ -314,10 +260,10 @@ final class ChannelSnapshotProbe
             // a tracked file). DL-236 (h) fixed it; the sibling has since gone with
             // its leg (DL-237), so this is the only survivor of that pair — the
             // reason it spells its action is unchanged.
-            return [Finding::unvalidated("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
+            return [Finding::unvalidated("this checkout's {$bundledDir}/package.json ".ChannelSnapshotManifest::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
         }
 
-        $comparison = self::compareVersions($deployed['version'], $bundled['version']);
+        $comparison = ChannelSnapshotManifest::compareVersions($deployed['version'], $bundled['version']);
         if ($comparison < 0) {
             return [Finding::warn("channel server snapshot at {$deployedDir} is STALE (deployed {$deployed['version']} < bundled {$bundled['version']}) — the next session starts on the older copy; {$resync}. To stop it recurring, deploy as a SYMLINK to {$bundledDir} rather than a copy: it resolves into the checkout, so there is nothing left to drift (a copy is still the answer when the deployment is on another host or another OS user's filesystem — see docs/multi-host.md)")];
         }
@@ -382,53 +328,6 @@ final class ChannelSnapshotProbe
         }
 
         return [Finding::ok("channel server deployment at {$deployedDir} has its entry file and node_modules — a presence check, not a load test: nothing here executes node, and whether the installed dependency TREE is complete is npm ci's business")];
-    }
-
-    /**
-     * Read a package.json's `version`, keeping the FOUR causes of "no version" apart
-     * — they are four different operator situations and only one of them wants the
-     * destructive re-copy. `version` is `''` when the file parses but declares none
-     * (what the python authority's `_package_version` returns).
-     *
-     * PUBLIC SINCE card#8974, at its second real caller: `BoardToolsClientHalfCheck` compares
-     * a SEAT-REPORTED version against this checkout's bundled manifest and needs the same
-     * four-way read — including the `''`-version case — rather than a second `file_get_contents`
-     * + `json_decode` that would collapse those causes back into one.
-     *
-     * @return array{status: 'ok'|'absent'|'unreadable'|'malformed', version: string}
-     */
-    public static function readManifest(string $path): array
-    {
-        if (! is_file($path)) {
-            return ['status' => 'absent', 'version' => ''];
-        }
-        $raw = @file_get_contents($path);
-        if ($raw === false) {
-            return ['status' => 'unreadable', 'version' => ''];
-        }
-        $decoded = json_decode($raw, true);
-        if (! is_array($decoded)) {
-            return ['status' => 'malformed', 'version' => ''];
-        }
-        $version = $decoded['version'] ?? '';
-
-        return ['status' => 'ok', 'version' => is_scalar($version) ? (string) $version : ''];
-    }
-
-    /**
-     * How a non-`ok` {@see self::readManifest()} status reads in a message.
-     *
-     * Public for the same reason and at the same caller as {@see self::readManifest()}: the
-     * two travel together, and a second phrasing of "is not present" beside this one is how
-     * an operator ends up reading two different sentences for one file state.
-     */
-    public static function manifestReason(string $status): string
-    {
-        return match ($status) {
-            'absent' => 'is not present',
-            'unreadable' => 'exists but is not readable by this user',
-            default => 'does not parse as a JSON object',
-        };
     }
 
     /**

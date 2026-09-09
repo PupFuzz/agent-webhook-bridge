@@ -708,7 +708,7 @@ class BoardToolsClientHalfCheckTest extends TestCase
 
     /**
      * ⭐ AN UNORDERABLE REPORTED VERSION MUST NOT BECOME A STALE VERDICT. The comparator
-     * COERCES rather than refusing — `versionTuple()` takes each chunk's leading digits and
+     * COERCES rather than refusing — `ChannelSnapshotManifest::versionTuple()` takes each chunk's leading digits and
      * yields 0 where there are none — so `v1.0.0` ranks as [0,0,0] and compares OLDER than
      * every real snapshot. Unfixed, the leg printed "v1.0.0 IS OLDER THAN 0.9.12" and told
      * the operator to re-copy the bridge's snapshot over that seat: a DOWNGRADE instruction

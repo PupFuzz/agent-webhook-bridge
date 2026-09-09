@@ -1369,12 +1369,12 @@ class StaleSnapshotRetention(unittest.TestCase):
 class VersionComparatorLockstep(unittest.TestCase):
     """Card 5108 / DL-229: `_version_tuple` here is the DECLARED AUTHORITY for
     channel-server snapshot comparison semantics. `bridge:check` re-implements it in
-    PHP (`App\\Bridge\\Support\\ChannelSnapshotProbe::compareVersions`) so it can tell a
+    PHP (`App\\Bridge\\Support\\ChannelSnapshotManifest::compareVersions`) so it can tell a
     stale deployed snapshot from a current one WITHOUT shelling out to this script.
 
     These vectors are the LOCKSTEP CONTRACT: the same pairs and the same verdicts are
-    asserted in `tests/Unit/Support/ChannelSnapshotProbeTest.php`
-    (`ChannelSnapshotProbeTest::versionVectors`). Change one side without the other and
+    asserted in `tests/Unit/Support/ChannelSnapshotManifestTest.php`
+    (`ChannelSnapshotManifestTest::versionVectors`). Change one side without the other and
     the provisioner and `bridge:check` silently disagree about which snapshots are
     stale — the operator re-syncs forever, or never.
 

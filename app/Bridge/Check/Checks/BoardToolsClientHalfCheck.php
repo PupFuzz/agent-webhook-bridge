@@ -6,7 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
-use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolDispatcher;
@@ -235,7 +235,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      * current or newer client) is a green line, because none of them measured a stale seat
      * and a `warn` an operator cannot act on is worse than silence.
      *
-     * The comparator is {@see ChannelSnapshotProbe::compareVersions()} and NOT PHP's
+     * The comparator is {@see ChannelSnapshotManifest::compareVersions()} and NOT PHP's
      * `version_compare()`, for the reason that method's own docblock gives at length: the
      * DECLARED AUTHORITY on whether a deployed snapshot is behind is
      * `bin/provision-board-tools.py`, and `version_compare()` disagrees with it on
@@ -250,8 +250,14 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
             return [false, 'CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.') — the reference channel server sends its own snapshot version from '.ClientVersion::FIRST_REPORTING_SNAPSHOT.' onward, so this call came from an older copy, or from a caller that is not a channel server at all (`bridge:check --probe-tools`, `provision-board-tools.py --self-cert`, a hand-run `bridge:tools-call`). THAT IS NOT EVIDENCE THE SEAT IS STALE — nothing was compared. Re-deploy the seat\'s channel server to get the comparison.'];
         }
 
+        // ⚑ THE BUNDLED MANIFEST IS THE BRIDGE'S OWN TRACKED FILE, which is why this reads
+        // ChannelSnapshotManifest and NOT ChannelSnapshotProbe. The probe's subject is a
+        // DEPLOYED directory under another OS user's home, and its public surface is pinned
+        // to a single entry point for exactly that reason; this read has nothing to do with
+        // that trust boundary and must not widen it.
+        //
         // ⛔ THE SEAT'S OPERAND IS CHECKED FIRST, AND IT IS CHECKED AT ALL BECAUSE THE
-        // COMPARATOR COERCES RATHER THAN REFUSING. `ChannelSnapshotProbe::versionTuple()`
+        // COMPARATOR COERCES RATHER THAN REFUSING. `ChannelSnapshotManifest::versionTuple()`
         // takes each dot-separated chunk's LEADING DIGITS and yields 0 where there are none
         // — deliberately, because it mirrors the declared authority — so a reported `v1.0.0`
         // becomes [0,0,0] and compares OLDER than every real snapshot. The leg would then
@@ -272,16 +278,16 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
             return [false, self::notCompared($reported, "`{$reported}` does not begin with a digit, so it is not a version the staleness comparator can order — that comparator matches `bin/provision-board-tools.py`, the tool that actually decides whether a deployed snapshot is replaced, and it reads each dot-separated chunk's leading digits. Comparing it would rank a fabricated 0 rather than the seat's version. Ask that seat what it is running")];
         }
 
-        $bundled = ChannelSnapshotProbe::readManifest($this->bundledDir.'/package.json');
+        $bundled = ChannelSnapshotManifest::readManifest($this->bundledDir.'/package.json');
         if ($bundled['status'] !== 'ok' || $bundled['version'] === '') {
             $why = $bundled['status'] !== 'ok'
-                ? ChannelSnapshotProbe::manifestReason($bundled['status'])
+                ? ChannelSnapshotManifest::manifestReason($bundled['status'])
                 : 'declares no version';
 
             return [false, self::notCompared($reported, "this checkout's {$this->bundledDir}/package.json {$why}, so there was no bundled version to compare it against. That file is tracked in this checkout: restore or repair it, and check that this process can read it")];
         }
 
-        if (ChannelSnapshotProbe::compareVersions($reported, $bundled['version']) < 0) {
+        if (ChannelSnapshotManifest::compareVersions($reported, $bundled['version']) < 0) {
             return [true, "CLIENT VERSION {$reported} IS OLDER THAN THE {$bundled['version']} THIS BRIDGE BUNDLES — that seat runs a STALE channel server, so a tool it does not offer may be missing from ITS copy rather than from this bridge, and reading that as a bridge fault sends the remedy to the wrong side. Re-copy this checkout's {$this->bundledDir} over the seat's deployed directory, run npm ci in it, and RESTART that session: the version is read when the channel server starts, so a re-deploy on its own does not change what this line reports."];
         }
 
