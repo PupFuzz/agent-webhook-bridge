@@ -79,6 +79,23 @@ const SHARED_TOKEN = process.env.BRIDGE_CHANNEL_TOKEN || '';
 //                              command (sshd substitutes the pinned bridge:tools-call).
 //   BRIDGE_TOOLS_SSH_KEY     — optional path to the identity key (-i).
 //   BRIDGE_TOOLS_SSH_PORT    — optional ssh port (-p).
+const CHANNEL_TOOLS_ENV = process.env.BRIDGE_CHANNEL_TOOLS;
+const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
+const TOOLS_SSH_TARGET = process.env.BRIDGE_TOOLS_SSH_TARGET || '';
+const TOOLS_SSH_KEY = process.env.BRIDGE_TOOLS_SSH_KEY || '';
+const TOOLS_SSH_PORT = process.env.BRIDGE_TOOLS_SSH_PORT || '';
+// Overall client-side deadline for one ssh board-tools round-trip. `-o ConnectTimeout`
+// (below) bounds only the TCP/handshake; this caps the WHOLE call so a host that
+// connects then hangs — or a wedged forced command — cannot pin the tools/call
+// indefinitely or leak the child. Mirrors the PHP probe posture
+// (SystemSshProbeEnvironment::sshRoundTrip: ConnectTimeout=10 + a 30s process timeout).
+const TOOLS_SSH_DEADLINE_MS = 60000;
+// How much of a failing ssh leg's stderr is held for the tool result (card#7709).
+// Above `scrubSnippet`'s own 500-char bound so a credential line that starts inside
+// the capture is still whole when the scrub anchors on it; the relay is what decides
+// how much of it a caller finally sees.
+const SSH_STDERR_CAPTURE_LIMIT = 2000;
+
 // This server's OWN package version, sent on every board-tools call as `client_version`
 // (card#8974 / DL-364). WHY: `bridge:check` could see the version of the snapshot the
 // BRIDGE bundles and nothing whatever about the copy the seat actually runs, so a tool
@@ -106,23 +123,6 @@ function readClientVersion() {
 }
 
 const CLIENT_VERSION = readClientVersion();
-
-const CHANNEL_TOOLS_ENV = process.env.BRIDGE_CHANNEL_TOOLS;
-const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
-const TOOLS_SSH_TARGET = process.env.BRIDGE_TOOLS_SSH_TARGET || '';
-const TOOLS_SSH_KEY = process.env.BRIDGE_TOOLS_SSH_KEY || '';
-const TOOLS_SSH_PORT = process.env.BRIDGE_TOOLS_SSH_PORT || '';
-// Overall client-side deadline for one ssh board-tools round-trip. `-o ConnectTimeout`
-// (below) bounds only the TCP/handshake; this caps the WHOLE call so a host that
-// connects then hangs — or a wedged forced command — cannot pin the tools/call
-// indefinitely or leak the child. Mirrors the PHP probe posture
-// (SystemSshProbeEnvironment::sshRoundTrip: ConnectTimeout=10 + a 30s process timeout).
-const TOOLS_SSH_DEADLINE_MS = 60000;
-// How much of a failing ssh leg's stderr is held for the tool result (card#7709).
-// Above `scrubSnippet`'s own 500-char bound so a credential line that starts inside
-// the capture is still whole when the scrub anchors on it; the relay is what decides
-// how much of it a caller finally sees.
-const SSH_STDERR_CAPTURE_LIMIT = 2000;
 
 // Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
 // explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
