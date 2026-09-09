@@ -6,11 +6,13 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
+use App\Bridge\Tools\ClientVersion;
 use Throwable;
 
 /**
@@ -71,11 +73,33 @@ use Throwable;
  * not merely known, because `Severity::Ok` is identical on both arms and the message is the
  * only place the difference can live.
  *
- * NEVER `fail` AND NEVER `warn`, on both halves of the rule: a `fail` would exit non-zero
- * over a seat that is idle by choice, and a `warn` would tell an operator something is
- * wrong when the honest statement is that this run learned nothing. The MESSAGE carries
- * that bound rather than leaving the severity to imply it — the remedy for an UNREPORTED
- * seat is to ASK THE SEAT, never to re-provision it.
+ * ⭐ THE REPORTED LINE ALSO CARRIES THE SEAT'S OWN SNAPSHOT VERSION SINCE card#8974 /
+ * DL-364, AND THAT IS THE ONE THING HERE THAT CAN `warn`. Everything else this command
+ * knows about the door is the BRIDGE's half; the seat's deployed channel-server version is
+ * a fact only the seat can supply, and until it did, a tool absent from a STALE seat copy
+ * and a tool absent from this bridge rendered identically — measured: a 0.4.4 seat against
+ * a bridge bundling 0.9.12, with the missing tool attributed to the bridge. The line now
+ * prints the reported version beside the version this checkout bundles:
+ *   - reported and OLDER than the bundled snapshot ⇒ `warn`. It is a MEASURED conclusion
+ *     about a real install fault, which is what separates it from the two `unvalidated`
+ *     arms below — nothing stopped this measurement; it came back stale.
+ *   - reported and at or ahead of the bundled snapshot ⇒ `ok`, versions printed.
+ *   - NOT reported ⇒ `ok`, and the line says a client older than
+ *     {@see ClientVersion::FIRST_REPORTING_SNAPSHOT} — or a caller that is not a channel
+ *     server at all — sends no version. ⛔ An absent report is NOT a stale seat and must
+ *     never be warned as one: it is the shape every pre-DL-364 client produces.
+ *   - reported but this checkout's own bundled manifest could not be read ⇒ `ok`, and the
+ *     line says the comparison was NOT MADE. ⛔ The whole finding deliberately does NOT
+ *     become `unvalidated` there: its subject is the SEAT's report, which WAS measured, and
+ *     spending a blind read of the BRIDGE's own file as if the seat had gone silent is the
+ *     misattribution this card exists to remove, inverted.
+ *
+ * NEVER `fail`, on every arm: a `fail` would exit non-zero over a seat that is idle by
+ * choice, or over a snapshot an operator has decided not to re-deploy yet. The UNREPORTED
+ * arms stay `unvalidated` and never `warn` — telling an operator something is wrong when
+ * the honest statement is that this run learned nothing is the defect the leg was built
+ * against. The MESSAGE carries that bound rather than leaving the severity to imply it —
+ * the remedy for an UNREPORTED seat is to ASK THE SEAT, never to re-provision it.
  *
  * ⚑ THE AGE IS ALWAYS PRINTED, INCLUDING ON THE GREEN LINE. The TTL exists only to stop an
  * ancient stamp reading as current; an operator judging "3h ago" for themselves is worth
@@ -92,6 +116,18 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      * that never asked for it.
      */
     public const ID = 'board_tools.client_half';
+
+    /**
+     * @param  string  $bundledDir  this checkout's `examples/channel-servers` — the
+     *                              reference snapshot a reported client version is compared
+     *                              against. Injected exactly as {@see ChannelSnapshotCheck}
+     *                              takes it, rather than resolved from `base_path()` inside
+     *                              the check, so a test can drive a KNOWN bundled version
+     *                              against a known reported one; reading it here would make
+     *                              every version assertion a function of whatever this
+     *                              repo's snapshot happens to be on the day it runs.
+     */
+    public function __construct(private readonly string $bundledDir) {}
 
     public function id(): string
     {
@@ -173,13 +209,106 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // over a state no writer can produce. NULL falls through with `not_sshd`: an
         // unmeasured row is not a measured negative, and neither is proven. `$provenance`
         // was resolved inside the fail-soft envelope above, for the reason stated there.
+        // ONE clause, appended to BOTH green lines, so the two arms cannot drift into
+        // reporting the seat's version differently — they differ in what they claim about
+        // the CALLER, and nothing about the version depends on that.
+        [$stale, $versionClause] = $this->versionClause($record->clientVersion);
+
         if ($record->provenance === CallProvenance::Sshd) {
-            yield Finding::ok("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.");
+            $sshd = ("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.").' '.$versionClause;
+
+            yield $stale ? Finding::warn($sshd) : Finding::ok($sshd);
 
             return;
         }
 
-        yield Finding::ok("board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it.");
+        $reported = "board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it. ".$versionClause;
+
+        yield $stale ? Finding::warn($reported) : Finding::ok($reported);
+    }
+
+    /**
+     * The version half of a green line: `[isStale, clause]` (card#8974 / DL-364).
+     *
+     * ⛔ `isStale` IS TRUE ON EXACTLY ONE INPUT — a reported version that COMPARED older
+     * than the bundled one. Every other shape (no report, an unreadable bundled manifest, a
+     * current or newer client) is a green line, because none of them measured a stale seat
+     * and a `warn` an operator cannot act on is worse than silence.
+     *
+     * The comparator is {@see ChannelSnapshotManifest::compareVersions()} and NOT PHP's
+     * `version_compare()`, for the reason that method's own docblock gives at length: the
+     * DECLARED AUTHORITY on whether a deployed snapshot is behind is
+     * `bin/provision-board-tools.py`, and `version_compare()` disagrees with it on
+     * pre-release and build tags — so this leg would report STALE on a snapshot the
+     * provisioner calls current, and re-deploying would never clear the line.
+     *
+     * @return array{0: bool, 1: string}
+     */
+    private function versionClause(?string $reported): array
+    {
+        if ($reported === null) {
+            return [false, 'CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.') — the reference channel server sends its own snapshot version from '.ClientVersion::FIRST_REPORTING_SNAPSHOT.' onward, so this call came from an older copy, or from a caller that is not a channel server at all (`bridge:check --probe-tools`, `provision-board-tools.py --self-cert`, a hand-run `bridge:tools-call`). THAT IS NOT EVIDENCE THE SEAT IS STALE — nothing was compared. Re-deploy the seat\'s channel server to get the comparison.'];
+        }
+
+        // ⚑ THE BUNDLED MANIFEST IS THE BRIDGE'S OWN TRACKED FILE, which is why this reads
+        // ChannelSnapshotManifest and NOT ChannelSnapshotProbe. The probe's subject is a
+        // DEPLOYED directory under another OS user's home, and its public surface is pinned
+        // to a single entry point for exactly that reason; this read has nothing to do with
+        // that trust boundary and must not widen it.
+        //
+        // ⛔ THE SEAT'S OPERAND IS CHECKED FIRST, AND IT IS CHECKED AT ALL BECAUSE THE
+        // COMPARATOR COERCES RATHER THAN REFUSING. `ChannelSnapshotManifest::versionTuple()`
+        // takes each dot-separated chunk's LEADING DIGITS and yields 0 where there are none
+        // — deliberately, because it mirrors the declared authority — so a reported `v1.0.0`
+        // becomes [0,0,0] and compares OLDER than every real snapshot. The leg would then
+        // print "v1.0.0 IS OLDER THAN 0.9.15" and instruct a re-deploy: a DOWNGRADE
+        // instruction, derived from a fabricated zero, on the most actionable line this leg
+        // prints. A leading non-digit means the string is not in the comparator's grammar at
+        // all, so there is no comparable operand and this is `Severity` limb (c) — the same
+        // state the bundled-manifest arm below reports, which is why it routes to the same
+        // sentence rather than a second one.
+        //
+        // ⚠ THE PREDICATE IS THE FIRST CHUNK, and the remainder is disclosed rather than
+        // chased: `0.beta.1` still compares (to [0,0,1]) and can still warn. That is not the
+        // same defect — its first chunk IS a number, the authority reads it identically, and
+        // `bin/provision-board-tools.py` would itself replace that snapshot — so the warn
+        // agrees with the tool that acts on it and CLEARS when the operator follows it. A
+        // leading non-digit is the case where the whole tuple is a fabrication.
+        if (preg_match('/^[0-9]/', $reported) !== 1) {
+            return [false, self::notCompared($reported, "`{$reported}` does not begin with a digit, so it is not a version the staleness comparator can order — that comparator matches `bin/provision-board-tools.py`, the tool that actually decides whether a deployed snapshot is replaced, and it reads each dot-separated chunk's leading digits. Comparing it would rank a fabricated 0 rather than the seat's version. Ask that seat what it is running")];
+        }
+
+        $bundled = ChannelSnapshotManifest::readManifest($this->bundledDir.'/package.json');
+        if ($bundled['status'] !== 'ok' || $bundled['version'] === '') {
+            $why = $bundled['status'] !== 'ok'
+                ? ChannelSnapshotManifest::manifestReason($bundled['status'])
+                : 'declares no version';
+
+            return [false, self::notCompared($reported, "this checkout's {$this->bundledDir}/package.json {$why}, so there was no bundled version to compare it against. That file is tracked in this checkout: restore or repair it, and check that this process can read it")];
+        }
+
+        if (ChannelSnapshotManifest::compareVersions($reported, $bundled['version']) < 0) {
+            return [true, "CLIENT VERSION {$reported} IS OLDER THAN THE {$bundled['version']} THIS BRIDGE BUNDLES — that seat runs a STALE channel server, so a tool it does not offer may be missing from ITS copy rather than from this bridge, and reading that as a bridge fault sends the remedy to the wrong side. Re-copy this checkout's {$this->bundledDir} over the seat's deployed directory, run npm ci in it, and RESTART that session: the version is read when the channel server starts, so a re-deploy on its own does not change what this line reports."];
+        }
+
+        return [false, "Client version {$reported} is at or ahead of the {$bundled['version']} this bridge bundles."];
+    }
+
+    /**
+     * The ONE sentence for "a version was reported and no comparison was made", with the
+     * cause named — two callers, one for each operand that can be missing (the SEAT's, when
+     * it is outside the comparator's grammar; the BRIDGE's, when its own manifest will not
+     * read).
+     *
+     * ⛔ ONE SENTENCE AND NOT TWO, because the two causes take different remedies but make
+     * the SAME claim — that the seat reported, and that this run did not rank it. Two
+     * separately-worded arms for one claim is how the pair drift into saying different
+     * things about the finding they both belong to, and the reader has to work out whether
+     * the difference is meaningful.
+     */
+    private static function notCompared(string $reported, string $cause): string
+    {
+        return "The seat reports client version {$reported}, NOT COMPARED — {$cause}. The seat's own report above is unaffected.";
     }
 
     /**

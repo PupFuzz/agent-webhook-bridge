@@ -32,6 +32,13 @@ use Illuminate\Database\Eloquent\Model;
  * not the enum's business: it is a row written before DL-316, carrying no measurement in
  * either direction, and the check reads it as unproven.
  *
+ * ⭐ `client_version` IS THE SEAT'S OWN REPORT OF WHICH SNAPSHOT IT RUNS (card#8974 /
+ * DL-364) — the one column here the FAR END supplies. It is stored exactly as
+ * `App\Bridge\Tools\ClientVersion` reduced it (NAMED, not `{@see}`-linked: pint's docblock
+ * fixer turns a fully-qualified `{@see}` into a real import, and this model must not take
+ * one on a Bridge class): a version-shaped token, or NULL for every way a call can fail to
+ * report one. ⚑ NULL is not an old version; it is no report.
+ *
  * ⛔ NAMES AND TIMESTAMPS ONLY. Nothing on this model may grow a field carrying a secret,
  * a token, or a config VALUE — its whole content is printed by `bridge:check`.
  */
@@ -48,6 +55,7 @@ class BoardToolsClientCall extends Model
         'agent',
         'transport',
         'call_provenance',
+        'client_version',
         'last_success_at',
     ];
 

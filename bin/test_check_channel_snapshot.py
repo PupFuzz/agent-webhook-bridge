@@ -79,7 +79,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # same-namespace, which is why none needs a `use` import — the probe's no-import assertion
 # still holds. Compared by EXACT equality in both directions, so an entry nothing uses
 # fails too: a permission outlives its reason otherwise, and this list is a trust boundary.
-_ALLOWED_PROBE_STATICS = {"self::", "Finding::", "PathVisibility::"}
+# `ChannelSnapshotManifest::` (card#8974 r3) is the manifest reader + version comparator the
+# probe's drift leg uses. It was hoisted OUT of the probe rather than shared FROM it, because
+# sharing from the probe widened the pinned call surface below from one entry point to four
+# — which is what this file's own `test_the_probe_call_site_hands_the_probe_only_strings`
+# caught. It is same-namespace (so the probe's no-import assertion still holds), it reads
+# files and parses JSON and integers and does nothing else, and it is on
+# `_PROBE_COLLABORATORS` so the no-exec scan covers it on the same terms as the probe.
+_ALLOWED_PROBE_STATICS = {"self::", "Finding::", "PathVisibility::", "ChannelSnapshotManifest::"}
 
 # Every class REACHABLE from the probe through the allow-list, scanned for exec
 # primitives on the same terms as the probe itself. Wider than the set above by
@@ -93,6 +100,12 @@ _PROBE_COLLABORATORS = (
     # does not trip the scan for two independent reasons — the `_` before `exec` is in the
     # negative lookbehind, and `executable(` is not `exec\s*\(`.
     "app/Bridge/Support/PathVisibility.php",
+    # The manifest reader/comparator the drift leg delegates to (card#8974 r3). Reaches
+    # nothing else, so this is a leaf: it names no class IN CODE. A grep will show three
+    # `ChannelSnapshotProbe` hits in it — all docblock prose, which `_php_code_only` strips
+    # before the scan, so they are not hops. Said precisely because the looser claim ("names
+    # no class at all") reads as false to anyone who runs that grep.
+    "app/Bridge/Support/ChannelSnapshotManifest.php",
 )
 
 # What may be passed INTO the probe: a variable, a property read chain, a quoted

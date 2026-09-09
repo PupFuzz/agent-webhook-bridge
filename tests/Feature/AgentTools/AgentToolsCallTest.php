@@ -140,6 +140,106 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame(CallProvenance::NotSshd, $row->call_provenance);
     }
 
+    // ─── the caller's own snapshot version (card#8974 / DL-364) ───────────────
+
+    /**
+     * The http door reads the same optional field the ssh door does, out of its own request
+     * shape, and records it on the same row, through the same primitive
+     * (`App\Bridge\Tools\ClientVersion`).
+     *
+     * ⚠ THAT DOES NOT MAKE THE TWO DOORS BYTE-IDENTICAL ON EVERY INPUT, and an earlier
+     * revision of this docblock claimed it did. This door sits behind Laravel's GLOBAL
+     * `TrimStrings` (and `ConvertEmptyStringsToNull`) middleware, so some inputs are
+     * normalised BEFORE the primitive ever sees them; the ssh door reads raw STDIN and gets
+     * them intact. The invariant that holds on both is the one that matters — nothing
+     * outside the whitelist is ever STORED — and the divergence is pinned by name in
+     * test_a_trailing_newline_is_pre_trimmed_by_the_framework_on_this_door.
+     */
+    public function test_a_reported_client_version_is_recorded_on_the_client_half_row(): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x'], 'client_version' => '0.9.14'])->assertStatus(200);
+
+        $this->assertSame('0.9.14', BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
+    }
+
+    /**
+     * ⛔ THE FIELD CANNOT REFUSE, AND THE ASSERTION IS THE FULL RESPONSE RATHER THAN THE
+     * STATUS. This is a NEW ingress key on a live door: if any of these shapes 4xx'd, every
+     * seat that had not been re-deployed would lose its board tools the moment the bridge
+     * upgraded — for an audit column. Both halves are pinned: the call succeeds identically,
+     * and the version is recorded as the honest NULL.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    #[DataProvider('unusableClientVersions')]
+    public function test_an_absent_or_unusable_client_version_is_accepted_exactly_as_before(array $extra): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $response = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']] + $extra);
+
+        $response->assertStatus(200);
+        $response->assertJsonPath('ok', true);
+        $response->assertJsonPath('result.card_id', 1);
+        $this->assertNull(BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version);
+    }
+
+    /**
+     * ⚠ A MEASURED CROSS-DOOR DIVERGENCE, pinned rather than smoothed over. Laravel's global
+     * `TrimStrings` middleware runs before this controller, so `"0.9.14\n"` arrives here
+     * already trimmed and is RECORDED as `0.9.14` — while the ssh door, which reads raw
+     * STDIN, refuses the same bytes and records nothing (`ToolsCallCommandTest`).
+     *
+     * ⛔ IT IS NOT CLOSED BY TRIMMING INSIDE THE PRIMITIVE, which was considered and
+     * rejected: `trim()` removes exactly the trailing newline the old `$` anchor tolerated,
+     * so trimming there would make the `\z` fix UNOBSERVABLE — the anchor mutation would
+     * stop reding, and the control that proves the whitelist is anchored at all would be
+     * destroyed to make a cosmetic difference go away.
+     *
+     * What is asserted is therefore the invariant that holds on BOTH doors and is the one
+     * the whitelist exists for: the call is accepted, and NOTHING CARRYING A NEWLINE is ever
+     * stored — because the row is printed verbatim into a `bridge:check` line.
+     */
+    public function test_a_trailing_newline_is_pre_trimmed_by_the_framework_on_this_door(): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x'], 'client_version' => "0.9.14\n"])
+            ->assertStatus(200);
+
+        $stored = BoardToolsClientCall::query()->where('agent', 'me')->sole()->client_version;
+
+        $this->assertSame('0.9.14', $stored, 'the framework trims this door\'s input before the controller reads it');
+        $this->assertStringNotContainsString("\n", (string) $stored);
+    }
+
+    /** @return array<string, array{0: array<string, mixed>}> */
+    public static function unusableClientVersions(): array
+    {
+        return [
+            'no key at all (a client older than the first reporting snapshot)' => [[]],
+            'a number rather than a string' => [['client_version' => 9]],
+            'an object' => [['client_version' => ['0.9.14']]],
+            'an empty string' => [['client_version' => '']],
+            // ⚠ THE TRAILING-NEWLINE SHAPE IS NOT IN THIS PROVIDER, and the reason is a
+            // measured difference between the doors — see
+            // test_a_trailing_newline_is_pre_trimmed_by_the_framework_on_this_door below.
+            'a newline forging a second bridge:check line' => [['client_version' => "0.9.14\nboard_tools: ALL CLEAR"]],
+            'longer than the column' => [['client_version' => '1.0.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']],
+        ];
+    }
+
     // ─── loopback gate ───────────────────────────────────────────────────────
 
     public function test_non_loopback_peer_is_refused_and_creates_nothing(): void
