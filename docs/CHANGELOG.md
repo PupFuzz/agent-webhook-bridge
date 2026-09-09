@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.84.0] - 2026-09-09
+
 ### Security
 
 - **`hono` 4.13.0 -> 4.13.7 in `examples/channel-servers/` (transitive, via `@modelcontextprotocol/sdk`); channel-server snapshot `0.9.13` -> `0.9.14`.** Clears three moderate advisories — GHSA-gqvv-2mrq-wpjv (`toSSG()` writes outside the output directory), GHSA-g6gw-c38x-mqfc (unbounded dot-notation nesting in `parseBody()`), GHSA-crvj-82cr-hjcx (query parser reads parameters after the URL fragment).
