@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\Support;
 
+use App\Bridge\Exceptions\PathResolvesToNoFileException;
 use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\UntrustedPathContents;
 use Tests\TestCase;
@@ -39,14 +40,31 @@ class UntrustedPathContentsTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach ((array) glob($this->dir.'/*') as $f) {
-            if (is_string($f)) {
-                @chmod($f, 0o644);
-                is_dir($f) && ! is_link($f) ? @rmdir($f) : @unlink($f);
-            }
-        }
-        @rmdir($this->dir);
+        self::removeTree($this->dir);
         parent::tearDown();
+    }
+
+    /**
+     * Recursive on purpose: an arm here leaves a populated directory (and one at mode 0000),
+     * and a flat sweep would strand it in the system temp dir on every run. `is_link` is
+     * checked BEFORE `is_dir` because a symlink to a directory answers both, and rmdir is not
+     * how you remove a link.
+     */
+    private static function removeTree(string $dir): void
+    {
+        @chmod($dir, 0o700);
+        foreach ((array) glob($dir.'/*') as $f) {
+            if (! is_string($f)) {
+                continue;
+            }
+            if (! is_link($f) && is_dir($f)) {
+                self::removeTree($f);
+
+                continue;
+            }
+            @unlink($f);
+        }
+        @rmdir($dir);
     }
 
     // ---- the ordinary answers, unchanged from the reader this one replaces ----------
@@ -220,5 +238,132 @@ class UntrustedPathContentsTest extends TestCase
         file_put_contents($path, str_repeat('x', 4096));
 
         $this->assertSame(4096, strlen((string) UntrustedPathContents::read($path, 'thing')));
+    }
+
+    // ---- WHICH KIND of refusal: establishing vs withholding (card#9037 r1) -------------
+    // ⛔ THE ONE THING A CALLER SPENDS. A caller that already models "there is nothing here"
+    // as an ANSWER routes the establishing refusals onto that arm; routing them all onto
+    // "could not look" is what silently retired an exit-code-bearing FAIL. Each case below
+    // asserts the TYPE, and every establishing case has a withholding twin so the split
+    // cannot be satisfied by answering one way for everything.
+
+    public function test_a_directory_establishes_that_no_bytes_are_at_the_path(): void
+    {
+        mkdir($this->dir.'/subdir', 0o700);
+
+        try {
+            UntrustedPathContents::read($this->dir.'/subdir', 'authorized_keys');
+            $this->fail('a directory was not refused');
+        } catch (PathResolvesToNoFileException $e) {
+            $this->assertStringContainsString('directory', $e->getMessage());
+        }
+    }
+
+    public function test_a_character_device_establishes_that_no_bytes_are_at_the_path(): void
+    {
+        $this->expectException(PathResolvesToNoFileException::class);
+        UntrustedPathContents::read('/dev/null', 'authorized_keys');
+    }
+
+    public function test_a_fifo_establishes_that_no_bytes_are_at_the_path(): void
+    {
+        // ⚠ Only the STATIC FIFO is measurable here, and that is the point of the residue
+        // note on the class: it is refused at the `lstat`, BEFORE the open that would block
+        // on it. A FIFO swapped in AFTER that measurement wedges the open, and no test in
+        // this file can drive that without hanging the suite it runs in.
+        // ⛔ SO THIS CASE HANGS UNDER THE TYPE-GUARD MUTATION — measured, and not a flaky
+        // test: remove the `isRegular` refusals to check that they discriminate and THIS
+        // fixture reaches the unguarded `fopen` and blocks forever. Exclude it from that
+        // one mutation run; the wedge it demonstrates is the residue itself.
+        if (! function_exists('posix_mkfifo')) {
+            $this->markTestSkipped('no posix_mkfifo on this build');
+        }
+        $path = $this->dir.'/fifo';
+        $this->assertTrue(posix_mkfifo($path, 0o600), 'could not create the fixture FIFO');
+
+        try {
+            UntrustedPathContents::read($path, 'authorized_keys');
+            $this->fail('a FIFO was not refused');
+        } catch (PathResolvesToNoFileException $e) {
+            $this->assertStringContainsString('FIFO', $e->getMessage());
+        }
+    }
+
+    public function test_a_dangling_symlink_establishes_that_no_bytes_are_at_the_path(): void
+    {
+        symlink($this->dir.'/never-created', $this->dir.'/dangling2');
+
+        $this->expectException(PathResolvesToNoFileException::class);
+        UntrustedPathContents::read($this->dir.'/dangling2', 'authorized_keys');
+    }
+
+    public function test_a_symlink_to_a_directory_establishes_that_no_bytes_are_at_the_path(): void
+    {
+        mkdir($this->dir.'/adir', 0o700);
+        symlink($this->dir.'/adir', $this->dir.'/link-to-dir');
+
+        $this->expectException(PathResolvesToNoFileException::class);
+        UntrustedPathContents::read($this->dir.'/link-to-dir', 'authorized_keys');
+    }
+
+    public function test_a_symlink_to_a_regular_file_withholds_rather_than_establishing(): void
+    {
+        // ⭐ THE TWIN of the dangling case, and the reason the primitive takes a second,
+        // FOLLOWING stat: this link names bytes that really exist and that a follower of the
+        // path really reads. We decline to attribute them — which establishes NOTHING, and
+        // must not be spendable as "there is nothing here".
+        file_put_contents($this->dir.'/real', "x\n");
+        symlink($this->dir.'/real', $this->dir.'/link-to-real');
+
+        try {
+            UntrustedPathContents::read($this->dir.'/link-to-real', 'authorized_keys');
+            $this->fail('a symlink to a regular file was not refused');
+        } catch (UnreadableFileException $e) {
+            $this->assertNotInstanceOf(PathResolvesToNoFileException::class, $e);
+            $this->assertStringContainsString('symbolic link to a regular file', $e->getMessage());
+        }
+    }
+
+    public function test_a_symlink_this_process_cannot_resolve_withholds_rather_than_establishing(): void
+    {
+        // ⛔ A FAILED stat IS NOT AN ABSENCE (card#5698). This link's target is really there;
+        // only the traversal is denied — and the naive "stat said false, so it is dangling"
+        // rule would answer ESTABLISHED here, handing a caller a measured-absence claim over
+        // a file it merely could not see.
+        mkdir($this->dir.'/closed', 0o700);
+        file_put_contents($this->dir.'/closed/target', "x\n");
+        symlink($this->dir.'/closed/target', $this->dir.'/link-into-closed');
+        chmod($this->dir.'/closed', 0o000);
+        clearstatcache();
+        if (@stat($this->dir.'/closed/target') !== false) {
+            @chmod($this->dir.'/closed', 0o700);
+            $this->markTestSkipped('this uid traverses a 0000 directory (root?), so the arm has nothing to measure');
+        }
+
+        try {
+            UntrustedPathContents::read($this->dir.'/link-into-closed', 'authorized_keys');
+            $this->fail('an unresolvable symlink was not refused');
+        } catch (UnreadableFileException $e) {
+            $this->assertNotInstanceOf(PathResolvesToNoFileException::class, $e);
+            $this->assertStringContainsString('could not resolve', $e->getMessage());
+        } finally {
+            @chmod($this->dir.'/closed', 0o700);
+        }
+    }
+
+    public function test_a_file_past_the_bound_withholds_rather_than_establishing(): void
+    {
+        // The size refusal is the OTHER accepted cost: this run did not read the file, so it
+        // knows nothing about what is in it — including whether it holds the line a caller is
+        // looking for. Establishing would be a lie about a file that certainly has content.
+        $path = $this->dir.'/huge2';
+        file_put_contents($path, str_repeat('k', UntrustedPathContents::MAX_BYTES + 1));
+
+        try {
+            UntrustedPathContents::read($path, 'authorized_keys');
+            $this->fail('an oversize file was not refused');
+        } catch (UnreadableFileException $e) {
+            $this->assertNotInstanceOf(PathResolvesToNoFileException::class, $e);
+        }
     }
 }

@@ -132,6 +132,35 @@ class SystemSshProbeEnvironmentTest extends TestCase
         @unlink($target);
     }
 
+    public function test_a_path_sshd_can_take_no_keys_from_reads_as_consulted_and_empty(): void
+    {
+        // ⛔ THE EXIT CODE LIVES ON THIS ANSWER. `consulted` is what keeps the authoritative
+        // not-wired FAIL reachable, and a directory or a dangling symlink at this name is a
+        // path sshd reads and takes NOTHING from — an established absence, exactly like no
+        // file at all. Routing it to `unreadable()` is what let the inspected account
+        // suppress root's own FAIL with one `mkdir` (card#9037 r1).
+        $dirPath = $this->dir.'/.ssh/authorized_keys';
+        mkdir($dirPath, 0o700);
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($dirPath);
+        $this->assertTrue($read->consulted, 'a directory at authorized_keys was not CONSULTED');
+        $this->assertNull($read->text);
+        rmdir($dirPath);
+
+        symlink($this->dir.'/.ssh/nothing-here', $dirPath);
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($dirPath);
+        $this->assertTrue($read->consulted, 'a dangling symlink at authorized_keys was not CONSULTED');
+        $this->assertNull($read->text);
+
+        // The control, from the other side of the split: a symlink to a REGULAR file is the
+        // one shape that withholds, so this pair cannot be satisfied by answering
+        // "consulted" for every refusal.
+        @unlink($dirPath);
+        file_put_contents($this->dir.'/real-keys', "# a comment\n");
+        symlink($this->dir.'/real-keys', $dirPath);
+        $this->assertFalse((new SystemSshProbeEnvironment)->readAuthorizedKeys($dirPath)->consulted);
+        @unlink($this->dir.'/real-keys');
+    }
+
     public function test_an_authorized_keys_past_the_read_bound_is_not_consulted(): void
     {
         // The size half of the same adoption. The old reader had no bound at all, and

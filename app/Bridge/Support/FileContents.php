@@ -36,9 +36,10 @@ use App\Bridge\Exceptions\UnreadableFileException;
  * Everything above reasons about WHICH UID THE ANSWER IS FOR. None of it reasons about WHO
  * CONTROLS THE PATH — and where the reader is more privileged than the account owning the
  * directory (root reading `~agent/.ssh/…`), that account decides what this read opens:
- * `is_file()` stats the TARGET, so a symlink to any file on the box passes it, and
- * `file_get_contents()` then reads whatever it names with no bound (`/proc/kcore` is
- * `is_file()`-true). This class is correct for a file the reader's own privilege level put
+ * `is_file()` follows the link and answers about the TARGET, so a symlink to any REGULAR file
+ * on the box passes it (`/proc/kcore` included; a symlink to a FIFO, socket or device does
+ * NOT — `is_file()` is false for those, which is the one part of this the predicate gets
+ * right), and `file_get_contents()` then reads whatever it named with no bound. This class is correct for a file the reader's own privilege level put
  * there — the bridge's own state, config and secret files, which is what every remaining call
  * site here reads. A leg reading a path a LOWER-TRUST
  * principal controls wants {@see UntrustedPathContents} instead — it takes the same
