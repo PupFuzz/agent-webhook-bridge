@@ -126,7 +126,7 @@ final class JobsPostureCheck implements Check
                 .'. NO pass runs on either ingress until it is fixed (the value is refused, never clamped).');
         }
 
-        yield from $this->tickFindings();
+        yield from $this->tickFindings($jobs);
         yield from $this->instanceFindings($jobs);
         yield from $this->passErrorFindings();
 
@@ -134,9 +134,10 @@ final class JobsPostureCheck implements Check
     }
 
     /**
+     * @param  Collection<int, ScheduledJob>  $jobs
      * @return iterable<Finding>
      */
-    private function tickFindings(): iterable
+    private function tickFindings(Collection $jobs): iterable
     {
         // A declaration that cannot be READ is not the same state as no declaration: it
         // reads as "not adopted" everywhere else, so this is the only place an operator
@@ -148,9 +149,35 @@ final class JobsPostureCheck implements Check
 
         $posture = TickRecord::posture();
 
-        // Not adopted ⇒ NOTHING. The event gate is the default ingress and is complete on
-        // its own; an install that never added a crontab line is not missing one.
+        // ⛔ NOT ADOPTED IS TWO DIFFERENT INSTALLS, AND THE COUNT IS WHAT TELLS THEM APART
+        // (card#9099). The sentence this arm used to carry — *an install that never added a
+        // crontab line is not missing one* — is TRUE of an EMPTY registry and FALSE the moment
+        // an enabled instance exists, and the old early return could not see the difference
+        // because it never looked at the population.
+        //
+        // The event gate is a complete ingress only for an install that RECEIVES SOMETHING: its
+        // clock IS the traffic ({@see JobSchedulerGate}, DL-306), so on a quiet install an
+        // enabled instance enumerates healthy in `bridge:jobs` and never fires, with the absence
+        // of the work as the operator's only signal. That is DL-012's silent inertness wearing
+        // the registry's listing.
+        //
+        // ⚑ `warn`, NOT `fail`, and the exit code deliberately does not move: on a busy install
+        // those instances genuinely DO run, so the population is degraded rather than dead and
+        // this leg cannot tell which install it is on. Not `unvalidated` either — nothing
+        // stopped the measurement; the leg asked its question and got an answer.
         if (! $posture->adopted) {
+            $exposed = $jobs->filter(static fn (ScheduledJob $j): bool => (bool) $j->enabled);
+
+            if ($exposed->isNotEmpty()) {
+                yield Finding::warn('jobs: this install holds '.$exposed->count().' ENABLED periodic instance(s) — '
+                    .$exposed->pluck('name')->implode(', ')
+                    .' — and has adopted NO tick, so their only ingress is the inbound webhook\'s after-response gate. '
+                    .'On an install receiving no deliveries that gate never evaluates and they never run, while '
+                    .'`bridge:jobs` keeps enumerating them as healthy. Adopt the tick with '
+                    .'`php artisan bridge:jobs install-tick` (it prints the line, asks, and installs on yes), or accept '
+                    .'the event gate deliberately if this install is known to be busy. This does NOT move the exit code.');
+            }
+
             return;
         }
 

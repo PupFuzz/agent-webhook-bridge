@@ -8,6 +8,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#9099 (DL-362)** — **`bridge:check` now WARNS when this install holds enabled periodic instances and has adopted no tick, and `bridge:jobs install-tick` offers the line and installs it on an explicit yes.** A job added to the registry on a tick-less install could enumerate healthy in `bridge:jobs` and **never fire**, with nothing anywhere saying so: `JobsPostureCheck::tickFindings()` returned before speaking whenever no tick was adopted, on the reasoning that *an install that never added a crontab line is not missing one* — true of an EMPTY registry, false the moment an enabled instance exists, and the early return never looked at the population. On a quiet install the after-response event gate never evaluates (its clock IS the traffic, DL-306), so the work simply does not happen and the absence is the only signal.
+  - **What prints:** one `warn` naming the exposed instances and the remedy. ⚑ **`warn`, and NO exit code moves** — on a busy install those instances genuinely do run off the event gate, so the leg cannot tell a degraded install from a healthy one and must not claim it can. Not `unvalidated` either: nothing stopped the measurement.
+  - ⭐ **The discriminator is the ENABLED count, not the row count.** A disabled instance is a decision somebody made, not work silently not happening, so a registry of only disabled rows stays silent — mutation-proven (ignoring `enabled` reds that case and only that case).
+  - **`bridge:jobs install-tick`** prints this install's own line, asks, and installs on yes. ⛔ **ORDERING IS LOAD-BEARING** — adoption is TWO things, the crontab LINE and the declared HORIZON (`BRIDGE_JOBS_TICK_EXPECTED_EVERY`, which is what `TickPosture` actually reads). Declaring the horizon with no line running yields `adopted` + never-asserted: **a live false alarm on an install with no clock.** The line goes FIRST, so a refusal or failure of the second half lands in `TickState::Undeclared` — the line runs, the alarm is not armed — which is benign and already reported. Canon #14's refusable-part-first rule.
+  - ⚑ **It refuses rather than guesses** — as root (the line belongs in the seat-owner's own crontab, never root's), with no TTY and no `--yes` (the confirmation IS the gate), when the base path does not render a line that runs, and when a `bridge:tick` line is already present (ONE LINE PER INSTALL; a second loses the shared pass lock and skips).
+  - ⛔ **`JobRegistry::insert()` LOGS and does not act.** It is callable at runtime from any subsystem including inside a web request as the FPM user — an account with typically no crontab, no TTY, and no business mutating host scheduling as the side effect of a data write. Adopting the tick stays the operator's act (DL-361); the first insert on a tick-less install now logs at **warning** level naming the ingress and the remedy.
+  - **`TickAdoptionNotice::forThisInstall()`** hoists the four-argument wiring at its second real caller (canon #5); `ProvisionToolsCommand` migrated to it, so the two sites cannot assemble a notice able to disagree with itself.
+  - **No migration, no new config key, no route change, and nothing the receiver accepts or rejects moves.**
+
 ## [0.83.0] - 2026-09-09
 
 ### Added

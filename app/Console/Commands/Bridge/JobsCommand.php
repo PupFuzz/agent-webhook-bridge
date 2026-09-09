@@ -7,11 +7,13 @@ use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Scheduling\JobSpecException;
+use App\Bridge\Scheduling\TickAdoptionNotice;
 use App\Bridge\Scheduling\TickAssertRecord;
 use App\Bridge\Scheduling\TickRecord;
 use App\Models\ScheduledJob;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Process\Process;
 
 /**
  * THE AUDIT SURFACE for the periodic-job registry (card#8425 / DL-325), and the operator's
@@ -50,7 +52,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 class JobsCommand extends BridgeCommand
 {
     protected $signature = 'bridge:jobs '
-        .'{action=list : list|add|remove|enable|disable|run} '
+        .'{action=list : list|add|remove|enable|disable|run|install-tick} '
         .'{name? : the instance name, for add/remove/enable/disable} '
         .'{--handler= : the registered handler an added instance invokes} '
         .'{--interval= : seconds between passes} '
@@ -59,7 +61,8 @@ class JobsCommand extends BridgeCommand
         .'{--justification= : REQUIRED on add — one sentence on why this cannot be event-driven} '
         .'{--payload= : JSON handler input} '
         .'{--json : machine-readable output} '
-        .'{--assert-tick : list only — exit non-zero when a DECLARED tick is not fresh}';
+        .'{--assert-tick : list only — exit non-zero when a DECLARED tick is not fresh} '
+        .'{--yes : install-tick only — skip the confirmation prompt (the prompt IS the gate; pass this only in a runbook you own)}';
 
     protected $description = 'Enumerate and edit the periodic-job registry; report tick freshness';
 
@@ -75,6 +78,134 @@ class JobsCommand extends BridgeCommand
         return $this->guardDatabase($this->handleGuarded(...), $this->stderr());
     }
 
+    /**
+     * Offer this install's own `bridge:tick` crontab line and, on an explicit yes, install it
+     * (card#9099).
+     *
+     * ⛔ THE ORDER OF THE TWO WRITES IS THE WHOLE DESIGN, and it is canon #14's
+     * refusable-part-first rule on a two-part mutation. Adoption is TWO independent things: the
+     * crontab LINE (the clock) and the declared HORIZON (`BRIDGE_JOBS_TICK_EXPECTED_EVERY`,
+     * which is what {@see TickPosture} actually reads). Declaring the horizon while no line runs
+     * produces `adopted` + never-asserted — a LIVE FALSE ALARM on an install with no clock. The
+     * inverse leaves `TickState::Undeclared`: the line runs, the alarm is not armed, which is
+     * benign and which `TickAdoptionNotice::alreadyTicking()` already reports. So the line goes
+     * FIRST and the horizon SECOND, and any refusal or failure of the second half lands in the
+     * benign state rather than the alarming one.
+     *
+     * ⚑ IT REFUSES RATHER THAN GUESSES, in four places: as root (the line belongs in the
+     * seat-owner account's own crontab, never root's — the notice has said so since DL-361);
+     * with no TTY and no `--yes` (the confirmation IS the gate, so a non-interactive run must
+     * not silently mutate a crontab); when the base path cannot be rendered into a line that
+     * runs; and when a `bridge:tick` line is already present, because a second line loses the
+     * shared pass lock and skips.
+     */
+    private function installTick(): int
+    {
+        $notice = TickAdoptionNotice::forThisInstall();
+
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->stderr()->writeln('bridge:jobs install-tick: REFUSED as root. The tick line belongs in the '
+                ."seat-owner account's OWN crontab, never root's — a root tick runs every job as root. Re-run as the "
+                .'account that owns this checkout.');
+
+            return self::FAILURE;
+        }
+
+        $line = $notice->crontabLine();
+        if ($line === null) {
+            $this->stderr()->writeln('bridge:jobs install-tick: this install\'s base path does not render into a '
+                .'crontab line that would run (a space or a shell metacharacter in the path). Nothing was changed.');
+
+            return self::FAILURE;
+        }
+
+        $existing = $this->readCrontab();
+        if ($existing === null) {
+            $this->stderr()->writeln('bridge:jobs install-tick: could not read this account\'s crontab (`crontab -l`). '
+                .'Nothing was changed — a crontab this command cannot read is one it must not overwrite.');
+
+            return self::FAILURE;
+        }
+
+        if (str_contains($existing, 'bridge:tick')) {
+            $this->line('bridge:jobs install-tick: a `bridge:tick` line is ALREADY in this account\'s crontab. '
+                .'Nothing was changed — ONE LINE PER INSTALL, and a second would lose the shared pass lock and skip.');
+            $this->line('  If the bridge still reports no tick, the LINE is not the problem: `php artisan bridge:jobs` '
+                .'shows what the bridge can see, and a cleared cache store loses the record without stopping the line.');
+
+            return self::SUCCESS;
+        }
+
+        $this->line('This install has adopted no tick. The line below would be added to THIS account\'s crontab:');
+        $this->line('');
+        $this->line('  '.$line);
+        $this->line('');
+
+        if (! $notice->interpreterIsNamed()) {
+            $this->line('⚠ The interpreter could not be named absolutely, so the line falls back to a bare `php` — '
+                .'which is an assumption about cron\'s minimal PATH, not a fact about it. Check it runs.');
+        }
+
+        if (! $this->option('yes')) {
+            if (! $this->input->isInteractive()) {
+                $this->stderr()->writeln('bridge:jobs install-tick: REFUSED — no TTY to confirm on and no `--yes`. '
+                    .'The confirmation IS the gate; this command does not mutate a crontab unasked.');
+
+                return self::FAILURE;
+            }
+
+            if (! $this->confirm('Install this line into your crontab now?', false)) {
+                $this->line('Nothing was changed.');
+
+                return self::SUCCESS;
+            }
+        }
+
+        if (! $this->writeCrontab(rtrim($existing, "\n")."\n".$line."\n")) {
+            $this->stderr()->writeln('bridge:jobs install-tick: `crontab -` refused the new table. Nothing was changed.');
+
+            return self::FAILURE;
+        }
+
+        $this->line('✓ crontab line installed.');
+
+        // SECOND, and only now: the alarm. Everything below can fail or be declined and this
+        // install is still strictly better off than it started — the clock runs.
+        $this->line('');
+        $this->line('The clock now runs. What is NOT yet armed is the ALARM that tells you when it stops: '
+            .'declare the horizon so a dead line goes LOUD instead of sitting silent.');
+        $this->line('  BRIDGE_JOBS_TICK_EXPECTED_EVERY='.TickAdoptionNotice::horizonS().'   (in .env)');
+        $this->line('  ⚠ a .env edit is INERT under `php artisan config:cache` until the cache is rebuilt.');
+        $this->line('  Then wire something that ASKS: `php artisan bridge:jobs --assert-tick`, from a session-start '
+            .'hook or any periodic runbook step. A declared horizon nothing ever reads is a dead alarm that reads '
+            .'as coverage.');
+
+        return self::SUCCESS;
+    }
+
+    /** This account's crontab text, '' when it has none, or null when it could not be read. */
+    private function readCrontab(): ?string
+    {
+        $proc = new Process(['crontab', '-l']);
+        $proc->run();
+
+        if ($proc->isSuccessful()) {
+            return $proc->getOutput();
+        }
+
+        // `crontab -l` exits non-zero with "no crontab for <user>" when the account simply has
+        // none — an EMPTY table, not an unreadable one, and the two take opposite actions.
+        return str_contains(strtolower($proc->getErrorOutput()), 'no crontab for') ? '' : null;
+    }
+
+    private function writeCrontab(string $table): bool
+    {
+        $proc = new Process(['crontab', '-'], null, null, $table);
+        $proc->run();
+
+        return $proc->isSuccessful();
+    }
+
     private function handleGuarded(): int
     {
         return match ((string) $this->argument('action')) {
@@ -84,6 +215,7 @@ class JobsCommand extends BridgeCommand
             'enable' => $this->mutate('enable'),
             'disable' => $this->mutate('disable'),
             'run' => $this->runPassNow(),
+            'install-tick' => $this->installTick(),
             default => $this->unknownAction(),
         };
     }
