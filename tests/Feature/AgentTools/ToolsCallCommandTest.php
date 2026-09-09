@@ -423,6 +423,92 @@ class ToolsCallCommandTest extends TestCase
     // ─── the cross-door contract (DL-326 Decision 7) ─────────────────────────
 
     /**
+     * A two-column board plus one card in each, for the `stage` cross-door legs below.
+     */
+    private function fakeTwoColumnBoard(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [
+                    ['id' => 50, 'name' => 'Backlog', 'position' => 1],
+                    ['id' => 51, 'name' => 'In Review', 'position' => 2],
+                ]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'a', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+                ['id' => 2, 'name' => 'b', 'workflow_stage_id' => 51, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+            ], 'links' => ['next' => null]]),
+        ]);
+    }
+
+    /** @return array<string, array{0: mixed}> */
+    public static function emptyStageArguments(): array
+    {
+        return [
+            'an empty string' => [''],
+            'whitespace only' => ['   '],
+            'a non-breaking space only' => ["\u{00A0}"],
+            'an explicit null' => [null],
+        ];
+    }
+
+    /**
+     * ⭐ THE SSH HALF OF THE `stage` CROSS-DOOR CONTRACT (card#8985 r1), and neither half
+     * can stand for the other. Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull`
+     * run on the HTTP door and NOT here, so every shape below arrives at the tool as a
+     * present-and-NULL `stage` there and as its literal self here. While the tool folded
+     * present-null into "absent", the HTTP door silently DROPPED the filter and returned
+     * the whole capped lane — more cards than the caller asked for — and this door refused
+     * the identical input. Only an ABSENT key means "no filter", on both.
+     *
+     * ⚑ RED-WHEN-REVERTED: restore `|| $args['stage'] === null` to the absent-check in
+     * `BoardMyCardsTool::stageFilter()` and the HTTP leg goes green-but-wrong (200, whole
+     * lane) while this one stays red for `null`; drop the empty-after-trim check and the
+     * string shapes here return the whole lane too.
+     */
+    #[DataProvider('emptyStageArguments')]
+    public function test_an_empty_stage_is_refused_on_this_door_as_it_is_on_http(mixed $value): void
+    {
+        $this->writeSshAgent();
+        $this->fakeTwoColumnBoard();
+
+        $r = $this->runCommand('me', (string) json_encode([
+            'tool' => 'board_my_cards', 'args' => ['stage' => $value],
+        ]));
+
+        $this->assertSame(1, $r['exit'], 'stdout: '.$r['stdout']);
+        $body = json_decode($r['stdout'], true);
+        $this->assertFalse($body['ok']);
+        $this->assertStringContainsString('EMPTY', (string) json_encode($body));
+    }
+
+    /**
+     * The same rule from the other side, and the leg that pins WHICH trim. `Str::trim` —
+     * what `TrimStrings` uses — strips a non-breaking space; PHP's ASCII `trim()` does not.
+     * So a name carrying one resolved at the HTTP door and was refused here until the tool
+     * normalised with the framework's own primitive.
+     *
+     * ⚑ RED-WHEN-REVERTED: swap `Str::trim` back to `trim` in `stageFilter()` and this
+     * exits 1 while its HTTP twin still passes.
+     */
+    public function test_a_stage_name_with_invisible_padding_resolves_on_this_door_as_it_does_on_http(): void
+    {
+        $this->writeSshAgent();
+        $this->fakeTwoColumnBoard();
+
+        $r = $this->runCommand('me', (string) json_encode([
+            'tool' => 'board_my_cards', 'args' => ['stage' => "In Review\u{00A0}"],
+        ]));
+
+        $this->assertSame(0, $r['exit'], 'stdout: '.$r['stdout']);
+        $body = json_decode($r['stdout'], true);
+        $this->assertSame(51, $body['result']['cards_window']['stage_filter']);
+        $this->assertSame([2], array_column($body['result']['cards_by_stage']['In Review'], 'id'));
+    }
+
+    /**
      * ⭐ THIS DOOR IS THE ONLY PLACE THE CLEAR-A-DESCRIPTION RULE CAN BE MEASURED. Laravel's
      * global `TrimStrings` + `ConvertEmptyStringsToNull` run on the HTTP door and NOT here —
      * `bridge:tools-call` json_decodes the body itself — so `"   "` arrives at the tool as

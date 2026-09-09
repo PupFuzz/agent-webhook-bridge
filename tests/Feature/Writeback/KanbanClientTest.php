@@ -860,6 +860,53 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client()->boardStageIdsByName(8));
     }
 
+    /**
+     * ⭐ THE MAP IS IN COLUMN ORDER, AND A TWO-WORKFLOW BOARD IS WHAT MAKES THAT
+     * FALSIFIABLE (card#8985 r2). `board_my_cards` publishes this map to seats as the
+     * board's own column list. `preloadStages()` CONCATENATES workflows, so payload order
+     * and column order are the same thing only on a single-workflow board whose array
+     * happens to be sorted — which is exactly the fixture every earlier test here used, so
+     * an unordered projection could not fail against any of them.
+     *
+     * The fixture answers `position` in the REVERSE of its array order, across two
+     * workflows, so "sorted by position" and "as the payload listed them" separate
+     * completely. ⚑ RED-WHEN-REVERTED: drop the `usort` and this answers 51, 52, 50.
+     */
+    public function test_stage_names_come_back_in_the_boards_own_column_order_not_the_payloads(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [
+                ['id' => 51, 'name' => 'Done', 'position' => 3.0],
+                ['id' => 52, 'name' => 'In Review', 'position' => 2.0],
+            ]],
+            ['stages' => [
+                ['id' => 50, 'name' => 'Backlog', 'position' => 1.0],
+            ]],
+        ]]])]);
+
+        $this->assertSame([50 => 'Backlog', 52 => 'In Review', 51 => 'Done'], $this->client()->boardStageNames(8));
+    }
+
+    /**
+     * ⛔ A STAGE WITH NO READABLE POSITION IS ORDERED LAST, NEVER DROPPED — the difference
+     * between this method and `boardStageOrder()`, which legitimately skips it. This map is
+     * the one list a seat uses to discover its own board, so hiding a column from it is a
+     * worse failure than an imperfect order. ⚑ RED-WHEN-REVERTED: skip position-less rows
+     * the way `boardStageOrder()` does and `Triage` disappears from the answer.
+     */
+    public function test_a_stage_with_no_readable_position_is_ordered_last_rather_than_dropped(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [
+                ['id' => 60, 'name' => 'Triage'],
+                ['id' => 61, 'name' => 'Doing', 'position' => 2.0],
+                ['id' => 62, 'name' => 'Backlog', 'position' => 1.0],
+            ]],
+        ]]])]);
+
+        $this->assertSame([62 => 'Backlog', 61 => 'Doing', 60 => 'Triage'], $this->client()->boardStageNames(8));
+    }
+
     public function test_a_board_that_genuinely_has_no_workflows_logs_nothing(): void
     {
         Log::shouldReceive('warning')->never();
