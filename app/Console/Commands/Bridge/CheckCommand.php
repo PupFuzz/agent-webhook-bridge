@@ -64,6 +64,7 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\ConfigSeenLedger;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -995,6 +996,14 @@ class CheckCommand extends BridgeCommand
      * fall-through, which is the shape that let an unknown severity print green in
      * the first place — one level over. A fifth case reds phpstan at both.
      *
+     * UNTRUSTED SPANS ARE ESCAPED HERE AND NOWHERE ELSE (card#9121, DL-366). A finding may
+     * carry bytes a foreign principal wrote — today the channel bind-FAILURE marker's
+     * detail — and this is the boundary where they become a terminal line. The rule lives
+     * in `App\Bridge\Support\UntrustedText` so a second producer does not re-implement it,
+     * and it is applied INSIDE the format gate below: `--format=json` carries
+     * `Finding::$message` verbatim to consumers already parsing it, so sanitising it here
+     * would be a shape change with no schema bump to warn them.
+     *
      * ONLY THE RENDER ARM IS GATED ON THE FORMAT (DL-249 stage 9); the tally and the
      * RETURN run either way, and that asymmetry is the exit contract's guarantee. A
      * `--format=json` run walks the identical decision path — the same checks, the same
@@ -1013,6 +1022,15 @@ class CheckCommand extends BridgeCommand
         }
 
         if (! $this->json) {
+            // THE ONE PLACE UNTRUSTED FINDING DETAIL IS MADE SAFE FOR A TERMINAL
+            // (card#9121, DL-366), and it is INSIDE the format gate on purpose: the JSON
+            // document reads `Finding::$message` and must stay byte-identical for the
+            // consumers already parsing it, so the escape is a property of the terminal
+            // rendering and of nothing else. The rule itself is `UntrustedText`'s, applied
+            // to the spans a check DECLARED it did not author; a message with none declared
+            // comes back identical, so this is a no-op on every finding the bridge wrote.
+            $message = UntrustedText::renderInto($message, $finding->untrusted);
+
             match ($finding->severity) {
                 Severity::Fail => $this->error($message),
                 Severity::Warn => $this->warn($message),

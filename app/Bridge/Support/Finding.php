@@ -24,10 +24,13 @@ final class Finding
      * construct one: a fourth such site could have minted the severity with nothing keyed
      * on the factory name able to see it. Closing the door makes the construction-site pin
      * in `UnvalidatedCallSiteTest` exhaustive BY CONSTRUCTION rather than by grep coverage.
+     *
+     * @param  list<string>  $untrusted  spans of `$message` this install did NOT author — see {@see self::carryingUntrusted()}
      */
     private function __construct(
         public readonly Severity $severity,
         public readonly string $message,
+        public readonly array $untrusted = [],
     ) {}
 
     public static function ok(string $message): self
@@ -68,6 +71,27 @@ final class Finding
      */
     public function scoped(string $scope): self
     {
-        return new self($this->severity, $scope.': '.$this->message);
+        return new self($this->severity, $scope.': '.$this->message, $this->untrusted);
+    }
+
+    /**
+     * The same finding, recording that `$raw` — a span it already interpolated verbatim —
+     * came from a principal this install does not vouch for (card#9121, DL-366).
+     *
+     * ⛔ IT ESCAPES NOTHING AND CHANGES NO BYTE OF `$message`, and that is the whole design.
+     * `bridge:check --format=json` carries `findings[].message` to machine consumers
+     * verbatim; sanitising here would change those bytes for every consumer at once with no
+     * schema bump to warn them. What this records is WHERE the seam is — the one fact only
+     * the call site knows — so that the TERMINAL renderer can apply
+     * {@see UntrustedText::forOperator()} to that span and nothing else. The rule has one
+     * owner; a call site only declares.
+     *
+     * NOT A CONSTRUCTION SITE, for the same reason {@see self::scoped()} is not: the
+     * severity is whatever the factory already decided, so the `unvalidated` call-site pin
+     * stays complete while this exists.
+     */
+    public function carryingUntrusted(string $raw): self
+    {
+        return new self($this->severity, $this->message, [...$this->untrusted, $raw]);
     }
 }

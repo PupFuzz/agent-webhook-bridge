@@ -47,6 +47,12 @@ use App\Bridge\Support\UntrustedPathContents;
  * agent name as the best available proxy for the server's own `BRIDGE_CHANNEL_NAME`; a
  * miss is harmless. What IS meaningful cross-host is the probe: a TCP connect to the
  * loopback endpoint reaches the remote listener through the tunnel's local end.
+ * ⛔ AND THE HTTP MARKER LEG DOES NOT RUN AT ALL WITHOUT `XDG_RUNTIME_DIR` (card#9121,
+ * DL-366): with no per-user runtime dir there is no path a marker could sit at that this
+ * process could attribute to the connector, so the leg reports `unvalidated` and reads
+ * nothing rather than reading a world-writable one. The SOCKET marker is unaffected — its
+ * directory belongs to the agent account, which is a trust relationship the install
+ * already has.
  *
  * THE PROBE IS THE ONLY HOST FACT BEHIND A SEAM — see {@see ChannelProbeEnvironment} for
  * why the filesystem legs are not. NO GOLDEN FIXTURE REACHES EITHER PROBE OR THE HTTP
@@ -165,8 +171,11 @@ final class ChannelTransportCheck implements PerAgentCheck
         }
 
         $xdg = getenv('XDG_RUNTIME_DIR');
-        $xdgDir = is_string($xdg) && $xdg !== '' ? $xdg : '/tmp';
-        yield from $this->markerLeg($name, $xdgDir.'/agent-webhook-bridge-channel-'.$name.'.http-'.$port.'.FAILED');
+        if (! is_string($xdg) || $xdg === '') {
+            yield Finding::unvalidated("agent {$name}: channel bind-FAILURE marker leg NOT RUN for the HTTP channel — XDG_RUNTIME_DIR is unset in this process, so there is no per-user runtime dir that could hold a marker attributable to the connector. This leg says NOTHING about whether the connector bound port {$port}; the liveness line below is unaffected. Remedy: set XDG_RUNTIME_DIR for the context the connector runs in (a systemd user session provides /run/user/<uid>; a cron or bare-systemd context does not) and point the connector at it.");
+        } else {
+            yield from $this->markerLeg($name, $xdg.'/agent-webhook-bridge-channel-'.$name.'.http-'.$port.'.FAILED');
+        }
 
         $result = $this->probe->probe("tcp://{$host}:{$port}");
         if ($result['connected']) {
@@ -188,8 +197,11 @@ final class ChannelTransportCheck implements PerAgentCheck
      * runs as the operator — routinely root — while the marker is WRITTEN by the agent
      * account's connector, so the path lives in a directory this process does not control:
      * the socket marker sits beside the socket in the agent's runtime dir, and the HTTP
-     * marker sits under `XDG_RUNTIME_DIR` or, when that is unset, under `/tmp`, which every
-     * local account can write. The shape this replaces was `is_file()` plus an unbounded
+     * marker sits under `XDG_RUNTIME_DIR`. ⛔ THAT PATH USED TO FALL BACK TO `/tmp` WHEN
+     * `XDG_RUNTIME_DIR` WAS UNSET, and it no longer does — see `self::httpLegs()`, which
+     * refuses the leg outright there (card#9121, DL-366): a marker in a world-writable
+     * directory under a predictable name has no integrity to recover by reading it more
+     * carefully. The shape this replaces was `is_file()` plus an unbounded
      * `@file_get_contents()`: `is_file()` follows the link and answers about the TARGET, so
      * the marker could be a symlink to ANY regular file root can read, and the read had no
      * size bound. What the reader does NOT close is its own docblock's to state.
@@ -219,11 +231,13 @@ final class ChannelTransportCheck implements PerAgentCheck
      * operator-facing finding changes how errors are reported, which is not this change's to
      * make. card#9121 carries it.
      *
-     * ⚠ IT BOUNDS THE READ; IT DOES NOT SANITIZE THE BYTES. On the success arm the marker's
-     * content is still interpolated verbatim into an operator-facing message that also
-     * reaches `--format=json`, exactly as before. Escaping, capping or dropping that detail
-     * changes how findings are reported and is not this change's to make; card#9121 carries
-     * the recommendation.
+     * ⚠ IT BOUNDS THE READ; IT DOES NOT SANITIZE THE BYTES — THE RENDERER DOES (card#9121,
+     * DL-366). On the success arm the marker's content is still interpolated verbatim into
+     * the message, and that is what keeps `--format=json` byte-identical for the consumers
+     * already parsing it. What changed is that the detail is now DECLARED untrusted on the
+     * finding, so `CheckCommand::emitFinding()` escapes and caps it on the way to a
+     * terminal. ⛔ THE JSON DOCUMENT STILL CARRIES THE RAW BYTES, deliberately: a consumer
+     * rendering those strings owns this same rule at its own boundary.
      *
      * @return iterable<Finding>
      */
@@ -252,6 +266,13 @@ final class ChannelTransportCheck implements PerAgentCheck
         }
 
         $detail = trim($detail);
-        yield Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
+        $finding = Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
+
+        // DECLARED, NOT ESCAPED HERE (card#9121, DL-366). The detail is bytes a foreign
+        // principal wrote; the RULE that makes them safe on a terminal has one owner in
+        // {@see UntrustedText} and is applied by the renderer, so this site says only WHERE
+        // the seam is — the one fact no renderer can recover from a flat message string.
+        // Escaping here would change `--format=json`'s bytes, which consumers already read.
+        yield $detail !== '' ? $finding->carryingUntrusted($detail) : $finding;
     }
 }
