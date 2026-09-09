@@ -8,8 +8,6 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
-## [0.83.0] - 2026-09-09
-
 ### Added
 
 - **card#9099 (DL-362)** — **`bridge:check` now WARNS when this install holds enabled periodic instances and has adopted no tick, and `bridge:jobs install-tick` offers the line and installs it on an explicit yes.** A job added to the registry on a tick-less install could enumerate healthy in `bridge:jobs` and **never fire**, with nothing anywhere saying so: `JobsPostureCheck::tickFindings()` returned before speaking whenever no tick was adopted, on the reasoning that *an install that never added a crontab line is not missing one* — true of an EMPTY registry, false the moment an enabled instance exists, and the early return never looked at the population. On a quiet install the after-response event gate never evaluates (its clock IS the traffic, DL-306), so the work simply does not happen and the absence is the only signal.
@@ -20,6 +18,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - ⛔ **`JobRegistry::insert()` LOGS and does not act.** It is callable at runtime from any subsystem including inside a web request as the FPM user — an account with typically no crontab, no TTY, and no business mutating host scheduling as the side effect of a data write. Adopting the tick stays the operator's act (DL-361); the first insert on a tick-less install now logs at **warning** level naming the ingress and the remedy.
   - **`TickAdoptionNotice::forThisInstall()`** hoists the four-argument wiring at its second real caller (canon #5); `ProvisionToolsCommand` migrated to it, so the two sites cannot assemble a notice able to disagree with itself.
   - **No migration, no new config key, no route change, and nothing the receiver accepts or rejects moves.**
+
+## [0.83.0] - 2026-09-09
 
 ### Added
 
