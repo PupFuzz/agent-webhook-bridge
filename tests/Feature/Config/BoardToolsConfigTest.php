@@ -537,4 +537,102 @@ class BoardToolsConfigTest extends TestCase
         $this->assertNotNull($bt->suppressedReason);
         $this->assertStringContainsString($expected, $bt->suppressedReason);
     }
+
+    // ─── row 3a (card#8973 / DL-360): the `retired` key ──────────────────────
+
+    public function test_a_retired_block_is_a_no_op_that_keeps_the_operators_reason(): void
+    {
+        $bt = $this->config(['board_tools' => ['retired' => '2026-09-08 — seat decommissioned']], $this->httpChannel)->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertSame('2026-09-08 — seat decommissioned', $bt->retiredReason);
+        // ⛔ NOT SUPPRESSED, and the discriminator is load-bearing: `suppressedReason`
+        // non-null means "a default-on block that could not satisfy itself", which
+        // `BoardToolsSuppressedCheck` FAILs on and `NextSteps` reads as unfinished work. A
+        // retirement is a DECISION, so it owes neither.
+        $this->assertNull($bt->suppressedReason);
+    }
+
+    public function test_a_retired_block_beside_an_explicit_enabled_false_is_still_retired(): void
+    {
+        $bt = $this->config(['board_tools' => ['enabled' => false, 'retired' => '2026-09-08 — decommissioned']], $this->httpChannel)->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertSame('2026-09-08 — decommissioned', $bt->retiredReason);
+    }
+
+    public function test_a_retired_block_beside_enabled_true_throws(): void
+    {
+        // Consistent with every other explicit-assertion malformation in this file: an
+        // operator asserting both "this seat is live" and "this seat is retired" has written
+        // config that cannot be satisfied, and guessing which half they meant is how a
+        // decommission silently un-decommissions itself.
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('board_tools.retired contradicts enabled: true — remove one');
+
+        $this->config(['board_tools' => [
+            'enabled' => true, 'retired' => '2026-09-08 — decommissioned',
+            'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]], $this->httpChannel);
+    }
+
+    /**
+     * ⭐ A MALFORMED `enabled` BEATS A `retired` KEY, and this is the arm the whole guard is
+     * shaped around. `enabled: yes` is the exact typo the non-bool arm exists to catch —
+     * symfony/yaml does not booleanize it — and a strict `enabled !== true` guard would let
+     * it fall THROUGH to the retired arm, turning a typo into a durable tombstone that
+     * silences the seat forever where today it suppresses and `bridge:check` FAILs.
+     *
+     * Presence and absence are pinned together: asserting only that it suppresses would pass
+     * against an implementation that also recorded the retirement.
+     */
+    public function test_a_non_bool_enabled_suppresses_and_is_not_read_as_a_retirement(): void
+    {
+        $bt = $this->config(['board_tools' => [
+            'enabled' => 'yes', 'retired' => '2026-09-08 — decommissioned',
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]], $this->httpChannel)->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertStringContainsString('boolean', (string) $bt->suppressedReason);
+        $this->assertNull($bt->retiredReason, 'a non-bool `enabled` was read past and the typo became a durable tombstone');
+    }
+
+    public function test_a_malformed_retired_value_suppresses_fail_closed(): void
+    {
+        // Fail-closed, and the block is still PRESENT — so the lost-block leg stays silent
+        // for this agent and the operator gets ONE failure to fix rather than a suppression
+        // FAIL plus a LOST FAIL for one defect.
+        $bt = $this->config(['board_tools' => ['retired' => '   ']], $this->httpChannel)->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertNull($bt->retiredReason);
+        $this->assertSame(
+            'board_tools.retired must be a non-empty string naming the date and reason, e.g. "2026-09-08 — seat decommissioned" — default-on suppressed',
+            $bt->suppressedReason,
+        );
+    }
+
+    public function test_a_retired_block_is_not_in_the_enabled_subset(): void
+    {
+        // The subset `CheckCommand` derives, and every board-tools leg below the suppression
+        // scan is bounded by — a retired seat must not appear in it, or the bearer, board
+        // state and ssh planes would all start asking about a decommissioned agent.
+        $configs = [
+            $this->config(['board_tools' => ['retired' => '2026-09-08 — decommissioned']], $this->httpChannel),
+            $this->config(['board_tools' => ['transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]]),
+        ];
+
+        $enabled = array_values(array_filter(
+            $configs,
+            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
+        ));
+
+        $this->assertCount(1, $enabled);
+        $this->assertSame('ssh', $enabled[0]->boardTools?->transport);
+    }
 }

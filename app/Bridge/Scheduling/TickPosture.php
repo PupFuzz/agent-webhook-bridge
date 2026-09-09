@@ -15,10 +15,15 @@ use Illuminate\Support\Carbon;
 final class TickPosture
 {
     /**
-     * Slack added to the declared horizon before a tick reads as stale. One whole extra
-     * interval plus a minute: cron fires on a wall clock the bridge does not share, a
-     * 10-minute line legitimately lands 10 minutes and change apart, and an alarm that
-     * fires on ordinary jitter is an alarm that gets muted. A MISSED tick still shows.
+     * The FIXED part of the slack, on top of one whole extra interval. Cron fires on a wall
+     * clock the bridge does not share, a 10-minute line legitimately lands 10 minutes and
+     * change apart, and an alarm that fires on ordinary jitter is an alarm that gets muted. A
+     * MISSED tick still shows.
+     *
+     * ⚠ It is a JUDGEMENT, not a measurement, which is why {@see self::summary()} prints the
+     * slack it bought straight out of {@see self::graceS()} rather than leaving a reader of
+     * `stale` to open this file — an unexplained constant stops being examined the moment the
+     * person who chose it stops reading the thread (rt#341, sola-pm).
      */
     private const GRACE_S = 60;
 
@@ -45,11 +50,26 @@ final class TickPosture
             // establish.
             $lastAt === null => TickState::Unmeasured,
             ! $adopted => TickState::Undeclared,
-            $ageS > ($expectedEveryS * 2) + self::GRACE_S => TickState::Stale,
+            $ageS > $expectedEveryS + self::graceS($expectedEveryS) => TickState::Stale,
             default => TickState::Fresh,
         };
 
         return new self($adopted, $adopted ? $expectedEveryS : null, $lastAt, $ageS, $state);
+    }
+
+    /**
+     * The slack this verdict allows ON TOP OF the declared horizon before a tick reads as
+     * stale: one whole extra interval plus {@see self::GRACE_S}.
+     *
+     * ⭐ ONE DERIVATION, TWO CONSUMERS — the threshold in {@see self::resolve()} and the
+     * sentence in {@see self::summary()}. A `stale` line that hand-typed the slack would be a
+     * figure a program derives, restated as prose (`CLAUDE_CONVENTIONS.md` § *Derived
+     * figures*): the constant moves, the message keeps printing the old number, and the
+     * reader it was added for is misled with more confidence than before it existed.
+     */
+    public static function graceS(int $expectedEveryS): int
+    {
+        return $expectedEveryS + self::GRACE_S;
     }
 
     /**
@@ -76,9 +96,35 @@ final class TickPosture
                 : 'tick: not adopted, and none recorded — the registry runs from the after-response event gate only.',
             TickState::Undeclared => 'tick: last seen '.$this->ageS.'s ago, but this install declares no expected interval (BRIDGE_JOBS_TICK_EXPECTED_EVERY), so no freshness verdict is claimed.',
             TickState::Fresh => 'tick: fresh — last seen '.$this->ageS.'s ago, expected every '.$this->expectedEveryS.'s.',
-            TickState::Stale => 'tick: STALE — last seen '.$this->ageS.'s ago against a declared '.$this->expectedEveryS
-                .'s interval. Every periodic job on this install has stopped running on the clock; check the crontab line and its account\'s mail.',
+            TickState::Stale => $this->staleSummary(),
         };
+    }
+
+    /**
+     * ⛔ AND THE REMEDIATION NAMES A CHANNEL THAT HAS SOMETHING IN IT. It used to end *"check the
+     * crontab line and its account's mail"* — but the line this repo now offers ends `2>&1` into a
+     * log file ({@see TickAdoptionNotice::crontabLine()}), so cron mails NOTHING, ever. A
+     * remediation step that sends the reader to a guaranteed-empty inbox spends the one action a
+     * `stale` verdict buys.
+     *
+     * ⭐ THE GRACE IS PRINTED WHERE THE VERDICT IS READ (rt#341, sola-pm). A reader who sees
+     * `stale` should not have to open this file to learn what was assumed on their behalf —
+     * an assumption nobody can see is one nobody re-examines, and the slack is a judgement
+     * rather than a measurement. Both figures come out of {@see self::graceS()}, the same
+     * derivation {@see self::resolve()} compares the age against, so the sentence cannot
+     * describe a threshold the code no longer applies.
+     */
+    private function staleSummary(): string
+    {
+        $expected = (int) $this->expectedEveryS;
+        $grace = self::graceS($expected);
+
+        return 'tick: STALE — last seen '.$this->ageS.'s ago against a declared '.$expected
+            .'s interval, which this verdict allows '.$grace.'s of jitter grace on top of (one extra interval + '
+            .self::GRACE_S.'s), so a tick older than '.($expected + $grace)
+            .'s reads as stale. Every periodic job on this install has stopped running on the clock; '
+            .'read `php artisan bridge:jobs` for what the registry last managed to do, then the crontab line itself '
+            .'and whatever its redirect writes (the offered line truncates storage/logs/tick.log on every run).';
     }
 
     /**

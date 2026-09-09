@@ -35,6 +35,13 @@ use Illuminate\Support\Facades\Log;
  * reach this same point, so the reading check bounds its own line. It is an observation
  * ABOUT the call and never a precondition OF it: the ledger swallows its own failures.
  *
+ * ⭐ SINCE card#8973 THE ENTRY POINT ALSO WRITES A SECOND DURABLE ROW
+ * ({@see ConfigSeenLedger}) — that an ENABLED `board_tools` block exists for this agent,
+ * which is what lets `bridge:check` tell a block that was LOST from one that never was. It
+ * is stamped at ENTRY rather than at the success point deliberately: the block's presence is
+ * a fact about the config the door resolved, not about whether the tool then succeeded, and
+ * a failing call must not leave the install looking un-provisioned.
+ *
  * ⭐ card#7836 ADDS THE ONE THING THE DOORS DO NOT SHARE: how the serving process was
  * started ({@see CallProvenance}). It is a PARAMETER and not something this class measures,
  * because this class is transport-neutral by design and the answer is not — the ssh door
@@ -55,6 +62,16 @@ final class BoardToolDispatcher
     public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance): DispatchOutcome
     {
         $transport = $cfg->transport;
+        // card#8973 / DL-360, AT ENTRY AND NOT AT THE SUCCESS POINT BELOW — the two rows
+        // answer different questions and that is why they are stamped in different places.
+        // The client-half row records that the door OPENED, so it belongs to the success;
+        // this one records that an ENABLED BLOCK EXISTS for this agent, which is true the
+        // moment a door hands one over, whether or not the tool then works. Both doors reach
+        // here with an enabled config already in hand — `bridge:tools-call` refuses a null,
+        // disabled or non-ssh block, and the HTTP resolver indexes only enabled http agents —
+        // so this cannot mint a sighting for a seat that has none, nor clear a live tombstone.
+        // Best-effort by construction: the ledger swallows its own failures.
+        ConfigSeenLedger::recordEnabled($agentName, $cfg);
 
         if ($toolName === '') {
             return DispatchOutcome::failure(422, 'request must carry a non-empty `tool`');

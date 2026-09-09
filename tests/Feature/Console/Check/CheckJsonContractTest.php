@@ -59,9 +59,48 @@ class CheckJsonContractTest extends TestCase
         $this->assertSame(1, CheckJsonRenderer::SCHEMA_VERSION, 'the shipped schema version moved — is that deliberate?');
         $this->assertSame(CheckJsonRenderer::SCHEMA_VERSION, $doc['schema']);
         $this->assertSame(
-            ['schema', 'ok', 'agent_scope_coverage', 'checks', 'findings_outside_registry', 'inventory', 'event_consumers'],
+            ['schema', 'ok', 'agent_scope_coverage', 'checks', 'findings_outside_registry', 'inventory', 'event_consumers', 'next_steps'],
             array_keys($doc),
         );
+    }
+
+    public function test_a_next_steps_entry_carries_exactly_these_keys(): void
+    {
+        // card#8959 / DL-352. The `minimal` install is one agent with no `board_tools:`
+        // block, so it is the smallest shape that reaches the array at all — which is also
+        // why the assertion is here and not on a fixture that happens to be empty: an
+        // `assertSame([], …)` would pin the key set of nothing.
+        //
+        // The full three-state discrimination lives in CheckNextStepsTest; what this class
+        // owns is the SHAPE, asserted against literals for the reason the class docblock
+        // gives — a renamed key breaks a consumer silently, and a `contains` assertion
+        // greens on it.
+        $doc = $this->document('minimal');
+
+        $this->assertCount(1, $doc['next_steps']);
+        $this->assertSame(['agent', 'state', 'command', 'doc'], array_keys($doc['next_steps'][0]));
+        $this->assertSame('prod-agent', $doc['next_steps'][0]['agent']);
+        $this->assertContains($doc['next_steps'][0]['state'], ['no_block', 'bridge_side_incomplete', 'seat_side_unreported']);
+    }
+
+    public function test_next_steps_is_present_and_empty_for_an_agent_whose_config_never_parsed(): void
+    {
+        // TWO THINGS AT ONCE, and they belong together.
+        //
+        // ⛔ PRESENT AND EMPTY, NEVER ABSENT — a consumer that had to tell a missing key from
+        // an empty list would be handling two types for one field, which is the rule §7
+        // applies to every possibly-empty map.
+        //
+        // ⚠ AND THE POPULATION BOUND: this install HAS an agent YAML, and it did not parse.
+        // The run knows nothing about its `board_tools` block, so it gets no entry rather
+        // than a guessed one — the cause is in `findings_outside_registry`, which is asserted
+        // here beside the emptiness so the empty array cannot be read as "this install has
+        // one agent and it is fine".
+        $doc = $this->document('agent-yaml-malformed');
+
+        $this->assertSame([], $doc['next_steps']);
+        $this->assertCount(1, $doc['findings_outside_registry']);
+        $this->assertSame('fail', $doc['findings_outside_registry'][0]['severity']);
     }
 
     public function test_agent_scope_coverage_is_complete_on_an_install_whose_agents_all_parsed(): void
@@ -216,6 +255,7 @@ class CheckJsonContractTest extends TestCase
                 [],
                 new EventConsumerReconciliation,
                 new AgentScopeCoverage,
+                [],
             )['checks'],
             null,
             'id',

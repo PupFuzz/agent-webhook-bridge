@@ -11,7 +11,6 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
-use App\Models\BoardToolsClientCall;
 use Throwable;
 
 /**
@@ -85,9 +84,18 @@ use Throwable;
  */
 final class BoardToolsClientHalfCheck implements PerAgentCheck
 {
+    /**
+     * The registry id, as a constant so a reader of this run's results can SELECT this
+     * check by id rather than by matching its prose (card#8959) — the same reason
+     * {@see SshPinnedLineCheck::ID} is one, and the same bound: selecting by id is what
+     * keeps a check later registered in the same slot from silently feeding a consumer
+     * that never asked for it.
+     */
+    public const ID = 'board_tools.client_half';
+
     public function id(): string
     {
-        return 'board_tools.client_half';
+        return self::ID;
     }
 
     /**
@@ -111,15 +119,16 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         $ttl = self::ttlSeconds();
 
         try {
-            $row = BoardToolsClientCall::query()->where('agent', $name)->first();
-            // ⚑ THE PROVENANCE IS READ HERE, INSIDE THE ENVELOPE, AND THE PLACEMENT IS THE
-            // WHOLE POINT. Eloquent applies an enum cast LAZILY, on attribute access — NOT
-            // on hydration — so a backing value this build cannot interpret throws a
+            // ⚑ THE WHOLE ROW IS RESOLVED HERE, INSIDE THE ENVELOPE, AND THE PLACEMENT IS
+            // THE WHOLE POINT. Eloquent applies an enum cast LAZILY, on attribute access —
+            // NOT on hydration — so a backing value this build cannot interpret throws a
             // `ValueError` at the READ. Read at the arm below, that throw is outside this
             // try and ABORTS `bridge:check`, which is the one thing a diagnostic command
             // may not do (CheckRunner deliberately does not catch). Measured, not reasoned:
             // a row inserted with an unknown value hydrates cleanly and throws on access.
-            $provenance = $row?->call_provenance;
+            // The reader touches the cast for exactly that reason, so the throw arrives at
+            // THIS call rather than wherever a field is first read.
+            $record = ClientHalfLedger::lastSuccess($name);
         } catch (Throwable $e) {
             // Limb (a): the read never completed, so the absence below would be this run's
             // failure rather than the seat's silence. An unmigrated install is the live
@@ -140,7 +149,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         $remedy = 'ASK THE SEAT to make one board-tools call (board_my_cards) and re-run bridge:check — do NOT re-provision the seat on the strength of this line.';
         $blind = 'the bridge cannot tell a seat that was never wired from one that is simply idle — it may not read the seat\'s own keypair or .mcp.json (an account may only read its own files), so the seat has to tell it, and calling IS the telling.';
 
-        if ($row === null) {
+        if ($record === null) {
             yield Finding::unvalidated("board_tools: agent {$name}: client half UNREPORTED — this install has recorded no successful board-tools call from that seat. THIS IS NOT EVIDENCE THE SEAT IS UNWIRED: {$blind} {$remedy}");
 
             return;
@@ -150,9 +159,9 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // keeps `humanAge()` integral, and the floor at zero is for a stamp in the future —
         // a clock stepping backwards on this host, which would otherwise render as a
         // negative age on a green line.
-        $age = (int) max(0, $row->last_success_at->diffInSeconds(now()));
+        $age = (int) max(0, $record->lastSuccessAt->diffInSeconds(now()));
         if ($age > $ttl) {
-            yield Finding::unvalidated("board_tools: agent {$name}: client half UNREPORTED — the seat's last successful board-tools call was ".self::humanAge($age).' ago (over '.$row->transport.'), older than the '.self::humanAge($ttl)." freshness window, so this run says nothing about whether it still works. THIS IS NOT EVIDENCE THE SEAT IS UNWIRED: {$blind} {$remedy}");
+            yield Finding::unvalidated("board_tools: agent {$name}: client half UNREPORTED — the seat's last successful board-tools call was ".self::humanAge($age).' ago (over '.$record->transport.'), older than the '.self::humanAge($ttl)." freshness window, so this run says nothing about whether it still works. THIS IS NOT EVIDENCE THE SEAT IS UNWIRED: {$blind} {$remedy}");
 
             return;
         }
@@ -164,13 +173,13 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // over a state no writer can produce. NULL falls through with `not_sshd`: an
         // unmeasured row is not a measured negative, and neither is proven. `$provenance`
         // was resolved inside the fail-soft envelope above, for the reason stated there.
-        if ($provenance === CallProvenance::Sshd) {
-            yield Finding::ok("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$row->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.");
+        if ($record->provenance === CallProvenance::Sshd) {
+            yield Finding::ok("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.");
 
             return;
         }
 
-        yield Finding::ok("board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$row->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it.");
+        yield Finding::ok("board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it.");
     }
 
     /**

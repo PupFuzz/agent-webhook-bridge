@@ -19,6 +19,7 @@ use App\Bridge\Check\Checks\BoardToolsBearerCheck;
 use App\Bridge\Check\Checks\BoardToolsBoardStateCheck;
 use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
 use App\Bridge\Check\Checks\BoardToolsHttpProbeCheck;
+use App\Bridge\Check\Checks\BoardToolsLostCheck;
 use App\Bridge\Check\Checks\BoardToolsSshDefaultAdvisoryCheck;
 use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
@@ -51,6 +52,9 @@ use App\Bridge\Check\Checks\WritebackSourceCoverageCheck;
 use App\Bridge\Check\Checks\WritebackTokenCheck;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
+use App\Bridge\Check\NextStep;
+use App\Bridge\Check\NextSteps;
+use App\Bridge\Check\NextStepState;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Retention\RetentionStoreProbe;
@@ -61,6 +65,7 @@ use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolAgentResolver;
+use App\Bridge\Tools\ConfigSeenLedger;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -194,6 +199,17 @@ class CheckCommand extends BridgeCommand
         // reported by its own leg above.
         $ctx->configDir = is_string($configDir) ? $configDir : null;
         if (is_string($configDir) && is_dir($configDir)) {
+            // PUBLISHED BY THE SCAN, because only the scan is entitled to say whether it
+            // happened (card#8973 / DL-360). ⛔ THE EXECUTE BIT IS IN THE PREDICATE AND
+            // `is_readable` ALONE IS NOT ENOUGH: a directory at mode 0400 passes both
+            // `is_dir()` and `is_readable()` and then globs EMPTY, because LISTING a
+            // directory needs the search (execute) bit. A reader re-deriving this from
+            // `is_readable` therefore concludes the scan succeeded on exactly the shape
+            // where it did not, and then reads the empty result as "this install has no
+            // agent configs" — a confidently false claim about an install that may hold a
+            // dozen. The 0400 case asserts both halves as preconditions before it runs, so
+            // the trap is measured on whatever host runs the suite rather than recalled.
+            $ctx->configDirScanned = is_readable($configDir) && is_executable($configDir);
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
                 $name = basename($file, '.yml');
                 $agentNames[] = $name;
@@ -349,11 +365,21 @@ class CheckCommand extends BridgeCommand
             // NOT "unreadable" any more: the arm below owns that case, so naming it here
             // would name a cause this arm no longer covers.
             ! is_string($configDir) || ! is_dir($configDir) => 'the config dir is unset or is not a directory, so no agent config was loaded',
-            // A dir that EXISTS but the bridge user cannot read passes the arm above,
-            // and its glob() comes back empty — so without this arm the next one would
-            // tell the operator the install has no agent config files, which is a
-            // confidently false claim about an install that may hold a dozen.
-            ! is_readable($configDir) => 'the config dir could not be read, so no agent config was loaded',
+            // A dir that EXISTS but this run cannot LIST passes the arm above, and its
+            // glob() comes back empty — so without this arm the next one would tell the
+            // operator the install has no agent config files, which is a confidently false
+            // claim about an install that may hold a dozen. ⚑ IT READS THE SCAN'S OWN
+            // VERDICT rather than re-deriving one (card#8973 / DL-360): this arm used
+            // `is_readable($configDir)`, which answers YES for a 0400 directory that globs
+            // empty because LISTING needs the search bit — so the arm written to prevent
+            // the false claim did not fire on the one mode that produces it.
+            // ⛔ "LISTED", NOT "READ", AND THE COMMENT ABOVE IS WHY. Once this arm reads the
+            // scan's own verdict it fires on a `0400` directory — which IS readable and is
+            // merely not traversable — so "could not be read" became a claim the operator can
+            // disprove with `cat`, on the very mode this arm was widened to cover. The
+            // remedy is in the sentence because the two modes take the same one: the account
+            // needs read AND execute, and a 0000 dir lacking both is covered by it too.
+            $ctx->configDirScanned !== true => 'the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded',
             $agentNames === [] => 'this install has no agent config files (no *.yml in the config dir)',
             $configs === [] => 'no agent config parsed (see the errors above)',
             default => 'every parsed agent aborted before this leg (see the errors above)',
@@ -516,10 +542,30 @@ class CheckCommand extends BridgeCommand
             fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
         ));
 
+        // ⚑ A WRITE, INSIDE A CHECK COMMAND, ON PURPOSE (card#8973 / DL-360). `bridge:check`
+        // is the one path that already parses every agent's block AND touches this bridge's
+        // database, and the fact being recorded — "this install saw an enabled block for
+        // this agent" — is exactly the one the CURRENT config can no longer supply once the
+        // block is gone. Recording it from every config load instead would be a database
+        // write on the request-parsing path. It runs BEFORE the legs that read it so the run
+        // sees its own sightings, and it is best-effort by construction: the ledger swallows
+        // and logs its own failures rather than letting an audit row abort a diagnostic.
+        ConfigSeenLedger::recordSightings($configs);
+
         // FIRST, and OUTSIDE the enabled-subset guard below: a suppressed block is
         // enabled=false, so a fleet whose only board_tools agent is suppressed has an
         // EMPTY subset and this is the only place its failure surfaces.
         if (! $this->emitReport($runner->run(CheckSlot::BoardToolsSuppression, $ctx))) {
+            $ok = false;
+        }
+
+        // OUTSIDE THE GUARD FOR A STRONGER REASON THAN THE SUPPRESSION SCAN'S: this leg's
+        // subject is an agent that is NOT in the enabled subset at all, and the install it
+        // was written for had lost EVERY block — so an empty subset is precisely the state
+        // it must speak in. It also populates `$ctx->boardToolsLost`, which the NEXT STEPS
+        // derivation below reads to withhold the `no_block` question for a seat just
+        // reported LOST.
+        if (! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))) {
             $ok = false;
         }
 
@@ -676,6 +722,19 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // card#8959 (DL-352): what an agent should RUN NEXT to finish enabling board tools,
+        // per agent. DERIVED, NOT MEASURED — {@see NextSteps} reads the configs this run
+        // parsed, the bearer index it built once, the ssh readback above and the
+        // client-half results, and walks nothing. Hoisted ABOVE the json branch for the
+        // same reason the event-consumer reconciliation is: TWO renderers read it, and a
+        // second derivation could disagree with the first.
+        //
+        // NOTHING HERE TOUCHES `$ok`. The block yields values, not findings, so it cannot
+        // reach the one arm ({@see self::emitFinding()}'s `fail`) that moves the exit code
+        // — the enablement gaps it points at are already reported, at their own severities,
+        // by the legs above.
+        $nextSteps = NextSteps::derive($ctx, $runner->results());
+
         // DL-249 STAGE 9: the machine document, and the ONLY thing this run writes to
         // stdout when it was asked for — every other emitter in this method is gated on
         // the format, so nothing can land beside it and make the stream unparseable.
@@ -692,6 +751,7 @@ class CheckCommand extends BridgeCommand
                 $this->unattributed,
                 $eventConsumers,
                 $ctx->agentScopeCoverage,
+                $nextSteps,
             ));
 
             return $ok ? self::SUCCESS : self::FAILURE;
@@ -741,6 +801,12 @@ class CheckCommand extends BridgeCommand
         // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
             $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.");
+        }
+
+        // LAST, after the account of what this run covered, because it is the only thing
+        // here addressed to the READER rather than about the run.
+        foreach ($this->nextStepsOutput($nextSteps) as $line) {
+            $this->line($line);
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
@@ -817,6 +883,7 @@ class CheckCommand extends BridgeCommand
             )
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
+            ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
             ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
             ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck)
@@ -976,6 +1043,81 @@ class CheckCommand extends BridgeCommand
     {
         $this->unattributed[] = $finding;
         $this->emitFinding($finding);
+    }
+
+    /**
+     * The NEXT STEPS block, in emission order, as plain lines (card#8959, DL-352).
+     *
+     * ⛔ AN INSTALL WITH NOTHING OUTSTANDING PRINTS NOTHING AT ALL — not an empty heading,
+     * not a reassurance. A block that appears on every run is one an operator learns to
+     * scroll past, and this one exists to be READ on the run where it has something to say.
+     * Returning a list rather than printing is what lets that decision be a property of a
+     * value a test can hold, which is the seam `emitInventory()` was split at for the same
+     * reason.
+     *
+     * ⛔ PLAIN TEXT, NO GLYPHS, NO LEADING INDENT, NO RUNS OF SPACES, and not as a style
+     * preference: `laravel/pao` binds its own `OutputStyle` when it detects an AI AGENT
+     * running the command (never under `runningUnitTests()`), and its `OutputCleaner`
+     * DELETES a fixed glyph set, COLLAPSES runs of spaces and rewrites `...` to `..`. This
+     * block's whole audience is that reader, so a golden capture taken under the test path
+     * would otherwise assert emphasis and structure the agent never receives. Uppercase and
+     * the `next step N/M` prefix survive both readers.
+     *
+     * THE SENTENCES LIVE HERE AND THE COMMAND/DOC DO NOT, which is the split
+     * {@see self::inventoryOutput()} makes against {@see CheckInventory}: the prose is this
+     * renderer's voice, and the two fields both renderers must agree on are read off
+     * {@see NextStep} so the printed command and the JSON one cannot diverge.
+     *
+     * @param  list<NextStep>  $steps
+     * @return list<string>
+     */
+    private function nextStepsOutput(array $steps): array
+    {
+        if ($steps === []) {
+            return [];
+        }
+
+        $total = count($steps);
+        $out = ["NEXT STEPS — board tools (the two-way board window: read, file and correct your own cards from your agent session) are not wired end to end for {$total} of this install's agents. One line each, naming the ONE command to run next. This changes nothing about the run above: no exit code, no check, no verdict."];
+
+        foreach ($steps as $i => $step) {
+            $n = $i + 1;
+            $out[] = "next step {$n}/{$total} — {$step->agent}: ".$this->nextStepSentence($step);
+        }
+
+        return $out;
+    }
+
+    /**
+     * The one sentence for one step — an exhaustive `match` over {@see NextStepState}, so a
+     * fifth state is a phpstan error here rather than an agent silently getting a command
+     * with no explanation. What each state MEANS is the enum's docblock to say, not this
+     * method's: the sentences render the definitions, they do not own them.
+     */
+    private function nextStepSentence(NextStep $step): string
+    {
+        $doc = "See {$step->doc}.";
+
+        return match ($step->state) {
+            // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
+            // the only state a correctly-configured install can sit in forever — an agent
+            // that is deliberately notification-only owes nothing and would otherwise be
+            // told to provision on every run, with no action available to silence it. That
+            // is the shape `emitFinding()` refuses `warn` for, one level down.
+            NextStepState::NoBlock => "no `board_tools:` block in {$step->agent}.yml, so this agent has no board window at all — and that is a QUESTION FOR YOU, not a defect this run found: should {$step->agent} be able to read, file and correct its own cards from inside its session? YES ⇒ run `{$step->command}` — it prints a paste-ready `board_tools:` skeleton (it never edits YAML); paste that into {$step->agent}.yml and re-run bridge:check. NO ⇒ put `board_tools:` with `enabled: false` under it in {$step->agent}.yml — a declined capability is a decision, and this line goes away. Either answer finishes it; leaving it unanswered is the only outcome that does not. {$doc}",
+
+            // ⛔ THE UNMEASURED ARM SAYS SO, AND SENDS THE READER TO `sudo`, NOT TO
+            // PROVISION. This is the line that, before the split, told an install whose only
+            // problem was a non-root run to re-provision — the privileged-window cost
+            // card#7756 named.
+            NextStepState::BridgeSideUnverified => "a `board_tools:` block is present, and THIS BRIDGE's half of the door COULD NOT BE VERIFIED FROM HERE — a leg above says which read this run was refused (the pinned authorized_keys line, because this run was not root; or the bearer token file, which this process could not see or read). That is not a fault and this is not evidence the half is broken. Re-run as the account that can read it: `{$step->command}`. Do NOT re-provision on the strength of this line alone. {$doc}",
+
+            NextStepState::BridgeSideIncomplete => "a `board_tools:` block is present, but THIS BRIDGE's half of the door was MEASURED and is not usable yet — the leg that found it is one of the board_tools lines above, with its own cause and cure. Run `{$step->command}`: for an http agent it mints or names the bearer fault, for an ssh agent it prints the per-agent setup packet. {$doc}",
+
+            // The bound is PRINTED, not merely known, because this is the one state whose
+            // remedy an operator can get wrong in a way that looks like success.
+            NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
+        };
     }
 
     /**

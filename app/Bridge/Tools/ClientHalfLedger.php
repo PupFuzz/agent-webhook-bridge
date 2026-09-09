@@ -92,4 +92,57 @@ final class ClientHalfLedger
             );
         }
     }
+
+    /**
+     * The last successful call recorded for ONE agent, or null when this install has none.
+     *
+     * ⛔ THIS READER PROPAGATES, AND THAT IS THE CONTRACT. The write side above is
+     * best-effort because a failed audit row must cost a live call nothing; a READ is the
+     * opposite — a caller that cannot distinguish "no row" from "could not look" reports an
+     * absence it never measured, which is the whole defect the reading legs exist to remove.
+     * So every failure mode reaches the caller and each caller owns its own fail-soft.
+     *
+     * ⚑ THE LAZY ENUM CAST IS TOUCHED HERE, INSIDE THE READER, and the placement is the
+     * point. Eloquent applies it on attribute ACCESS, not on hydration, so a backing value
+     * this build cannot interpret hydrates cleanly and throws a `ValueError` wherever the
+     * attribute is first read (measured, not reasoned — see {@see BoardToolsClientCall}).
+     * Resolving it here makes that throw land at the READER CALL, which is a site a caller
+     * can wrap; left to the caller it lands at whichever branch happens to read the field.
+     */
+    public static function lastSuccess(string $agent): ?ClientHalfRecord
+    {
+        $row = BoardToolsClientCall::query()->where('agent', $agent)->first();
+
+        return $row === null ? null : self::hydrate($row);
+    }
+
+    /**
+     * Every agent's last successful call, keyed by agent name.
+     *
+     * ONE QUERY, NOT ONE PER AGENT: its caller is a run-once check that quotes this row as
+     * EVIDENCE beside a verdict it reached some other way, over a population that is the
+     * install's whole recorded roster. A per-agent loop there would issue one query per seat
+     * to decorate lines most of which print nothing.
+     *
+     * @return array<string, ClientHalfRecord>
+     */
+    public static function lastSuccesses(): array
+    {
+        $out = [];
+        foreach (BoardToolsClientCall::query()->get() as $row) {
+            $out[$row->agent] = self::hydrate($row);
+        }
+
+        return $out;
+    }
+
+    private static function hydrate(BoardToolsClientCall $row): ClientHalfRecord
+    {
+        return new ClientHalfRecord(
+            agent: $row->agent,
+            lastSuccessAt: $row->last_success_at,
+            transport: $row->transport,
+            provenance: $row->call_provenance,
+        );
+    }
 }

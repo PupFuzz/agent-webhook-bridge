@@ -5,11 +5,15 @@ namespace Tests\Feature\Console;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Tools\AuthorizedKeysRead;
+use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
 use App\Console\Commands\Bridge\ReplayCommand;
 use App\Models\AgentDispatch;
+use App\Models\BoardToolsClientCall;
+use App\Models\BoardToolsConfigSeen;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -160,9 +164,65 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing, which is what makes the arm below reachable');
 
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('the config dir could not be read, so no agent config was loaded')
+            ->expectsOutputToContain('the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded')
             ->doesntExpectOutputToContain('this install has no agent config files')
             ->assertExitCode(0);
+    }
+
+    /**
+     * ⭐ THE MODE THE OLD PREDICATE GOT WRONG (card#8973 / DL-360). A directory at 0400 is
+     * `is_readable()` and is NOT traversable, so `glob()` comes back empty and the arm above
+     * — which asked `is_readable` — did not fire on it: the operator was told the install
+     * holds no agent config files, over an install holding one. LISTING a directory needs the
+     * search (execute) bit, and the scan now publishes what it actually managed
+     * (`CheckContext::$configDirScanned`) instead of every reader re-deriving a different
+     * approximation of it.
+     *
+     * ⚑ TWO CONSUMERS ARE ASSERTED, because one of them is the reason the field exists: the
+     * skip reason above, and the LOST leg's gate — which must withhold its verdict rather
+     * than report a recorded seat's block missing off a directory it could not read.
+     */
+    public function test_check_treats_a_readable_but_untraversable_config_dir_as_unscanned(): void
+    {
+        $this->skipAsRoot();
+        $configDir = $this->dir.'/mode-0400-config';
+        File::ensureDirectoryExists($configDir);
+        File::put($configDir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\nsubscriptions: []\n");
+        config(['bridge.config_dir' => $configDir]);
+        BoardToolsConfigSeen::query()->create([
+            'agent' => 'prod-agent', 'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4,
+            'first_seen_at' => now()->subDay(), 'last_seen_at' => now()->subHour(),
+        ]);
+        $this->unreadableDir = $configDir;
+        chmod($configDir, 0o400);
+        clearstatcache(true, $configDir);
+
+        // GUARD THE PRECONDITION, NEVER ASSUME IT — and the guard is the whole trap: the dir
+        // reports READABLE and still globs empty. A runner where either half is false would
+        // leave this test green against a different code path.
+        $this->assertTrue(is_readable($configDir), 'a 0400 dir is readable — that IS the trap the old predicate fell into');
+        $this->assertFalse(is_executable($configDir), 'this runner can traverse a 0400 directory, so the state under test is unreachable here');
+        $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing, or this test is not about an unscanned dir');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded')
+            ->doesntExpectOutputToContain('this install has no agent config files')
+            ->expectsOutputToContain('the config dir could not be scanned this run, so 1 recorded seat(s) cannot be checked for a LOST block')
+            ->doesntExpectOutputToContain('block LOST')
+            ->assertExitCode(0);
+
+        // THE CONTROL, and it is what makes the four assertions above non-vacuous: the same
+        // fixture with the search bit restored takes the opposite branch on every one of
+        // them — and the recorded seat, whose YAML carries no board_tools block, is now
+        // genuinely LOST.
+        chmod($configDir, 0o755);
+        clearstatcache(true, $configDir);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded')
+            ->doesntExpectOutputToContain('cannot be checked for a LOST block')
+            ->expectsOutputToContain('board_tools: agent prod-agent: block LOST')
+            ->assertExitCode(1);
     }
 
     public function test_check_names_an_empty_config_dir_as_why_the_agent_plane_did_not_run(): void
@@ -260,14 +320,38 @@ class BridgeCommandsTest extends TestCase
                 return "/home/{$user}";
             }
 
+            // bridge:check never renders the setup packet, so the packet's uid compare has
+            // no reader on this fake — both legs answer UNMEASURED, which is the safe arm.
+            public function uidForUser(string $user): ?int
+            {
+                return null;
+            }
+
+            public function euid(): ?int
+            {
+                return null;
+            }
+
             public function sshdEffectiveConfig(?string $forUser = null): ?string
             {
                 return $this->root ? $this->sshd : null;
             }
 
-            public function readAuthorizedKeys(string $path): ?string
+            public function readAuthorizedKeys(string $path): AuthorizedKeysRead
             {
-                return $this->keys === '' ? null : $this->keys;
+                // '' models a file this run could not READ (the unverifiable setup these
+                // cases assert), never an absent one — see AuthorizedKeysRead.
+                return $this->keys === ''
+                    ? AuthorizedKeysRead::unreadable()
+                    : AuthorizedKeysRead::text($this->keys);
+            }
+
+            // These cases state ONE authorized_keys file, so no two paths name one file
+            // and a path is its own identity. The aliased shape is covered where it can
+            // be measured rather than stated: SystemSshProbeEnvironmentTest.
+            public function fileIdentity(string $path): string
+            {
+                return $path;
             }
 
             public function sshRoundTrip(string $target, string $stdin): array
@@ -2763,7 +2847,11 @@ class BridgeCommandsTest extends TestCase
         // .FAILED marker (the swallowed stderr never showed it). bridge:check
         // surfaces it loudly (warn, not fail).
         $sock = $this->dir.'/x.sock';
-        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — another session holds the channel\n");
+        // The connector's own body shape as of channel-server 0.9.13 (card#8984): it
+        // ENUMERATES the causes rather than naming one. A pre-0.9.13 seat still writes the
+        // old "another session holds the channel" body — which is why `bridge:check`'s own
+        // tail points at the doc instead of summarising whatever is in the file.
+        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — not bindable. Causes include: (1) this session's previous channel server after re-provisioning (/mcp reconnect does not stop the previous channel server — restart the session); (2) another Claude Code session or another process holding it (close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); (3) [unix only] a leaked socket file — or any other file — occupying the path, with no listener (rm it only if you are sure no server is running). THIS Claude Code session is deaf to live-wake until then.\n");
         $this->writeAgentWithChannelSocket($sock);
 
         $code = Artisan::call('bridge:check');
@@ -2863,7 +2951,7 @@ class BridgeCommandsTest extends TestCase
         try {
             $port = 8790;
             File::put($this->dir."/agent-webhook-bridge-channel-prod-agent.http-{$port}.FAILED",
-                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — another process holds the port\n");
+                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — not bindable. Causes include: (1) this session's previous channel server after re-provisioning (/mcp reconnect does not stop the previous channel server — restart the session); (2) another Claude Code session or another process holding it (close it, or set BRIDGE_CHANNEL_PORT / BRIDGE_CHANNEL_SOCKET); (3) [unix only] a leaked socket file — or any other file — occupying the path, with no listener (rm it only if you are sure no server is running). THIS Claude Code session is deaf to live-wake until then.\n");
             $this->writeAgentWithChannelUrl("http://127.0.0.1:{$port}/");
 
             $code = Artisan::call('bridge:check');
@@ -3015,8 +3103,8 @@ class BridgeCommandsTest extends TestCase
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
-        $this->assertStringContainsString('40 registered', $out);
-        $this->assertStringContainsString('All 40 are accounted for', $out);
+        $this->assertStringContainsString('41 registered', $out);
+        $this->assertStringContainsString('All 41 are accounted for', $out);
     }
 
     public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void
@@ -3581,6 +3669,113 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    // ─── card#8973 / DL-360: the LOST-block leg, end to end ──────────────────
+
+    /**
+     * ⭐ THE WHOLE CARD, DRIVEN THROUGH THE REAL COMMAND. The five states below all render as
+     * "this agent has no enabled board_tools block" to every other leg in this plane, and
+     * before this card `bridge:check` printed the same silence and the same exit 0 for every
+     * one of them. Written as ONE test because the sequence IS the subject: each step's
+     * verdict is only meaningful against the step before it, and split into five tests each
+     * would pass against a leg stuck on its own answer.
+     */
+    public function test_check_reports_a_lost_board_tools_block_and_the_retirement_that_silences_it(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        $this->fakeBoardOk();
+
+        // 1. An enabled block: the run RECORDS the sighting, and says nothing about it.
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('block LOST')
+            ->assertExitCode(0);
+        $row = BoardToolsConfigSeen::query()->where('agent', 'impl')->sole();
+        $this->assertNotNull($row->last_seen_at);
+        $this->assertNull($row->retired_reason);
+
+        // 2. The block is gone from a config that is still there: FAIL, and the NEXT STEPS
+        //    block must NOT also ask the `no_block` question for that agent — its own answer
+        //    ("NO ⇒ set enabled: false") would MUTE the failure printed two lines above.
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('board_tools: agent impl: block LOST')
+            ->doesntExpectOutputToContain('so this agent has no board window at all')
+            ->assertExitCode(1);
+
+        // 3. The operator states the decommission: exit 0, and the line CONFIRMS THE ROW.
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+            ."board_tools:\n  retired: \"2026-09-08 — seat decommissioned\"\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('board_tools: agent impl: RETIRED — 2026-09-08 — seat decommissioned (tombstone on record)')
+            ->doesntExpectOutputToContain('block LOST')
+            ->assertExitCode(0);
+
+        // 4. The YAML is deleted, as the RETIRED line authorises: silent, and the decision
+        //    outlives the file that stated it.
+        File::delete($this->dir.'/impl.yml');
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('block LOST')
+            ->doesntExpectOutputToContain('RETIRED')
+            ->assertExitCode(0);
+        $this->assertSame('2026-09-08 — seat decommissioned', BoardToolsConfigSeen::query()->where('agent', 'impl')->sole()->retired_reason);
+    }
+
+    /**
+     * ⛔ AN EXPLICIT `enabled: false` IS A DECISION ONLY WHILE THE BLOCK IS PRESENT. Deleting
+     * a declining seat's YAML re-opens the question, because a deleted seat is a
+     * DECOMMISSION and the product asks for the decommission to be stated — the tombstone is
+     * the statement, and `enabled: false` is not one once there is no file to read it from.
+     */
+    public function test_a_declining_seat_whose_yaml_is_deleted_becomes_a_lost_block(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        $this->fakeBoardOk();
+        $this->artisan('bridge:check')->assertExitCode(0);
+
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+            ."board_tools:\n  enabled: false\n");
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('block LOST')
+            ->assertExitCode(0);
+
+        File::delete($this->dir.'/impl.yml');
+        // ⛔ CAPTURED RATHER THAN MATCHED, and the reason is a harness trap rather than a
+        // style choice: `expectsOutputToContain()` installs one Mockery expectation per
+        // substring against `doWrite`, so two substrings that both match the SAME line leave
+        // the second unconsumed and the test fails claiming the output does not contain it.
+        // Both phrases below are on one line, which is the point of asserting them together.
+        $exit = Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('board_tools: agent impl: block LOST', $out);
+        $this->assertStringContainsString('recreate impl.yml holding only that block', $out);
+    }
+
+    /**
+     * ⛔ THE OPERATOR RULING (DL-360) ON THE REAL COMMAND: a `board_tools_client_calls` row
+     * alone never FAILs. That row is stamped indistinguishably by `--probe-tools`,
+     * `--self-cert` and a hand-run `bridge:tools-call`, so an agent probed once and later
+     * renamed or removed carries one forever — and reading it as "this seat had a block"
+     * would flip `bridge:check`'s exit code on installs nobody had touched, the moment they
+     * upgraded to this release.
+     */
+    public function test_a_client_calls_row_for_a_vanished_agent_does_not_flip_the_exit_code(): void
+    {
+        BoardToolsClientCall::query()->create([
+            'agent' => 'ghost-agent', 'transport' => 'ssh',
+            'call_provenance' => CallProvenance::Sshd, 'last_success_at' => now()->subDay(),
+        ]);
+        $this->assertSame(0, BoardToolsConfigSeen::query()->count(), 'the fixture wrote a config-seen row, so this says nothing about the client-calls row alone');
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('ghost-agent')
+            ->assertExitCode(0);
+    }
+
     public function test_check_fails_on_an_unreadable_board_tools_bearer(): void
     {
         // Under default-ON a dead bearer is a broken enablement → FAIL (was WARN/exit
@@ -3717,37 +3912,39 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(64, strlen(trim((string) file_get_contents($tokenPath))));   // bin2hex(32) = 64 hex chars
     }
 
-    public function test_provision_tools_prints_the_ssh_role_invocations(): void
+    public function test_provision_tools_prints_the_ssh_setup_packet(): void
     {
-        // FR #5010 §2: an ssh-transport agent mints NO bridge-side secret. provision-tools
-        // now PRINTS the ready-to-run `provision-board-tools.py --role a|b` invocations
-        // with this agent's params filled in (--agent from config, --artisan from
-        // base_path, --ssh-account from board_tools.ssh_account) — replacing the old
-        // generated root-run bash script. The static python program owns both legs; its
-        // full-line pubkey validator supersedes the prefix-only generated-bash guard
-        // (#5033), so no `HOST_B_PUBKEY`/`case … ecdsa-*` scaffold appears at all.
+        // card#8971 / DL-357: the ssh branch prints the per-agent SETUP PACKET, not the
+        // two `--role a|b` invocations it grew from. This is the REGRESSION half — that
+        // the ssh transport still mints no bridge-side secret, still exits 0, and still
+        // carries both role invocations somewhere in what it prints. Every branch of the
+        // packet itself (sudo-or-not, the root refusal, the ref line, --pubkey-from) is
+        // driven through the bound seams in ProvisionToolsPacketTest; this test
+        // deliberately binds nothing, so it also witnesses that the real
+        // SystemSshProbeEnvironment / SystemGitRefProbe pair renders SOMETHING rather
+        // than throwing on a host where neither answer is knowable.
         File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
             ."board_tools:\n  transport: ssh\n  ssh_account: bridge-user\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
-        $artisan = base_path('artisan');
         $script = base_path('bin/provision-board-tools.py');
 
-        $this->artisan('bridge:provision-tools')
-            // host-A leg: run as root, --role a with agent filled in + the python path
-            ->expectsOutputToContain("sudo python3 {$script} --role a --agent impl")
-            // --artisan + --ssh-account resolved from base_path + the configured account
-            ->expectsOutputToContain("--artisan {$artisan} --ssh-account bridge-user --pubkey-stdin")
-            // same-box hint (§6): hand the .pub path to --role a --pubkey-from
-            ->expectsOutputToContain('--pubkey-from')
-            // host-B leg: --role b on the calling seat, ssh-target user from ssh_account
-            ->expectsOutputToContain('python3 provision-board-tools.py --role b --agent impl')
-            ->expectsOutputToContain('--ssh-target bridge-user@<host-A>')
-            // cert hint retained
-            ->expectsOutputToContain('bridge:check --probe-tools-ssh=bridge-user@<host-A>')
-            // the old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone
-            ->doesntExpectOutputToContain('HOST_B_PUBKEY')
-            ->doesntExpectOutputToContain('ecdsa-*|ssh-*|sk-*')
-            ->assertExitCode(0);
+        Artisan::call('bridge:provision-tools');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('BOARD-TOOLS SETUP PACKET — agent impl (ssh transport)', $out);
+        $this->assertStringContainsString('forced command runs as: bridge-user', $out);
+        // Both legs are still named — the seat's --role b, and the operator's --role a.
+        $this->assertStringContainsString('--role b --agent impl --ssh-target bridge-user@<host-A>', $out);
+        $this->assertStringContainsString("python3 {$script} --role a --agent impl", $out);
+        // The five actors-and-steps spine.
+        foreach (['STEP 1 — IMPL AGENT impl', 'STEP 2 — PM', 'STEP 4 — IMPL AGENT impl', 'STEP 5 — PM'] as $step) {
+            $this->assertStringContainsString($step, $out);
+        }
+        // The old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone.
+        $this->assertStringNotContainsString('HOST_B_PUBKEY', $out);
+        $this->assertStringNotContainsString('ecdsa-*|ssh-*|sk-*', $out);
+        // And so is the stale Windows-gating claim the old guidance printed (card#8971).
+        $this->assertStringNotContainsString('Windows host-B is spec-complete', $out);
 
         // No bridge-side token file was created for the ssh agent.
         $this->assertFileDoesNotExist($this->dir.'/impl-board-tools-token');

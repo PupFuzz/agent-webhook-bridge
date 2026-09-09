@@ -4,6 +4,7 @@ namespace Tests\Feature\Scheduling;
 
 use App\Bridge\Check\Checks\JobsPostureCheck;
 use App\Bridge\Scheduling\JobScheduler;
+use App\Bridge\Scheduling\TickAssertRecord;
 use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
@@ -73,15 +74,23 @@ class JobsPostureCheckTest extends TestCase
         $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
     }
 
-    public function test_a_declared_and_fresh_tick_is_reported_as_ok(): void
+    /**
+     * The FULLY WIRED install: a declared horizon, a fresh tick, and something that asserts
+     * it. ⚑ The assert record is stamped deliberately — without it this fixture is an install
+     * whose alarm nobody reads, and the reader leg warns (see below). Leaving it out would
+     * have made this test's `assertCount` the thing that noticed, which is how a fixture ends
+     * up asserting the state it was not written about.
+     */
+    public function test_a_declared_and_fresh_and_asserted_tick_is_reported_as_ok(): void
     {
         config(['bridge.jobs.tick_expected_every' => 600]);
         TickRecord::stamp();
+        TickAssertRecord::stamp();
 
         $findings = $this->findingsOf(new JobsPostureCheck);
 
-        $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertCount(2, $findings);
+        $this->assertSame([Severity::Ok, Severity::Ok], array_map(fn (Finding $f): Severity => $f->severity, $findings));
         $this->assertStringContainsString('tick: fresh', $findings[0]->message);
     }
 
@@ -96,6 +105,86 @@ class JobsPostureCheckTest extends TestCase
         $this->assertSame(Severity::Warn, $findings[0]->severity);
         $this->assertStringContainsString('STALE', $findings[0]->message);
         $this->assertStringContainsString('bridge:jobs --assert-tick', $findings[0]->message);
+    }
+
+    /**
+     * ⛔ A DECLARED HORIZON WITH NO READER IS REPORTED (card#8425 / DL-351, rt#341) — the leg
+     * that stops a dead alarm reading as coverage.
+     *
+     * ⚠ THE ASSERTIONS ARE ON THE CONTENT, not on the presence of a second finding. A leg
+     * asserted only by count or by absence certifies whatever replaces it, and this warn's
+     * whole value is that it names WHICH horizon and WHICH state — an operator who is told
+     * only *"something is wrong with the tick"* goes and reads the crontab line, which is
+     * fine and not the problem.
+     *
+     * The tick itself is FRESH here, so the only thing that can produce a warn is the reader
+     * leg: the fixture rules out borrowing the staleness line's severity.
+     */
+    public function test_a_declared_horizon_that_nothing_has_ever_asserted_is_reported(): void
+    {
+        config(['bridge.jobs.tick_expected_every' => 600]);
+        TickRecord::stamp();
+
+        $findings = $this->findingsOf(new JobsPostureCheck);
+        $warns = array_values(array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Warn));
+
+        $this->assertCount(1, $warns, 'a fresh tick nobody asserts must warn exactly once, and about the reader');
+        $this->assertStringContainsString('DECLARES a tick every 600s', $warns[0]->message);
+        $this->assertStringContainsString('NOTHING HAS EVER ASSERTED IT', $warns[0]->message);
+        $this->assertStringContainsString('bridge:jobs --assert-tick', $warns[0]->message);
+    }
+
+    /**
+     * ⛔ THE CONTROL THAT KEEPS THE LEG ADOPTABLE: declaring nothing is not a defect. An
+     * install that never wanted the tick must never be told to wire a hook for one — that is
+     * every no-cron install in the fleet, and a line on each of their preflights is how a
+     * check earns its way to being ignored.
+     */
+    public function test_an_install_that_declared_no_horizon_is_never_told_to_wire_a_reader(): void
+    {
+        // A tick has even been SEEN here — an undeclared install still gets no verdict and
+        // therefore no reader demand.
+        TickRecord::stamp();
+
+        $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
+    }
+
+    /**
+     * ⭐ AND THE OTHER CONTROL: once something HAS asserted, the warn is gone and the age is
+     * reported. No verdict is claimed on that age — nothing declares how often a seat's hook
+     * should fire, and inventing a cadence here would be the fleet-wide constant the horizon
+     * itself refuses.
+     */
+    public function test_an_install_whose_assert_has_run_reports_the_age_and_stops_warning(): void
+    {
+        config(['bridge.jobs.tick_expected_every' => 600]);
+        TickRecord::stamp();
+        TickAssertRecord::stamp();
+        $this->travel(120)->seconds();
+
+        $findings = $this->findingsOf(new JobsPostureCheck);
+
+        $this->assertSame([], array_filter($findings, fn (Finding $f): bool => $f->severity !== Severity::Ok));
+        $this->assertStringContainsString('the tick horizon has a reader', $this->messages($findings));
+        $this->assertStringContainsString('last ran 120s ago', $this->messages($findings));
+        $this->assertStringContainsString('no verdict is claimed on it', $this->messages($findings));
+    }
+
+    /**
+     * ⚑ THE TWO ALARMS ARE INDEPENDENT AXES, and both are reported when both hold: a dead
+     * clock and an unwatched horizon have different remedies (fix the crontab line; wire the
+     * hook), and suppressing either behind the other costs the operator a round trip.
+     */
+    public function test_a_dead_clock_and_an_unwatched_horizon_are_two_findings(): void
+    {
+        config(['bridge.jobs.tick_expected_every' => 600]);
+        TickRecord::stamp();
+        $this->travel(5000)->seconds();
+
+        $messages = $this->messages($this->findingsOf(new JobsPostureCheck));
+
+        $this->assertStringContainsString('STALE', $messages);
+        $this->assertStringContainsString('NOTHING HAS EVER ASSERTED IT', $messages);
     }
 
     /**

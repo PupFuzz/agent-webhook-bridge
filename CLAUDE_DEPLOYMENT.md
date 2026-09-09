@@ -73,6 +73,19 @@ php artisan bridge:check                          # validate .env, dirs, DB conn
 php artisan migrate --force
 php artisan optimize                              # config/route cache
 php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent)
+php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
+                                                  # this agent read, file and correct its own cards from inside its
+                                                  # session? YES -> run this; it prints a paste-ready board_tools:
+                                                  # block, and for an ssh-transport agent the whole SETUP PACKET
+                                                  # (five steps, three actors — one of them a human).
+                                                  # NO -> declare `board_tools:` with `enabled: false` in its YAML;
+                                                  # a declined capability is a decision WHILE THE BLOCK IS PRESENT.
+                                                  # Either answer finishes it. Deleting that YAML later is a
+                                                  # decommission, not a decline: docs/board-tools.md § Retiring a seat.
+                                                  # `bridge:check` above prints a NEXT STEPS line for every agent
+                                                  # that has answered neither way, and that block is the entry point.
+                                                  # Roles/handoff (ssh door): docs/board-tools-enablement.md
+                                                  # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 sudo systemctl reload apache2 php8.5-fpm
 ```
 
@@ -87,11 +100,24 @@ git pull --ff-only
 # and on some hosts the channel-server .mjs) live OUTSIDE the repo — git pull
 # CANNOT update them. Reconcile each: see "Reconcile out-of-repo copies" below.
 composer install --no-dev --optimize-autoloader
+# ⚠ Channel server loading from THIS checkout? Reconcile its installed tree too —
+# node_modules is gitignored, so the pull moved package-lock.json and left the
+# INSTALLED tree untouched. Read the ⚠/⛔ callout right below this block: it says
+# why nothing else catches that, and why the RESTART afterwards is an ASK.
+( cd examples/channel-servers && npm ci --no-audit --no-fund )
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
 php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```
+
+> **⚠ The channel server's `node_modules` — the pull does NOT update it, and nothing else notices.** `examples/channel-servers/node_modules/` is **gitignored** (DL-033), so a `git pull` / `git checkout <tag>` rewrites `package-lock.json` and leaves the **installed tree exactly as it was**. The install then runs whatever versions it resolved on its *first* `npm ci`, against a lockfile that says otherwise — including transitive packages a later lockfile bumped **to fix a CVE**. **Nothing in the toolchain reports this state:** GitHub's dependabot reads the **repo's** lockfile and correctly calls the alert fixed; `bridge:check`'s snapshot legs `stat` for `node_modules`' **presence** and never read a version out of it (that leg says so itself); and the supply-chain workflow audits the **committed** lockfile, not your disk. So the only thing standing between an install and a known-vulnerable module tree is the `npm ci` above — **run it on every update, not only when you noticed the lockfile move.** Measured twice on the reference host: 2026-08-11 (`ip-address`, `fast-uri`) and 2026-09-07, where two consecutive tag deploys left `fast-uri 3.1.5` / `qs 6.15.2` installed under a lockfile pinning `3.1.7` / `6.16.0`. `npm ci` is the whole fix *and* the whole verification — it **deletes** `node_modules` and reinstalls the lockfile exactly, so *installed == lockfile* is its postcondition, not something to re-check afterwards (this is precisely what `npm ci` does and `npm install` does not, which is why DL-033 chose it).
+>
+> **Where it sits, and why:** beside `composer install`, because it is the same operation on the **sibling manifest** — the pull moved both lockfiles, and this is the one nothing downstream reconciles. Keep it **before `bridge:check`** so the check's snapshot legs `stat` a settled tree rather than one that is about to be deleted and rebuilt under them. ⚠ **That ordering is hygiene, not a check that would catch this** — the presence leg passes on a stale tree exactly as it does on a fresh one, which is the whole point of this callout.
+>
+> ⚠ **Skip it only if this install's channel server does not load from this checkout.** A **standalone snapshot** (a per-agent `cp -R` elsewhere on the box) is reconciled in its own directory instead — see *"Reconcile out-of-repo copies"* below, whose `npm ci` is the same step one directory over. Read the `args` path of the channel entry in the seat's `~/.mcp.json` to find out which topology you are in.
+>
+> ⛔ **Then RESTART the channel server — and that is an ASK, not a step you automate.** `npm ci` changes files on disk; a channel server that is already running holds the **old** modules in memory and keeps doing so indefinitely. The reference channel server is an **MCP stdio child of the seat's `claude` process** (`StdioServerTransport`, spawned from that seat's `.mcp.json`), so "restart it" means **restarting the SESSION that owns it** — ⛔ **and NOT `/mcp reconnect`, which was written here and is wrong: /mcp reconnect does not stop the previous channel server — restart the session.** Reconnect spawns a second child while the first still holds the channel's address; the new one cannot bind it and exits 2 (measured on three seats on the port transport, roundtable #420 — [`docs/board-tools-enablement.md` § Activating on a running seat](docs/board-tools-enablement.md#activating-on-a-running-seat) owns the mechanism and the causes). Restarting the session **disconnects the live channel of the agent whose seat you are on**, dropping the transport the bridge pushes into until it comes back, which is why it is an ask. Do it at a session boundary, with the agent's agreement. ⛔ **Never wire a kill/restart of the channel server into an unattended deploy step:** the process you would be killing is the operator's own live session, and the deploy has no way to know what it is in the middle of. Until the restart happens, the `npm ci` is on disk and not in the running process — the deploy is not finished, and the install is not the version the lockfile says.
 
 > **⚠ Running a custom classifier or handler?** A custom class under `app/Bridge/Classifiers/` (per [`docs/customization.md`](docs/customization.md) § Loading your classifier) is **untracked but not gitignored**, so `git pull` preserves your *old* file unchanged into the new release — **unless a release starts *tracking* a class at that same filename.** That happened at **v0.50.0**, which ships `CoordinationClassifier.php` **tracked** (roundtable #8) where installs previously vendored it as an *untracked overlay*: `git pull`/`checkout` then **refuses with a collision** (`error: The following untracked working tree files would be overwritten by checkout`) rather than preserving it. The refusal is a *safe* fail (it never silently clobbers your overlay) but it **blocks the pull** — back up + `rm` your overlay first, then pull. The tracked `CoordinationClassifier` with its default families `[coord-message]` reproduces the vanilla pre-#8 overlay; opt into `impl-ci-wake`/`kanban-triage` via `classifier.config`. See the **v0.50.0 Upgrading** note in [`docs/CHANGELOG.md`](docs/CHANGELOG.md). **Check [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for a `classify()`/contract change in the versions you're crossing and migrate your class in the SAME step as the pull.** `classify()` has had two breaking changes (DL-022 added `AgentConfig $agent`; DL-025 collapsed to a single `classify(ClassifyContext $ctx)` — the **last** such break). An old signature is an uncatchable `E_COMPILE_ERROR` that fatals the receiver on the next live delivery — and with `opcache.validate_timestamps=On` the new contract is picked up within `revalidate_freq` of the pull, **before** the FPM reload, so the failure window opens at pull time. This is why `bridge:check` is ordered **before** the reload above: its out-of-process classifier load (DL-025) names a stale class instead of letting it fatal a request — but that only helps if you migrate-and-check, not pull-and-serve.
 
@@ -116,7 +142,7 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 1. **The session launcher.** The canonical [`examples/start-channel-session.sh`](examples/start-channel-session.sh) (bash, Linux UDS+HTTP) and [`examples/start-claude.ps1`](examples/start-claude.ps1) + [`examples/start-claude.bat`](examples/start-claude.bat) (Windows HTTP-tunnel) are **self-resolving** (see "The canonical channel launcher" below) — one copy serves any agent with no per-agent hardcoding, so a verbatim copy doesn't drift the way a hand-edited one did. After a pull, `diff` each deployed launcher against its sample and port any new guardrails. (A launcher predating DL-157 is hand-rolled + channel-pinned — replace it with the self-resolving one rather than re-porting.)
 
 2. **The channel MCP server (`agent-webhook-bridge-channel.mjs`)** — find where it actually loads from: the `args` path of the channel server in **`~/.mcp.json`** (the entry keyed by the channel name, e.g. `kanbanboard-agent`). Two topologies:
-   - **Loaded directly from a checked-out repo's `examples/channel-servers/`** (e.g. `…/agent-webhook-bridge-<agent>/examples/channel-servers/…`) — the pull already updated it; just run `npm ci` in that dir if its `package-lock.json` changed (DL-033).
+   - **Loaded directly from a checked-out repo's `examples/channel-servers/`** (e.g. `…/agent-webhook-bridge-<agent>/examples/channel-servers/…`) — the pull already updated the **tracked** files, but **not** the gitignored `node_modules/`, which is why the update block above runs `npm ci` there **unconditionally**. It is not conditional on the lockfile having visibly changed — that condition is the one an operator silently fails. The ⚠/⛔ pair under *"Update an existing install"* owns this, including the restart; don't re-derive it here.
    - **A standalone COPY** (multi-agent hosts commonly snapshot it per agent, e.g. `*-coordination/OUTBOUND/<agent>/channel-setup/agent-webhook-bridge-channel.mjs`) — it drifts. See **"Multi-agent channel-server distribution"** below for the canonical git-tag reconcile.
 
    Either way, put that same directory in the agent's `channel.server_path` (DL-229) so `bridge:check` reports on it — undeclared, it says *not validated* (severity `unvalidated`, tallied at the end of the run) rather than healthy. **Co-located installs only:** the check `stat`s the directory from the bridge process, so declare it only when the deployed copy is on the bridge's own filesystem. In the cross-host topology of [`docs/multi-host.md`](docs/multi-host.md) the channel server lives on host B and the bridge on host A cannot see it — leave `server_path` unset there, or `bridge:check` reports a dangling path (it cannot distinguish "on another host" from "removed").
@@ -285,13 +311,23 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 ## Commands
 
 ```bash
-php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
+php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220).
+                                                      # Ends with a NEXT STEPS block naming each agent whose board-tools enablement is
+                                                      # incomplete and the ONE command to run next (DL-352) — output only, exit unchanged,
+                                                      # silent when nothing is outstanding. --format=json carries it as next_steps[].
+                                                      # ⛔ --probe-tools does NOT verify a seat's half: it stamps the same ledger row from
+                                                      # this box (docs/board-tools.md step 6), so it clears the line without the seat calling.
 php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences + per-divergence history
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
 php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
-php artisan bridge:provision-tools [--dry-run] [--agent=]                    # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked)
+php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
+                                                      # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
+                                                      # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
+                                                      # instead (DL-357) — five steps, three actors; STEP 3 is the OPERATOR's pin and
+                                                      # is emitted inside a USER ACTION REQUIRED banner. The three packet options are
+                                                      # ssh-only and each is refused without --agent. docs/board-tools-enablement.md
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
@@ -360,18 +396,14 @@ A misconfigured posture pushes **nothing** and warns once per day, never per del
 
 ⛔ **Read `docs/periodic-jobs.md` before adding a job. A periodic job is the LAST resort here** — the event gate is the first answer, and the registry refuses an instance that does not say, in one sentence, why the work cannot be event-driven.
 
-Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, handler, interval, owner, docs-ref, justification, enabled}`. Handlers are **code** — a job may only reference a handler that exists in this build, so what a job *can do* is fixed at code-review time; a row naming an unknown handler is a **loud refusal**, never a silent skip. Any code path may insert or remove an instance at runtime; `bridge:jobs` enumerates the whole periodic population.
+Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, handler, interval, owner, docs-ref, justification, enabled}` — where `justification` is a required **documentation slot**, not a gate: the insert refuses an empty answer on length and judges nothing about the one it accepts. Handlers are **code** — a job may only reference a handler that exists in this build, so what a job *can do* is fixed at code-review time; a row naming an unknown handler is a **loud refusal**, never a silent skip. Any code path may insert or remove an instance at runtime; `bridge:jobs` enumerates the whole periodic population.
 
 **Two ingresses, and the second is opt-in per install:**
 
 - **Default, no operator action:** the registry runs off the inbound webhook's after-response gate (DL-199's shape) — bounded, non-blocking, never on a client-visible path.
-- **Opt-in:** ONE crontab line, under **the seat-owner account, never root**:
-  ```cron
-  0,10,20,30,40,50 * * * * cd /path/to/bridge && php artisan bridge:tick >> /path/to/bridge/storage/logs/tick.log 2>&1
-  ```
-  then declare the interval so a dead line goes loud: `BRIDGE_JOBS_TICK_EXPECTED_EVERY=600`. ⚠ A `.env` edit is inert under `config:cache` — rebuild it.
+- **Opt-in:** ONE crontab line, under **the seat-owner account, never root** — and ONE **per install**, never per agent. ⛔ **The line is not restated here.** `php artisan bridge:provision-tools` prints it for THIS install (absolute interpreter, absolute paths, already filled in) and stops printing it once a tick is adopted; [`docs/periodic-jobs.md`](docs/periodic-jobs.md) § *Adopting the tick* owns the template and the two things that are easy to get wrong about it — the **absolute** interpreter (cron's `PATH` is minimal) and the **truncating** redirect (an appended `tick.log` grows without bound and nothing rotates it). Then declare the interval that line runs at so a dead line goes loud — ⛔ **the figure is not restated here either**, because it is DERIVED from the offered line's cadence and a copy here is a second number free to disagree with it; `bridge:provision-tools` prints the value beside the line, and the owner section carries it beside the template. ⚠ A `.env` edit is inert under `config:cache` — rebuild it.
 
-**Death is the alarm.** The bridge records the last tick it received and reports its freshness against **this install's own declaration**, never a fleet constant. `php artisan bridge:jobs --assert-tick` exits non-zero **only** when a DECLARED tick is not fresh, which is what a session-start hook should run; `bridge:check`'s `jobs.posture` leg discloses the same fact at preflight. An **absent** record is reported as `unmeasured`, never as death, and an install that declared nothing is never reported as failing.
+**Death is the alarm.** The bridge records the last tick it received and reports its freshness against **this install's own declaration**, never a fleet constant. `php artisan bridge:jobs --assert-tick` exits non-zero **only** when a DECLARED tick is not fresh, which is what a session-start hook should run; `bridge:check`'s `jobs.posture` leg discloses the same fact at preflight. An **absent** record is reported as `unmeasured`, never as death, and an install that declared nothing is never reported as failing. ⛔ **And declaring the horizon is only half of it — wire the assert.** A declared horizon nothing ever asserts reads as coverage while reporting to nobody, so `--assert-tick` records that it ran and the `jobs.posture` leg **warns** until it has run here at least once (an install that declared no horizon stays silent). The `stale` message prints the jitter grace and the resulting threshold, both derived from the constant the verdict itself uses.
 
 | Key | Env | Default | Meaning |
 | --- | --- | --- | --- |

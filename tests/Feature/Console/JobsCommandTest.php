@@ -58,8 +58,8 @@ class JobsCommandTest extends TestCase
 
     /**
      * ⭐ The operator's anti-proliferation rule at the hand-entry door. It is a REQUIRED
-     * ARGUMENT and not an approval gate: nothing queues, nobody is asked, and the refusal
-     * arrives immediately with the reason.
+     * DOCUMENTATION SLOT and not an approval gate: nothing queues, nobody is asked, nothing
+     * judges the answer, and the refusal arrives immediately with the reason.
      */
     public function test_add_refuses_an_instance_with_no_justification(): void
     {

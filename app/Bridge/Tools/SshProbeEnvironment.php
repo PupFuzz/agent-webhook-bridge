@@ -42,14 +42,69 @@ interface SshProbeEnvironment
     public function homeForUser(string $user): ?string;
 
     /**
+     * The numeric uid of a NAMED OS account, or null when this run did not establish
+     * one — either because the account database has no such account, or because this
+     * process cannot look OS accounts up at all (no `posix_getpwnam`).
+     *
+     * ⛔ THE TWO NON-ANSWERS ARE DELIBERATELY COLLAPSED HERE, unlike
+     * {@see self::homeForUser()}, and the reason is the consumer rather than economy.
+     * The only reader is the setup packet's *does the pin need `sudo`* decision, which
+     * compares this against {@see self::euid()}: a non-null EQUAL pair prints the
+     * self-account form, and EVERY other combination prints the `sudo` form. Both
+     * non-answers therefore reach the same, SAFER, branch — an unnecessary `sudo` costs
+     * the operator a password prompt, a missing one costs them a failed pin — so a third
+     * state would be a distinction no caller could spend. Nothing here accuses an
+     * account of not existing.
+     */
+    public function uidForUser(string $user): ?int;
+
+    /**
+     * This process's EFFECTIVE uid, or null when it cannot be read (no `posix_geteuid`
+     * — the extension is optional and commonly absent on hardened hosts). Null is
+     * UNMEASURED, never 0: see {@see self::uidForUser()} for what the one consumer does
+     * with it.
+     */
+    public function euid(): ?int;
+
+    /**
      * The EFFECTIVE (Match-resolved) sshd config text from `sshd -T [-C user=<user>]`,
      * or null when it cannot be run (not root — `sshd -T` loads host private keys — or
      * no sshd binary). Null means UNVERIFIED, never "posture is fine".
      */
     public function sshdEffectiveConfig(?string $forUser = null): ?string;
 
-    /** The authorized_keys file text at $path, or null when absent/unreadable. */
-    public function readAuthorizedKeys(string $path): ?string;
+    /**
+     * One read of the `authorized_keys` file at $path.
+     *
+     * THREE STATES, and {@see AuthorizedKeysRead} owns why: a file that is NOT THERE was
+     * consulted and contributes nothing (so an absence drawn over it is established), while
+     * a file this process could not LOOK at establishes nothing at all. Returning null for
+     * both made the authoritative "not wired" FAIL unreachable on the OpenSSH default, whose
+     * second file is absent on essentially every host (card#8976).
+     */
+    public function readAuthorizedKeys(string $path): AuthorizedKeysRead;
+
+    /**
+     * An OPAQUE key that is EQUAL for two paths naming the SAME physical file and different
+     * for two paths naming different files. Never a path to read, print or hand an operator
+     * — only ever compared (card#8976 r2).
+     *
+     * ⛔ WHY THE SEAM ANSWERS THIS AT ALL. `AuthorizedKeysFile` names a list, and nothing
+     * stops two of its entries resolving to one file: `.ssh/authorized_keys2` symlinked to
+     * `.ssh/authorized_keys` (or hard-linked to it), or the same file spelled two ways
+     * (`%h/.ssh/authorized_keys` beside `.ssh/authorized_keys`). Deduplicating by the path
+     * STRING leaves one physical line counted once per spelling, and the probe's ambiguity
+     * arm — *"more than one authorized_keys line forces …; leave exactly one"* — then fails
+     * an install that has exactly one, with a remedy the operator cannot follow. String
+     * identity cannot answer a question about files; only the filesystem can.
+     *
+     * Two paths this run cannot resolve to a file (neither exists, or it may not look) fall
+     * back to a NORMALISED form of the path itself: two spellings of one ABSENT file may
+     * then stay two keys. That is harmless where it lands — an absent file contributes no
+     * line, so no match is double-counted — and it is why this returns a total string
+     * rather than a nullable one: there is no state in which the caller may not compare.
+     */
+    public function fileIdentity(string $path): string;
 
     /**
      * Round-trip one board-tools call over ssh to $target (`user@host`), sending

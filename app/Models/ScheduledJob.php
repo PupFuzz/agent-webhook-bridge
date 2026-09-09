@@ -20,10 +20,12 @@ use Illuminate\Support\Carbon;
  * removing instances of an already-reviewed handler is ungated and happens at runtime. A
  * `handler` naming nothing is refused loudly at both ends rather than skipped.
  *
- * ⭐ `justification` IS REQUIRED AND IS PART OF THE PUBLIC ENUMERATION. A periodic job is
- * the last resort in this design; the field is the one sentence the inserter owes saying
- * why the event-gated path could not do it. It is friction by intent — see
- * {@see JobSpec} for what that friction does and does not buy.
+ * ⭐ `justification` IS A REQUIRED DOCUMENTATION SLOT AND IS PART OF THE PUBLIC ENUMERATION.
+ * A periodic job is the last resort in this design; the field is the one sentence the
+ * inserter owes saying why the event-gated path could not do it. ⛔ It is documentation, NOT
+ * a gate: the insert refuses an empty answer on length and filters nothing else, so a stored
+ * row's justification means somebody wrote a sentence, never that anything vetted it — see
+ * {@see JobSpec} for that bound stated in full.
  *
  * ⛔ NO SECRET, TOKEN OR CONFIG VALUE MAY BE STORED ON THIS MODEL. Every column below is
  * printed by `bridge:jobs` — both the human listing and `--json`, and `payload` included —

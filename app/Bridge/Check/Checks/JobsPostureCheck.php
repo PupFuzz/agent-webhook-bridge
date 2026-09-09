@@ -7,6 +7,8 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobsConfig;
+use App\Bridge\Scheduling\TickAssertRecord;
+use App\Bridge\Scheduling\TickPosture;
 use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Scheduling\TickState;
 use App\Bridge\Support\FaultMarker;
@@ -32,6 +34,17 @@ use Throwable;
  * (`BRIDGE_JOBS_TICK_EXPECTED_EVERY`), never on a fleet-wide constant: only this install
  * knows what its crontab line says, and an install that declared nothing is not failing by
  * not ticking. An ABSENT record reads as UNMEASURED — never as death.
+ *
+ * ⛔ AND IT REPORTS WHETHER THE ALARM HAS A READER (card#8425 / DL-351, rt#341). Every
+ * sentence above is about a horizon an install DECLARED; none of it establishes that anything
+ * ever ASKS. An install can declare `BRIDGE_JOBS_TICK_EXPECTED_EVERY`, wire no consumer of
+ * `--assert-tick` anywhere, and the four-state evaluator will resolve `stale` perfectly for
+ * nobody — a state indistinguishable from having declared no horizon, and worse than it,
+ * because the declaration reads as coverage to whoever audits the config. That is the same
+ * class as `StandupGate::ERROR_KEY`'s write site with no read site (DL-345) with the ends
+ * swapped: there the marker had no reader, here the VERDICT has none.
+ * {@see TickAssertRecord} records the assertion's own entry point, and this leg turns *"the
+ * operator believes this is watched"* into a checkable claim.
  *
  * ⚑ WHY THE STALE-TICK LINE IS `warn` AND NOT `fail`, stated because the opposite is
  * defensible and was weighed. `fail` flips `bridge:check`'s exit code, and this command
@@ -117,7 +130,7 @@ final class JobsPostureCheck implements Check
         yield from $this->instanceFindings($jobs);
         yield from $this->passErrorFindings();
 
-        yield Silence::because('the registry is enabled with a usable cadence, the tick posture is either unadopted or fresh, and no instance is refused or repeatedly failing');
+        yield Silence::because('the registry is enabled with a usable cadence, no tick horizon is declared (an adopted one always yields its state and its reader posture), and no instance is refused or repeatedly failing');
     }
 
     /**
@@ -143,11 +156,50 @@ final class JobsPostureCheck implements Check
 
         if ($posture->state === TickState::Fresh) {
             yield Finding::ok('jobs: '.$posture->summary());
+        } else {
+            yield Finding::warn('jobs: '.$posture->summary().' Assert this from a session-start hook with `php artisan bridge:jobs --assert-tick`.');
+        }
+
+        yield from $this->tickReaderFindings($posture);
+    }
+
+    /**
+     * ⛔ IS ANYTHING ACTUALLY READING THE ALARM? A declared horizon with no reader is
+     * indistinguishable from no horizon at all, and it is WORSE than that: the declaration
+     * reads as coverage to whoever audits the config, so the operator believes the clock is
+     * watched (rt#341, sola-pm's blocking ask). Everything above computes the verdict
+     * correctly; this leg is the only thing that reports whether anyone ever asks for it.
+     *
+     * ⚠ THE TWO ABSENCES ARE NOT COLLAPSED. *No record of an assert ever* and *asserted, and
+     * here is how long ago* are different states with different remedies, so they are
+     * different findings at different severities. {@see TickAssertRecord} does not expire for
+     * the same reason.
+     *
+     * ⚑ NO VERDICT IS CLAIMED ON THE AGE. Nothing declares how often a seat's hook should
+     * fire — the tick horizon is the operator's declaration precisely because only the
+     * install knows its own cadence, and there is no equivalent declaration for the hook. So
+     * the age is reported and judged by the reader, the same cut
+     * {@see FaultMarker::lastFault()} makes over its own `at`.
+     *
+     * @return iterable<Finding>
+     */
+    private function tickReaderFindings(TickPosture $posture): iterable
+    {
+        $assertedAgeS = TickAssertRecord::ageS();
+
+        if ($assertedAgeS === null) {
+            yield Finding::warn('jobs: this install DECLARES a tick every '.$posture->expectedEveryS
+                .'s and NOTHING HAS EVER ASSERTED IT — the bridge holds no record of `php artisan bridge:jobs --assert-tick`'
+                .' being run here, so the freshness verdict above is computed for nobody and a dead crontab line would be'
+                .' reported to no one. Run it from a session-start hook (or any periodic runbook step) so the declaration'
+                .' is a checked claim rather than a belief. A cleared or unreadable cache store also reads this way —'
+                .' this never reads as watched when it is not.');
 
             return;
         }
 
-        yield Finding::warn('jobs: '.$posture->summary().' Assert this from a session-start hook with `php artisan bridge:jobs --assert-tick`.');
+        yield Finding::ok('jobs: the tick horizon has a reader — `bridge:jobs --assert-tick` last ran '.$assertedAgeS
+            .'s ago. Nothing declares how often it should run, so that age is reported and no verdict is claimed on it.');
     }
 
     /**

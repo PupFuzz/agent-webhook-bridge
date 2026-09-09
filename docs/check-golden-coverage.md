@@ -4,20 +4,35 @@
 > Measured against `app/Console/Commands/Bridge/CheckCommand.php` over the
 > 49 branch predicates in `handle()`, in 50 minutes. Decision record: **DL-242**.
 
-> ⚠ **STALE — the counts below are NOT this branch's.** TWO predicates have been added to
+> ⚠ **STALE — the counts below are NOT this branch's.** FOUR predicates have been added to
 > `handle()` since the run above: the `CheckSlot::Jobs` emit for the periodic-job registry's
-> posture leg (card#8425 / DL-325) and the `CheckSlot::Standup` emit for the standup
-> digest's (card#8683 / DL-345), so the live enumeration finds **51** where the header states
-> 49. The measurement was NOT re-run: it is a ~50-minute mutation pass that must execute on a
-> COPY of the repo, and neither change touches a predicate the tables below name.
+> posture leg (card#8425 / DL-325), the `CheckSlot::Standup` emit for the standup digest's
+> (card#8683 / DL-345), the `foreach` that renders the NEXT STEPS block (card#8959 /
+> DL-352), and the `CheckSlot::BoardToolsLost` emit for the LOST-block leg (card#8973 /
+> DL-360), so the live enumeration finds **53** where the header states 49. Re-derive that
+> number with `php bin/check-golden-predicates.php --json` rather than reading it here — it
+> is the DENOMINATOR the currency guard compares, and it moves with the source. The
+> measurement was NOT re-run: it is a ~50-minute mutation pass that must execute on a COPY of
+> the repo, and none of the four touches a predicate the tables below name.
 
-> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The two
+> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The four
 > predicates present but never measured are
-> `if ! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))` (card#8425 / DL-325) and
-> `if ! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))` (card#8683 / DL-345).
+> `if ! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))` (card#8425 / DL-325),
+> `if ! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))` (card#8683 / DL-345),
+> `foreach $this->nextStepsOutput($nextSteps)` (card#8959 / DL-352) and
+> `if ! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))` (card#8973 / DL-360).
 > Their verdicts are therefore UNKNOWN here, in either direction — they are
 > not in the disclosed-gap table because they were not measured, which is a different thing
-> from being protected. Re-run `php bin/check-golden-mutate.php` to retire both banners.
+> from being protected. ⚑ The last one is measured ELSEWHERE and that is not the same claim:
+> `tests/Feature/Console/Check/CheckNextStepsTest.php` watched three mutants of the
+> derivation behind it go red, and 43 golden captures move with it — so it is covered, by a
+> named suite, and still not by THIS artifact's measurement. ⚑ **The DL-360 predicate is
+> covered the same way and carries the same caveat:** `tests/Feature/Console/BridgeCommandsTest.php`
+> drives BOTH of its branches end to end — an install whose recorded block is gone exits 1,
+> the same install with the block present exits 0 — so it is covered, by a named suite, and
+> still not by THIS artifact's measurement. Re-running the ~50-minute mutation pass for one
+> added predicate was not warranted. Re-run
+> `php bin/check-golden-mutate.php` to retire both banners.
 
 > ⚑ **WHAT IS GUARDED HERE, AND WHAT IS NOT (card#7992).** Two suite guards keep this file
 > honest about its SUBJECT — the predicate count stated above, and the set of conditions the

@@ -546,10 +546,17 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
 - **Provisioning:** `bridge:provision-tools` mints each enabled **http** agent's
   bearer (0600, idempotent, collision-checked). It never edits agent YAML — for an
   agent without a `board_tools:` block it prints a paste-ready skeleton. For an
-  **ssh** agent it mints no secret (the private key is host B's) — it **prints the
-  ready-to-run `provision-board-tools.py --role a|b` invocation** for each leg
-  (FR #5010 §2), with this agent's params filled in (`--agent` from the config,
-  `--artisan` from the install path, `--ssh-account` from `board_tools.ssh_account`).
+  **ssh** agent it mints no secret (the private key is the seat's) — it **prints that
+  agent's BOARD-TOOLS SETUP PACKET** (card#8971 / DL-357): the five-step, three-actor
+  enablement exchange, with this install's own params filled in (`--agent` from the
+  config, `--artisan`/script/storage paths from the install, the forced-command account
+  from `board_tools.ssh_account`, and the git ref this box runs). ⛔ **Who runs which
+  step, why STEP 3 is a process control a HUMAN performs, and how the key line and
+  fingerprint are handed over are owned by
+  [`docs/board-tools-enablement.md`](board-tools-enablement.md)** — not restated here.
+  `--host-a=`, `--ssh-port=` and `--pubkey-from=` fill the packet in as those values
+  become known; each is refused without `--agent`, and a `--pubkey-from` file that is not
+  exactly one well-formed public-key line is refused before any pin command is printed.
   The static `bin/provision-board-tools.py` program owns both legs from a single
   source that cannot drift: `--role a` (root, Linux, on the bridge box) pins the
   forced-command `authorized_keys` line — the **sole** security boundary — and makes
@@ -557,8 +564,45 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   hardening; see `docs/multi-host.md § 3`); `--role b` (the calling seat, cross-platform
   python) generates
   the FIPS ECDSA P-256 key, deploys the bundled channel-server snapshot, and merges
-  `.mcp.json`. The merge **force-sets the SSH tools transport keys** it owns
-  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
+  `.mcp.json`.
+  **The key is derived ONCE (card#8972):** without `--ssh-key`, `--role b` derives
+  `~/.ssh/<agent>-board-tools` from `--agent`, generates it if absent, and records it.
+  **`--ssh-key <path>` means "use THIS existing key"** — the flag never generates one, and
+  that path is then what is printed for the host-A handoff, what `--self-cert` probes, and
+  what is recorded. Either way **`BRIDGE_TOOLS_SSH_KEY` is always the key the run actually
+  used** — it is no longer possible to pin one key on host A and record another in
+  `.mcp.json`. What the flag asserts, and what is therefore **checked before anything is
+  handed off**:
+  - **both halves exist.** A missing half refuses, naming the given path and the default
+    it would otherwise use; when only the `.pub` is missing the refusal prints the
+    `ssh-keygen -y -f <key> > <key>.pub` that regenerates it.
+  - ⭐ **they are two halves of ONE pair.** Existence is not the contract — the public
+    half pinned on host A has to be the one this seat can present. `ssh-keygen -y` derives
+    the public half from the private one and the **type + blob** fields are compared (the
+    comment is not: `-y` prints the comment stored in the *private* key, which legitimately
+    differs). A mismatch refuses; without this check the pin succeeds and every later board
+    -tools call fails `Permission denied (publickey)`.
+  - **the private half is passphraseless.** The channel server spawns ssh in **BatchMode
+    with no agent**, so an encrypted key can never be unlocked at call time whatever the
+    pin says. The same `ssh-keygen -y -P ''` answers this, and the refusal names BatchMode
+    as the reason.
+  - ⚠ **its permissions are VERIFIED, not rewritten.** A key the tool generated is
+    hardened by the tool (`chmod 600`; on Windows `icacls /inheritance:r` + an owner-SID
+    grant). A key you *named* is only judged: the same refuse-if-broader decision runs and
+    a too-open key **refuses with the `chmod 600` / `icacls` command to run**, because
+    provisioning must not silently re-permission a file it does not own — an
+    `/inheritance:r` in particular drops every inherited ACE and is not undoable from what
+    this tool knows. On Windows the **`.ssh` directory decision runs before any file ACL is
+    touched**, so a refusal never leaves a rewritten ACL behind.
+  The merge treats the SSH tools transport keys it owns
+  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) as **ONE SET, reconciled** — every member the
+  run declared is force-set and **every member it did not declare is REMOVED**. ⚠ So
+  omitting `--ssh-port` on a re-provision **drops** a port an earlier run set, rather than
+  leaving it in place: pass `--ssh-port` every time you want one. (Before card#8972 the
+  merge only ever `update()`d, so `_PORT` survived every later run that omitted it and the
+  channel server kept spawning `ssh -p <old port>`.) The reconcile is scoped to that set,
+  so `BRIDGE_CHANNEL_TOKEN` and the channel vars below are never collateral. It only
+  **creates the live-wake channel
   vars (`BRIDGE_CHANNEL_TRANSPORT`/`_NAME`) if absent** — a re-provision never
   overwrites an existing seat's channel transport (e.g. an HTTP live-wake fallback),
   only bootstrapping the platform default on a fresh `.mcp.json`: **`unix` on POSIX,
@@ -567,23 +611,68 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   Its pubkey validator is
   a **full-line shape check** (rejects multi-line /
   CRLF pastes), superseding the prefix-only guard the old generated bash carried.
-  Run the host-A line as root on the bridge box and the host-B line on the calling seat;
-  a same-box Linux run hands the `.pub` path to `--role a --pubkey-from` (no paste).
+  **`--role a` needs root only to write ANOTHER account's `authorized_keys`** (card#8971):
+  where the forced-command account is the one running the command it pins with **no
+  `sudo`** — that account can already write its own file — and every other non-root
+  combination is refused by name. Both arms print the path they wrote and note that
+  **sshd's `AuthorizedKeysFile` is not resolved by this tool**. `--expect-fingerprint`
+  (optional, both roles; bare `SHA256:…` or a whole `ssh-keygen -lf` line) refuses on a
+  mismatch printing both values — ⛔ a **transcription** guard, never a checkpoint, since
+  any holder of the `.pub` can compute it. A hand-edited `authorized_keys` line naming the
+  same agent with different options is **refused rather than appended beside**, and a
+  tool-shaped line for that agent whose forced command differs (another checkout's
+  `artisan`, another timeout, extra options) is **refused rather than reported as
+  *already present (same key)*** — sshd runs what that line says. **TWO tool-shaped lines
+  for one agent are refused too**, naming each by its position in the file: only the first
+  was ever examined, so a duplicate carrying a SECOND key stayed authorized behind an
+  *already present* that was reading line one. ⚠ The same-agent scan behind the first of
+  those three is a **heuristic over the bare `--agent=<name>` spelling**, and a hand line
+  written `--agent="<name>"` is **not seen** — a declared bound, whose miss direction is
+  the behaviour that was already there.
+  **`--role b --certify-only`** fires just the ssh round-trip using the target and key the
+  seat already recorded in its own `.mcp.json` — no keygen, no snapshot deploy, no
+  `.mcp.json` write; it needs `--agent --project-dir --channel-name` and refuses
+  `--ssh-target`/`--ssh-key`, because the recorded values are the ones the channel server
+  will actually use.
+  **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
+  `.tmp`, compared against what is there, and `os.replace`d in — an unchanged re-run
+  writes nothing (it prints `unchanged`), a changed one first copies the previous file to
+  `.mcp.json.bak-<UTC>` (0600) and prints that path, and a failure mid-write leaves the
+  seat's live `.mcp.json` byte-identical with no temp file behind.
+  A **stale channel-server snapshot is renamed aside, never deleted** — `.channel-server`
+  becomes `.channel-server.stale-<deployed version>` (suffixed with a UTC stamp if that
+  name is taken), and the printed message names **both** dispositions: how to roll back
+  (move that path back over `.channel-server`) and that it can be discarded *once the new
+  snapshot is confirmed working*. ⚠ **What is left behind on a mid-deploy failure is the
+  retained tree, not a running channel server:** if the copy or the `npm ci` fails after
+  the rename, `.channel-server` is absent or half-populated and `.mcp.json` still points at
+  it — the seat is **down until you roll back**, which is exactly why nothing is deleted
+  and why the rollback is printed. The Node ≥ 20 precheck runs **before** the rename, so
+  the most likely refusal on a fresh seat happens with the deployed tree still in place and
+  nothing to undo.
+  **`known_hosts` is seeded unconditionally** (an `ssh-keyscan` of the `--ssh-target`
+  host), with or without `--self-cert` — so **a successful keyscan is NOT evidence the
+  board-tools door is live**: it only proves the host answers on the ssh port. Only
+  `--self-cert`, run *after* host A has pinned the key, certifies that door.
+  Which line runs where, and in what order, is the packet's job to say — a same-box Linux
+  run hands the `.pub` path to `--role a --pubkey-from` (no paste) and collapses further
+  still into the wrapper below.
   Windows host B is supported: the host-B leg is cross-platform python and the Windows
   path (`%USERPROFILE%\.ssh`, icacls-based key hardening in lieu of `chmod 600`, and a
   Win32-OpenSSH precheck that fails closed if `ssh.exe`/`ssh-keygen.exe`/`ssh-keyscan`
   are absent) was validated on a real en-US Windows 11 seat. The `ssh -i` round-trip
   (`--self-cert`) is the authoritative permission check; the icacls SID-based ACL
   assertion (refuse if the private key is readable, or its `.ssh` dir writable, by any
-  principal beyond `{owner, SYSTEM, Administrators}`) is defense-in-depth. Certify
-  afterward with `bridge:check --probe-tools-ssh=<user@host>`.
-  **Known limitation (en-US only):** the icacls hardening matches Windows built-in
-  principals (`BUILTIN\Users`, `NT AUTHORITY\SYSTEM`, …) by their **en-US account
-  names**. On a **localized** Windows those print under localized names and do not
-  match, so the icacls decision **refuses** (fail-closed — a spurious refuse, never an
-  unsafe accept). A durable fix — resolving principals to their well-known SIDs directly
-  (`LookupAccountName` / `icacls /save`) rather than through the localized-name table —
-  is tracked separately.
+  principal beyond `{owner, SYSTEM, Administrators}`) is defense-in-depth. The seat
+  certifies itself with the packet's STEP 4 (`--role b --certify-only`); ⛔ a
+  `--probe-tools-ssh` run from the BRIDGE box stamps the same ledger row and is not
+  evidence about the seat (DL-229).
+  **Locale-independent (card#5053).** The icacls decision is pinned by **well-known SID**,
+  not by the localized account name icacls prints: principals are resolved to their SIDs
+  through the OS (a `LookupAccountName`-equivalent), which returns the same fixed SIDs on
+  a localized Windows as on en-US. The en-US name table survives only as an offline
+  fallback when that lookup is unavailable, and an unresolvable principal is kept raw so
+  the decision still fails **closed** (a spurious refuse, never an unsafe accept).
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
   membership. For an **ssh** agent it also probes (offline) the pinned
@@ -714,6 +803,37 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 `tool_calls` ledger table is the named v2 upgrade if operators want it.
 
 ## Same-box enablement (Apache/FPM)
+
+> **Wiring an SSH-transport agent, or a seat on another box?** This section is the HTTP
+> door's runbook. Who does what for the ssh door — and why one of its steps is a human's —
+> is [`docs/board-tools-enablement.md`](board-tools-enablement.md); the steps themselves
+> come from `bridge:provision-tools --agent=<name>`.
+
+> **⭐ You do not have to remember to come here — `bridge:check` sends you.** Since DL-352
+> the command a fresh install already runs ends with a **NEXT STEPS** block naming every
+> agent whose board-tools enablement is incomplete, the state it stopped in, and the ONE
+> command to run next; `--format=json` carries the same entries as `next_steps[]`
+> (`{agent, state, command, doc}`). An install with nothing outstanding prints no block at
+> all, and the block never moves the exit code — it is output, not a verdict. **That block
+> is this section's entry point**, so the normal way in is to run `php artisan bridge:check`
+> and follow the line for your agent rather than to read all seven steps first.
+>
+> What each `state` means is defined ONCE, in
+> [`docs/check-json-contract.md § 7a`](check-json-contract.md#7a-next_steps--what-to-run-next-per-agent)
+> (owner: `NextStepState`'s docblock) — not restated here. How they map onto the steps
+> below: `no_block` → steps 3–4; `bridge_side_incomplete` → the `bridge:provision-tools`
+> line the entry prints, then re-run; `bridge_side_unverified` → **re-run as the account
+> that can read** (`sudo`), and do **not** re-provision on that line alone — nothing was
+> measured; `seat_side_unreported` → steps 5 and 7, on the seat. ⛔ **The last one cannot
+> be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
+> ledger row the state is read from, *from this box*, so it would silence the line without
+> the seat ever having called. **An agent that does not want board tools declares
+> `board_tools:` with `enabled: false` — while the block is present**; a declined capability
+> is a decision and the line stops printing. ⚠ **Deleting that YAML is a different act.** An
+> `enabled: false` block is a decision only while something states it, so deleting the file
+> re-opens the question — and if this install ever recorded an enabled block for that agent,
+> it re-opens as a **LOST** failure whose remedy is an explicit retirement. See
+> **[A restored install](#a-restored-install)** and **[Retiring a seat](#retiring-a-seat)**.
 
 The end-to-end runbook for the common topology: the bridge served by an Apache
 vhost (`*:443`/`*:80`) proxying to PHP-FPM, with the agent's channel server on
@@ -858,6 +978,90 @@ confirm the seat by having the seat call.
 
 Restart the agent's channel MCP server so it re-reads its env; the tools are now
 advertised and live.
+
+⚠ **On a seat whose session is already running, that means restarting the SESSION** —
+/mcp reconnect does not stop the previous channel server — restart the session. See
+[`docs/board-tools-enablement.md` § Activating on a running seat](board-tools-enablement.md#activating-on-a-running-seat),
+which owns the mechanism, the causes of the bind failure, and who does the restart.
+
+### A restored install
+
+**If `bridge:check` prints `board_tools: agent <name>: block LOST`, this install once had a
+working `board_tools` block for that seat and now has none.** The line is a **fail** and it
+flips the exit code — the command is refusing to certify the install (card#8973 / DL-360).
+It is not derived from the current config, which no longer holds the evidence: it is derived
+from a row in the bridge's own database recording that a previous run PARSED an enabled block
+for that agent. That is why a home-dir restore, which brings the config tree back without the
+block, cannot make the line go away by itself.
+
+**⚠ The witness survives what killed the config only under a stated condition: the bridge
+DATABASE must not live inside the restored tree.** That holds for MariaDB and for a SQLite
+file outside the restored path. It does **not** hold for a SQLite file under it — there the
+row dies with the config and the leg has nothing to say, which is a gap rather than a
+guarantee.
+
+**There are exactly two remedies, and only you know which applies:**
+
+1. **The block should still be there** — a restore or a hand edit dropped it. Re-add it from
+   the deploy's source of truth and re-run `bridge:check`. The line goes away because the
+   block is back, not because anything was silenced.
+2. **The seat is genuinely gone** — decommissioned, renamed, moved to another host. Say so:
+   [Retiring a seat](#retiring-a-seat).
+
+**⛔ `--probe-tools` cannot clear it, and neither can any other probe.** Those stamp the
+CLIENT-CALL ledger, which this leg never reads as a trigger — it quotes a client call inside
+the line as evidence and nothing more. The only things that move this verdict are re-adding
+the block and retiring the seat.
+
+**⚑ The `no_block` NEXT STEP is deliberately NOT printed for a lost agent.** That question
+("should this agent be able to read, file and correct its own cards?") offers `enabled: false`
+as one valid answer, which would MUTE the failure instead of answering it. One voice per
+agent: the FAIL above carries the remedy.
+
+## Retiring a seat
+
+**Deleting a seat is a decommission, and this bridge asks for the decommission to be stated**
+(card#8973 / DL-360). An `enabled: false` block is a decision while the block is present and
+nothing at all once the YAML is deleted, so a declining seat whose file is removed re-opens as
+a LOST failure. The statement that closes it is one key:
+
+```yaml
+board_tools:
+  retired: "2026-09-08 — seat decommissioned, host retired"
+```
+
+The value is yours, stored verbatim and printed back to you; the date rides inside the
+sentence rather than being parsed out of it.
+
+**The sequence, in this order:**
+
+1. Add the `retired:` key to `<name>.yml`.
+2. Run `php artisan bridge:check` and **read the line**. You are waiting for
+   `board_tools: agent <name>: RETIRED — <your reason> (tombstone on record)`.
+3. **Only then** delete the YAML, if you want it gone.
+
+**⛔ Step 2 is not a formality, and the line confirms the ROW rather than your config.** The
+tombstone write is best-effort — it is deliberately allowed to fail rather than break a check
+run — so a run can print
+`retired in config but the tombstone could NOT be recorded (see the log)` instead. That is a
+WARNING line, not a green one — the row WAS read and the tombstone is not there — so delete the
+YAML on the strength of it and the only statement of your decision goes with it, and the seat
+comes back as a LOST failure with nothing left to retire it with. ⚠ It does not flip the exit
+code: `bridge:check` can exit 0 with this line printed, so read the line rather than the code.
+
+**What clears a tombstone: re-adding an enabled block.** Putting a working `board_tools` block
+back for that agent clears the retirement on the next run — re-adding the seat re-opens the
+question the retirement closed, and the leg starts watching it again.
+
+**A renamed or removed agent whose YAML is already gone** cannot be given a `retired:` key,
+because there is no file to put it in. The cure is in the FAIL line itself: recreate
+`<name>.yml` holding only the `board_tools: {retired: "…"}` block, run `bridge:check` once so
+it prints `RETIRED`, then delete the file.
+
+**⚠ A bridge OLDER than the release that added this key does not understand it.** It parses
+`retired:` as an unrecognised key on a default-on block, SUPPRESSES the agent, and
+`bridge:check` FAILs on the suppression. Roll every install that reads this config forward
+before adding the key.
 
 ## Same-box SSH enablement — the one-shot wrapper (card 5090)
 

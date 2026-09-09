@@ -36,6 +36,9 @@ If both run on the same host, use the [Unix domain socket transport](../examples
 - Claude Code running on host B with the [reference channel server](../examples/channel-servers/README.md) configured for **HTTP** transport (not UDS — the cross-host case requires TCP for the SSH tunnel terminus).
 - SSH access from B to A via public-key auth (no password prompts).
 - `autossh` installed on host B (`apt install autossh` or `brew install autossh`).
+- **Node ≥ 20 + npm on host B, with a reachable registry or a warm cache.** The channel
+  server runs on Node 20; `provision-board-tools.py --role b` deploys the bundled snapshot
+  and runs `npm ci` in it, and it refuses BEFORE mutating anything if Node 20 is absent.
 
 > **Leave `channel.server_path` unset in this topology.** That key (DL-229) lets `bridge:check` validate the deployed channel-server snapshot, but it `stat`s the directory from the bridge process — which here runs on host A while the channel server lives on host B. A host-B path declared on host A resolves to nothing and reports the dangling FAIL ("repoint the symlink") for a deployment that is perfectly healthy, just on the other machine; the probe cannot tell the two apart. Unset, `bridge:check` reports the snapshot legs at severity **`unvalidated`** and counts them in the run's closing tally (card 5170) — that is an accurate statement about *this* host, not a complaint: it is **not a failure and not a warning**, it exits 0, and there is nothing here to fix. It exists so a green `bridge:check` on host A is never mistaken for a validated host-B snapshot. Snapshot drift on host B stays a host-B concern — reconcile it there by diffing against the reference (see [`../examples/channel-servers/README.md`](../examples/channel-servers/README.md) § Staying in sync). **What you CAN certify on host B: that the deployment will launch.** Copy `bin/check-channel-snapshot.py` there (it is stdlib-only, self-contained, and reads no bridge config or checkout) and run `python3 check-channel-snapshot.py <deployed dir>` **as the OS user whose Claude Code session starts the server**, before a session starts — exit 0 launch OK, 1 launch FAILED with node's own stderr, 2 could not check. This is the topology that makes the seat-side design obvious rather than merely correct (DL-237): host A cannot even `stat` the deployment, let alone run its node. It does **not** close the staleness gap — host A still has no way to compare host B's version, and this tool deliberately makes no claim about it.
 
@@ -343,38 +346,63 @@ server on B spawns `ssh` (with **no** command — sshd substitutes the pinned on
 writes `{tool, args}` to its stdin, and reads the single JSON envelope from its
 stdout.
 
-### 1. On host B — generate a FIPS-approved board-tools key
+### Setup — run the setup packet, then hand out its steps
+
+Do not follow a hand-written step list for this transport. `php artisan
+bridge:provision-tools --agent=<agent>` (with the agent's `board_tools.transport: ssh`
+block present) prints the **BOARD-TOOLS SETUP PACKET** for that agent — five numbered
+steps, each marked with the actor who runs it, with this install's own account, artisan
+path, script path, storage path and git ref already filled in:
+
+| step | actor | what it does |
+| --- | --- | --- |
+| 1 | impl agent, on its seat | `provision-board-tools.py --role b` — generates the FIPS ECDSA P-256 key, deploys the channel snapshot, merges `.mcp.json`; posts its PUBLIC key line and keeps the printed `Fingerprint:` line visible |
+| 2 | PM agent, on host A | saves that key line to a file (quoted heredoc or a file-write tool — never a shell one-liner), re-runs the command with `--host-a` + `--pubkey-from`, then **STOPS** |
+| 3 | **operator (a human)** | pins the forced-command line with `--role a` (§ 3 below is what that line IS and why it is the only boundary) |
+| 4 | impl agent, on its seat | `--role b --certify-only` — one real ssh round-trip using the target and key its own `.mcp.json` recorded; then starts its session |
+| 5 | PM agent, on host A | `bridge:check` — the agent's NEXT STEPS line clears once step 4's call is on the ledger |
+
+Who each actor is, why step 3 is a **process** control rather than a mechanism, and how
+the key line and fingerprint are handed over, are owned by
+[`docs/board-tools-enablement.md`](board-tools-enablement.md) — read it once, then let the
+packet supply the steps. The packet mutates nothing, so re-running it as values become
+known is free.
+
+**Where the seat's key comes from.** `--role b` generates it: **ECDSA P-256, never
+ed25519** — a FIPS sshd rejects ed25519, so a pinned ed25519 key would never authenticate
+and `bridge:check` FAILs one on a FIPS seat. `--ssh-key` names an EXISTING pair to use
+instead (both halves must already be on disk; the flag never generates one).
+
+**Certifying, and what a green `bridge:check` here does and does not mean.** Step 4's
+`--certify-only` is the seat's own proof. On host A:
 
 ```bash
-# ECDSA P-256 is FIPS-approved; a FIPS sshd REJECTS ed25519 — do not use it here.
-# A non-FIPS host may choose another algorithm; the recipe is parameterized, not pinned.
-ssh-keygen -t ecdsa -b 256 -f ~/.ssh/<agent>-board-tools -C '<agent>-board-tools'
+# Reading a forced-command account's 0600 authorized_keys needs root when it is not the
+# invoking account; run once as root (with board_tools.ssh_account set) to certify offline.
+sudo bridge:check                                   # offline: pinned line + FIPS key
+bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a host that can reach A)
 ```
 
-### 2. On host A — pin the forced command in the bridge-user `authorized_keys`
+`bridge:check` fails if the pinned line grants a pty/forwarding or if a FIPS seat's key is
+ed25519; it asserts **no** sshd posture (card 5091 retired the account-level hardening —
+see § 3). Run where it cannot read the forced-command account's `authorized_keys`
+(unprivileged, distinct account) it emits an explicit **UNVERIFIED** finding for that leg
+(never a false OK) — at severity `unvalidated` since DL-251, so it renders plain and joins
+the run's closing tally: an insufficient euid means the leg could not measure, not that the
+pinned line is wrong. Under `sudo` with a distinct forced-command account, set
+`board_tools.ssh_account` (§ 3) so the pinned-line check certifies that account, not root.
+⛔ **`--probe-tools-ssh` run from host A is not evidence about the SEAT** — it stamps the
+same ledger row the seat's own call would (DL-229; `docs/board-tools-enablement.md`
+§ *Not automated, and why*).
 
-Add ONE line forcing `bridge:tools-call --agent=<agent>` and denying pty + all
-forwarding. The enumerated `no-*` form works on FIPS **and** non-FIPS (`restrict`
-is the non-FIPS shorthand). Paste host B's **public** key:
-
-```
-command="php /path/to/agent-webhook-bridge/artisan bridge:tools-call --agent=<agent>",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding <PASTE HOST-B PUBLIC KEY>
-```
-
-`bridge:provision-tools --agent=<agent>` (with the agent's `board_tools.transport:
-ssh` block present) **prints the ready-to-run `provision-board-tools.py --role a|b`
-invocation** for each leg (FR #5010 §2), with this agent's params filled in. The
-`--role a` line (run as root on host A) pins this exact forced-command line — the sole
-security boundary (§ 3) — and makes no `sshd_config` change; the `--role b` line
-(run on host B) generates the FIPS key (§ 1), deploys the channel snapshot, and merges
-`.mcp.json`. Both legs are idempotent (append-or-verify; never clobber existing config)
-and fail-closed. A same-box Linux run hands the `.pub` path to `--role a --pubkey-from`
-(no paste). Certify afterward with `bridge:check --probe-tools-ssh=<user@host-A>`.
+> Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). A FIPS sshd's
+> `restrict` behavior is reasoned from the OpenSSH man page, confirmed on a real FIPS
+> seat when sola's seat fires.
 
 ### 3. The security boundary — the forced-command key (no sshd drop-in)
 
 The **sole** security boundary for the board-tools SSH transport is the pinned
-forced-command `authorized_keys` line (§ 2): sshd substitutes
+forced-command `authorized_keys` line the packet's STEP 3 pins: sshd substitutes
 `bridge:tools-call --agent=<agent>` for whatever the key-holder sends, and the
 enumerated `no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding` flags
 deny an interactive shell and every forwarding channel regardless of how sshd is
@@ -391,6 +419,65 @@ interactive logins on a shared account. Tune with `--forced-command-timeout <sec
 (`0` disables it). Existing pinned keys keep their current command until re-provisioned —
 re-run `--role a` for the same agent after removing the old `authorized_keys` line to
 upgrade an already-pinned key to the bounded form.
+
+**Who runs the pin, and whether it needs `sudo` (card#8971).** `--role a` writes an
+`authorized_keys` file, and root is required only to write **another account's**. When the
+forced-command account IS the account running the command — the common case, where the
+bridge's own user is the ssh account — it runs with **no `sudo`**: the account can already
+write its own `authorized_keys` with a text editor, so demanding root buys no boundary and
+spends a privileged window. ⛔ **Every other non-root combination is still refused by
+name.** The packet works this out for you (it compares the account's uid against this
+process's euid, and takes the `sudo` form whenever either is unknown) and prints the exact
+line to run.
+
+**`--expect-fingerprint` is a transcription guard, not a checkpoint.** `--role b` prints a
+`Fingerprint: SHA256:…` line beside the public key; the operator reads it **on the seat**
+and passes it to `--role a --expect-fingerprint`, which refuses on a mismatch and prints
+BOTH values (they are public). ⛔ **It does not make the pin safe** — anyone holding the
+`.pub` can compute it. What makes the pin safe is a person deciding the key is that seat's;
+[`docs/board-tools-enablement.md`](board-tools-enablement.md) states that plainly.
+
+**Symlinks and ownership.** `--role a` opens **two** directories — `~<account>` and the
+`.ssh` inside it — each **once**, each `O_NOFOLLOW`, and does every later
+`chmod`/`chown`/`mkdir`/`open` through those descriptors: `.ssh` is opened or created
+*relative to* the home fd, and `authorized_keys` relative to the `.ssh` fd. So **no syscall
+after those two opens re-resolves a name** whoever controls `~<account>` could move
+underneath it. A symlinked `~/.ssh` fails its open, and the two arms answer differently on
+purpose: the **root arm refuses** it by name (root acting through a link a lower-trust
+account controls is the hazard — pin into the real directory, or make `~/.ssh` a real
+directory owned by the account), while the **self-account arm resolves the link first** and
+keeps working, because there the process IS the account and following its own link is its
+own choice. Dotfiles topologies stay legal on the self-account arm. A symlinked
+`authorized_keys` is **refused in both arms** — the open is `O_NOFOLLOW`, because writing
+through it would put an ssh key line into whatever the link points at, **and a hardlinked
+`authorized_keys` is refused on the root arm**: `O_NOFOLLOW` has no link to decline to
+follow there, so the root arm `fstat`s the opened file and refuses a link count above one
+rather than chmodding, chowning and appending onto an inode that carries another name.
+⚑ That refusal does **not** read `fs.protected_hardlinks` — it holds whether or not the
+sysctl is on — and the self-account arm does not take it, since the file is the account's
+own.
+
+⛔ **The two descriptors are asked DIFFERENT ownership questions, and the home's is the
+stricter one.** On the root arm the **home** must be the account's **own real directory**:
+`fstat` on the home fd, refuse unless it is owned by the account, and a symlinked, missing
+or non-directory home is one named refusal. **Root-owned is not accepted for the home** —
+unlike `.ssh`, where the root arm `fstat`s the fd and allows **the account or root** (sshd's
+own StrictModes rule), because a `~/.ssh` created once under `sudo` is ordinary and, with
+the home already pinned to the account's own directory, a root-owned `.ssh` can only be one
+that lives there. ⭐ **This is one rule over both branches** — `.ssh` absent (created with
+`mkdir` inside the home fd, never `makedirs`) and `.ssh` already present, the ordinary one.
+It was previously two: a create-time `lstat` of the home that the existing-`.ssh` branch
+never reached, and an owner check on `.ssh` that allows root — so a `~<account>` symlinked
+at `/root` opened cleanly, reported uid 0, and took the whole write. ⚑ The self-account arm
+takes no ownership refusal, but a `~/.ssh` it cannot chmod (one created once under `sudo`,
+so root owns it) is **named** — fix the directory's ownership by hand and re-run.
+
+**An `authorized_keys` line for this agent that is not the line this run would write is
+refused, never appended beside or reported as *already present*.** The three states it
+refuses on, and the heuristic's declared blind spot, are in
+[`docs/board-tools.md`](board-tools.md) § *How it is wired (operator view)*, in the
+**Provisioning** bullet — that paragraph owns them, and a second copy here is a copy that
+drifts.
 
 > **No account-level sshd hardening (card 5091).** Earlier releases had `--role a`
 > write a `Match User <bridge-user>` sshd drop-in (`PasswordAuthentication no` +
@@ -409,14 +496,41 @@ upgrade an already-pinned key to the bounded form.
 > `root`, set **`board_tools.ssh_account: <bridge-user>`** in the agent config. Absent
 > it, the probe resolves the *invoking* account (root under sudo) and would read
 > **`/root/.ssh/authorized_keys`** — false-negativing the very seat it targets. With it
-> set, the `authorized_keys` (`%h`/`%u`) pinned-line check resolves `<bridge-user>`. If a
+> set, the pinned-line check resolves `<bridge-user>`. It resolves that account's
+> `AuthorizedKeysFile` as sshd does, with the one documented exception named below:
+> **every** file the directive names (it is a
+> whitespace-separated LIST, and the OpenSSH default is the two-file
+> `.ssh/authorized_keys .ssh/authorized_keys2`), with all four tokens `man 5 sshd_config`
+> documents for it expanded — `%%` → a literal `%`, `%h` → the home, `%u` → the account
+> name, `%U` → its numeric uid — and a path that is not absolute after expansion taken
+> relative to the home (`~` is not a token). The pinned line may sit in **any** of those
+> files, so a line in `authorized_keys2` certifies exactly like one in `authorized_keys`,
+> and the finding names which file carried it. The **authoritative** "not wired" FAIL is
+> only reached when every one of those files was actually consulted: an entry this run
+> could not OPEN (another 0600 file) or could not resolve (`%U` with no uid lookup on a
+> host without `posix_getpwnam`) is reported `unvalidated` and **named**, because the line
+> may be in exactly the file that was not read. A file that simply is **not there** is
+> consulted, not withheld — sshd takes no keys from it, so it counts toward the FAIL, which
+> is what makes the FAIL reachable at all on the two-file default (`authorized_keys2` does
+> not exist on most hosts). ⚠ **The exception: `AuthorizedKeysFile none`**, which
+> `man 5 sshd_config` defines as *"skip checking for user keys in files"*, is **not**
+> special-cased — the probe resolves it as the relative filename `none` and reports the
+> authoritative "not wired" FAIL naming `<home>/none`. **The verdict is correct** (with
+> `none` set, no pinned key can authenticate at all, so board-tools over ssh is impossible
+> by construction) **but the path in it does not exist**: the remedy there is to stop
+> setting `none` for this account, not to go and edit that file. If a
 > **configured** `ssh_account` does not resolve to an OS account on the host, the
 > account-dependent legs **fail** honestly (*"…does not resolve to an OS account…"*)
 > rather than certify against a phantom `/.ssh/authorized_keys` built from an empty home.
 > Leave it unset when the forced command runs as the invoking account (byte-identical to
 > before).
 
-### 4. On host B — point the channel server at the ssh target
+### 4. The seat-side env keys `--role b` writes (reference)
+
+STEP 1 of the packet writes these into the seat's own `.mcp.json`; nobody has to export
+them by hand. They are listed here so a reader can tell what a correctly-provisioned seat
+looks like, and so an operator wiring one manually knows what the provisioner would have
+written:
 
 ```bash
 export BRIDGE_TOOLS_SSH_TARGET=<bridge-user>@host-A   # NOT with BRIDGE_TOOLS_ENDPOINT — the two are mutually exclusive
@@ -424,33 +538,17 @@ export BRIDGE_TOOLS_SSH_KEY=~/.ssh/<agent>-board-tools   # optional (-i)
 # export BRIDGE_TOOLS_SSH_PORT=22                        # optional (-p)
 ```
 
+> **If you later run `provision-board-tools.py --role b` on this seat, it FORCE-WRITES
+> `BRIDGE_TOOLS_SSH_KEY` into `.mcp.json`** (card#8972) — always to the key that run
+> actually used, overwriting whatever is there. That is deliberate: the recorded key and
+> the key pinned on host A must be the same file. This manual recipe and the provisioner
+> are two ways to reach the same state, not two states; see
+> [`docs/board-tools.md § Provisioning`](board-tools.md).
+
 The ssh transport carries **no bearer** — identity is the pinned `--agent`, so no
 `BRIDGE_TOOLS_TOKEN` is set. It **coexists** with the `-R` wake tunnel and the
 existing HTTP forward-leg seats (each seat picks exactly one board-tools
 transport).
-
-### 5. On host A — certify
-
-```bash
-# Reading a forced-command account's 0600 authorized_keys needs root when it is not the
-# invoking account; run once as root (with board_tools.ssh_account set) to certify offline.
-sudo bridge:check                                   # offline: pinned line + FIPS key
-bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a host that can reach A)
-```
-
-`bridge:check` fails if the pinned line grants a pty/forwarding or if a FIPS seat's
-key is ed25519; it asserts **no** sshd posture (card 5091 retired the account-level
-hardening — see § 3). Run where it cannot read the forced-command account's
-`authorized_keys` (unprivileged, distinct account) it emits an explicit
-**UNVERIFIED** finding for that leg (never a false OK) — at severity `unvalidated`
-since DL-251, so it renders plain and joins the run's closing tally: an insufficient
-euid means the leg could not measure, not that the pinned line is wrong.
-Under `sudo` with a distinct forced-command account, set `board_tools.ssh_account` (see step 3) so the pinned-line
-check certifies that account, not root.
-
-> Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). A FIPS sshd's
-> `restrict` behavior is reasoned from the OpenSSH man page, confirmed on a real FIPS
-> seat when sola's seat fires.
 
 ## What this runbook does NOT cover
 

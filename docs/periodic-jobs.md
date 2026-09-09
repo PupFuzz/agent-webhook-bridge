@@ -25,10 +25,15 @@
 >    you just wrote answering *"why not 1, 2 or 3?"* is the `justification` the registry
 >    requires at insert.
 >
-> The registry **refuses an instance with no justification**. That is not an approval gate —
-> nobody is consulted, insertion stays programmatic and happens at runtime — it is a
-> required argument, and it costs exactly one sentence. It exists because the alternative
-> is a periodic population that nobody can audit for *why*, only for *what*.
+> The registry **refuses an instance with no justification**. ⛔ **That is a required
+> DOCUMENTATION SLOT, not a gate, and the difference matters when you read a stored row
+> back.** Nobody is consulted, insertion stays programmatic and happens at runtime, and
+> **nothing judges the answer**: the refusal is a 20-character length floor, so it stops an
+> empty string, a dash and an `n/a` — and stops nothing else. A fluent sentence that is wrong,
+> or a constant supplied by a generic caller, passes it. So a justification on a row means
+> *somebody wrote a reason*, **never** *something checked the reason*. It costs one sentence,
+> and it exists because the alternative is a periodic population nobody can audit for *why*,
+> only for *what*.
 
 ---
 
@@ -47,7 +52,7 @@ which no sweep across N crontabs on N accounts could give you.
 | **Handler contract** | `App\Bridge\Scheduling\JobHandler` — `name()`, `capability()`, `run()` |
 | **Scheduler** | `App\Bridge\Scheduling\JobScheduler` — one bounded, non-blocking pass |
 | **Ingress A (default)** | `App\Bridge\Scheduling\JobSchedulerGate` — after-response, off the inbound webhook |
-| **Ingress B (opt-in)** | `php artisan bridge:tick` — one crontab line |
+| **Ingress B (opt-in)** | `php artisan bridge:tick` — one crontab line, **per install** (never per agent) |
 | **Enumeration / edit** | `php artisan bridge:jobs [--json] [--assert-tick]` |
 | **Preflight leg** | `bridge:check` → `jobs.posture` |
 
@@ -76,11 +81,41 @@ past the pass**.
 
 ## Adopting the tick
 
-It is one line, under **the seat-owner account, never root**:
+⭐ **It is ONE line PER BRIDGE INSTALL, never one per agent.** The registry (`scheduled_jobs`)
+has no agent column, the last-tick record and the scheduler's lock and interval markers carry no
+agent segment, and `BRIDGE_JOBS_TICK_EXPECTED_EVERY` is one install-level value. So onboarding a
+second agent on this install needs **no second line** — and a second line would buy nothing: it
+loses the non-blocking pass lock or falls inside the shared `min_pass_interval` and skips, while
+costing a second log file to keep alive.
+
+⭐ **You do not have to transcribe the template below.** `php artisan bridge:provision-tools`
+prints this line for **THIS install**, with its own absolute interpreter and its own paths
+already filled in — and stops printing it the moment the install has adopted a tick, so it never
+becomes a step that reappears for every agent (DL-361). This section is the template for a
+reader who has no install in front of them, and the owner of the explanation.
+
+The template, under **the seat-owner account, never root**:
 
 ```cron
-0,10,20,30,40,50 * * * * cd /path/to/bridge && php artisan bridge:tick >> /path/to/bridge/storage/logs/tick.log 2>&1
+0,10,20,30,40,50 * * * * cd /path/to/bridge && /path/to/php /path/to/bridge/artisan bridge:tick > /path/to/bridge/storage/logs/tick.log 2>&1
 ```
+
+⛔ **The interpreter is ABSOLUTE, and that is not a style choice.** `cron` runs with a minimal
+`PATH` that is nothing like an interactive shell's, so a bare `php` is an **assumption** about
+the crontab account's environment written as if it were a fact — and a line that cannot find its
+interpreter fails in exactly the silent way this whole subsystem exists to report. The emitted
+line names the interpreter the emitting process is itself running under (`PHP_BINARY`), which is
+the one answer a program here can *establish* rather than infer; ⚠ that is evidence about this
+box, not a guarantee about what the crontab account can execute. A hand-written line must supply
+the path itself. (Same reason [`writeback.md`](writeback.md) § *Running reconcile unattended*
+sets `PATH=` inside its crontab.)
+
+⚑ **`>`, not `>>` — the file holds the LAST tick only, so nothing has to rotate it.** An
+appended `tick.log` grows without bound: six lines an hour, forever, with no logrotate stanza
+anywhere in this repo and nothing that tails it. The durable account of what the registry
+actually did is the **row** (`bridge:jobs`) — *"a log line is not, because nobody tails it"* is
+DL-012's own finding — plus the app log and the exit code. ⚠ Want the history instead? Use `>>`
+and rotate it yourself; under `>` a fault that reaches this file is gone at the next tick.
 
 Then **declare the interval you used**, in seconds, so a dead crontab line goes loud:
 
@@ -90,6 +125,11 @@ BRIDGE_JOBS_TICK_EXPECTED_EVERY=600
 
 ⚠ On an install running `php artisan config:cache`, a `.env` edit is **inert** until the
 cache is rebuilt. See `CLAUDE_DEPLOYMENT.md`.
+
+Then **wire something that asserts it** — `php artisan bridge:jobs --assert-tick`, from a
+session-start hook or any periodic runbook step. A declared horizon nothing reads is a dead
+alarm that looks like coverage; `bridge:check` warns until something has asked (see *A declared
+horizon with nobody reading it* below).
 
 That is the whole adoption. You never add a second crontab line: everything else is a row in
 the registry.
@@ -144,7 +184,7 @@ knows what its crontab line says.
 |---|---|
 | `unmeasured` | **No tick has ever been recorded.** The ordinary reading on an install that has not adopted the tick — and the honest reading when one that HAS adopted it has never been seen. It means *nothing measured*, **never** *dead*. |
 | `undeclared` | A tick was recorded, but this install declared no expected interval. An age is known; **no verdict is claimed**, because inventing a default constant to produce one is exactly what this design refuses. |
-| `fresh` | A horizon was declared and the last tick is inside it (one extra interval + 60s of slack, for cron jitter). |
+| `fresh` | A horizon was declared and the last tick is inside it, plus a jitter grace of one extra interval and a fixed allowance on top. **The `stale` message prints the grace and the resulting threshold in seconds** — `App\Bridge\Scheduling\TickPosture::graceS()` owns both, and the verdict is computed from that same derivation. |
 | `stale` | A horizon was declared and the last tick **blew it**. Evidence on any install, with no tuning, because the install set the number itself. |
 
 Assert it from a session-start hook:
@@ -156,6 +196,31 @@ php artisan bridge:jobs --json            # the same facts, with the inputs besi
 
 ⛔ **Only a declared horizon can fail an assertion.** An install that never adopted the tick
 is not failing by not ticking, so this can never be adopted by accident.
+
+### A declared horizon with nobody reading it
+
+⛔ **Declaring the horizon is half the alarm. The other half is that something ASKS.** An
+install can set `BRIDGE_JOBS_TICK_EXPECTED_EVERY`, wire no consumer of `--assert-tick`
+anywhere, and every state above still resolves perfectly — for nobody. That is
+indistinguishable from having declared no horizon at all, and **worse than it**, because the
+declaration reads as coverage to whoever audits the config: the operator believes the clock is
+watched.
+
+So `--assert-tick` **records that it was run**, and `bridge:check`'s `jobs.posture` leg reports
+whether it ever was:
+
+| what the leg says | when |
+|---|---|
+| `warn` — *this install DECLARES a tick every Ns and NOTHING HAS EVER ASSERTED IT* | A horizon is declared and the bridge holds no record of `--assert-tick` running here. |
+| `ok` — *the tick horizon has a reader … last ran Ns ago* | A horizon is declared and the assert has run. **The age is reported and no verdict is claimed on it** — nothing declares how often your hook should fire, and inventing a cadence at this end would be the fleet-wide constant the horizon itself refuses. |
+| *(nothing)* | No horizon is declared. Declaring nothing is not a defect, and an install that never adopted the tick is never told to wire a hook for it. |
+
+⚑ **Never invoked and invoked-long-ago are different states and are reported differently**, so
+the record does not expire: a TTL would silently turn *asserted last month* into *nothing has
+ever asked*. ⚠ A cleared or unreadable cache store reads as **no record** and therefore warns —
+loud in the direction that matters, and it never reads as watched when it is not. ⛔
+`bridge:check` reads this and deliberately never writes it: a preflight that stamped the record
+would extinguish its own warn on the first run with nothing wired.
 
 ## Governance: handlers are the surface, instances are free
 
@@ -171,7 +236,9 @@ is not failing by not ticking, so this can never be adopted by accident.
   cleanups) declare `JobCapability::ReadAndAlert` and exist under normal code review.
 - **Instances are free.** Inserting or removing an instance of an already-reviewed handler
   is ungated, programmatic and runtime. The only thing an inserter owes is the
-  `justification` sentence — a required argument, not an approval.
+  `justification` sentence — **a required documentation slot, not an approval and not a
+  filter**: its length floor refuses an empty answer and judges nothing about the answer it
+  accepts.
 
 ⚠ What the capability declaration does NOT establish: it records what the author *claims*.
 A handler that writes to a board while declaring `ReadAndAlert` is mis-declared, and nothing
@@ -313,4 +380,4 @@ gets an age and no verdict.
 | `BRIDGE_JOBS_MIN_PASS_INTERVAL` | `60` | Floor between passes, **shared by both ingresses** (the event gate is evaluated on every delivery). A 5/10/15-minute tick is never affected by it. ⚠ A value that is not a positive integer is **REFUSED, never clamped**: no pass runs on either ingress, `bridge:check`'s `jobs.posture` leg **fails**, and `bridge:tick` exits non-zero. (`sixty` reads as `0`; clamping it to 1 would have turned an intended 60-second floor into a pass per second, silently.) |
 | `BRIDGE_JOBS_MAX_PER_PASS` | `3` | The bound. A backlog drains across passes; a pass is never unbounded. ⚠ Refused the same way outside `1…1000`. |
 | `BRIDGE_JOBS_ARMED_MUTATORS` | *(empty)* | Comma-separated handler names this install has armed. The only ask-the-operator gate in the subsystem. |
-| `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the death-is-the-alarm horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. ⚠ A value that is not a positive integer arms **nothing** and reads as unadopted — `bridge:check` warns on one, because that is the only place an operator who set it wrongly finds out. |
+| `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the death-is-the-alarm horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. ⚠ A value that is not a positive integer arms **nothing** and reads as unadopted — `bridge:check` warns on one, because that is the only place an operator who set it wrongly finds out. ⛔ Setting it is not the same as being watched: `bridge:check` also **warns while nothing has ever run `bridge:jobs --assert-tick` here**, because a horizon with no reader is a dead alarm that reads as coverage. |

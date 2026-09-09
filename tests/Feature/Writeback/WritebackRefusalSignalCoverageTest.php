@@ -145,6 +145,12 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'Bridge/Writeback/CoordConfigTerminals.php::issuePopulationsForBoardId#1' => 'CONFIG: the same block selection for the issue-population axis',
         'Bridge/Writeback/CoordConfigTerminals.php::issuePopulationsForBoardId#2' => 'CONFIG: the compare that picks that block',
         'Bridge/Support/BoardToolsConfig.php::build#1' => 'CONFIG: the per-agent YAML key naming the board this agent writes to',
+        // card#8973 / DL-360 — the same CONFIG value as the line above, on its way into and out of a
+        // durable row. Neither site READS anything: both are the COLUMN NAME in a list (an upsert's
+        // update-column list, and the model's `$fillable`), which the array-literal-key exclusion in
+        // the bounds above does not reach because a bare list entry has no `=>`.
+        'Bridge/Tools/ConfigSeenLedger.php::recordEnabled#1' => 'CONFIG, and not a read at all: the COLUMN NAME in the upsert\'s update list, recording the per-agent YAML board this install saw — the same value BoardToolsConfig::build#1 parses, never a card\'s board',
+        'Models/BoardToolsConfigSeen.php::(file scope)#1' => 'CONFIG, and not a read at all: the column NAME in the model\'s `$fillable`, so the sighting row can carry the agent\'s configured board for the LOST line to print',
         'Bridge/Adapters/KanbanAdapter.php::parse#1' => 'WEBHOOK ENVELOPE: the delivery\'s scope id, read at the receiver door before any card exists',
         'Bridge/Classifiers/InboxOnlyClassifier.php::newCardIntent#1' => 'WEBHOOK PAYLOAD: copies the envelope\'s board onto the staged intent; nothing is compared and nothing is written',
         'Bridge/Classifiers/InboxOnlyClassifier.php::lifecycleIntent#1' => 'WEBHOOK PAYLOAD: the same copy on the lifecycle families',

@@ -86,6 +86,10 @@ class CheckCommandRegistrationTest extends TestCase
         'event.follows_consumer',
         // board-tools plane (stage 7b)
         'board_tools.suppressed',
+        // card#8973 / DL-360 — registered beside the suppression scan and OUTSIDE the
+        // enabled-subset guard, because its subject is an agent that is NOT in that subset:
+        // the install it was written for had lost every block, so the subset was empty.
+        'board_tools.lost',
         'board_tools.bearer',
         'board_tools.board_state',
         // card#7756 / DL-313 — the one leg on this plane whose subject is the CALLING SEAT
