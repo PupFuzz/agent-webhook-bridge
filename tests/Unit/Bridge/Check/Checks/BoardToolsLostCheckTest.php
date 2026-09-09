@@ -115,6 +115,17 @@ class BoardToolsLostCheckTest extends TestCase
      */
     public function test_a_row_with_no_left_edge_renders_seen_at_rather_than_a_headless_window(): void
     {
+        // ⛔ FREEZE FIRST. This test writes `now()` into the row and then asserts the rendered
+        // message contains `now()->toIso8601String()` — TWO reads of the wall clock at two
+        // different instants, compared for exact equality. A second boundary falling between
+        // them renders `…:08` against an expected `…:09` and reds a correct check. Observed on
+        // a real run (11:04:08 vs 11:04:09) while it was green on the re-run.
+        //
+        // The clock is frozen rather than the assertion loosened: matching the timestamp
+        // loosely would stop this test noticing a message that renders the WRONG instant,
+        // which is the property it exists to check.
+        $this->freezeTime();
+
         BoardToolsConfigSeen::query()->create([
             'agent' => 'impl',
             'transport' => 'ssh',
