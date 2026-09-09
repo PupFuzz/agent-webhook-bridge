@@ -229,10 +229,17 @@ class UnvalidatedCallSiteTest extends TestCase
         // seat that was NEVER WIRED and a seat that is merely IDLE are one absence here —
         // the leg genuinely did not answer its own question, and a `warn` would assert a
         // fault it cannot establish while a `fail` would exit non-zero over a seat that is
-        // quiet by choice. The only positive verdict this leg can reach is `ok`, off a
-        // fresh successful call, because reaching the dispatcher AT ALL requires the whole
-        // client chain. `BoardToolsClientHalfCheckTest` pins the two-severity set from the
-        // source, so a fourth factory appearing here reds there first.
+        // quiet by choice. The positive verdicts this leg can reach are `ok` off a fresh
+        // successful call — reaching the dispatcher AT ALL requires the whole client chain —
+        // and, since DL-364, `warn` on that same REPORTED finding when the seat's reported
+        // channel-server version is older than the one this bridge bundles (a MEASURED
+        // comparison, which is what separates it from (2) and (3) above).
+        // `BoardToolsClientHalfCheckTest` pins that THREE-severity set from the check's own
+        // source, so a `Finding::fail(` appearing here — the one factory this leg must never
+        // construct, because it is the only severity that moves the exit code — reds there
+        // first. ⚑ THE COUNT BELOW IS UNRELATED TO THAT SET: it counts `Finding::unvalidated(`
+        // CALL SITES in the file, which the three arms enumerated above produce, and DL-364
+        // added none of them.
         'app/Bridge/Check/Checks/BoardToolsClientHalfCheck.php' => 3,
         // card#8973 / DL-360 — TWO legs, and both are limb (a): a read that did not complete,
         // never a fault the leg measured. Spelled out because this comment is what a

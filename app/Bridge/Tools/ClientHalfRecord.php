@@ -7,7 +7,7 @@ use Carbon\CarbonInterface;
 
 /**
  * One agent's last successful board-tools call, as {@see ClientHalfLedger}'s readers hand it
- * out — the row's four facts, resolved, with no Eloquent model behind them.
+ * out — the row's facts, resolved, with no Eloquent model behind them.
  *
  * WHY A RECORD RATHER THAN THE MODEL. The enum cast on {@see BoardToolsClientCall} is applied
  * LAZILY, on attribute access, so handing a caller the model hands them a `ValueError` that
@@ -29,6 +29,12 @@ use Carbon\CarbonInterface;
  * the column existed, carrying no measurement in either direction. {@see CallProvenance} has
  * no `Unknown` case precisely so the two cannot be collapsed, and both available backfills
  * would be lies — so the absence is carried through to the reader rather than resolved here.
+ *
+ * ⛔ `clientVersion` IS NULLABLE FOR THREE DIFFERENT REASONS AND THEY ARE DELIBERATELY NOT
+ * KEPT APART (DL-364): a client older than {@see ClientVersion::FIRST_REPORTING_SNAPSHOT},
+ * a caller that is not a channel server at all (`--self-cert`, a hand-run
+ * `bridge:tools-call`), and a value {@see ClientVersion} refused. All three are "this call
+ * reported no version", the reading check says exactly that, and no state here claims more.
  */
 final readonly class ClientHalfRecord
 {
@@ -37,5 +43,6 @@ final readonly class ClientHalfRecord
         public CarbonInterface $lastSuccessAt,
         public string $transport,
         public ?CallProvenance $provenance,
+        public ?string $clientVersion,
     ) {}
 }

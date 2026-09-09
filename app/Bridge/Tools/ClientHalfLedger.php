@@ -52,6 +52,13 @@ use Throwable;
  * printed verbatim into a `bridge:check` line, so anything stored here is disclosed. That
  * governs the provenance too: what is written is the enum's NAME, never `SSH_CONNECTION`'s
  * contents, which are a client IP, a client port and this host's own address and port.
+ *
+ * ⭐ SINCE card#8974 / DL-364 THE ROW ALSO CARRIES THE CALLING CHANNEL SERVER'S OWN
+ * SNAPSHOT VERSION, which is the one field on it the FAR END supplies rather than the
+ * bridge. It arrives already reduced to a version-shaped token or to null by
+ * {@see ClientVersion}, which is what keeps the disclosure rule above true of a
+ * caller-supplied string; this class stores whatever that reduction returned and never
+ * re-derives it.
  */
 final class ClientHalfLedger
 {
@@ -72,23 +79,33 @@ final class ClientHalfLedger
      * over-read card#7836 exists to remove — and it is written as the enum's `->value`
      * because `upsert()` is a raw builder write that never runs the model's casts.
      *
-     * ⛔ THE PARAMETER IS REQUIRED, with no default. A default would make the strong verdict
-     * depend on a caller REMEMBERING to opt in, and the failure mode of forgetting is
-     * silent: the row still writes, the check still reports, and a genuine ssh call reads as
-     * unproven forever. Every door states what it knows.
+     * ⛔ BOTH OBSERVATION PARAMETERS ARE REQUIRED, with no default. A default would make a
+     * verdict depend on a caller REMEMBERING to opt in, and the failure mode of forgetting
+     * is silent: the row still writes, the check still reports, and a genuine ssh call reads
+     * as unproven — or a current seat as an unreporting one — forever. Every door states
+     * what it knows, INCLUDING that it knows nothing: `$clientVersion` is `?string` and a
+     * door with no version to pass passes null explicitly.
+     *
+     * ⚑ `client_version` IS IN THE UPDATE COLUMN LIST FOR THE SAME REASON `call_provenance`
+     * IS, and the null direction is the load-bearing one: a call that reports NO version
+     * must CLEAR a version an earlier call recorded. Otherwise a seat that was downgraded —
+     * or `--self-cert` / a hand-run `bridge:tools-call`, neither of which is a channel
+     * server and neither of which reports one — would leave the last-reported version
+     * standing beside a call that never made it, and the check would print a version for a
+     * call that did not carry one.
      */
-    public static function record(string $agent, string $transport, CallProvenance $provenance): void
+    public static function record(string $agent, string $transport, CallProvenance $provenance, ?string $clientVersion): void
     {
         try {
             BoardToolsClientCall::query()->upsert(
-                [['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'last_success_at' => now()]],
+                [['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'client_version' => $clientVersion, 'last_success_at' => now()]],
                 ['agent'],
-                ['transport', 'call_provenance', 'last_success_at'],
+                ['transport', 'call_provenance', 'client_version', 'last_success_at'],
             );
         } catch (Throwable $e) {
             Log::warning(
                 'agent-tools: the successful call could not be recorded — bridge:check will report this seat\'s client half as UNREPORTED until a later call lands',
-                ['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'error' => $e->getMessage()],
+                ['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'client_version' => $clientVersion, 'error' => $e->getMessage()],
             );
         }
     }
@@ -143,6 +160,7 @@ final class ClientHalfLedger
             lastSuccessAt: $row->last_success_at,
             transport: $row->transport,
             provenance: $row->call_provenance,
+            clientVersion: $row->client_version,
         );
     }
 }

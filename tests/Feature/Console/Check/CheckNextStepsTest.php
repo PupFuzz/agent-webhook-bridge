@@ -185,6 +185,47 @@ class CheckNextStepsTest extends TestCase
         $this->assertSame([], $this->runCheckAsJsonForCurrentInstall()['next_steps']);
     }
 
+    /**
+     * ⭐ A SEAT ON A STALE SNAPSHOT HAS STILL REPORTED (card#8974 / DL-364), AND THAT IS A
+     * CONSUMER FACT, NOT A COSMETIC ONE. The version verdict rides on the SAME finding as
+     * the client-half report, so the stale arm turns that finding `warn` — and this
+     * derivation used to key on the presence of `Severity::Ok`. Left as it was, an operator
+     * whose seat is merely BEHIND would be handed `seat_side_unreported` and told to go ask
+     * the seat to call: the one thing that has already happened, while the real remedy
+     * (re-deploy the snapshot) sits on the line above.
+     *
+     * Three things are pinned together, because each alone is satisfiable by a regression in
+     * the other two: the warn is REACHED (otherwise this fixture proves nothing), the agent
+     * owes NOTHING in NEXT STEPS, and the exit code does not move.
+     */
+    public function test_a_seat_on_a_stale_snapshot_still_counts_as_having_reported(): void
+    {
+        $this->bootGoldenInstall('next-steps-stale-client', function (GoldenInstall $i) {
+            $this->fakeBoard();
+            $i->boot()
+                ->agent('agent-c', $this->boardToolsAgentYaml($i->path('bearer-c')))
+                ->secret('bearer-c', self::BEARER_C)
+                ->secret('kanban/writeback-token', 'wb-token');
+            // 0.4.4 is the version the reporting install was measured on, and it is older
+            // than anything this checkout can bundle — so the comparison is against the REAL
+            // registered snapshot dir and needs no fixture version to stay in step with it.
+            $this->recordClientHalfCallFor('agent-c', clientVersion: '0.4.4');
+        });
+
+        $exit = Artisan::call('bridge:check');
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('agent-c: client half REPORTED', $output);
+        $this->assertStringContainsString('CLIENT VERSION 0.4.4 IS OLDER THAN', $output);
+        $this->assertStringNotContainsString('seat_side_unreported', $output);
+        $this->assertSame([], $this->nextStepLines($output));
+        $this->assertStringNotContainsString('NEXT STEPS', $output);
+        // DL-037 #2 / DL-039: only `fail` moves the exit code, and a stale seat snapshot is
+        // not a failed install.
+        $this->assertSame(0, $exit);
+        $this->assertSame([], $this->runCheckAsJsonForCurrentInstall()['next_steps']);
+    }
+
     public function test_an_explicit_opt_out_owes_nothing_and_silences_the_line(): void
     {
         // ⭐ THE `no_block` LINE MAKES A PROMISE TO THE OPERATOR — *"put `enabled: false`
@@ -351,11 +392,12 @@ class CheckNextStepsTest extends TestCase
      * A recorded call well inside the freshness window — the state that makes an agent owe
      * nothing.
      */
-    private function recordClientHalfCallFor(string $agent): void
+    private function recordClientHalfCallFor(string $agent, ?string $clientVersion = null): void
     {
         BoardToolsClientCall::query()->create([
             'agent' => $agent,
             'transport' => 'http',
+            'client_version' => $clientVersion,
             'last_success_at' => now()->subMinutes(5),
         ]);
     }
