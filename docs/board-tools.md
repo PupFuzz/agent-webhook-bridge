@@ -47,6 +47,8 @@ never silently no-ops.
 | Arg | Required | Notes |
 | --- | --- | --- |
 | `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own lane, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
+| `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
+| `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
 
 **Returns:**
 
@@ -63,12 +65,23 @@ never silently no-ops.
                     "description": "...", "description_truncated": false } ],
     "In Review": [ /* ... */ ]
   },
-  "shared_swimlane": { "swimlane_id": 9, "cards_by_stage": { /* ... */ } }, // when configured
-  // the coord block, all four keys together, when the coord leg is configured:
+  "cards_window": {          // describes cards_by_stage above — ALWAYS present
+    "total": 390,            // how many cards matched, BEFORE the cut
+    "returned": 52,          // how many you were given
+    "limit": 52,             // the cap in effect for this call
+    "truncated": true,       // true ⇒ there is more behind this list
+    "stage_filter": null     // the numeric stage id this list was narrowed to, or null
+  },
+  "shared_swimlane": {                                     // when configured
+    "swimlane_id": 9, "cards_by_stage": { /* ... */ },
+    "cards_window": { /* same five keys, for the shared lane's OWN population */ }
+  },
+  // the coord block, all five keys together, when the coord leg is configured:
   "coord_board_id": 12,             // the board the coord ROWS are on (null when none was read)
   "coord_board_observed": true,
   "configured_coord_board_id": 12,
-  "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ]
+  "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ],
+  "coord_cards_window": { /* total / returned / limit / truncated — NO stage_filter */ }
 }
 ```
 
@@ -77,6 +90,47 @@ see [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4x
 The whole call refuses, including when only the **coord** leg failed: a response silently
 missing its coordination cards reads exactly like a board with none.
 
+### The default is capped (`cards_window`, `stage`, `limit`)
+
+⚠ **Every card list in this response is cut to a fixed number of CARDS, and the response
+says so.** Before card#8985 nothing bounded the count: the DL-245 cap bounds one
+*description*, and the **titles-only** response — the cheapest call this tool offers — was
+measured at **121,032 chars / 390 cards** on one seat and **81,067 chars / 292 cards** on
+another (2026-09-07). That overflows the context window of the very seat the tool exists
+for, and the old response gave no hint it was oversized or partial.
+
+- **The cap is 52 cards per list, and that figure is derived, not chosen.** The two measurements
+  above are 310.3 and 277.6 chars per card; the cap has to hold at the **larger** rate, or
+  the fatter of the two measured seats is still over budget. The budget is **16,384 chars
+  for one list** — this install's *existing* ceiling for a single opted-in card body
+  (`board_tools.description_max_bytes`), so a whole titles-only window costs no more than
+  one description already does. 16,384 / 310.3 = 52.8 ⇒ **52 cards per list**.
+- **It bounds ONE list.** An install with a shared lane *and* a coord leg has three lists
+  and can return three capped ones. That is a bound, not a promise of the budget.
+- **`cards_window` is how a capped read says it is capped.** `total` is the population
+  **before** the cut — that is what makes `truncated` worth reading. ⛔ **Never treat a
+  `truncated: true` list as the whole board**, exactly as you must never treat a truncated
+  description as the whole scope.
+- **Narrow with `stage` before you raise `limit`.** `stage` answers about one column, and
+  `total` then reports **that column's** size. Raising `limit` grows the response in
+  proportion to the cards it lets through; it is the deliberate escape hatch for a caller
+  that genuinely needs a whole lane, not the routine path.
+- **Which cards you get is deterministic: the lowest card ids, emitted in the board's own
+  answer order.** Two properties are bought by that — polling twice shows you the same
+  window rather than a reshuffled one, and a card created elsewhere in the lane does not
+  move the window out from under you. A row carrying no readable id sorts **last** (it is
+  still counted in `total`). A list that was *not* cut is byte-identical to what this tool
+  returned before the cap existed.
+- **The cap bounds the RESPONSE, not the bridge's reads.** The bridge still pages the whole
+  lane out of kanban — `total` has to be the real size for `truncated` to mean anything.
+- **`stage` is refused rather than guessed.** An ambiguous name (two columns whose names
+  differ only in case, say) is a 422 naming the candidates; so is a name that matches
+  nothing, and so is a numeric id your board does not carry. A guessed column would answer
+  about a *different* column and the answer would look exactly like a correct one. ⚠ On a
+  board whose structure this bridge could not read at all (an empty stage map — logged
+  upstream), a **numeric id is taken unverified** and a **name is refused**, saying so:
+  validating an id against an empty map would turn a degraded read into a dead argument.
+
 ### Where these cards are (`board_id` vs `configured_board_id`)
 
 **⚠ `board_id` is WHERE THE ROWS ARE, read off the rows themselves — not where you
@@ -84,7 +138,9 @@ are configured to read (card#7295, DL-302).** Before this it was the configured
 value restated, for a row set whose own board nothing had checked, so a window of
 foreign rows would have reported this board's id as fact. What a caller gets now:
 
-- **`board_id` + `board_observed`** are the reading. `true` ⇒ every returned row
+- **`board_id` + `board_observed`** are the reading, taken over the rows you were
+  **returned** — so on a capped read it describes the cards you got, not the ones behind
+  the cut. `true` ⇒ every returned row
   (your lane **and** the shared lane) reported that same board. `false` ⇒ **`board_id`
   is null and the response claims no board** — it never falls back to config. Three
   things unobserve it: **an empty window** (no rows read ⇒ no board read — the common
@@ -119,8 +175,10 @@ A card is a **delivery** surface, not just a tracking one — the scope written 
 is what a cold session needs to implement from. That body is off by default and
 opt-in per call:
 
-- **Default (no argument): the two keys are ABSENT**, not null — the response is
-  byte-identical to what it was before the argument existed.
+- **Default (no argument): the two keys are ABSENT**, not null — the projected CARD is
+  byte-identical to what it was before the argument existed. ⚠ The **response** is not,
+  and never was this claim: it has since grown the DL-302 board keys and card#8985's
+  window blocks.
 - **Opt in when you are STARTING a card, not when polling.** A body runs ~2 KB and
   *every* card in your lane is returned, so a large lane multiplies the response
   many times over. The bridge pays nothing extra to fetch it (the kanban search row
@@ -130,9 +188,11 @@ opt-in per call:
   per-agent `board_tools.description_max_bytes` (default 16384) and a card that was
   cut carries `"description_truncated": true`. **Never treat a truncated body as
   the whole scope** — re-read the card on the board instead.
-- **The cap is per CARD, not per response.** It bounds one pathological body; it
-  does not bound the total, which is `cards in your lane × their bodies`. Lower the
-  key on a large board, raise it if your scope statements are longer than 16 KB.
+- **The cap is per CARD, not per response.** It bounds one pathological body; it does not
+  bound the total, which is `cards returned × their bodies`. Lower the key on a large
+  board, raise it if your scope statements are longer than 16 KB. ⚠ Since card#8985 the
+  **count** of cards returned is bounded separately (§ The default is capped) — so the two
+  caps multiply to a real ceiling, which neither did alone.
 
 Read isolation is **100% bridge-enforced**. All agents on an install share one
 kanban read/write user, and kanban scopes reads by that user's *board*

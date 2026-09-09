@@ -30,13 +30,39 @@ use Illuminate\Support\Facades\Log;
  * one at all, and `configured_board_id` keeps the scope this agent is configured
  * for as a separately named value — never one dressed as the other.
  *
- * `include_description` (DL-245) is the tool's only argument: OPT-IN, because a
- * card body is ~2 KB and the projection has no bound on how many cards a lane
- * holds. Absent ⇒ the projected CARD is byte-identical to the DL-217 shape (the
- * two description keys are ABSENT, not null-valued; the enclosing response grew
- * the DL-302 board keys). The field costs no extra API call —
+ * `include_description` (DL-245) is OPT-IN, because a card body is ~2 KB and — until
+ * card#8985 below — the projection had no bound on how many cards a lane holds. It is
+ * no longer the tool's only argument. Absent ⇒ the projected CARD is byte-identical to
+ * the DL-217 shape (the two description keys are ABSENT, not null-valued). ⚠ THE
+ * ENCLOSING RESPONSE IS NOT: it grew the DL-302 board keys and then card#8985's window
+ * blocks, so the byte-identity claim is about the CARD and has never been about the
+ * envelope. The field costs no extra API call —
  * `KanbanClient::swimlaneCards()` already fetches `description` and the
  * projection discarded it.
+ *
+ * ⛔ THE DEFAULT RESPONSE IS CAPPED BY CARD COUNT (card#8985, DL-365). The
+ * DL-245 warning above bounds ONE description; nothing bounded the number of
+ * cards, and the TITLES-ONLY response — the cheapest call this tool offers —
+ * was measured at 121,032 chars / 390 cards on one seat and 81,067 / 292 on
+ * another (2026-09-07), which overflows the context window of the very seats it
+ * exists for. Each of the three card populations (own lane, shared lane, coord)
+ * is now cut to `BoardMyCardsTool::DEFAULT_MAX_CARDS` cards unless the caller
+ * raises `limit`, and each carries its own window block — `total` / `returned` / `limit` /
+ * `truncated` — so a capped read is legible AS capped and can never be mistaken
+ * for "that is all there is". The cut is by CARD COUNT, never by bytes: a byte cut
+ * would land in a different place on every call, and a caller cannot reason about
+ * a boundary it cannot predict.
+ *
+ * `stage` (card#8985) is the narrowing filter the window block points at. It keys
+ * on the NUMERIC stage id — the id board consumers already key on and the id these
+ * rows actually carry — and accepts a stage NAME only as a convenience, only when
+ * that name resolves to exactly ONE stage on the board. An ambiguous name is a
+ * REFUSAL, never a guess: guessing would silently answer about a different column
+ * than the one asked for, and the answer would look exactly like a correct one.
+ *
+ * ⚠ The cap bounds the RESPONSE, not the upstream reads: `swimlaneCards()` still
+ * paginates the whole lane, because `total` has to be the lane's real size for the
+ * `truncated` flag to mean anything.
  *
  * ⭐ A PERMANENT 4xx FROM THE BOARD IS A NAMED REFUSAL, NOT THE RETRYABLE 502 (card#8486)
  * — see {@see readRefusal}. Every read this tool makes is covered, on both the own/shared
@@ -47,6 +73,28 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardMyCardsTool implements Tool
 {
+    /**
+     * The number of cards each list in the response is cut to when the caller
+     * names no `limit` (card#8985). DERIVED FROM THE MEASUREMENT, not chosen for
+     * roundness, and the derivation is the reason it is odd:
+     *
+     *   - Measured titles-only responses, 2026-09-07: 121,032 chars / 390 cards
+     *     = 310.3 chars per card, and 81,067 / 292 = 277.6.
+     *   - The LARGER rate is the one the cap has to hold at — sizing on the mean
+     *     would leave the fatter of the two measured seats still over budget.
+     *   - Budget: 16,384 chars for one card list, which is this repo's OWN
+     *     existing ceiling for a single opted-in card body — the constant
+     *     `BoardToolsConfig::DEFAULT_DESCRIPTION_MAX_BYTES`.
+     *     A whole titles-only board window costing no more than one description
+     *     is a bound this install has already accepted somewhere, rather than a
+     *     fresh number invented here.
+     *   - 16,384 / 310.3 = 52.8 ⇒ 52 cards per list.
+     *
+     * ⚠ It bounds ONE list. An install with a shared lane AND a coord leg can
+     * return three saturated lists; that is a bound, not a promise of the budget.
+     */
+    public const DEFAULT_MAX_CARDS = 52;
+
     public function name(): string
     {
         return 'board_my_cards';
@@ -55,6 +103,10 @@ final class BoardMyCardsTool implements Tool
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $descriptionCap = $this->descriptionCap($args, $cfg);
+        // Validated BEFORE the first read: it needs nothing from the board, and a
+        // refusal that costs an upstream request is a refusal that costs an
+        // upstream request on every retry of a caller that has not fixed its args.
+        $limit = $this->cardLimit($args);
         $boardId = (int) $cfg->boardId;
         $swimlaneId = (int) $cfg->swimlaneId;
         // ⛔ TWO `try`s FOR TWO KANBAN ROUTE CLASSES, NOT A STYLE CHOICE (card#8486 R1). The
@@ -68,28 +120,45 @@ final class BoardMyCardsTool implements Tool
             throw $this->readRefusal($e, $agentName, 'stages', BoardReadRoute::BoardScoped, "the structure of your board {$boardId}");
         }
 
+        // Resolved against the stage names just read, so a name that names nothing —
+        // or names two things — is refused before any card search is paid for.
+        $stageFilter = $this->stageFilter($args, $stageNames, $boardId);
+
         try {
-            $ownRows = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
+            $ownRows = $this->onStage($this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own'), $stageFilter);
             $sharedRows = $cfg->sharedSwimlaneId === null
                 ? null
-                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+                : $this->onStage($this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared'), $stageFilter);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
         }
 
-        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRows, $sharedRows ?? []), $boardId, $agentName, $sharedRows === null ? 'own' : 'own+shared');
+        [$ownCards, $ownWindow] = $this->cardWindow($ownRows, $limit);
+        $ownWindow['stage_filter'] = $stageFilter;
+        $sharedCards = $sharedRows === null ? null : $this->cardWindow($sharedRows, $limit);
+
+        // ⚠ THE BOARD READING IS OVER THE ROWS THE CALLER IS ACTUALLY HANDED, which is
+        // what `board_id`/`board_observed` have always claimed to be (DL-302: "every
+        // RETURNED row reported that same board"). Reading it over the pre-cap set
+        // would unobserve a window on account of a row the caller never sees — a null
+        // board for a window whose every visible card agrees.
+        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownCards, $sharedCards[0] ?? []), $boardId, $agentName, $sharedCards === null ? 'own' : 'own+shared');
         $result = [
             'board_id' => $observedBoard,
             'board_observed' => $boardObserved,
             'configured_board_id' => $boardId,
             'swimlane_id' => $swimlaneId,
-            'cards_by_stage' => $this->groupByStage($ownRows, $stageNames, $descriptionCap),
+            'cards_by_stage' => $this->groupByStage($ownCards, $stageNames, $descriptionCap),
+            'cards_window' => $ownWindow,
         ];
 
-        if ($sharedRows !== null) {
+        if ($sharedCards !== null) {
+            $sharedWindow = $sharedCards[1];
+            $sharedWindow['stage_filter'] = $stageFilter;
             $result['shared_swimlane'] = [
                 'swimlane_id' => (int) $cfg->sharedSwimlaneId,
-                'cards_by_stage' => $this->groupByStage($sharedRows, $stageNames, $descriptionCap),
+                'cards_by_stage' => $this->groupByStage($sharedCards[0], $stageNames, $descriptionCap),
+                'cards_window' => $sharedWindow,
             ];
         }
 
@@ -98,11 +167,12 @@ final class BoardMyCardsTool implements Tool
             // already holds, so a future key added to the literal above would drop
             // the observed coord block with nothing red. Naming each key also puts
             // coordBlock()'s declared shape under phpstan.
-            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName);
+            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit);
             $result['coord_board_id'] = $coord['coord_board_id'];
             $result['coord_board_observed'] = $coord['coord_board_observed'];
             $result['configured_coord_board_id'] = $coord['configured_coord_board_id'];
             $result['coord_cards'] = $coord['coord_cards'];
+            $result['coord_cards_window'] = $coord['coord_cards_window'];
         }
 
         return $result;
@@ -165,6 +235,209 @@ final class BoardMyCardsTool implements Tool
         }
 
         return $include ? $cfg->descriptionMaxBytes : null;
+    }
+
+    /**
+     * The number of cards each list in this response is cut to. Absent ⇒ the
+     * derived default; a caller that genuinely needs a whole large lane raises it
+     * and pays for it, which is what makes the cap a DEFAULT rather than a
+     * capability this tool no longer has.
+     *
+     * ⚠ A non-int is REFUSED rather than coerced, for the reason
+     * `include_description` refuses one: `"200"` or `200.0` coerced would spend a
+     * caller's context on a bound it never actually asked for, and a coerced 0 or
+     * -1 would silently empty the window. `is_int` also excludes `true`, which
+     * would otherwise coerce to a one-card window.
+     *
+     * @param  array<string, mixed>  $args
+     */
+    private function cardLimit(array $args): int
+    {
+        if (! array_key_exists('limit', $args) || $args['limit'] === null) {
+            return self::DEFAULT_MAX_CARDS;
+        }
+        $limit = $args['limit'];
+        if (! is_int($limit) || $limit < 1) {
+            throw new ToolRefusalException('board_my_cards: `limit` must be an integer of at least 1 when provided — it is the number of CARDS each list is cut to (default '.self::DEFAULT_MAX_CARDS.'). Raising it raises the response size in proportion; narrow with `stage` instead where you can.');
+        }
+
+        return $limit;
+    }
+
+    /**
+     * The NUMERIC stage id this call is narrowed to, or null when the caller named
+     * none. The numeric id is the primary form — it is what the rows carry and what
+     * every other board consumer keys on — and a string is accepted as a NAME, never
+     * as an id: `"7"` is looked up as a stage called `7`, not as stage 7. That is the
+     * one reading a caller cannot be surprised by, because the alternative (guess
+     * which the caller meant) picks a column for them.
+     *
+     * ⛔ AN AMBIGUOUS NAME IS A REFUSAL, NOT A GUESS. Two stages that differ only in
+     * case, or two genuinely identical names, resolve to a set — and answering about
+     * one of them produces a window that is indistinguishable from a correct answer
+     * about the other. The refusal names the board's stages so the caller can send an
+     * id instead.
+     *
+     * ⚠ An id is checked against the board's stages ONLY when the stage read
+     * produced any. `boardStageNames()` answers an empty map when the preload read
+     * carried no stages (already logged upstream), and validating against an empty
+     * map would refuse every filter on a board whose structure this bridge could
+     * not read — turning a degraded read into a dead argument. A NAME still cannot
+     * be resolved in that state and says so.
+     *
+     * @param  array<string, mixed>  $args
+     * @param  array<int, string>  $stageNames
+     */
+    private function stageFilter(array $args, array $stageNames, int $boardId): ?int
+    {
+        if (! array_key_exists('stage', $args) || $args['stage'] === null) {
+            return null;
+        }
+        $stage = $args['stage'];
+
+        if (is_int($stage)) {
+            if ($stageNames !== [] && ! isset($stageNames[$stage])) {
+                throw new ToolRefusalException("board_my_cards: `stage` {$stage} is not a stage on board {$boardId} — its stages are ".$this->stageList($stageNames).'. Nothing was filtered; no cards were returned for a column that does not exist.');
+            }
+
+            return $stage;
+        }
+
+        if (! is_string($stage)) {
+            throw new ToolRefusalException('board_my_cards: `stage` must be the NUMERIC stage id (as `board_my_cards` reports it under each card\'s `stage`), or a stage NAME as a string. It is never coerced from another type.');
+        }
+
+        if ($stageNames === []) {
+            throw new ToolRefusalException("board_my_cards: `stage` was given as a NAME, but this bridge read no stages for board {$boardId}, so there is nothing to resolve it against. Pass the numeric stage id, and tell your operator the board structure read came back empty.");
+        }
+
+        $wanted = mb_strtolower(trim($stage));
+        $matches = [];
+        foreach ($stageNames as $id => $name) {
+            if (mb_strtolower(trim($name)) === $wanted) {
+                $matches[$id] = $name;
+            }
+        }
+
+        if (count($matches) === 1) {
+            return (int) array_key_first($matches);
+        }
+        if ($matches === []) {
+            throw new ToolRefusalException("board_my_cards: `stage` does not name any stage on board {$boardId} — its stages are ".$this->stageList($stageNames).'. Names are matched case-insensitively and whitespace-trimmed; nothing else is inferred.');
+        }
+
+        throw new ToolRefusalException("board_my_cards: `stage` names MORE THAN ONE stage on board {$boardId} — ".$this->stageList($matches).'. The bridge does not guess which column you meant, because a guessed answer is indistinguishable from a correct one. Pass the numeric stage id.');
+    }
+
+    /**
+     * `50 (Backlog), 51 (In Review)` — the board\'s own stages, id first because the
+     * id is what the refusal is asking the caller to send. Sorted by id so the
+     * message is stable across calls.
+     *
+     * @param  array<int, string>  $stageNames
+     */
+    private function stageList(array $stageNames): string
+    {
+        ksort($stageNames);
+        $parts = [];
+        foreach ($stageNames as $id => $name) {
+            $parts[] = "{$id} ({$name})";
+        }
+
+        return implode(', ', $parts);
+    }
+
+    /**
+     * Keep only the rows in the named stage. A row whose `workflow_stage_id` is
+     * absent or non-numeric is DROPPED by a stage filter — it cannot be shown to be
+     * in the asked-for column, and a caller that named a column is asking about that
+     * column, not about everything the bridge could not place.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    private function onStage(array $rows, ?int $stageId): array
+    {
+        if ($stageId === null) {
+            return $rows;
+        }
+
+        $kept = [];
+        foreach ($rows as $row) {
+            $rowStage = $row['workflow_stage_id'] ?? null;
+            if (is_numeric($rowStage) && (int) $rowStage === $stageId) {
+                $kept[] = $row;
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Cut one card list to the cap, and report the cut (card#8985). Returns
+     * `[the rows the caller gets, the window block describing them]`.
+     *
+     * ⛔ `total` IS THE WHOLE POPULATION, NOT WHAT WAS RETURNED, and that is the
+     * only thing that makes `truncated` worth anything: the flag says a cut
+     * happened and the total says how much is behind it, so a capped read can
+     * never be read as 'that is all there is'. `returned` and `limit` are stated
+     * separately because they differ in the ordinary case — a list shorter than
+     * the cap returns everything under a cap that never bit.
+     *
+     * ⚠ WHICH cards survive is deterministic and is the LOWEST CARD IDS, not
+     * whatever order the upstream search happened to answer in. Two properties are
+     * being bought: a caller polling twice sees the same window rather than a
+     * reshuffled one, and the window does not move out from under it every time a
+     * card is created elsewhere in the lane. The rows are then emitted in their
+     * ORIGINAL order, so a list that was not cut is byte-identical to what this
+     * tool has always returned. A row carrying no numeric id sorts last (it cannot
+     * be placed, and it must not displace a card that can).
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool}}
+     */
+    private function cardWindow(array $rows, int $limit): array
+    {
+        $total = count($rows);
+        if ($total <= $limit) {
+            return [$rows, ['total' => $total, 'returned' => $total, 'limit' => $limit, 'truncated' => false]];
+        }
+
+        $order = array_keys($rows);
+        usort($order, function (int $a, int $b) use ($rows): int {
+            $idA = $this->sortableCardId($rows[$a]);
+            $idB = $this->sortableCardId($rows[$b]);
+            if ($idA === $idB) {
+                return $a <=> $b;
+            }
+            if ($idA === null) {
+                return 1;
+            }
+            if ($idB === null) {
+                return -1;
+            }
+
+            return $idA <=> $idB;
+        });
+
+        $keep = array_slice($order, 0, $limit);
+        sort($keep);
+        $kept = [];
+        foreach ($keep as $index) {
+            $kept[] = $rows[$index];
+        }
+
+        return [$kept, ['total' => $total, 'returned' => count($kept), 'limit' => $limit, 'truncated' => true]];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function sortableCardId(array $row): ?int
+    {
+        $id = $row['id'] ?? null;
+
+        return is_numeric($id) ? (int) $id : null;
     }
 
     /**
@@ -291,9 +564,18 @@ final class BoardMyCardsTool implements Tool
      * is the same standard applied to both windows in one file, which is the whole
      * complaint on this card.
      *
-     * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>}
+     * ⛔ `stage` DOES NOT REACH THIS BLOCK, and that is a property of the ids rather
+     * than an omission (card#8985). These cards are on the COORD board; a stage id is
+     * only meaningful on the board it belongs to, so applying the caller's product-board
+     * id here would silently filter one list against another board's column numbering
+     * and answer an empty coord window that looks exactly like "nothing is addressed to
+     * you". The `limit` cap DOES reach it — a card count means the same thing on any
+     * board — and this block carries its own window so its truncation is legible on its
+     * own terms.
+     *
+     * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>, coord_cards_window: array{total: int, returned: int, limit: int, truncated: bool}}
      */
-    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName): array
+    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit): array
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
@@ -321,13 +603,15 @@ final class BoardMyCardsTool implements Tool
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'coord stages', BoardReadRoute::BoardScoped, "the structure of the coordination board {$coordBoardId} your address tags are on");
         }
-        [$observedBoard, $boardObserved] = $this->observedBoard($rows, $coordBoardId, $agentName, 'coord');
+        [$coordCards, $coordWindow] = $this->cardWindow($rows, $limit);
+        [$observedBoard, $boardObserved] = $this->observedBoard($coordCards, $coordBoardId, $agentName, 'coord');
 
         return [
             'coord_board_id' => $observedBoard,
             'coord_board_observed' => $boardObserved,
             'configured_coord_board_id' => $coordBoardId,
-            'coord_cards' => array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames, $descriptionCap), $rows),
+            'coord_cards' => array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames, $descriptionCap), $coordCards),
+            'coord_cards_window' => $coordWindow,
         ];
     }
 

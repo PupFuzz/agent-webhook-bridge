@@ -221,7 +221,11 @@ const TOOL_DEFINITIONS = [
       'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
       'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
-      'include_description when you need the SCOPE written on a card. A board fault ' +
+      'include_description when you need the SCOPE written on a card. EACH card list is ' +
+      'CAPPED by default; every list carries a window block (total / returned / limit / ' +
+      'truncated) and truncated: true means there is more behind it — narrow with stage, ' +
+      'or raise limit deliberately. NEVER read a truncated list as the whole board. ' +
+      'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
       'window and never a retryable upstream error, so do not retry it: tell your ' +
@@ -233,11 +237,33 @@ const TOOL_DEFINITIONS = [
           type: 'boolean',
           description:
             "Include each card's body (default false). Opt-in because a body is ~2 KB " +
-            'and every card in your lane is returned, so this can multiply the response ' +
-            'size many times over — ask for it when starting work on a card, not when ' +
+            'and it is added to EVERY card the call returns, so it multiplies the ' +
+            'response size by the number of cards — ask for it when starting work on a ' +
+            'card, not when ' +
             'polling. A body longer than the bridge-configured per-card cap is cut and ' +
             'the card carries description_truncated: true; never read a truncated body ' +
             'as the whole scope.',
+        },
+        stage: {
+          type: ['integer', 'string'],
+          description:
+            'Return only cards in ONE column of your product board. The NUMERIC stage id ' +
+            'is the primary form (it is what each card reports under "stage" alongside ' +
+            'the id the bridge groups by). A STRING is treated as a stage NAME, matched ' +
+            'case-insensitively, and is REFUSED if it names no stage or more than one — ' +
+            'the bridge never guesses which column you meant. Does not apply to the ' +
+            'coordination cards: those are on a different board, whose stage ids are ' +
+            'unrelated to yours.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'How many cards EACH list is cut to (the bridge default is deliberately ' +
+            'small — a whole board of titles overflows a context window). Raise it only ' +
+            'when you genuinely need a whole lane: the response grows in proportion. ' +
+            'Prefer narrowing with stage. Read the window block to see whether a cut ' +
+            'happened and how much is behind it.',
         },
       },
       additionalProperties: false,

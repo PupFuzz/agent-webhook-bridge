@@ -3,6 +3,7 @@
 namespace Tests\Feature\AgentTools;
 
 use App\Bridge\Tools\BoardCallRefusal;
+use App\Bridge\Tools\BoardMyCardsTool;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -1582,6 +1583,379 @@ class AgentToolsCallTest extends TestCase
         $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => $value]])
             ->assertStatus(422);
         Http::assertNothingSent();
+    }
+
+    // ─── board_my_cards: the capped default window (card#8985 / DL-365) ──────
+
+    /**
+     * A lane of $count cards, ids 1..$count, all in the one stage. `links.next: null`
+     * ends the client's pagination after this one page — without it the fake answers
+     * the same oversized page for every page the client asks for, and the test would
+     * be measuring a duplication the real client never produces.
+     *
+     * @param  array<int, array<string, mixed>>  $rowOverridesById  merged into the row with that id
+     */
+    private function fakeLaneOf(int $count, array $rowOverridesById = []): void
+    {
+        $rows = [];
+        for ($id = 1; $id <= $count; $id++) {
+            $rows[] = array_merge([
+                'id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10,
+            ], $rowOverridesById[$id] ?? []);
+        }
+
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [
+                    ['id' => 50, 'name' => 'Backlog', 'position' => 1],
+                    ['id' => 51, 'name' => 'In Review', 'position' => 2],
+                ]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => $rows, 'links' => ['next' => null]]),
+        ]);
+    }
+
+    public function test_my_cards_caps_a_large_lane_and_says_it_did(): void
+    {
+        // THE DEFECT (card#8985): titles only, no include_description — measured at
+        // 121,032 chars / 390 cards on one seat. The cheapest call this tool offers
+        // overflowed the window of the seat it exists for, and the response said
+        // nothing at all about being partial.
+        $this->fakeLaneOf(500);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $result['cards_by_stage']['Backlog']);
+        $this->assertSame([
+            'total' => 500,
+            'returned' => BoardMyCardsTool::DEFAULT_MAX_CARDS,
+            'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS,
+            'truncated' => true,
+            'stage_filter' => null,
+        ], $result['cards_window']);
+    }
+
+    public function test_my_cards_does_not_flag_a_lane_that_fits(): void
+    {
+        // The CONTROL for the assertion above: `truncated` has to be able to be false,
+        // or it is a constant dressed as a measurement. A lane under the cap returns
+        // every card and says nothing was cut.
+        $this->fakeLaneOf(3);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertCount(3, $result['cards_by_stage']['Backlog']);
+        $this->assertSame([
+            'total' => 3,
+            'returned' => 3,
+            'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS,
+            'truncated' => false,
+            'stage_filter' => null,
+        ], $result['cards_window']);
+    }
+
+    public function test_my_cards_keeps_the_lowest_card_ids_in_their_original_order(): void
+    {
+        // WHICH cards survive is a contract, not an accident: the same call twice must
+        // answer the same window, and a card created elsewhere in the lane must not
+        // shuffle what a seat is already looking at.
+        $this->fakeLaneOf(500);
+
+        $cards = $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog');
+
+        $this->assertSame(range(1, BoardMyCardsTool::DEFAULT_MAX_CARDS), array_column($cards, 'id'));
+    }
+
+    public function test_my_cards_selection_is_by_card_id_not_by_the_order_the_board_answered_in(): void
+    {
+        // ⛔ THE PRECEDING TEST CANNOT TELL THE TWO APART and must not be read as
+        // covering this: its lane arrives in ascending id order, so "the 52 lowest ids"
+        // and "the first 52 rows the search answered" are the SAME 52 rows there. This
+        // one answers the lane BACKWARDS, which is the only arrangement in which the
+        // rule is falsifiable — and it pins the emission order too: selection reorders
+        // nothing, so an uncut list stays byte-identical to what this tool always gave.
+        $rows = [];
+        for ($id = 500; $id >= 1; $id--) {
+            $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10];
+        }
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => $rows, 'links' => ['next' => null]]),
+        ]);
+
+        $cards = $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog');
+
+        $this->assertSame(
+            range(BoardMyCardsTool::DEFAULT_MAX_CARDS, 1),
+            array_column($cards, 'id')
+        );
+    }
+
+    public function test_my_cards_never_lets_an_unidentifiable_row_displace_a_card_that_has_an_id(): void
+    {
+        // A row carrying no readable id cannot be PLACED in the deterministic order at
+        // all, so it sorts last: which cards a seat is shown must not depend on rows the
+        // bridge could not even identify. (The rows are still COUNTED — `total` is the
+        // lane's real size, whatever the bridge could read off each row.)
+        $this->fakeLaneOf(6, [3 => ['id' => null], 5 => ['id' => 'not-a-number']]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 3]])
+            ->assertStatus(200)->json('result');
+
+        $this->assertSame(
+            [1, 2, 4],
+            array_map(static fn (array $card): mixed => $card['id'], $result['cards_by_stage']['Backlog'])
+        );
+        $this->assertSame(6, $result['cards_window']['total']);
+    }
+
+    public function test_my_cards_limit_raises_the_cap(): void
+    {
+        // The cap is a DEFAULT, not a capability removal — a caller that needs the
+        // whole lane can still have it, deliberately and at its own cost.
+        $this->fakeLaneOf(500);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 500]])
+            ->assertStatus(200)->json('result');
+
+        $this->assertCount(500, $result['cards_by_stage']['Backlog']);
+        $this->assertFalse($result['cards_window']['truncated']);
+        $this->assertSame(500, $result['cards_window']['limit']);
+    }
+
+    /** @return array<string, array{0: mixed}> */
+    public static function unusableLimits(): array
+    {
+        return [
+            'zero' => [0],
+            'negative' => [-1],
+            // ⚠ 10.0 is NOT usable here: PHP encodes it as `10` and it arrives an int,
+            // so the case would assert nothing. A non-integral float is the shape that
+            // actually survives the wire.
+            'a non-integral float' => [10.5],
+            'a numeric string' => ['10'],
+            'a bool' => [true],
+            'a list' => [[10]],
+        ];
+    }
+
+    #[DataProvider('unusableLimits')]
+    public function test_my_cards_refuses_an_unusable_limit_before_any_board_read(mixed $value): void
+    {
+        Http::fake();   // the refusal must precede every board read
+
+        $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => $value]])
+            ->assertStatus(422);
+        Http::assertNothingSent();
+    }
+
+    public function test_my_cards_filters_by_numeric_stage_id(): void
+    {
+        // The numeric id is the primary form — it is what the rows carry and what
+        // every other board consumer keys on.
+        $this->fakeLaneOf(6, [3 => ['workflow_stage_id' => 51], 5 => ['workflow_stage_id' => 51]]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 51]])
+            ->assertStatus(200)->json('result');
+
+        $this->assertSame(['In Review'], array_keys($result['cards_by_stage']));
+        $this->assertSame([3, 5], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertSame(2, $result['cards_window']['total']);
+        $this->assertSame(51, $result['cards_window']['stage_filter']);
+    }
+
+    public function test_my_cards_resolves_an_unambiguous_stage_name_to_its_id(): void
+    {
+        // A name is a convenience, resolved case-insensitively; what the window echoes
+        // back is the ID it resolved to, so the caller can send that next time.
+        $this->fakeLaneOf(6, [3 => ['workflow_stage_id' => 51]]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 'in review']])
+            ->assertStatus(200)->json('result');
+
+        $this->assertSame([3], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertSame(51, $result['cards_window']['stage_filter']);
+    }
+
+    public function test_my_cards_caps_a_filtered_stage_and_totals_only_that_stage(): void
+    {
+        // `total` is the population the caller ASKED ABOUT. A stage filter that
+        // reported the whole lane's size would make `truncated` unreadable.
+        $this->fakeLaneOf(500);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 'Backlog', 'limit' => 4]])
+            ->assertStatus(200)->json('result');
+
+        $this->assertSame([
+            'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
+        ], $result['cards_window']);
+        $this->assertSame([1, 2, 3, 4], array_column($result['cards_by_stage']['Backlog'], 'id'));
+    }
+
+    public function test_my_cards_refuses_an_ambiguous_stage_name_rather_than_guessing(): void
+    {
+        // ⛔ A guessed column answers about a DIFFERENT stage and the answer looks
+        // exactly like a correct one. Two stages differing only in case are the live
+        // shape (kanban does not forbid it).
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [
+                    ['id' => 50, 'name' => 'Backlog', 'position' => 1],
+                    ['id' => 51, 'name' => 'BACKLOG', 'position' => 2],
+                ]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 'backlog']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('MORE THAN ONE', (string) $res->getContent());
+        // The refusal precedes the card search: nothing was read for a filter that
+        // could not be resolved.
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'tasks/search.json'));
+    }
+
+    /** @return array<string, array{0: mixed}> */
+    public static function unusableStages(): array
+    {
+        return [
+            'an id no stage carries' => [999],
+            'a name no stage carries' => ['Shipped'],
+            // A STRING is always a NAME, never an id — `"50"` is looked up as a stage
+            // called `50`, which this board has none of.
+            'a numeric string, which is a NAME not an id' => ['50'],
+            'a non-integral float' => [50.5],
+            'a bool' => [true],
+            'a list' => [[50]],
+        ];
+    }
+
+    #[DataProvider('unusableStages')]
+    public function test_my_cards_refuses_an_unusable_stage_and_searches_nothing(mixed $value): void
+    {
+        $this->fakeLaneOf(3);
+
+        $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => $value]])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'tasks/search.json'));
+    }
+
+    public function test_my_cards_takes_a_stage_id_but_not_a_name_when_the_board_read_no_stages(): void
+    {
+        // The asymmetry is deliberate. `boardStageNames()` answers an empty map when the
+        // preload read carried no stages (a degraded read, logged upstream). Validating
+        // an ID against an empty map would refuse EVERY filter on such a board — a
+        // degraded read turned into a dead argument — so an id is taken unverified. A
+        // NAME has genuinely nothing to resolve against and says so rather than
+        // resolving to nothing and answering an empty window that reads like an empty
+        // column.
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => []]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+            ], 'links' => ['next' => null]]),
+        ]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 50]])
+            ->assertStatus(200)->json('result');
+        // Taken, applied, and the stage falls back to the raw-id label the tool has
+        // always used when it cannot name a stage.
+        $this->assertSame(50, $result['cards_window']['stage_filter']);
+        $this->assertSame([1], array_column($result['cards_by_stage']['stage:50'], 'id'));
+
+        // ⚠ THE MESSAGE, not just the 422: the "names no stage on this board" refusal is
+        // also a 422, so a status-only assertion cannot tell the two apart — and the two
+        // send an operator to opposite places (fix your argument vs. the board-structure
+        // read came back empty).
+        $refusal = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 'Backlog']])
+            ->assertStatus(422);
+        $this->assertStringContainsString('read no stages for board 10', (string) $refusal->getContent());
+    }
+
+    public function test_my_cards_caps_the_shared_lane_on_its_own_window(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  shared_swimlane_id: 9\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $url = urldecode($request->url());
+                $lane = str_contains($url, 'swimlane_id=9') ? 9 : 4;
+                $rows = [];
+                for ($id = 1; $id <= ($lane === 9 ? 200 : 2); $id++) {
+                    $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50,
+                        'swimlane_id' => $lane, 'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10];
+                }
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            },
+        ]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 5]])
+            ->assertStatus(200)->json('result');
+
+        // Each list is cut on its OWN population; the own lane fits and the shared one does not.
+        $this->assertFalse($result['cards_window']['truncated']);
+        $this->assertSame(2, $result['cards_window']['total']);
+        $this->assertTrue($result['shared_swimlane']['cards_window']['truncated']);
+        $this->assertSame(200, $result['shared_swimlane']['cards_window']['total']);
+        $this->assertCount(5, $result['shared_swimlane']['cards_by_stage']['Backlog']);
+    }
+
+    public function test_my_cards_caps_the_coord_cards_on_their_own_window_and_the_stage_filter_never_reaches_them(): void
+    {
+        // ⛔ A stage id is only meaningful on the board it belongs to. Applying the
+        // product board's id to the coord board would filter one list against another
+        // board's column numbering and answer an empty coord window that reads exactly
+        // like "nothing is addressed to you".
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/boards/12/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $url = urldecode($request->url());
+                $coord = str_contains($url, 'tags:"repo:me"');
+                $rows = [];
+                for ($id = 1; $id <= ($coord ? 10 : 2); $id++) {
+                    $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => $coord ? 70 : 50,
+                        'swimlane_id' => 4, 'tags' => $coord ? ['repo:me'] : [], 'payload' => [],
+                        'updated_at' => '2026-07-20', 'board_id' => $coord ? 12 : 10];
+                }
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            },
+        ]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 50, 'limit' => 4]])
+            ->assertStatus(200)->json('result');
+
+        // The product-board stage filter narrowed the own lane...
+        $this->assertSame(50, $result['cards_window']['stage_filter']);
+        // ...and the coord cards are untouched by it, capped on their own count only.
+        $this->assertCount(4, $result['coord_cards']);
+        $this->assertSame(
+            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true],
+            $result['coord_cards_window']
+        );
     }
 
     // ─── board_correct_card: ownership scoping + the refusal table (card#8378) ─
