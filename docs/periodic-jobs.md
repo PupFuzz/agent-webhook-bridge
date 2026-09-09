@@ -52,7 +52,7 @@ which no sweep across N crontabs on N accounts could give you.
 | **Handler contract** | `App\Bridge\Scheduling\JobHandler` — `name()`, `capability()`, `run()` |
 | **Scheduler** | `App\Bridge\Scheduling\JobScheduler` — one bounded, non-blocking pass |
 | **Ingress A (default)** | `App\Bridge\Scheduling\JobSchedulerGate` — after-response, off the inbound webhook |
-| **Ingress B (opt-in)** | `php artisan bridge:tick` — one crontab line |
+| **Ingress B (opt-in)** | `php artisan bridge:tick` — one crontab line, **per install** (never per agent) |
 | **Enumeration / edit** | `php artisan bridge:jobs [--json] [--assert-tick]` |
 | **Preflight leg** | `bridge:check` → `jobs.posture` |
 
@@ -81,11 +81,41 @@ past the pass**.
 
 ## Adopting the tick
 
-It is one line, under **the seat-owner account, never root**:
+⭐ **It is ONE line PER BRIDGE INSTALL, never one per agent.** The registry (`scheduled_jobs`)
+has no agent column, the last-tick record and the scheduler's lock and interval markers carry no
+agent segment, and `BRIDGE_JOBS_TICK_EXPECTED_EVERY` is one install-level value. So onboarding a
+second agent on this install needs **no second line** — and a second line would buy nothing: it
+loses the non-blocking pass lock or falls inside the shared `min_pass_interval` and skips, while
+costing a second log file to keep alive.
+
+⭐ **You do not have to transcribe the template below.** `php artisan bridge:provision-tools`
+prints this line for **THIS install**, with its own absolute interpreter and its own paths
+already filled in — and stops printing it the moment the install has adopted a tick, so it never
+becomes a step that reappears for every agent (DL-361). This section is the template for a
+reader who has no install in front of them, and the owner of the explanation.
+
+The template, under **the seat-owner account, never root**:
 
 ```cron
-0,10,20,30,40,50 * * * * cd /path/to/bridge && php artisan bridge:tick >> /path/to/bridge/storage/logs/tick.log 2>&1
+0,10,20,30,40,50 * * * * cd /path/to/bridge && /path/to/php /path/to/bridge/artisan bridge:tick > /path/to/bridge/storage/logs/tick.log 2>&1
 ```
+
+⛔ **The interpreter is ABSOLUTE, and that is not a style choice.** `cron` runs with a minimal
+`PATH` that is nothing like an interactive shell's, so a bare `php` is an **assumption** about
+the crontab account's environment written as if it were a fact — and a line that cannot find its
+interpreter fails in exactly the silent way this whole subsystem exists to report. The emitted
+line names the interpreter the emitting process is itself running under (`PHP_BINARY`), which is
+the one answer a program here can *establish* rather than infer; ⚠ that is evidence about this
+box, not a guarantee about what the crontab account can execute. A hand-written line must supply
+the path itself. (Same reason [`writeback.md`](writeback.md) § *Running reconcile unattended*
+sets `PATH=` inside its crontab.)
+
+⚑ **`>`, not `>>` — the file holds the LAST tick only, so nothing has to rotate it.** An
+appended `tick.log` grows without bound: six lines an hour, forever, with no logrotate stanza
+anywhere in this repo and nothing that tails it. The durable account of what the registry
+actually did is the **row** (`bridge:jobs`) — *"a log line is not, because nobody tails it"* is
+DL-012's own finding — plus the app log and the exit code. ⚠ Want the history instead? Use `>>`
+and rotate it yourself; under `>` a fault that reaches this file is gone at the next tick.
 
 Then **declare the interval you used**, in seconds, so a dead crontab line goes loud:
 

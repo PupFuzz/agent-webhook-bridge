@@ -4,6 +4,8 @@ namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Check\NextSteps;
 use App\Bridge\Exceptions\UnreadableSecretException;
+use App\Bridge\Scheduling\TickAdoptionNotice;
+use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -196,7 +198,53 @@ class ProvisionToolsCommand extends BridgeCommand
             $tokenValues[$cfg->agentName] = $value;
         }
 
-        return $this->reportCollisions($all, $tokenValues) ? $rc : self::FAILURE;
+        $clean = $this->reportCollisions($all, $tokenValues);
+
+        $this->printTickNotice();
+
+        return $clean ? $rc : self::FAILURE;
+    }
+
+    /**
+     * The install-wide TICK offer (card#9058 / DL-361) — {@see TickAdoptionNotice} owns every
+     * word of it and every arm of when it says nothing.
+     *
+     * ⭐ ONCE PER RUN, NEVER ONCE PER AGENT, AND THAT PLACEMENT IS THE DESIGN. `bridge:tick` is
+     * ONE line per bridge install: the registry table carries no agent column, and neither the
+     * last-tick record's cache key nor the scheduler's lock/marker keys carry an agent segment.
+     * Printed inside the per-agent loop it would tell N onboarding agents to each add their own
+     * line — a worse defect than the silence it replaces — so it sits OUTSIDE the loop, where a
+     * roster-wide run prints it exactly once and a per-agent run prints the same single offer.
+     * ⚑ That also makes it transport-agnostic: the ssh SETUP PACKET is where an ssh agent's
+     * enablement lives, but an http-transport install needs the tick just as much and has no
+     * packet to carry it.
+     *
+     * ⛔ IT CANNOT MOVE THE EXIT CODE. It returns nothing and is called after the verdict is
+     * already decided; a periodic ingress this install has not adopted is not a provisioning
+     * fault.
+     *
+     * ⚠ THE IMPURITY IS HERE, NOT IN THE NOTICE. The posture and the reason a declaration cannot
+     * be read come from the cache and the config ({@see TickRecord::posture()},
+     * {@see TickRecord::declarationProblem()}), the base path and `PHP_BINARY` from this process —
+     * so the renderer stays a pure function of them and every arm is drivable from a test.
+     */
+    private function printTickNotice(): void
+    {
+        $lines = (new TickAdoptionNotice(
+            posture: TickRecord::posture(),
+            basePath: base_path(),
+            phpBinary: PHP_BINARY,
+            declarationProblem: TickRecord::declarationProblem(),
+        ))->lines();
+
+        if ($lines === []) {
+            return;
+        }
+
+        $this->line('');
+        foreach ($lines as $line) {
+            $this->line($line);
+        }
     }
 
     /**
