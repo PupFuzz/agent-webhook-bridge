@@ -1038,10 +1038,11 @@ sentence rather than being parsed out of it.
 **⛔ Step 2 is not a formality, and the line confirms the ROW rather than your config.** The
 tombstone write is best-effort — it is deliberately allowed to fail rather than break a check
 run — so a run can print
-`retired in config but the tombstone could NOT be recorded (see the log)` instead. That is an
-UNVERIFIED line, not a green one: delete the YAML on the strength of it and the only statement
-of your decision goes with it, and the seat comes back as a LOST failure with nothing left to
-retire it with.
+`retired in config but the tombstone could NOT be recorded (see the log)` instead. That is a
+WARNING line, not a green one — the row WAS read and the tombstone is not there — so delete the
+YAML on the strength of it and the only statement of your decision goes with it, and the seat
+comes back as a LOST failure with nothing left to retire it with. ⚠ It does not flip the exit
+code: `bridge:check` can exit 0 with this line printed, so read the line rather than the code.
 
 **What clears a tombstone: re-adding an enabled block.** Putting a working `board_tools` block
 back for that agent clears the retirement on the next run — re-adding the seat re-opens the

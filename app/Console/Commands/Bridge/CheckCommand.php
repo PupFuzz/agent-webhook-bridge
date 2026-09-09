@@ -373,7 +373,13 @@ class CheckCommand extends BridgeCommand
             // `is_readable($configDir)`, which answers YES for a 0400 directory that globs
             // empty because LISTING needs the search bit — so the arm written to prevent
             // the false claim did not fire on the one mode that produces it.
-            $ctx->configDirScanned !== true => 'the config dir could not be read, so no agent config was loaded',
+            // ⛔ "LISTED", NOT "READ", AND THE COMMENT ABOVE IS WHY. Once this arm reads the
+            // scan's own verdict it fires on a `0400` directory — which IS readable and is
+            // merely not traversable — so "could not be read" became a claim the operator can
+            // disprove with `cat`, on the very mode this arm was widened to cover. The
+            // remedy is in the sentence because the two modes take the same one: the account
+            // needs read AND execute, and a 0000 dir lacking both is covered by it too.
+            $ctx->configDirScanned !== true => 'the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded',
             $agentNames === [] => 'this install has no agent config files (no *.yml in the config dir)',
             $configs === [] => 'no agent config parsed (see the errors above)',
             default => 'every parsed agent aborted before this leg (see the errors above)',

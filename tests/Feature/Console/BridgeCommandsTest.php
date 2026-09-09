@@ -163,7 +163,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing, which is what makes the arm below reachable');
 
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('the config dir could not be read, so no agent config was loaded')
+            ->expectsOutputToContain('the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded')
             ->doesntExpectOutputToContain('this install has no agent config files')
             ->assertExitCode(0);
     }
@@ -204,7 +204,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing, or this test is not about an unscanned dir');
 
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('the config dir could not be read, so no agent config was loaded')
+            ->expectsOutputToContain('the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded')
             ->doesntExpectOutputToContain('this install has no agent config files')
             ->expectsOutputToContain('the config dir could not be scanned this run, so 1 recorded seat(s) cannot be checked for a LOST block')
             ->doesntExpectOutputToContain('block LOST')
@@ -218,7 +218,7 @@ class BridgeCommandsTest extends TestCase
         clearstatcache(true, $configDir);
 
         $this->artisan('bridge:check')
-            ->doesntExpectOutputToContain('the config dir could not be read, so no agent config was loaded')
+            ->doesntExpectOutputToContain('the config dir could not be listed (it needs read + execute for this account), so no agent config was loaded')
             ->doesntExpectOutputToContain('cannot be checked for a LOST block')
             ->expectsOutputToContain('board_tools: agent prod-agent: block LOST')
             ->assertExitCode(1);

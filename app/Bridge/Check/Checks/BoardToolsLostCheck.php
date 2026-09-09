@@ -108,13 +108,11 @@ final class BoardToolsLostCheck implements Check
     public function run(CheckContext $ctx): iterable
     {
         try {
-            // ⚑ MATERIALISED TO PLAIN ARRAYS INSIDE THE ENVELOPE, and both halves of that
-            // matter. Eloquent applies its casts LAZILY, on attribute access, so a row read
-            // here and a field read at an arm below would put the throw OUTSIDE this try and
-            // abort `bridge:check` — the one thing a diagnostic command may not do
-            // (CheckRunner deliberately does not catch). The
-            // client-half reader is inside for the same reason: it resolves the DL-316 enum,
-            // whose unknown backing value throws at the read.
+            // ⚑ MATERIALISED TO PLAIN ARRAYS INSIDE THE ENVELOPE. Eloquent applies its casts
+            // LAZILY, on attribute access, so a row read here and a field read at an arm
+            // below would put the throw OUTSIDE this try and abort `bridge:check` — the one
+            // thing a diagnostic command may not do (CheckRunner deliberately does not
+            // catch).
             $seen = [];
             foreach (BoardToolsConfigSeen::query()->get() as $row) {
                 $seen[$row->agent] = [
@@ -126,11 +124,14 @@ final class BoardToolsLostCheck implements Check
                     'retired_reason' => $row->retired_reason,
                 ];
             }
-            $calls = ClientHalfLedger::lastSuccesses();
         } catch (Throwable $e) {
             // Limb (a): the read never completed, so an absence below would be this run's own
             // failure wearing the install's silence. An unmigrated install is the live cause.
-            yield Finding::unvalidated("board_tools: could NOT read the config-seen ledger ({$e->getMessage()}) — a LOST block cannot be detected on this run; run migrations");
+            // ⛔ THE LINE NAMES BOTH CONSEQUENCES because ONE read carries both: this table is
+            // also where the retirement leg's tombstone lives, so a `retired:` key in config
+            // goes unanswered on this path too and the operator must not read the silence as
+            // "no retirement to report".
+            yield Finding::unvalidated("board_tools: could NOT read the config-seen ledger ({$e->getMessage()}) — a LOST block cannot be detected on this run, and a retired: key in config cannot be confirmed against its tombstone; run migrations");
 
             return;
         }
@@ -167,6 +168,23 @@ final class BoardToolsLostCheck implements Check
                 $parsed[$config->agentName] = $config;
             }
 
+            // ⭐ ITS OWN NARROW ENVELOPE, AND THE WIDTH IS THE POINT. This read resolves the
+            // DL-316 enum, whose unknown backing value throws at the attribute read — and it
+            // feeds ONE THING: the EVIDENCE clause of a LOST line (see this class's docblock;
+            // the row is never a trigger). Sharing the config-seen ledger's envelope made a
+            // throw from HERE print that ledger's message, so an install whose config-seen
+            // read had just succeeded was told it had failed and sent to run migrations that
+            // could not help — and the retirement leg below the shared envelope's `return`
+            // went silent with it. A failure here therefore degrades the CLAUSE and nothing
+            // else; the LOST verdict never depended on this table.
+            $callsUnreadable = null;
+            $calls = [];
+            try {
+                $calls = ClientHalfLedger::lastSuccesses();
+            } catch (Throwable $e) {
+                $callsUnreadable = $e->getMessage();
+            }
+
             foreach ($recorded as $name) {
                 // The YAML is on disk and did NOT parse: a `fail` on its own leg already, and
                 // this run knows nothing about what its board_tools block says. Claiming the
@@ -185,7 +203,7 @@ final class BoardToolsLostCheck implements Check
                 }
 
                 $ctx->boardToolsLost[] = $name;
-                yield Finding::fail($this->lostMessage($name, $seen[$name], $calls[$name] ?? null, $config === null));
+                yield Finding::fail($this->lostMessage($name, $seen[$name], $calls[$name] ?? null, $config === null, $callsUnreadable));
             }
         }
 
@@ -219,9 +237,17 @@ final class BoardToolsLostCheck implements Check
 
                 continue;
             }
-            // Limb (a): the tombstone write did not complete, so this run cannot promise the
-            // decision will outlive the file that states it.
-            yield Finding::unvalidated("board_tools: agent {$name}: retired in config but the tombstone could NOT be recorded (see the log) — do not delete {$name}.yml until a run prints RETIRED");
+            // ⛔ `warn`, NOT `unvalidated`, AND THE DISCRIMINATOR IS THIS LEG'S OWN QUESTION.
+            // That question is "is the tombstone ON RECORD?" — the row was read, it is not
+            // there, and THIS RUN ALREADY TRIED to write it (the sighting pass runs before the
+            // checks), so the answer is measured and it is NO. `unvalidated` means the install
+            // stopped the measurement (the Severity rule, limb (a)); what is uncertain here is
+            // the FUTURE — whether the decision outlives the file stating it — and
+            // world-ambiguity is not measurement-ambiguity, which that rule excludes by name.
+            // Not `fail` either: nothing is broken yet, the config still states the decision,
+            // and a best-effort audit row that lost a race must not flip the exit code of an
+            // otherwise clean install.
+            yield Finding::warn("board_tools: agent {$name}: retired in config but the tombstone could NOT be recorded (see the log) — do not delete {$name}.yml until a run prints RETIRED");
         }
     }
 
@@ -234,6 +260,16 @@ final class BoardToolsLostCheck implements Check
      * and it prints the TRANSPORT rather than the provenance: the sentence is about which
      * front door served the call, not about how the serving process was started.
      *
+     * ⛔ AN UNREADABLE CLIENT-CALL LEDGER IS SAID, NOT SWALLOWED, AND IT IS SAID HERE RATHER
+     * THAN AS A SECOND FINDING. The clause is printed only when a call exists, so dropping it
+     * silently would let *"could not look"* render exactly like *"this install recorded no
+     * call"* — the absence-never-measured this ledger's own reader refuses to hand its callers
+     * ({@see ClientHalfLedger::lastSuccesses()} propagates for that reason). The finding stays
+     * a `fail`: the leg's question — is a recorded seat's block gone? — was fully measured off
+     * the config-seen row and the current config, and neither reads this table. A separate
+     * `unvalidated` line would claim *"I should have measured this and the install stopped
+     * me"* about a decoration, and would print on runs with no LOST line to decorate.
+     *
      * ⛔ A NULL LEFT EDGE PRINTS "seen at", NOT A WINDOW WITH A HOLE IN IT, and this arm stays
      * even though {@see ConfigSeenLedger::recordEnabled()} now stamps the column. Interpolating
      * a row whose `first_seen_at` is NULL and whose `last_seen_at` is not produces *"was seen
@@ -245,7 +281,7 @@ final class BoardToolsLostCheck implements Check
      *
      * @param  array{first: ?string, last: ?string, transport: ?string, board: ?int, swimlane: ?int, retired_reason: ?string}  $row
      */
-    private function lostMessage(string $name, array $row, ?ClientHalfRecord $call, bool $yamlAbsent): string
+    private function lostMessage(string $name, array $row, ?ClientHalfRecord $call, bool $yamlAbsent, ?string $callsUnreadable): string
     {
         $window = $row['first'] === null
             ? "was seen at {$row['last']}"
@@ -255,6 +291,8 @@ final class BoardToolsLostCheck implements Check
 
         if ($call !== null) {
             $message .= '; last successful tools call '.$call->lastSuccessAt->toIso8601String().' over '.$call->transport;
+        } elseif ($callsUnreadable !== null) {
+            $message .= "; whether this seat ever completed a tools call could NOT be read this run ({$callsUnreadable}), so no call evidence is quoted either way";
         }
 
         $message .= ', and the current config has no board_tools block. Re-add the block from the deploy\'s source of truth, or retire the seat explicitly: board_tools: {retired: "<ISO date> — <reason>"}';

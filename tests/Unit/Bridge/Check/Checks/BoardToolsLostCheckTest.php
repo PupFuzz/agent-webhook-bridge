@@ -250,13 +250,21 @@ class BoardToolsLostCheckTest extends TestCase
      * ends "run bridge:check once, then delete the YAML", so a `recorded` line sourced from
      * the config the operator just wrote would send them to delete the only statement of the
      * decision over a tombstone that was never written.
+     *
+     * ⛔ `warn`, NOT `unvalidated`, AND THE SEVERITY IS ASSERTED BESIDE ITS SIBLING'S. This
+     * leg's question is *is the tombstone ON RECORD* — the row was read, the answer is NO,
+     * and the run had already tried to write it. `unvalidated` means the install stopped the
+     * MEASUREMENT; what is uncertain here is the FUTURE (will the decision outlive the file),
+     * which `Severity`'s rule excludes by name as world-ambiguity. The `unvalidated` sibling
+     * asserted in `test_an_unmigrated_ledger_…` is the contrast: there the read itself never
+     * completed.
      */
-    public function test_a_retired_config_with_no_row_is_unvalidated_and_says_not_to_delete_the_yaml(): void
+    public function test_a_retired_config_with_no_row_warns_and_says_not_to_delete_the_yaml(): void
     {
         $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
         $this->assertStringContainsString('retired in config but the tombstone could NOT be recorded', $findings[0]->message);
         $this->assertStringContainsString('do not delete impl.yml until a run prints RETIRED', $findings[0]->message);
     }
@@ -303,28 +311,42 @@ class BoardToolsLostCheckTest extends TestCase
      * SQLite connection and comes back with the driver's own `no such table`. An install that
      * pulled the code and has not run `php artisan migrate` reaches this on every run, and
      * `bridge:check` must not ABORT on it (CheckRunner deliberately does not catch).
+     *
+     * ⛔ THIS ENVELOPE COVERS ONE READ AND OWES TWO CONSEQUENCES, which is why the fixture
+     * carries a `retired:` config it cannot answer for. The tombstone lives in the very table
+     * that could not be read, so the retirement leg is skipped on this path — and a line
+     * naming only the LOST consequence would leave the operator, standing at step 2 of the
+     * retirement runbook, reading the silence as *no retirement to report*.
      */
-    public function test_an_unmigrated_ledger_is_unvalidated_and_does_not_abort_the_run(): void
+    public function test_an_unmigrated_ledger_is_unvalidated_names_both_losses_and_does_not_abort_the_run(): void
     {
-        $findings = $this->withUnmigratedDatabase(fn () => $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], [])));
+        $ctx = $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']);
+
+        $findings = $this->withUnmigratedDatabase(fn () => $this->findingsOf(new BoardToolsLostCheck, $ctx));
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
         $this->assertStringContainsString('could NOT read the config-seen ledger', $findings[0]->message);
+        $this->assertStringContainsString('a LOST block cannot be detected on this run', $findings[0]->message);
+        $this->assertStringContainsString('a retired: key in config cannot be confirmed against its tombstone', $findings[0]->message);
         $this->assertStringContainsString('run migrations', $findings[0]->message);
     }
 
     /**
-     * ⭐ A BACKING VALUE THIS BUILD CANNOT INTERPRET MUST NOT ABORT `bridge:check`. The
-     * Eloquent enum cast is applied LAZILY, on attribute access, so the `ValueError` lands
-     * wherever the attribute is first READ — and this leg reads the client-half rows through
-     * a reader that touches the cast INSIDE the envelope, precisely so the throw arrives at a
-     * site the envelope covers.
+     * ⭐ A BACKING VALUE THIS BUILD CANNOT INTERPRET MUST NOT ABORT `bridge:check`, AND MUST
+     * NOT BE REPORTED AS SOMETHING ELSE. The Eloquent enum cast is applied LAZILY, on
+     * attribute access, so the `ValueError` lands wherever the attribute is first READ — here
+     * inside `ClientHalfLedger::lastSuccesses()`, which has its OWN narrow envelope.
+     *
+     * ⛔ THE SUBJECT IS THE ASSERTION. While one envelope covered this read AND the
+     * config-seen read, a fully-migrated install whose config-seen ledger had just been read
+     * perfectly was told that ledger could not be read, and sent to run migrations that could
+     * not help. The verdict is unaffected by this table — the row is evidence, never a
+     * trigger — so the LOST `fail` still prints and says what it could not look at.
      *
      * ⛔ NOT A GUARD OVER AN UNREACHABLE STATE: nothing is added to defend against the value.
-     * What is asserted is that the read happens inside the envelope the leg already has.
      */
-    public function test_an_uninterpretable_provenance_value_is_reported_and_does_not_abort_the_run(): void
+    public function test_an_uninterpretable_provenance_value_degrades_only_the_evidence_clause(): void
     {
         $this->recordSeen('impl');
         $this->recordCall('impl');
@@ -338,9 +360,39 @@ class BoardToolsLostCheckTest extends TestCase
         $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], []));
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
-        $this->assertStringContainsString('could NOT read the config-seen ledger', $findings[0]->message);
-        $this->assertStringNotContainsString('block LOST', $findings[0]->message);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent impl: block LOST', $findings[0]->message);
+        // SAID, NOT SWALLOWED: the clause prints only when a call exists, so a silent drop
+        // would render "could not look" exactly like "this install recorded no call".
+        $this->assertStringContainsString('whether this seat ever completed a tools call could NOT be read this run', $findings[0]->message);
+        // …and it does not invent the evidence it could not read.
+        $this->assertStringNotContainsString('last successful tools call', $findings[0]->message);
+        // THE WRONG SUBJECT AND THE REMEDY THAT CANNOT WORK, both pinned: this run read the
+        // config-seen ledger and this install is fully migrated.
+        $this->assertStringNotContainsString('config-seen ledger', $findings[0]->message);
+        $this->assertStringNotContainsString('run migrations', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE RETIREMENT LEG SURVIVES THE SAME PATH, and it is the half a shared envelope
+     * silently skipped: its `yield from` sat BELOW that envelope's `return`. The scenario is
+     * concrete — a current install carrying one legacy `board_tools_client_calls` row this
+     * build cannot interpret, and an operator who has just added `retired:` and is at step 2
+     * of `docs/board-tools.md § Retiring a seat`, waiting for the RETIRED line.
+     */
+    public function test_a_retired_config_still_gets_its_tombstone_line_when_the_client_call_ledger_is_unreadable(): void
+    {
+        $this->recordSeen('impl');
+        BoardToolsConfigSeen::query()->where('agent', 'impl')->update(['retired_seen_at' => now(), 'retired_reason' => '2026-09-08 — decommissioned']);
+        $this->recordCall('impl');
+        DB::table('board_tools_client_calls')->where('agent', 'impl')->update(['call_provenance' => 'future-case']);
+        $this->assertNotNull(BoardToolsClientCall::query()->where('agent', 'impl')->first());
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent impl: RETIRED — 2026-09-08 — decommissioned (tombstone on record)', $findings[0]->message);
     }
 
     /**

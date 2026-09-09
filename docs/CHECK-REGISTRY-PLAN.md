@@ -2892,7 +2892,9 @@ the work distinguishes those.
   `handle()` gains no `foreach`), the pinned id list, both registered-total literals, and the
   whole golden corpus — every capture moved its inventory line and NOT ONE line of content,
   because the leg is silent on every committed shape. `UnvalidatedCallSiteTest` reds as designed
-  (three new sites, argued in place). ⚑ `docs/check-golden-coverage.{md,json}` were NOT
+  (TWO new sites, argued in place — it was three until the r5 review moved the *retired in
+  config, no tombstone on record* line to `warn`: that leg READ the row and measured the
+  absence, and DL-360 Decision 14 carries the derivation). ⚑ `docs/check-golden-coverage.{md,json}` were NOT
   regenerated: both banners were already up, and this adds a fourth predicate they now name —
   re-derived live with `php bin/check-golden-predicates.php --json`, which reports exactly one
   ARRIVED and none DEPARTED.

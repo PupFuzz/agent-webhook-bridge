@@ -42,7 +42,7 @@ use Throwable;
  * DIFFERENT THINGS AND NEITHER LINE MAY BORROW THE OTHER'S: a lost SIGHTING blinds the lost
  * check for that seat, while a lost RETIREMENT blinds nothing — it leaves the operator's
  * decision undurable, so the lost-block check is not silenced for it and the RETIRED line
- * reports `unvalidated` instead. One message standing for both is specific and wrong, which is worse than generic.
+ * reports `warn` instead — the row WAS read and the tombstone is measurably not on it. One message standing for both is specific and wrong, which is worse than generic.
  *
  * ⛔ NEVER read-then-write. Two doors can serve one agent concurrently and a check can run
  * beside them, so a `SELECT` followed by an `INSERT` races into a unique violation that costs
