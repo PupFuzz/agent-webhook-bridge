@@ -319,15 +319,28 @@ final class BoardCreateCardTool implements Tool
     private function requireTitle(array $args): string
     {
         $title = $args['title'] ?? null;
-        if (! is_string($title) || trim($title) === '') {
+        if (! is_string($title)) {
             throw new ToolRefusalException('board_create_card: `title` is required and must be a non-empty string');
         }
+        // EMPTY is the middleware's definition, not PHP's ({@see BoardToolArgs}), and it
+        // is answered BEFORE the cap so that a blank-and-over-long title refuses with the
+        // same sentence on both doors.
+        $trimmed = BoardToolArgs::trimmed($title);
+        if ($trimmed === '') {
+            throw new ToolRefusalException('board_create_card: `title` is required and must be a non-empty string');
+        }
+        // ⚠ THE CAP IS TAKEN ON THE VALUE AS SENT, and the TRIMMED value is what is
+        // written. That is conservative rather than sloppy — raw within the cap implies
+        // the trimmed value is — and refusing a title the HTTP door's middleware would
+        // have shortened is this door's PRE-EXISTING strictness, not something this change
+        // introduced. Moving the cap onto the trimmed value would make this door accept
+        // input it refuses today, which is its own operator gate.
         $tooLong = BoardCallRefusal::overLongName($this->name(), 'title', $title, 'No card was created');
         if ($tooLong !== null) {
             throw $tooLong;
         }
 
-        return $title;
+        return $trimmed;
     }
 
     /**
@@ -415,8 +428,13 @@ final class BoardCreateCardTool implements Tool
         if (! is_string($description)) {
             throw new ToolRefusalException('board_create_card: `description` must be a string when provided');
         }
+        // A description that is blank once the middleware's trim has run is the same
+        // thing as an ABSENT one — which is exactly what the HTTP door hands over,
+        // because `ConvertEmptyStringsToNull` nulls it there. A card being born has
+        // nothing to clear, so there is no third meaning to preserve.
+        $description = BoardToolArgs::trimmed($description);
 
-        return $description;
+        return $description === '' ? null : $description;
     }
 
     /**

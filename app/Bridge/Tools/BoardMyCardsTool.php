@@ -7,7 +7,6 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 
 /**
  * board_my_cards (DL-217) — a READ-PROXY returning the calling agent's own cards
@@ -309,12 +308,13 @@ final class BoardMyCardsTool implements Tool
      * caller asked for — while the other refused the identical input. Only an ABSENT key
      * means "no filter", and that is the same on both doors.
      *
-     * ⚠ The trim is `Str::trim`, the framework's own, NOT PHP's ASCII `trim()`. That is
-     * the same lockstep in the other direction: `TrimStrings` strips a non-breaking space
-     * (it is in `Str::INVISIBLE_CHARACTERS`) and `trim()` does not, so a name carrying one
-     * resolved at the HTTP door and was refused at the ssh door. Reusing the primitive the
-     * middleware uses is what makes the two doors agree, rather than a hand-rolled
-     * character class that would drift from it.
+     * ⚠ The trim is {@see BoardToolArgs::trimmed}, which delegates to the framework's own
+     * `Str::trim` — NOT PHP's ASCII `trim()`. That is the same lockstep in the other
+     * direction: `TrimStrings` strips a non-breaking space (it is in
+     * `Str::INVISIBLE_CHARACTERS`) and `trim()` does not, so a name carrying one resolved
+     * at the HTTP door and was refused at the ssh door. This tool was the FIRST site to
+     * converge (DL-365 Decision 10) and card#9155 hoisted the rule into a primitive every
+     * board tool now shares, which is what keeps the next tool from hand-rolling it again.
      *
      * ⚠ An id is checked against the board's stages ONLY when the stage read
      * produced any. `boardStageNames()` answers an empty map when the preload read
@@ -353,13 +353,13 @@ final class BoardMyCardsTool implements Tool
             throw new ToolRefusalException("board_my_cards: `stage` was given as a NAME, but this bridge read no stages for board {$boardId}, so there is nothing to resolve it against. Pass the numeric stage id, and tell your operator the board structure read came back empty.");
         }
 
-        $wanted = mb_strtolower(Str::trim($stage));
+        $wanted = mb_strtolower(BoardToolArgs::trimmed($stage));
         if ($wanted === '') {
             throw new ToolRefusalException("board_my_cards: `stage` was sent EMPTY (it contains nothing but invisible characters). Omit the argument entirely to read every column of board {$boardId}; an empty value is not a filter and is refused rather than silently ignored, which would hand you more cards than you asked for.");
         }
         $matches = [];
         foreach ($stageNames as $id => $name) {
-            if (mb_strtolower(Str::trim($name)) === $wanted) {
+            if (mb_strtolower(BoardToolArgs::trimmed($name)) === $wanted) {
                 $matches[$id] = $name;
             }
         }
