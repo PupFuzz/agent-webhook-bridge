@@ -39,20 +39,57 @@ enum NextStepState: string
      * The agent's YAML carries no `board_tools:` block at all, so this agent has no board
      * window — the state every install starts in. Command: `bridge:provision-tools
      * --agent=<name>` (prints a paste-ready skeleton; never edits YAML).
+     *
+     * ⛔ AN ABSENT BLOCK IS NECESSARY FOR THIS STATE AND, SINCE card#8973 / DL-360, NO
+     * LONGER SUFFICIENT — an agent whose block this install has RECORDED as enabled and
+     * whose config now has none is reported as LOST by `board_tools.lost`, and gets NO entry
+     * here. The two would otherwise contradict each other on one screen: this state's whole
+     * premise (DL-357 Decision 8) is that it is a QUESTION for the operator, the one state a
+     * correctly-configured install can sit in forever, and its own "NO ⇒ set `enabled:
+     * false`" answer would MUTE a FAIL printed two lines above. So the population is now
+     * *no block AND no record of one* — `next_steps` being empty still means nothing is
+     * OUTSTANDING, never that every agent has a window.
      */
     case NoBlock = 'no_block';
 
     /**
      * A block is present and THIS RUN COULD NOT MEASURE this bridge's half of the door:
-     * (ssh) the pinned forced-command line probe returned `unvalidated` — the
-     * `authorized_keys` it needed was not readable by this run, typically because it was
-     * not root; (http) the bearer token file could not be seen or read by THIS PROCESS
-     * (cards #5698 / #5778), which says nothing about the web user whose resolver serves
-     * the door.
+     * (ssh) the pinned forced-command line probe returned `unvalidated`; (http) the bearer
+     * token file could not be seen or read by THIS PROCESS (cards #5698 / #5778), which
+     * says nothing about the web user whose resolver serves the door.
+     *
+     * ⚠ THE ssh HALF IS SEVERAL CAUSES AND NOT ONE, AND THESE ARE EXAMPLES OF THEM: an
+     * `authorized_keys` file this run could not READ (typically because it was not root);
+     * an `AuthorizedKeysFile` entry it could not RESOLVE (`%U` with no uid lookup), so the
+     * pinned line may be in exactly that file (card#8976); the configured
+     * `board_tools.ssh_account` never LOOKED UP at all, because this PHP process has no
+     * `posix_getpwnam` — nothing was named, nothing was attempted, and whether that account
+     * exists is UNKNOWN (DL-259). ⛔ DO NOT READ THEM AS A CLOSED SET, HERE OR IN
+     * `docs/check-json-contract.md` § 7a:
+     * the arms live in `SshTransportProbe`, a new one reaches this state without appearing
+     * here, and prose that claimed to enumerate them was falsified three times inside one
+     * card. `tests/Feature/Console/Check/UnvalidatedCallSiteTest.php` pins the set FROM THE
+     * SOURCE; what this list is for is saying that the state is not one claim.
      *
      * ⛔ NOT A FAULT, AND THE REMEDY IS THE OPPOSITE OF ONE: re-run `bridge:check` as the
      * account that can read (`sudo`), and do not re-provision on this line alone. The leg
-     * above names which read was blocked.
+     * above names what it could not consult — a file, an `AuthorizedKeysFile` entry, or the
+     * account itself.
+     *
+     * ⚠ THE COMMAND IS THE REMEDY FOR THE COMMON CAUSE, NOT FOR EVERY CAUSE (card#8976,
+     * DL-359). The ssh leg's `unvalidated` arms that need a root-resolved
+     * `AuthorizedKeysFile` to exist at all are reachable ONLY from a run that is ALREADY
+     * root, so a privileged re-run cannot supply what they lacked: an entry this PHP
+     * process could not RESOLVE (`%U` on a host with no `posix_getpwnam`, an extension
+     * `sudo` does not install), and a file a root-resolved run could not OPEN. ⚑ THE
+     * NEVER-LOOKED-UP-ACCOUNT ARM IS NOT ROOT-GATED AT ALL and `sudo` is no remedy for it
+     * either — the missing extension IS the whole cause, and a privileged re-run installs
+     * nothing. The state itself is still right on those arms — nothing was measured, and re-provisioning is
+     * still the wrong move — so this is a BOUND on the command, not a fifth state:
+     * `command` must name ONE command, no command supplies a missing PHP extension, and a
+     * state whose `command` had to be fabricated would put a FALSE instruction in the
+     * machine contract in place of a merely unhelpful one. The finding above names what
+     * went unconsulted; the fix is there.
      */
     case BridgeSideUnverified = 'bridge_side_unverified';
 

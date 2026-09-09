@@ -79,7 +79,9 @@ php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUES
                                                   # block, and for an ssh-transport agent the whole SETUP PACKET
                                                   # (five steps, three actors — one of them a human).
                                                   # NO -> declare `board_tools:` with `enabled: false` in its YAML;
-                                                  # a declined capability is a decision. Either answer finishes it.
+                                                  # a declined capability is a decision WHILE THE BLOCK IS PRESENT.
+                                                  # Either answer finishes it. Deleting that YAML later is a
+                                                  # decommission, not a decline: docs/board-tools.md § Retiring a seat.
                                                   # `bridge:check` above prints a NEXT STEPS line for every agent
                                                   # that has answered neither way, and that block is the entry point.
                                                   # Roles/handoff (ssh door): docs/board-tools-enablement.md

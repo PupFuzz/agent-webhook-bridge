@@ -9,6 +9,7 @@ use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\AssertsDocPointers;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenInstall;
 use Tests\Support\CheckGolden\GoldenSshEnvironment;
@@ -41,6 +42,7 @@ use Tests\TestCase;
  */
 class CheckNextStepsTest extends TestCase
 {
+    use AssertsDocPointers;
     use BootsGoldenInstall;
     use RefreshDatabase;
 
@@ -229,14 +231,10 @@ class CheckNextStepsTest extends TestCase
         // A POINTER WITH NO CHECK IS A COMMENT. The constant is printed to operators and
         // emitted to machine consumers, so a heading renamed in the doc would leave both
         // following a section that does not exist — and nothing else in this repo joins the
-        // two. Asserted against the doc's own heading line, not against a second copy of it.
-        [, $heading] = explode(' § ', NextSteps::DOC, 2);
-
-        $this->assertStringContainsString(
-            "\n## {$heading}\n",
-            (string) file_get_contents(base_path('docs/board-tools.md')),
-            'NextSteps::DOC names a section docs/board-tools.md does not have',
-        );
+        // two. The assertion moved to a trait at its SECOND caller (card#8973): the lost-block
+        // leg prints a pointer of the same shape, and the copy that stood here also hard-coded
+        // the FILE beside a pointer that already names it.
+        $this->assertDocPointerNamesARealHeading(NextSteps::DOC);
     }
 
     // ---- fixture plumbing ----
@@ -259,9 +257,12 @@ class CheckNextStepsTest extends TestCase
     {
         $this->bootGoldenInstall('next-steps-five-agents', function (GoldenInstall $i) {
             $this->fakeBoard();
-            // The default fake: `readAuthorizedKeys()` answers null and `isRoot()` false, which
-            // is the probe's UNVERIFIED path — the same binding the golden corpus'
-            // `board-tools-ssh-default-transport-advisory` fixture uses to reach it.
+            // The default fake: `readAuthorizedKeys()` answers `unreadable()` — a file this
+            // run could NOT LOOK AT, which since card#8976 is a different answer from an
+            // ABSENT one — and `isRoot()` false. That is the probe's UNVERIFIED path, the
+            // same binding the golden corpus' `board-tools-ssh-default-transport-advisory`
+            // fixture uses to reach it (its `…-keys-file-absent` twin passes `absentPaths`
+            // for the other answer, and reaches this same state by the other sentence).
             $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
             $i->boot()
                 ->agent('agent-a', $this->kanbanOnlyAgentYaml())

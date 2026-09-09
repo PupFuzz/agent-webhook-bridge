@@ -1,0 +1,188 @@
+<?php
+
+namespace Tests\Unit\Tools;
+
+use App\Bridge\Tools\SystemSshProbeEnvironment;
+use Tests\TestCase;
+
+/**
+ * The REAL `authorized_keys` read, on a real filesystem (card#8976).
+ *
+ * ⭐ WHY THIS CLASS EXISTS, when the rest of this seam is left to the fakes: the defect it
+ * pins was a CLASSIFICATION defect at the syscall boundary — `is_file()` answering false for
+ * a file that is not there and for a file this process may not look at — and no fake can
+ * fail in that direction, because a fake states its answer rather than measuring one.
+ * {@see SshTransportProbeTest} proves what the PROBE does with three stated answers and
+ * says nothing about whether those answers are measured correctly; this is the other half.
+ *
+ * ⚑ THE PERMISSION ARMS SKIP UNDER A UID THAT IGNORES THE MODE (root, and some CI
+ * containers) rather than asserting: the arm is checked against a real open first, so a
+ * pass here is never a mode that was not actually enforced.
+ */
+class SystemSshProbeEnvironmentTest extends TestCase
+{
+    private string $dir;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->dir = sys_get_temp_dir().'/ssh-probe-env-'.bin2hex(random_bytes(6));
+        mkdir($this->dir.'/.ssh', 0o700, true);
+    }
+
+    protected function tearDown(): void
+    {
+        // Restore any mode an arm dropped, or the recursive delete cannot enter.
+        @chmod($this->dir.'/.ssh', 0o700);
+        @chmod($this->dir.'/.ssh/authorized_keys', 0o600);
+        foreach (glob($this->dir.'/.ssh/*') ?: [] as $f) {
+            @unlink($f);
+        }
+        @rmdir($this->dir.'/.ssh');
+        @rmdir($this->dir);
+
+        parent::tearDown();
+    }
+
+    public function test_a_file_that_is_not_there_reads_as_consulted_and_empty(): void
+    {
+        // ⭐ THE DEFECT'S OWN INPUT. `.ssh/authorized_keys2` is absent on essentially every
+        // host, and the OpenSSH default names it — so if this answered "not consulted", the
+        // authoritative not-wired FAIL would be unreachable on the default install.
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($this->dir.'/.ssh/authorized_keys2');
+
+        $this->assertTrue($read->consulted, 'an absent file was CONSULTED — sshd takes no keys from it');
+        $this->assertNull($read->text);
+    }
+
+    public function test_a_readable_file_reads_as_its_text(): void
+    {
+        file_put_contents($this->dir.'/.ssh/authorized_keys', "# a comment\n");
+
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($this->dir.'/.ssh/authorized_keys');
+
+        $this->assertTrue($read->consulted);
+        $this->assertSame("# a comment\n", $read->text);
+    }
+
+    public function test_a_present_file_this_process_may_not_open_reads_as_not_consulted(): void
+    {
+        // The other side of the pair, and the reason the classification cannot be dropped:
+        // the same null the old `?string` returned, over an input where absence is NOT
+        // established.
+        $path = $this->dir.'/.ssh/authorized_keys';
+        file_put_contents($path, "# secret\n");
+        chmod($path, 0o000);
+        $this->skipUnlessTheModeIsEnforced($path);
+
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($path);
+
+        $this->assertFalse($read->consulted, 'a file this process cannot open establishes NOTHING');
+        $this->assertNull($read->text);
+    }
+
+    public function test_a_path_under_an_untraversable_directory_reads_as_not_consulted(): void
+    {
+        // The stat half, which the read half cannot see: with no +x on the parent,
+        // `is_file()` returns false for a file that is really there, and calling that
+        // "absent" is the card#5698 conflation. `PathVisibility` is asked first for exactly
+        // this input.
+        $path = $this->dir.'/.ssh/authorized_keys';
+        file_put_contents($path, "# secret\n");
+        chmod($this->dir.'/.ssh', 0o000);
+        $this->skipUnlessTheModeIsEnforced($path);
+
+        $read = (new SystemSshProbeEnvironment)->readAuthorizedKeys($path);
+
+        $this->assertFalse($read->consulted);
+        $this->assertNull($read->text);
+        // The control: it is not answering "not consulted" for every input — the arm above
+        // reads the same shape with the mode restored and gets the text back.
+        chmod($this->dir.'/.ssh', 0o700);
+        $this->assertSame("# secret\n", (new SystemSshProbeEnvironment)->readAuthorizedKeys($path)->text);
+    }
+
+    // ─── file IDENTITY (card#8976 r2) ─────────────────────────────────────────
+    // Two AuthorizedKeysFile entries can name ONE file, and the probe counts LINES over
+    // them: keyed by the path string, one physical line is counted once per spelling and
+    // the ambiguity FAIL fires on an install that has exactly one. What the filesystem
+    // actually answers for each way of aliasing a file is measured HERE; what the probe
+    // does with those answers is stated in SshTransportProbeTest.
+
+    public function test_a_symlinked_second_file_shares_the_target_s_identity(): void
+    {
+        // `.ssh/authorized_keys2` pointing at `.ssh/authorized_keys` — one file, two names,
+        // and the shape an operator produces by linking rather than copying a pin.
+        $target = $this->dir.'/.ssh/authorized_keys';
+        $link = $this->dir.'/.ssh/authorized_keys2';
+        file_put_contents($target, "# a comment\n");
+        symlink($target, $link);
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertSame($env->fileIdentity($target), $env->fileIdentity($link));
+
+        // ⛔ THE CONTROL, and it is what stops this method answering "same" to everything:
+        // a REAL second file in the same directory must not share the identity.
+        file_put_contents($this->dir.'/.ssh/other_keys', "# a comment\n");
+        $this->assertNotSame($env->fileIdentity($target), $env->fileIdentity($this->dir.'/.ssh/other_keys'));
+    }
+
+    public function test_a_hard_link_shares_the_identity_where_realpath_alone_would_not(): void
+    {
+        // ⭐ WHY THIS IS NOT `realpath()`. A hard link has no symlink to resolve: both names
+        // are the file. `realpath()` answers each name with ITSELF, so a probe deduplicating
+        // on it would still count one physical line twice.
+        $target = $this->dir.'/.ssh/authorized_keys';
+        $link = $this->dir.'/.ssh/authorized_keys2';
+        file_put_contents($target, "# a comment\n");
+        link($target, $link);
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertSame($env->fileIdentity($target), $env->fileIdentity($link));
+        // The pinned negative that makes the line above a measurement of the INODE and not
+        // of a path rule: realpath disagrees on exactly this input.
+        $this->assertNotSame(realpath($target), realpath($link));
+    }
+
+    public function test_two_spellings_of_one_path_share_an_identity_present_or_absent(): void
+    {
+        // `%h//.ssh/authorized_keys` beside `.ssh/authorized_keys` is one file spelled
+        // twice — POSIX collapses the inner slashes. Asserted in BOTH states, because the
+        // two are answered by different halves of the method: an existing file compares by
+        // inode, and one that is not there has no inode to compare, so the fallback has to
+        // normalise the spelling itself.
+        $path = $this->dir.'/.ssh/authorized_keys';
+        $doubled = $this->dir.'/.ssh//authorized_keys';
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertSame($env->fileIdentity($path), $env->fileIdentity($doubled), 'absent, so this is the normalised-path fallback');
+
+        file_put_contents($path, "# a comment\n");
+        $this->assertSame($env->fileIdentity($path), $env->fileIdentity($doubled), 'present, so this is the inode');
+    }
+
+    public function test_two_paths_with_no_file_at_them_stay_distinct(): void
+    {
+        // The fallback's other direction: nothing to stat is not a licence to call two
+        // different absent paths one file. (Two SPELLINGS of one absent path are the case
+        // above; these are two paths.)
+        $env = new SystemSshProbeEnvironment;
+
+        $this->assertNotSame(
+            $env->fileIdentity($this->dir.'/.ssh/authorized_keys'),
+            $env->fileIdentity($this->dir.'/.ssh/authorized_keys2'),
+        );
+    }
+
+    /**
+     * A mode is only evidence if the kernel enforced it for THIS uid — root, and some
+     * container uids, read straight through 0000. Asked with a real open rather than by
+     * comparing uids, because that is the same question the subject asks.
+     */
+    private function skipUnlessTheModeIsEnforced(string $path): void
+    {
+        if (@file_get_contents($path) !== false) {
+            $this->markTestSkipped('this uid reads through the mode (root?), so the arm has nothing to measure');
+        }
+    }
+}

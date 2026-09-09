@@ -828,8 +828,12 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > be cleared with `--probe-tools`** — step 6 explains why: that probe stamps the very
 > ledger row the state is read from, *from this box*, so it would silence the line without
 > the seat ever having called. **An agent that does not want board tools declares
-> `board_tools:` with `enabled: false`**; a declined capability is a decision and the line
-> stops printing.
+> `board_tools:` with `enabled: false` — while the block is present**; a declined capability
+> is a decision and the line stops printing. ⚠ **Deleting that YAML is a different act.** An
+> `enabled: false` block is a decision only while something states it, so deleting the file
+> re-opens the question — and if this install ever recorded an enabled block for that agent,
+> it re-opens as a **LOST** failure whose remedy is an explicit retirement. See
+> **[A restored install](#a-restored-install)** and **[Retiring a seat](#retiring-a-seat)**.
 
 The end-to-end runbook for the common topology: the bridge served by an Apache
 vhost (`*:443`/`*:80`) proxying to PHP-FPM, with the agent's channel server on
@@ -979,6 +983,85 @@ advertised and live.
 /mcp reconnect does not stop the previous channel server — restart the session. See
 [`docs/board-tools-enablement.md` § Activating on a running seat](board-tools-enablement.md#activating-on-a-running-seat),
 which owns the mechanism, the causes of the bind failure, and who does the restart.
+
+### A restored install
+
+**If `bridge:check` prints `board_tools: agent <name>: block LOST`, this install once had a
+working `board_tools` block for that seat and now has none.** The line is a **fail** and it
+flips the exit code — the command is refusing to certify the install (card#8973 / DL-360).
+It is not derived from the current config, which no longer holds the evidence: it is derived
+from a row in the bridge's own database recording that a previous run PARSED an enabled block
+for that agent. That is why a home-dir restore, which brings the config tree back without the
+block, cannot make the line go away by itself.
+
+**⚠ The witness survives what killed the config only under a stated condition: the bridge
+DATABASE must not live inside the restored tree.** That holds for MariaDB and for a SQLite
+file outside the restored path. It does **not** hold for a SQLite file under it — there the
+row dies with the config and the leg has nothing to say, which is a gap rather than a
+guarantee.
+
+**There are exactly two remedies, and only you know which applies:**
+
+1. **The block should still be there** — a restore or a hand edit dropped it. Re-add it from
+   the deploy's source of truth and re-run `bridge:check`. The line goes away because the
+   block is back, not because anything was silenced.
+2. **The seat is genuinely gone** — decommissioned, renamed, moved to another host. Say so:
+   [Retiring a seat](#retiring-a-seat).
+
+**⛔ `--probe-tools` cannot clear it, and neither can any other probe.** Those stamp the
+CLIENT-CALL ledger, which this leg never reads as a trigger — it quotes a client call inside
+the line as evidence and nothing more. The only things that move this verdict are re-adding
+the block and retiring the seat.
+
+**⚑ The `no_block` NEXT STEP is deliberately NOT printed for a lost agent.** That question
+("should this agent be able to read, file and correct its own cards?") offers `enabled: false`
+as one valid answer, which would MUTE the failure instead of answering it. One voice per
+agent: the FAIL above carries the remedy.
+
+## Retiring a seat
+
+**Deleting a seat is a decommission, and this bridge asks for the decommission to be stated**
+(card#8973 / DL-360). An `enabled: false` block is a decision while the block is present and
+nothing at all once the YAML is deleted, so a declining seat whose file is removed re-opens as
+a LOST failure. The statement that closes it is one key:
+
+```yaml
+board_tools:
+  retired: "2026-09-08 — seat decommissioned, host retired"
+```
+
+The value is yours, stored verbatim and printed back to you; the date rides inside the
+sentence rather than being parsed out of it.
+
+**The sequence, in this order:**
+
+1. Add the `retired:` key to `<name>.yml`.
+2. Run `php artisan bridge:check` and **read the line**. You are waiting for
+   `board_tools: agent <name>: RETIRED — <your reason> (tombstone on record)`.
+3. **Only then** delete the YAML, if you want it gone.
+
+**⛔ Step 2 is not a formality, and the line confirms the ROW rather than your config.** The
+tombstone write is best-effort — it is deliberately allowed to fail rather than break a check
+run — so a run can print
+`retired in config but the tombstone could NOT be recorded (see the log)` instead. That is a
+WARNING line, not a green one — the row WAS read and the tombstone is not there — so delete the
+YAML on the strength of it and the only statement of your decision goes with it, and the seat
+comes back as a LOST failure with nothing left to retire it with. ⚠ It does not flip the exit
+code: `bridge:check` can exit 0 with this line printed, so read the line rather than the code.
+
+**What clears a tombstone: re-adding an enabled block.** Putting a working `board_tools` block
+back for that agent clears the retirement on the next run — re-adding the seat re-opens the
+question the retirement closed, and the leg starts watching it again.
+
+**A renamed or removed agent whose YAML is already gone** cannot be given a `retired:` key,
+because there is no file to put it in. The cure is in the FAIL line itself: recreate
+`<name>.yml` holding only the `board_tools: {retired: "…"}` block, run `bridge:check` once so
+it prints `RETIRED`, then delete the file.
+
+**⚠ A bridge OLDER than the release that added this key does not understand it.** It parses
+`retired:` as an unrecognised key on a default-on block, SUPPRESSES the agent, and
+`bridge:check` FAILs on the suppression. Roll every install that reads this config forward
+before adding the key.
 
 ## Same-box SSH enablement — the one-shot wrapper (card 5090)
 

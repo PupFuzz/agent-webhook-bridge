@@ -179,6 +179,25 @@ enum CheckSlot: string
     case BoardToolsSuppression = 'board-tools-suppression';
 
     /**
+     * The LOST-block plane (card#8973 / DL-360): an agent this install has RECORDED with an
+     * enabled `board_tools` block, whose config now has none and which carries no explicit
+     * retirement.
+     *
+     * IT RUNS OVER THE RECORDED ROSTER, NOT THE ENABLED SUBSET, WHICH IS WHY IT IS ITS OWN
+     * SLOT and why it sits OUTSIDE the enabled-subset guard beside
+     * {@see self::BoardToolsSuppression}. Its subject is precisely an agent that is NOT in
+     * {@see CheckContext::$boardToolsEnabled} — the witnessed install had lost every block,
+     * so its enabled subset was empty and every slot below it was skipped in silence. A leg
+     * that can only speak while the thing it looks for is present is a decoration.
+     *
+     * ⚑ IT MUST RUN AFTER THE SIGHTING WRITE AND BEFORE `NextSteps::derive()`, and both
+     * halves matter: the run has to see its own sightings, and the `next_steps` block reads
+     * {@see CheckContext::$boardToolsLost} to withhold the `no_block` question for a seat it
+     * has just reported as LOST.
+     */
+    case BoardToolsLost = 'board-tools-lost';
+
+    /**
      * The board-tools BEARER plane, reached only when some agent has the block enabled:
      * the token-readability and token-collision problems the resolver accumulated at
      * construction.

@@ -1,0 +1,506 @@
+<?php
+
+namespace Tests\Unit\Bridge\Check\Checks;
+
+use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Checks\BoardToolsLostCheck;
+use App\Bridge\Check\Silence;
+use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
+use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ConfigSeenLedger;
+use App\Models\BoardToolsClientCall;
+use App\Models\BoardToolsConfigSeen;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\Support\AssertsDocPointers;
+use Tests\Support\MaterializesChecks;
+use Tests\Support\UsesUnmigratedDatabase;
+use Tests\TestCase;
+
+/**
+ * The LOST-block leg (card#8973 / DL-360).
+ *
+ * ⭐ WHAT THIS CLASS HAS TO PROVE, and why a green run without it would prove nothing: the
+ * leg's whole value is that it DISCRIMINATES over inputs that all look like "this agent has
+ * no enabled board_tools block". Five install shapes land on that description —
+ * never-provisioned, block deleted, YAML deleted, explicitly retired, and a config that
+ * failed to parse — and today's `bridge:check` renders all five identically as silence. A
+ * test asserting only the FAIL would pass against a leg that failed on all five, and one
+ * asserting only a silence would pass against the leg this card exists to replace. So the
+ * shapes are driven through one code path and compared.
+ *
+ * ⛔ THE OPERATOR RULING IS PINNED AS AN ABSENCE WITH A NON-VACUOUS CONTROL. A
+ * `board_tools_client_calls` row ALONE must never produce a FAIL — that row is stamped by
+ * `--probe-tools`, `--self-cert` and a hand-run `bridge:tools-call`, so any agent ever probed
+ * and later removed carries one forever and would flip the exit code on an install nobody
+ * touched. The absence is asserted beside a case where the SAME agent name DOES produce a
+ * FAIL off a config-seen row, so "nothing happened" cannot be satisfied by a leg that is
+ * simply broken.
+ */
+class BoardToolsLostCheckTest extends TestCase
+{
+    use AssertsDocPointers;
+    use MaterializesChecks;
+    use RefreshDatabase;
+    use UsesUnmigratedDatabase;
+
+    // ─── the LOST verdict ─────────────────────────────────────────────────────
+
+    public function test_a_recorded_seat_whose_block_is_gone_fails_and_names_itself_to_the_context(): void
+    {
+        $this->recordSeen('impl');
+        $ctx = $this->ctx([$this->agent('impl', null)], ['impl']);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent impl: block LOST', $findings[0]->message);
+        // BOTH remedies, because only the operator knows which happened.
+        $this->assertStringContainsString('Re-add the block from the deploy\'s source of truth', $findings[0]->message);
+        $this->assertStringContainsString('retire the seat explicitly', $findings[0]->message);
+        $this->assertStringContainsString('docs/board-tools.md § Retiring a seat', $findings[0]->message);
+        // The YAML is still there, so the recreate-run-delete cure does NOT apply.
+        $this->assertStringNotContainsString('recreate impl.yml', $findings[0]->message);
+        // The seat is named in PROSE; this field is the only structured carrier, and the
+        // NEXT STEPS suppression is downstream of it.
+        $this->assertSame(['impl'], $ctx->boardToolsLost);
+    }
+
+    public function test_a_recorded_seat_with_no_yaml_at_all_gains_the_recreate_run_delete_cure(): void
+    {
+        $this->recordSeen('impl');
+        // No config, and the name is NOT in agentNames: the file is gone from the config dir.
+        $ctx = $this->ctx([], []);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('block LOST', $findings[0]->message);
+        // The operator cannot write a `retired:` key into a file that does not exist, so the
+        // line has to say how to get one written.
+        $this->assertStringContainsString('recreate impl.yml holding only that block, run bridge:check once (it prints RETIRED), then delete it', $findings[0]->message);
+    }
+
+    /**
+     * ⚑ THE CLIENT-CALL CLAUSE IS EVIDENCE, PRINTED ON A LINE THE ROW DID NOT TRIGGER. It
+     * names the TRANSPORT, never the provenance: the sentence is about which door served the
+     * call, and printing an internal measurement there would put a word the operator cannot
+     * act on where a door name belongs.
+     */
+    public function test_the_lost_line_quotes_a_client_call_as_evidence_when_one_exists(): void
+    {
+        $this->recordSeen('impl');
+        $this->recordCall('impl');
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], []));
+
+        $this->assertStringContainsString('last successful tools call ', $findings[0]->message);
+        $this->assertStringContainsString(' over ssh', $findings[0]->message);
+        $this->assertStringNotContainsString('sshd', $findings[0]->message);
+        $this->assertStringNotContainsString('call_provenance', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE RENDER FLOOR ON A HEADLESS WINDOW. A row whose `first_seen_at` is NULL and whose
+     * `last_seen_at` is not renders *"was seen from  to <last>"* through the window form — a
+     * sentence with a hole in it — and this arm prints *"was seen at <last>"* instead. ⚑ WHY
+     * SUCH A ROW IS REACHABLE at all is stated ONCE, on
+     * {@see ConfigSeenLedger::recordEnabled()} (the intra-call window between that writer's two
+     * non-transactional statements), and is not restated here: this case asserts the RENDER,
+     * whatever wrote the row.
+     */
+    public function test_a_row_with_no_left_edge_renders_seen_at_rather_than_a_headless_window(): void
+    {
+        BoardToolsConfigSeen::query()->create([
+            'agent' => 'impl',
+            'transport' => 'ssh',
+            'board_id' => 10,
+            'swimlane_id' => 4,
+            'first_seen_at' => null,
+            'last_seen_at' => now(),
+        ]);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', null)], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString(
+            'an enabled board_tools block was seen at '.now()->toIso8601String().' (transport ssh, board 10, swimlane 4)',
+            $findings[0]->message,
+        );
+        $this->assertStringNotContainsString('seen from', $findings[0]->message);
+    }
+
+    // ─── the four shapes that must NOT fail ───────────────────────────────────
+
+    /**
+     * ⭐ THE DISCRIMINATION TEST. Every one of these renders as "no enabled board_tools block"
+     * to every other leg in this plane, and each assertion alone would pass against a leg
+     * stuck on its own verdict — only the set shows the leg tells them apart.
+     */
+    public function test_a_present_block_in_any_form_is_not_lost(): void
+    {
+        $this->recordSeen('impl');
+
+        $verdicts = [];
+        foreach ([
+            'enabled' => ['transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55],
+            'disabled' => ['enabled' => false],
+            'suppressed' => ['board_id' => 10],   // default-on, unsatisfiable
+        ] as $shape => $block) {
+            $verdicts[$shape] = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', $block)], ['impl']));
+        }
+        // The control: the SAME recorded seat, with the block gone, DOES fail — so the three
+        // empty results above are the leg answering, not the leg being broken.
+        $verdicts['gone'] = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', null)], ['impl']));
+
+        $this->assertSame([], $verdicts['enabled']);
+        $this->assertSame([], $verdicts['disabled']);
+        $this->assertSame([], $verdicts['suppressed']);
+        $this->assertCount(1, $verdicts['gone']);
+        $this->assertSame(Severity::Fail, $verdicts['gone'][0]->severity);
+    }
+
+    /**
+     * A YAML that is on disk and did not parse is already a `fail` on its own leg, and this
+     * run knows NOTHING about what its board_tools block says. Claiming the block is gone
+     * would be a guess about a file this run could not read.
+     */
+    public function test_a_yaml_that_failed_to_parse_is_not_reported_as_lost(): void
+    {
+        $this->recordSeen('impl');
+        // On disk (agentNames) but absent from the parsed configs — exactly what
+        // CheckCommand's loop leaves behind when AgentConfig::load() throws.
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], ['impl']));
+
+        $this->assertSame([], $findings);
+    }
+
+    /**
+     * ⛔ THE OPERATOR RULING (DL-360), PINNED. Seen to fail by widening the population to
+     * client-calls names: that mutation makes this test red while every other test in this
+     * class stays green, which is what makes it the guard for the ruling rather than a
+     * restatement of it.
+     */
+    public function test_a_client_calls_row_alone_never_produces_a_lost_finding(): void
+    {
+        $this->recordCall('ghost');
+        $this->assertSame(0, BoardToolsConfigSeen::query()->count(), 'the fixture wrote a config-seen row, so this says nothing about the client-calls row alone');
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], []));
+
+        $this->assertSame([], $findings);
+
+        // NON-VACUOUS CONTROL: the same agent name, with a config-seen row, DOES fail. An
+        // empty result above is therefore the ruling being honoured, not the leg being dead.
+        $this->recordSeen('ghost');
+        $control = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], []));
+        $this->assertCount(1, $control);
+        $this->assertSame(Severity::Fail, $control[0]->severity);
+    }
+
+    public function test_an_install_with_no_history_says_only_that_nothing_is_lost(): void
+    {
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', null)], ['impl']));
+
+        $this->assertSame([], $findings);
+        $this->assertSame(
+            ['no agent this install has recorded with an enabled board_tools block is now without one, and no config carries a retired key — the scan covers every recorded seat, including a fleet with no board_tools at all'],
+            $this->silencesOf($this->ctx([$this->agent('impl', null)], ['impl'])),
+        );
+    }
+
+    // ─── retirement ───────────────────────────────────────────────────────────
+
+    public function test_a_tombstoned_seat_whose_block_is_gone_is_silenced_with_its_own_declaration(): void
+    {
+        $this->recordSeen('impl');
+        BoardToolsConfigSeen::query()->where('agent', 'impl')->update(['retired_seen_at' => now(), 'retired_reason' => '2026-09-08 — decommissioned']);
+
+        $ctx = $this->ctx([], []);
+        $this->assertSame([], $this->findingsOf(new BoardToolsLostCheck, $ctx));
+        $this->assertSame([], $ctx->boardToolsLost);
+        $this->assertContains(
+            'every recorded seat whose block is gone carries an explicit retirement tombstone',
+            $this->silencesOf($this->ctx([], [])),
+            'the tombstone path inherited the fall-through declaration instead of stating its own reason',
+        );
+    }
+
+    public function test_a_retired_config_with_its_row_reports_ok(): void
+    {
+        $this->recordSeen('impl');
+        BoardToolsConfigSeen::query()->where('agent', 'impl')->update(['retired_seen_at' => now(), 'retired_reason' => '2026-09-08 — decommissioned']);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent impl: RETIRED — 2026-09-08 — decommissioned (tombstone on record)', $findings[0]->message);
+        $this->assertStringContainsString('remove the retired key and re-add the block to bring it back', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE LINE CONFIRMS THE ROW, NEVER THE CONFIG, and this is the arm that makes that
+     * true. The write is best-effort, so it CAN have failed — and the cure this leg prints
+     * ends "run bridge:check once, then delete the YAML", so a `recorded` line sourced from
+     * the config the operator just wrote would send them to delete the only statement of the
+     * decision over a tombstone that was never written.
+     *
+     * ⛔ `warn`, NOT `unvalidated`, AND THE SEVERITY IS ASSERTED BESIDE ITS SIBLING'S. This
+     * leg's question is *is the tombstone ON RECORD* — the row was read, the answer is NO,
+     * and the run had already tried to write it. `unvalidated` means the install stopped the
+     * MEASUREMENT; what is uncertain here is the FUTURE (will the decision outlive the file),
+     * which `Severity`'s rule excludes by name as world-ambiguity. The `unvalidated` sibling
+     * asserted in `test_an_unmigrated_ledger_…` is the contrast: there the read itself never
+     * completed.
+     */
+    public function test_a_retired_config_with_no_row_warns_and_says_not_to_delete_the_yaml(): void
+    {
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('retired in config but the tombstone could NOT be recorded', $findings[0]->message);
+        $this->assertStringContainsString('do not delete impl.yml until a run prints RETIRED', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE CONTROL THAT MAKES THE `ok` CASE NON-VACUOUS. Its sibling above has NO ROW at
+     * all, so both tests pass under a leg that reads mere row EXISTENCE as the tombstone —
+     * the two arms sit at opposite corners and nothing occupies the one in between. This is
+     * that corner: the row IS there and the tombstone is measurably not ON it.
+     *
+     * ⛔ IT IS ALSO THE ARM'S ONLY REALISTIC PRODUCTION TRIGGER. `ConfigSeenLedger::recordRetired()`
+     * is best-effort and logs rather than throws, so a seat recorded by an earlier enabled
+     * sighting keeps a `retired_reason` of NULL when that upsert loses a race — and an
+     * operator at step 2 of the retirement runbook, told `(tombstone on record)` on the
+     * strength of the row alone, deletes the YAML and the seat returns as a LOST fail with
+     * nothing left to retire it with.
+     */
+    public function test_a_recorded_row_without_a_tombstone_warns_rather_than_reporting_it_retired(): void
+    {
+        $this->recordSeen('impl');
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('retired in config but the tombstone could NOT be recorded', $findings[0]->message);
+        $this->assertStringNotContainsString('tombstone on record', $findings[0]->message);
+    }
+
+    // ─── the directory gate, and its ordering ─────────────────────────────────
+
+    public function test_recorded_seats_and_an_unscanned_config_dir_report_one_unvalidated_and_no_fail(): void
+    {
+        $this->recordSeen('impl');
+        $this->recordSeen('impl2');
+        $ctx = $this->ctx([], [], scanned: false);
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('2 recorded seat(s) cannot be checked for a LOST block', $findings[0]->message);
+        $this->assertSame([], $ctx->boardToolsLost, 'an unscanned dir minted a LOST name, which would then mute a next step over a question this run never asked');
+    }
+
+    /**
+     * ⭐ THE ORDERING CONTROL, and it is the reason the two halves are one test. An install
+     * with NO board-tools history has no subject here, so an unreadable config dir must
+     * produce nothing at all — asking "could I read the dir?" before "is there anything to
+     * check?" would turn every unreadable directory on every fleet that never had board tools
+     * into a finding about a question nobody asked. The half above proves the gate fires; this
+     * half proves it fires only where there is a subject.
+     */
+    public function test_an_unscanned_config_dir_with_no_recorded_seats_says_nothing(): void
+    {
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], [], scanned: false));
+
+        $this->assertSame([], $findings);
+        $this->assertSame(
+            ['no agent this install has recorded with an enabled board_tools block is now without one, and no config carries a retired key — the scan covers every recorded seat, including a fleet with no board_tools at all'],
+            $this->silencesOf($this->ctx([], [], scanned: false)),
+        );
+    }
+
+    // ─── the fail-soft envelope ───────────────────────────────────────────────
+
+    /**
+     * ⚑ THE FAILURE IS REAL, NOT SYNTHETIC: the query runs against a genuinely unmigrated
+     * SQLite connection and comes back with the driver's own `no such table`. An install that
+     * pulled the code and has not run `php artisan migrate` reaches this on every run, and
+     * `bridge:check` must not ABORT on it (CheckRunner deliberately does not catch).
+     *
+     * ⛔ THIS ENVELOPE COVERS ONE READ AND OWES TWO CONSEQUENCES, which is why the fixture
+     * carries a `retired:` config it cannot answer for. The tombstone lives in the very table
+     * that could not be read, so the retirement leg is skipped on this path — and a line
+     * naming only the LOST consequence would leave the operator, standing at step 2 of the
+     * retirement runbook, reading the silence as *no retirement to report*.
+     */
+    public function test_an_unmigrated_ledger_is_unvalidated_names_both_losses_and_does_not_abort_the_run(): void
+    {
+        $ctx = $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']);
+
+        $findings = $this->withUnmigratedDatabase(fn () => $this->findingsOf(new BoardToolsLostCheck, $ctx));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('could NOT read the config-seen ledger', $findings[0]->message);
+        $this->assertStringContainsString('a LOST block cannot be detected on this run', $findings[0]->message);
+        $this->assertStringContainsString('a retired: key in config cannot be confirmed against its tombstone', $findings[0]->message);
+        $this->assertStringContainsString('has not run `php artisan migrate` since the upgrade that added board_tools_config_seen', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ A BACKING VALUE THIS BUILD CANNOT INTERPRET MUST NOT ABORT `bridge:check`, AND MUST
+     * NOT BE REPORTED AS SOMETHING ELSE. The Eloquent enum cast is applied LAZILY, on
+     * attribute access, so the `ValueError` lands wherever the attribute is first READ — here
+     * inside `ClientHalfLedger::lastSuccesses()`, which has its OWN narrow envelope.
+     *
+     * ⛔ THE SUBJECT IS THE ASSERTION. While one envelope covered this read AND the
+     * config-seen read, a fully-migrated install whose config-seen ledger had just been read
+     * perfectly was told that ledger could not be read, and sent to run migrations that could
+     * not help. The verdict is unaffected by this table — the row is evidence, never a
+     * trigger — so the LOST `fail` still prints and says what it could not look at.
+     *
+     * ⛔ NOT A GUARD OVER AN UNREACHABLE STATE: nothing is added to defend against the value.
+     */
+    public function test_an_uninterpretable_provenance_value_degrades_only_the_evidence_clause(): void
+    {
+        $this->recordSeen('impl');
+        $this->recordCall('impl');
+        // MUST FIT varchar(16) — SQLite ignores the width, MariaDB enforces it, so a longer
+        // literal is green here and red on both CI database legs.
+        DB::table('board_tools_client_calls')->where('agent', 'impl')->update(['call_provenance' => 'future-case']);
+
+        // Non-vacuous: the row really does hydrate, so the throw really is at the READ.
+        $this->assertNotNull(BoardToolsClientCall::query()->where('agent', 'impl')->first());
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], []));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent impl: block LOST', $findings[0]->message);
+        // SAID, NOT SWALLOWED: the clause prints only when a call exists, so a silent drop
+        // would render "could not look" exactly like "this install recorded no call".
+        $this->assertStringContainsString('whether this seat ever completed a tools call could NOT be read this run', $findings[0]->message);
+        // …and it does not invent the evidence it could not read.
+        $this->assertStringNotContainsString('last successful tools call', $findings[0]->message);
+        // THE WRONG SUBJECT AND THE REMEDY THAT CANNOT WORK, both pinned: this run read the
+        // config-seen ledger and this install is fully migrated.
+        $this->assertStringNotContainsString('config-seen ledger', $findings[0]->message);
+        // ⛔ THE TABLE NAME, not the words "run migrations": the config-seen remedy is now
+        // spelled conditionally (`php artisan migrate` … board_tools_config_seen), and the
+        // old phrase appears nowhere in the build — so asserting ITS absence would pass over
+        // any replacement, including the wrong remedy landing here verbatim.
+        $this->assertStringNotContainsString('board_tools_config_seen', $findings[0]->message);
+    }
+
+    /**
+     * ⭐ THE RETIREMENT LEG SURVIVES THE SAME PATH, and it is the half a shared envelope
+     * silently skipped: its `yield from` sat BELOW that envelope's `return`. The scenario is
+     * concrete — a current install carrying one legacy `board_tools_client_calls` row this
+     * build cannot interpret, and an operator who has just added `retired:` and is at step 2
+     * of `docs/board-tools.md § Retiring a seat`, waiting for the RETIRED line.
+     */
+    public function test_a_retired_config_still_gets_its_tombstone_line_when_the_client_call_ledger_is_unreadable(): void
+    {
+        $this->recordSeen('impl');
+        BoardToolsConfigSeen::query()->where('agent', 'impl')->update(['retired_seen_at' => now(), 'retired_reason' => '2026-09-08 — decommissioned']);
+        $this->recordCall('impl');
+        DB::table('board_tools_client_calls')->where('agent', 'impl')->update(['call_provenance' => 'future-case']);
+        $this->assertNotNull(BoardToolsClientCall::query()->where('agent', 'impl')->first());
+
+        $findings = $this->findingsOf(new BoardToolsLostCheck, $this->ctx([$this->agent('impl', ['retired' => '2026-09-08 — decommissioned'])], ['impl']));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent impl: RETIRED — 2026-09-08 — decommissioned (tombstone on record)', $findings[0]->message);
+    }
+
+    /**
+     * The FAIL line ends by sending the operator to a runbook section, and that pointer is a
+     * CLAIM about another file. Nothing else in this repo joins the two, so a heading renamed
+     * in the doc would leave every lost-block failure pointing at a section that is not there.
+     */
+    public function test_the_doc_pointer_names_a_heading_that_docs_board_tools_actually_has(): void
+    {
+        $this->assertDocPointerNamesARealHeading(BoardToolsLostCheck::DOC);
+
+        // …and the line actually PRINTS it, so the constant cannot be checked while the
+        // message carries a second, unchecked spelling.
+        $this->recordSeen('impl');
+        $this->assertStringContainsString(BoardToolsLostCheck::DOC, $this->findingsOf(new BoardToolsLostCheck, $this->ctx([], []))[0]->message);
+    }
+
+    // ─── fixtures ─────────────────────────────────────────────────────────────
+
+    /**
+     * The DECLARED silences one execution yielded, in order.
+     *
+     * ⚑ NOT A SECOND `CheckRunner::materialize()`. That method's job is to STRIP the sentinel
+     * before a renderer can be handed one, and its safety argument is that it is the only
+     * strip site; this reads the declarations the runner discards, which is a question the
+     * runner cannot answer at all — {@see Silence} is by design invisible downstream of it.
+     *
+     * @return list<string>
+     */
+    private function silencesOf(CheckContext $ctx): array
+    {
+        $out = [];
+        foreach ((new BoardToolsLostCheck)->run($ctx) as $yielded) {
+            if ($yielded instanceof Silence) {
+                $out[] = $yielded->reason;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param  list<AgentConfig>  $configs
+     * @param  list<string>  $agentNames
+     */
+    private function ctx(array $configs, array $agentNames, bool $scanned = true): CheckContext
+    {
+        $ctx = new CheckContext;
+        $ctx->configs = $configs;
+        $ctx->agentNames = $agentNames;
+        $ctx->configDirScanned = $scanned;
+
+        return $ctx;
+    }
+
+    /** @param array<string, mixed>|null $block */
+    private function agent(string $name, ?array $block): AgentConfig
+    {
+        $raw = ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []];
+        if ($block !== null) {
+            $raw['board_tools'] = $block;
+        }
+
+        return AgentConfig::fromArray($name, $raw);
+    }
+
+    private function recordSeen(string $agent): void
+    {
+        BoardToolsConfigSeen::query()->updateOrCreate(
+            ['agent' => $agent],
+            ['transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'first_seen_at' => now()->subDays(30), 'last_seen_at' => now()],
+        );
+    }
+
+    private function recordCall(string $agent): void
+    {
+        BoardToolsClientCall::query()->updateOrCreate(
+            ['agent' => $agent],
+            ['transport' => 'ssh', 'call_provenance' => CallProvenance::Sshd, 'last_success_at' => now()->subHour()],
+        );
+    }
+}
