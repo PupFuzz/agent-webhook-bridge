@@ -72,7 +72,7 @@ The lexical verbs are GitHub's own linking keywords — `close`/`closes`/`closed
 ## Setup (operator)
 
 ### 1. A least-privilege writeback token
-Create a kanban API token for the mapped boards (NOT the broad provisioning token). ⚠ **"Card moves" is NOT the scope** — that spelling stood here from DL-019, when `KanbanClient` exposed `getCard` + `moveCard` and nothing else, and it understates what the writeback needs today. kanban authorizes a card PATCH by which fields it carries: a PATCH whose SOLE key is `workflow_stage_id` takes `task.move`, every other field set takes `task.update` (kanban DL-204 — `TaskMutator::update()` → `TaskPolicy` → `BoardPermissions`). The board permissions the writeback actually needs on every mapped board are:
+Create a kanban API token for the mapped boards. ⛔ **It belongs to a DIFFERENT kanban ACCOUNT from any agent's `<secret_dir>/<provider>/token` — the two paths are two board USERS, not two paths for one credential** (DL-009). `<secret_dir>/<provider>/token` is an agent's own identity — the account it provisions as — while this token is the writeback service user's, and *its* writes are steered by PR titles and branch names anyone who can open a PR chooses — so the broad provisioning token placed at both paths hands that chooser a privileged board write. Nothing in the bridge can detect the collapse — `bridge:check` reports the `identity_id` you declare and makes no separation claim at all — so keeping the two accounts apart is the operator's job, and this is where it is decided. Which user to mint it as is the ⛔ note further down this section. ⚠ **"Card moves" is NOT the scope** — that spelling stood here from DL-019, when `KanbanClient` exposed `getCard` + `moveCard` and nothing else, and it understates what the writeback needs today. kanban authorizes a card PATCH by which fields it carries: a PATCH whose SOLE key is `workflow_stage_id` takes `task.move`, every other field set takes `task.update` (kanban DL-204 — `TaskMutator::update()` → `TaskPolicy` → `BoardPermissions`). The board permissions the writeback actually needs on every mapped board are:
 
 | Permission | What needs it |
 | --- | --- |
@@ -125,6 +125,26 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
   }
 }
 ```
+**Where `identity_id` comes from — nothing in the bridge derives it.** It is the writeback user's numeric kanban `user_id`. Ask the API for it, **authenticated as the writeback token you just placed**: that is what makes the answer *that* user's id rather than some other account's.
+
+```bash
+# ⚠ BRIDGE_KANBAN_API_BASE_URL (from your .env) ALREADY ENDS IN /api/v3 — appending a
+#   second /api/v3 404s, and that 404 reads as a wrong endpoint rather than a doubled path.
+# `read` and `printf` are shell BUILTINS and `curl --config -` takes the header on STDIN,
+#   so the token reaches no argv — docs/config-schema.md § Handling a secret VALUE.
+read -r WBTOKEN < "$BRIDGE_DIR/kanban/writeback-token"
+printf 'header = "Authorization: Bearer %s"\n' "$WBTOKEN" \
+  | curl -sS --config - "${BRIDGE_KANBAN_API_BASE_URL%/}/users/current.json" \
+  | jq -r '.data.id'
+unset WBTOKEN
+```
+
+⚠ **The id is `.data.id`, not `.id`** — the user record sits inside a `data` envelope, so a bare `.id` prints `null`, which reads as *this endpoint does not answer the question* when in fact it just did.
+
+⛔ **Extract the id and print nothing else.** Treat the whole response body as sensitive **whatever this API version returns** — deliberately a CLASS, not a list of which keys are sensitive: the body's shape moves between versions, and a stale list here would read as permission to print everything it forgot to name. (Measured 2026-09-09 on the reference install, which is why this is stated as a class: the body carries the user's own record *and* a sibling object describing the presenting token, and an enumeration written days earlier already disagreed with it.)
+
+Put the number in `identity_id` above. `bridge:check` then reports the value your config declares — § 1's ⛔ note owns what that does and does not establish. ⚑ **Having the bridge resolve this for you** — off the very token you just placed — is proposed as **card#9141** and is deliberately not built here; today it is an operator step.
+
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
 
 > **The mapping key names a repo, and repo names are case-insensitive (DL-293).** GitHub treats
