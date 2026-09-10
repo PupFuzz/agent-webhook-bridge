@@ -50,6 +50,14 @@ use Throwable;
  */
 final class DispatchService
 {
+    /**
+     * The handler name whose success is only ever ACCEPTED BY TRANSPORT (card#9172).
+     * Named once because three sites in this file key on it — the route_intents
+     * synthesis, the silent-drop guard and the delivery wording below — and a fourth
+     * literal is how one of them silently stops meaning the same handler as the others.
+     */
+    private const CHANNEL_PUSH = 'channel_push';
+
     public function __construct(
         private SubscriptionRegistry $subscriptions,
         private AgentRegistry $agents,
@@ -254,9 +262,9 @@ final class DispatchService
             if ($agent->channel->routeIntents) {
                 foreach ($result->intents as $intent) {
                     $routed = ReactionTarget::make(
-                        handler: 'channel_push',
+                        handler: self::CHANNEL_PUSH,
                         targetId: $intent->subjectId,
-                        debounceKey: 'channel_push:'.$intent->subjectId,
+                        debounceKey: self::CHANNEL_PUSH.':'.$intent->subjectId,
                         payload: $intent->toArray(),
                     );
                     $targets[$routed->handler.'|'.$routed->debounceKey] = $routed;
@@ -288,12 +296,16 @@ final class DispatchService
 
             // Best-effort: a throw is a recorded note, not a delivery failure.
             $note = null;
+            // Set only by a channel_push that RETURNED — a push that threw never reached
+            // the endpoint at all, and is already carried by $note (card#9172).
+            $unconfirmedPush = false;
             foreach ($bestEffort as [$target, $handler]) {
                 try {
                     if ($handler === null) {
                         throw new \RuntimeException("unknown handler '{$target->handler}'");
                     }
                     $handler->handle($target, $agent);
+                    $unconfirmedPush = $unconfirmedPush || $target->handler === self::CHANNEL_PUSH;
                 } catch (Throwable $e) {
                     $note = self::exceptionNote($e);
                     Log::warning('bridge dispatch: handler failed', [
@@ -309,7 +321,7 @@ final class DispatchService
             if ($result->intents === [] && $targets === []) {
                 $this->markDropped($dispatch, 'classifier emitted no reactions');
             } else {
-                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null);
+                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush);
             }
         }
     }
@@ -376,7 +388,7 @@ final class DispatchService
             // numeric strings numerically, so a targetId of ' 7' would pair
             // against a subject of '7' and silently suppress a warn the inbox
             // cannot back. Ids are opaque to the bridge — only identity pairs.
-            if ($t->handler !== 'channel_push' || in_array($t->targetId, $subjectIds, true)) {
+            if ($t->handler !== self::CHANNEL_PUSH || in_array($t->targetId, $subjectIds, true)) {
                 continue;
             }
             $key = $agent->agentName.'|'.$t->targetId;
@@ -393,7 +405,14 @@ final class DispatchService
         }
     }
 
-    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null): void
+    /**
+     * ⛔ WHAT IS SAID CHANGES; WHAT IS STORED DOES NOT (card#9172, DL-370). The
+     * `outcome` column keeps the SAME `delivered` value for every dispatch, channel_push
+     * or not — `bridge:replay`, its `--force` transitions and `bridge:standup` all key on
+     * it, and a second value or a widened enum is a different, larger question that was
+     * not authorised here. `ChannelPushUnconfirmedTest` pins the stored byte.
+     */
+    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null, bool $unconfirmedPush = false): void
     {
         $dispatch->update([
             'processed_at' => now(),
@@ -407,12 +426,27 @@ final class DispatchService
         // Info-level so the healthy live path is observable (it otherwise logs
         // nothing — only failures logged at WARNING) — DL-036. The reason key
         // marks a suppressed-surface delivery in the live log (DL-203).
-        Log::info('bridge dispatch: delivered', array_filter([
-            'agent' => $dispatch->agent_name,
-            'event' => $dispatch->webhook_event_id,
-            'handler_note' => $note,
-            'reason' => $reason,
-        ], static fn ($v) => $v !== null));
+        //
+        // ⭐ `delivered` IS A CLAIM ABOUT THE SEAT AND THE BRIDGE DOES NOT HOLD ONE for a
+        // channel_push leg: the transport treats a 2xx as the sole success condition and
+        // the channel endpoint answers as soon as it has WRITTEN the notification. So the
+        // line degrades to the weakest leg the dispatch actually ran — a dispatch that
+        // also moved a card says so under its own `kanban_move_card: moved` line, which is
+        // where a confirmed leg is evidenced. The claim below is deliberately about THIS
+        // BRIDGE's evidence, not about the endpoint's behaviour: what the far end declares
+        // is the far end's to say, and ChannelPushHandler logs what it declared.
+        Log::info(
+            $unconfirmedPush ? 'bridge dispatch: accepted by transport (unconfirmed)' : 'bridge dispatch: delivered',
+            array_filter([
+                'agent' => $dispatch->agent_name,
+                'event' => $dispatch->webhook_event_id,
+                'unconfirmed' => $unconfirmedPush
+                    ? 'a channel_push leg ran and the bridge holds no delivery receipt for it — see the `bridge channel_push:` line for what that endpoint declared'
+                    : null,
+                'handler_note' => $note,
+                'reason' => $reason,
+            ], static fn ($v) => $v !== null)
+        );
     }
 
     private function markDropped(AgentDispatch $dispatch, string $reason): void

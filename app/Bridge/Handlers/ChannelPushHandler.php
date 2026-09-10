@@ -13,6 +13,8 @@ use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Push the intent to a local channel endpoint so an active Claude Code session
@@ -54,6 +56,21 @@ final class ChannelPushHandler implements Handler
      * @var list<string>
      */
     private const ALLOWED_METHODS = ['POST', 'PUT', 'PATCH'];
+
+    /**
+     * The header a channel endpoint DECLARES its delivery-receipt status on (card#9172).
+     * The shipped reference server answers `none` on its 202: it resolves the push once
+     * the notification is written to the stdio transport, and the MCP notification
+     * contract gives it nothing back about what the session did with it.
+     *
+     * READ, NEVER ASSUMED. The bridge could hard-code "channel pushes are unconfirmed"
+     * and be right about the server it ships — but the endpoint is operator-configurable,
+     * and a belief restated on this side of a seam is a copy that drifts when the far end
+     * moves (canon #7 DECLARE/CHECK, canon #16). An endpoint that sends no such header
+     * has told the bridge nothing, and {@see reportAcceptance} says exactly that rather
+     * than picking an answer for it.
+     */
+    private const RECEIPT_HEADER = 'X-Channel-Delivery-Receipt';
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
@@ -127,14 +144,49 @@ final class ChannelPushHandler implements Handler
                 $this->assertClassifierSocketAllowed($socket);
             }
             $this->validateSocketPath($socket, $usedAgentChannel);
-            ChannelPushTransport::send($socket, null, $method, $headers, $body, $timeout);
+            $this->reportAcceptance(
+                ChannelPushTransport::send($socket, null, $method, $headers, $body, $timeout),
+                $target,
+                $agent,
+            );
 
             return;
         }
 
         /** @var string $url */
         $this->validateLocalhostUrl($url);
-        ChannelPushTransport::send(null, $url, $method, $headers, $body, $timeout);
+        $this->reportAcceptance(
+            ChannelPushTransport::send(null, $url, $method, $headers, $body, $timeout),
+            $target,
+            $agent,
+        );
+    }
+
+    /**
+     * What the push actually established, and what the far end said it could establish
+     * (card#9172).
+     *
+     * The transport `->throw()`s on any non-2xx, so reaching here means the endpoint
+     * accepted the write and NOTHING MORE: the bridge holds no receipt that the seat
+     * received the intent. ⚠ It equally holds no evidence that the seat did NOT — whether
+     * an unseen notification is dropped or deferred to the session's next turn boundary
+     * is not established here, and this line claims neither. The whole point is that the
+     * question has no answer on this path, which is why it is stated rather than left for
+     * an operator to read out of a bare success.
+     */
+    private function reportAcceptance(Response $response, ReactionTarget $target, AgentConfig $agent): void
+    {
+        $declared = $response->header(self::RECEIPT_HEADER);
+
+        Log::info('bridge channel_push: accepted by transport (unconfirmed)', [
+            'agent' => $agent->agentName,
+            'target_id' => $target->targetId,
+            'status' => $response->status(),
+            'endpoint_declares' => $declared !== ''
+                ? self::RECEIPT_HEADER.': '.$declared
+                : 'declared nothing — this endpoint sends no '.self::RECEIPT_HEADER
+                    .' header, so whether it can confirm a seat received a push is unknown to the bridge',
+        ]);
     }
 
     private function resolveTimeout(mixed $value): float

@@ -119,7 +119,7 @@ curl -X POST --unix-socket /run/user/1000/agent-webhook-bridge-channel-kanbanboa
   http://localhost/
 ```
 
-Expected: `forwarded` (HTTP 202). The Claude Code session receives `<channel source="kanbanboard-agent" kind="smoke_test" target_id="manual_curl">{"intent":{"kind":"smoke_test","target_id":"manual_curl"}}</channel>` and Claude responds in the next turn.
+Expected: HTTP **202** with an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …`. **The 202 means the notification was written to the stdio transport and nothing more** — this transport returns no receipt that the session received it, which is why the header says so on the wire and why the bridge reports a push as *accepted by transport*, never as *delivered*. The Claude Code session receives `<channel source="kanbanboard-agent" kind="smoke_test" target_id="manual_curl">{"intent":{"kind":"smoke_test","target_id":"manual_curl"}}</channel>` and Claude responds in the next turn.
 
 **Important:** this smoke test validates the **transport** (bridge → server → Claude Code), NOT the **event schema** (what your classifier emits, what Claude does with it). A green smoke test doesn't mean your classifier's `channel_push` ReactionTargets are correctly shaped.
 

@@ -2406,6 +2406,47 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:inspect', ['id' => 99999])->assertExitCode(1);
     }
 
+    public function test_inspect_says_what_a_delivered_row_does_and_does_not_evidence(): void
+    {
+        // card#9172. `bridge:inspect` renders the STORED outcome verbatim, and `delivered`
+        // there reads as "the seat got it" while the bridge only ever held "every handler
+        // returned". A `channel_push` leg is accepted by transport and unconfirmed — but
+        // the ledger records no handler identity, so this table CANNOT relabel per row
+        // without inventing which legs ran. It states what the word covers instead, and
+        // says the row cannot answer per leg.
+        //
+        // ⛔ NOT PRINTED OVER A TABLE WITH NO DELIVERED ROW, which is what makes the legend
+        // a reading of the rows rather than a banner: the dropped-only arm below is the
+        // discriminator, and a legend hard-coded into every run reds there.
+        $this->writeAgent();
+        $event = $this->event();
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+        ]);
+
+        $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $event->id]));
+        $out = Artisan::output();
+        $this->assertStringContainsString('delivered', $out);                     // the stored value still prints
+        $this->assertStringContainsString('accepted by transport (unconfirmed)', $out);
+        $this->assertStringContainsString('not a read receipt', $out);
+        $this->assertStringContainsString('does not record which handlers ran', $out);
+
+        $dropped = WebhookEvent::create([
+            'delivery_id' => 'evt-dropped', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.created', 'actor_id' => '999', 'payload' => ['subject_id' => 43],
+        ]);
+        AgentDispatch::create([
+            'webhook_event_id' => $dropped->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo',
+        ]);
+
+        $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $dropped->id]));
+        $droppedOut = Artisan::output();
+        $this->assertStringContainsString('dropped', $droppedOut);
+        $this->assertStringNotContainsString('accepted by transport (unconfirmed)', $droppedOut);
+    }
+
     public function test_replay_reprocesses_an_errored_dispatch(): void
     {
         $this->writeAgent();

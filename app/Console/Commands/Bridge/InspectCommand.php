@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 
 /**
@@ -72,6 +73,25 @@ class InspectCommand extends BridgeCommand
             mb_strimwidth((string) ($d->reason ?? $d->error_message ?? ''), 0, 60, '…'),
         ])->values()->all();
         $this->table(['agent', 'outcome', 'processed_at', 'reason / error'], $rows);
+
+        // ⭐ WHAT THE WORD IN THAT COLUMN COVERS (card#9172, DL-370). `delivered` is the
+        // stored outcome and it reads as "the seat got it"; the bridge only ever held
+        // "every handler returned without throwing". A `channel_push` leg is accepted by
+        // its transport and unconfirmed there.
+        //
+        // ⛔ SAID, NOT RELABELLED, and the ledger is why: the row records no handler
+        // identity, so this table cannot tell a push-only dispatch from one that also
+        // completed a card-move writeback — and a writeback DOES get a real receipt.
+        // Rewriting the column for every row would replace one false claim with its
+        // mirror image. Printed only when a delivered row is on screen, so it stays a
+        // reading of these rows rather than a banner.
+        if ($dispatches->contains(fn ($d): bool => $d->outcome === AgentDispatch::OUTCOME_DELIVERED)) {
+            $this->line('`delivered` = every handler for that dispatch returned. It is not a read receipt: a '
+                .'`channel_push` leg is accepted by transport (unconfirmed) — the endpoint answers once the '
+                .'notification is written to it and reports nothing about what the session did with it. The '
+                .'ledger does not record which handlers ran, so this table cannot say per row which legs were '
+                .'confirmed; the `bridge dispatch:` / `bridge channel_push:` log lines for the event can.');
+        }
 
         return self::SUCCESS;
     }

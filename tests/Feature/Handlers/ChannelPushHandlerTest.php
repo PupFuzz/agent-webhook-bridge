@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class ChannelPushHandlerTest extends TestCase
@@ -29,6 +30,43 @@ class ChannelPushHandlerTest extends TestCase
         (new ChannelPushHandler)->handle(
             ReactionTarget::make('channel_push', 'card-1', payload: $payload),
             $this->agent($channelSocket),
+        );
+    }
+
+    public function test_reports_the_receipt_status_the_endpoint_declares(): void
+    {
+        // card#9172, canon #7 CHECK leg: the declaring end is the channel server, and the
+        // bridge READS its declaration rather than restating a belief about it. The
+        // shipped server answers `X-Channel-Delivery-Receipt: none` on its 202 — a 202
+        // means the notification was written to the stdio transport and nothing more.
+        Log::spy();
+        Http::fake(['*' => Http::response('forwarded', 202, ['X-Channel-Delivery-Receipt' => 'none'])]);
+
+        $this->push(['url' => 'http://localhost:8788/', 'kind' => 'new_card', 'subject_id' => '42']);
+
+        Http::assertSent(fn ($request) => $request->url() === 'http://localhost:8788/');
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
+                && $ctx['target_id'] === 'card-1'
+                && str_contains($ctx['endpoint_declares'], 'X-Channel-Delivery-Receipt: none')
+        );
+    }
+
+    public function test_names_an_endpoint_that_declares_nothing_instead_of_assuming_for_it(): void
+    {
+        // THE OTHER HALF, and the one canon #7 calls NAME WHAT YOU CANNOT VERIFY: an
+        // operator-supplied channel server that sends no declaration has told the bridge
+        // nothing, and "no declaration" must not be rendered as either answer. Paired with
+        // the case above so a fix that hard-codes one string for both reds here.
+        Log::spy();
+        Http::fake(['*' => Http::response('forwarded', 202)]);
+
+        $this->push(['url' => 'http://localhost:8788/', 'kind' => 'new_card', 'subject_id' => '42']);
+
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
+                && str_contains($ctx['endpoint_declares'], 'declared nothing')
+                && ! str_contains($ctx['endpoint_declares'], 'X-Channel-Delivery-Receipt: none')
         );
     }
 

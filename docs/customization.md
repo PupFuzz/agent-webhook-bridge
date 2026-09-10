@@ -619,7 +619,7 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
 
 6. **Remove the polling hooks** from `~/.claude/settings.json`. Strip `PreToolUse` and `Stop` entries that run `bridge:inbox`. **Keep `SessionStart`** — that's the catch-up path for events queued in `inbox.jsonl` while no session was up.
 
-7. **Verify:** `php artisan bridge:check`, then trigger a test event. `php artisan bridge:inspect <N>` shows the dispatch ledger including whether `channel_push` succeeded or recorded `done-with-note` (connection refused = no session up, which is normal).
+7. **Verify:** `php artisan bridge:check`, then trigger a test event. `php artisan bridge:inspect <N>` shows the dispatch ledger — whether the push threw (connection refused = no session up, which is normal, and lands as a note beside a `delivered` row) or returned. ⛔ **A row that did not throw is not evidence the seat got it:** the push's success condition is a 2xx from the channel endpoint, which answers once the notification is written to its transport. `bridge:inspect` prints a legend saying so, and the `bridge dispatch:` / `bridge channel_push:` log lines for that event carry the same reading (card#9172).
 
 8. **End-to-end smoke test:** from the dir with `.mcp.json`, start `claude --dangerously-load-development-channels server:kanbanboard-agent`, then in a separate terminal:
 
@@ -629,7 +629,7 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
          -d '{"intent":{"kind":"smoke_test","subject_id":"manual"}}' \
          http://localhost/
 
-   Expected: `forwarded` (HTTP 202) from curl, and a `<channel source="kanbanboard-agent" ...>` tag in your Claude Code session within seconds.
+   Expected: HTTP **202** from curl with an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …`, and a `<channel source="kanbanboard-agent" ...>` tag in your Claude Code session within seconds. **The 202 is the transport's answer, not the session's** — it means the notification was written to the stdio transport, and nothing on this path reports back whether the session received it. The tag in your session is the only evidence that it did.
 
 > **Channels are CLI-only — there is no config auto-load.** `--dangerously-load-development-channels server:<KEY>` must be passed on **every** `claude` invocation; it cannot live in `settings.json`, `.mcp.json`, or any config file (the flag deliberately bypasses the channel allowlist, so loading a development channel requires an explicit per-session opt-in). Wrap it in a launcher so you don't retype it — see [`examples/start-channel-session.sh`](../examples/start-channel-session.sh), which also clears a stale socket and installs the channel-server deps on first run. **Live push only delivers while that session is up**; otherwise `channel_push` is best-effort (`done-with-note`) and `inbox.jsonl` is the backstop.
 

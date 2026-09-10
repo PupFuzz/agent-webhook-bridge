@@ -283,7 +283,7 @@ curl -X POST -H "Content-Type: application/json" \
   --config - http://127.0.0.1:8788/
 ```
 
-Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
+Expected: HTTP **202** with an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …` — the write reached the stdio transport on host B, which returns no receipt that the session received it. The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
 
 ## Operator action by failure mode
 
