@@ -7,8 +7,12 @@ use Illuminate\Foundation\Http\Middleware\TrimStrings;
 use Illuminate\Support\Str;
 
 /**
- * HOW A BOARD TOOL NORMALISES A CALLER-SUPPLIED STRING — one owner for every door
- * (card#9155). A board tool is reached through TWO front doors and only ONE of them
+ * HOW A BOARD TOOL NORMALISES A STRING IT IS ABOUT TO COMPARE OR STORE — one owner for
+ * every door (card#9155). The values that MATTER here are caller-supplied, because those
+ * are the ones the two doors disagree about; the primitive is used on a few
+ * bridge- or board-supplied values too ({@see CallerTagPolicy::isPreserved}'s card tags
+ * and install hold tags, {@see BoardMyCardsTool}'s board stage NAMES) so that one
+ * vocabulary is folded exactly one way rather than two. A board tool is reached through TWO front doors and only ONE of them
  * has Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull` in front of it:
  * {@see AgentToolsController} is an HTTP route, so
  * the middleware has already rewritten `args` before the controller reads them, while
@@ -30,7 +34,7 @@ use Illuminate\Support\Str;
  * framework's own function; it does not re-list `Str::INVISIBLE_CHARACTERS`, and it must
  * never grow a hand-rolled character class. A copied list is a restatement of Laravel's
  * set that goes stale the moment they add a codepoint — which is precisely the drift
- * this card exists to close, re-minted one layer down. `Tests\Unit\Tools\BoardToolTrimPrimitiveTest`
+ * this card exists to close, re-minted one layer down. `Tests\Unit\Tools\BoardToolArgsTest`
  * pins the identity against the middleware itself rather than against a fixture list, so
  * a framework upgrade that widens the set widens this with it.
  *

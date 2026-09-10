@@ -38,14 +38,20 @@ Three tools ship today (two since DL-217; the correction tool since DL-326):
 > blank title, a body of invisible characters, a whitespace-only tag — is now refused or
 > cleared, exactly as the HTTP door has always done.
 >
-> ⚠ **THREE DIVERGENCES REMAIN, and in all three the ssh door is the STRICTER one.**
+> ⚠ **SOME DIVERGENCES REMAIN, and in each of them the ssh door is the STRICTER one.**
 > `idempotency_key`'s charset, a tag's charset and 64-character cap, and
 > `title`/`name`'s 255-character cap all read the value **as sent**. So a value whose
 > *padding* is what trips one — `" abc "` as an `idempotency_key`, a tag padded with a
 > non-breaking space, a title at the cap with spaces around it — is refused over ssh and
-> accepted (as its trimmed self) over HTTP. Closing that means making the ssh door accept
-> input it refuses today, which is a separate change to what the system accepts and is not
-> made here. Nothing wrong is written in the meantime: the strict door refuses.
+> accepted (as its trimmed self) over HTTP. **The same holds one level out, in the request
+> envelope rather than in `args`:** `TrimStrings` cleans the whole HTTP body, so a `tool`
+> key padded with a non-breaking space resolves over HTTP and is refused over ssh, and a
+> padded `client_version` is recorded over HTTP and dropped over ssh. Closing any of these
+> means making the ssh door accept input it refuses today, which is a separate change to
+> what the system accepts and is not made here. Nothing wrong is written in the meantime:
+> the strict door refuses. **The list is deliberately not presented as complete** — an
+> exhaustive prose list is a count in longer form; the checked-in denominator is
+> `BoardToolsBlankArgumentCrossDoorTest`'s divergence arms.
 
 ## Discovering them
 

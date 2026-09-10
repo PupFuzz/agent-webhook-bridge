@@ -122,6 +122,14 @@ use Illuminate\Support\Facades\Log;
 final class BoardCorrectCardTool implements Tool
 {
     /**
+     * ⚠ ONE CONSTANT BECAUSE THE TWO THROW SITES MUST STAY BYTE-IDENTICAL — see
+     * {@see BoardCreateCardTool}'s `TITLE_REFUSAL` for the reasoning; `name` is the same
+     * shape one tool over (not-a-string at the HTTP door, empty-once-trimmed at the ssh
+     * door, one refusal either way).
+     */
+    private const NAME_REFUSAL = 'board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)';
+
+    /**
      * The arguments this tool accepts. Anything else is refused — see
      * {@see FIELD_OWNERS} for the ones refused with a named owner.
      *
@@ -337,11 +345,11 @@ final class BoardCorrectCardTool implements Tool
             // the TRIMMED value is what is written — see `requireTitle()` in
             // {@see BoardCreateCardTool} for why that asymmetry is deliberate.
             if (! is_string($name)) {
-                throw new ToolRefusalException('board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)');
+                throw new ToolRefusalException(self::NAME_REFUSAL);
             }
             $trimmed = BoardToolArgs::trimmed($name);
             if ($trimmed === '') {
-                throw new ToolRefusalException('board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)');
+                throw new ToolRefusalException(self::NAME_REFUSAL);
             }
             $tooLong = BoardCallRefusal::overLongName($this->name(), 'name', $name, 'Nothing was written');
             if ($tooLong !== null) {
