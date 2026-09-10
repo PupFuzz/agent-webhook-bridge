@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Support\KeyboardProbe;
 use Illuminate\Console\Command;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -15,6 +16,26 @@ use Throwable;
  */
 abstract class BridgeCommand extends Command
 {
+    /**
+     * Is there a keyboard to ask a question ON — the shared predicate for every
+     * `bridge:*` command that gates a mutation behind a confirmation.
+     *
+     * ⛔ IT IS NOT `$this->input->isInteractive()`, AND THE DIFFERENCE IS A HANG.
+     * {@see App\Bridge\Support\KeyboardProbe} owns the measurement and the reason;
+     * this method exists so the next command that needs it finds one predicate rather
+     * than minting a second (canon #5).
+     *
+     * ⚠ `bridge:jobs install-tick` HAS the second copy already — same class, wrong
+     * predicate, and its message says "no TTY" while testing interactivity. It is
+     * deliberately NOT migrated here: changing what an already-shipped command refuses
+     * is an acceptance change, and that is operator-gated (card#9141 fix round; the
+     * migration is filed as its own item).
+     */
+    protected function hasKeyboard(): bool
+    {
+        return $this->laravel->make(KeyboardProbe::class)->hasKeyboard();
+    }
+
     /**
      * A console option coerced to a non-empty string, or null when absent/blank.
      */

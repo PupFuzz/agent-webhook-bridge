@@ -156,10 +156,14 @@ class ProvisionCommand extends BridgeCommand
      * then WRITE. A confirmed mutation does not belong in a check; the check instead names
      * this command as the remedy.
      *
-     * ⚠ THE CONFIRMATION IS THE ONLY GATE, and it needs no TTY test to be safe: `confirm()`
-     * returns its default without asking when the run is not interactive, and that default
-     * is NO. There is deliberately no `--yes`: an unattended accept is the silent write the
-     * offer shape exists to prevent.
+     * ⛔ THE CONFIRMATION IS THE GATE, AND IT TAKES A KEYBOARD TO BE ONE. An earlier revision
+     * of this method claimed `confirm()` was safe on its own because it "returns its default
+     * without asking when the run is not interactive" — FALSE, and the correction is the
+     * reason {@see BridgeCommand::hasKeyboard()} exists: `$input->isInteractive()` is false
+     * ONLY for `--no-interaction`/`-n`/`-q`, so under a pipe `confirm()` READS STDIN. A piped
+     * `yes` wrote unattended, and a pipe with no data and no EOF blocked the command. So the
+     * offer is not prepared at all without a keyboard, and there is still deliberately no
+     * `--yes`: an unattended accept is the silent write the offer shape exists to prevent.
      *
      * @param  list<AgentConfig>  $agents  UNFILTERED by --agent: the identity is install-scoped,
      *                                     and a narrowed comparison population would report a
@@ -193,6 +197,7 @@ class ProvisionCommand extends BridgeCommand
                 TokenPath::forWriteback($secretDir, 'kanban'),
                 $apiBaseUrl,
                 $this->otherKanbanTokenPaths($secretDir, $agents),
+                $this->hasKeyboard(),
             );
         } catch (Throwable $e) {
             // ⛔ THE CLASS, NOT THE MESSAGE, ON THIS HALF ONLY. Setup completing is the
@@ -235,10 +240,12 @@ class ProvisionCommand extends BridgeCommand
             $this->info("  ✓ writeback.json identity_id = {$identity->id}.");
         } catch (Throwable $e) {
             // ⚑ THE MESSAGE, HERE. A failed write is the arm whose cause is BOTH the useful
-            // half and safe to print: every message on this path is composed by this app from
-            // the path and the OS error, and no upstream response body can reach it. Withholding
-            // it — as the resolve half must — would leave a read-only or full filesystem
-            // reported as a bare exception class.
+            // half and safe to print: every message on this path is composed by this app —
+            // the FILE it could not write, plus whatever reason its own write primitive could
+            // name (⚠ measured: `error_get_last()` gave nothing under `@` here, so that reason
+            // can be the primitive's fallback list rather than the errno) — and no upstream
+            // response body can reach it. Withholding it, as the resolve half must, would
+            // leave a read-only or full filesystem reported as a bare exception class.
             $this->warn(sprintf(
                 'writeback: identity_id %d was NOT written — %s. Nothing else changed; put the number in by hand (docs/writeback.md § 2).',
                 $identity->id,

@@ -127,7 +127,7 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
 ```
 **Where `identity_id` comes from.** It is the writeback user's numeric kanban `user_id`, and it is answered by asking the API **authenticated as the writeback token you just placed**: that is what makes the answer *that* user's id rather than some other account's.
 
-**The bridge will do it for you, as an OFFER** (DL-369). With the token in place and `writeback.json` present but declaring no `identity_id`, `php artisan bridge:provision` resolves the token, prints the id **and the user's display name**, warns when another kanban token this install's config names resolves to the same user, and writes the value only if you confirm. ⛔ **Confirm against the display name, not the number** — recognising the account is the whole point of the offer, and § 1's ⛔ note owns why accepting the wrong one is worse than having no value. It never writes unasked, and it never blocks setup: every failure it can meet — no token yet, an unreachable API, a rejected token, a body it cannot read — falls back to the recipe below with THAT cause named.
+**The bridge will do it for you, as an OFFER** (DL-369). With the token in place and `writeback.json` present but declaring no `identity_id`, `php artisan bridge:provision` resolves the token, prints the id **and the user's display name**, warns when another kanban token this install's config names resolves to the same user, and writes the value only if you confirm. ⛔ **Confirm against the display name, not the number** — recognising the account is the whole point of the offer, and § 1's ⛔ note owns why accepting the wrong one is worse than having no value. ⛔ **It asks only where stdin is a TERMINAL** — under a pipe, cron or a script it makes no request and prints the recipe below instead, because a confirmation nobody is there to give is not a gate. It never writes unasked, and it never blocks setup: every failure it can meet — no keyboard, no token yet, an unreachable API, a rejected token, a body it cannot read, a display name it cannot render verbatim — falls back to the recipe below with THAT cause named.
 
 ```bash
 # ⚠ BRIDGE_KANBAN_API_BASE_URL (from your .env) ALREADY ENDS IN /api/v3 — appending a
@@ -140,6 +140,8 @@ printf 'header = "Authorization: Bearer %s"\n' "$WBTOKEN" \
   | jq -r '.data.id'
 unset WBTOKEN
 ```
+
+⚠ **`${BRIDGE_KANBAN_API_BASE_URL%/}` strips ONE trailing slash; the bridge strips ALL of them** (`rtrim($base, '/')`), so the two spellings diverge on a base that ends in more than one. If yours does, use the URL `bridge:provision` printed — it prints the exact one it requested.
 
 ⚠ **The id is `.data.id`, not `.id`** — the user record sits inside a `data` envelope, so a bare `.id` prints `null`, which reads as *this endpoint does not answer the question* when in fact it just did.
 

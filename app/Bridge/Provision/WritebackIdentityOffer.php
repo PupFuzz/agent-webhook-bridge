@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\FileContents;
+use App\Bridge\Support\KeyboardProbe;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\WritebackConfig;
@@ -68,11 +69,28 @@ final class WritebackIdentityOffer
     /**
      * @param  list<string>  $otherTokenPaths  every OTHER kanban token this install's config
      *                                         names, for the same-user comparison
+     * @param  bool  $canConfirm  whether a HUMAN can answer — {@see KeyboardProbe}.
+     *                            False ⇒ no offer is prepared AT ALL, and no request is made
      */
-    public function prepare(string $configDir, string $writebackTokenPath, string $apiBaseUrl, array $otherTokenPaths): WritebackIdentityOfferPlan
+    public function prepare(string $configDir, string $writebackTokenPath, string $apiBaseUrl, array $otherTokenPaths, bool $canConfirm): WritebackIdentityOfferPlan
     {
         if (! self::isPending($configDir)) {
             return WritebackIdentityOfferPlan::nothingToOffer();
+        }
+
+        // ⛔ NO KEYBOARD ⇒ NO OFFER, AND THE CHECK IS FIRST — before the token read and before
+        // the request. An offer nobody can answer is not a cheaper offer, it is two defects:
+        // `QuestionHelper` branches only on `$input->isInteractive()`, which is false ONLY for
+        // `--no-interaction`/`-n`/`-q`, so under a pipe it goes on to READ STDIN — a piped
+        // `yes` WRITES with no human present (the operator's "never a silent write" property,
+        // falsified), and a pipe that never writes BLOCKS the command (DL-352 rejected an
+        // interactive `bridge:provision` for exactly that failure mode). Both measured.
+        if (! $canConfirm) {
+            return $this->fallback(
+                $configDir,
+                $apiBaseUrl,
+                'there is no keyboard to confirm on (stdin is not a terminal), and this value is never written unconfirmed',
+            );
         }
 
         // ⛔ THE SAME TRANSPORT FLOOR THE PROVISIONING LOOP APPLIES, ASSERTED HERE RATHER THAN

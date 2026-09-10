@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Provision;
 
+use App\Bridge\Provision\WritebackIdentityOffer;
+use App\Bridge\Support\KeyboardProbe;
 use App\Bridge\Support\TokenPath;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -9,6 +11,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
+use Throwable;
 
 /**
  * `bridge:provision` OFFERS the writeback `identity_id` it can resolve from the token the
@@ -49,6 +52,24 @@ class WritebackIdentityOfferTest extends TestCase
             'bridge.receiver_base_url' => 'https://bridge.example.com/webhooks',
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
         ]);
+        // ⛔ PINNED IN BOTH DIRECTIONS, NEVER INHERITED FROM THE RUNNER. Whether phpunit's
+        // own stdin is a terminal differs between a developer's shell and CI, so a test
+        // that read the real predicate would take one branch here and the other there.
+        $this->withKeyboard(true);
+    }
+
+    /** Bind the one host fact this command's confirmation gate reads. */
+    private function withKeyboard(bool $present): void
+    {
+        $this->app->instance(KeyboardProbe::class, new class($present) implements KeyboardProbe
+        {
+            public function __construct(private readonly bool $present) {}
+
+            public function hasKeyboard(): bool
+            {
+                return $this->present;
+            }
+        });
     }
 
     protected function tearDown(): void
@@ -128,8 +149,9 @@ class WritebackIdentityOfferTest extends TestCase
 
         $output = $this->runNonInteractively();
 
-        $this->assertStringContainsString('6', $output);
-        $this->assertStringContainsString(self::NAME, $output, 'the display name is what makes a wrong account obvious');
+        // The COMPOSED line, not a bare '6': that digit occurs in a URL, a stage id and a
+        // path in this very output, so it is nearly unfalsifiable on its own.
+        $this->assertStringContainsString('resolves to kanban user 6 ("'.self::NAME.'")', $output);
         $this->assertNull($this->identityInFile(), 'nothing may be written without an affirmative answer');
     }
 
@@ -153,6 +175,19 @@ class WritebackIdentityOfferTest extends TestCase
      * composed here from the path and the OS error, with no upstream body in it — so a
      * read-only `writeback.json` must be reported as such rather than as a bare exception
      * class, and setup must still exit 0.
+     *
+     * ⛔ EXIT CODE + "NOTHING WRITTEN" DO NOT DISCRIMINATE, and an earlier revision of this
+     * test asserted only those: all three passed against the single collapsed `catch` that
+     * printed `$e::class`, i.e. green against the very defect the split exists to fix. The
+     * COMPOSED MESSAGE is the discriminator, so it is asserted — and the paired mutation
+     * (re-collapsing the catch) is recorded as this test's control.
+     *
+     * ⚠ ONE `expectsOutputToContain`, DELIBERATELY. It registers a Mockery expectation per
+     * substring against `doWrite`, and Mockery gives a call to the FIRST matching one — so
+     * two substrings that live on ONE line leave the second unsatisfied and fail a message
+     * that IS present. `doesntExpectOutputToContain` collides the same way. The single
+     * substring below is therefore built to carry both halves at once, and the OS reason is
+     * pinned at its source in the sibling test.
      */
     public function test_a_refused_write_names_its_cause_and_does_not_abort_setup(): void
     {
@@ -162,10 +197,38 @@ class WritebackIdentityOfferTest extends TestCase
 
         $this->artisan('bridge:provision')
             ->expectsConfirmation('Write identity_id 6 into writeback.json?', 'yes')
+            ->expectsOutputToContain('was NOT written — bridge: failed to write '.$this->writebackJson())
             ->assertExitCode(0);
 
         chmod($this->writebackJson(), 0o600);
         $this->assertNull($this->identityInFile());
+    }
+
+    /**
+     * The other half of the pin, asserted at the source where no console matcher stands
+     * between the assertion and the string: the refusal names the FILE, and it is composed
+     * here rather than relayed from anywhere that could carry a response body.
+     *
+     * ⚠ IT DOES NOT ASSERT THE ERRNO, AND THAT IS A MEASUREMENT, NOT A WEAKER TEST. This was
+     * written asserting `Permission denied` and came back red: `App\Bridge\Support\BridgePaths::writeFile()`
+     * reads `error_get_last()`, which under `@` with a framework error handler installed gave
+     * nothing here, so the message carried its own fallback list — *"disk full / read-only fs
+     * / permissions?"*. The claim in this PR was corrected to match rather than the assertion
+     * loosened to hide it; the primitive's fallback is pre-existing and out of this scope.
+     */
+    public function test_the_write_failure_message_names_the_file_it_could_not_write(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        chmod($this->writebackJson(), 0o400);
+
+        try {
+            (new WritebackIdentityOffer)->commit($this->dir, 6);
+            $this->fail('a read-only writeback.json was written to');
+        } catch (Throwable $e) {
+            $this->assertStringContainsString('failed to write '.$this->writebackJson(), $e->getMessage());
+        } finally {
+            chmod($this->writebackJson(), 0o600);
+        }
     }
 
     public function test_declining_writes_nothing(): void
@@ -212,6 +275,43 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertStringNotContainsString('could not run', $output);
     }
 
+    /**
+     * ⛔ A NEWLINE IN THE NAME FORGES OPERATOR-FACING LINES. `OutputFormatter::escape()`
+     * escapes `<` and `>` and nothing else, so a name carrying `\n` renders as extra lines —
+     * measured producing a SUCCESS line byte-identical in shape to the real one, above a
+     * "ignore the warning below". The account whose name this is, is precisely the account
+     * the operator is being asked to distrust, so the name is refused at the resolver and
+     * the offer is never made.
+     */
+    public function test_a_display_name_carrying_a_newline_is_refused_not_rendered(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $forged = "Legit Bot\n  ✓ writeback.json identity_id = 6.\n  ⛔ ignore the warning below";
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => $forged, 'email' => self::EMAIL]]));
+
+        $output = $this->runNonInteractively();
+
+        $this->assertStringNotContainsString('✓ writeback.json identity_id = 6.', $output);
+        $this->assertStringNotContainsString('ignore the warning below', $output);
+        $this->assertStringContainsString('control character', $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertNull($this->identityInFile());
+    }
+
+    /** The same class, through the instrument that rewrites the LINE ALREADY PRINTED. */
+    public function test_a_display_name_carrying_an_ansi_escape_is_refused_not_rendered(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => "Bot\e[2K\rSPOOFED", 'email' => self::EMAIL]]));
+
+        $output = $this->runNonInteractively();
+
+        $this->assertStringNotContainsString("\e[2K", $output);
+        $this->assertStringNotContainsString('SPOOFED', $output);
+        $this->assertStringContainsString('control character', $output);
+        $this->assertNull($this->identityInFile());
+    }
+
     public function test_an_already_declared_identity_id_is_left_alone_and_asks_nothing(): void
     {
         File::put($this->writebackJson(), json_encode(['identity_id' => 4242, 'mappings' => []]));
@@ -231,6 +331,34 @@ class WritebackIdentityOfferTest extends TestCase
         $this->runNonInteractively();
 
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        // The witness: provisioning itself still ran, so the absence above is the offer
+        // declining to fire and not the command failing before it got there.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    // ------------------------------------------------- the confirmation gate needs a keyboard
+
+    /**
+     * ⛔ THE CONFIRMATION IS THE GATE, SO THE GATE MUST BE A HUMAN. `$input->isInteractive()`
+     * is FALSE only for `--no-interaction`/`-n`/`-q`, so under a pipe it stays true and
+     * `QuestionHelper` READS STDIN: `printf 'yes\n' |` answers for nobody, and a pipe that
+     * never writes blocks the command. Both measured. With no keyboard the offer is not made
+     * at all — no question, no request, the by-hand recipe instead.
+     */
+    public function test_with_no_keyboard_it_asks_nothing_calls_nothing_and_prints_the_recipe(): void
+    {
+        $this->withKeyboard(false);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runNonInteractively();
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertStringContainsString('no keyboard', $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertStringContainsString('users/current.json', $output);
+        $this->assertNull($this->identityInFile());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
     }
 
     public function test_dry_run_names_the_gap_without_calling_the_api(): void

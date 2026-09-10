@@ -29,6 +29,16 @@ use Illuminate\Http\Client\ConnectionException;
  * exception carrying a response body is NOT caught here and turned into a printable string:
  * only {@see ConnectionException}, whose message is a transport diagnosis, is.
  *
+ * ⚠ WHAT THE NAME GUARD DOES NOT CLOSE, stated because refusing control characters looks
+ * like it settles the question: a name built from ORDINARY characters that merely READS like
+ * another account's — a homoglyph, a lookalike spelling, a trailing-space variant — is
+ * accepted and is indistinguishable from the real one on this surface. The guard is about
+ * whether the name renders AS ITSELF, never about whether it is the name you expected;
+ * that judgement is the operator's, which is why the offer is a confirmation and not a check.
+ * Bidi-override and zero-width characters (`\p{Cf}`) are NOT refused — they are a real
+ * reordering vector and deliberately out of scope here, because they were not measured and
+ * a guard written from a guess is one nobody can size.
+ *
  * ⚠ The body is decoded HERE rather than through the client's `json()` helper: that helper
  * reads a process-global decoding-flags setting, so a JSON_THROW_ON_ERROR set anywhere else
  * in the app would convert this fail-soft path into a thrown exception inside setup.
@@ -83,6 +93,25 @@ final class KanbanIdentityResolver
         if ($name === '') {
             return KanbanIdentityResolution::failed(
                 'the response carried no display name at `.data.name` — the id is not offered without one to recognise it by'
+            );
+        }
+
+        // ⛔ AN UNRENDERABLE NAME IS REFUSED HERE, NOT ESCAPED AT THE RENDER, because the
+        // render's escape is `OutputFormatter::escape()` — which escapes `<` and `>` and
+        // NOTHING ELSE. A name carrying a newline draws EXTRA OPERATOR-FACING LINES (measured:
+        // a forged success line, byte-identical in shape to the real one, above an
+        // "ignore the warning below"); a name carrying ESC rewrites the line already printed.
+        // This is the one surface whose whole purpose is verbatim human recognition, and the
+        // account it names is precisely the account the operator is being asked to distrust —
+        // so a name that cannot be shown as itself resolves to NO OFFER, which this method
+        // already has a home for. Refusing at the resolver rather than at one call site means
+        // every future consumer of a {@see KanbanIdentity} inherits the guard (canon #5).
+        // `!== 0` covers BOTH outcomes: 1 is a control character, false is a name that is not
+        // valid UTF-8 — also unrenderable, and also not something to print to find out.
+        if (preg_match('/\p{Cc}/u', $name) !== 0) {
+            return KanbanIdentityResolution::failed(
+                'the display name at `.data.name` carries a control character (or is not valid UTF-8), so it cannot be shown '
+                .'verbatim — and a name you cannot read is not one you can check the account against'
             );
         }
 
