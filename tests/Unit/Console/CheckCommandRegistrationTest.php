@@ -84,6 +84,10 @@ class CheckCommandRegistrationTest extends TestCase
         'writeback.source_coverage',
         // event-follows-consumer (stage 7a)
         'event.follows_consumer',
+        // card#9150 — the only leg that asks GITHUB about a github subscription. Registered
+        // between the event-consumer plane (which reads this bridge's own inbound history and
+        // needs no network) and the board-tools one, because that is where its output lands.
+        'github.webhook_subscription',
         // board-tools plane (stage 7b)
         'board_tools.suppressed',
         // card#8973 / DL-360 — registered beside the suppression scan and OUTSIDE the

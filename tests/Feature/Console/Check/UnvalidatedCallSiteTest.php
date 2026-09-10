@@ -302,6 +302,16 @@ class UnvalidatedCallSiteTest extends TestCase
         // few lines below already routes through `PathVisibility` for its unseeable half
         // and keeps `fail` for its measured half. This is the third state neither covered.
         'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
+        // card#9150. FOUR sites, and each is a DIFFERENT way this run failed to enumerate a
+        // repo's webhooks: no receiver URL to look for (the comparand did not resolve — limb
+        // (c)); no token resolved for the repo; the hook-list read got a non-2xx; and the read
+        // did not complete or came back as something that is not a hook list. All four are
+        // limb (a)/(c) and none is evidence the hook is gone.
+        //   THE FIFTH ARM IS DELIBERATELY ABSENT AND IS THE WHOLE POINT OF THE LEG: a hook
+        // list READ TO THE END with no matching hook is a MEASURED absence and reports `fail`,
+        // moving the exit code. If a future edit ever moves that arm into this list, the leg
+        // has stopped answering the question it exists to answer.
+        'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 4,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

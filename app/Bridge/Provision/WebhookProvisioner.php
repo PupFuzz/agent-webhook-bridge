@@ -4,6 +4,7 @@ namespace App\Bridge\Provision;
 
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\TokenFile;
@@ -39,7 +40,13 @@ final class WebhookProvisioner
     ): ProvisionResult {
         $match = null;
         foreach ($client->listWebhooks($scopeId) as $live) {
-            if (($live['url'] ?? null) === $receiverUrl) {
+            // THE PREDICATE IS SHARED, NOT SPELLED HERE (card#9150): `bridge:check`'s github
+            // leg asks the same question of a repo's hook list, and a drift between two
+            // copies of it would make one command adopt a subscription the other reports
+            // MISSING — at a severity that moves an exit code. {@see ReceiverUrl} owns it,
+            // including the exact-match bound.
+            $url = $live['url'] ?? null;
+            if (ReceiverUrl::matches(is_string($url) ? $url : null, $receiverUrl)) {
                 $match = $live;
                 break;
             }

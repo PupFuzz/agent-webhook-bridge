@@ -8,6 +8,7 @@ use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\UrlValidator;
@@ -106,7 +107,7 @@ class ProvisionCommand extends BridgeCommand
 
                 UrlValidator::secureHttpUrl($apiBaseUrl, "bridge.providers.{$sub->provider}.api_base_url");
                 $client = new KanbanProvisionClient($apiBaseUrl, $token);
-                $receiverUrl = rtrim($receiverBaseUrl, '/')."/{$sub->provider}?b={$sub->scopeId}";
+                $receiverUrl = ReceiverUrl::for($receiverBaseUrl, $sub->provider, $sub->scopeId);
 
                 try {
                     if ($this->option('list')) {

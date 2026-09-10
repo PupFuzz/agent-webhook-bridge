@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -20,6 +21,14 @@ use Illuminate\Support\Facades\Log;
  *
  * Verb-only + throws on non-2xx: the caller (ReconcileCommand) decides that a
  * per-card 4xx/5xx is warn + skip, never abort the whole run.
+ *
+ * ⚑ IT IS NO LONGER PR-STATE ONLY (card#9150). {@see self::hasRepoWebhookFor} reads the
+ * repo's WEBHOOK list. It lives here rather than in a sibling client because everything
+ * that made this class the right shape for a PR read is the same for a hook read — the
+ * resolved-token constructor, the UA/Accept/api-version headers GitHub requires, the
+ * timeout, and throw-on-non-2xx so the caller owns the posture. A second read-only GitHub
+ * client would be a second place for those to drift (canon #5). What it is NOT is a
+ * write client: nothing here creates, edits or deletes a hook.
  */
 final class GitHubReadClient
 {
@@ -27,6 +36,20 @@ final class GitHubReadClient
 
     /** Kept under a human-interactive command's patience; a slow GitHub is skipped per card. */
     public const TIMEOUT_SECONDS = 15;
+
+    /** GitHub's maximum page size for `GET /repos/{repo}/hooks`; a smaller one only costs pages. */
+    private const HOOK_PAGE_SIZE = 100;
+
+    /**
+     * How many hook pages {@see self::hasRepoWebhookFor} will walk before giving up.
+     *
+     * A BOUND, NOT A BELIEF ABOUT REPOS. It exists so an unbounded loop cannot be driven by
+     * an upstream that keeps answering full pages; reaching it reports "I did not finish"
+     * (`null`), never "absent". At 100 per page that is 1,000 hooks on one repo — GitHub's
+     * own documented ceiling is far below it — so the honest answer at the cap is that
+     * something is answering this URL that is not a repo's hook list.
+     */
+    private const HOOK_PAGE_LIMIT = 10;
 
     /**
      * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
@@ -47,6 +70,64 @@ final class GitHubReadClient
     public function probeRepo(string $repo): void
     {
         $this->http()->get(self::API_BASE."/repos/{$repo}")->throw();
+    }
+
+    /**
+     * Does this repo carry a webhook whose delivery URL is `$receiverUrl`? (card#9150)
+     *
+     * ⛔ IT RETURNS A BOOLEAN, AND THAT IS A SECURITY BOUNDARY RATHER THAN A STYLE CHOICE.
+     * The hook list is the WHOLE FLEET's: every other install's receiver endpoint is in the
+     * response body. Matching INSIDE this method is what makes "no other endpoint can reach
+     * an operator log, a finding or a traceback" true by construction — a `list<string>`
+     * return would put that guarantee back on every caller's discipline, and the first
+     * caller to interpolate its result into a diagnostic would publish the fleet.
+     *
+     * ⭐ THE THIRD ANSWER IS THE POINT. `null` means THIS READ DID NOT ESTABLISH EITHER —
+     * the enumeration hit {@see self::HOOK_PAGE_LIMIT}, or a 200 came back carrying
+     * something other than a JSON list (a proxy, a cache, an auth portal — the class
+     * {@see self::warnUnreadableBody} exists for). Collapsing that into `false` would tell
+     * the caller the hook is GONE on evidence that measured nothing, and the caller
+     * (`GitHubWebhookSubscriptionCheck`, whose absent arm is a `fail` that moves
+     * `bridge:check`'s exit code) would red a healthy install off a bad proxy.
+     *
+     * Throws RequestException on any non-2xx, like every other read here: a 403 or 404 is a
+     * token that may not enumerate hooks on this repo, which is the caller's to classify —
+     * NOT an empty result (an unreadable API response is not an empty one).
+     */
+    public function hasRepoWebhookFor(string $repo, string $receiverUrl): ?bool
+    {
+        for ($page = 1; $page <= self::HOOK_PAGE_LIMIT; $page++) {
+            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
+                'per_page' => self::HOOK_PAGE_SIZE,
+                'page' => $page,
+            ])->throw()->json();
+
+            if (! is_array($body) || ! array_is_list($body)) {
+                self::warnUnreadableBody(
+                    "the webhook-list read for {$repo} returned a 200 whose body is not a JSON list of hooks — whether a hook points at this install is UNKNOWN, not false, and a consumer that reads it as \"no such hook\" would convict a healthy install",
+                    ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                );
+
+                return null;
+            }
+
+            foreach ($body as $hook) {
+                $config = is_array($hook) ? ($hook['config'] ?? null) : null;
+                $url = is_array($config) ? ($config['url'] ?? null) : null;
+                if (ReceiverUrl::matches(is_string($url) ? $url : null, $receiverUrl)) {
+                    return true;
+                }
+            }
+
+            // A SHORT PAGE IS THE END OF THE LIST, which is what makes `false` an
+            // EXHAUSTED enumeration rather than "not on page 1" — the distinction the
+            // `fail` severity below this rests on.
+            if (count($body) < self::HOOK_PAGE_SIZE) {
+                return false;
+            }
+        }
+
+        return null;
     }
 
     /**

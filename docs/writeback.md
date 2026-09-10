@@ -215,6 +215,14 @@ The bridge does **not** provision GitHub webhooks — `bridge:provision` manages
 - **Secret:** the per-scope HMAC secret at `$BRIDGE_DIR/github/webhook-secret-scope-your-org%2Fyour-repo`
 - **Events:** **Pull requests** — and, to enable the branch-create → In-Progress trigger (DL-160), **Pushes** as well. (Choose "Let me select individual events" and tick both. A webhook subscribed to *Pull requests* only will silently never fire the `started` move.)
 
+> ⭐ **`bridge:check` verifies this hook exists, from v0.85.0 (card#9150 / DL-368) — for EVERY declared github subscription, not just a writeback one.** It reads the repo's webhook list and looks for one whose **delivery URL is exactly** the payload URL above. A hook it read the whole list and did not find is a **`fail`** that makes `bridge:check` exit non-zero — a webhook that has been deleted leaves the agent deaf while every bridge-side surface still looks healthy, which is the outage this leg exists for. A read it could not make — no token, an HTTP 401/403/404, a network failure — is **`unvalidated`** and moves nothing: it measured nothing, and is not evidence the hook is gone.
+>
+> ⚠ **Listing a repo's webhooks needs a token with `admin:repo_hook` on that repo**, resolved the same way `bridge:reconcile` resolves its read token (DL-184/185). An install whose token cannot enumerate hooks is supported and simply gets the `unvalidated` line.
+>
+> ⚠ **The match is by EXACT delivery URL.** A hook whose URL differs only in spelling — `?b=your-org%2Fyour-repo` instead of `?b=your-org/your-repo` — reads as absent. Paste the payload URL in the form above.
+>
+> ⛔ **It never reports what else is on the repo's hook list.** That list carries every other install's receiver endpoint; the leg answers only whether **this** install's is on it.
+
 ### 5. Verify
 ```bash
 php artisan bridge:check        # validates writeback.json + the writeback token,
