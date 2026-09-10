@@ -35,6 +35,18 @@ namespace App\Bridge\Support;
  *  - **It is not an escape for any other sink.** These bytes are shaped for a terminal
  *    line. Anything writing a finding to HTML, a shell argument or a log format owns its
  *    own encoding.
+ *  - **The escaped class is `Cc | Cf` and NOT all of `\p{C}`, so two neighbours pass
+ *    through** and are named here rather than left for the next reader to discover:
+ *    COMBINING MARKS (`\p{Mn}`, `\p{Me}`) — a stack of them renders as a smear over the
+ *    preceding glyph, which mangles a line without forging one — and PRIVATE-USE
+ *    codepoints (`\p{Co}`), whose glyph is whatever font the operator's terminal happens
+ *    to load. Neither reorders text, neither introduces a line break, and neither is a
+ *    control sequence, so both are DISPLAY noise rather than the spoofing class this
+ *    escapes; escaping them would hex out the accented and scripted text a legitimate
+ *    non-English connector error is made of. Named, not closed — if a spoof is ever
+ *    demonstrated through one, that is a reason to widen, and the demonstration is the
+ *    bar (`\p{Cn}`, unassigned, is out for the same reason and moves every time the
+ *    Unicode tables do).
  *  - **One arm has no red-once witness**, disclosed at the arm itself: the PCRE-failure
  *    fallback in {@see self::forOperator()} could not be reached with any input a review
  *    could construct. It is kept because the direction of that fallback is a security
@@ -82,9 +94,12 @@ final class UntrustedText
      *     or forge one inside a token an operator is reading for identity. MEASURED on this
      *     build, not assumed: none of them is matched by step 2's `\s+` (PCRE's `/u` sets
      *     UCP, and Cf is not Unicode whitespace), so the collapse never reached them;
-     *     U+00A0 IS `\s` under UCP and is therefore already a space by the time this runs;
-     *  4. the cap, with a marker naming the FULL length, so a truncated line says it was
-     *     truncated and by how much rather than silently ending.
+     *     U+00A0 IS `\s` under UCP and is therefore already a space by the time this runs.
+     *     ⭐ THE BACKSLASH (`\x5C`) IS IN THE CLASS TOO, doubled to `\\`, and it is here
+     *     rather than in an earlier pass ON PURPOSE — see the callback;
+     *  4. the cap, applied to the ESCAPED text (that is what fills a screen) with a marker
+     *     naming the SPAN's OWN character count, so a truncated line says it was truncated
+     *     and how big the thing actually was rather than how wide this rendering of it got.
      *
      * ⛔ ESCAPED, NOT STRIPPED. `\x1B` deleted leaves `[31m` on the operator's line, which
      * reads as content the connector wrote; `\x1B` shown as `\x1B` says what was actually
@@ -97,11 +112,32 @@ final class UntrustedText
      */
     public static function forOperator(string $raw): string
     {
-        $collapsed = preg_replace('/\s+/u', ' ', mb_scrub($raw, 'UTF-8'));
+        // Scrubbed ONCE and reused by the cap below. A second `mb_scrub($raw)` down there
+        // would be a second derivation of one value (canon #5) — and the one the marker's
+        // figure is measured on, so a drift between them is a wrong figure, not a slow one.
+        $scrubbed = mb_scrub($raw, 'UTF-8');
+        $collapsed = preg_replace('/\s+/u', ' ', $scrubbed);
         $escaped = is_string($collapsed)
             ? preg_replace_callback(
-                '/[\x00-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u',
+                '/[\x00-\x1F\x5C\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u',
                 static function (array $m): string {
+                    // ⭐ THE BACKSLASH IS ESCAPED, AND IT IS IN THIS SAME CLASS RATHER THAN
+                    // IN A PASS BEFORE IT. Without it `forOperator('\\x1B[31m')` — a
+                    // LITERAL backslash, x, 1, B — returns bytes identical to the rendering
+                    // of a real ESC, so a payload could forge the diagnostic *there was a
+                    // control byte here* and falsify the one claim this rendering makes:
+                    // that it says what was actually in the file. It is one-directional
+                    // (false positives only, never a missed control byte), which is why it
+                    // is a correctness fix to the DIAGNOSTIC and not to the escape.
+                    // ⛔ ONE PASS IS WHY THE ORDERING CANNOT BE WRONG. "Escape backslashes
+                    // first" is the usual instruction and the usual bug — a second pass
+                    // re-escapes the backslashes the first pass just emitted. Here the
+                    // regex consumes each source character exactly once and nothing
+                    // re-reads its output, so the rule needs no ordering to be correct.
+                    if ($m[0] === '\\') {
+                        return '\\\\';
+                    }
+
                     $codepoint = (int) mb_ord($m[0], 'UTF-8');
 
                     // TWO WIDTHS, and the wider one is not cosmetic. `%02X` does not
@@ -133,13 +169,21 @@ final class UntrustedText
         }
 
         $text = trim($escaped);
-
-        $length = mb_strlen($text, 'UTF-8');
-        if ($length > self::MAX_CHARS) {
-            return mb_substr($text, 0, self::MAX_CHARS, 'UTF-8')." [TRUNCATED, {$length} CHARS]";
+        if (mb_strlen($text, 'UTF-8') <= self::MAX_CHARS) {
+            return $text;
         }
 
-        return $text;
+        // ⛔ THE FIGURE IS THE SPAN'S OWN SIZE, NOT THE RENDERED SIZE, and the distinction
+        // is the whole point of printing one. The cap is applied to the ESCAPED text —
+        // correctly, because that is what fills the operator's screen — but reporting the
+        // escaped length as the span's size tells an operator sizing a planted marker that
+        // a file held 800 characters when it held 100 (one `\x{202E}` renders eight wide).
+        // That is the same wrong-but-specific-figure defect the widened escape class exists
+        // to stop, re-minted one layer up, so the count is taken on the SCRUBBED SOURCE and
+        // the label names which of the two it is.
+        $sourceChars = mb_strlen($scrubbed, 'UTF-8');
+
+        return mb_substr($text, 0, self::MAX_CHARS, 'UTF-8')." [TRUNCATED, {$sourceChars} SOURCE CHARS]";
     }
 
     /**
@@ -154,20 +198,45 @@ final class UntrustedText
      * EVERY occurrence is replaced, deliberately: a message that interpolates one
      * untrusted value twice is one this rule must not half-apply.
      *
-     * An empty span is skipped rather than special-cased downstream — `str_replace` with an
-     * empty needle is a no-op, and skipping says so.
+     * ⛔ ONE NON-RE-SCANNING PASS — `strtr()` WITH A MAP, NEVER `str_replace()` PER SPAN IN
+     * A LOOP, and this is a security property rather than an optimisation. A loop re-scans
+     * the message it has already rewritten, so when span A is a SUBSTRING of span B the
+     * first pass rewrites A's occurrence INSIDE B's, B's exact-substring match then fails,
+     * and B is left ENTIRELY UNESCAPED — silently, with no error and nothing red. That is
+     * not a contrived shape: the deployed-snapshot legs declare a deployment PATH and a
+     * `package.json` `version`, both chosen by the same principal, and a version that
+     * quotes the path is all it takes (`mkdir $'ch\x1bx'` succeeds on Linux — a path
+     * component may hold any byte but NUL and `/`). MEASURED on that exact pair: the loop
+     * left 2 live ESC bytes on the operator's line, including an erase-line; `strtr` leaves
+     * 0. `strtr` matches the LONGEST key at each position, consumes the message left to
+     * right exactly once, and never re-processes text it has emitted — so B wins where the
+     * two overlap and A is still escaped everywhere B does not cover it.
+     *
+     * ⛔ A PAIR WHOSE RENDERING IS EMPTY IS DROPPED, not just a pair whose SPAN is empty,
+     * and the second half of that is the bug the first half hid. `forOperator()` can RETURN
+     * `''` from a non-empty span — whitespace collapses to one space and `trim()` then
+     * empties it — after which the replacement is a DELETION applied to every occurrence of
+     * that span in the message. A `version` of `" "` therefore deleted every space from the
+     * bridge's OWN prose (`channelserversnapshotat/tmp/...isSTALE`), with no control byte
+     * anywhere in the input. Dropping the pair leaves the harmless whitespace in place,
+     * which is the correct rendering of a whitespace-only foreign span.
      *
      * @param  list<string>  $untrusted
      */
     public static function renderInto(string $message, array $untrusted): string
     {
+        $map = [];
         foreach ($untrusted as $raw) {
             if ($raw === '') {
                 continue;
             }
-            $message = str_replace($raw, self::forOperator($raw), $message);
+            $rendered = self::forOperator($raw);
+            if ($rendered === '') {
+                continue;
+            }
+            $map[$raw] = $rendered;
         }
 
-        return $message;
+        return $map === [] ? $message : strtr($message, $map);
     }
 }

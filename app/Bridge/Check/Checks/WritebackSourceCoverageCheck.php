@@ -98,7 +98,11 @@ final class WritebackSourceCoverageCheck implements Check
             try {
                 $read = $client->readBoardCards($boardId);
             } catch (Throwable $e) {
-                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".$e->getMessage());
+                // DECLARED (card#9121, DL-366): the kanban RESPONSE BODY summary rides
+                // in on `RequestException`'s message — see `WritebackBoardStateCheck`.
+                $relayed = $e->getMessage();
+
+                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".$relayed)->carryingUntrusted($relayed);
 
                 continue;
             }

@@ -282,9 +282,12 @@ final class SshTransportProbe
             // below crossed the wire from a REMOTE host: its stderr, its stdout, and the
             // `error` string inside its envelope are bytes THAT host chose, and each was
             // being interpolated verbatim into a line on the operator's terminal. The rule
-            // that makes them safe there has one owner (App\Bridge\Support\UntrustedText) and the
-            // renderer applies it; these sites say only WHERE the foreign span is, which is
-            // the one fact no renderer can recover from a flat message string.
+            // that makes them safe there has one owner — `UntrustedText` (NAMED, not
+            // `{@see}`-linked and not spelled out: pint's docblock fixer turns a qualified
+            // reference into a real `use`, and importing a `Support` class here for a
+            // comment would add an import nothing executes) — and the renderer applies it;
+            // these sites say only WHERE the foreign span is, which is the one fact no
+            // renderer can recover from a flat message string.
             $stderr = trim($r['stderr']);
 
             return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".$stderr.')')->carryingUntrusted($stderr)];

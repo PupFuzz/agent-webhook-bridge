@@ -105,7 +105,10 @@ class UntrustedFindingDetailTest extends TestCase
         $long = str_repeat('E', 500);
         $finding = $this->plantedMarkerFinding($long);
 
-        $this->assertStringContainsString('[TRUNCATED, 500 CHARS]', $this->emit($finding));
+        // `SOURCE CHARS`, not `CHARS`: the figure is the SPAN's own size and the label says
+        // so. Escaping is the identity on this payload, so this leg cannot tell the two
+        // figures apart — `UntrustedTextTest` owns the one that can.
+        $this->assertStringContainsString('[TRUNCATED, 500 SOURCE CHARS]', $this->emit($finding));
         // The FINDING is untouched, which is what the JSON test below depends on.
         $this->assertStringContainsString("({$long})", $finding->message);
     }

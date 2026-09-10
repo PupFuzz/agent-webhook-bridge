@@ -117,7 +117,12 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
                 }
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
+            // DECLARED (card#9121, DL-366): `->throw()` makes this a `RequestException`,
+            // whose message carries the kanban RESPONSE BODY summary — see the same arm in
+            // `WritebackBoardStateCheck` for the measurement.
+            $relayed = $e->getMessage();
+
+            yield Finding::unvalidated("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$relayed)->carryingUntrusted($relayed);
         }
     }
 }

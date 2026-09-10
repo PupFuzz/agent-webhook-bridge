@@ -66,14 +66,18 @@ final class PathVisibility
      *                           below supplies the cause and the remedy itself — it says
      *                           a directory ABOVE denies traversal and asks for traversal,
      *                           never for a chmod of whatever is named here.
+     * @param  string  $untrusted  the span of `$display` this install did NOT author, or
+     *                             `''` when every part of it is the operator's own — see
+     *                             {@see self::notVisibleFinding()}, which owns the reasoning
+     *                             and the census.
      */
-    public static function unverifiedUnlessVisible(string $path, string $display): ?Finding
+    public static function unverifiedUnlessVisible(string $path, string $display, string $untrusted = ''): ?Finding
     {
         if (self::ancestorIsTraversable($path)) {
             return null;
         }
 
-        return self::notVisibleFinding($display);
+        return self::notVisibleFinding($display, $untrusted);
     }
 
     /**
@@ -86,10 +90,34 @@ final class PathVisibility
      * {@see self::unverifiedUnlessVisible} would be the alternative, and it would measure a
      * second time — a file can change between the read and the re-check, and then the two
      * measurements disagree about one throw.
+     *
+     * ⭐ THE UNTRUSTED-SPAN DECLARATION LIVES ON THE GUARD, NOT AT THE CALL SITES
+     * (card#9121, DL-366, canon #5). `$display` is composed BY the caller and interpolated
+     * HERE, and this method is the only thing that ever holds the `Finding` — so a caller
+     * whose display carries foreign bytes cannot declare them without unwrapping a
+     * `?Finding`, at every site, forever. Two of the ten sites needed it, and BOTH were
+     * missed by the sweep that declared their own siblings two branches away in the same
+     * function; a parameter on the guard is the difference between remembering and not
+     * being able to forget. It escapes nothing — {@see UntrustedText} owns that rule and
+     * the TERMINAL renderer applies it; this only records WHERE the seam is.
+     *
+     * ⛔ THE DEFAULT IS `''` — NO DECLARATION — AND THAT IS A RULING, NOT A CONVENIENCE.
+     * The test is the PRINCIPAL, not the shape: a display naming the OPERATOR's own config
+     * (a `secret_dir` / `config_dir` path, a configured `token_path`, a `channel.socket`
+     * parent, an agent name out of this install's own YAML) is text this install vouches
+     * for, and declaring it would say otherwise. The two MEMBERS are both in
+     * `ChannelSnapshotProbe` (NAMED, never `{@see}`-linked: pint rewrites a docblock FQCN
+     * into a real `use`, and importing a consumer here would invert the layer): the
+     * resolved `readlink()` target, and the deployment realpath below it, where the account
+     * being inspected chose the link target and every directory name in it.
+     *
+     * @param  string  $untrusted  the span of `$display` a foreign principal chose, or `''`
      */
-    public static function notVisibleFinding(string $display): Finding
+    public static function notVisibleFinding(string $display, string $untrusted = ''): Finding
     {
-        return Finding::unvalidated("{$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and an agent's own directories are often 0700), so this leg could NOT be validated and \"absent\" is NOT a conclusion this run is entitled to draw; re-run bridge:check as the owning user, or grant it traversal");
+        $finding = Finding::unvalidated("{$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and an agent's own directories are often 0700), so this leg could NOT be validated and \"absent\" is NOT a conclusion this run is entitled to draw; re-run bridge:check as the owning user, or grant it traversal");
+
+        return $untrusted === '' ? $finding : $finding->carryingUntrusted($untrusted);
     }
 
     /**

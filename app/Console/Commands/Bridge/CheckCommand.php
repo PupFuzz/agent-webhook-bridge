@@ -472,7 +472,14 @@ class CheckCommand extends BridgeCommand
                         // `unvalidated` and not `warn` (DL-251): an envelope that cannot
                         // name its cause did not answer anything.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$e->getMessage()));
+                        // DECLARED PRECAUTIONARILY (card#9121, DL-366), and for the
+                        // envelope's OWN stated reason: the paragraph above says a check
+                        // throwing AFTER the client built lands here too, and those checks
+                        // read kanban through `->throw()` — so this arm can relay a
+                        // `RequestException` carrying a response-body summary. An envelope
+                        // that cannot name its cause cannot rule that cause out either.
+                        $relayed = $e->getMessage();
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$relayed)->carryingUntrusted($relayed));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');

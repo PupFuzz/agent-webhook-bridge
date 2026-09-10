@@ -365,6 +365,106 @@ class ChannelSnapshotProbeTest extends TestCase
         }
     }
 
+    /**
+     * ⛔ THE GUARD BUILDS THE FINDING, SO THE GUARD MUST CARRY THE DECLARATION (card#9121,
+     * DL-366). `PathVisibility::unverifiedUnlessVisible()` interpolates the path this file
+     * hands it and returns a `?Finding` — so a `Finding::` grep over THIS file cannot see
+     * it, which is exactly how the first sweep declared `$resolved` two branches below and
+     * left these two sites echoing the same value raw.
+     *
+     * ⚑ THE SHAPE IS THE ONE `PathVisibility`'s OWN DOCBLOCK CALLS ROUTINE — an ancestor
+     * denying traversal, the bridge running as a different OS user than the agent — not a
+     * contrivance built to reach an arm.
+     */
+    public function test_the_not_visible_guard_declares_the_resolved_symlink_target(): void
+    {
+        $this->skipAsRoot();
+        // The account being inspected chose BOTH: the link target, and the directory name
+        // in it. `readlink()` hands back those bytes verbatim.
+        mkdir($this->tmp.'/locked', 0700, true);
+        mkdir($this->tmp."/locked/ch\x1bx\u{202E}");
+        symlink($this->tmp."/locked/ch\x1bx\u{202E}", $this->tmp.'/link');
+        chmod($this->tmp.'/locked', 0000);
+
+        try {
+            $findings = ChannelSnapshotProbe::probe($this->tmp.'/link', $this->reference('1.2.3'));
+
+            $this->assertCount(1, $findings);
+            $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+            $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+            $this->assertStringContainsString("\x1b", $findings[0]->message, 'the fixture must actually plant the bytes');
+
+            $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+            $this->assertStringContainsString('ch\x1Bx\x{202E}', $rendered);
+            $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+        } finally {
+            chmod($this->tmp.'/locked', 0700);
+        }
+    }
+
+    /**
+     * The SECOND guard call site — the one gating both legs on traversal INTO the deployed
+     * directory. It names `$deployedDir` rather than `$resolved`, so it is a separate
+     * declaration and a separate arm, and a fix that reached only the first would pass the
+     * test above and fail this one.
+     */
+    public function test_the_not_visible_guard_declares_the_deployment_path(): void
+    {
+        $this->skipAsRoot();
+        $evil = "dep\x1bloy\u{202E}";
+        $deployed = $this->deployment('1.2.3', name: $evil);
+        chmod($deployed, 0000);
+
+        try {
+            $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+            $this->assertCount(1, $findings);
+            $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+            $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+            $this->assertStringContainsString('dep\x1Bloy\x{202E}', $rendered);
+            $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+        } finally {
+            chmod($deployed, 0755);
+        }
+    }
+
+    /**
+     * ⛔ THE OVERLAP CASE, DRIVEN THROUGH THE REAL LEG. `versionLeg()` is where two spans
+     * chosen by the SAME principal are declared on one finding, and where a version that
+     * quotes the deployment path makes one a substring of the other — the shape a per-span
+     * replacement loop silently half-applies. The two probe tests above this one each make
+     * ONE value hostile and the other benign, which is exactly why neither caught it.
+     */
+    public function test_a_version_that_quotes_the_deployment_path_is_still_fully_escaped(): void
+    {
+        $this->skipAsRoot();
+        $evil = "dep\x1bloy";
+        $deployed = $this->deployment("0.0 installed at {$this->tmp}/{$evil} \x1b[2K\x1b[1;31m", name: $evil);
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('9.9.9'));
+
+        // Anchored on the ERASE-LINE, which lives only in the VERSION: the deployment
+        // directory's own name also carries an ESC, so every leg naming the path matches a
+        // bare `\x1b` filter and the two-declaration arm would not be isolated.
+        $versionLeg = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, "\x1b[2K"),
+        ));
+        $this->assertNotEmpty($versionLeg, 'the fixture must reach the arm that echoes both spans');
+        foreach ($versionLeg as $finding) {
+            $this->assertCount(2, $finding->untrusted, 'this leg is the two-declaration site');
+            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $this->assertStringContainsString('\x1B[2K\x1B[1;31m', $rendered);
+        }
+
+        // EVERY finding of the run, not just that arm: nothing on the operator's report may
+        // carry a live control byte once the declarations are applied.
+        foreach ($findings as $finding) {
+            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+        }
+    }
+
     private function reference(string $version): string
     {
         return $this->tree('reference', [

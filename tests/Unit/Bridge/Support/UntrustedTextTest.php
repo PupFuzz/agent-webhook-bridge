@@ -80,7 +80,7 @@ class UntrustedTextTest extends TestCase
         $rendered = UntrustedText::forOperator(str_repeat('E', UntrustedText::MAX_CHARS + 50));
 
         $this->assertSame(
-            str_repeat('E', UntrustedText::MAX_CHARS).' [TRUNCATED, '.(UntrustedText::MAX_CHARS + 50).' CHARS]',
+            str_repeat('E', UntrustedText::MAX_CHARS).' [TRUNCATED, '.(UntrustedText::MAX_CHARS + 50).' SOURCE CHARS]',
             $rendered,
         );
         // The marker is not a silent ellipsis: `laravel/pao`'s OutputCleaner deletes glyphs
@@ -105,7 +105,7 @@ class UntrustedTextTest extends TestCase
 
         $this->assertTrue(mb_check_encoding($rendered, 'UTF-8'));
         $this->assertSame(
-            str_repeat('é', UntrustedText::MAX_CHARS).' [TRUNCATED, '.(UntrustedText::MAX_CHARS + 1).' CHARS]',
+            str_repeat('é', UntrustedText::MAX_CHARS).' [TRUNCATED, '.(UntrustedText::MAX_CHARS + 1).' SOURCE CHARS]',
             $rendered,
         );
     }
@@ -182,6 +182,94 @@ class UntrustedTextTest extends TestCase
         // NBSP is the one that is NOT identity, and deliberately so: it IS `\s` under PCRE's
         // UCP, so step 2 has already collapsed it to a plain space before the escape runs.
         $this->assertSame('a b', UntrustedText::forOperator("a\u{00A0}b"));
+    }
+
+    /**
+     * ⛔ THE BLOCKER A PER-SPAN LOOP HAS AND A SINGLE PASS CANNOT: when span A is a
+     * SUBSTRING of span B, a `str_replace` loop rewrites A's occurrence INSIDE B's on the
+     * first pass, B's exact-substring match then fails on the second, and **B is left
+     * ENTIRELY UNESCAPED** — silently, no error, nothing red.
+     *
+     * The fixture is the live shape, not a contrivance: `ChannelSnapshotProbe::versionLeg()`
+     * declares a deployment PATH and a `package.json` `version`, both chosen by the same
+     * principal, and a version that quotes the path is all it takes (`mkdir $'ch\x1bx'`
+     * succeeds — a path component may hold any byte but NUL and `/`). The two ESC bytes that
+     * survive the loop are in B and not in A, and one of them is an ERASE-LINE.
+     *
+     * ⚠ ASSERTED ON THE COUNT OF LIVE CONTROL BYTES, not only on the escaped form being
+     * present: the loop DOES escape A, so an assertion that merely finds `\x1B` somewhere in
+     * the output passes on the broken code. What discriminates is that ZERO raw ESC bytes
+     * remain anywhere in the line.
+     */
+    public function test_two_overlapping_declared_spans_both_get_escaped(): void
+    {
+        $path = "/deploy/ch\x1bx";                          // span A
+        $version = "0.0 from /deploy/ch\x1bx \x1b[2K\x1b[1;31m"; // span B — CONTAINS span A
+        $message = "snapshot at {$path} is STALE (deployed {$version} < bundled 9.9.9)";
+
+        $rendered = UntrustedText::renderInto($message, [$path, $version]);
+
+        $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+        // Presence witnesses for BOTH spans, so this cannot be satisfied by dropping either.
+        $this->assertStringContainsString('/deploy/ch\x1Bx is STALE', $rendered);
+        $this->assertStringContainsString('0.0 from /deploy/ch\x1Bx \x1B[2K\x1B[1;31m', $rendered);
+        // The order the call site declared them in must not matter.
+        $this->assertSame($rendered, UntrustedText::renderInto($message, [$version, $path]));
+    }
+
+    /**
+     * ⛔ A SPAN WHOSE RENDERING IS EMPTY IS A DELETION APPLIED TO THE WHOLE MESSAGE.
+     * `forOperator()` returns `''` for a whitespace-only span (the run collapses to one
+     * space, `trim()` empties it), and `str_replace(' ', '', $message)` then strips every
+     * space from the bridge's OWN prose. NO CONTROL BYTE IS NEEDED — a deployed
+     * `package.json` carrying `"version": " "` is the whole exploit.
+     */
+    public function test_a_span_that_renders_empty_does_not_strip_the_message(): void
+    {
+        $message = 'snapshot at /tmp/d is STALE (deployed   < bundled 9.9.9)';
+
+        $this->assertSame($message, UntrustedText::renderInto($message, [' ']));
+        $this->assertSame($message, UntrustedText::renderInto($message, ["\n\t "]));
+        // The trusted prose still reads as prose — spelled out beside the identity above,
+        // because an assertSame on a mangled expectation would have passed just as well.
+        $this->assertStringContainsString('snapshot at /tmp/d is STALE', UntrustedText::renderInto($message, [' ']));
+    }
+
+    /**
+     * ⛔ THE TRUNCATION FIGURE IS THE SPAN'S OWN SIZE, NOT THE RENDERED SIZE. Both existing
+     * cap tests use `E` and `é`, where escaping is the identity and the two numbers are
+     * equal — so neither could discriminate. Escaping is 8:1 here, which is exactly the
+     * ratio that made the old figure a wrong-but-specific answer to *how big was the thing
+     * planted in my file*.
+     */
+    public function test_the_truncation_marker_reports_the_span_size_and_not_the_escaped_size(): void
+    {
+        $rendered = UntrustedText::forOperator(str_repeat("\u{202E}", 100));
+
+        $this->assertStringEndsWith(' [TRUNCATED, 100 SOURCE CHARS]', $rendered);
+        $this->assertStringNotContainsString('800', $rendered);
+        // The 4:1 case too, so the assertion is about the rule and not about one ratio.
+        $this->assertStringEndsWith(' [TRUNCATED, 100 SOURCE CHARS]', UntrustedText::forOperator(str_repeat("\x1b", 100)));
+        // The cap itself is still on what fills the screen: MAX_CHARS of escaped text.
+        $this->assertSame(UntrustedText::MAX_CHARS, mb_strlen(explode(' [TRUNCATED', $rendered)[0], 'UTF-8'));
+    }
+
+    /**
+     * A LITERAL backslash-x-1-B rendered identically to a REAL ESC, so a payload could forge
+     * the diagnostic *there was a control byte here* — falsifying the one claim this
+     * rendering makes, that it says what was actually in the file. One-directional (a false
+     * ESC can be claimed; a real one can never be hidden), which is why it is a fix to the
+     * DIAGNOSTIC rather than to the escape.
+     */
+    public function test_a_literal_backslash_cannot_forge_the_rendering_of_a_control_byte(): void
+    {
+        $this->assertSame('\\\\x1B[31m', UntrustedText::forOperator('\x1B[31m'));
+        $this->assertSame('\x1B[31m', UntrustedText::forOperator("\x1b[31m"));
+        // THE POINT, stated as an assertion rather than left to the reader of the two above.
+        $this->assertNotSame(
+            UntrustedText::forOperator('\x1B[31m'),
+            UntrustedText::forOperator("\x1b[31m"),
+        );
     }
 
     public function test_render_into_replaces_every_occurrence_of_a_declared_span(): void

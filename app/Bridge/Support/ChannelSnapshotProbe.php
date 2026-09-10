@@ -60,6 +60,12 @@ namespace App\Bridge\Support;
  *  - the RESOLVED path (`$resolved`, and the `$deployedDir` realpath below it) — the
  *    account being inspected chooses the symlink target and the directory names, and a path
  *    COMPONENT may hold any byte but NUL and `/`.
+ * ⚑ THAT INCLUDES THE FINDINGS THIS FILE DOES NOT CONSTRUCT. Both
+ * {@see PathVisibility::unverifiedUnlessVisible()} calls below interpolate the resolved path
+ * into a finding built inside the GUARD, so they pass it as the guard's untrusted-span
+ * argument. The first cut of this sweep declared `$resolved` two branches away and missed
+ * these two, because a reviewer greps for `Finding::` and a guard that returns one is not
+ * spelled that way — which is why the declaration is a parameter there and not a wrap here.
  * ⛔ THE OTHER INTERPOLATED VALUES ARE DELIBERATELY NOT DECLARED, and the reason is the
  * PRINCIPAL rather than the shape: `$serverPath` is the operator's own `channel.server_path`
  * and `$bundledDir` / `$bundled['version']` are this checkout's own tracked files. Declaring
@@ -105,7 +111,7 @@ final class ChannelSnapshotProbe
         // against a directory that is not there: a fatal condition misreported as a
         // drift question.
         if (! is_dir($resolved)) {
-            if (($unverified = PathVisibility::unverifiedUnlessVisible($resolved, "channel server path {$where}")) !== null) {
+            if (($unverified = PathVisibility::unverifiedUnlessVisible($resolved, "channel server path {$where}", $resolved)) !== null) {
                 return [$unverified];
             }
 
@@ -143,7 +149,7 @@ final class ChannelSnapshotProbe
         // deployed directory needs its own guard. No leg makes one today — the
         // completeness walk that did was retired with its leg (DL-237) — so adding
         // one means adding that guard with it.
-        if (($unverified = PathVisibility::unverifiedUnlessVisible($deployedDir.'/'.self::ENTRY_FILE, "channel server path {$deployedDir}")) !== null) {
+        if (($unverified = PathVisibility::unverifiedUnlessVisible($deployedDir.'/'.self::ENTRY_FILE, "channel server path {$deployedDir}", $deployedDir)) !== null) {
             return [$unverified];
         }
 

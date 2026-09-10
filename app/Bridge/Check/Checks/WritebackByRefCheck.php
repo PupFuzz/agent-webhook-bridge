@@ -66,7 +66,11 @@ final class WritebackByRefCheck implements Check
                 yield Finding::ok('writeback: by-ref reachable (correlation=ref)');
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated('writeback: could not probe by-ref reachability — '.$e->getMessage());
+            // DECLARED (card#9121, DL-366): the kanban RESPONSE BODY summary rides in on
+            // `RequestException`'s message — see `WritebackBoardStateCheck`.
+            $relayed = $e->getMessage();
+
+            yield Finding::unvalidated('writeback: could not probe by-ref reachability — '.$relayed)->carryingUntrusted($relayed);
         }
     }
 }
