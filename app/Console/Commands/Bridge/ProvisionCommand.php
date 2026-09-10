@@ -7,9 +7,11 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
+use App\Bridge\Provision\WritebackIdentityOffer;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use Throwable;
 
@@ -48,7 +50,8 @@ class ProvisionCommand extends BridgeCommand
             return self::FAILURE;
         }
 
-        $agents = (new SubscriptionRegistry($configDir))->agentConfigs();
+        $allAgents = (new SubscriptionRegistry($configDir))->agentConfigs();
+        $agents = $allAgents;
         $only = $this->strOption('agent');
         if ($only !== null) {
             $agents = array_values(array_filter($agents, fn (AgentConfig $a) => $a->agentName === $only));
@@ -130,7 +133,117 @@ class ProvisionCommand extends BridgeCommand
             }
         }
 
+        $this->offerWritebackIdentity($configDir, $secretDir, $allAgents);
+
         return $rc;
+    }
+
+    /**
+     * Offer the writeback `identity_id` this install has not declared, resolved from the
+     * writeback token it already holds (card#9141 / DL-369).
+     *
+     * ⛔ IT CANNOT MOVE `$rc`, AND IS CALLED WHERE THAT IS OBVIOUS — after the provisioning
+     * loop, returning void. Whether kanban can be asked who a token is says nothing about
+     * whether this install's webhook subscriptions are correct, and a setup command that
+     * started failing because an unrelated offer could not be made would be exactly the
+     * fail-closed behaviour this must not have.
+     *
+     * ⚑ WHY HERE AND NOT IN `App\Bridge\Check\Checks\WritebackIdentityCheck`, which is where the
+     * missing value is currently WARNED about: that leg is an offline reporter inside a
+     * read-only command — it makes no network call and writes nothing, by design and by its
+     * own docblock — and the operator's ruling is that this resolve must SHOW, ASK and only
+     * then WRITE. A confirmed mutation does not belong in a check; the check instead names
+     * this command as the remedy.
+     *
+     * ⚠ THE CONFIRMATION IS THE ONLY GATE, and it needs no TTY test to be safe: `confirm()`
+     * returns its default without asking when the run is not interactive, and that default
+     * is NO. There is deliberately no `--yes`: an unattended accept is the silent write the
+     * offer shape exists to prevent.
+     *
+     * @param  list<AgentConfig>  $agents  UNFILTERED by --agent: the identity is install-scoped,
+     *                                     and a narrowed comparison population would report a
+     *                                     clean result over tokens it never looked at
+     */
+    private function offerWritebackIdentity(string $configDir, string $secretDir, array $agents): void
+    {
+        if ($this->option('list')) {
+            return;
+        }
+
+        $apiBaseUrl = (string) config('bridge.providers.kanban.api_base_url');
+        if ($apiBaseUrl === '' || ! WritebackIdentityOffer::isPending($configDir)) {
+            return;
+        }
+
+        if ($this->option('dry-run')) {
+            $this->line(sprintf(
+                'writeback: %s declares no identity_id — a run without --dry-run offers the value resolved from the writeback token.',
+                WritebackIdentityOffer::path($configDir),
+            ));
+
+            return;
+        }
+
+        $offer = new WritebackIdentityOffer;
+
+        try {
+            $plan = $offer->prepare(
+                $configDir,
+                TokenPath::forWriteback($secretDir, 'kanban'),
+                $apiBaseUrl,
+                $this->otherKanbanTokenPaths($secretDir, $agents),
+            );
+
+            foreach ($plan->notes as $note) {
+                $this->line($note);
+            }
+            foreach ($plan->warnings as $warning) {
+                $this->warn($warning);
+            }
+
+            $identity = $plan->offered;
+            if ($identity === null) {
+                return;
+            }
+
+            if (! $this->confirm("Write identity_id {$identity->id} into writeback.json?", false)) {
+                $this->line('  Nothing was written.');
+
+                return;
+            }
+
+            $offer->commit($configDir, $identity->id);
+            $this->info("  ✓ writeback.json identity_id = {$identity->id}.");
+        } catch (Throwable $e) {
+            // ⛔ THE CLASS, NOT THE MESSAGE. Setup completing is the guarantee; an unexpected
+            // failure here must not abort it. The message is withheld because an HTTP-layer
+            // exception can carry the response body, and that body is sensitive as a class —
+            // the named causes an operator can act on are produced by the resolver, which
+            // never puts the body in one.
+            $this->warn(sprintf(
+                'writeback: the identity_id offer could not run (%s) — nothing was written; docs/writeback.md § 2 has the by-hand recipe.',
+                $e::class,
+            ));
+        }
+    }
+
+    /**
+     * The kanban tokens this install's config names, EXCEPT the writeback's own — the
+     * population the same-user comparison can actually see. Per-agent `api.kanban.token_path`
+     * overrides are honoured by asking each agent for its own path rather than re-deriving
+     * the convention here.
+     *
+     * @param  list<AgentConfig>  $agents
+     * @return list<string>
+     */
+    private function otherKanbanTokenPaths(string $secretDir, array $agents): array
+    {
+        $paths = [TokenPath::for($secretDir, 'kanban')];
+        foreach ($agents as $agent) {
+            $paths[] = $agent->tokenPath($secretDir, 'kanban');
+        }
+
+        return array_values(array_diff(array_unique($paths), [TokenPath::forWriteback($secretDir, 'kanban')]));
     }
 
     private function readToken(AgentConfig $agent, string $provider, string $secretDir): ?string

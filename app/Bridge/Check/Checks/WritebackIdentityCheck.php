@@ -39,7 +39,10 @@ use App\Bridge\Support\Finding;
  * ⛔ IT REPORTS, IT DOES NOT CERTIFY, and the bound is the point rather than a caveat.
  * The bridge can see the identity it is CONFIGURED with — a declared value, not a
  * resolved one; nobody here calls the API to ask who the token really is — and it cannot
- * enumerate the other tokens on the host. The collision that was actually measured is between the writeback token
+ * enumerate the other tokens on the host. ⚑ SETUP does resolve it since DL-369 —
+ * {@see App\Bridge\Provision\WritebackIdentityOffer}, as a confirmed offer inside
+ * `bridge:provision`, which is where the network call and the write belong. This leg stays
+ * offline and stays a reporter; what it gained is the remedy line naming that command. The collision that was actually measured is between the writeback token
  * and a BOARD CLI's token that lives entirely outside this install's config — invisible
  * from here, in principle and not just today. So this leg deliberately makes NO
  * separation claim: an assertion that stayed green on the very install shape that has the
@@ -70,7 +73,8 @@ final class WritebackIdentityCheck implements Check
 
         $identity = $ctx->writeback->identityId;
         if ($identity === null) {
-            yield Finding::warn('writeback.json: no identity_id — set it so the writeback card_updated webhook is auto echo-suppressed (else it loops back)');
+            yield Finding::warn('writeback.json: no identity_id — set it so the writeback card_updated webhook is auto echo-suppressed (else it loops back). '
+                .'`php artisan bridge:provision` OFFERS the value resolved from the writeback token (confirm it, it does not write unasked); docs/writeback.md § 2 has the by-hand recipe.');
 
             return;
         }
