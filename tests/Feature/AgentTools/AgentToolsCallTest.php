@@ -3662,6 +3662,129 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
     }
 
+    /**
+     * ⛔ A 5xx IS NOT A REFUSAL, AND THE LOG MUST NOT SAY IT IS. `writeRefusal` classifies
+     * permanence first and logs only when the board actually refused — the same order
+     * `lookupRefusal` has always had. The first cut of this tool logged BEFORE classifying,
+     * so a 500 / 429 / 400 emitted `board_take_card: the board refused the assignment write`
+     * and was then re-thrown as the retryable 502, putting 5xx noise into the one line an
+     * operator greps for refusals.
+     *
+     * @param  int  $status  a board status that is NOT in the permanent set
+     */
+    #[DataProvider('nonPermanentWriteStatuses')]
+    public function test_a_transient_board_status_on_the_write_is_retryable_and_is_not_logged_as_a_refusal(int $status): void
+    {
+        Log::spy();
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: $status));
+
+        // The dispatcher's retryable 502 — NOT a 422 refusal.
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])
+            ->assertStatus(502);
+
+        Log::shouldNotHaveReceived('warning', [
+            'board_take_card: the board refused the assignment write',
+            \Mockery::any(),
+        ]);
+    }
+
+    /** @return array<string, array{int}> */
+    public static function nonPermanentWriteStatuses(): array
+    {
+        return ['500' => [500], '429' => [429], '400' => [400]];
+    }
+
+    /**
+     * The control for the arm above, and the reason it is not vacuous: on a status the board
+     * DID refuse permanently, the same line IS emitted. Without this a `Log::warning` deleted
+     * outright would satisfy the assertion above.
+     */
+    public function test_a_permanent_board_status_on_the_write_is_logged_as_a_refusal(): void
+    {
+        Log::spy();
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: 403));
+
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])->assertStatus(422);
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message, array $context = []) => $message === 'board_take_card: the board refused the assignment write'
+                && ($context['status'] ?? null) === 403)
+            ->once();
+    }
+
+    /**
+     * The three write-path arms the first cut left untested — every one deterministic, so
+     * every one a NAMED refusal rather than the retryable 502, and every one saying what did
+     * not happen.
+     *
+     * @param  array{0: int, 1: string}  $expected  the board status and a phrase its refusal owes
+     */
+    #[DataProvider('permanentWriteStatuses')]
+    public function test_each_permanent_board_status_on_the_write_is_a_named_refusal(int $status, string $phrase): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: $status));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($phrase, $error);
+        // The board's own body is never echoed, and the retryable 502's text never appears.
+        $this->assertStringNotContainsString('upstream board error', $error);
+        $this->assertStringNotContainsString('nope', $error);
+    }
+
+    /** @return array<string, array{int, string}> */
+    public static function permanentWriteStatuses(): array
+    {
+        return [
+            '404 — the card went between the check and the write' => [404, 'no longer exists'],
+            '401 — the token is not accepted at all' => [401, 'did not accept the bridge\'s writeback token'],
+            '422 — kanban\'s own validator refused the value' => [422, 'identity.kanban_user_id'],
+        ];
+    }
+
+    /**
+     * ⚠ THE COORD-CARD CLAUSE. `board_my_cards` returns coordination cards in the same
+     * response as the seat's own, and every card now carries `assigned_user_id` — so the
+     * obvious next move is to try to take one. Coordination cards are out of scope BY NAME
+     * (DL-372 Decision 3), and the refusal must not send the operator to audit the product
+     * board's membership, which is definitely not the cause. `BoardCallRefusal::readCause`'s
+     * own docblock calls naming a wrong cause *worse than saying nothing*.
+     */
+    public function test_a_seat_with_a_coord_leg_is_told_why_a_coord_card_is_not_takeable(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        // A card on the COORD board is simply absent from the product-board-scoped search —
+        // zero rows, exactly like a card that does not exist.
+        Http::fake($this->takeFake(live: []));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('coordination cards', $error);
+        $this->assertStringContainsString('board 12', $error, 'the coord board is named, so the seat can tell the two id spaces apart');
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * The control: an install with NO coord leg must not carry the clause. Without this arm
+     * the clause could be unconditional prose and the arm above would still pass — telling
+     * every seat about a board its config does not have.
+     */
+    public function test_a_seat_with_no_coord_leg_is_not_told_about_coordination_cards(): void
+    {
+        Http::fake($this->takeFake(live: []));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringNotContainsString('coordination cards', (string) $res->json('error'));
+    }
+
     // ─── board_my_cards renders the assignee (card#9170) ──────────────────────
 
     /**

@@ -61,7 +61,7 @@ The **filename** (minus `.yml`) is the agent's canonical name and its echo "self
 ### `identity:` (optional mapping) — the agent's own immutable upstream ids
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `kanban_user_id` | int | `null` | The agent's kanban `user_id`. Auto-seeded into self echo-suppression. |
+| `kanban_user_id` | int | `null` | The agent's kanban `user_id`. Auto-seeded into self echo-suppression — **and, since DL-372, the value `board_take_card` WRITES to a card's `assigned_user_id` when this seat claims it.** ⚠ **An agent with no `kanban_user_id` cannot take a card at all:** every `board_take_card` call refuses, permanently, naming this key as an INSTALL fault — the bridge has no id to record as that seat. ⛔ **Nothing reports that state ahead of time.** There is deliberately no `bridge:check` leg for it (DL-372: the key is optional for every other consumer, and failing an install over an unused field would be wrong), so the only discovery path is a seat's failed call. If you enable `board_tools` for an agent, set this. |
 | `github_user_id` | int | `null` | The agent's immutable GitHub `sender.id`. Auto-seeded into self echo. |
 | `github_login` | string | `null` | **Display-only label** — never a matching key (renameable; DL-002). A stale value logs a one-line drift warning. |
 

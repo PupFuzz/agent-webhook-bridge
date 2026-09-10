@@ -143,6 +143,12 @@ never silently no-ops.
 > [`board_take_card`](#board_take_card). A number you do not recognise means somebody
 > else does.
 >
+> ⚠ **It rides the `coord_cards` block too, and those cards are NOT takeable.** They are on
+> the separately configured coordination board, addressed to you by TAG rather than held in a
+> lane, and `board_take_card` is scoped to your own board and lanes (DL-372 Decision 3). The
+> attempt is refused write-free, and on an install with a coord leg the refusal names that as
+> the likely cause rather than sending your operator to audit the product board's membership.
+>
 > ⛔ **The bridge resolves NO NAME for that id, deliberately and permanently.** Doing so
 > would need a fleet-wide seat→kanban-user map — a table two products would both key on,
 > with nothing to red when they drift — and the whole design of this feature is that
@@ -270,10 +276,14 @@ A card is a **delivery** surface, not just a tracking one — the scope written 
 is what a cold session needs to implement from. That body is off by default and
 opt-in per call:
 
-- **Default (no argument): the two keys are ABSENT**, not null — the projected CARD is
-  byte-identical to what it was before the argument existed. ⚠ The **response** is not,
-  and never was this claim: it has since grown the DL-302 board keys and card#8985's
-  window blocks.
+- **Default (no argument): the two keys are ABSENT**, not null — they are the only
+  conditional part of the card shape. ⛔ **This bullet used to claim the projected CARD was
+  byte-identical to what it was before the argument existed, and that claim is RETIRED
+  (DL-372), not re-scoped:** `assigned_user_id` joined every projected card unconditionally,
+  so the card is no longer the DL-217 one. What holds is the weaker, true statement — every
+  key this tool has ever emitted is still emitted, with the same meaning. The **response**
+  was never covered by the old claim either: it had already grown the DL-302 board keys and
+  card#8985's window blocks.
 - **Opt in when you are STARTING a card, not when polling.** A body runs ~2 KB and
   *every* card in your lane is returned, so a large lane multiplies the response
   many times over. The bridge pays nothing extra to fetch it (the kanban search row
@@ -547,7 +557,8 @@ a board it did not read. `tags_written` is present only when the call corrected 
 | `type` / `card_type_id` / `triaged` | `type:` is a reserved tag prefix and `triaged` is the triage pass's — both refused at create too |
 | `block_reason` | the writeback's pinned-card opt-out (DL-193) |
 | `archived` / `archived_at` / `_action` | a retire is a lifecycle act, not a field write |
-| `priority` / `due_date` / `assigned_user_id` | not part of this tool's contract |
+| `priority` / `due_date` | not part of this tool's contract |
+| `assigned_user_id` / `assignee` | **`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument** (DL-372). Named rather than left to the catch-all row below: a seat reaching for this key is reaching for the one value the take door will never accept from a payload, and *"unknown argument"* would read as a spelling mistake. |
 | anything else | `unknown argument …` — **nothing is silently ignored** |
 
 ⛔ **The offered set is deliberately NARROWER than `kbcard patch`'s corrective

@@ -243,8 +243,12 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * The per-card description byte cap for THIS call, or null when the caller did
-     * not opt in. Null is what keeps the default response byte-identical: it makes
-     * the projection omit both description keys rather than emit them null-valued.
+     * not opt in. Null is what makes the projection OMIT both description keys rather than
+     * emit them null-valued — which is the whole of what the default buys. ⛔ It is not
+     * *"what keeps the default response byte-identical"*, as this sentence said until
+     * card#9170: `assigned_user_id` now rides every projected card unconditionally, so that
+     * claim is retired here as it is on the class docblock rather than left standing in the
+     * one copy nobody re-read.
      * A non-bool is REFUSED rather than coerced — a truthy string would silently
      * turn on the expensive projection the opt-in exists to gate.
      *

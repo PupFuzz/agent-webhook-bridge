@@ -23,7 +23,7 @@ use Illuminate\Support\Facades\Log;
  *
  * ⛔⭐ THE ID IS RESOLVED FROM THE AGENT REGISTRY AND THERE IS NO ARGUMENT FOR IT. This
  * tool accepts `card_id` AND NOTHING ELSE; the value written is
- * {@see SeatKanbanUser::resolve}'s answer for the agent name the DOOR derived (from the
+ * {@see SeatKanbanUser::forCallingAgent}'s answer for the agent name the DOOR derived (from the
  * bearer, or from the pinned ssh forced command) — never a value that travelled in the
  * request. That is the constraint the whole feature rests on, and it is a CONSTRUCTION,
  * not a validation: this door is driven by a lower-trust principal, and a tool that
@@ -88,6 +88,20 @@ use Illuminate\Support\Facades\Log;
  * re-sends the id in that case; the difference is unobservable on the board and the
  * response says which happened.
  *
+ * ⚠ DISCLOSED BOUND — REFUSE-ON-CONFLICT DETECTS A CLAIM THAT HAS LANDED, NOT A RACE.
+ * {@see currentHolder} reads the search row and {@see KanbanClient::patchCard} then writes
+ * unconditionally: there is no compare-and-swap, because kanban's task PATCH offers no
+ * conditional update to express one. So two seats that read `assigned_user_id: null` at the
+ * same instant BOTH write, last-writer-wins, and both are answered `taken: true,
+ * already_held: false` — the loser believing it holds a card another seat is on, which is the
+ * very state this tool exists to make visible. ⭐ THE WINDOW IS ACCEPTED, and it is accepted
+ * on its size rather than waved through: it is the gap between one read and one write on one
+ * card, against a workflow where a seat claims a card once and then works it for minutes or
+ * hours. What the refusal covers is the whole of the rest of that span, which is where the
+ * collision this was filed for actually happens (the operator's case is a card sitting
+ * claimed-but-unmoved, not two agents typing at once). ⛔ It is written down because every
+ * other bound here is — a guard whose limits are undisclosed reads as a guarantee.
+ *
  * ⛔ A ROW THAT CARRIES NO READABLE `assigned_user_id` IS A DEGRADED READ AND REFUSES.
  * Present-null is a real value meaning UNASSIGNED and is the ordinary case; an ABSENT key
  * or a non-numeric one means the read cannot say whose claim the write would take, and
@@ -144,7 +158,7 @@ final class BoardTakeCardTool implements Tool
         // than as a board lookup that went nowhere.
         $this->refuseForeignArguments($args);
         $cardId = $this->requireCardId($args);
-        $userId = SeatKanbanUser::resolve($agentName, $this->name());
+        $userId = SeatKanbanUser::forCallingAgent($agentName, $this->name());
 
         $boardId = (int) $cfg->boardId;
         [$row, $lane] = $this->takeableRow($client, $cfg, $boardId, $cardId, $agentName);
@@ -344,7 +358,35 @@ final class BoardTakeCardTool implements Tool
     {
         $lanes = implode(', ', array_map(static fn (int $lane): string => (string) $lane, $this->workableLanes($cfg)));
 
-        return "board_take_card: card {$cardId} is not one you can take — this tool claims only cards on your own board {$boardId} and in a lane you work (swimlane ".$lanes.'). Nothing was written. ⚠ A board the bridge\'s writeback token is not a MEMBER of answers exactly the same way: kanban\'s search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe this card is in your lane, have your operator check that token\'s membership of board '.$boardId.'. Use `board_my_cards` to see the cards you can take.';
+        return "board_take_card: card {$cardId} is not one you can take — this tool claims only cards on your own board {$boardId} and in a lane you work (swimlane ".$lanes.').'.$this->coordClause($cfg).' Nothing was written. ⚠ A board the bridge\'s writeback token is not a MEMBER of answers exactly the same way: kanban\'s search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe this card is in your lane, have your operator check that token\'s membership of board '.$boardId.'. Use `board_my_cards` to see the cards you can take.';
+    }
+
+    /**
+     * ⚠ THE LIKELIEST CAUSE, NAMED — but only on an install where it EXISTS.
+     *
+     * `board_my_cards` returns coordination cards in the same response as the seat's own, and
+     * since card#9170 every card in it carries `assigned_user_id` — so reaching for
+     * `board_take_card` with a coord card's id is the obvious next move, and it is out of
+     * scope by name (DL-372 Decision 3). Those cards are on a DIFFERENT board, so the
+     * product-board-scoped lookup returns zero rows and they are indistinguishable from a card
+     * that does not exist. Without this clause the refusal's only actionable sentence sends the
+     * operator to audit the token's membership of the PRODUCT board — a cause that is
+     * definitely not the cause, which {@see BoardCallRefusal::readCause} calls worse than
+     * saying nothing.
+     *
+     * ⛔ IT IS CONDITIONAL ON THE INSTALL, NOT PROSE. An install with no coord leg has no such
+     * board, and telling that seat about coordination cards would be inventing a second id
+     * space it does not have. ⚠ It NAMES the likely cause rather than establishing it: proving
+     * the id is a coord card would cost a second board-scoped read on every miss, and the
+     * verdict would still be a refusal.
+     */
+    private function coordClause(BoardToolsConfig $cfg): string
+    {
+        if ($cfg->coordBoardId === null || $cfg->addressTags === []) {
+            return '';
+        }
+
+        return " ⚠ If you took this id from the `coord_cards` block of `board_my_cards`, that is very likely why: coordination cards live on board {$cfg->coordBoardId}, they are addressed to you by TAG rather than held in a lane, and this tool does not claim them — their ids are a different space from your product board's.";
     }
 
     /**
@@ -421,14 +463,19 @@ final class BoardTakeCardTool implements Tool
      */
     private function writeRefusal(RequestException $e, int $cardId, int $userId, string $agentName): \Throwable
     {
-        Log::warning('board_take_card: the board refused the assignment write', [
-            'agent' => $agentName, 'card_id' => $cardId, 'status' => $e->response->status(),
-        ]);
-
+        // ⛔ CLASSIFY FIRST, LOG SECOND — the order {@see lookupRefusal} has, and the first cut
+        // of this method had backwards. A 500 / 429 / 400 is re-thrown for the dispatcher's
+        // retryable 502, which is the correct answer for a fault that MAY clear: the board did
+        // not REFUSE it, and a warning saying so puts 5xx noise into the one line an operator
+        // greps for refusals. Two halves of one file must not disagree about what a refusal is.
         $status = BoardCallRefusal::permanentOnWrite($e);
         if ($status === null) {
             return $e;
         }
+
+        Log::warning('board_take_card: the board refused the assignment write', [
+            'agent' => $agentName, 'card_id' => $cardId, 'status' => $status,
+        ]);
 
         return new ToolRefusalException(match ($status) {
             404 => "board_take_card: card {$cardId} no longer exists — it was removed between the scope check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
