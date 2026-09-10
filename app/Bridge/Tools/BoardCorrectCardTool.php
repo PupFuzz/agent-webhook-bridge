@@ -122,6 +122,14 @@ use Illuminate\Support\Facades\Log;
 final class BoardCorrectCardTool implements Tool
 {
     /**
+     * ⚠ ONE CONSTANT BECAUSE THE TWO THROW SITES MUST STAY BYTE-IDENTICAL — see
+     * {@see BoardCreateCardTool}'s `TITLE_REFUSAL` for the reasoning; `name` is the same
+     * shape one tool over (not-a-string at the HTTP door, empty-once-trimmed at the ssh
+     * door, one refusal either way).
+     */
+    private const NAME_REFUSAL = 'board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)';
+
+    /**
      * The arguments this tool accepts. Anything else is refused — see
      * {@see FIELD_OWNERS} for the ones refused with a named owner.
      *
@@ -298,28 +306,29 @@ final class BoardCorrectCardTool implements Tool
      * named caller-fixable refusal instead of a board 422 the seat reads as a retryable
      * `502 upstream board error`.
      *
-     * ⭐ THE DESCRIPTION IS TRIMMED, AND THAT IS WHAT MAKES "CLEAR" MEAN THE SAME THING
-     * ON BOTH DOORS FOR ASCII WHITESPACE. `TrimStrings` runs ahead of
-     * `ConvertEmptyStringsToNull` on the HTTP door only, so `"   "` arrives as null there
-     * (⇒ clear) and as three spaces over ssh (⇒ a card whose body is whitespace).
-     * Trimming here converges them for that class.
+     * ⭐ BOTH TEXT FIELDS ARE TRIMMED THROUGH {@see BoardToolArgs}, AND THAT IS WHAT MAKES
+     * ONE CALL MEAN ONE THING ON BOTH DOORS. `TrimStrings` runs ahead of
+     * `ConvertEmptyStringsToNull` on the HTTP door only, so a blank `description` arrives
+     * as null there (⇒ clear) and as its literal self over ssh (⇒ a card whose body is
+     * whitespace). Trimming here converges them — for `"   "` and, since card#9155, for
+     * the invisible-character class too.
      *
-     * ⛔ IT DOES NOT CONVERGE THEM IN GENERAL, AND AN EARLIER REVISION OF THIS DOCBLOCK
-     * CLAIMED IT DID (card#8985 r2). The middleware trims with `Str::trim`, whose
-     * `Str::INVISIBLE_CHARACTERS` set includes `\x{00A0}` and much else; PHP's `trim()`
-     * here strips ASCII whitespace only. **Measured:** a description of one non-breaking
-     * space arrives NULL at the HTTP door (⇒ clear) and survives `trim()` here, so over
-     * ssh it is WRITTEN as the card's body — the second meaning for one call that the
-     * paragraph above says is gone. `name` (and `board_create_card`'s `title`) have the
-     * same gap one step earlier: `trim($name) === ''` is FALSE for that value, so ssh
-     * accepts a visually blank title the HTTP door refuses.
+     * ⛔ WHICH TRIM IS LOAD-BEARING, AND AN EARLIER REVISION OF THIS DOCBLOCK CLAIMED A
+     * CONVERGENCE PHP'S `trim()` DOES NOT DELIVER (card#8985 r2). The middleware trims with
+     * `Str::trim`, whose `Str::INVISIBLE_CHARACTERS` set includes `\x{00A0}` and much else;
+     * PHP's ASCII `trim()` strips none of them. **Measured:** a description of one
+     * non-breaking space arrived NULL at the HTTP door (⇒ clear) and survived `trim()` here,
+     * so over ssh it was WRITTEN as the card's body; `name` (and `board_create_card`'s
+     * `title`) had the same gap one step earlier — `trim($name) === ''` is FALSE for that
+     * value, so ssh accepted a visually blank title the HTTP door refuses. {@see BoardToolArgs}
+     * closes it by delegating to the middleware's own `Str::trim` BY IDENTITY, for every tool
+     * at once, and owns the reasoning; this docblock deliberately does not restate the set.
      *
-     * ⚠ NOT FIXED HERE, DELIBERATELY. Closing it makes this door REFUSE input it accepts
-     * today — a change to what the system accepts, which is operator-gated in this repo —
-     * so it is filed as its own card rather than folded into an unrelated branch.
-     * `BoardMyCardsTool` normalises with `Str::trim` for the same class on a READ
-     * argument; that is one site converged, not this one, and the two are deliberately
-     * not described as a shared rule until the gate is answered.
+     * ⚠ WHAT IS STORED IS THE TRIMMED VALUE, which is what the HTTP door stores — there the
+     * middleware has already run when the controller reads `args`. `name`'s length bound
+     * deliberately stays on the value AS SENT: it is conservative that way (raw within the
+     * cap implies the trimmed value is), and moving it would make this door ACCEPT a padded
+     * over-long name it refuses today, which is a permissive change and its own gate.
      *
      * @param  array<string, mixed>  $args
      * @return array<string, string>
@@ -330,14 +339,23 @@ final class BoardCorrectCardTool implements Tool
 
         if (array_key_exists('name', $args)) {
             $name = $args['name'];
-            if (! is_string($name) || trim($name) === '') {
-                throw new ToolRefusalException('board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)');
+            // EMPTY is the middleware's definition, not PHP's ({@see BoardToolArgs}), and
+            // it is answered before the cap so a blank-and-over-long name refuses with the
+            // same sentence on both doors. ⚠ The cap itself stays on the value AS SENT and
+            // the TRIMMED value is what is written — see `requireTitle()` in
+            // {@see BoardCreateCardTool} for why that asymmetry is deliberate.
+            if (! is_string($name)) {
+                throw new ToolRefusalException(self::NAME_REFUSAL);
+            }
+            $trimmed = BoardToolArgs::trimmed($name);
+            if ($trimmed === '') {
+                throw new ToolRefusalException(self::NAME_REFUSAL);
             }
             $tooLong = BoardCallRefusal::overLongName($this->name(), 'name', $name, 'Nothing was written');
             if ($tooLong !== null) {
                 throw $tooLong;
             }
-            $fields['name'] = $name;
+            $fields['name'] = $trimmed;
         }
 
         if (array_key_exists('description', $args)) {
@@ -345,7 +363,7 @@ final class BoardCorrectCardTool implements Tool
             if ($description !== null && ! is_string($description)) {
                 throw new ToolRefusalException('board_correct_card: `description` must be a string, or null/"" to CLEAR it (omit `description` to leave it alone)');
             }
-            $fields['description'] = trim($description ?? '');
+            $fields['description'] = BoardToolArgs::trimmed($description ?? '');
         }
 
         return $fields;
