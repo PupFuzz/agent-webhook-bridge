@@ -624,12 +624,13 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
 8. **End-to-end smoke test:** from the dir with `.mcp.json`, start `claude --dangerously-load-development-channels server:kanbanboard-agent`, then in a separate terminal:
 
        SOCK="/run/user/$(id -u)/agent-webhook-bridge-channel-kanbanboard-agent.sock"
-       curl -X POST --unix-socket "$SOCK" \
+       # -i prints the response HEAD; a bare curl shows only the body.
+       curl -i -X POST --unix-socket "$SOCK" \
          -H 'Content-Type: application/json' \
          -d '{"intent":{"kind":"smoke_test","subject_id":"manual"}}' \
          http://localhost/
 
-   Expected: HTTP **202** from curl with an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …`, and a `<channel source="kanbanboard-agent" ...>` tag in your Claude Code session within seconds. **The 202 is the transport's answer, not the session's** — it means the notification was written to the stdio transport, and nothing on this path reports back whether the session received it. The tag in your session is the only evidence that it did.
+   Expected (the `-i` is what prints the first two): HTTP **202** from curl, an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …`, and a `<channel source="kanbanboard-agent" ...>` tag in your Claude Code session within seconds. **The 202 is the transport's answer, not the session's** — it means the notification was written to the stdio transport, and nothing on this path reports back whether the session received it. The tag in your session is the only evidence that it did.
 
 > **Channels are CLI-only — there is no config auto-load.** `--dangerously-load-development-channels server:<KEY>` must be passed on **every** `claude` invocation; it cannot live in `settings.json`, `.mcp.json`, or any config file (the flag deliberately bypasses the channel allowlist, so loading a development channel requires an explicit per-session opt-in). Wrap it in a launcher so you don't retype it — see [`examples/start-channel-session.sh`](../examples/start-channel-session.sh), which also clears a stale socket and installs the channel-server deps on first run. **Live push only delivers while that session is up**; otherwise `channel_push` is best-effort (`done-with-note`) and `inbox.jsonl` is the backstop.
 

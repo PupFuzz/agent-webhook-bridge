@@ -52,6 +52,36 @@ class ChannelPushHandlerTest extends TestCase
         );
     }
 
+    public function test_the_declared_value_is_scrubbed_and_bounded_before_it_is_logged(): void
+    {
+        // `$declared` is a header the ENDPOINT controls, and this line runs once per push
+        // — the busiest operator-facing stream the bridge has. `SecretScrubber`'s own
+        // docblock states the invariant: every surface putting text the bridge did not
+        // compose into an operator-facing stream passes through it first. A raw header
+        // reaching Log::info() breaks it, and an unbounded one turns each push into
+        // whatever length the far end chose.
+        //
+        // ⚠ Sibling sites exist and are NOT fixed here — the consolidation is filed
+        // separately; this asserts THIS call site only.
+        Log::spy();
+        $declared = 'Bearer sk-live-abcdefghijklmnopqrstuvwxyz0123456789 '.str_repeat('A', 500);
+        Http::fake(['*' => Http::response('forwarded', 202, ['X-Channel-Delivery-Receipt' => $declared])]);
+
+        $this->push(['url' => 'http://localhost:8788/', 'kind' => 'new_card', 'subject_id' => '42']);
+
+        Log::shouldHaveReceived('info')->withArgs(function (string $m, array $ctx): bool {
+            $logged = $ctx['endpoint_declares'];
+
+            return str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
+                // Bounded: the far end does not get to choose the line length.
+                && mb_strlen($logged) <= 200
+                // Scrubbed: the credential-shaped run is gone, and the header NAME still
+                // reads, so the bound is not doing the redacting by accident.
+                && ! str_contains($logged, 'sk-live-abcdefghijklmnopqrstuvwxyz0123456789')
+                && str_contains($logged, 'X-Channel-Delivery-Receipt:');
+        });
+    }
+
     public function test_names_an_endpoint_that_declares_nothing_instead_of_assuming_for_it(): void
     {
         // THE OTHER HALF, and the one canon #7 calls NAME WHAT YOU CANNOT VERIFY: an

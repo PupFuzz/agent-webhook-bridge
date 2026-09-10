@@ -9,6 +9,7 @@ use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
@@ -176,6 +177,17 @@ final class ChannelPushHandler implements Handler
      */
     private function reportAcceptance(Response $response, ReactionTarget $target, AgentConfig $agent): void
     {
+        // ⛔ SCRUBBED AND BOUNDED BEFORE IT IS LOGGED. The header value is composed by the
+        // ENDPOINT, not by the bridge, which is exactly what {@see SecretScrubber}'s own
+        // docblock says must pass through it before reaching an operator-facing stream —
+        // and this line runs once per push, the busiest such stream the bridge has, so an
+        // unbounded value lets the far end choose how long every one of them is.
+        //
+        // The bound is taken over the COMPOSED value, not over the header value alone, so
+        // what is capped is the thing an operator actually reads. The header NAME leads,
+        // so it survives the truncation and the line still says which declaration it is
+        // reporting. The declared-nothing arm below is text the BRIDGE composed and is
+        // deliberately not truncated.
         $declared = $response->header(self::RECEIPT_HEADER);
 
         Log::info('bridge channel_push: accepted by transport (unconfirmed)', [
@@ -183,7 +195,7 @@ final class ChannelPushHandler implements Handler
             'target_id' => $target->targetId,
             'status' => $response->status(),
             'endpoint_declares' => $declared !== ''
-                ? self::RECEIPT_HEADER.': '.$declared
+                ? mb_strimwidth(self::RECEIPT_HEADER.': '.SecretScrubber::text($declared), 0, 200, '…')
                 : 'declared nothing — this endpoint sends no '.self::RECEIPT_HEADER
                     .' header, so whether it can confirm a seat received a push is unknown to the bridge',
         ]);

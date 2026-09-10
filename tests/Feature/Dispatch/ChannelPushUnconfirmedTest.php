@@ -16,6 +16,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Mockery;
 use Tests\TestCase;
 
 /**
@@ -102,7 +103,45 @@ class ChannelPushUnconfirmedTest extends TestCase
                 && str_contains($ctx['unconfirmed'], 'channel_push')
                 && str_contains($ctx['unconfirmed'], 'no delivery receipt')
         );
-        Log::shouldNotHaveReceived('info', ['bridge dispatch: delivered']);
+        // ⛔ THE FULL 2-ARG FORM IS LOAD-BEARING — do not "simplify" it back to one element.
+        // `Log::info()` is called with (message, context), and a 1-element expectation goes
+        // through Mockery's withArgsInArray(), which never matches a 2-arg call: the
+        // never() is then trivially satisfied and the assertion says nothing. Measured —
+        // with a spurious `delivered` line emitted alongside the real one, the 1-element
+        // form PASSED and this one reds with `exactly 0 times but called 1 times`.
+        Log::shouldNotHaveReceived('info', ['bridge dispatch: delivered', Mockery::any()]);
+    }
+
+    public function test_a_channel_push_that_threw_reads_as_unconfirmed_too_and_keeps_its_error_note(): void
+    {
+        // ⛔ THE INVERSION THIS TEST EXISTS TO PREVENT. `ChannelPushTransport::send()` ends
+        // in `->throw()`, which raises on ANY non-2xx — that is the endpoint having been
+        // REACHED and having ANSWERED, not a push that went nowhere. Keying the wording on
+        // "handle() returned" therefore gave the FAILED push the strongest word and the
+        // possibly-successful 202 the hedged one, exactly backwards, and on the COMMON
+        // case: an idle seat's connection-refused is the documented normal outcome for
+        // this handler. Either way the agent-facing leg is unconfirmed, so either way it
+        // reads that way.
+        //
+        // The `handler_note` is what still tells the operator WHICH failure, and it is
+        // asserted here so the wording change cannot be read as swallowing the error.
+        Http::fake(['*' => Http::response('channel transport closed: stdio gone', 503)]);
+        $this->writeAgent(EventDrivenClassifier::class, withChannel: true);
+        Log::spy();
+
+        $this->dispatch();
+
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => $m === 'bridge dispatch: accepted by transport (unconfirmed)'
+                && isset($ctx['unconfirmed'])
+                && isset($ctx['handler_note'])
+                && str_contains($ctx['handler_note'], '503')
+        );
+        Log::shouldNotHaveReceived('info', ['bridge dispatch: delivered', Mockery::any()]);
+        // The stored outcome is STILL `delivered` on the throw path, unchanged from before
+        // this card: a best-effort push failure was never a dispatch failure (DL-009).
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, AgentDispatch::firstOrFail()->outcome);
     }
 
     public function test_a_dispatch_with_no_channel_push_still_reads_as_delivered(): void

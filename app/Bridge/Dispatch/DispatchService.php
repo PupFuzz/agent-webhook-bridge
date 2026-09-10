@@ -50,14 +50,6 @@ use Throwable;
  */
 final class DispatchService
 {
-    /**
-     * The handler name whose success is only ever ACCEPTED BY TRANSPORT (card#9172).
-     * Named once because three sites in this file key on it — the route_intents
-     * synthesis, the silent-drop guard and the delivery wording below — and a fourth
-     * literal is how one of them silently stops meaning the same handler as the others.
-     */
-    private const CHANNEL_PUSH = 'channel_push';
-
     public function __construct(
         private SubscriptionRegistry $subscriptions,
         private AgentRegistry $agents,
@@ -262,9 +254,9 @@ final class DispatchService
             if ($agent->channel->routeIntents) {
                 foreach ($result->intents as $intent) {
                     $routed = ReactionTarget::make(
-                        handler: self::CHANNEL_PUSH,
+                        handler: HandlerRegistry::CHANNEL_PUSH,
                         targetId: $intent->subjectId,
-                        debounceKey: self::CHANNEL_PUSH.':'.$intent->subjectId,
+                        debounceKey: HandlerRegistry::CHANNEL_PUSH.':'.$intent->subjectId,
                         payload: $intent->toArray(),
                     );
                     $targets[$routed->handler.'|'.$routed->debounceKey] = $routed;
@@ -296,16 +288,24 @@ final class DispatchService
 
             // Best-effort: a throw is a recorded note, not a delivery failure.
             $note = null;
-            // Set only by a channel_push that RETURNED — a push that threw never reached
-            // the endpoint at all, and is already carried by $note (card#9172).
             $unconfirmedPush = false;
             foreach ($bestEffort as [$target, $handler]) {
+                // ⛔ SET ON THE ATTEMPT, NOT ON A RETURN (card#9172, operator-ruled). A
+                // raise out of `handle()` is NOT evidence the push went nowhere:
+                // `ChannelPushTransport::send()` ends in `->throw()`, which fires on ANY
+                // non-2xx — the endpoint reached and answering — and a read timeout can
+                // land after the write already did. Keying on "returned" therefore gave a
+                // FAILED push the strongest word and a possibly-successful 202 the hedged
+                // one, and it did so on the common case, because an idle seat's
+                // connection-refused is this handler's documented normal outcome. Either
+                // way the agent-facing leg is unconfirmed. WHICH failure it was is the
+                // `handler_note`'s to say, and that is unchanged.
+                $unconfirmedPush = $unconfirmedPush || $target->handler === HandlerRegistry::CHANNEL_PUSH;
                 try {
                     if ($handler === null) {
                         throw new \RuntimeException("unknown handler '{$target->handler}'");
                     }
                     $handler->handle($target, $agent);
-                    $unconfirmedPush = $unconfirmedPush || $target->handler === self::CHANNEL_PUSH;
                 } catch (Throwable $e) {
                     $note = self::exceptionNote($e);
                     Log::warning('bridge dispatch: handler failed', [
@@ -388,7 +388,7 @@ final class DispatchService
             // numeric strings numerically, so a targetId of ' 7' would pair
             // against a subject of '7' and silently suppress a warn the inbox
             // cannot back. Ids are opaque to the bridge — only identity pairs.
-            if ($t->handler !== self::CHANNEL_PUSH || in_array($t->targetId, $subjectIds, true)) {
+            if ($t->handler !== HandlerRegistry::CHANNEL_PUSH || in_array($t->targetId, $subjectIds, true)) {
                 continue;
             }
             $key = $agent->agentName.'|'.$t->targetId;
