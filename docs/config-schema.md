@@ -77,7 +77,7 @@ Each entry:
 
 Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Only `kanban` is API-provisionable (`bridge:provision` skips github with a non-zero exit).
 
-⭐ **A `github` subscription is VERIFIED AGAINST THE REPO from v0.85.0 (card#9150 / DL-368).** Because `bridge:provision` cannot see github, a declared github scope and the repo's live webhook had no comparison anywhere in the product — a webhook deleted in repo settings left the agent deaf while every bridge-side surface stayed healthy. `bridge:check` now reads the repo's webhook list and looks for one whose delivery URL is exactly `<BRIDGE_RECEIVER_BASE_URL>/github?b=<scope>`:
+⭐ **A `github` subscription is VERIFIED AGAINST THE REPO (card#9150 / DL-368).** Because `bridge:provision` cannot see github, a declared github scope and the repo's live webhook had no comparison anywhere in the product — a webhook deleted in repo settings left the agent deaf while every bridge-side surface stayed healthy. `bridge:check` now reads the repo's webhook list and looks for one that would DELIVER to `<BRIDGE_RECEIVER_BASE_URL>/github?b=<scope>` — the ⚠ below says what that does and does not treat as the same URL:
 
 | What this run established | `bridge:check` reports | Exit code |
 |---|---|---|

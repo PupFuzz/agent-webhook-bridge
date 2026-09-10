@@ -258,6 +258,62 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('ok', $this->onlyFinding($doc)['severity']);
     }
 
+    public function test_exhausting_the_page_bound_is_unvalidated_and_never_an_absent_hook(): void
+    {
+        // ⛔ THE ARM THAT KEEPS "I DID NOT FINISH ENUMERATING" OUT OF `Absent`, and it had no
+        // witness until now: mutating the bound's `return null` to `return false` left the
+        // whole suite green, because the only multi-page fixture was two pages deep. Ten FULL
+        // pages with no match is the shape that reaches it — the read never established an
+        // absence, so convicting the install would be a `fail` off nothing.
+        $full = array_fill(0, 100, ['config' => ['url' => self::FOREIGN_RECEIVER]]);
+        $sequence = Http::sequence();
+        for ($page = 1; $page <= 11; $page++) {
+            $sequence->push($full, 200);
+        }
+        $this->bootGithubInstall($sequence);
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit, 'a bound this run stopped at measured no absence, so it must not move the exit code');
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('unvalidated', $finding['severity']);
+        $this->assertStringContainsString('could not enumerate', $finding['message']);
+        $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+    }
+
+    public function test_a_hook_entry_with_no_readable_url_is_unvalidated_and_never_an_absent_hook(): void
+    {
+        // A 200 whose ENTRIES are unreadable is the same cause as a 200 whose BODY is — an
+        // upstream shape change — and on a shape change it is EVERY install at once. Before
+        // this it fell through the element type tests into the short-page `return false` and
+        // convicted them all.
+        $this->bootGithubInstall(Http::response([['id' => 1, 'config' => ['endpoint' => 'moved']]], 200));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('unvalidated', $finding['severity']);
+        $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+    }
+
+    public function test_a_matching_hook_still_wins_over_an_unreadable_sibling_entry(): void
+    {
+        // ⚑ THE ASYMMETRY, ASSERTED. An unreadable entry casts doubt on an ABSENCE, never on a
+        // HIT — so a list carrying one malformed entry beside a real matching hook is still
+        // `ok`. Without this, the fix above could have been written as "any unreadable entry
+        // ⇒ unvalidated" and silenced a leg that had already found its answer.
+        $this->bootGithubInstall(Http::response([
+            ['id' => 1, 'config' => ['endpoint' => 'moved']],
+            ['id' => 2, 'config' => ['url' => self::RECEIVER]],
+        ], 200));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('ok', $this->onlyFinding($doc)['severity']);
+    }
+
     public function test_no_other_installs_receiver_url_ever_reaches_the_output(): void
     {
         // ⛔ THE FLEET-LEAK CONTROL, over the WHOLE command output rather than one finding:
@@ -334,7 +390,6 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
                 'doc' => NextSteps::WEBHOOK_DOC,
             ],
         ], $doc['next_steps']);
-        $this->assertFalse($doc['ok'], 'the document verdict and the exit code are one variable');
         $this->assertFalse($doc['ok'], 'the document verdict and the exit code are one variable');
     }
 

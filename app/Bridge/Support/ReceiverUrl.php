@@ -83,12 +83,25 @@ final class ReceiverUrl
      * that forced it. This side reports; that side writes.
      *
      * ⭐ THE EQUIVALENCE CLASS IS THE RECEIVER'S OWN ROUTING, NOT A HAND-PICKED SET OF
-     * SPELLINGS. The endpoint (everything before the `?`) must match byte for byte — a
-     * different host or path is a different install and is none of this method's business to
-     * normalise — and the query is compared as PARSED PARAMETERS, which decodes each value
-     * exactly once, which is precisely what `$request->query('b')` gives
-     * `VerifyHmacSignature`. So `?b=owner%2Frepo` and `?b=owner/repo` are one hook, because
-     * the receiver cannot tell them apart either.
+     * SPELLINGS, and each half of it is MEASURED against this app rather than reasoned:
+     *
+     *   - the QUERY is compared as PARSED PARAMETERS, which decodes each value exactly once
+     *     — precisely what `$request->query('b')` hands `VerifyHmacSignature` — so
+     *     `?b=owner%2Frepo` and `?b=owner/repo` are one hook;
+     *   - TRAILING SLASHES on the path are dropped, because Laravel trims them before route
+     *     matching. Measured through the real router: `/webhooks/github?b=…`,
+     *     `/webhooks/github/?b=…` and `/webhooks/github//?b=…` all reach the SAME middleware
+     *     and fail at the same point, so a hook spelled with one is LIVE;
+     *   - the SCHEME and HOST are lowercased and an explicit `:443`/`:80` matching the scheme
+     *     is dropped — RFC 3986 §6.2.2.1/§6.2.3 syntax-based normalization, i.e. properties of
+     *     how the delivery REACHES this box rather than of this app. ⚠ Stated as the standard
+     *     rather than as a probe, because nothing here can drive DNS or a real TLS connect.
+     *
+     * ⛔ PATH CASE IS DELIBERATELY *NOT* NORMALISED, and that is measured too, in the opposite
+     * direction: `/Webhooks/github?b=…` answers **404** (no route) and `/webhooks/GitHub?b=…`
+     * answers **400 `invalid_provider`**. Those spellings genuinely deliver nothing, so
+     * treating them as equivalent would invent a hook that does not work — the inverse of the
+     * defect this predicate exists to avoid.
      *
      * ⛔ DECODED ONCE, NEVER REPEATEDLY, AND `%252F` THEREFORE DOES **NOT** MATCH — decided
      * from the receiver's behaviour rather than from taste. `?b=owner%252Frepo` arrives as
@@ -97,12 +110,18 @@ final class ReceiverUrl
      * delivers NOTHING. Reporting it as absent is the correct verdict, not a false negative:
      * that is exactly the state the `fail` arm exists to name.
      *
-     * ⚠ THE COMPARISON IS OVER THE WHOLE PARAMETER MAP, so a hook carrying an EXTRA query
-     * parameter — or a fragment, which is never transmitted to a server at all — reads as
-     * absent even though the receiver would ignore it. That is a known, deliberate bound and
-     * not an oversight: the ruling authorised normalising ENCODING and nothing else, and
-     * widening past it here would be the second unreviewed widening of a predicate whose
-     * negative arm moves an exit code.
+     * ⚠ WHAT IS NORMALISED IS THE LIST ABOVE, AND NOTHING ELSE IS CLAIMED. Any other spelling
+     * the receiver would tolerate but this predicate has not been shown to — a hook carrying
+     * an extra query parameter, or a fragment, are two that are known — reads as ABSENT, and
+     * on this leg that is a `fail` that moves the exit code.
+     *
+     * ⛔ THAT RESIDUAL IS OPEN, NOT CLOSED, AND THIS DELIBERATELY DOES NOT ENUMERATE IT. An
+     * earlier revision listed two members and called them "a known, deliberate bound" — an
+     * exhaustive-list claim over a population nobody had derived, and the trailing-slash
+     * spelling was already outside it and already reddening a healthy install. The honest
+     * shape is the positive statement above (what IS normalised, each with its evidence) plus
+     * this warning; a reader who needs the negative set must derive it against the receiver,
+     * as `Tests\Unit\Support\ReceiverUrlTest` does for the members it pins.
      *
      * ⚑ `===` ON TWO ARRAYS IS ORDER-SENSITIVE, and that cannot bite while the bound above
      * holds: {@see self::for()} composes exactly ONE parameter, so any live URL that agrees
@@ -123,7 +142,7 @@ final class ReceiverUrl
         [$liveEndpoint, $liveQuery] = self::split($liveUrl);
         [$ourEndpoint, $ourQuery] = self::split($receiverUrl);
 
-        if ($liveEndpoint !== $ourEndpoint) {
+        if (self::normaliseEndpoint($liveEndpoint) !== self::normaliseEndpoint($ourEndpoint)) {
             return false;
         }
 
@@ -131,6 +150,46 @@ final class ReceiverUrl
         parse_str($ourQuery, $ourParams);
 
         return $liveParams === $ourParams;
+    }
+
+    /**
+     * One endpoint, reduced to the spellings this receiver cannot tell apart.
+     *
+     * ⛔ USED ONLY BY {@see self::deliversTo()}. `matchesExactly()` never calls it: provision
+     * compares what it would WRITE, and normalising there would change what it treats as an
+     * existing subscription.
+     *
+     * ⚠ THE USERINFO IS PRESERVED AND CASE-SENSITIVE. A receiver base URL can legitimately
+     * carry credentials (`EndpointUrlRedactionTest` pins that shape), and folding it away
+     * would make a credentialed endpoint equal an uncredentialed one. It never leaves this
+     * method — the caller gets a bool.
+     *
+     * A value `parse_url` cannot read as an absolute URL is returned with trailing slashes
+     * trimmed and nothing else assumed about it: that is the one normalisation that needs no
+     * structure.
+     */
+    private static function normaliseEndpoint(string $endpoint): string
+    {
+        $parts = parse_url($endpoint);
+        if (! is_array($parts) || ! isset($parts['scheme'], $parts['host'])) {
+            return rtrim($endpoint, '/');
+        }
+
+        $scheme = strtolower($parts['scheme']);
+        $port = $parts['port'] ?? null;
+        if (($scheme === 'https' && $port === 443) || ($scheme === 'http' && $port === 80)) {
+            $port = null;
+        }
+
+        $userinfo = isset($parts['user'])
+            ? $parts['user'].(isset($parts['pass']) ? ':'.$parts['pass'] : '').'@'
+            : '';
+
+        return $scheme.'://'.$userinfo.strtolower($parts['host'])
+            .($port === null ? '' : ':'.$port)
+            // Path case is NOT folded — see deliversTo()'s docblock for the measurement that
+            // decided it.
+            .rtrim($parts['path'] ?? '', '/');
     }
 
     /**

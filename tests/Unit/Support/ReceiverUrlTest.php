@@ -53,10 +53,33 @@ class ReceiverUrlTest extends TestCase
             // and the hook feeds nothing. Absent is the correct answer.
             ['double-encoded hook', 'https://bridge.example.com/webhooks/github?b=owner%252Frepo', self::RECEIVER, false, false],
 
-            // The endpoint is never normalised — a different install is a different install.
+            // A DIFFERENT install stays different — the endpoint is reduced, never dissolved.
             ['different host', 'https://someone-else.example.net/webhooks/github?b=owner/repo', self::RECEIVER, false, false],
             ['different path', 'https://bridge.example.com/webhooks/kanban?b=owner/repo', self::RECEIVER, false, false],
-            ['host case differs', 'https://BRIDGE.example.com/webhooks/github?b=owner/repo', self::RECEIVER, false, false],
+
+            // ⭐ THE SPELLINGS THAT REACH THE SAME ROUTE, each one a `fail` on a HEALTHY
+            // install until it was normalised. The trailing-slash rows are MEASURED through
+            // the real router (all three reach the same middleware and fail at the same
+            // point); the host-case and default-port rows are RFC 3986 §6.2.2.1/§6.2.3
+            // syntax-based normalization — properties of how a delivery reaches the box, which
+            // no test here can drive.
+            ['trailing slash on the path', 'https://bridge.example.com/webhooks/github/?b=owner/repo', self::RECEIVER, true, false],
+            ['several trailing slashes', 'https://bridge.example.com/webhooks/github//?b=owner/repo', self::RECEIVER, true, false],
+            ['host case differs', 'https://BRIDGE.Example.COM/webhooks/github?b=owner/repo', self::RECEIVER, true, false],
+            ['scheme case differs', 'HTTPS://bridge.example.com/webhooks/github?b=owner/repo', self::RECEIVER, true, false],
+            ['explicit default port', 'https://bridge.example.com:443/webhooks/github?b=owner/repo', self::RECEIVER, true, false],
+
+            // ⛔ AND THE OPPOSITE DIRECTION, which is what stops the normalisation dissolving
+            // the endpoint. Both are MEASURED to deliver NOTHING — `/Webhooks/github` answers
+            // 404 (no route) and `/webhooks/GitHub` answers 400 `invalid_provider` — so
+            // calling them equivalent would invent a hook that does not work.
+            ['path case differs', 'https://bridge.example.com/Webhooks/github?b=owner/repo', self::RECEIVER, false, false],
+            ['provider segment case differs', 'https://bridge.example.com/webhooks/GitHub?b=owner/repo', self::RECEIVER, false, false],
+            // A NON-default port is a different endpoint, not a spelling.
+            ['explicit non-default port', 'https://bridge.example.com:8443/webhooks/github?b=owner/repo', self::RECEIVER, false, false],
+            // Credentials in the userinfo are preserved, so a credentialed endpoint never
+            // equals an uncredentialed one.
+            ['userinfo present', 'https://svc:pw@bridge.example.com/webhooks/github?b=owner/repo', self::RECEIVER, false, false],
 
             ['different scope', 'https://bridge.example.com/webhooks/github?b=owner/other', self::RECEIVER, false, false],
             // The stated bound: an extra parameter the receiver would ignore still reads as

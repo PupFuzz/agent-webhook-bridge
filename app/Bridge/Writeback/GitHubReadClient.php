@@ -111,17 +111,43 @@ final class GitHubReadClient
                 return null;
             }
 
+            // ⛔ AN ELEMENT THIS PROJECTION CANNOT READ MAKES THE ENUMERATION INCOMPLETE, and
+            // it must reach `null` rather than falling through to `false` (card#9150 r2). The
+            // container-level guard above already routes an unreadable 200 to `null`; before
+            // this, an entry with no readable `config.url` — the SAME cause, an upstream shape
+            // change — fell past these type tests into the short-page `return false` below and
+            // convicted the install. On a shape change that is EVERY install at once, every
+            // exit code moved, off a read that established nothing.
+            //
+            // ⚑ A MATCH STILL WINS. The flag is only consulted when no hook matched, so one
+            // malformed entry beside a readable matching one still answers `true` — an
+            // unreadable element casts doubt on an ABSENCE, never on a hit.
+            $unreadableElement = false;
             foreach ($body as $hook) {
                 $config = is_array($hook) ? ($hook['config'] ?? null) : null;
                 $url = is_array($config) ? ($config['url'] ?? null) : null;
+                if (! is_string($url)) {
+                    $unreadableElement = true;
+
+                    continue;
+                }
                 // `deliversTo`, NOT `matchesExactly` (card#9150 r1): a hook spelled
                 // `?b=owner%2Frepo` delivers here exactly as `?b=owner/repo` does, and this
                 // method's negative answer becomes a `fail` that moves an exit code.
                 // `ReceiverUrl` owns why the two predicates differ and why provision keeps
                 // the exact one.
-                if (ReceiverUrl::deliversTo(is_string($url) ? $url : null, $receiverUrl)) {
+                if (ReceiverUrl::deliversTo($url, $receiverUrl)) {
                     return true;
                 }
+            }
+
+            if ($unreadableElement) {
+                self::warnUnreadableBody(
+                    "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
+                    ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                );
+
+                return null;
             }
 
             // A SHORT PAGE IS THE END OF THE LIST, which is what makes `false` an

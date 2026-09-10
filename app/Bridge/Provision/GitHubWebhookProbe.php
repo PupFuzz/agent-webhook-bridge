@@ -89,14 +89,22 @@ final class GitHubWebhookProbe
     /**
      * The operator hint for a HOOK-LIST status.
      *
-     * ⚠ DELIBERATELY NOT {@see GitHubRepoProbe::hintFor}, AND THE
-     * REASON IS THE ENDPOINT AND NOT A PREFERENCE (canon #12 — argue the mechanism, not the
-     * label). That table is DL-186's, written for `GET /repos/{repo}`, and it sends a 403/404
-     * to *"needs `repo` scope"*. On `GET /repos/{repo}/hooks` the same two statuses are
-     * overwhelmingly a token WITHOUT `admin:repo_hook` — GitHub 404s a hook list it will not
-     * serve rather than 403-ing it — so sharing the table would print a confidently wrong
-     * remedy on the arm this leg reaches most. Two tables here is one decision per endpoint,
-     * not one behaviour implemented twice.
+     * ⚠ DELIBERATELY NOT {@see GitHubRepoProbe::hintFor}, AND THE REASON IS THE ENDPOINT AND
+     * NOT A PREFERENCE (canon #12 — argue the mechanism, not the label). That table is
+     * DL-186's, written for `GET /repos/{repo}`, and it sends a 403/404 to *"needs `repo`
+     * scope"*. On `GET /repos/{repo}/hooks` both statuses are overwhelmingly a token WITHOUT
+     * `admin:repo_hook`, so sharing that table would print a confidently wrong remedy on the
+     * arm this leg reaches most. Two tables is one decision per ENDPOINT, not one behaviour
+     * implemented twice.
+     *
+     * ⛔ BOTH 403 AND 404 ARE LIVE ARMS AND NEITHER MAY BE DROPPED. An earlier revision of this
+     * paragraph argued the divergence by saying GitHub *"404s a hook list it will not serve
+     * rather than 403-ing it"* — which reads as *the 403 arm is dead*, and a maintainer acting
+     * on it would delete the arm this leg's most important test drives (a real GitHub 403 body,
+     * `Must have admin rights to Repository.`). GitHub answers BOTH depending on what the token
+     * can see: a 403 where it can see the repo and not its hooks, a 404 where it may not admit
+     * the repo exists. The 404 hint therefore says the two causes are indistinguishable from
+     * here rather than naming one.
      */
     public static function hintFor(int $status): string
     {
