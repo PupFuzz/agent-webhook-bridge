@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
+use Tests\Support\ReadsDeclaredSpans;
 use Tests\TestCase;
 
 /**
@@ -35,6 +36,7 @@ use Tests\TestCase;
 class BoardToolsHttpProbeCheckTest extends TestCase
 {
     use MaterializesChecks;
+    use ReadsDeclaredSpans;
 
     private const ENDPOINT = 'https://bridge.test/agent-tools/call';
 
@@ -409,7 +411,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         ));
         $this->assertNotEmpty($echoing, 'the fixture must reach an arm that echoes the responder detail');
         foreach ($echoing as $finding) {
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $rendered = UntrustedText::render($finding->segments);
             // PRESENCE WITNESS, not merely an absence: an absence-only assertion is also
             // satisfied by a change that DROPPED the detail, which would withhold the one
             // part of the line naming the actual fault.
@@ -448,8 +450,8 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertContains(self::FOREIGN_PAYLOAD, $findings[0]->untrusted);
-        $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+        $this->assertContains(self::FOREIGN_PAYLOAD, $this->declaredSpans($findings[0]));
+        $rendered = UntrustedText::render($findings[0]->segments);
         $this->assertStringContainsString('\x1B[2J', $rendered);
         $this->assertStringNotContainsString("\x1b", $rendered);
     }

@@ -771,7 +771,7 @@ class SshTransportProbeTest extends TestCase
         ));
         $this->assertNotEmpty($echoing, "the {$field} fixture must reach an arm that echoes it");
         foreach ($echoing as $finding) {
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $rendered = UntrustedText::render($finding->segments);
             // PRESENCE WITNESS, not merely an absence: an absence-only assertion is
             // satisfied by a change that DROPPED the detail, which would withhold the one
             // part of the line naming the actual remote fault.
@@ -802,10 +802,12 @@ class SshTransportProbeTest extends TestCase
      * key-algorithm token and validates no shape, so an escape or a bidi override inside it
      * reached the terminal intact.
      *
-     * ⚑ The declared span is what the message ECHOES, not the raw field — the echo is cut at
-     * `KEY_ALGORITHM_ECHO_MAX`, and a declaration of the uncut value would not match the
-     * message at all, which is a guard failing open with nothing red. `keyAlgorithmEcho()`
-     * is the one derivation both the display and the declaration read.
+     * ⚑ The span IS the echo, because the echo is what the message carries — cut at
+     * `KEY_ALGORITHM_ECHO_MAX`, wrapped at the position it occupies, so the escape covers
+     * exactly the bytes on the line. Under the value-matching renderer this replaced, a
+     * declaration of the UNCUT field would have matched nothing and failed open with nothing
+     * red; a position cannot miss, which is why this leg now asserts the rendering rather
+     * than the declaration.
      */
     public function test_the_pinned_key_algorithm_echo_is_declared_as_untrusted(): void
     {
@@ -819,7 +821,7 @@ class SshTransportProbeTest extends TestCase
         $fail = $this->firstMatching($findings, 'a FIPS sshd rejects it');
         $this->assertNotNull($fail);
         $this->assertStringContainsString("\x1b", $fail->message, 'the fixture must actually plant the bytes');
-        $rendered = UntrustedText::renderInto($fail->message, $fail->untrusted);
+        $rendered = UntrustedText::render($fail->segments);
         // Asserted on the ESCAPE and not on the whole token: `AuthorizedKeysLine` lowercases
         // the algorithm field (key algorithms are case-insensitive to sshd), so pinning the
         // literal here would be pinning that normalisation, which is not this test's subject.

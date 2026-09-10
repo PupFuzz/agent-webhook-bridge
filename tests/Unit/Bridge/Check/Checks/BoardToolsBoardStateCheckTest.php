@@ -273,7 +273,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         ));
         $this->assertNotEmpty($relaying, 'the fixture must reach the relaying catch arm');
         foreach ($relaying as $finding) {
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $rendered = UntrustedText::render($finding->segments);
             $this->assertStringNotContainsString("\n", $rendered, "a forged line reached the operator: {$rendered}");
             $this->assertStringContainsString('FAIL: board 5 verified clean', $rendered);
             $this->assertStringContainsString('could not read board', $rendered);

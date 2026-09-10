@@ -54,30 +54,30 @@ final class PathVisibility
      * Returns the "could not be validated" finding when this process cannot stat
      * $path at all, and null when it can — so a call site reads as the guard it is:
      *
-     *     yield PathVisibility::unverifiedUnlessVisible($p, "…") ?? Finding::warn("… absent …");
+     *     yield PathVisibility::unverifiedUnlessVisible($p, Provenance::ownConfig("…"))
+     *         ?? Finding::warn("… absent …");
      *
-     * @param  string  $display  what to NAME in the message: the subject the operator
-     *                           would recognize, which is NOT always $path. A leg that
-     *                           probes a child to ask about its container (the channel
-     *                           probe stats the entry file to ask about the deployed
-     *                           DIRECTORY) names the container; a leg whose subject IS
-     *                           the file (a secret, a token) names the file. Both shapes
-     *                           are live and both read correctly, because the message
-     *                           below supplies the cause and the remedy itself — it says
-     *                           a directory ABOVE denies traversal and asks for traversal,
-     *                           never for a chmod of whatever is named here.
-     * @param  string  $untrusted  the span of `$display` this install did NOT author, or
-     *                             `''` when every part of it is the operator's own — see
-     *                             {@see self::notVisibleFinding()}, which owns the reasoning
-     *                             and the census.
+     * @param  Provenance  $display  what to NAME in the message: the subject the operator
+     *                               would recognize, which is NOT always $path. A leg that
+     *                               probes a child to ask about its container (the channel
+     *                               probe stats the entry file to ask about the deployed
+     *                               DIRECTORY) names the container; a leg whose subject IS
+     *                               the file (a secret, a token) names the file. Both shapes
+     *                               are live and both read correctly, because the message
+     *                               below supplies the cause and the remedy itself — it says
+     *                               a directory ABOVE denies traversal and asks for traversal,
+     *                               never for a chmod of whatever is named here. It carries
+     *                               the RULING on who wrote each part of itself — see
+     *                               {@see Provenance} for why that ruling is a required sum
+     *                               type here and not an optional string.
      */
-    public static function unverifiedUnlessVisible(string $path, string $display, string $untrusted = ''): ?Finding
+    public static function unverifiedUnlessVisible(string $path, Provenance $display): ?Finding
     {
         if (self::ancestorIsTraversable($path)) {
             return null;
         }
 
-        return self::notVisibleFinding($display, $untrusted);
+        return self::notVisibleFinding($display);
     }
 
     /**
@@ -101,23 +101,21 @@ final class PathVisibility
      * being able to forget. It escapes nothing — {@see UntrustedText} owns that rule and
      * the TERMINAL renderer applies it; this only records WHERE the seam is.
      *
-     * ⛔ THE DEFAULT IS `''` — NO DECLARATION — AND THAT IS A RULING, NOT A CONVENIENCE.
-     * The test is the PRINCIPAL, not the shape: a display naming the OPERATOR's own config
-     * (a `secret_dir` / `config_dir` path, a configured `token_path`, a `channel.socket`
-     * parent, an agent name out of this install's own YAML) is text this install vouches
-     * for, and declaring it would say otherwise. The two MEMBERS are both in
+     * ⛔ THE RULING IS REQUIRED AND TYPED — {@see Provenance}, which owns the reasoning and
+     * the census of which displays are whose. It replaced an optional `string $untrusted =
+     * ''`, whose silent default made *this display is the operator's own* and *nobody
+     * thought about it* the same call. The two FOREIGN members are both in
      * `ChannelSnapshotProbe` (NAMED, never `{@see}`-linked: pint rewrites a docblock FQCN
      * into a real `use`, and importing a consumer here would invert the layer): the
      * resolved `readlink()` target, and the deployment realpath below it, where the account
      * being inspected chose the link target and every directory name in it.
-     *
-     * @param  string  $untrusted  the span of `$display` a foreign principal chose, or `''`
      */
-    public static function notVisibleFinding(string $display, string $untrusted = ''): Finding
+    public static function notVisibleFinding(Provenance $display): Finding
     {
-        $finding = Finding::unvalidated("{$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and an agent's own directories are often 0700), so this leg could NOT be validated and \"absent\" is NOT a conclusion this run is entitled to draw; re-run bridge:check as the owning user, or grant it traversal");
-
-        return $untrusted === '' ? $finding : $finding->carryingUntrusted($untrusted);
+        return Finding::unvalidated([
+            ...$display->segments,
+            " is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and an agent's own directories are often 0700), so this leg could NOT be validated and \"absent\" is NOT a conclusion this run is entitled to draw; re-run bridge:check as the owning user, or grant it traversal",
+        ]);
     }
 
     /**

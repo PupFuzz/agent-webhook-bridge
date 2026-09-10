@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\Untrusted;
 
 /**
  * The offline SSH-transport pinned-line + sshd-posture probe for `bridge:check`
@@ -60,7 +61,7 @@ final class SshTransportProbe
 {
     /**
      * How many BYTES of the matched line's key-algorithm field an operator message may
-     * echo. {@see self::keyAlgorithmForMessage()} owns the reason it is bounded at all.
+     * echo. {@see self::keyAlgorithmSegments()} owns the reason it is bounded at all.
      * The figure is DERIVED, not picked: the longest key type OpenSSH defines is
      * `sk-ecdsa-sha2-nistp256-cert-v01@openssh.com` — 43 ASCII bytes (`ssh -Q key`,
      * OpenSSH 9.6p1) — so 64 cannot truncate a real algorithm name, only a field that is
@@ -246,13 +247,13 @@ final class SshTransportProbe
         }
 
         if ($this->env->fipsEnabled()) {
-            // An empty declaration is skipped by the renderer, so the `unknown` arm — where
-            // nothing foreign is echoed at all — needs no branch here.
-            $algorithmEcho = $this->keyAlgorithmEcho($line->keyAlgorithm) ?? '';
+            // The `unknown` arm echoes nothing foreign and therefore declares nothing — see
+            // keyAlgorithmSegments(), which is where that branch lives now.
+            $algorithm = $this->keyAlgorithmSegments($line->keyAlgorithm);
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is ".$this->keyAlgorithmForMessage($line->keyAlgorithm).' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)')->carryingUntrusted($algorithmEcho);
+                $findings[] = Finding::fail(["FIPS mode is enabled but the pinned key for agent {$agentName} is ", ...$algorithm, ' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)']);
             } else {
-                $findings[] = Finding::ok("the pinned key for agent {$agentName} (".$this->keyAlgorithmForMessage($line->keyAlgorithm).') is FIPS-approved')->carryingUntrusted($algorithmEcho);
+                $findings[] = Finding::ok(["the pinned key for agent {$agentName} (", ...$algorithm, ') is FIPS-approved']);
             }
         }
 
@@ -290,19 +291,19 @@ final class SshTransportProbe
             // renderer can recover from a flat message string.
             $stderr = trim($r['stderr']);
 
-            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".$stderr.')')->carryingUntrusted($stderr)];
+            return [Finding::fail(["ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ", Untrusted::span($stderr), ')'])];
         }
 
         $decoded = json_decode($r['stdout'], true);
         if (! is_array($decoded) || ! array_key_exists('ok', $decoded)) {
             $snippet = substr(trim($r['stdout']), 0, 200);
 
-            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".$snippet)->carryingUntrusted($snippet)];
+            return [Finding::fail(["ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ", Untrusted::span($snippet)])];
         }
         if ($decoded['ok'] !== true) {
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
-            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")->carryingUntrusted($error)];
+            return [Finding::fail(["ssh {$target}: board_my_cards did not succeed (error: ", Untrusted::span($error), ')'])];
         }
 
         $result = $decoded['result'] ?? null;
@@ -570,27 +571,38 @@ final class SshTransportProbe
      * {@see BoardMyCardsTool} states the LOUDER version of this for its own byte cap — a
      * failed encode for the whole response — and that consequence belongs to ITS renderer,
      * which sets no substitute flag. It is not this one's, and reading it across was wrong.
+     *
+     * ⛔ IT RETURNS SEGMENTS, NOT A STRING (card#9121, DL-366). The token is foreign and it
+     * is wrapped in backticks this install wrote, so the foreign part is INTERIOR to the
+     * phrase. A flat string would hand the renderer a sentence with the seam erased and ask
+     * it to find the token again by substring search; that is the design this change exists
+     * to end. The `unknown` arm carries no span because it echoes nothing.
+     *
+     * @return list<string|Untrusted>
      */
-    private function keyAlgorithmForMessage(?string $algorithm): string
+    private function keyAlgorithmSegments(?string $algorithm): array
     {
         $cut = $this->keyAlgorithmEcho($algorithm);
         if ($cut === null) {
-            return '`unknown`';
+            return ['`unknown`'];
         }
 
-        return $cut === $algorithm ? '`'.$algorithm.'`' : '`'.$cut.'` (truncated)';
+        return $cut === $algorithm
+            ? ['`', Untrusted::span($cut), '`']
+            : ['`', Untrusted::span($cut), '` (truncated)'];
     }
 
     /**
-     * The exact span of the key algorithm that reaches the operator's line, or null when
-     * nothing foreign does — what {@see Finding::carryingUntrusted()} declares at the two
-     * FIPS legs (card#9121, DL-366).
+     * The BOUNDED echo of the key algorithm — the exact bytes that reach the operator's
+     * line — or null when nothing foreign does (card#9121, DL-366).
      *
-     * ⭐ ONE DERIVATION, CALLED BY THE DISPLAY METHOD, never a second cut beside it. The
-     * declaration is matched by EXACT SUBSTRING at render time, so a sibling that re-derived
-     * the same `mb_strcut` could drift by one byte and the escape would then silently not
-     * apply — a guard that fails open with nothing red. This is the reader; the other method
-     * formats what it returns.
+     * ⭐ ONE DERIVATION, CALLED BY THE COMPOSING METHOD, never a second cut beside it. Both
+     * the phrase's text and its `(truncated)` tail turn on whether this cut equals the raw
+     * field, so a sibling that re-derived the same `mb_strcut` could disagree with it about
+     * that. ⚑ It is no longer load-bearing for the ESCAPE — {@see self::keyAlgorithmSegments()}
+     * wraps this return value at the position it occupies, so there is nothing to match and
+     * a drift could not silently un-escape anything. It was, under the value-matching
+     * renderer this replaced, and that is the sentence this docblock used to carry.
      *
      * The bytes are foreign for the reason DL-363 established about this file:
      * `authorized_keys` lives under the INSPECTED account's home, so that account chose

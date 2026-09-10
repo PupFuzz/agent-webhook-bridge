@@ -12,7 +12,9 @@ namespace App\Bridge\Support;
  * error body, a foreign config's parse error). Escaping at each site is the second
  * divergent implementation of one behaviour, which is canon #5's defect — so the rule
  * lives here, the RENDERER applies it, and a call site's only job is to DECLARE which span
- * of its message it did not author ({@see Finding::carryingUntrusted()}).
+ * of its message it did not author — BY POSITION, by composing that message as a list of
+ * segments with the foreign parts wrapped in {@see Untrusted}. {@see self::render()} owns
+ * why nothing is searched for, and {@see Untrusted} owns the three defects that taught it.
  *
  * ⛔ IT IS NOT APPLIED IN `Finding`'s CONSTRUCTOR, DELIBERATELY, and the reason is a write
  * contract. `bridge:check --format=json` carries `findings[].message` verbatim, machine
@@ -29,9 +31,12 @@ namespace App\Bridge\Support;
  *    its own boundary; the document's own `message` bound (operator prose, never part of
  *    the contract) is where that is written down for consumers.
  *  - **It only sanitises DECLARED spans.** A future call site that interpolates a foreign
- *    string and forgets `carryingUntrusted()` gets no protection, and nothing here can see
- *    that omission — the message is one flat string by the time a renderer holds it. The
- *    guard against that is review of the call site, not this class.
+ *    string into a plain prose segment, rather than wrapping it in {@see Untrusted}, gets no
+ *    protection, and nothing here can see that omission — a string segment is indivisible by
+ *    the time a renderer holds it. The guard against that is review of the call site, not
+ *    this class. ⚑ What IS closed, and was not under the value-matching design this
+ *    replaced, is the span that IS declared: it can no longer be missed, straddled or
+ *    skipped, because {@see self::render()} performs no matching at all.
  *  - **It is not an escape for any other sink.** These bytes are shaped for a terminal
  *    line. Anything writing a finding to HTML, a shell argument or a log format owns its
  *    own encoding.
@@ -187,56 +192,41 @@ final class UntrustedText
     }
 
     /**
-     * A finding's message with each declared untrusted span replaced by its rendered form.
+     * A finding's SEGMENTS, rendered as one operator line: this install's own prose verbatim,
+     * every {@see Untrusted} span through {@see self::forOperator()}.
      *
-     * SUBSTRING REPLACEMENT, not a re-composition, because the message is already one flat
-     * string by the time any renderer holds it and the call site is the only thing that
-     * ever knew where the seam was. The span is matched EXACTLY as it was interpolated —
-     * control bytes and all — so the match is on bytes the check itself passed through,
-     * never on a pattern guessed from the sentence around it.
+     * ⛔ NOTHING IS SEARCHED FOR, AND THAT IS THE WHOLE PROPERTY. Two earlier cuts of this
+     * change declared each span by VALUE and re-found it here — one with a per-span
+     * `str_replace` loop, one with a single `strtr()` map — and BOTH shipped a live
+     * `ESC [ 2 K` erase-line onto root's terminal, by different mechanisms, each with a green
+     * suite. {@see Untrusted} records all three failures and why no third matching strategy
+     * could be sound: a search reconstructs a position from bytes the attacker chose, and the
+     * prose it has to disambiguate against is public, because it is in the message their
+     * bytes are going into.
      *
-     * EVERY occurrence is replaced, deliberately: a message that interpolates one
-     * untrusted value twice is one this rule must not half-apply.
+     * What replaces the argument is arithmetic. Each segment is rendered exactly once, in
+     * order, independent of every other segment — so COVERAGE is not a property of the input
+     * (which an attacker picks) but of the loop (which they do not). A span cannot be eaten
+     * by a neighbour's match, cannot be skipped because its rendering is empty, and cannot be
+     * re-processed: there is no match, no skip and no second pass to exploit.
      *
-     * ⛔ ONE NON-RE-SCANNING PASS — `strtr()` WITH A MAP, NEVER `str_replace()` PER SPAN IN
-     * A LOOP, and this is a security property rather than an optimisation. A loop re-scans
-     * the message it has already rewritten, so when span A is a SUBSTRING of span B the
-     * first pass rewrites A's occurrence INSIDE B's, B's exact-substring match then fails,
-     * and B is left ENTIRELY UNESCAPED — silently, with no error and nothing red. That is
-     * not a contrived shape: the deployed-snapshot legs declare a deployment PATH and a
-     * `package.json` `version`, both chosen by the same principal, and a version that
-     * quotes the path is all it takes (`mkdir $'ch\x1bx'` succeeds on Linux — a path
-     * component may hold any byte but NUL and `/`). MEASURED on that exact pair: the loop
-     * left 2 live ESC bytes on the operator's line, including an erase-line; `strtr` leaves
-     * 0. `strtr` matches the LONGEST key at each position, consumes the message left to
-     * right exactly once, and never re-processes text it has emitted — so B wins where the
-     * two overlap and A is still escaped everywhere B does not cover it.
+     * ⚑ A SPAN WHOSE RENDERING IS EMPTY RENDERS EMPTY, and needs no special case any more.
+     * Under value matching it needed one and got the wrong one twice: an empty replacement is
+     * a DELETION applied to every occurrence, which stripped the spaces out of the bridge's
+     * own prose (a `version` of `" "` sufficed), and the fix — dropping the pair — put the
+     * span's RAW bytes back on the line, `\r` and `\t` included. Here the span is at a
+     * position and its rendering goes at that position, whatever its length; the prose either
+     * side is not reachable from it at all.
      *
-     * ⛔ A PAIR WHOSE RENDERING IS EMPTY IS DROPPED, not just a pair whose SPAN is empty,
-     * and the second half of that is the bug the first half hid. `forOperator()` can RETURN
-     * `''` from a non-empty span — whitespace collapses to one space and `trim()` then
-     * empties it — after which the replacement is a DELETION applied to every occurrence of
-     * that span in the message. A `version` of `" "` therefore deleted every space from the
-     * bridge's OWN prose (`channelserversnapshotat/tmp/...isSTALE`), with no control byte
-     * anywhere in the input. Dropping the pair leaves the harmless whitespace in place,
-     * which is the correct rendering of a whitespace-only foreign span.
-     *
-     * @param  list<string>  $untrusted
+     * @param  list<string|Untrusted>  $segments
      */
-    public static function renderInto(string $message, array $untrusted): string
+    public static function render(array $segments): string
     {
-        $map = [];
-        foreach ($untrusted as $raw) {
-            if ($raw === '') {
-                continue;
-            }
-            $rendered = self::forOperator($raw);
-            if ($rendered === '') {
-                continue;
-            }
-            $map[$raw] = $rendered;
+        $line = '';
+        foreach ($segments as $segment) {
+            $line .= $segment instanceof Untrusted ? self::forOperator($segment->raw) : $segment;
         }
 
-        return $map === [] ? $message : strtr($message, $map);
+        return $line;
     }
 }

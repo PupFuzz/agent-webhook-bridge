@@ -9,10 +9,12 @@ use App\Bridge\Support\UntrustedText;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\ReadsDeclaredSpans;
 use Tests\Support\SkipsAsRoot;
 
 class ChannelSnapshotProbeTest extends TestCase
 {
+    use ReadsDeclaredSpans;
     use SkipsAsRoot;
 
     private string $tmp;
@@ -321,12 +323,12 @@ class ChannelSnapshotProbeTest extends TestCase
         ));
         $this->assertNotEmpty($echoing, 'the fixture must actually reach an arm that echoes the version');
         foreach ($echoing as $finding) {
-            $this->assertContains($payload, $finding->untrusted, "undeclared foreign span in: {$finding->message}");
+            $this->assertContains($payload, $this->declaredSpans($finding), "undeclared foreign span in: {$finding->message}");
 
             // PRESENCE WITNESS, not an absence: an absence-only assertion is satisfied by a
             // renderer that dropped the detail entirely, which would certify a regression
             // that withholds the one part of the line naming the real fault.
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $rendered = UntrustedText::render($finding->segments);
             $this->assertStringContainsString('\x1B[2J', $rendered);
             $this->assertStringContainsString('\x{202E}', $rendered);
             $this->assertStringContainsString('agent prod-agent: channel socket live', $rendered);
@@ -358,8 +360,8 @@ class ChannelSnapshotProbeTest extends TestCase
         ));
         $this->assertNotEmpty($echoing, 'the fixture must reach the legs that name the deployment path');
         foreach ($echoing as $finding) {
-            $this->assertContains($deployed, $finding->untrusted, "undeclared foreign span in: {$finding->message}");
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $this->assertContains($deployed, $this->declaredSpans($finding), "undeclared foreign span in: {$finding->message}");
+            $rendered = UntrustedText::render($finding->segments);
             $this->assertStringContainsString('dep\x1B[2Jloy\x{202E}ed', $rendered);
             $this->assertStringNotContainsString("\x1b", $rendered);
         }
@@ -394,7 +396,7 @@ class ChannelSnapshotProbeTest extends TestCase
             $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
             $this->assertStringContainsString("\x1b", $findings[0]->message, 'the fixture must actually plant the bytes');
 
-            $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+            $rendered = UntrustedText::render($findings[0]->segments);
             $this->assertStringContainsString('ch\x1Bx\x{202E}', $rendered);
             $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
         } finally {
@@ -420,7 +422,7 @@ class ChannelSnapshotProbeTest extends TestCase
 
             $this->assertCount(1, $findings);
             $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
-            $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+            $rendered = UntrustedText::render($findings[0]->segments);
             $this->assertStringContainsString('dep\x1Bloy\x{202E}', $rendered);
             $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
         } finally {
@@ -439,7 +441,8 @@ class ChannelSnapshotProbeTest extends TestCase
     {
         $this->skipAsRoot();
         $evil = "dep\x1bloy";
-        $deployed = $this->deployment("0.0 installed at {$this->tmp}/{$evil} \x1b[2K\x1b[1;31m", name: $evil);
+        $version = "0.0 installed at {$this->tmp}/{$evil} \x1b[2K\x1b[1;31m";
+        $deployed = $this->deployment($version, name: $evil);
 
         $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('9.9.9'));
 
@@ -452,15 +455,20 @@ class ChannelSnapshotProbeTest extends TestCase
         ));
         $this->assertNotEmpty($versionLeg, 'the fixture must reach the arm that echoes both spans');
         foreach ($versionLeg as $finding) {
-            $this->assertCount(2, $finding->untrusted, 'this leg is the two-declaration site');
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            // THREE POSITIONS, not two values: the deployment path lands twice (once as the
+            // subject, once inside the re-sync command) and the version once. Under the
+            // value-matching renderer this read 2, because a declaration was a value and a
+            // replace-all covered every occurrence of it by accident; a position is
+            // per-occurrence, so the count is the number of places on the operator's line.
+            $this->assertSame([$deployed, $version, $deployed], $this->declaredSpans($finding));
+            $rendered = UntrustedText::render($finding->segments);
             $this->assertStringContainsString('\x1B[2K\x1B[1;31m', $rendered);
         }
 
         // EVERY finding of the run, not just that arm: nothing on the operator's report may
         // carry a live control byte once the declarations are applied.
         foreach ($findings as $finding) {
-            $rendered = UntrustedText::renderInto($finding->message, $finding->untrusted);
+            $rendered = UntrustedText::render($finding->segments);
             $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
         }
     }

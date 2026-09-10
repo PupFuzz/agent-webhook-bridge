@@ -8,6 +8,7 @@ use App\Bridge\Check\OptInCheck;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\Untrusted;
 use App\Bridge\Tools\BoardToolsScopeHeader;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -149,7 +150,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 // subject is this operator's own token file, which this install vouches for.
                 $connectError = $e->getMessage();
 
-                yield Finding::fail("board_tools probe: agent {$name}: could NOT connect to {$endpoint} ({$connectError}) — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.")->carryingUntrusted($connectError);
+                yield Finding::fail(["board_tools probe: agent {$name}: could NOT connect to {$endpoint} (", Untrusted::span($connectError), ") — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call."]);
 
                 continue;
             }
@@ -168,7 +169,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             if (! $resp->successful()) {
                 [$label, $detail] = $this->probeErrorDetail($resp);
 
-                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → HTTP {$status} — the tool call did not succeed ({$label}{$detail}).")->carryingUntrusted($detail);
+                yield Finding::fail(["board_tools probe: agent {$name}: {$endpoint} → HTTP {$status} — the tool call did not succeed ({$label}", Untrusted::span($detail), ').']);
 
                 continue;
             }
@@ -177,7 +178,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             if (! is_array($result)) {
                 [$label, $detail] = $this->probeErrorDetail($resp);
 
-                yield Finding::fail("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$label}{$detail}).")->carryingUntrusted($detail);
+                yield Finding::fail(["board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$label}", Untrusted::span($detail), ').']);
 
                 continue;
             }

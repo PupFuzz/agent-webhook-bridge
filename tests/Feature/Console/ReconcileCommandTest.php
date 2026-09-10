@@ -5,6 +5,7 @@ namespace Tests\Feature\Console;
 use App\Models\WritebackBoardDivergence;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -447,6 +448,53 @@ class ReconcileCommandTest extends TestCase
         $this->artisan('bridge:reconcile')
             ->expectsOutputToContain('token from token file')
             ->assertExitCode(1);
+    }
+
+    /**
+     * ⛔ A KANBAN ERROR BODY CANNOT MOVE THE OPERATOR'S CURSOR (card#9121, DL-366).
+     *
+     * `KanbanClient` reads through `->throw()`, so a non-2xx arrives as an
+     * `Illuminate\Http\Client\RequestException` whose constructor bakes the RESPONSE BODY
+     * SUMMARY into `getMessage()` — and this command relays that to `error()` with no
+     * `Finding` and no renderer anywhere in the path. Guzzle's `bodySummary` gate is
+     * `/[^\pL\pM\pN\pP\pS\pZ\n\r\t]/u`: it fails closed on an ESC, so this leg cannot
+     * be attacked with one — and it PASSES `\r`, which is all that is needed. The body below
+     * is the live shape: a carriage return followed by a line that says the opposite of the
+     * verdict, on the run an operator reads to decide whether to `--fix`. Rendered raw, the
+     * `\r` returns the cursor to column 0 and the forgery overwrites the real line.
+     *
+     * ⚠ ASSERTED ON A CENSUS OF LIVE CONTROL BYTES, with a presence witness beside it: the
+     * diagnostic must still REACH the operator (the whole point of relaying it), so an
+     * assertion that only checked for the absence of `\r` would be satisfied by a fix that
+     * dropped the body.
+     */
+    public function test_a_relayed_kanban_error_body_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        Http::fake([
+            '*preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
+            '*tasks/search.json*' => Http::response("\rboard 8: 0 divergences, nothing to do\t\n", 500),
+            'https://api.github.com/*' => Http::response(['full_name' => 'owner/repo'], 200),
+        ]);
+
+        $this->assertSame(1, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('read failed', $output);
+        // PRESENCE WITNESS — the relayed diagnostic still reaches the operator, on ONE line.
+        $this->assertStringContainsString('board 8: 0 divergences, nothing to do', $output);
+        $this->assertMatchesRegularExpression(
+            '/read failed — [^\n]*board 8: 0 divergences, nothing to do/',
+            $output,
+            'the relayed body must not be able to start a line of its own',
+        );
+        // THE CENSUS. `\n` is excluded — the console writes one per line — and nothing else
+        // is: no sentence this install wrote carries a `\r` or a `\t`.
+        $this->assertSame(
+            0,
+            preg_match_all('/[\x00-\x09\x0B-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u', $output),
+            'a live control byte reached the operator terminal: '.addcslashes($output, "\0..\37\177..\377"),
+        );
     }
 
     public function test_no_writeback_config_fails(): void

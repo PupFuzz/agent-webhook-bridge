@@ -7,6 +7,7 @@ use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
@@ -216,7 +217,17 @@ class ReconcileCommand extends BridgeCommand
         try {
             $read = $kanban->readBoardCards($boardId);
         } catch (Throwable $e) {
-            $this->error("board {$boardId} ({$repoList}): read failed — {$e->getMessage()}");
+            // ⛔ THE RELAYED MESSAGE IS FOREIGN BYTES ON AN OPERATOR'S TERMINAL, and this
+            // command has no `Finding` and no renderer between it and the console — so the
+            // rule's owner is called HERE, at the write (card#9121, DL-366). `KanbanClient`
+            // reads through `->throw()`, so a non-2xx arrives as an
+            // `Illuminate\Http\Client\RequestException` whose constructor bakes the kanban
+            // RESPONSE BODY SUMMARY into `getMessage()`. Guzzle's `bodySummary` gate is
+            // `/[^\pL\pM\pN\pP\pS\pZ\n\r\t]/u`: it fails closed on an ESC but PASSES
+            // `\r` — and a 500 body of `"\rboard 8: 0 divergences, nothing to do"` returns
+            // the cursor to column 0 and overwrites the line this command just printed, on
+            // the run an operator reads to decide whether to `--fix`.
+            $this->error("board {$boardId} ({$repoList}): read failed — ".UntrustedText::forOperator($e->getMessage()));
             $this->hadError = true;
 
             return;
@@ -234,7 +245,7 @@ class ReconcileCommand extends BridgeCommand
             // Loud, not silent: a board-wide order outage (preload down) would else
             // masquerade as per-card stage drift. Cards then report as unorderable and
             // the run exits non-zero (set per-card in reconcileCard).
-            $this->warn("board {$boardId}: could not read stage order ({$e->getMessage()}) — cards on it can't be direction-checked and won't be auto-moved");
+            $this->warn("board {$boardId}: could not read stage order (".UntrustedText::forOperator($e->getMessage()).") — cards on it can't be direction-checked and won't be auto-moved");
             $order = [];
         }
 
@@ -353,7 +364,8 @@ class ReconcileCommand extends BridgeCommand
 
             return;
         } catch (Throwable $e) {   // timeout / connection
-            $this->warn("card {$cardId} ({$cardRepo}#{$prNumber}): GitHub read failed ({$e->getMessage()}) — skipped");
+            // The same rule, a different remote: this arm relays GITHUB's response body.
+            $this->warn("card {$cardId} ({$cardRepo}#{$prNumber}): GitHub read failed (".UntrustedText::forOperator($e->getMessage()).') — skipped');
             $this->skipped++;
 
             return;
@@ -662,7 +674,7 @@ class ReconcileCommand extends BridgeCommand
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
                 } catch (Throwable $e) {
-                    $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], $e->getMessage()));
+                    $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], UntrustedText::forOperator($e->getMessage())));
                     $this->hadError = true;
                 }
             }

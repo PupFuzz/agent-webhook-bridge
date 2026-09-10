@@ -8,6 +8,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\Untrusted;
 use Throwable;
 
 /**
@@ -122,7 +123,7 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
             // `WritebackBoardStateCheck` for the measurement.
             $relayed = $e->getMessage();
 
-            yield Finding::unvalidated("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$relayed)->carryingUntrusted($relayed);
+            yield Finding::unvalidated(["board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ", Untrusted::span($relayed)]);
         }
     }
 }

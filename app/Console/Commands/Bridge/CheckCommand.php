@@ -64,6 +64,7 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\Untrusted;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\ConfigSeenLedger;
@@ -479,7 +480,7 @@ class CheckCommand extends BridgeCommand
                         // `RequestException` carrying a response-body summary. An envelope
                         // that cannot name its cause cannot rule that cause out either.
                         $relayed = $e->getMessage();
-                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$relayed)->carryingUntrusted($relayed));
+                        $this->emitUnattributed(Finding::unvalidated(['writeback: skipped board-visibility probe — ', Untrusted::span($relayed)]));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -1020,8 +1021,6 @@ class CheckCommand extends BridgeCommand
      */
     private function emitFinding(Finding $finding): bool
     {
-        $message = $finding->message;
-
         // Counted HERE — the single chokepoint every probe finding flows through, so any
         // future probe emitting the severity is tallied without touching its call site.
         if ($finding->severity === Severity::Unvalidated) {
@@ -1034,9 +1033,11 @@ class CheckCommand extends BridgeCommand
             // document reads `Finding::$message` and must stay byte-identical for the
             // consumers already parsing it, so the escape is a property of the terminal
             // rendering and of nothing else. The rule itself is `UntrustedText`'s, applied
-            // to the spans a check DECLARED it did not author; a message with none declared
-            // comes back identical, so this is a no-op on every finding the bridge wrote.
-            $message = UntrustedText::renderInto($message, $finding->untrusted);
+            // to the SEGMENTS a check composed its message from — its own prose verbatim,
+            // each declared foreign span through the escape, at the position it occupies.
+            // Nothing is searched for; a message with no declared span renders to the same
+            // bytes it always did, so this is a no-op on every finding the bridge wrote.
+            $message = UntrustedText::render($finding->segments);
 
             match ($finding->severity) {
                 Severity::Fail => $this->error($message),

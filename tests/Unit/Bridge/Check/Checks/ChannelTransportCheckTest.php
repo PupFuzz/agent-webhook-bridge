@@ -11,6 +11,7 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
 use Tests\Support\MaterializesChecks;
+use Tests\Support\ReadsDeclaredSpans;
 use Tests\TestCase;
 
 /**
@@ -38,6 +39,7 @@ use Tests\TestCase;
 class ChannelTransportCheckTest extends TestCase
 {
     use MaterializesChecks;
+    use ReadsDeclaredSpans;
 
     private string $dir;
 
@@ -547,7 +549,7 @@ class ChannelTransportCheckTest extends TestCase
         $unix = $this->socketFindings($socket, $this->probe(connected: false));
 
         foreach (['http' => $http[0], 'unix' => $unix[0]] as $transport => $finding) {
-            $this->assertSame([$payload], $finding->untrusted, "{$transport}: the marker detail must be declared untrusted");
+            $this->assertSame([$payload], $this->declaredSpans($finding), "{$transport}: the marker detail must be declared untrusted");
             $this->assertStringContainsString("({$payload})", $finding->message, "{$transport}: the message must still carry the raw bytes");
         }
     }
@@ -560,7 +562,7 @@ class ChannelTransportCheckTest extends TestCase
 
         $findings = $this->httpFindings('http://127.0.0.1:8765/push', $this->probe(connected: false));
 
-        $this->assertSame([], $findings[0]->untrusted);
+        $this->assertSame([], $this->declaredSpans($findings[0]));
     }
 
     // ---- neither ----

@@ -52,8 +52,11 @@ namespace App\Bridge\Support;
  * private to this class until card#5698 hoisted it; that class docs the reasoning.
  *
  * ⭐ EVERY FINDING HERE THAT ECHOES A FOREIGN VALUE DECLARES IT (card#9121, DL-366) — the
- * declaration is {@see Finding::carryingUntrusted()} and it escapes nothing; the rule lives
- * in {@see UntrustedText} and the TERMINAL renderer applies it. Two values in this file are
+ * declaration is an {@see Untrusted} segment IN the message's own segment list, so the value
+ * is declared at the POSITION it occupies and nothing has to find it again; it escapes
+ * nothing, the rule lives in {@see UntrustedText} and the TERMINAL renderer applies it. ⚑ A
+ * value interpolated TWICE is TWO segments — see {@see self::launchNotMeasured()} and the
+ * node_modules arm — because a position is per-occurrence. Two values in this file are
  * foreign, and both were being interpolated verbatim into an operator's line:
  *  - the DEPLOYED `package.json`'s `version` — arbitrary JSON string content, under another
  *    OS user's home, shape-validated nowhere and bounded only by the reader's byte cap;
@@ -62,10 +65,11 @@ namespace App\Bridge\Support;
  *    COMPONENT may hold any byte but NUL and `/`.
  * ⚑ THAT INCLUDES THE FINDINGS THIS FILE DOES NOT CONSTRUCT. Both
  * {@see PathVisibility::unverifiedUnlessVisible()} calls below interpolate the resolved path
- * into a finding built inside the GUARD, so they pass it as the guard's untrusted-span
- * argument. The first cut of this sweep declared `$resolved` two branches away and missed
- * these two, because a reviewer greps for `Finding::` and a guard that returns one is not
- * spelled that way — which is why the declaration is a parameter there and not a wrap here.
+ * into a finding built inside the GUARD, so they pass it as a {@see Provenance} — a REQUIRED
+ * sum with no default, so the ruling cannot be made by omission. The first cut of this sweep
+ * declared `$resolved` two branches away and missed these two, because a reviewer greps for
+ * `Finding::` and a guard that returns one is not spelled that way — which is why the
+ * declaration is a parameter there and not a wrap here.
  * ⛔ THE OTHER INTERPOLATED VALUES ARE DELIBERATELY NOT DECLARED, and the reason is the
  * PRINCIPAL rather than the shape: `$serverPath` is the operator's own `channel.server_path`
  * and `$bundledDir` / `$bundled['version']` are this checkout's own tracked files. Declaring
@@ -103,7 +107,19 @@ final class ChannelSnapshotProbe
         // resolver) errors instead of returning a verdict on exactly the seat that
         // most needs one, so fall back to the link target and then the literal.
         $resolved = self::resolveNonStrict($serverPath);
-        $where = $resolved === $serverPath ? $serverPath : "{$serverPath} → {$resolved}";
+        // ⭐ `$where` IS A SEGMENT LIST, NOT AN INTERPOLATED STRING (card#9121, DL-366). It
+        // is `<the operator's own configured path> → <the RESOLVED target>`, and only the
+        // second half is foreign — the account being inspected chose the link target. Kept
+        // as segments so every message below drops it in with the seam still marked; a flat
+        // string would put the renderer back to guessing where the seam was.
+        // ⚑ THE TWO HALVES ARE NAMED so the traversability guard below composes the SAME
+        // subject from the SAME pieces rather than re-deriving it — its API takes the prose
+        // and the span separately (it builds the sentence around them), so what it must not
+        // be able to do is disagree with these three messages about either one.
+        $whereProse = $resolved === $serverPath ? '' : $serverPath.' → ';
+        $whereSpan = Untrusted::span($resolved);
+        /** @var list<string|Untrusted> $where */
+        $where = [$whereProse, $whereSpan];
 
         // EXISTENCE BEFORE CLASSIFICATION — load-bearing ordering. A dangling symlink
         // resolves (non-strictly) to a STALE path that differs from the checkout, so
@@ -111,7 +127,7 @@ final class ChannelSnapshotProbe
         // against a directory that is not there: a fatal condition misreported as a
         // drift question.
         if (! is_dir($resolved)) {
-            if (($unverified = PathVisibility::unverifiedUnlessVisible($resolved, "channel server path {$where}", $resolved)) !== null) {
+            if (($unverified = PathVisibility::unverifiedUnlessVisible($resolved, Provenance::carrying('channel server path '.$whereProse, $whereSpan))) !== null) {
                 return [$unverified];
             }
 
@@ -121,10 +137,10 @@ final class ChannelSnapshotProbe
             // action than a dangling link, and reporting "repoint the symlink"
             // for it sends them after a symlink that isn't the problem.
             if (file_exists($resolved)) {
-                return [Finding::fail("channel server path {$where} names a file, not the channel-server directory — point channel.server_path at the deployed DIRECTORY (only the ".self::ENTRY_FILE.' entry form is normalized to its directory for you)')->carryingUntrusted($resolved)];
+                return [Finding::fail(['channel server path ', ...$where, ' names a file, not the channel-server directory — point channel.server_path at the deployed DIRECTORY (only the '.self::ENTRY_FILE.' entry form is normalized to its directory for you)'])];
             }
 
-            return [Finding::fail("channel server path does not resolve (dangling symlink or removed directory): {$where} — the MCP server will not launch at next session start; the link target moved, repoint the symlink (or re-deploy the directory)")->carryingUntrusted($resolved)];
+            return [Finding::fail(['channel server path does not resolve (dangling symlink or removed directory): ', ...$where, ' — the MCP server will not launch at next session start; the link target moved, repoint the symlink (or re-deploy the directory)'])];
         }
 
         $deployedDir = realpath($resolved) ?: $resolved;
@@ -149,7 +165,7 @@ final class ChannelSnapshotProbe
         // deployed directory needs its own guard. No leg makes one today — the
         // completeness walk that did was retired with its leg (DL-237) — so adding
         // one means adding that guard with it.
-        if (($unverified = PathVisibility::unverifiedUnlessVisible($deployedDir.'/'.self::ENTRY_FILE, "channel server path {$deployedDir}", $deployedDir)) !== null) {
+        if (($unverified = PathVisibility::unverifiedUnlessVisible($deployedDir.'/'.self::ENTRY_FILE, Provenance::carrying('channel server path ', Untrusted::span($deployedDir)))) !== null) {
             return [$unverified];
         }
 
@@ -163,7 +179,7 @@ final class ChannelSnapshotProbe
             // Repo-direct: the version compare would be a self-compare — the
             // deployment and the reference are one directory, so there is no drift
             // question to answer. The presence leg below still runs on it.
-            $findings = [Finding::ok("channel server path {$where} IS this checkout's examples/channel-servers — no snapshot to drift, version compare skipped")->carryingUntrusted($resolved)];
+            $findings = [Finding::ok(['channel server path ', ...$where, " IS this checkout's examples/channel-servers — no snapshot to drift, version compare skipped"])];
         } else {
             $findings = self::versionLeg($deployedDir, $bundledDir);
         }
@@ -221,7 +237,14 @@ final class ChannelSnapshotProbe
      */
     private static function launchNotMeasured(string $deployedDir): Finding
     {
-        return Finding::unvalidated("channel server snapshot at {$deployedDir} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$deployedDir} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node")->carryingUntrusted($deployedDir);
+        // TWO SPANS, not one: the path is interpolated twice and each occurrence is its own
+        // position. Under the value-matching renderer this was one declaration covering both
+        // by accident of a replace-all; a position is per-occurrence and says so.
+        return Finding::unvalidated([
+            'channel server snapshot at ', Untrusted::span($deployedDir),
+            ' was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run '.self::LAUNCH_ASSERT.' ', Untrusted::span($deployedDir),
+            " ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node",
+        ]);
     }
 
     /**
@@ -247,7 +270,7 @@ final class ChannelSnapshotProbe
      */
     private static function versionLeg(string $deployedDir, string $bundledDir): array
     {
-        $resync = self::resyncCommand($deployedDir, $bundledDir);
+        $resync = self::resyncSegments($deployedDir, $bundledDir);
         $deployed = ChannelSnapshotManifest::readManifest($deployedDir.'/package.json');
         if ($deployed['status'] !== 'ok') {
             // ONE cause per message, and the destructive advice ONLY where it is the
@@ -256,6 +279,7 @@ final class ChannelSnapshotProbe
             // (the copy lands with the same ownership problem) and does not need to
             // replace a whole directory to fix one corrupt manifest — while it DOES
             // overwrite the entry file and every other local edit on its way past.
+            /** @var list<string|Untrusted> $advice */
             $advice = match ($deployed['status']) {
                 'absent' => $resync,
                 // ⚠ Widened from the permission remedy alone (card#9121): the guarded reader
@@ -263,11 +287,15 @@ final class ChannelSnapshotProbe
                 // attributed to the deployment, so a remedy naming permissions as the only
                 // cause would be a wrong-but-specific instruction on the shapes it does not
                 // cover. Both remedies are stated; neither is asserted as the cause.
-                'unreadable' => "re-run bridge:check as the agent's user or grant it read access to the file — and if that package.json is not a plain regular file, replace it with one",
-                default => 'repair the manifest — its `version` field is what the staleness compare reads',
+                'unreadable' => ["re-run bridge:check as the agent's user or grant it read access to the file — and if that package.json is not a plain regular file, replace it with one"],
+                default => ['repair the manifest — its `version` field is what the staleness compare reads'],
             };
 
-            return [Finding::unvalidated("channel server snapshot at {$deployedDir}: package.json ".ChannelSnapshotManifest::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")->carryingUntrusted($deployedDir)];
+            return [Finding::unvalidated([
+                'channel server snapshot at ', Untrusted::span($deployedDir),
+                ': package.json '.ChannelSnapshotManifest::manifestReason($deployed['status']).' — cannot tell whether the deployed copy is stale; ',
+                ...$advice,
+            ])];
         }
 
         // The BUNDLED manifest is this checkout's own file and deliberately does NOT
@@ -285,12 +313,22 @@ final class ChannelSnapshotProbe
             // a tracked file). DL-236 (h) fixed it; the sibling has since gone with
             // its leg (DL-237), so this is the only survivor of that pair — the
             // reason it spells its action is unchanged.
-            return [Finding::unvalidated("this checkout's {$bundledDir}/package.json ".ChannelSnapshotManifest::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")->carryingUntrusted($deployedDir)->carryingUntrusted($deployed['version'])];
+            return [Finding::unvalidated([
+                "this checkout's {$bundledDir}/package.json ".ChannelSnapshotManifest::manifestReason($bundled['status']).' — the deployed snapshot at ', Untrusted::span($deployedDir),
+                ' (version ', Untrusted::span($deployed['version']),
+                ') cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it',
+            ])];
         }
 
         $comparison = ChannelSnapshotManifest::compareVersions($deployed['version'], $bundled['version']);
         if ($comparison < 0) {
-            return [Finding::warn("channel server snapshot at {$deployedDir} is STALE (deployed {$deployed['version']} < bundled {$bundled['version']}) — the next session starts on the older copy; {$resync}. To stop it recurring, deploy as a SYMLINK to {$bundledDir} rather than a copy: it resolves into the checkout, so there is nothing left to drift (a copy is still the answer when the deployment is on another host or another OS user's filesystem — see docs/multi-host.md)")->carryingUntrusted($deployedDir)->carryingUntrusted($deployed['version'])];
+            return [Finding::warn([
+                'channel server snapshot at ', Untrusted::span($deployedDir),
+                ' is STALE (deployed ', Untrusted::span($deployed['version']),
+                " < bundled {$bundled['version']}) — the next session starts on the older copy; ",
+                ...$resync,
+                ". To stop it recurring, deploy as a SYMLINK to {$bundledDir} rather than a copy: it resolves into the checkout, so there is nothing left to drift (a copy is still the answer when the deployment is on another host or another OS user's filesystem — see docs/multi-host.md)",
+            ])];
         }
 
         // `>=`, and no second line for the NEWER case. Until DL-237 one existed, and
@@ -299,7 +337,11 @@ final class ChannelSnapshotProbe
         // rewritten: operator-facing output naming machinery that is gone is worse
         // than no line. Whether the deployment will LAUNCH is not this leg's question
         // on any branch either; {@see self::probe()} discloses that once, uniformly.
-        return [Finding::ok("channel server snapshot at {$deployedDir} is current (deployed {$deployed['version']} >= bundled {$bundled['version']})")->carryingUntrusted($deployedDir)->carryingUntrusted($deployed['version'])];
+        return [Finding::ok([
+            'channel server snapshot at ', Untrusted::span($deployedDir),
+            ' is current (deployed ', Untrusted::span($deployed['version']),
+            " >= bundled {$bundled['version']})",
+        ])];
     }
 
     /**
@@ -307,9 +349,12 @@ final class ChannelSnapshotProbe
      * STALE `warn` and the absent-deployed-manifest `unvalidated`. ("Both WARN sites"
      * until DL-251; only one of the two is a `warn` now.)
      */
-    private static function resyncCommand(string $deployedDir, string $bundledDir): string
+    /**
+     * @return list<string|Untrusted>
+     */
+    private static function resyncSegments(string $deployedDir, string $bundledDir): array
     {
-        return "re-copy the WHOLE directory (cp -R {$bundledDir}/. {$deployedDir}/) then run npm ci in it";
+        return ['re-copy the WHOLE directory (cp -R '.$bundledDir.'/. ', Untrusted::span($deployedDir), '/) then run npm ci in it'];
     }
 
     /**
@@ -345,14 +390,23 @@ final class ChannelSnapshotProbe
     {
         $entry = $deployedDir.'/'.self::ENTRY_FILE;
         if (! is_file($entry)) {
-            return [Finding::fail("channel server entry {$entry} does not exist — channel.server_path does not point at a channel-server deployment; the MCP server will not launch at next session start")->carryingUntrusted($deployedDir)];
+            return [Finding::fail([
+                'channel server entry ', Untrusted::span($deployedDir), '/'.self::ENTRY_FILE,
+                ' does not exist — channel.server_path does not point at a channel-server deployment; the MCP server will not launch at next session start',
+            ])];
         }
 
         if (! is_dir($deployedDir.'/'.self::NODE_MODULES)) {
-            return [Finding::fail("channel server dependencies are not installed at {$deployedDir} (no node_modules) — the entry's bare imports (the MCP SDK, hono) die on ERR_MODULE_NOT_FOUND at next session start; run npm ci in {$deployedDir}")->carryingUntrusted($deployedDir)];
+            return [Finding::fail([
+                'channel server dependencies are not installed at ', Untrusted::span($deployedDir),
+                " (no node_modules) — the entry's bare imports (the MCP SDK, hono) die on ERR_MODULE_NOT_FOUND at next session start; run npm ci in ", Untrusted::span($deployedDir),
+            ])];
         }
 
-        return [Finding::ok("channel server deployment at {$deployedDir} has its entry file and node_modules — a presence check, not a load test: nothing here executes node, and whether the installed dependency TREE is complete is npm ci's business")->carryingUntrusted($deployedDir)];
+        return [Finding::ok([
+            'channel server deployment at ', Untrusted::span($deployedDir),
+            " has its entry file and node_modules — a presence check, not a load test: nothing here executes node, and whether the installed dependency TREE is complete is npm ci's business",
+        ])];
     }
 
     /**

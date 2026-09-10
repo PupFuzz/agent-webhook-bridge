@@ -89,7 +89,19 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # it delegated its read to the guarded reader. What it now reaches is not restated here:
 # `_PROBE_COLLABORATORS` below owns the reach, and that list is DERIVED and asserted rather
 # than written down, so it cannot say something different from the code.
-_ALLOWED_PROBE_STATICS = {"self::", "Finding::", "PathVisibility::", "ChannelSnapshotManifest::"}
+# `Untrusted::` and `Provenance::` (card#9121 r3) are the two named constructors the probe
+# calls to DECLARE which spans of its own messages it did not author. Both are same-namespace
+# value objects whose entire body is `new self(...)` over the arguments handed in — they
+# neither read, resolve, nor execute anything — and both are scanned as collaborators below,
+# which is where that claim is actually enforced rather than asserted here.
+_ALLOWED_PROBE_STATICS = {
+    "self::",
+    "Finding::",
+    "PathVisibility::",
+    "ChannelSnapshotManifest::",
+    "Untrusted::",
+    "Provenance::",
+}
 
 # Every class REACHABLE from the probe, scanned for exec primitives on the same terms as
 # the probe itself. Wider than the set above by design: `Severity` is never named in the
@@ -129,6 +141,13 @@ _PROBE_COLLABORATORS = (
     "app/Bridge/Support/UntrustedPathContents.php",
     "app/Bridge/Exceptions/UnreadableFileException.php",
     "app/Bridge/Exceptions/PathResolvesToNoFileException.php",
+    # card#9121 r3: the untrusted-span declaration became POSITIONAL, so the probe wraps each
+    # foreign value in `Untrusted` inside its own message list and hands `PathVisibility` a
+    # `Provenance` instead of a bare string. Both are same-namespace value objects reachable
+    # directly from the probe; `Provenance` also reaches `Untrusted`. Listed because a hop the
+    # scan does not follow is a hop nothing guards, not because either is suspected.
+    "app/Bridge/Support/Untrusted.php",
+    "app/Bridge/Support/Provenance.php",
 )
 
 # Classes the closure reaches that this repo does NOT declare, so no `app/` file can be

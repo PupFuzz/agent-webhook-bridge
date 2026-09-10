@@ -92,9 +92,12 @@ class UntrustedFindingDetailTest extends TestCase
         // severity arm, or the output style.
         //
         // ⚠ It is also this change's own honest bound, stated as an executing fact rather
-        // than as prose: a future call site that interpolates a foreign string and forgets
-        // `Finding::carryingUntrusted()` gets no protection, and nothing can see that from
-        // the flat message. Review of the call site is the guard; this is not it.
+        // than as prose: a future call site that interpolates a foreign string into a plain
+        // PROSE segment, rather than wrapping it in `App\Bridge\Support\Untrusted`, gets no
+        // protection, and nothing can see that omission. Review of the call site is the
+        // guard; this is not it. ⚑ What the positional design DID close is the span that IS
+        // declared — it can no longer be missed, straddled or skipped by a renderer's
+        // search, because there is no search (DL-366 Decision 8).
         $buffer = $this->emit(Finding::warn('agent prod-agent: '.self::PAYLOAD));
 
         $this->assertStringContainsString("\x1b[2J", $buffer);

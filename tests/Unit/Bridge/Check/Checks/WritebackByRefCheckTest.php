@@ -110,7 +110,7 @@ class WritebackByRefCheckTest extends TestCase
         $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
         $this->assertStringContainsString($forged, $findings[0]->message, 'the fixture must actually plant the line');
 
-        $rendered = UntrustedText::renderInto($findings[0]->message, $findings[0]->untrusted);
+        $rendered = UntrustedText::render($findings[0]->segments);
         $this->assertStringNotContainsString("\n", $rendered, "a forged line reached the operator: {$rendered}");
         // PRESENCE WITNESS: the text is still THERE, on one line — the fix is not a drop.
         $this->assertStringContainsString('FAIL: board 5 verified clean', $rendered);

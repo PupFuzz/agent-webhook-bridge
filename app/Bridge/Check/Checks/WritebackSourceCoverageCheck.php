@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\Untrusted;
 use App\Bridge\Writeback\WritebackConfig;
 use Throwable;
 
@@ -102,7 +103,7 @@ final class WritebackSourceCoverageCheck implements Check
                 // in on `RequestException`'s message — see `WritebackBoardStateCheck`.
                 $relayed = $e->getMessage();
 
-                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".$relayed)->carryingUntrusted($relayed);
+                yield Finding::unvalidated(["writeback: could not read board {$boardId} to check dl source coverage — ", Untrusted::span($relayed)]);
 
                 continue;
             }

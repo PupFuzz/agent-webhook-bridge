@@ -3,6 +3,7 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\PathVisibility;
+use App\Bridge\Support\Provenance;
 use App\Bridge\Support\Severity;
 use Tests\TestCase;
 
@@ -40,7 +41,7 @@ class PathVisibilityTest extends TestCase
         // The load-bearing negative: absence is ANSWERABLE here, so the guard must stand
         // aside and let the caller make its definite claim.
         $this->assertTrue(PathVisibility::ancestorIsTraversable($this->dir.'/nope'));
-        $this->assertNull(PathVisibility::unverifiedUnlessVisible($this->dir.'/nope', 'subject'));
+        $this->assertNull(PathVisibility::unverifiedUnlessVisible($this->dir.'/nope', Provenance::ownConfig('subject')));
     }
 
     public function test_a_path_under_an_untraversable_dir_is_not_visible(): void
@@ -52,7 +53,7 @@ class PathVisibilityTest extends TestCase
 
         try {
             $this->assertFalse(PathVisibility::ancestorIsTraversable($locked.'/token'));
-            $finding = PathVisibility::unverifiedUnlessVisible($locked.'/token', 'the token');
+            $finding = PathVisibility::unverifiedUnlessVisible($locked.'/token', Provenance::ownConfig('the token'));
         } finally {
             chmod($locked, 0755);
         }
@@ -97,7 +98,7 @@ class PathVisibilityTest extends TestCase
 
         try {
             $this->assertTrue(PathVisibility::ancestorIsTraversable($execOnly.'/child'));
-            $this->assertNull(PathVisibility::unverifiedUnlessVisible($execOnly.'/child', 'subject'));
+            $this->assertNull(PathVisibility::unverifiedUnlessVisible($execOnly.'/child', Provenance::ownConfig('subject')));
         } finally {
             chmod($execOnly, 0755);
         }
@@ -109,9 +110,9 @@ class PathVisibilityTest extends TestCase
         // non-visibility, so it must NOT re-measure. Asserted on a path whose ancestor IS
         // traversable — the world where the statting door returns null — which is exactly
         // the discriminator: an implementation that re-checked would answer differently here.
-        $this->assertNull(PathVisibility::unverifiedUnlessVisible($this->dir.'/nope', 'the token'));
+        $this->assertNull(PathVisibility::unverifiedUnlessVisible($this->dir.'/nope', Provenance::ownConfig('the token')));
 
-        $finding = PathVisibility::notVisibleFinding('the token');
+        $finding = PathVisibility::notVisibleFinding(Provenance::ownConfig('the token'));
 
         $this->assertSame(Severity::Unvalidated, $finding->severity);
         $this->assertStringContainsString('the token', $finding->message);

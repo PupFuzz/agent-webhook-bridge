@@ -11,6 +11,8 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
+use App\Bridge\Support\Provenance;
+use App\Bridge\Support\Untrusted;
 use App\Bridge\Support\UntrustedPathContents;
 
 /**
@@ -127,7 +129,7 @@ final class ChannelTransportCheck implements PerAgentCheck
     {
         $dir = dirname($socket);
         if (! is_dir($dir)) {
-            yield PathVisibility::unverifiedUnlessVisible($dir, "agent {$name}: channel.socket parent dir {$dir}")
+            yield PathVisibility::unverifiedUnlessVisible($dir, Provenance::ownConfig("agent {$name}: channel.socket parent dir {$dir}"))
                 ?? Finding::warn("agent {$name}: channel.socket parent dir {$dir} does not exist — live-wake will silently no-op. On systemd Linux this is /run/user/<uid>; a uid change (host restore) breaks it. Repoint channel.socket, or write it uid-agnostically as \${XDG_RUNTIME_DIR}/…");
         } elseif (! is_writable($dir)) {
             $uid = function_exists('posix_getuid') ? (string) posix_getuid() : '?';
@@ -265,14 +267,18 @@ final class ChannelTransportCheck implements PerAgentCheck
             return;
         }
 
+        // DECLARED IN PLACE, NOT ESCAPED HERE (card#9121, DL-366). The detail is bytes a
+        // foreign principal wrote; the RULE that makes them safe on a terminal has one owner
+        // in {@see UntrustedText} and is applied by the renderer, so this site says only
+        // WHERE the seam is — the one fact no renderer can recover from a flat message
+        // string, and the fact two value-matching cuts of this change threw away. Escaping
+        // here would change `--format=json`'s bytes, which consumers already read.
         $detail = trim($detail);
-        $finding = Finding::warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').self::MARKER_TAIL);
 
-        // DECLARED, NOT ESCAPED HERE (card#9121, DL-366). The detail is bytes a foreign
-        // principal wrote; the RULE that makes them safe on a terminal has one owner in
-        // {@see UntrustedText} and is applied by the renderer, so this site says only WHERE
-        // the seam is — the one fact no renderer can recover from a flat message string.
-        // Escaping here would change `--format=json`'s bytes, which consumers already read.
-        yield $detail !== '' ? $finding->carryingUntrusted($detail) : $finding;
+        yield Finding::warn([
+            "agent {$name}: channel bind-FAILURE marker at {$marker}",
+            ...($detail !== '' ? [' (', Untrusted::span($detail), ')'] : []),
+            self::MARKER_TAIL,
+        ]);
     }
 }

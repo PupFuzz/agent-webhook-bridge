@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\Untrusted;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackMapping;
@@ -171,7 +172,7 @@ final class WritebackBoardStateCheck implements Check
                         // renders as exactly that line.
                         $relayed = $e->getMessage();
 
-                        yield Finding::fail("writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ".$relayed.'. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.')->carryingUntrusted($relayed);
+                        yield Finding::fail(["writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ", Untrusted::span($relayed), '. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.']);
                     }
                 }
                 // #2652: every workflow stage id the mapping targets — each
@@ -263,7 +264,7 @@ final class WritebackBoardStateCheck implements Check
             } catch (Throwable $e) {
                 $relayed = $e->getMessage();
 
-                yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$relayed)->carryingUntrusted($relayed);
+                yield Finding::unvalidated(["writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ", Untrusted::span($relayed)]);
             }
         }
     }
@@ -358,7 +359,7 @@ final class WritebackBoardStateCheck implements Check
         } catch (Throwable $e) {
             $relayed = $e->getMessage();
 
-            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".$relayed.' '.$tail)->carryingUntrusted($relayed);
+            yield Finding::unvalidated(["{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ", Untrusted::span($relayed), ' '.$tail]);
 
             return;
         }

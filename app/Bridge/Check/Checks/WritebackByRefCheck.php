@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\Untrusted;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Throwable;
 
@@ -70,7 +71,7 @@ final class WritebackByRefCheck implements Check
             // `RequestException`'s message — see `WritebackBoardStateCheck`.
             $relayed = $e->getMessage();
 
-            yield Finding::unvalidated('writeback: could not probe by-ref reachability — '.$relayed)->carryingUntrusted($relayed);
+            yield Finding::unvalidated(['writeback: could not probe by-ref reachability — ', Untrusted::span($relayed)]);
         }
     }
 }
