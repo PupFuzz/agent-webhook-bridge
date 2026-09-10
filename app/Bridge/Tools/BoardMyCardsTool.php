@@ -32,13 +32,18 @@ use Illuminate\Support\Facades\Log;
  *
  * `include_description` (DL-245) is OPT-IN, because a card body is ~2 KB and — until
  * card#8985 below — the projection had no bound on how many cards a lane holds. It is
- * no longer the tool's only argument. Absent ⇒ the projected CARD is byte-identical to
- * the DL-217 shape (the two description keys are ABSENT, not null-valued). ⚠ THE
- * ENCLOSING RESPONSE IS NOT: it grew the DL-302 board keys and then card#8985's window
- * blocks, so the byte-identity claim is about the CARD and has never been about the
- * envelope. The field costs no extra API call —
+ * no longer the tool's only argument. Absent ⇒ the two description keys are ABSENT from
+ * the projected card, not null-valued. The field costs no extra API call —
  * `KanbanClient::swimlaneCards()` already fetches `description` and the
  * projection discarded it.
+ *
+ * ⛔ THE CARD IS NO LONGER BYTE-IDENTICAL TO THE DL-217 SHAPE, and this paragraph used to
+ * say it was (of the default, description-less call). card#9170 added `assigned_user_id`
+ * to EVERY projected card, unconditionally — see {@see projectCard} for why it carries no
+ * opt-in and no name — so the claim is retired rather than re-scoped: the ENVELOPE had
+ * already grown the DL-302 board keys and card#8985's window blocks, and now the CARD has
+ * grown a key too. What holds is the weaker, true statement: every key this tool has ever
+ * emitted is still emitted, with the same meaning.
  *
  * ⛔ THE DEFAULT RESPONSE IS CAPPED BY CARD COUNT (card#8985, DL-365). The
  * DL-245 warning above bounds ONE description; nothing bounded the number of
@@ -756,9 +761,22 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * Project a raw kanban card row to the tool's card shape (DL-217): id, name,
-     * stage, tags, dl_number, pr_number, updated_at — plus, ONLY when the caller
-     * opted in (DL-245), description + description_truncated. Nothing else leaves
-     * the bridge.
+     * stage, tags, assigned_user_id, dl_number, pr_number, updated_at — plus, ONLY when
+     * the caller opted in (DL-245), description + description_truncated. Nothing else
+     * leaves the bridge.
+     *
+     * ⭐ `assigned_user_id` IS THE RAW BOARD FIELD AND CARRIES NO NAME (card#9170). It is
+     * what makes a claimed-but-unmoved card legible: a card whose column never moved is
+     * otherwise indistinguishable from an unclaimed one, so two seats pull the same work.
+     * ⛔ THE BRIDGE DOES NOT RESOLVE THE ID TO A SEAT, deliberately and permanently —
+     * doing so would need a fleet-wide seat→kanban-user map, which is the cross-repo table
+     * canon #7 warns about and which {@see SeatKanbanUser} exists to make unnecessary. The
+     * raw id is REPORTED and never a failure; a consumer that knows a name for it renders
+     * one (`kbcard` does, from its own board env), and one that does not shows the id.
+     * `null` is a real value meaning UNASSIGNED; a row answering nothing about its
+     * assignment also reads null here, because on a READ projection the two are the same
+     * to a caller — {@see BoardTakeCardTool} is where that distinction is load-bearing,
+     * and it refuses rather than guessing.
      *
      * @param  array<string, mixed>  $row
      * @param  array<int, string>  $stageNames
@@ -781,6 +799,7 @@ final class BoardMyCardsTool implements Tool
             'name' => is_scalar($row['name'] ?? null) ? (string) $row['name'] : null,
             'stage' => $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : null,
             'tags' => $tags,
+            'assigned_user_id' => is_numeric($row['assigned_user_id'] ?? null) ? (int) $row['assigned_user_id'] : null,
             'dl_number' => is_scalar($payload['dl_number'] ?? null) ? $payload['dl_number'] : null,
             'pr_number' => is_scalar($payload['pr_number'] ?? null) ? $payload['pr_number'] : null,
             'updated_at' => is_scalar($row['updated_at'] ?? null) ? (string) $row['updated_at'] : null,

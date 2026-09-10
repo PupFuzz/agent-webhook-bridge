@@ -7,8 +7,8 @@ use App\Bridge\Support\HandlerRegistry;
 /**
  * Resolves a tool name to a {@see Tool} instance (DL-217) — the deliberate
  * sibling of {@see HandlerRegistry}'s register/resolve shape.
- * Ships the three tools (board_my_cards, board_create_card, board_correct_card)
- * always-on: they are INERT without a per-agent `board_tools` block, so there is
+ * Ships the four tools (board_my_cards, board_create_card, board_correct_card,
+ * board_take_card) always-on: they are INERT without a per-agent `board_tools` block, so there is
  * no opt-in gate here —
  * an install with no board_tools config simply never reaches a tool. EVERY front
  * door enforces that before dispatch, each on evidence of its own; which doors
@@ -27,7 +27,7 @@ final class BoardToolsRegistry
     public function __construct()
     {
         $this->tools = [];
-        foreach ([new BoardMyCardsTool, new BoardCreateCardTool, new BoardCorrectCardTool] as $tool) {
+        foreach ([new BoardMyCardsTool, new BoardCreateCardTool, new BoardCorrectCardTool, new BoardTakeCardTool] as $tool) {
             $this->tools[$tool->name()] = $tool;
         }
     }

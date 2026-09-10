@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -116,6 +117,50 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
     public static function tagTools(): array
     {
         return array_map(fn (string $tool) => [$tool], array_combine(array_keys(self::TAG_TOOLS), array_keys(self::TAG_TOOLS)));
+    }
+
+    /**
+     * ⭐ THE SET GUARD, not a vocabulary guard (card#9170) — and it is the one this class was
+     * missing. Everything above asks whether an ADVERTISED tool's description still names the
+     * vocabulary the bridge enforces. None of it asks whether a tool the bridge SHIPS is
+     * advertised at all, and that is the failure this repo has already measured: a seat
+     * running a copy of this directory that predates a tool reports the tool "absent from my
+     * surface" and the gap is attributed to the bridge (the `client_version` field exists
+     * because of exactly that incident). Registering a fourth tool and shipping a server that
+     * still advertises three is the same defect minted at the same seam, and until now nothing
+     * would have gone red.
+     *
+     * ⛔ DELETING THE COPY IS UNAVAILABLE — an MCP `tools/list` entry IS the surface, inline,
+     * with no pointer a model can follow — so canon #16's other arm applies and the copy is
+     * GUARDED. The population is DERIVED from the registry rather than listed here, so a tool
+     * added to the bridge cannot be exempted by forgetting to add it to a list.
+     *
+     * ⚠ STATED BOUND: this says the tool is NAMED in the file, not that its schema is right.
+     * `clear_context` is deliberately outside the population — it is a LOCAL-exec tool that is
+     * never proxied to the bridge, so it is in no bridge registry to derive.
+     */
+    public function test_every_tool_the_bridge_registers_is_advertised_by_the_reference_channel_server(): void
+    {
+        $src = (string) file_get_contents(base_path('examples/channel-servers/agent-webhook-bridge-channel.mjs'));
+        $start = strpos($src, 'const TOOL_DEFINITIONS = [');
+        $this->assertNotFalse($start, 'TOOL_DEFINITIONS no longer exists in the reference channel server — re-anchor this test');
+        // Cut at the literal's own close, so a tool named only in a COMMENT further down the
+        // file — `clear_context`'s block says the words "TOOL_DEFINITIONS" — cannot satisfy
+        // this. The region has to be the array a seat's `tools/list` actually returns.
+        $end = strpos($src, "\n];\n", $start);
+        $this->assertNotFalse($end, 'the TOOL_DEFINITIONS literal no longer closes where this test expects — re-anchor it');
+        $definitions = substr($src, $start, $end - $start);
+
+        $registered = (new BoardToolsRegistry)->known();
+        $this->assertNotEmpty($registered, 'the registry came back empty — the derivation, not the server, is what changed');
+
+        foreach ($registered as $tool) {
+            $this->assertStringContainsString(
+                "name: '{$tool}',",
+                $definitions,
+                "the bridge registers `{$tool}` and the reference channel server does not advertise it — a tool absent from TOOL_DEFINITIONS is UNREACHABLE from every seat that deploys this directory, and the seat will report it missing as though the bridge lacked it"
+            );
+        }
     }
 
     #[DataProvider('tagTools')]

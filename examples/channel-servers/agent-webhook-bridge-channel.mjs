@@ -225,6 +225,11 @@ const TOOL_DEFINITIONS = [
       'CAPPED by default; every list carries a window block (total / returned / limit / ' +
       'truncated) and truncated: true means there is more behind it — narrow with stage, ' +
       'or raise limit deliberately. NEVER read a truncated list as the whole board. ' +
+      'Each card carries assigned_user_id: the raw kanban user id holding it, or null ' +
+      'when nobody does. That is how you tell a card another seat is already working ' +
+      'from a free one WHEN THE COLUMN NEVER MOVED — the bridge resolves no name for ' +
+      'it, so an id you do not recognise is somebody else. board_take_card is how you ' +
+      'claim a free one. ' +
       'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
@@ -372,6 +377,46 @@ const TOOL_DEFINITIONS = [
             '"triaged" are refused as at create, and each tag is capped at 64 ' +
             'characters (kanban\'s own limit). Tags that are not yours to drop are ' +
             'preserved: the reserved ones and any hold marker (no-automove).',
+        },
+      },
+      required: ['card_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_take_card',
+    description:
+      'CLAIM a card for yourself — write your own name into the board\'s assignee ' +
+      'field so another seat can see the work is taken even when the column has not ' +
+      'moved. Use it the moment you start on a card, not when you finish. ' +
+      'IT TAKES card_id AND NOTHING ELSE: the bridge works out which kanban user you ' +
+      'are from the identity your call authenticated as, so there is NO argument for ' +
+      'a user id and there never will be — you can claim a card for yourself and for ' +
+      'nobody else. Sending assigned_user_id, assignee, user_id or any other ' +
+      'user-naming argument is REFUSED and nothing is written. ' +
+      'Scoped to cards on YOUR board in a lane you work (your own swimlane, or the ' +
+      'shared one if your bridge is configured for it) — exactly what board_my_cards ' +
+      'shows you. You do NOT have to have filed the card: taking work somebody else ' +
+      'queued for you is the point. ' +
+      'A card ALREADY HELD BY SOMEBODY ELSE is REFUSED (422) naming the user holding ' +
+      'it, and nothing is written — that refusal is the collision detector, so treat ' +
+      'it as "another seat is on this" and pick up different work rather than ' +
+      'retrying. There is no override here; taking a card off another seat is a ' +
+      'decision for your operator. ' +
+      'Re-taking a card you already hold SUCCEEDS, writes nothing, and answers ' +
+      'already_held: true, so it is safe to call again if you are unsure. ' +
+      'A board fault that cannot clear (the bridge token revoked/rotated, or the ' +
+      'writeback role unable to update tasks) is REFUSED (422) naming the INSTALL ' +
+      'fault — do not retry it; tell your operator, quoting the message as-is.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'integer',
+          description:
+            'The id of the card to claim, as board_my_cards reports it. Must be an ' +
+            'integer — a decorated string is refused, never coerced. This is the ' +
+            'ONLY argument this tool has.',
         },
       },
       required: ['card_id'],
