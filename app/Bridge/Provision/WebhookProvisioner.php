@@ -40,13 +40,17 @@ final class WebhookProvisioner
     ): ProvisionResult {
         $match = null;
         foreach ($client->listWebhooks($scopeId) as $live) {
-            // THE PREDICATE IS SHARED, NOT SPELLED HERE (card#9150): `bridge:check`'s github
-            // leg asks the same question of a repo's hook list, and a drift between two
-            // copies of it would make one command adopt a subscription the other reports
-            // MISSING — at a severity that moves an exit code. {@see ReceiverUrl} owns it,
-            // including the exact-match bound.
+            // ⛔ BYTE EQUALITY, AND IT DIVERGES FROM `bridge:check`'s PREDICATE ON PURPOSE
+            // (card#9150 r1). That command's github leg asks a DIFFERENT question of a repo's
+            // hook list — *would this hook deliver here?* — and answers YES for a
+            // percent-encoded scope, because the receiver cannot tell the two spellings apart
+            // and a `fail` there reds a healthy install. This side WRITES: what counts as an
+            // already-existing subscription decides whether one is created, which is a change
+            // to what the system accepts and is deliberately NOT widened.
+            // `ReceiverUrl::deliversTo()` is the other half and names this one; a test pins
+            // that this predicate stays exact.
             $url = $live['url'] ?? null;
-            if (ReceiverUrl::matches(is_string($url) ? $url : null, $receiverUrl)) {
+            if (ReceiverUrl::matchesExactly(is_string($url) ? $url : null, $receiverUrl)) {
                 $match = $live;
                 break;
             }

@@ -41,14 +41,20 @@ use App\Bridge\Support\SecretPath;
  *   that the read happened at all — which is load-bearing precisely because the `fail`
  *   beside it rests on the same read.
  *
- * ⛔ IT MATCHES BY RECEIVER URL — the same predicate `bridge:provision` uses for kanban, in
- * the same primitive ({@see ReceiverUrl}) — and NEVER by event list or hook id. A hook's
- * event list is the operator's to choose (`docs/writeback.md` § *The repo webhook* names two
- * different correct answers), and a hook id is not knowable from config. ⚠ THE MATCH IS
- * EXACT, and the `fail` line SAYS SO, because that is the one way this leg can be wrong in
- * the expensive direction: a hook whose URL differs from the composed one only in spelling
- * (a percent-encoded scope) reads as absent here, and an operator who is told the match was
- * by exact URL can see that in one look instead of hunting a hook that is in front of them.
+ * ⛔ IT MATCHES BY RECEIVER URL, in the shared {@see ReceiverUrl} primitive — and NEVER by
+ * event list or hook id. A hook's event list is the operator's to choose
+ * (`docs/writeback.md` § *The repo webhook* names two different correct answers), and a hook
+ * id is not knowable from config.
+ *
+ * ⭐ IT USES {@see ReceiverUrl::deliversTo()}, NOT `bridge:provision`'s BYTE-EQUAL PREDICATE,
+ * AND THE DIVERGENCE IS DELIBERATE (card#9150 r1). The first cut shared provision's exact
+ * match and printed the bound on the `fail` line. That bound turned out to be REACHABLE on a
+ * live consumer install, which registers `?b=PupFuzz%2Fmezzanine`: the receiver routes that
+ * identically to the unencoded spelling, so the hook was healthy and this leg called it
+ * MISSING — a `fail` that reds a working install, which inverts the ruling the whole leg
+ * rests on. `deliversTo()` compares the endpoint byte for byte and the query as PARSED
+ * parameters, which is the receiver's own routing; `ReceiverUrl` owns why provision keeps
+ * the exact one and why `%252F` still reads as absent.
  *
  * ⛔ IT NEVER ENUMERATES THE FLEET. The repo's hook list carries every OTHER install's
  * receiver endpoint; the match happens inside `App\Bridge\Writeback\GitHubReadClient` and
@@ -207,7 +213,7 @@ final class GitHubWebhookSubscriptionCheck implements Check
     {
         $ctx->githubWebhooksMissing[] = ['scope' => $scope, 'agents' => $agents];
 
-        return Finding::fail("github webhook: {$scope} has NO repo webhook delivering to this install's receiver — this run READ the repo's whole hook list with the token from {$source} and none of its delivery URLs is <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}. Nothing upstream will wake this install for that scope ({$who}): events reach it late through a periodic sweep, or not at all. bridge:provision CANNOT fix this — it provisions the kanban provider only, and a github webhook lives in the repo's own settings. Add it by hand in the repo's Settings then Webhooks: payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}, content type application/json, secret = the per-scope HMAC secret file{$this->secretPathClause($ctx, $scope)} — then re-run bridge:check. See docs/writeback.md section The repo webhook. NOTE the match is by EXACT delivery URL, so a hook whose URL differs only in spelling (a percent-encoded scope) reads as absent here.");
+        return Finding::fail("github webhook: {$scope} has NO repo webhook delivering to this install's receiver — this run READ the repo's whole hook list with the token from {$source} and none of its delivery URLs is <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}. Nothing upstream will wake this install for that scope ({$who}): events reach it late through a periodic sweep, or not at all. bridge:provision CANNOT fix this — it provisions the kanban provider only, and a github webhook lives in the repo's own settings. Add it by hand in the repo's Settings then Webhooks: payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}, content type application/json, secret = the per-scope HMAC secret file{$this->secretPathClause($ctx, $scope)} — then re-run bridge:check. See docs/writeback.md section The repo webhook. NOTE the match is on the receiver ENDPOINT byte for byte plus the query's decoded parameters, so `?b=owner%2Frepo` and `?b=owner/repo` are the same hook — but a DOUBLE-encoded scope (%252F) is not, because the receiver would refuse that delivery with invalid_scope, and neither is a hook carrying any extra query parameter.");
     }
 
     /**

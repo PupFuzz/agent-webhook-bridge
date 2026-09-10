@@ -85,7 +85,7 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 | Read the whole hook list; **no** hook delivers here | **`fail`** — a deaf agent is a broken install | ⚠ **non-zero** |
 | Could not read it — no token resolved, HTTP 401/403/404, a network failure, a 200 that is not a hook list | **`unvalidated`** — this measured nothing and is **not** evidence the hook is gone | unchanged |
 
-⚠ Listing a repo's webhooks needs a token with **`admin:repo_hook`** on that repo, resolved by the `BRIDGE_GITHUB_TOKEN_PATH` precedence below. An install whose token cannot enumerate hooks is supported and simply gets the `unvalidated` line. ⚠ The match is by **exact** delivery URL — a hook spelled `?b=owner%2Frepo` reads as absent. Setup and remedy: [`writeback.md`](writeback.md) § *The repo webhook (one-time, in GitHub)*.
+⚠ Listing a repo's webhooks needs a token with **`admin:repo_hook`** on that repo, resolved by the `BRIDGE_GITHUB_TOKEN_PATH` precedence below. An install whose token cannot enumerate hooks is supported and simply gets the `unvalidated` line. ⚠ The receiver **endpoint** is matched byte for byte and the query as **parsed parameters**, so `?b=owner%2Frepo` and `?b=owner/repo` are the same hook; a **double-encoded** scope (`%252F`) is not (the receiver would refuse that delivery with `invalid_scope`), and neither is a hook carrying an extra query parameter. Setup and remedy: [`writeback.md`](writeback.md) § *The repo webhook (one-time, in GitHub)*.
 
 ### `echo_suppression:` (optional) — OTHER agents only (self is auto-seeded)
 | Key | Type | Default | Notes |

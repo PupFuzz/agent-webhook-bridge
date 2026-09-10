@@ -219,7 +219,7 @@ The bridge does **not** provision GitHub webhooks — `bridge:provision` manages
 >
 > ⚠ **Listing a repo's webhooks needs a token with `admin:repo_hook` on that repo**, resolved the same way `bridge:reconcile` resolves its read token (DL-184/185). An install whose token cannot enumerate hooks is supported and simply gets the `unvalidated` line.
 >
-> ⚠ **The match is by EXACT delivery URL.** A hook whose URL differs only in spelling — `?b=your-org%2Fyour-repo` instead of `?b=your-org/your-repo` — reads as absent. Paste the payload URL in the form above.
+> ⚠ **What counts as a match.** The receiver **endpoint** (everything before the `?`) is compared byte for byte, and the query is compared as **parsed parameters** — so `?b=your-org%2Fyour-repo` and `?b=your-org/your-repo` are the **same hook**, because the receiver cannot tell them apart either. ⛔ A **double-encoded** scope (`%252F`) is **not** equivalent: the receiver decodes it once to a literal the scope validator refuses, answers `invalid_scope` 400, and the hook delivers nothing — so reporting it absent is correct. A hook carrying an **extra query parameter** also reads as absent. ⚠ `bridge:provision` deliberately keeps a stricter byte-equal match on its own (kanban) subscriptions; that difference is intentional and recorded in **DL-368**.
 >
 > ⛔ **It never reports what else is on the repo's hook list.** That list carries every other install's receiver endpoint; the leg answers only whether **this** install's is on it.
 

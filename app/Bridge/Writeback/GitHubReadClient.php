@@ -114,7 +114,12 @@ final class GitHubReadClient
             foreach ($body as $hook) {
                 $config = is_array($hook) ? ($hook['config'] ?? null) : null;
                 $url = is_array($config) ? ($config['url'] ?? null) : null;
-                if (ReceiverUrl::matches(is_string($url) ? $url : null, $receiverUrl)) {
+                // `deliversTo`, NOT `matchesExactly` (card#9150 r1): a hook spelled
+                // `?b=owner%2Frepo` delivers here exactly as `?b=owner/repo` does, and this
+                // method's negative answer becomes a `fail` that moves an exit code.
+                // `ReceiverUrl` owns why the two predicates differ and why provision keeps
+                // the exact one.
+                if (ReceiverUrl::deliversTo(is_string($url) ? $url : null, $receiverUrl)) {
                     return true;
                 }
             }

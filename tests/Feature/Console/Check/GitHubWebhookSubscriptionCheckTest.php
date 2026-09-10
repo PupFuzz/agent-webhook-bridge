@@ -4,8 +4,10 @@ namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\NextSteps;
+use App\Bridge\Validation\ScopeId;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
@@ -72,6 +74,78 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringContainsString(self::SCOPE, $finding['message']);
     }
 
+    public function test_a_percent_encoded_hook_url_is_a_live_hook_against_an_unencoded_receiver(): void
+    {
+        // ⭐ card#9150 r1, AND THE REASON THE PREDICATE DIVERGED FROM `bridge:provision`'s.
+        // A live consumer install registers `?b=PupFuzz%2Fmezzanine`. The receiver routes
+        // that identically to the unencoded spelling, so the hook is HEALTHY — and under the
+        // first cut's byte equality this leg reported it missing and moved the exit code,
+        // reddening a working install. That inverts the ruling the whole leg rests on.
+        $this->bootGithubInstall($this->hookPage(['https://bridge.example.com/github?b=owner%2Frepo']));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit, 'an equivalent spelling is a live hook, and must not red a healthy install');
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('ok', $finding['severity']);
+        $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+    }
+
+    /**
+     * ⚠ THE MIRROR DIRECTION — an ENCODED configured receiver against a plain hook — IS NOT
+     * TESTED HERE, AND THE REASON IS A MEASUREMENT RATHER THAN AN OMISSION.
+     *
+     * `ReceiverUrl::for()` composes the receiver URL from the agent's declared scope, and a
+     * scope carrying a `%` never reaches it: `SubscriptionConfig` runs every scope through
+     * `App\Bridge\Validation\ScopeId`, whose character class excludes `%`, so
+     * `scopes: ["owner%2Frepo"]` is REFUSED at config load (measured:
+     * `ConfigException: subscriptions[…].scopes[0] 'owner%2Frepo' is invalid`). There is
+     * therefore no install this command can be given that composes an encoded receiver URL,
+     * and a fixture asserting otherwise would be asserting a state the product forbids.
+     *
+     * The predicate is still symmetric, and that direction is covered where it is meaningful
+     * — `Tests\Unit\Support\ReceiverUrlTest` drives `ReceiverUrl::deliversTo()` directly over
+     * both directions and the mixed cases.
+     */
+    public function test_a_double_encoded_hook_url_is_not_equivalent_because_the_receiver_would_refuse_it(): void
+    {
+        // ⛔ DECIDED FROM THE RECEIVER, NOT FROM TASTE, and stated rather than left to fall
+        // out of the implementation. `?b=owner%252Frepo` arrives at
+        // `VerifyHmacSignature` as the literal scope `owner%2Frepo`, which `ScopeId` REFUSES
+        // (`%` is outside its character class) — so that hook delivers NOTHING and answers
+        // `invalid_scope` 400. Reporting it as absent is the CORRECT verdict: it is exactly
+        // the deaf-agent state the `fail` arm exists to name, not a false negative.
+        $this->bootGithubInstall($this->hookPage(['https://bridge.example.com/github?b=owner%252Frepo']));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(1, $exit);
+        $this->assertSame('fail', $this->onlyFinding($doc)['severity']);
+    }
+
+    public function test_the_equivalence_class_is_the_receivers_own_routing(): void
+    {
+        // ⭐ THE JUSTIFICATION, PINNED AGAINST THE RECEIVER RATHER THAN ASSERTED IN PROSE.
+        // `deliversTo()` treats `%2F` and `/` as one hook ONLY because
+        // `VerifyHmacSignature` reads the scope with `$request->query('b')` and cannot tell
+        // them apart. If that ever stops being true the normalisation is wrong and this reds
+        // — which is a stronger guard than any restatement of the reason in a docblock.
+        //
+        // ⚑ The same call establishes the OTHER half: a double-encoded value decodes ONCE, to
+        // a literal `ScopeId` refuses, which is why the arm above is a `fail`.
+        $decoded = fn (string $url): ?string => Request::create($url, 'POST')->query('b');
+
+        $this->assertSame('owner/repo', $decoded('https://bridge.example.com/github?b=owner%2Frepo'));
+        $this->assertSame('owner/repo', $decoded('https://bridge.example.com/github?b=owner/repo'));
+
+        $double = $decoded('https://bridge.example.com/github?b=owner%252Frepo');
+        $this->assertSame('owner%2Frepo', $double);
+        $this->assertFalse(
+            ScopeId::matches((string) $double),
+            'a double-encoded scope must be refused by the receiver — that is why this leg reports it ABSENT rather than equivalent',
+        );
+    }
+
     public function test_a_hook_list_read_to_the_end_without_our_receiver_fails_and_moves_the_exit_code(): void
     {
         $this->bootGithubInstall($this->hookPage([self::FOREIGN_RECEIVER]));
@@ -92,9 +166,12 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringContainsString('<BRIDGE_RECEIVER_BASE_URL>/github?b=owner/repo', $finding['message']);
         $this->assertStringContainsString('webhook-secret-scope-owner%2Frepo', $finding['message']);
 
-        // The bound the leg can be wrong on is PRINTED, because the operator is the only one
-        // who can see a hook whose URL differs only in spelling.
-        $this->assertStringContainsString('match is by EXACT delivery URL', $finding['message']);
+        // The bound the leg can still be wrong on is PRINTED, because the operator is the
+        // only one who can see the hook. Since card#9150 r1 that bound is NARROWER than the
+        // exact match it replaced — encoding no longer counts as a difference — so the line
+        // names what does.
+        $this->assertStringContainsString('`?b=owner%2Frepo` and `?b=owner/repo` are the same hook', $finding['message']);
+        $this->assertStringContainsString('DOUBLE-encoded scope (%252F) is not', $finding['message']);
     }
 
     public function test_a_403_on_the_hook_list_is_unvalidated_and_does_not_collapse_into_the_fail_arm(): void
@@ -287,11 +364,12 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
      *                                no stub at all, for the fixtures that must not reach the
      *                                network
      */
-    private function bootGithubInstall(mixed $hooksResponse, bool $withToken = true): void
+    private function bootGithubInstall(mixed $hooksResponse, bool $withToken = true, ?string $scope = null): void
     {
-        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooksResponse, $withToken) {
+        $scope ??= self::SCOPE;
+        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooksResponse, $withToken, $scope) {
             $i->boot()->agent('gh-agent', "identity:\n  github_user_id: 555\n"
-                ."subscriptions:\n  - provider: github\n    scopes: [\"".self::SCOPE."\"]\n");
+                ."subscriptions:\n  - provider: github\n    scopes: [\"{$scope}\"]\n");
             if ($withToken) {
                 $i->secret('github/token', 'gh-token');
             }
