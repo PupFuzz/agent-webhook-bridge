@@ -13,6 +13,46 @@ Three tools ship today (two since DL-217; the correction tool since DL-326):
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card YOU filed** — its `name`, `description` or `tags`. Scoped to cards carrying your own bridge-stamped `created-by:<you>`, on your own board; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
 
+> ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
+> COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
+> the HTTP one has Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull` in front
+> of it, so until this the same call could mean two things: a `title` of one non-breaking
+> space was **refused** over HTTP and **created a card with a visually blank title** over
+> ssh. Both doors now normalise through one primitive that delegates to the framework's
+> own `Str::trim`, whose invisible set includes `\u00A0` (NBSP), `\u200B` (zero-width
+> space) and `\uFEFF` (BOM) — so:
+>
+> - a value that is blank once trimmed is treated as **empty**: refused where the field is
+>   required (`title`, `name`, a `tags` entry), and a **clear** where the field has a clear
+>   form (`board_correct_card`'s `description`);
+> - a value that is not blank is **stored trimmed**;
+> - ⚠ but a field's **length cap and charset guard still read the value you SENT**, padding
+>   included — they are deliberately not moved, because loosening them would make the ssh
+>   door accept input it refuses today. So a value whose *padding* is what trips a cap is
+>   still refused over ssh and still accepted over HTTP; see the note at the end of this
+>   section;
+> - characters **inside** a value are never touched, and non-ASCII text (accents, CJK) is
+>   unaffected.
+>
+> ⚠ **This is a behaviour change on the ssh door:** input it used to accept — a visually
+> blank title, a body of invisible characters, a whitespace-only tag — is now refused or
+> cleared, exactly as the HTTP door has always done.
+>
+> ⚠ **SOME DIVERGENCES REMAIN, and in each of them the ssh door is the STRICTER one.**
+> `idempotency_key`'s charset, a tag's charset and 64-character cap, and
+> `title`/`name`'s 255-character cap all read the value **as sent**. So a value whose
+> *padding* is what trips one — `" abc "` as an `idempotency_key`, a tag padded with a
+> non-breaking space, a title at the cap with spaces around it — is refused over ssh and
+> accepted (as its trimmed self) over HTTP. **The same holds one level out, in the request
+> envelope rather than in `args`:** `TrimStrings` cleans the whole HTTP body, so a `tool`
+> key padded with a non-breaking space resolves over HTTP and is refused over ssh, and a
+> padded `client_version` is recorded over HTTP and dropped over ssh. Closing any of these
+> means making the ssh door accept input it refuses today, which is a separate change to
+> what the system accepts and is not made here. Nothing wrong is written in the meantime:
+> the strict door refuses. **The list is deliberately not presented as complete** — an
+> exhaustive prose list is a count in longer form; the checked-in denominator is
+> `BoardToolsBlankArgumentCrossDoorTest`'s divergence arms.
+
 ## Discovering them
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
@@ -252,9 +292,9 @@ well-formed empty collection, which the bridge cannot tell from a genuinely empt
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `title` | yes | Non-empty string, **≤ 255 characters** (kanban's `name => string\|max:255`; an over-long title is **refused** (422) before any request is sent — card#8486, the same bound `board_correct_card` puts on `name`, through the same primitive). |
-| `description` | no | String. |
-| `tags` | no | List of strings, each **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. (A non-reserved colon such as `priority:high` is fine.) |
+| `title` | yes | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's `name => string\|max:255`; an over-long title is **refused** (422) before any request is sent — card#8486, the same bound `board_correct_card` puts on `name`, through the same primitive). A title that is blank once trimmed — including one made only of invisible characters — is **refused**. ⚠ The cap reads the value **as sent**, padding included (see the normalisation rule at the top). |
+| `description` | no | String, **trimmed**. A description that is blank once trimmed is treated as **absent**: no `description` is written at all (a card being born has nothing to clear). |
+| `tags` | no | List of strings, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). An entry that is blank once trimmed is **refused**. Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. (A non-reserved colon such as `priority:high` is fine.) |
 | `idempotency_key` | no (recommended) | `[A-Za-z0-9.-]{1,64}`. Other characters are refused (they are kanban tag-search metacharacters that could correlate the wrong card). The key is **lowercased** before use, so it correlates case-insensitively (`Report` and `report` are the same key). |
 
 **Behaviour:**
@@ -367,9 +407,9 @@ that keys on one card per subject.
 | Arg | Required | Notes |
 | --- | --- | --- |
 | `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced: a coerced id names a different card, and this id selects the row the write lands on. |
-| `name` | no | Non-empty string, **≤ 255 characters** (kanban's own `name => string\|max:255`). There is **no clear form** — a card cannot be left without a name, so a present-but-empty `name` is refused (omit it to leave it alone). |
-| `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only (see the present/absent rule below). |
-| `tags` | no | List of strings — **your** tags, each **≤ 64 characters** (kanban's `tags.* => string\|max:64`). The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
+| `name` | no | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's own `name => string\|max:255`; ⚠ the cap reads the value **as sent**, padding included). There is **no clear form** — a card cannot be left without a name, so a `name` that is blank once trimmed, including one made only of invisible characters, is refused (omit it to leave it alone). |
+| `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only or invisible-characters-only (see the present/absent rule below). |
+| `tags` | no | List of strings — **your** tags, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`); an entry that is blank once trimmed is refused. The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
 
 > ⚠ **The two length caps are a MIRROR of rules that live in the kanban repo** (`App\Support\TaskWriteRules`), held in one place here (`KanbanFieldLimits`) and stated as a mirror: they are a **diagnostic**, not the safety. The safety is kanban's own 422 — which the tool maps to a named refusal rather than the retryable 502 — so a cap that goes stale degrades the *message*, never the outcome. `board_create_card` shares both caps (one policy, both tools: `name`/`title` at 255 through `BoardCallRefusal::overLongName()`, every tag at 64 through `CallerTagPolicy`).
 
@@ -382,7 +422,9 @@ same as omitting `tags`), and `description: ""` clears the body.
 > `TrimStrings` ahead of it) rewrites `"description": ""` to `null` before the HTTP
 > controller ever reads `args`, while the **ssh** door (`bridge:tools-call`) decodes
 > the body itself and preserves it. Treating them as one value is what keeps this
-> tool's contract identical on both transports. ⚠ This is why `board_create_card`'s
+> tool's contract identical on both transports — as does trimming with the framework's
+> own primitive, so that a body of invisible characters CLEARS on both doors rather than
+> being written on one of them (card#9155; the normalisation rule at the top of this doc). ⚠ This is why `board_create_card`'s
 > rule (a present `null` reads as *absent*) is deliberately **not** copied — there,
 > `null` cannot mean "clear", because a card being born has nothing to clear.
 
