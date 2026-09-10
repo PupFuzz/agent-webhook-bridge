@@ -13,6 +13,7 @@ use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Throwable;
 
 /**
@@ -193,36 +194,55 @@ class ProvisionCommand extends BridgeCommand
                 $apiBaseUrl,
                 $this->otherKanbanTokenPaths($secretDir, $agents),
             );
-
-            foreach ($plan->notes as $note) {
-                $this->line($note);
-            }
-            foreach ($plan->warnings as $warning) {
-                $this->warn($warning);
-            }
-
-            $identity = $plan->offered;
-            if ($identity === null) {
-                return;
-            }
-
-            if (! $this->confirm("Write identity_id {$identity->id} into writeback.json?", false)) {
-                $this->line('  Nothing was written.');
-
-                return;
-            }
-
-            $offer->commit($configDir, $identity->id);
-            $this->info("  ✓ writeback.json identity_id = {$identity->id}.");
         } catch (Throwable $e) {
-            // ⛔ THE CLASS, NOT THE MESSAGE. Setup completing is the guarantee; an unexpected
-            // failure here must not abort it. The message is withheld because an HTTP-layer
-            // exception can carry the response body, and that body is sensitive as a class —
-            // the named causes an operator can act on are produced by the resolver, which
-            // never puts the body in one.
+            // ⛔ THE CLASS, NOT THE MESSAGE, ON THIS HALF ONLY. Setup completing is the
+            // guarantee, so nothing here may abort it — and the message is withheld because an
+            // HTTP-layer exception can carry the response BODY, which is sensitive as a class.
+            // Every cause an operator can act on is produced by the resolver as a named
+            // fallback, which never puts the body in one.
             $this->warn(sprintf(
                 'writeback: the identity_id offer could not run (%s) — nothing was written; docs/writeback.md § 2 has the by-hand recipe.',
                 $e::class,
+            ));
+
+            return;
+        }
+
+        // ⚠ ESCAPED, because these lines interpolate values this command did not choose —
+        // a kanban display name, a path — and the console INTERPRETS `<…>` style tags. The
+        // operator is being asked to recognise an account by that name, so a name the
+        // renderer silently rewrote is one they cannot check against the board.
+        foreach ($plan->notes as $note) {
+            $this->line(OutputFormatter::escape($note));
+        }
+        foreach ($plan->warnings as $warning) {
+            $this->warn(OutputFormatter::escape($warning));
+        }
+
+        $identity = $plan->offered;
+        if ($identity === null) {
+            return;
+        }
+
+        if (! $this->confirm("Write identity_id {$identity->id} into writeback.json?", false)) {
+            $this->line('  Nothing was written.');
+
+            return;
+        }
+
+        try {
+            $offer->commit($configDir, $identity->id);
+            $this->info("  ✓ writeback.json identity_id = {$identity->id}.");
+        } catch (Throwable $e) {
+            // ⚑ THE MESSAGE, HERE. A failed write is the arm whose cause is BOTH the useful
+            // half and safe to print: every message on this path is composed by this app from
+            // the path and the OS error, and no upstream response body can reach it. Withholding
+            // it — as the resolve half must — would leave a read-only or full filesystem
+            // reported as a bare exception class.
+            $this->warn(sprintf(
+                'writeback: identity_id %d was NOT written — %s. Nothing else changed; put the number in by hand (docs/writeback.md § 2).',
+                $identity->id,
+                OutputFormatter::escape($e->getMessage()),
             ));
         }
     }

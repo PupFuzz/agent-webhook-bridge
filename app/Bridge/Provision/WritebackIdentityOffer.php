@@ -8,6 +8,7 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\FileContents;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\WritebackConfig;
 use Throwable;
 
@@ -72,6 +73,17 @@ final class WritebackIdentityOffer
     {
         if (! self::isPending($configDir)) {
             return WritebackIdentityOfferPlan::nothingToOffer();
+        }
+
+        // ⛔ THE SAME TRANSPORT FLOOR THE PROVISIONING LOOP APPLIES, ASSERTED HERE RATHER THAN
+        // INHERITED FROM IT. This request presents the writeback bearer token, and the loop's
+        // own `secureHttpUrl` call runs per kanban SUBSCRIPTION — an install that declares none
+        // reaches this line having validated nothing. Refusing is a fail-soft fallback, not a
+        // throw: the operator is told the config is the fault and setup still finishes.
+        try {
+            UrlValidator::secureHttpUrl($apiBaseUrl, 'bridge.providers.kanban.api_base_url');
+        } catch (ConfigException $e) {
+            return $this->fallback($configDir, $apiBaseUrl, $e->getMessage());
         }
 
         try {

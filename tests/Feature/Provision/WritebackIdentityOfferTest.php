@@ -14,12 +14,14 @@ use Tests\TestCase;
  * `bridge:provision` OFFERS the writeback `identity_id` it can resolve from the token the
  * operator has already placed (card#9141 / DL-369) — it never writes one unasked.
  *
- * ⛔ THE FAIL-SOFT MATRIX IS THE IMPORTANT HALF, and it is one test per ARM rather than one
- * "it errors" test: no token, an unreachable API, 401, 403, a body that is not JSON, a body
- * with no `.data.id`, and a body carrying a bare `.id` are seven different diagnoses that
- * must each fall back to the by-hand recipe with setup's own outcome untouched. A single
- * assertion over "some failure happened" would pass on an implementation that reported the
- * wrong cause for six of them, which is worse than reporting none (canon #10).
+ * ⛔ THE FAIL-SOFT MATRIX IS THE IMPORTANT HALF, and the rule is ONE TEST PER NAMED CAUSE —
+ * the `test_fail_soft_*` methods below are the population, and a new cause owes a new one.
+ * Each asserts the same three things through `assertFellBackTo()`: the cause is NAMED, the
+ * by-hand recipe is pointed at, and setup's own outcome is untouched. A single "it errors"
+ * assertion would pass on an implementation that reported the WRONG cause for all but one of
+ * them, and a wrong-but-specific cause sends an operator to the wrong repair (canon #10).
+ * There is deliberately no count here: a number in prose is a restatement of the method list
+ * and goes stale the first time an arm is added — which it already did once.
  */
 class WritebackIdentityOfferTest extends TestCase
 {
@@ -146,6 +148,26 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertSame(8, $raw['mappings']['your-org/your-repo']['board_id'] ?? null);
     }
 
+    /**
+     * ⚑ The write is the one failure whose CAUSE is both useful and safe to print — it is
+     * composed here from the path and the OS error, with no upstream body in it — so a
+     * read-only `writeback.json` must be reported as such rather than as a bare exception
+     * class, and setup must still exit 0.
+     */
+    public function test_a_refused_write_names_its_cause_and_does_not_abort_setup(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+        chmod($this->writebackJson(), 0o400);
+
+        $this->artisan('bridge:provision')
+            ->expectsConfirmation('Write identity_id 6 into writeback.json?', 'yes')
+            ->assertExitCode(0);
+
+        chmod($this->writebackJson(), 0o600);
+        $this->assertNull($this->identityInFile());
+    }
+
     public function test_declining_writes_nothing(): void
     {
         $this->seedWritebackWithoutIdentity();
@@ -170,6 +192,24 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertStringNotContainsString(self::WRITEBACK_TOKEN, $output);
         $this->assertStringNotContainsString(self::BOARD_TOKEN, $output);
         $this->assertStringNotContainsString(self::EMAIL, $output);
+    }
+
+    /**
+     * ⛔ The display name is a value this install did not choose, and the console INTERPRETS
+     * `<…>` style tags in it — so an unescaped name carrying one is SHOWN ALTERED, which on
+     * this surface is the one thing that must not happen: the operator is being asked to
+     * recognise an account BY THAT NAME, and a name the console rewrote is a name they cannot
+     * check against the board. Watched red against the unescaped render.
+     */
+    public function test_a_display_name_carrying_console_markup_is_shown_verbatim(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => 'Bot <info>svc</info> Writeback', 'email' => self::EMAIL]]));
+
+        $output = $this->runNonInteractively();
+
+        $this->assertStringContainsString('Bot <info>svc</info> Writeback', $output);
+        $this->assertStringNotContainsString('could not run', $output);
     }
 
     public function test_an_already_declared_identity_id_is_left_alone_and_asks_nothing(): void
@@ -249,6 +289,27 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertNull($this->identityInFile(), 'a fallback must not write a value it never resolved');
         // Setup ran to completion: the subscription this install declares was still created.
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ The request presents the writeback BEARER TOKEN, so the cleartext-http floor
+     * `bridge:provision`'s own loop applies has to hold here too — and it cannot be inherited
+     * from that loop, which runs its check per kanban SUBSCRIPTION and does not run at all on
+     * an install that declares none. The refusal is a fallback, not a throw.
+     */
+    public function test_fail_soft_refuses_to_present_the_token_over_cleartext_http(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'http://kanban.example.com/api/v3']);
+        $this->seedWritebackWithoutIdentity();
+        File::put($this->dir.'/prod-agent.yml', "subscriptions: []\n");   // no kanban scope: the loop validates nothing
+        $this->fakeResolvedUser();
+
+        Artisan::call('bridge:provision', ['--no-interaction' => true]);
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('must use https', $output);
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertNull($this->identityInFile());
     }
 
     public function test_fail_soft_no_writeback_token_yet(): void
