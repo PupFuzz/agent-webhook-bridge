@@ -95,15 +95,26 @@ final class ReceiverUrl
      *   - the PATH is percent-DECODED (after the trim — see the comment on that expression for
      *     why the order is load-bearing), because the matcher decodes segment content:
      *     `/webhooks/git%68ub` and `/webhooks%2Fgithub` both route as `provider=github`;
+     *   - a FRAGMENT is DISCARDED WITH EVERYTHING AFTER IT, before the query is even looked
+     *     for — it is never transmitted, so `…/github?b=owner/repo#frag` is the same delivery
+     *     as `…/github?b=owner/repo`, while `…/github#x?b=owner/repo` sends NO query at all
+     *     and is therefore a different one. {@see self::split()} owns that and says why the
+     *     order is the whole of it;
      *   - the SCHEME and HOST are lowercased and an explicit `:443`/`:80` matching the scheme
      *     is dropped — RFC 3986 §6.2.2.1/§6.2.3 syntax-based normalization, i.e. properties of
      *     how the delivery REACHES this box rather than of this app. ⚠ Stated as the standard
      *     rather than as a probe, because nothing here can drive DNS or a real TLS connect.
      *
-     * ⛔ THE PATH RULE IS PINNED AGAINST THE ROUTER ITSELF, OVER A GENERATED POPULATION.
-     * `Tests\Feature\Console\Check\ReceiverUrlRoutingAgreementTest` derives its spellings from
-     * the canonical path by mechanical transforms and requires this predicate to AGREE with
-     * the real route matcher on every one, in BOTH directions.
+     * ⛔ BOTH THE PATH RULE AND THE QUERY RULE ARE PINNED AGAINST THE RECEIVER ITSELF, OVER
+     * GENERATED POPULATIONS. `Tests\Feature\Console\Check\ReceiverUrlRoutingAgreementTest`
+     * derives path spellings from the canonical path and query spellings from the canonical
+     * query by mechanical transforms, and requires this predicate to agree with what the
+     * request actually resolves to — the matched route WITH its parameters, and the scope
+     * `VerifyHmacSignature` then reads out of it. ⚠ The query was held FIXED there for one
+     * round, on the stated ground that a router cannot answer for it. True of scheme/host/
+     * port; false of the query, which this box answers with the same call the middleware
+     * makes — and the half of the predicate that produced the ORIGINAL live defect was the
+     * half left judged by a hand-written table.
      *
      * ⚠ THAT IS A MUCH LARGER DENOMINATOR THAN A LIST — IT IS NOT A PROOF THE CLASS IS CLOSED,
      * and saying it was is how this card kept re-finding the same defect. r3 shipped that
@@ -136,9 +147,24 @@ final class ReceiverUrl
      * that is exactly the state the `fail` arm exists to name.
      *
      * ⚠ WHAT IS NORMALISED IS THE LIST ABOVE, AND NOTHING ELSE IS CLAIMED. Any other spelling
-     * the receiver would tolerate but this predicate has not been shown to — a hook carrying
-     * an extra query parameter, or a fragment, are two that are known — reads as ABSENT, and
-     * on this leg that is a `fail` that moves the exit code.
+     * the receiver would tolerate but this predicate has not been shown to reads as ABSENT,
+     * and on this leg that is a `fail` that moves the exit code. The one member of that
+     * residual which is KNOWN and measured is a hook carrying an EXTRA query parameter: the
+     * receiver reads only `b` and would deliver, this compares the whole parameter map and
+     * says absent.
+     *
+     * ⛔ THAT SENTENCE ONCE CLAIMED THE RESIDUAL WAS ONE-DIRECTIONAL, AND IT WAS FALSE — which
+     * is worth more than the bug it hid (card#9150 r5). It named *"a fragment"* as a second
+     * known member reading as absent. The trailing fragment does; a fragment BEFORE the query
+     * did the opposite — it read as PRESENT for a hook that delivers nothing, because
+     * {@see self::split()} cut on `?` alone. The claim was the stated basis for accepting a
+     * wide residual (*it is only ever the loud direction*), so being wrong about its DIRECTION
+     * was worse than being wrong about its membership: a maintainer reading it would not go
+     * looking for a false `ok`. ⭐ The residual is now asserted rather than described —
+     * `ReceiverUrlRoutingAgreementTest` requires `deliversTo()` `true` ⇒ the receiver agrees,
+     * over EVERY member of both generated populations with no exception, and requires full
+     * agreement over the complement of the extra-parameter residual, expressed as a predicate
+     * on the URL's parameter keys rather than as a list of members somebody wrote down.
      *
      * ⛔ THAT RESIDUAL IS OPEN, NOT CLOSED, AND THIS DELIBERATELY DOES NOT ENUMERATE IT. An
      * earlier revision listed two members and called them "a known, deliberate bound" — an
@@ -227,15 +253,37 @@ final class ReceiverUrl
     }
 
     /**
-     * `[everything before the first `?`, everything after it]`.
+     * `[endpoint, query]` — of the URL AS IT WOULD BE SENT.
      *
      * A URL with no `?` yields an empty query, which `parse_str` turns into an empty map —
      * so an endpoint-only hook compares unequal to one carrying `b`, without a special case.
+     *
+     * ⛔ THE FRAGMENT IS CUT FIRST, AND THE ORDER IS THE WHOLE OF THIS METHOD (card#9150 r5).
+     * A `#` does not delimit a field here — it TERMINATES the URL: everything from it onward
+     * is a fragment, which is never transmitted. So it must be discarded BEFORE the `?` is
+     * looked for, never reinterpreted as query. Splitting on `?` alone read
+     * `…/webhooks/github#x?b=owner/repo` as the canonical endpoint plus `b=owner/repo` and
+     * answered YES — while the receiver gets `POST /webhooks/github` with NO query string,
+     * `VerifyHmacSignature` reads `query('b')` as `null` and answers `invalid_scope` 400.
+     * ⭐ That is the SILENT false-`ok` this whole leg exists to prevent: the hook feeds
+     * nothing, forever, and `bridge:check` calls the subscription healthy. The mirror case —
+     * a fragment AFTER the query — was the loud one: the fragment bytes landed in the scope
+     * value and reddened a hook that delivers correctly. One cut fixes both, because both are
+     * the same misreading of one character.
+     *
+     * `Tests\Feature\Console\Check\ReceiverUrlRoutingAgreementTest::queryRegions()` generates a
+     * `#` at EVERY index rather than at the two positions a reviewer would think of, because
+     * which answer is right is decided by that position.
      *
      * @return array{0: string, 1: string}
      */
     private static function split(string $url): array
     {
+        $hash = strpos($url, '#');
+        if ($hash !== false) {
+            $url = substr($url, 0, $hash);
+        }
+
         $at = strpos($url, '?');
 
         return $at === false

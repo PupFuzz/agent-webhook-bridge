@@ -93,6 +93,17 @@ class ReceiverUrlTest extends TestCase
             ['extra query parameter', self::RECEIVER.'&x=1', self::RECEIVER, false, false],
             ['no query at all', 'https://bridge.example.com/webhooks/github', self::RECEIVER, false, false],
 
+            // ⛔ A FRAGMENT IS NEVER TRANSMITTED, AND ITS POSITION DECIDES EVERYTHING (r5).
+            // Before the `#` the query does not exist on the wire at all: GitHub POSTs
+            // `/webhooks/github` with NO query string, `query('b')` is null and the receiver
+            // answers `invalid_scope` 400 — so `absent` is the true verdict, and answering
+            // `true` here was the SILENT false-`ok` this leg exists to prevent. After the `#`
+            // the fragment is dropped and the delivery is byte-identical to the canonical one,
+            // so the hook is LIVE. Both measured through `Request::create()->query('b')`.
+            ['fragment before the query', 'https://bridge.example.com/webhooks/github#x?b=owner/repo', self::RECEIVER, false, false],
+            ['empty fragment before the query', 'https://bridge.example.com/webhooks/github#?b=owner/repo', self::RECEIVER, false, false],
+            ['fragment after the query', self::RECEIVER.'#frag', self::RECEIVER, true, false],
+
             // Both callers read this field out of a decoded API response where it may be
             // absent; no URL matches nothing, which is the safe direction for each.
             ['null url', null, self::RECEIVER, false, false],
@@ -102,11 +113,15 @@ class ReceiverUrlTest extends TestCase
     public function test_a_plus_in_the_path_is_a_literal_plus_and_never_a_space(): void
     {
         // ⛔ THE ONE PROPERTY THAT SEPARATES `rawurldecode` FROM `urldecode`, and it is NOT
-        // witnessable through the router-agreement suite: that population is generated from
-        // THIS install's canonical path, which contains neither `+` nor `%20`, so the two
-        // functions are extensionally identical over all 41 spellings and a mutation between
-        // them reds nothing there. Measured, not assumed — which is why the case is pinned
-        // HERE, where the base URL is a parameter.
+        // witnessable through the agreement suite: that population is generated from THIS
+        // install's canonical path, which contains neither `+` nor `%20`, so the two functions
+        // are extensionally identical over it and a mutation between them reds nothing there.
+        // ⚠ That used to say *"over all 41 spellings"* — a count of a GENERATED population,
+        // which is a restatement that goes stale silently, and had (it was 40). The claim is a
+        // predicate now, asserted where the population lives:
+        // `ReceiverUrlRoutingAgreementTest::test_the_path_population_witnesses_no_plus_and_no_percent_20`.
+        // Measured, not assumed — which is why the case is pinned HERE, where the base URL is
+        // a parameter.
         //
         // `+` is a LITERAL PLUS in a path (RFC 3986); only a QUERY treats it as a space. So a
         // receiver served under `/web+hooks` must not match a hook spelled `/web%20hooks`:
