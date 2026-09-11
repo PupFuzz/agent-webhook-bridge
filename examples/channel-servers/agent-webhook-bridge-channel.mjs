@@ -854,6 +854,27 @@ const VALID_META_KEY = /^[A-Za-z0-9_]+$/;
 // silently dropped on the Claude Code side.
 export { VALID_META_KEY };
 
+// ⭐ THE DECLARE LEG (canon #7): THIS TRANSPORT CARRIES NO DELIVERY RECEIPT, AND THE 202
+// SAYS SO ON THE WIRE. `mcp.notification()` resolves once the notification has been
+// WRITTEN to the stdio transport; nothing in the notification contract reports back
+// whether the Claude Code session on the far end ingested it, and this server has no
+// other channel to learn that from. So a 202 here means ACCEPTED BY TRANSPORT, never
+// `delivered` — and whether a session that is mid-turn sees the notification at its next
+// turn boundary or never sees it at all is NOT ESTABLISHED, so this server claims
+// neither. The declaration goes out on every surface that has its own reader, and each is
+// DERIVED from the constants below rather than restated — so the surface set is whatever
+// `grep -nE 'DELIVERY_RECEIPT_HEADER|ACCEPTED_UNCONFIRMED' <this file>` returns, never a
+// number written here that the next surface added would falsify. Today the readers are: the
+// HEADER is what the bridge parses (App\Bridge\Handlers\ChannelPushHandler reads it and
+// reports what this end declared, or that this end declared nothing), and the BODY is
+// what an operator sees running the README's curl smoke test. A comment alone would not
+// do: it lives in a repo the bridge cannot read and the operator is not standing in.
+const DELIVERY_RECEIPT_HEADER = 'X-Channel-Delivery-Receipt';
+const NO_DELIVERY_RECEIPT = 'none';
+const ACCEPTED_UNCONFIRMED =
+  'forwarded — accepted by transport (unconfirmed): written to the stdio transport, ' +
+  'which returns no receipt that the session received it';
+
 const server = http.createServer((req, res) => {
   if (req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'PATCH') {
     res.writeHead(405, { 'Content-Type': 'text/plain' });
@@ -880,12 +901,19 @@ const server = http.createServer((req, res) => {
         method: 'notifications/claude/channel',
         params: { content: body, meta },
       });
-      res.writeHead(202, { 'Content-Type': 'text/plain' });
-      res.end('forwarded');
+      res.writeHead(202, {
+        'Content-Type': 'text/plain',
+        [DELIVERY_RECEIPT_HEADER]: NO_DELIVERY_RECEIPT,
+      });
+      res.end(ACCEPTED_UNCONFIRMED);
     } catch (err) {
-      // notification() resolves when written to transport; failure here
-      // typically means the stdio transport is gone (Claude Code session
-      // closed). 503 prompts the bridge consumer to retry on next drain.
+      // A throw here means the write itself failed — typically the stdio transport is
+      // gone (Claude Code session closed). The bridge's channel_push raises on any
+      // non-2xx and records the throw as a best-effort handler note beside an otherwise
+      // completed dispatch; it does NOT retry, and no drain exists on this path, so this
+      // 503 is a REPORT and not a request to redeliver. Its counterpart is the 202
+      // above: the two together say the write happened or it did not, and neither says
+      // anything about what the session did with it.
       res.writeHead(503, { 'Content-Type': 'text/plain' });
       res.end(`channel transport closed: ${err && err.message ? err.message : err}`);
     }
