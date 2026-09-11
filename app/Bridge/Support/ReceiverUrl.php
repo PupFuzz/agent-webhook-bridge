@@ -92,18 +92,27 @@ final class ReceiverUrl
      *     Measured through the real router: `/webhooks/github?b=…`, `/webhooks/github/?b=…`
      *     and `/webhooks/github//?b=…` all resolve to the SAME route with the SAME parameters,
      *     so a hook spelled with one is LIVE;
+     *   - the PATH is percent-DECODED (after the trim — see the comment on that expression for
+     *     why the order is load-bearing), because the matcher decodes segment content:
+     *     `/webhooks/git%68ub` and `/webhooks%2Fgithub` both route as `provider=github`;
      *   - the SCHEME and HOST are lowercased and an explicit `:443`/`:80` matching the scheme
      *     is dropped — RFC 3986 §6.2.2.1/§6.2.3 syntax-based normalization, i.e. properties of
      *     how the delivery REACHES this box rather than of this app. ⚠ Stated as the standard
      *     rather than as a probe, because nothing here can drive DNS or a real TLS connect.
      *
-     * ⛔ THE PATH RULE IS NOT A LIST OF SPELLINGS — IT IS PINNED AGAINST THE ROUTER ITSELF.
-     * `Tests\Feature\Console\Check\ReceiverUrlRoutingAgreementTest` matches each spelling
-     * through the real route matcher and requires this predicate to AGREE with it, so the next
-     * spelling nobody thought of reds there instead of being found in production. Three rounds
-     * of this card each fixed ONE member of that class by hand before the class itself was
-     * closed; the members are still pinned individually, but the agreement test is what makes
-     * the rule derived rather than enumerated.
+     * ⛔ THE PATH RULE IS PINNED AGAINST THE ROUTER ITSELF, OVER A GENERATED POPULATION.
+     * `Tests\Feature\Console\Check\ReceiverUrlRoutingAgreementTest` derives its spellings from
+     * the canonical path by mechanical transforms and requires this predicate to AGREE with
+     * the real route matcher on every one, in BOTH directions.
+     *
+     * ⚠ THAT IS A MUCH LARGER DENOMINATOR THAN A LIST — IT IS NOT A PROOF THE CLASS IS CLOSED,
+     * and saying it was is how this card kept re-finding the same defect. r3 shipped that
+     * claim over a TEN-ELEMENT LITERAL LIST; a generated population then found **15** further
+     * disagreements it scored zero on, every one a percent-encoded path character (a live
+     * spelling: `/webhooks/git%68ub` routes, kernel 401). The generator enumerates TRANSFORMS
+     * rather than spellings, which is a far smaller thing to be wrong about — but it is still
+     * something someone wrote, so a transform nobody thought of is still invisible. Read this
+     * as *the population is derived and wide*, never as *the class is closed*.
      *
      * ⛔ AND IT NORMALISES *LESS* THAN `Request::path()`, WHICH IS THE CORRECTION THAT MATTERS.
      * A review round proposed mirroring `path()` — `'/'.trim($path, '/')`, which folds LEADING
@@ -203,9 +212,18 @@ final class ReceiverUrl
 
         return $scheme.'://'.$userinfo.strtolower($parts['host'])
             .($port === null ? '' : ':'.$port)
+            // ⛔ TRIM THE RAW PATH, THEN DECODE — the ORDER is measured, not stylistic, and
+            // both orders are wrong the other way round. The matcher tolerates a trailing
+            // slash on the RAW path but decodes segment CONTENT, and those are different
+            // things: `/webhooks/github/` routes, `/webhooks/github%2F` does NOT, while
+            // `/webhooks%2Fgithub` and `/webhooks/git%68ub` both route as `provider=github`.
+            // Decoding first turns that `%2F` into a trailing slash the trim then eats, so the
+            // predicate answers `true` for a spelling that delivers NOTHING — the silent
+            // false-`ok`. Trimming first keeps it as content, where the router keeps it.
+            //
             // Path case is NOT folded — see deliversTo()'s docblock for the measurement that
             // decided it.
-            .rtrim($parts['path'] ?? '', '/');
+            .rawurldecode(rtrim($parts['path'] ?? '', '/'));
     }
 
     /**

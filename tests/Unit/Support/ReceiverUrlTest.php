@@ -99,6 +99,30 @@ class ReceiverUrlTest extends TestCase
         ];
     }
 
+    public function test_a_plus_in_the_path_is_a_literal_plus_and_never_a_space(): void
+    {
+        // ⛔ THE ONE PROPERTY THAT SEPARATES `rawurldecode` FROM `urldecode`, and it is NOT
+        // witnessable through the router-agreement suite: that population is generated from
+        // THIS install's canonical path, which contains neither `+` nor `%20`, so the two
+        // functions are extensionally identical over all 41 spellings and a mutation between
+        // them reds nothing there. Measured, not assumed — which is why the case is pinned
+        // HERE, where the base URL is a parameter.
+        //
+        // `+` is a LITERAL PLUS in a path (RFC 3986); only a QUERY treats it as a space. So a
+        // receiver served under `/web+hooks` must not match a hook spelled `/web%20hooks`:
+        // `urldecode` folds both to `/web hooks` and calls them one endpoint, which is the
+        // over-normalisation direction — a hook that delivers nothing reported `ok`.
+        $receiver = ReceiverUrl::for('https://bridge.example.com/web+hooks', 'github', 'owner/repo');
+
+        $this->assertSame('https://bridge.example.com/web+hooks/github?b=owner/repo', $receiver);
+        $this->assertFalse(
+            ReceiverUrl::deliversTo('https://bridge.example.com/web%20hooks/github?b=owner/repo', $receiver),
+            'a percent-encoded SPACE is not a literal PLUS — folding them is `urldecode`, and it invents an endpoint',
+        );
+        // The same path spelled with its `+` percent-encoded IS the same endpoint.
+        $this->assertTrue(ReceiverUrl::deliversTo('https://bridge.example.com/web%2Bhooks/github?b=owner/repo', $receiver));
+    }
+
     #[DataProvider('cases')]
     public function test_both_predicates_answer_as_specified(string $label, ?string $live, string $receiver, bool $delivers, bool $exact): void
     {
