@@ -88,20 +88,36 @@ final class ReceiverUrl
      *   - the QUERY is compared as PARSED PARAMETERS, which decodes each value exactly once
      *     — precisely what `$request->query('b')` hands `VerifyHmacSignature` — so
      *     `?b=owner%2Frepo` and `?b=owner/repo` are one hook;
-     *   - TRAILING SLASHES on the path are dropped, because Laravel trims them before route
-     *     matching. Measured through the real router: `/webhooks/github?b=…`,
-     *     `/webhooks/github/?b=…` and `/webhooks/github//?b=…` all reach the SAME middleware
-     *     and fail at the same point, so a hook spelled with one is LIVE;
+     *   - TRAILING SLASHES on the path are dropped, because the compiled route tolerates them.
+     *     Measured through the real router: `/webhooks/github?b=…`, `/webhooks/github/?b=…`
+     *     and `/webhooks/github//?b=…` all resolve to the SAME route with the SAME parameters,
+     *     so a hook spelled with one is LIVE;
      *   - the SCHEME and HOST are lowercased and an explicit `:443`/`:80` matching the scheme
      *     is dropped — RFC 3986 §6.2.2.1/§6.2.3 syntax-based normalization, i.e. properties of
      *     how the delivery REACHES this box rather than of this app. ⚠ Stated as the standard
      *     rather than as a probe, because nothing here can drive DNS or a real TLS connect.
      *
-     * ⛔ PATH CASE IS DELIBERATELY *NOT* NORMALISED, and that is measured too, in the opposite
-     * direction: `/Webhooks/github?b=…` answers **404** (no route) and `/webhooks/GitHub?b=…`
-     * answers **400 `invalid_provider`**. Those spellings genuinely deliver nothing, so
-     * treating them as equivalent would invent a hook that does not work — the inverse of the
-     * defect this predicate exists to avoid.
+     * ⛔ THE PATH RULE IS NOT A LIST OF SPELLINGS — IT IS PINNED AGAINST THE ROUTER ITSELF.
+     * `Tests\Feature\Console\Check\ReceiverUrlRoutingAgreementTest` matches each spelling
+     * through the real route matcher and requires this predicate to AGREE with it, so the next
+     * spelling nobody thought of reds there instead of being found in production. Three rounds
+     * of this card each fixed ONE member of that class by hand before the class itself was
+     * closed; the members are still pinned individually, but the agreement test is what makes
+     * the rule derived rather than enumerated.
+     *
+     * ⛔ AND IT NORMALISES *LESS* THAN `Request::path()`, WHICH IS THE CORRECTION THAT MATTERS.
+     * A review round proposed mirroring `path()` — `'/'.trim($path, '/')`, which folds LEADING
+     * slashes too — on the premise that `//webhooks/github?b=…` is live. **Measured through
+     * this app's kernel, it is not:** `path()` does answer `webhooks/github` for it, but the
+     * MATCHER reads `getPathInfo()`, which keeps the leading slashes, so it matches NO ROUTE
+     * and answers **404**. Adopting that change makes a DEAD spelling compare equal and reports
+     * a green `ok` for a hook that delivers nothing — the inverse defect, and the worse one,
+     * because a false `fail` is loud and a false `ok` is silent. The agreement test above reds
+     * on exactly that mutation.
+     *
+     * ⛔ PATH CASE IS NOT FOLDED EITHER, measured in the same direction: `/Webhooks/github?b=…`
+     * answers **404** and `/webhooks/GitHub?b=…` answers **400 `invalid_provider`**. Those
+     * genuinely deliver nothing.
      *
      * ⛔ DECODED ONCE, NEVER REPEATEDLY, AND `%252F` THEREFORE DOES **NOT** MATCH — decided
      * from the receiver's behaviour rather than from taste. `?b=owner%252Frepo` arrives as

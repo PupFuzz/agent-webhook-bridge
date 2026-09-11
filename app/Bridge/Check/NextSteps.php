@@ -102,8 +102,13 @@ final class NextSteps
     private const RERUN_PRIVILEGED = 'sudo php artisan bridge:check';
 
     /**
-     * Derive one entry per agent whose board-tools enablement is incomplete, in config
-     * order.
+     * Derive one entry per OUTSTANDING ITEM, in config order.
+     *
+     * ⚠ THE UNIT IS NOT UNIFORMLY THE AGENT, and this docblock said it was until card#9150
+     * r3 — on the very method whose last statement is `array_merge($steps, self::webhookSteps($ctx))`.
+     * The board-tools half below is per AGENT; {@see self::webhookSteps()} is per
+     * **(agent, scope)**, because one repo's missing hook deafens every agent subscribed to
+     * it. `docs/check-json-contract.md` § 7a states that for the consumer.
      *
      * FIRST MATCH WINS, and the order of the arms is the order the work has to happen in:
      * an agent with no block cannot have a bearer fault, and an agent whose bridge half is

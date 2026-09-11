@@ -314,6 +314,42 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('ok', $this->onlyFinding($doc)['severity']);
     }
 
+    public function test_a_matching_hook_on_a_late_r_page_still_wins_over_an_unreadable_earlier_entry(): void
+    {
+        // ⛔ THE CROSS-PAGE CASE, WHICH IS WHERE THE *"a match still wins"* CLAIM WAS FALSE
+        // (card#9150 r3). The flag was declared INSIDE the page loop, so its `return null`
+        // fired at the end of page 1 and pre-empted page 2 entirely — the single-page test
+        // beside this one could not see it, and three surfaces asserted the claim
+        // unconditionally. Page 1 is FULL so the walk continues; the match is on page 2.
+        $page1 = array_fill(0, 99, ['config' => ['url' => self::FOREIGN_RECEIVER]]);
+        $page1[] = ['id' => 7, 'config' => ['endpoint' => 'moved']];
+        $this->bootGithubInstall(Http::sequence()
+            ->push($page1, 200)
+            ->push([['id' => 8, 'config' => ['url' => self::RECEIVER]]], 200));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('ok', $this->onlyFinding($doc)['severity'], 'an unreadable entry must cast doubt on an ABSENCE, never pre-empt a later page that holds the hook');
+    }
+
+    public function test_an_unreadable_entry_on_an_earlier_page_still_unmakes_an_absence(): void
+    {
+        // THE OTHER HALF OF THE HOIST, and it is what stops the fix above being a licence to
+        // ignore the flag: page 1 carries the unreadable entry, page 2 exhausts the list with
+        // no match — so the absence is NOT established and this must stay `unvalidated`.
+        $page1 = array_fill(0, 99, ['config' => ['url' => self::FOREIGN_RECEIVER]]);
+        $page1[] = ['id' => 7, 'config' => ['endpoint' => 'moved']];
+        $this->bootGithubInstall(Http::sequence()
+            ->push($page1, 200)
+            ->push([['id' => 8, 'config' => ['url' => self::FOREIGN_RECEIVER]]], 200));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('unvalidated', $this->onlyFinding($doc)['severity']);
+    }
+
     public function test_no_other_installs_receiver_url_ever_reaches_the_output(): void
     {
         // ⛔ THE FLEET-LEAK CONTROL, over the WHOLE command output rather than one finding:

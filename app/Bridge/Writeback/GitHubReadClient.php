@@ -96,6 +96,15 @@ final class GitHubReadClient
      */
     public function hasRepoWebhookFor(string $repo, string $receiverUrl): ?bool
     {
+        // ⛔ HOISTED ABOVE THE PAGE LOOP (card#9150 r3). Declared per page, its `return null`
+        // fired at the end of whichever page saw the unreadable entry and pre-empted every
+        // later page — so a malformed entry on page 1 SILENCED a real matching hook on page 2.
+        // Measured: 99 foreign + 1 unreadable on page 1, the match on page 2, answered
+        // `unvalidated` where `ok` was earned. The direction was safe (never a false `fail`),
+        // but the claim *a match still wins* was FALSE across a page boundary while three
+        // surfaces asserted it unconditionally.
+        $unreadableElement = false;
+
         for ($page = 1; $page <= self::HOOK_PAGE_LIMIT; $page++) {
             $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
                 'per_page' => self::HOOK_PAGE_SIZE,
@@ -122,7 +131,6 @@ final class GitHubReadClient
             // ⚑ A MATCH STILL WINS. The flag is only consulted when no hook matched, so one
             // malformed entry beside a readable matching one still answers `true` — an
             // unreadable element casts doubt on an ABSENCE, never on a hit.
-            $unreadableElement = false;
             foreach ($body as $hook) {
                 $config = is_array($hook) ? ($hook['config'] ?? null) : null;
                 $url = is_array($config) ? ($config['url'] ?? null) : null;
@@ -141,19 +149,21 @@ final class GitHubReadClient
                 }
             }
 
-            if ($unreadableElement) {
-                self::warnUnreadableBody(
-                    "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
-                    ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
-                );
-
-                return null;
-            }
-
             // A SHORT PAGE IS THE END OF THE LIST, which is what makes `false` an
             // EXHAUSTED enumeration rather than "not on page 1" — the distinction the
-            // `fail` severity below this rests on.
+            // `fail` severity below this rests on. ⚑ The flag is consulted HERE, at the one
+            // place an ABSENCE is about to be asserted, so an unreadable entry anywhere in
+            // the walk unmakes that absence while never pre-empting a later page's match.
             if (count($body) < self::HOOK_PAGE_SIZE) {
+                if ($unreadableElement) {
+                    self::warnUnreadableBody(
+                        "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
+                        ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                    );
+
+                    return null;
+                }
+
                 return false;
             }
         }

@@ -53,7 +53,7 @@ php artisan bridge:check                    # identical to --format=text
   "findings_outside_registry": [ … ],   // findings belonging to no check (see §5)
   "inventory": { … },                   // the run's account (see §6)
   "event_consumers": { … },             // the observed-vs-consumed reconciliation (see §7)
-  "next_steps": [ … ]                   // what an agent should RUN NEXT, per agent (see §7a)
+  "next_steps": [ … ]                   // what to RUN NEXT to finish wiring this install (see §7a)
 }
 ```
 
@@ -66,7 +66,7 @@ php artisan bridge:check                    # identical to --format=text
 | `findings_outside_registry` | array of findings | Findings the command's own fail-soft envelopes produced, which belong to no registered check — §5. |
 | `inventory` | object | The per-disposition account of the run — §6. |
 | `event_consumers` | object | The observed-vs-consumed reconciliation as data — §7. |
-| `next_steps` | array | One entry per agent whose board-tools enablement is incomplete, with the command to run next — §7a. **Empty means nothing is OUTSTANDING, never that every agent is enabled.** ⚠ Since DL-360 *outstanding* is also narrower than *unhealthy*: an agent whose block this install RECORDED and which now has none is a `board_tools.lost` **fail** in `checks[]` and gets NO entry here, so a fleet whose only agent is lost has an EMPTY array and `ok: false`. Read `ok` for the verdict; this array is a pointer to work. |
+| `next_steps` | array | What to run next to finish wiring this install — **[§7a](#7a-next_steps--what-to-run-next) owns the population, the entry shape and the `state` vocabulary, and this row deliberately carries no second copy of them** (card#9150: the copy that stood here said *one entry per agent whose board-tools enablement is incomplete* and was false one release later, while three other docs had been redirected to this file). **Empty means nothing is OUTSTANDING, never that every agent is healthy.** Read `ok` for the verdict; this array is a pointer to work. |
 
 ### 3a. `agent_scope_coverage` — read this before any scope-keyed negative
 
@@ -240,7 +240,7 @@ Per scope:
 - **The declaration half is computed even when nothing arrived** — `consumed` / `bare` / `qualified` are meaningful on a scope with zero arrivals, which is the half a config-auditing consumer reads. (The text renderer stays silent for such a scope; the data does not inherit that bound.)
 - **Every possibly-empty map is encoded as a JSON object, never `[]`** (`observed`, `observed_actions`, `qualified`, `unlisted_actions`). This is asserted on the encoded bytes, so a consumer indexing them never has to handle two types for one field. The nested maps inside them cannot be empty by construction.
 
-### 7a. `next_steps` — what to run next, per agent
+### 7a. `next_steps` — what to run next
 
 Added in **DL-352** (card#8959) on the **added-key** row of §2, so `schema` stays `1`: nothing else moves, no severity is invented, and no existing key changes type or meaning.
 
@@ -256,7 +256,7 @@ Added in **DL-352** (card#8959) on the **added-key** row of §2, so `schema` sta
 ]
 ```
 
-One entry per agent whose wiring of this install is incomplete, in config order, each naming the ONE command to run next. It is the machine half of the operator report's **NEXT STEPS** block; both are rendered from the same value, so the command a consumer runs is the command the report printed.
+One entry per outstanding item, in config order, each naming the ONE command to run next. ⚠ **The unit is NOT uniformly the agent:** a board-tools entry is per AGENT, and a `github_webhook_missing` entry is per **(agent, scope)** — one repo's missing hook deafens every agent subscribed to it, and each is told separately (`NextSteps::webhookSteps()`). It is the machine half of the operator report's **NEXT STEPS** block; both are rendered from the same value, so the command a consumer runs is the command the report printed.
 
 **Two subjects since DL-368 (card#9150):** the first four `state` values are about **board-tools** enablement (DL-217); `github_webhook_missing` is about a declared **github subscription** whose repo carries no webhook delivering here. The block is *this install is not wired end to end*, which both answer to.
 
@@ -292,7 +292,7 @@ One entry per agent whose wiring of this install is incomplete, in config order,
 | Cross-renderer agreement over all install shapes (verdict, exit, inventory counts vs. the committed text capture) | `tests/Feature/Console/Check/CheckGoldenTest.php` |
 | The reconciliation derivation | `app/Bridge/Check/EventConsumers/EventConsumerReconciler.php` |
 | The `next_steps` derivation (§7a) | `app/Bridge/Check/NextSteps.php` |
-| The `next_steps` guard (both renderers, the four board-tools states, plus the opt-out and the no-entry case) | `tests/Feature/Console/Check/CheckNextStepsTest.php` |
+| The `next_steps` guard (both renderers, every board-tools state, plus the opt-out and the no-entry case) | `tests/Feature/Console/Check/CheckNextStepsTest.php` |
 | The `github_webhook_missing` state, the three-way severity split behind it, and the fleet-leak control (DL-368) | `tests/Feature/Console/Check/GitHubWebhookSubscriptionCheckTest.php` |
 | Why the surface is shaped this way | [`CHECK-REGISTRY-PLAN.md`](CHECK-REGISTRY-PLAN.md) § Stage 9 result; **DL-249** |
 

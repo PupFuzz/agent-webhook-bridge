@@ -975,7 +975,7 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > the command a fresh install already runs ends with a **NEXT STEPS** block naming what is not
 > wired end to end, the state it stopped in, and the ONE command to run next; `--format=json`
 > carries the same entries as `next_steps[]`. ⛔ **The entry shape and the `state` vocabulary
-> are owned by [`docs/check-json-contract.md` § 7a](check-json-contract.md#7a-next_steps--what-to-run-next-per-agent)
+> are owned by [`docs/check-json-contract.md` § 7a](check-json-contract.md#7a-next_steps--what-to-run-next)
 > and are deliberately not restated here** — the key set stated in this paragraph was already
 > false one release later (card#9150 / DL-368 added `scope`), which is the drift the same
 > paragraph's own rule about state meanings exists to prevent.
@@ -989,7 +989,7 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > rather than to read all seven steps first.
 >
 > What each `state` means is defined ONCE, in
-> [`docs/check-json-contract.md § 7a`](check-json-contract.md#7a-next_steps--what-to-run-next-per-agent)
+> [`docs/check-json-contract.md § 7a`](check-json-contract.md#7a-next_steps--what-to-run-next)
 > (owner: `NextStepState`'s docblock) — not restated here. How they map onto the steps
 > below: `no_block` → steps 3–4; `bridge_side_incomplete` → the `bridge:provision-tools`
 > line the entry prints, then re-run; `bridge_side_unverified` → **re-run as the account

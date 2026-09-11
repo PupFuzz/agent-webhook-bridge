@@ -75,6 +75,12 @@ class ReceiverUrlTest extends TestCase
             // calling them equivalent would invent a hook that does not work.
             ['path case differs', 'https://bridge.example.com/Webhooks/github?b=owner/repo', self::RECEIVER, false, false],
             ['provider segment case differs', 'https://bridge.example.com/webhooks/GitHub?b=owner/repo', self::RECEIVER, false, false],
+            // ⛔ http IS NOT https, and this row is the one over-normalisation direction that
+            // was unwitnessed: forcing the scheme to `https` left this class green. The
+            // regression it admits is the INVERSE defect — a hook registered at `http://…`
+            // would report `ok` while GitHub's delivery takes a 301 it does not follow, so the
+            // agent is deaf and the check is green.
+            ['scheme differs (http vs https)', 'http://bridge.example.com/webhooks/github?b=owner/repo', self::RECEIVER, false, false],
             // A NON-default port is a different endpoint, not a spelling.
             ['explicit non-default port', 'https://bridge.example.com:8443/webhooks/github?b=owner/repo', self::RECEIVER, false, false],
             // Credentials in the userinfo are preserved, so a credentialed endpoint never
