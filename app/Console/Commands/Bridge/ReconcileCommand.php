@@ -489,18 +489,23 @@ class ReconcileCommand extends BridgeCommand
                 if ($owner === null) {
                     // ⛔ ESCAPED (card#9121, DL-366 Decision 12): `canonRepo` is parsed out of
                     // a CARD's `pr_url` by `([^/]+/[^/]+?)`, which admits every byte but `/`,
-                    // and `canonicalizeSource()` reduces no byte class — so on THIS arm it is
-                    // still the card author's bytes. Past this branch it has been MATCHED
-                    // against `$byCanonRepo`, whose keys are this install's own mappings, so
-                    // the later lines print a value from a closed set this install owns and
-                    // are deliberately left as prose (declaring them would say this install
-                    // does not vouch for its own writeback.json).
+                    // and `canonicalizeSource()` reduces no byte class.
                     $this->line("card {$cardId}: pr_url repo ".UntrustedText::forOperator($ref->canonRepo).' is not in scope for this board (unmapped, or excluded by --repo) — skipped');
                     $this->skipped++;
 
                     return $none;
                 }
 
+                // ⛔ PER VALUE, NOT PER ARM (card#9121 round 5). One parse of one foreign
+                // field returns five values with FIVE dispositions, and an earlier revision
+                // of this method ruled the ARM instead — "past here it is matched, so it is
+                // this install's own" — which was true of `canonRepo` and FALSE of `prUrl`
+                // on this same line. `$owner['repo']`/`$owner['mapping']` are the matched
+                // `writeback.json` entry; `canonRepo` IS the key it matched; `prNumber` is an
+                // `int`. `prUrl` is `PrUrlRef::$raw` — the stored URL VERBATIM, whose own
+                // docblock says `unnormalized`: `parse()` needs only a mapped repo and
+                // `/pull/<n>` matching SOMEWHERE, so everything else in it is the card
+                // author's. Its consumers escape it at each console write.
                 return [$owner['repo'], $owner['mapping'], $ref->canonRepo, $ref->prNumber, $ref->prUrl];
 
             case TrackedRefKind::PrNumber:
@@ -518,7 +523,11 @@ class ReconcileCommand extends BridgeCommand
                 return $none;
 
             case TrackedRefKind::DlOnly:
-                $this->line("card {$cardId} (DL {$ref->dl}): no PR reference (pr_url/pr_number) — DL→PR resolution is out of v1 scope; skipped");
+                // ⛔ ESCAPED (card#9121 round 5): `TrackedCardRef` stores this as
+                // `(string) $payload['dl_number']` behind a bare `is_scalar` — the same field
+                // and the same gate DL-366 Decision 12 declares foreign in
+                // `WritebackSourceCoverageCheck`.
+                $this->line("card {$cardId} (DL ".UntrustedText::forOperator((string) $ref->dl).'): no PR reference (pr_url/pr_number) — DL→PR resolution is out of v1 scope; skipped');
                 $this->skipped++;
 
                 return $none;
@@ -648,7 +657,11 @@ class ReconcileCommand extends BridgeCommand
     private function finish(bool $fix, int $maxMoves, KanbanClient $kanban): int
     {
         foreach ($this->planned as $p) {
-            $this->line(sprintf('DRIFT     card %d board %d: stage %d → %d (%s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $p['evidence']));
+            // ⛔ ESCAPED AT THE WRITE, not where `evidence` is composed (DL-366 Decision 11's
+            // stated layer: a command writing the console directly IS the renderer). It can
+            // hold a card's raw `pr_url`; `forOperator()` is the identity on the other two
+            // things it can hold (a GitHub `html_url`, a mapped `repo#number`).
+            $this->line(sprintf('DRIFT     card %d board %d: stage %d → %d (%s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], UntrustedText::forOperator($p['evidence'])));
         }
         foreach ($this->backward as $p) {
             if ($p['kind'] === 'unorderable') {
@@ -658,7 +671,7 @@ class ReconcileCommand extends BridgeCommand
             } else {
                 $label = 'backward — not moved (card is ahead of its PR state; likely a deliberate human move)';
             }
-            $this->line(sprintf('SKIP-DRIFT card %d board %d: stage %d ↛ %d (%s; %s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $label, $p['evidence']));
+            $this->line(sprintf('SKIP-DRIFT card %d board %d: stage %d ↛ %d (%s; %s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $label, UntrustedText::forOperator($p['evidence'])));
         }
 
         $moved = 0;

@@ -507,11 +507,12 @@ class ReconcileCommandTest extends TestCase
      * prints for an OUT-OF-SCOPE card is bytes the card's author chose, relayed to the
      * operator's terminal on the ordinary success path of a board read.
      *
-     * ⚑ IT IS THE OUT-OF-SCOPE ARM SPECIFICALLY, and the in-scope arms are deliberately NOT
-     * changed: past this point `$cardRepo` has been MATCHED against `$byCanonRepo`, whose
-     * keys are this install's own `writeback.json` mappings, so every later line prints a
-     * value from a closed set this install owns. Here the lookup MISSED, which is precisely
-     * why the unreduced value is still in hand.
+     * ⚑ THE VALUE HERE IS `canonRepo` AND THE RULING IS ABOUT `canonRepo`. An earlier
+     * revision of this docblock ruled the ARM instead — *"past this point every later line
+     * prints a value from a closed set"* — and that was measured FALSE at the next review:
+     * the same `return` also hands back `prUrl`, the card's URL stored verbatim. Each value
+     * out of that parse now carries its own disposition, at the return and in
+     * `RawBoardRowReaderTest`; no sentence anywhere certifies a region of this file.
      *
      * ⚠ An ESC would be blocked upstream by nothing at all here — unlike the relayed
      * exception bodies, which Guzzle's `bodySummary` gate fails closed on. Nothing filters
@@ -528,6 +529,58 @@ class ReconcileCommandTest extends TestCase
         // PRESENCE WITNESS — the operator still learns WHICH repo was out of scope.
         $this->assertStringContainsString('is not in scope for this board', $output);
         $this->assertStringContainsString('pr_url repo evil/\\x1B[2k all clear', $output);
+        $this->assertNoLiveControlByte($output);
+    }
+
+    /**
+     * ⛔ THE `pr_url` ITSELF, ON THE MATCHED ARM — the ordinary DRIFT line, not an error arm
+     * (card#9121, DL-366 Decision 12, round 5).
+     *
+     * ⭐ WHY THE PREVIOUS ROUND MISSED IT, recorded because the reasoning is the defect and
+     * not the line: `resolveTracked()` returns FIVE values from one parse of one foreign
+     * field, and round 4 ruled the ARM ("past this branch the value has been matched against
+     * this install's own mappings") instead of ruling each VALUE. That is true of
+     * `canonRepo`, which IS the matched key, and false of `prUrl` on the same return — it is
+     * `PrUrlRef::$raw`, whose own docblock says *the URL exactly as it was stored,
+     * unnormalized*. `PrUrlRef::parse` needs only a mapped repo and `#/pull/(\d+)#` matching
+     * SOMEWHERE in the string; everything after the number is attacker free text, nothing
+     * lower-cases it, and no `bodySummary` gate stands in front of it.
+     */
+    public function test_a_matched_pr_url_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        $this->fake(
+            [$this->card(5, 50, ['pr_url' => "https://github.com/owner/repo/pull/5\x1b[2K\rSummary: 0 forward drift, nothing to do"])],
+            [5 => $this->mergedToDevPr()],
+        );
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        // PRESENCE WITNESS — the evidence still reaches the operator, on the DRIFT line.
+        $this->assertStringContainsString('DRIFT     card 5 board 8: stage 50 → 52 (merged)', $output);
+        $this->assertStringContainsString('https://github.com/owner/repo/pull/5\x1B[2K Summary: 0 forward drift', $output);
+        $this->assertNoLiveControlByte($output);
+    }
+
+    /**
+     * ⛔ `dl_number` ON THE `DlOnly` ARM — the SAME FIELD behind the SAME `is_scalar` GATE
+     * that Decision 12 declares foreign in `WritebackSourceCoverageCheck`, twenty-three lines
+     * below the arm round 4 fixed, in the same `switch`.
+     *
+     * `TrackedCardRef::fromPayload()` stores it as `(string) $payload['dl_number']` and
+     * reduces nothing else about it. This is an ordinary skip line on a healthy run.
+     */
+    public function test_a_dl_only_cards_dl_number_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['dl_number' => "42\x1b[2K\rSummary: 0 forward drift, nothing to do"])], []);
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('no PR reference (pr_url/pr_number)', $output);
+        $this->assertStringContainsString('(DL 42\x1B[2K Summary: 0 forward drift, nothing to do)', $output);
         $this->assertNoLiveControlByte($output);
     }
 

@@ -12,44 +12,6 @@ use Tests\TestCase;
  *
  * ⭐ WHY IT EXISTS, and what it corrects. DL-366 Decision 11 declared kanban-relayed
  * exception text a foreign span "at all seven arms" — a census taken over `bridge:check`'s
- * FINDINGS. But a finding is not the population: the population is FOREIGN BYTES REACHING AN
- * OPERATOR'S TERMINAL, and `bridge:reconcile` and `bridge:provision` relay the same
- * `Illuminate\Http\Client\RequestException` — the same kanban response body, baked into
- * `getMessage()` by the same constructor — straight to `error()`/`warn()` with NO finding and
- * NO renderer anywhere in the path. Five arms, invisible to a census that counted findings.
- * A census sentence that reads as closed over a population it never covered is worse than
- * silence: the next reader audits their own join against it and gets confidence.
- *
- * WHAT IT DOES: counts `getMessage()` per file under `app/Console/Commands/`, over
- * COMMENT-STRIPPED source, against the ruling table below. Adding a relay — foreign or not —
- * reds this and forces the author to write down which it is. That is the whole point: the
- * defect was never a wrong ruling, it was a site nobody ruled on.
- *
- * ⛔ THE TWO ROUTES TO THE ONE RULE, because a reader will otherwise take the second for a
- * second implementation. `App\Bridge\Support\UntrustedText` owns the rule (NAMED, not
- * imported: this class asserts over SOURCE, and an import would put the literal it greps for
- * into its own file). A command that yields a `Finding` declares the span positionally and
- * the TERMINAL renderer applies the rule; a command that writes the console directly IS the
- * renderer, so it calls `UntrustedText::forOperator()` at the write. One rule, one owner, two
- * entry points — not two rules.
- *
- * WHAT IT DOES NOT DO, stated plainly rather than left to be assumed:
- *  - **It cannot tell anyone a relay is foreign.** The ruling is prose, per arm, below.
- *  - **It bounds `app/Console/Commands/` only** — the population of DIRECT console writes.
- *    Foreign text reaching an operator through a `Finding` is bounded by the renderer and by
- *    the per-producer coverage pins; foreign text reaching a LOG, a digest or an HTTP
- *    response is a different sink with a different encoding and is out of scope here
- *    (`bridge:standup --dry-run` is the live example, ruled in DL-366 Decision 11).
- *  - **It is lexical.** A relay that reached the console without the literal `getMessage()`
- *    would be counted nowhere. None exists in `app/Console/Commands/` today — checked by
- *    reading every catch block in the tree, not by this grep — which is what makes this
- *    exhaustive NOW rather than by construction.
- */
-/**
- * A TRIPWIRE ON EVERY RELAYED EXCEPTION MESSAGE A BRIDGE COMMAND PRINTS (card#9121, DL-366).
- *
- * ⭐ WHY IT EXISTS, and what it corrects. DL-366 Decision 11 declared kanban-relayed
- * exception text a foreign span "at all seven arms" — a census taken over `bridge:check`'s
  * FINDINGS. But a finding is not the population of relayed exception text: `bridge:reconcile`
  * and `bridge:provision` relay the same `Illuminate\Http\Client\RequestException` — the same
  * kanban response body, baked into `getMessage()` by the same constructor — straight to
@@ -67,14 +29,17 @@ use Tests\TestCase;
  * the latter, and `app/Console/Commands/Bridge/InspectCommand.php` falsifies it: that
  * command `table()`s four `webhook_events` envelope fields and a stored
  * `agent_dispatches.error_message`, with no `getMessage()` and no catch block in the file at
- * all, so nothing here can see any of it. ⚠ It is NOT called a member either — that would be
- * the same overclaim pointing the other way. A review round asserted a kanban error body
- * reaches that column and it does not on this tree: every kanban-calling handler is a
- * `DurableReaction`, whose throw propagates to a 5xx rather than being stored. Whether
- * foreign bytes reach those cells at all is a REACHABILITY question, recorded open in DL-366
- * bound (6) with what was checked and what was not. Adding a relay — foreign or not — reds
- * this and forces the author to write down which it is. That is the whole point: the defect
- * was never a wrong ruling, it was a site nobody ruled on.
+ * all, so nothing here can see any of it. ⛔ A kanban response body DOES reach that column:
+ * `DispatchService` catches `classify()` into `recordError()`, and
+ * `GitHubPrCardMoveClassifier::classify()` calls `KanbanClient::correlateDl()`, which reads
+ * through `->throw()`, with no catch in that file. What keeps it off the screen is
+ * arithmetic, not a guard — `mb_strimwidth(…, 0, 60, '…')` against a class-and-status prefix
+ * measuring 80 characters — and nothing asserts it. That is card#9251, not this pin. ⚠ An
+ * earlier revision of this paragraph argued the opposite from a handler taxonomy that was
+ * true and did not answer the question; it is named here because enumerating a path and not
+ * checking it is the same failure as counting findings and calling it a sink census. Adding
+ * a relay — foreign or not — reds this and forces the author to write down which it is. That
+ * is the whole point: the defect was never a wrong ruling, it was a site nobody ruled on.
  *
  * ⛔ THE TWO ROUTES TO THE ONE RULE, because a reader will otherwise take the second for a
  * second implementation. `App\Bridge\Support\UntrustedText` owns the rule (NAMED, not
@@ -148,7 +113,7 @@ class ForeignRelayAdoptionTest extends TestCase
             'ruling' => '✔ NOT FOREIGN ×1 — a local secret-file read fault, on a path this install configured.',
         ],
         'Bridge/ReconcileCommand.php' => [
-            'relays' => 6, 'escaped' => 5,
+            'relays' => 6, 'escaped' => 8,
             'ruling' => '⛔ FOREIGN ×4 — the board read, the stage-order read, the GitHub PR read and the card '
                 .'move. `KanbanClient` and the GitHub read client both go through `->throw()`, so a non-2xx arrives '
                 .'as a `RequestException` whose constructor bakes the RESPONSE BODY SUMMARY into the message. '
@@ -157,8 +122,12 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'column 0 and overwrites the line `bridge:reconcile` just printed, on the run an operator reads to '
                 .'decide whether to `--fix`. Witnessed end to end in `ReconcileCommandTest`. '
                 .'✔ NOT FOREIGN ×2 — the same two config faults, from its own startup. '
-                .'⚑ The fifth escape is NOT a relay: it is a card\'s `pr_url` repo on the out-of-scope arm '
-                .'(DL-366 Decision 12), foreign for a different reason and through no exception at all.',
+                .'⚑ THE OTHER FOUR ESCAPES ARE NOT RELAYS, and each names a VALUE rather than an arm '
+                .'(card#9121 round 5, after a per-ARM ruling here was measured false): a card\'s `pr_url` '
+                .'REPO on the out-of-scope arm; the same card\'s raw `pr_url` (`PrUrlRef::$raw`, stored '
+                .'verbatim) at BOTH console writes of `evidence`; and a card\'s `dl_number` on the `DlOnly` '
+                .'arm. None involves an exception, all four are ordinary-operation lines, and the count is '
+                .'8 rather than 6 because the rule escapes AT THE WRITE and `evidence` has two of them.',
         ],
         'Bridge/ReplayCommand.php' => [
             'relays' => 1, 'escaped' => 0,
