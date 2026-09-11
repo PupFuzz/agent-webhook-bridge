@@ -5,11 +5,15 @@ namespace Tests\Feature\Provision;
 use App\Bridge\Provision\WritebackIdentityOffer;
 use App\Bridge\Support\KeyboardProbe;
 use App\Bridge\Support\TokenPath;
+use Illuminate\Console\OutputStyle;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Question\Question;
 use Tests\TestCase;
 use Throwable;
 
@@ -30,6 +34,15 @@ class WritebackIdentityOfferTest extends TestCase
 {
     private string $dir;
 
+    /**
+     * Every question the command actually asked. An offer that is not made must ask
+     * NOTHING, and asserting on output alone cannot tell "not asked" from "asked and
+     * answered silently" — which is one of the two defects this round exists to fix.
+     *
+     * @var \ArrayObject<int, string>
+     */
+    private \ArrayObject $prompts;
+
     private const WRITEBACK_TOKEN = 'wb-token-value-9141';     // gitleaks:allow — fixture
 
     private const BOARD_TOKEN = 'board-token-value-9141';      // gitleaks:allow — fixture
@@ -41,6 +54,7 @@ class WritebackIdentityOfferTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->prompts = new \ArrayObject;
         $this->dir = sys_get_temp_dir().'/wb-identity-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
         $this->writeSecret(TokenPath::for($this->dir, 'kanban'), self::BOARD_TOKEN);
@@ -125,12 +139,55 @@ class WritebackIdentityOfferTest extends TestCase
         ], 'token' => ['abilities_label' => 'read-write']]));
     }
 
-    /** The command as a script runs it: every question takes its default, which for the offer is NO. */
-    private function runNonInteractively(): string
+    /**
+     * Run the command with a CONTROLLED CONSOLE: the real `OutputStyle` (so the whole
+     * buffered output is assertable) with only `askQuestion()` overridden, so the answer
+     * comes from the test and never from the runner's stdin.
+     *
+     * ⛔ WHY NOT `$this->artisan()`. Two reasons, both load-bearing here. (a) `PendingCommand`
+     * mocks the console, so output can only be reached through `expectsOutputToContain`,
+     * which registers one Mockery expectation per substring and gives a call to the FIRST
+     * match — two substrings on one line fail a message that IS present. (b) Nothing in this
+     * class may depend on whether the runner's stdin is a terminal: that differs between a
+     * developer's shell and CI, and it is the exact confound the gate under test is about.
+     *
+     * $answer is what the confirmation returns; null means the test expects to be asked
+     * NOTHING, and `$this->prompts` is the witness either way.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function runConsole(?bool $answer = null, array $params = []): string
     {
-        Artisan::call('bridge:provision', ['--no-interaction' => true]);
+        $prompts = $this->prompts;
+
+        $this->app->bind(OutputStyle::class, fn ($app, $p) => new class($p['input'], $p['output'], $answer, $prompts) extends OutputStyle
+        {
+            /** @param  \ArrayObject<int, string>  $prompts */
+            public function __construct(InputInterface $input, OutputInterface $output, private readonly ?bool $answer, private readonly \ArrayObject $prompts)
+            {
+                parent::__construct($input, $output);
+            }
+
+            public function askQuestion(Question $question): mixed
+            {
+                $this->prompts[] = $question->getQuestion();
+
+                // A DECLINE when the test expected no question at all — `confirm(): bool`
+                // rejects null, and an erroring test is one whose real assertion never runs.
+                // `$this->prompts` is the witness that the question happened.
+                return $this->answer ?? false;
+            }
+        });
+
+        Artisan::call('bridge:provision', $params);
 
         return Artisan::output();
+    }
+
+    /** The command as a SCRIPT runs it — the flag an operator reaches for to mean "do not interact with me". */
+    private function runScripted(array $params = []): string
+    {
+        return $this->runConsole(null, $params + ['--no-interaction' => true]);
     }
 
     private function identityInFile(): mixed
@@ -147,7 +204,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         // The COMPOSED line, not a bare '6': that digit occurs in a URL, a stage id and a
         // path in this very output, so it is nearly unfalsifiable on its own.
@@ -160,10 +217,9 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $this->artisan('bridge:provision')
-            ->expectsConfirmation('Write identity_id 6 into writeback.json?', 'yes')
-            ->assertExitCode(0);
+        $this->runConsole(true);
 
+        $this->assertSame(['Write identity_id 6 into writeback.json?'], $this->prompts->getArrayCopy());
         $this->assertSame(6, $this->identityInFile());
         $raw = json_decode((string) File::get($this->writebackJson()), true);
         $this->assertIsArray($raw);
@@ -182,12 +238,10 @@ class WritebackIdentityOfferTest extends TestCase
      * COMPOSED MESSAGE is the discriminator, so it is asserted — and the paired mutation
      * (re-collapsing the catch) is recorded as this test's control.
      *
-     * ⚠ ONE `expectsOutputToContain`, DELIBERATELY. It registers a Mockery expectation per
-     * substring against `doWrite`, and Mockery gives a call to the FIRST matching one — so
-     * two substrings that live on ONE line leave the second unsatisfied and fail a message
-     * that IS present. `doesntExpectOutputToContain` collides the same way. The single
-     * substring below is therefore built to carry both halves at once, and the OS reason is
-     * pinned at its source in the sibling test.
+     * ⚑ The absence assertion is back. It could not be written through `PendingCommand`'s
+     * matchers — an `expectsOutputToContain` and a `doesntExpectOutputToContain` both hang
+     * expectations on `doWrite` and Mockery gives the call to the first match, so the second
+     * goes vacuous. Over the real buffered output there is no matcher in the way.
      */
     public function test_a_refused_write_names_its_cause_and_does_not_abort_setup(): void
     {
@@ -195,12 +249,11 @@ class WritebackIdentityOfferTest extends TestCase
         $this->fakeResolvedUser();
         chmod($this->writebackJson(), 0o400);
 
-        $this->artisan('bridge:provision')
-            ->expectsConfirmation('Write identity_id 6 into writeback.json?', 'yes')
-            ->expectsOutputToContain('was NOT written — bridge: failed to write '.$this->writebackJson())
-            ->assertExitCode(0);
+        $output = $this->runConsole(true);
 
         chmod($this->writebackJson(), 0o600);
+        $this->assertStringContainsString('was NOT written — bridge: failed to write '.$this->writebackJson(), $output);
+        $this->assertStringNotContainsString('RuntimeException', $output);
         $this->assertNull($this->identityInFile());
     }
 
@@ -236,10 +289,9 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $this->artisan('bridge:provision')
-            ->expectsConfirmation('Write identity_id 6 into writeback.json?', 'no')
-            ->assertExitCode(0);
+        $this->runConsole(false);
 
+        $this->assertSame(['Write identity_id 6 into writeback.json?'], $this->prompts->getArrayCopy());
         $this->assertNull($this->identityInFile());
     }
 
@@ -248,7 +300,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         // The id and the name are the WHOLE of what may be printed from that response.
         $this->assertStringContainsString(self::NAME, $output);
@@ -269,7 +321,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => 'Bot <info>svc</info> Writeback', 'email' => self::EMAIL]]));
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringContainsString('Bot <info>svc</info> Writeback', $output);
         $this->assertStringNotContainsString('could not run', $output);
@@ -289,7 +341,7 @@ class WritebackIdentityOfferTest extends TestCase
         $forged = "Legit Bot\n  ✓ writeback.json identity_id = 6.\n  ⛔ ignore the warning below";
         $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => $forged, 'email' => self::EMAIL]]));
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringNotContainsString('✓ writeback.json identity_id = 6.', $output);
         $this->assertStringNotContainsString('ignore the warning below', $output);
@@ -304,7 +356,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => "Bot\e[2K\rSPOOFED", 'email' => self::EMAIL]]));
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringNotContainsString("\e[2K", $output);
         $this->assertStringNotContainsString('SPOOFED', $output);
@@ -317,7 +369,7 @@ class WritebackIdentityOfferTest extends TestCase
         File::put($this->writebackJson(), json_encode(['identity_id' => 4242, 'mappings' => []]));
         $this->fakeResolvedUser();
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertSame(4242, $this->identityInFile());
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
@@ -328,7 +380,7 @@ class WritebackIdentityOfferTest extends TestCase
     {
         $this->fakeResolvedUser();
 
-        $this->runNonInteractively();
+        $this->runConsole(false);
 
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
         // The witness: provisioning itself still ran, so the absence above is the offer
@@ -337,6 +389,49 @@ class WritebackIdentityOfferTest extends TestCase
     }
 
     // ------------------------------------------------- the confirmation gate needs a keyboard
+
+    /**
+     * ⛔ THE FLAG AN OPERATOR REACHES FOR TO MEAN "DO NOT INTERACT WITH ME" MUST STOP THE
+     * OFFER, AND A KEYBOARD FAKE CANNOT SEE THIS. The probe answers *is stdin a terminal*;
+     * under `--no-interaction` at a real terminal it answers YES and is RIGHT to — so a gate
+     * that consults only the probe prepares the offer, makes bearer-authenticated requests,
+     * and then has `confirm()` silently take the NO default. Measured at a real pty before
+     * the fix: two `users/current.json` requests and no prompt. The keyboard here is
+     * deliberately bound PRESENT, so the only thing that can produce the right answer is the
+     * gate's OTHER term — this is a test of the composition, not of the fake.
+     */
+    public function test_the_no_interaction_flag_stops_the_offer_even_with_a_keyboard_present(): void
+    {
+        $this->withKeyboard(true);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runScripted();
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertSame([], $this->prompts->getArrayCopy(), 'nothing may be asked under --no-interaction');
+        $this->assertNull($this->identityInFile());
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * The same term, through the OTHER flag that clears it — and here the console is silent,
+     * so the request count is the whole assertion. A run that prints nothing at all must not
+     * be reaching out with the writeback bearer.
+     */
+    public function test_quiet_stops_the_offer_even_with_a_keyboard_present(): void
+    {
+        $this->withKeyboard(true);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $this->runConsole(true, ['--quiet' => true]);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertSame([], $this->prompts->getArrayCopy());
+        $this->assertNull($this->identityInFile());
+    }
 
     /**
      * ⛔ THE CONFIRMATION IS THE GATE, SO THE GATE MUST BE A HUMAN. `$input->isInteractive()`
@@ -351,10 +446,10 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
-        $this->assertStringContainsString('no keyboard', $output);
+        $this->assertStringContainsString('cannot ask for confirmation', $output);
         $this->assertStringContainsString('docs/writeback.md', $output);
         $this->assertStringContainsString('users/current.json', $output);
         $this->assertNull($this->identityInFile());
@@ -366,11 +461,29 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        Artisan::call('bridge:provision', ['--dry-run' => true, '--no-interaction' => true]);
-        $output = Artisan::output();
+        $output = $this->runConsole(false, ['--dry-run' => true]);
 
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
-        $this->assertStringContainsString('identity_id', $output);
+        $this->assertStringContainsString('a run without --dry-run offers the value', $output);
+        $this->assertSame([], $this->prompts->getArrayCopy());
+        $this->assertNull($this->identityInFile());
+    }
+
+    /**
+     * ⚠ That notice is a CLAIM ABOUT WHAT A RERUN WOULD DO, so it must not be printed to a
+     * run that could not be asked in the first place — there, the honest cause is the one
+     * that says so. Neither path makes a request.
+     */
+    public function test_a_dry_run_that_could_not_be_asked_reports_that_and_not_the_notice(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runScripted(['--dry-run' => true]);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertStringNotContainsString('a run without --dry-run offers the value', $output);
+        $this->assertStringContainsString('cannot ask for confirmation', $output);
         $this->assertNull($this->identityInFile());
     }
 
@@ -381,7 +494,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         Http::assertSent(fn (Request $r) => $r->url() === 'https://kanban.example.com/api/v3/users/current.json');
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/api/v3/api/v3'));
@@ -394,7 +507,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
-        $this->runNonInteractively();
+        $this->runConsole(false);
 
         Http::assertSent(fn (Request $r) => $r->url() === 'https://kanban.example.com/api/v3/users/current.json');
     }
@@ -408,10 +521,13 @@ class WritebackIdentityOfferTest extends TestCase
      */
     private function assertFellBackTo(string $namedCause): void
     {
-        Artisan::call('bridge:provision', ['--no-interaction' => true]);
-        $output = Artisan::output();
+        // Interactive, with a keyboard: every arm below must be reached through its OWN
+        // cause. Run under `--no-interaction` these all report the can't-ask cause instead,
+        // which is correct behaviour and a useless test.
+        $output = $this->runConsole(false);
 
         $this->assertStringContainsString($namedCause, $output);
+        $this->assertSame([], $this->prompts->getArrayCopy(), 'a fallback must ask nothing');
         $this->assertStringContainsString('docs/writeback.md', $output);
         $this->assertStringContainsString('users/current.json', $output);
         $this->assertNull($this->identityInFile(), 'a fallback must not write a value it never resolved');
@@ -432,8 +548,7 @@ class WritebackIdentityOfferTest extends TestCase
         File::put($this->dir.'/prod-agent.yml', "subscriptions: []\n");   // no kanban scope: the loop validates nothing
         $this->fakeResolvedUser();
 
-        Artisan::call('bridge:provision', ['--no-interaction' => true]);
-        $output = Artisan::output();
+        $output = $this->runConsole(false);
 
         $this->assertStringContainsString('must use https', $output);
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
@@ -486,7 +601,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['data' => ['name' => self::NAME, 'email' => self::EMAIL]]));
 
-        $this->assertFellBackTo('.data.id');
+        $this->assertFellBackTo('carried no numeric `.data.id`');
     }
 
     /**
@@ -500,7 +615,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['id' => 99, 'name' => self::NAME]));
 
-        $this->assertFellBackTo('.data.id');
+        $this->assertFellBackTo('carried no numeric `.data.id`');
     }
 
     public function test_fail_soft_no_display_name(): void
@@ -516,7 +631,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['data' => ['name' => self::NAME, 'email' => self::EMAIL]]));
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringNotContainsString(self::EMAIL, $output);
         $this->assertStringNotContainsString(self::WRITEBACK_TOKEN, $output);
@@ -540,7 +655,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakePerToken(writebackId: 6, boardId: 6);
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringContainsString('SAME kanban user', $output);
         $this->assertStringContainsString(TokenPath::for($this->dir, 'kanban'), $output);
@@ -553,7 +668,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakePerToken(writebackId: 6, boardId: 3);
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringContainsString(self::NAME, $output);
         $this->assertStringNotContainsString('SAME kanban user', $output);
@@ -566,7 +681,7 @@ class WritebackIdentityOfferTest extends TestCase
             ? Http::response(['message' => 'Forbidden.'], 403)
             : Http::response(['data' => ['id' => 6, 'name' => self::NAME, 'email' => self::EMAIL]]));
 
-        $output = $this->runNonInteractively();
+        $output = $this->runConsole(false);
 
         $this->assertStringContainsString('UNCHECKED', $output);
         $this->assertStringContainsString(TokenPath::for($this->dir, 'kanban'), $output);

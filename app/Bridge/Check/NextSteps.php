@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\SshPinnedLineCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Console\Commands\Bridge\BridgeCommand;
 
 /**
  * WHAT AN AGENT SHOULD RUN NEXT to finish enabling board tools, per agent (card#8959,
@@ -19,10 +20,19 @@ use App\Bridge\Support\Severity;
  * command a fresh install is told to run.
  *
  * ⛔ THE "PROMPT" IS OUTPUT, NEVER A TTY PROMPT, and that is structural rather than
- * stylistic: every `bridge:*` command is non-interactive by construction (there is no
- * `ask`/`confirm`/`choice` call anywhere in `app/`), because the seat that runs install
- * steps is an agent's Bash with no TTY — an interactive wizard would block it forever. So
- * the prompt is a block the agent READS, on the command a fresh install already runs.
+ * stylistic: `bridge:check` must run HEADLESS, because the seat that runs install steps is
+ * an agent's Bash with no TTY — a question there would not be answered, it would block
+ * forever. So the prompt is a block the agent READS, on the command a fresh install runs.
+ *
+ * ⚠ THE RULE IS ABOUT THIS COMMAND, NOT ABOUT `app/`. It used to add *"there is no
+ * `ask`/`confirm`/`choice` call anywhere in `app/`"* — a derivable census, and false: it
+ * was falsified by `bridge:jobs install-tick` (card#9058) and again by `bridge:provision`'s
+ * confirmed `identity_id` offer (card#9141). Both are MUTATING commands an operator runs by
+ * hand, and both refuse rather than block where they cannot ask
+ * ({@see BridgeCommand::canPromptToConfirm()} — install-tick's
+ * own copy of that predicate is card#9255). The census is not re-synced here: a claim about
+ * the whole of `app/` has no business in the docblock of one renderer, and what is
+ * load-bearing for this block is the sentence above it.
  *
  * ⭐ IT DERIVES, IT DOES NOT MEASURE. Every input is something this run already produced:
  * the parsed agent configs, the bearer index the command built once, and the pinned-line

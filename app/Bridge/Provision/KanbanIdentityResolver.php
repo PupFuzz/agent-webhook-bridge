@@ -106,12 +106,17 @@ final class KanbanIdentityResolver
         // so a name that cannot be shown as itself resolves to NO OFFER, which this method
         // already has a home for. Refusing at the resolver rather than at one call site means
         // every future consumer of a {@see KanbanIdentity} inherits the guard (canon #5).
-        // `!== 0` covers BOTH outcomes: 1 is a control character, false is a name that is not
-        // valid UTF-8 — also unrenderable, and also not something to print to find out.
+        // `!== 0` rather than `=== 1` because `preg_match` also returns FALSE (on malformed
+        // UTF-8), and refusing is the right answer either way. ⚠ That branch is UNREACHABLE
+        // FROM HERE and the message deliberately does not claim it as a cause: `$name` comes
+        // from `json_decode()` above, which rejects malformed UTF-8 first — measured end to
+        // end, a lone-surrogate and a `0xFE` name both surface as "the response body was not
+        // JSON". The spelling stays as the safe one for a future caller; the OPERATOR-FACING
+        // cause names only what can actually have happened (canon #10).
         if (preg_match('/\p{Cc}/u', $name) !== 0) {
             return KanbanIdentityResolution::failed(
-                'the display name at `.data.name` carries a control character (or is not valid UTF-8), so it cannot be shown '
-                .'verbatim — and a name you cannot read is not one you can check the account against'
+                'the display name at `.data.name` carries a control character, so it cannot be shown verbatim — and a name '
+                .'you cannot read is not one you can check the account against'
             );
         }
 

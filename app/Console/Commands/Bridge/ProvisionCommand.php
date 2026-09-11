@@ -156,14 +156,14 @@ class ProvisionCommand extends BridgeCommand
      * then WRITE. A confirmed mutation does not belong in a check; the check instead names
      * this command as the remedy.
      *
-     * ⛔ THE CONFIRMATION IS THE GATE, AND IT TAKES A KEYBOARD TO BE ONE. An earlier revision
-     * of this method claimed `confirm()` was safe on its own because it "returns its default
-     * without asking when the run is not interactive" — FALSE, and the correction is the
-     * reason {@see BridgeCommand::hasKeyboard()} exists: `$input->isInteractive()` is false
-     * ONLY for `--no-interaction`/`-n`/`-q`, so under a pipe `confirm()` READS STDIN. A piped
-     * `yes` wrote unattended, and a pipe with no data and no EOF blocked the command. So the
-     * offer is not prepared at all without a keyboard, and there is still deliberately no
-     * `--yes`: an unattended accept is the silent write the offer shape exists to prevent.
+     * ⛔ THE CONFIRMATION IS THE GATE, AND {@see BridgeCommand::canPromptToConfirm()} DECIDES
+     * WHETHER THIS RUN MAY ASK AT ALL. Two revisions of this comment were wrong before it
+     * held, both measured false at the real command rather than reasoned away: `confirm()`
+     * alone let a piped `yes` write unattended and let a held pipe block; and the keyboard
+     * probe alone let `--no-interaction` prepare the offer and make bearer-authenticated API
+     * calls before `confirm()` silently declined. Where this run may not ask, the offer is
+     * not prepared AT ALL — no request, no question. There is still deliberately no `--yes`:
+     * an unattended accept is the silent write the offer shape exists to prevent.
      *
      * @param  list<AgentConfig>  $agents  UNFILTERED by --agent: the identity is install-scoped,
      *                                     and a narrowed comparison population would report a
@@ -180,7 +180,10 @@ class ProvisionCommand extends BridgeCommand
             return;
         }
 
-        if ($this->option('dry-run')) {
+        // ⚠ The dry-run NOTICE is a claim about what a rerun would do, so it is only true of a
+        // run that could be asked. Where this one could not, fall through instead: the offer
+        // composes the honest cause and makes no request on that path either.
+        if ($this->option('dry-run') && $this->canPromptToConfirm()) {
             $this->line(sprintf(
                 'writeback: %s declares no identity_id — a run without --dry-run offers the value resolved from the writeback token.',
                 WritebackIdentityOffer::path($configDir),
@@ -197,7 +200,7 @@ class ProvisionCommand extends BridgeCommand
                 TokenPath::forWriteback($secretDir, 'kanban'),
                 $apiBaseUrl,
                 $this->otherKanbanTokenPaths($secretDir, $agents),
-                $this->hasKeyboard(),
+                $this->canPromptToConfirm(),
             );
         } catch (Throwable $e) {
             // ⛔ THE CLASS, NOT THE MESSAGE, ON THIS HALF ONLY. Setup completing is the

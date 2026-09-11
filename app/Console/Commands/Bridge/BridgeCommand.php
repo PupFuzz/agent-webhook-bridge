@@ -17,23 +17,35 @@ use Throwable;
 abstract class BridgeCommand extends Command
 {
     /**
-     * Is there a keyboard to ask a question ON — the shared predicate for every
+     * May this run ASK the operator to confirm something — the shared predicate for every
      * `bridge:*` command that gates a mutation behind a confirmation.
      *
-     * ⛔ IT IS NOT `$this->input->isInteractive()`, AND THE DIFFERENCE IS A HANG.
-     * {@see App\Bridge\Support\KeyboardProbe} owns the measurement and the reason;
-     * this method exists so the next command that needs it finds one predicate rather
-     * than minting a second (canon #5).
+     * ⛔ BOTH TERMS, AND EACH CATCHES WHAT THE OTHER CANNOT. Measured at a real pty, and
+     * every one-term spelling was shipped and then falsified in this repo:
+     *  - `isInteractive()` ALONE is not a keyboard. It is false only for
+     *    `--no-interaction`/`-n`/`-q`, so under a PIPE it stays true and `QuestionHelper`
+     *    goes on to read stdin — a piped `yes` answers for nobody, and a pipe that never
+     *    writes blocks the command.
+     *  - {@see KeyboardProbe} ALONE is not consent. Under `--no-interaction` AT A TERMINAL
+     *    it answers true and is right to; the operator has simply said do not interact —
+     *    and a gate consulting only the probe prepared an offer, made bearer-authenticated
+     *    API calls, and then had `confirm()` silently take the NO default. Under `-q` it
+     *    did that with a completely silent console.
      *
-     * ⚠ `bridge:jobs install-tick` HAS the second copy already — same class, wrong
-     * predicate, and its message says "no TTY" while testing interactivity. It is
-     * deliberately NOT migrated here: changing what an already-shipped command refuses
-     * is an acceptance change, and that is operator-gated (card#9141 fix round; the
-     * migration is filed as its own item).
+     * ⚑ NOT NAMED `hasKeyboard()`, deliberately: under `-n` at a terminal a keyboard IS
+     * present and this returns false, so that name would be a false claim about what it
+     * decides — the exact defect class this predicate exists to close.
+     *
+     * ⚠ `bridge:jobs install-tick` HAS a second copy already — same class, and its message
+     * says "no TTY" over an `isInteractive()` test (measured live: a piped `yes` installs a
+     * crontab line with no human present; a held pipe blocks). It is deliberately NOT
+     * migrated here: changing what an already-shipped command refuses is an acceptance
+     * change, and that is operator-gated — **card#9255**.
      */
-    protected function hasKeyboard(): bool
+    protected function canPromptToConfirm(): bool
     {
-        return $this->laravel->make(KeyboardProbe::class)->hasKeyboard();
+        return $this->input->isInteractive()
+            && $this->laravel->make(KeyboardProbe::class)->hasKeyboard();
     }
 
     /**
