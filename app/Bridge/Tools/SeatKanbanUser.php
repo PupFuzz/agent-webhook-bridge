@@ -27,10 +27,12 @@ use Illuminate\Support\Facades\Log;
  * value from the request body. That is one site today —
  * {@see BoardTakeCardTool::call} — and one site is exactly the distance between the property
  * and being false. So it is not left to be remembered:
- * `Tests\Feature\AgentTools\SeatIdentityCallSiteGuardTest` DERIVES every
- * `SeatKanbanUser::` call site in `app/` on the tokenizer, holds set equality against a
- * dispositioned list, and reds on any site whose first argument is not the enclosing body's
- * own untouched `$agentName`. A second caller is a REVIEW EVENT, not a silence — which is
+ * `Tests\Feature\AgentTools\SeatIdentityCallSiteGuardTest` GUARDS it — and that class OWNS
+ * the census. What it derives, which SPELLINGS of a call its predicate can see and which one
+ * it refuses outright, and what it still cannot reach, are stated THERE and deliberately not
+ * restated here: this paragraph used to carry a copy, and the copy went on asserting the
+ * census was complete while the predicate was blind to two of the three ways a second caller
+ * can be spelled. A second caller is a REVIEW EVENT, not a silence — which is
  * what DL-372's own argument demands, having rejected a validated `assigned_user_id`
  * argument for putting the property *"one forgotten branch away from being false"*.
  *
@@ -55,6 +57,16 @@ use Illuminate\Support\Facades\Log;
  * that resolved the agent. What it CAN see is a roster that changed between the two reads,
  * which is why {@see NOT_IN_ROSTER} is a real state and not a defensive one.
  *
+ * ⛔ AND A `kanban_user_id` DECLARED BY MORE THAN ONE AGENT IS ONE OF THOSE FAULTS, because
+ * an id that names two seats does not identify the CALLER. `assigned_user_id` is a kanban
+ * USER, not a seat: nothing downstream of this method can tell two seats sharing an id apart,
+ * so `board_take_card` would answer seat `a` `taken: true, already_held: true` for a card
+ * seat `b` is working — the loser believing it holds claimed work, which is the one state
+ * that tool exists to make visible. ⚠ The install state is REACHABLE: `AgentRegistry` WARNS
+ * on a shared id and excludes it from attribution rather than refusing, and `bridge:check`
+ * surfaces that at exit 0, so an install runs in it. This class is the door's last chance to
+ * say so, and it refuses rather than write a claim it cannot attribute.
+ *
  * EVERY FAILURE IS AN INSTALL FAULT, NAMED AS ONE, AND PERMANENT. A seat cannot fix any of
  * them by changing its arguments, so each is a {@see ToolRefusalException} (422-class)
  * carrying the config key or file the operator must go and look at — never a bare refusal
@@ -65,6 +77,9 @@ final class SeatKanbanUser
 {
     /** The state where the roster no longer carries the agent the door authenticated. */
     private const NOT_IN_ROSTER = 'not_in_roster';
+
+    /** The state where the answer would not IDENTIFY the caller: two agents, one id. */
+    private const SHARED_KANBAN_USER_ID = 'shared_kanban_user_id';
 
     /**
      * The kanban user id declared for $callingAgentName, or a named INSTALL-fault refusal.
@@ -95,22 +110,42 @@ final class SeatKanbanUser
             throw new ToolRefusalException("{$tool}: the bridge could not read its own agent configuration, so it cannot establish WHICH kanban user you are — and this door writes only the calling seat's own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault, not something your arguments can fix; report it to your operator.");
         }
 
+        $mine = null;
         foreach ($configs as $config) {
             // Case-SENSITIVE, the same narrow direction `board_correct_card`'s mint-stamp
             // compare takes: agent names are filesystem-cased config names, so `me` and `ME`
             // can be two seats, and a casefolded compare would resolve one seat's identity
             // for the other's call.
-            if ($config->agentName !== $callingAgentName) {
-                continue;
+            if ($config->agentName === $callingAgentName) {
+                $mine = $config;
+                break;
             }
+        }
 
-            $kanbanUserId = $config->identity->kanbanUserId;
+        if ($mine !== null) {
+            $kanbanUserId = $mine->identity->kanbanUserId;
             if ($kanbanUserId === null) {
                 Log::warning('board tools: the calling agent declares no identity.kanban_user_id, so it has no id to assign itself', [
                     'agent' => $callingAgentName, 'tool' => $tool,
                 ]);
 
                 throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: add `identity.kanban_user_id` to that agent's YAML (it is the same numeric id the board shows for your account) and report it to your operator.");
+            }
+
+            $sharing = [];
+            foreach ($configs as $config) {
+                if ($config->identity->kanbanUserId === $kanbanUserId) {
+                    $sharing[] = $config->agentName;
+                }
+            }
+            if (count($sharing) > 1) {
+                sort($sharing);
+                Log::warning('board tools: the calling agent\'s identity.kanban_user_id is declared by more than one agent, so it does not identify the caller', [
+                    'agent' => $callingAgentName, 'tool' => $tool, 'kanban_user_id' => $kanbanUserId,
+                    'agents' => $sharing, 'reason' => self::SHARED_KANBAN_USER_ID,
+                ]);
+
+                throw new ToolRefusalException("{$tool}: this bridge's config declares `identity.kanban_user_id` {$kanbanUserId} for MORE THAN ONE agent (".implode(', ', $sharing).'), so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each agent a distinct `identity.kanban_user_id` (`bridge:check` already WARNS on this collision — it does not fail, so an install can run in this state for a long time) and report it to your operator.');
             }
 
             return $kanbanUserId;

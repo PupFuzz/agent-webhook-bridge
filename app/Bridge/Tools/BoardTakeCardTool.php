@@ -11,9 +11,9 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * board_take_card (card#9170, DL-372) — CLAIM a card for the calling seat by writing
- * kanban's native `assigned_user_id`. The fourth tool on the door, beside
- * {@see BoardMyCardsTool} (read), {@see BoardCreateCardTool} (create) and
- * {@see BoardCorrectCardTool} (correct).
+ * kanban's native `assigned_user_id`. A write tool on the board-tools door;
+ * {@see BoardToolsRegistry} IS the set of tools that door offers, and
+ * `docs/board-tools.md`'s tool table is held against it, so neither is restated here.
  *
  * ⭐ WHAT IT IS FOR: a card whose COLUMN never moved is indistinguishable from an
  * unclaimed one, so two seats pull the same work and neither finds out. The assignee is
@@ -62,9 +62,13 @@ use Illuminate\Support\Facades\Log;
  *     by {@see BoardScopedRow}, never through the unscoped `getCard()` that DL-323 records
  *     as the defect for a caller-supplied id.
  *  2. THE CARD IS IN A LANE THIS SEAT WORKS — its own `swimlane_id`, or the configured
- *     shared lane. That is exactly the population `board_my_cards` reports for this seat,
- *     which is what makes the tool's scope legible: a card you can see is a card you can
- *     take. ⛔ The COORD board is deliberately OUT: those cards live on a separately
+ *     shared lane. ⚠ That is the same LANE SCOPE {@see BoardMyCardsTool} reads, and
+ *     deliberately NOT the same SET — the shorthand "exactly the population `board_my_cards`
+ *     reports" was false in BOTH directions and is corrected here rather than repeated: that
+ *     tool CAPS its response by card count (card#8985 / DL-365), so a card it did not return
+ *     can still be takeable, and a card it DOES show can be refused because another user
+ *     holds it. What makes the scope legible is the LANE, not the listing.
+ *     ⛔ The COORD board is deliberately OUT: those cards live on a separately
  *     configured board, are addressed by TAG rather than by lane, and reaching them would
  *     put a write on a second board this door has never written to. Narrow first; widening
  *     later is a decision an operator can make, un-widening is not.
@@ -107,8 +111,11 @@ use Illuminate\Support\Facades\Log;
  * or a non-numeric one means the read cannot say whose claim the write would take, and
  * fail-closed is the only safe direction for a guard whose whole job is not to overwrite
  * somebody. MEASURED, not assumed: `GET /tasks/search.json` carries `assigned_user_id` on
- * every row it returns (381/381 rows on the reference board, 2026-09-09), so the degraded
- * arm is a real fail-closed guard rather than the ordinary path.
+ * every row it returns, so the degraded arm is a real fail-closed guard rather than the
+ * ordinary path. ⛔ THE MEASUREMENT ITSELF LIVES IN `docs/kanban-integration-contract.md`,
+ * on the `PATCH /tasks/{id}.json` row that declares this cross-system dependency — that doc
+ * owns the figure and its date, and a second copy in a docblock is a number free to disagree
+ * with the contract the far end is read against.
  *
  * ⚠ THE PIN DOES NOT GOVERN THIS WRITE, AND THAT IS A RULING RATHER THAN AN OVERSIGHT.
  * {@see PinGuard::PINNED_FIELDS} IS the field rule and names `name`

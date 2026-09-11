@@ -388,9 +388,11 @@ const TOOL_DEFINITIONS = [
   {
     name: 'board_take_card',
     description:
-      'CLAIM a card for yourself — write your own name into the board\'s assignee ' +
-      'field so another seat can see the work is taken even when the column has not ' +
-      'moved. Use it the moment you start on a card, not when you finish. ' +
+      'CLAIM a card for yourself — write your own kanban USER ID into the board\'s ' +
+      'assigned_user_id so another seat can see the work is taken even when the column ' +
+      'has not moved. (It is a numeric id, never a name: nothing here resolves a seat ' +
+      'name, which is why no user-naming argument exists.) Use it the moment you start ' +
+      'on a card, not when you finish. ' +
       'IT TAKES card_id AND NOTHING ELSE: the bridge works out which kanban user you ' +
       'are from the identity your call authenticated as, so there is NO argument for ' +
       'a user id and there never will be — you can claim a card for yourself and for ' +

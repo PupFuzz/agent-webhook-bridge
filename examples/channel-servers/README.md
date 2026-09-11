@@ -265,7 +265,7 @@ By default this server is one-way: the bridge pushes wake events, the server
 surfaces them as `notifications/claude/channel`, no reply. When board tools are
 advertised (tri-state — see `BRIDGE_CHANNEL_TOOLS` in the env table: `=1` force-on,
 or **unset with `BRIDGE_TOOLS_ENDPOINT` + a resolvable bearer**), the server ALSO
-advertises four request/response MCP tools — `board_my_cards`,
+advertises the bridge's request/response MCP tools — `board_my_cards`,
 `board_create_card`, `board_correct_card` (DL-326: correct a card YOU filed,
 instead of minting a second card to say the first one is wrong) and
 `board_take_card` (DL-372: claim a card for YOURSELF — the assignee is resolved from

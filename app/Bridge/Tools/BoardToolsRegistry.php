@@ -7,8 +7,11 @@ use App\Bridge\Support\HandlerRegistry;
 /**
  * Resolves a tool name to a {@see Tool} instance (DL-217) — the deliberate
  * sibling of {@see HandlerRegistry}'s register/resolve shape.
- * Ships the four tools (board_my_cards, board_create_card, board_correct_card,
- * board_take_card) always-on: they are INERT without a per-agent `board_tools` block, so there is
+ * The CONSTRUCTOR BELOW IS THE SHIPPED SET — it is not restated in prose here, because a
+ * counted or listed copy goes stale on the day the next tool lands and reads as complete
+ * until somebody notices; `ChannelServerToolSurfaceRestatementTest` holds the reference
+ * channel server AND `docs/board-tools.md`'s tool table against {@see known}. Every shipped
+ * tool is always-on: they are INERT without a per-agent `board_tools` block, so there is
  * no opt-in gate here —
  * an install with no board_tools config simply never reaches a tool. EVERY front
  * door enforces that before dispatch, each on evidence of its own; which doors

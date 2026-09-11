@@ -5,7 +5,9 @@ agent gets a small, channel-identity-scoped **request/response** surface over th
 same channel that already delivers wake events — so an impl seat with **no kanban
 token and no toolkit** can see and capture its own board work directly.
 
-Four tools ship today (two since DL-217; the correction tool since DL-326; the take tool since DL-372):
+The tools that ship today — the table is held against the bridge's own registry by
+`ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
@@ -640,8 +642,11 @@ consulted. Two independent narrowings are checked instead, and **both** are requ
    used: your `card_id` is caller-supplied against an id space that is **global across every
    board on the instance**.
 2. **The card is in a lane you work** — your own `swimlane_id`, or the configured
-   `shared_swimlane_id`. That is exactly the population `board_my_cards` shows you: a card
-   you can see is a card you can take.
+   `shared_swimlane_id`. ⚠ That is the same **lane scope** `board_my_cards` reads, but it is
+   **not the same set of cards**, in either direction: `board_my_cards` **caps** its response
+   by card count (card#8985), so a card it did not list can still be takeable; and a card it
+   **does** list can be **refused** here because another user already holds it. What makes the
+   scope legible is the lane you work, not the listing you got.
 
 > ⛔ **Coordination cards are OUT of scope.** They live on a separately configured board and
 > are addressed by TAG rather than by lane, and reaching them would put a write on a second

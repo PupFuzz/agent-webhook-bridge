@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Tools\BoardTakeCardTool;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
@@ -47,10 +48,28 @@ use Tests\TestCase;
  * If a future change does thread a derived-name type through the door, this class is what
  * says the call graph still holds while that lands — it is not an alternative to it.
  *
- * POPULATION, re-derived every run: every `SeatKanbanUser::<method>(` call in every `*.php`
- * under `app/`, on PHP's own tokenizer ({@see SourceScan::sitesInApp}), so a mention in a
- * docblock or a `{@see}` is excluded by CONSTRUCTION rather than by a regex the next spelling
- * walks past. Sites are keyed `<path under app/>::<enclosing function>#<ordinal>`.
+ * ⛔⭐ THE POPULATION IS THREE LEGS, AND IT IS THREE BECAUSE THE FIRST CUT WAS BLIND TO TWO
+ * OF THE THREE WAYS A SECOND CALLER CAN BE SPELLED. That cut required a `T_STRING` whose text
+ * was exactly `SeatKanbanUser`; an adversarial review planted each spelling in `app/` in turn
+ * and MEASURED the guard: unqualified → RED (it worked), while `\App\Bridge\Tools\SeatKanbanUser::`
+ * and `use … as Roster;` each left the WHOLE class GREEN. PHP 8 emits a qualified name as ONE
+ * `T_NAME_QUALIFIED` / `T_NAME_FULLY_QUALIFIED` token, and an alias replaces the class token
+ * outright — and a fully-qualified reference is the NATURAL reflex from `app/Providers`,
+ * `app/Console` or `app/Bridge/Check`, which is precisely where a second caller gets written.
+ * So, re-derived every run:
+ *  1. **THE CALL SITES.** Every `<class>::<method>(` call in every `*.php` under `app/`, on
+ *     PHP's own tokenizer ({@see SourceScan::sitesInApp}), where `<class>` is any token whose
+ *     final `\`-segment EQUALS {@see IDENTITY_CLASS} — so a mention in a docblock or a
+ *     `{@see}` is excluded by CONSTRUCTION and a qualified spelling is INCLUDED by it. Sites
+ *     are keyed `<path under app/>::<enclosing function>#<ordinal>`.
+ *  2. **NO ALIASED IMPORT ANYWHERE IN `app/`** — the one spelling leg 1 cannot see, because
+ *     after `use … as Roster;` the class token at the call site is `Roster`. It is REFUSED
+ *     rather than resolved: the remediation is to spell the class, not to teach the walk
+ *     import tables ({@see test_no_file_in_app_imports_the_identity_class_under_an_alias}).
+ *  3. **WHICH FILES MAY NAME THE CLASS AT ALL** ({@see NAMING_FILES}), which is what closes
+ *     INDIRECT invocation from a new file — a `[SeatKanbanUser::class, 'forCallingAgent']`
+ *     callable handed to `call_user_func`, say — without teaching the walk to resolve
+ *     callables. A new file that so much as names this class is a review event.
  *
  * THE RULE, over that whole population: a site's FIRST argument must be the bare variable
  * `$agentName` — the parameter `Tool::call` receives from
@@ -66,6 +85,13 @@ use Tests\TestCase;
  *  - **Control flow is not modelled**: the rebind test is textual and body-scoped, exactly as
  *    `PinnedFieldWriteCoverageTest`'s consult test is. A rebind in a nested closure counts
  *    (it is in the same body); one in a called method does not.
+ *  - ⛔ **THE SPELLING BOUND THAT REMAINS, after all three legs: a class name that is not a
+ *    NAME TOKEN, inside one of the two files that may already name it.** `$cls =
+ *    'SeatKanban'.'User'; $cls::forCallingAgent(…)`, a `class_alias()`, a reflection invoke —
+ *    no token-level census can see a name assembled at runtime, and leg 3 cannot help there
+ *    because those files are in its set by disposition. It is written down rather than
+ *    implied: a stated scope must equal the actual predicate, and this one does not reach
+ *    dynamic dispatch.
  *  - **`tests/` is not in the population.** A test double is not a door.
  *  - **A site the walk cannot attribute to a method lands as `(file scope)`** rather than
  *    being skipped — loud, in the safe direction.
@@ -95,6 +121,22 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      */
     private const DISPOSITIONED = [
         'Bridge/Tools/BoardTakeCardTool.php::call#1' => 'THE call site the self-only property rests on: `$agentName` is `Tool::call`\'s own parameter, which BoardToolDispatcher passes from the door that derived it (the bearer on http, the pinned forced command on ssh), and it is never rebound in this body. The id it returns is the ONLY value the tool writes to `assigned_user_id`.',
+    ];
+
+    /**
+     * LEG 3'S DISPOSITION: the files under `app/` that may NAME this class in CODE at all
+     * (prose is dropped by the tokenizer, so a `{@see SeatKanbanUser}` in another file's
+     * docblock is not a member — `BoardMyCardsTool` carries one and is deliberately absent).
+     *
+     * ⛔ IT IS NOT A STYLE RULE. A file that names the class can INVOKE it in a way leg 1's
+     * predicate cannot read — a `::class` callable array, an alias, a string — so the answer
+     * to "which files may name it" is the answer to "where could a second caller hide".
+     *
+     * @var array<string, string>
+     */
+    private const NAMING_FILES = [
+        'Bridge/Tools/BoardTakeCardTool.php' => 'THE one caller — its single call site is dispositioned above and must pass the door-derived `$agentName`.',
+        'Bridge/Tools/SeatKanbanUser.php' => 'the class\'s own declaration.',
     ];
 
     /**
@@ -194,6 +236,26 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 SeatKanbanUser::forCallingAgent($agentName, 'a');
                 SeatKanbanUser::somethingElse($nope, 'b');
             }
+
+            public function fullyQualified(): void
+            {
+                $id = \App\Bridge\Tools\SeatKanbanUser::forCallingAgent($args['agent'], 'tool');
+            }
+
+            public function namespaceQualified(): void
+            {
+                $id = Tools\SeatKanbanUser::forCallingAgent($agentName, 'tool');
+            }
+
+            public function aLongerNameIsADifferentClass(): void
+            {
+                $id = \App\Other\MySeatKanbanUser::forCallingAgent($args['agent'], 'tool');
+            }
+
+            public function anAliasIsNotVisibleToThisLeg(): void
+            {
+                $id = Roster::forCallingAgent($args['agent'], 'tool');
+            }
         }
         PHP;
 
@@ -212,10 +274,118 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 // has no key at all: a DIFFERENT class with the same method name is not a site.
                 'Fixture.php::twoInOneBody#1' => ['first_arg' => '$agentName', 'rebound' => false],
                 'Fixture.php::twoInOneBody#2' => ['first_arg' => '$nope', 'rebound' => false],
+                // ⭐ THE TWO SPELLINGS THE FIRST CUT WAS BLIND TO, each measured GREEN as a
+                // planted second caller before the predicate was widened. PHP 8 emits each
+                // qualified name as ONE token, so a predicate reading `T_STRING` saw neither.
+                'Fixture.php::fullyQualified#1' => ['first_arg' => self::NOT_A_BARE_VARIABLE, 'rebound' => false],
+                'Fixture.php::namespaceQualified#1' => ['first_arg' => '$agentName', 'rebound' => false],
+                // ⛔ AND THE TWO NON-MEMBERS THAT KEEP THE WIDENING HONEST, neither with a key:
+                // `MySeatKanbanUser` is a DIFFERENT class (final-segment EQUALITY, not
+                // `str_ends_with`), and an ALIASED call is invisible here BY DESIGN — leg 2
+                // refuses the import outright rather than resolving it, which is the only
+                // reason this arm is allowed to be absent.
             ],
             SourceScan::sites($source, 'Fixture.php', self::identitySiteAt(...)),
             'the scanner no longer reads a `'.self::IDENTITY_CLASS.'::` call the way this fixture states, and '
             .'the population above is only as good as it. Every arm is a way it would otherwise mislead.',
+        );
+    }
+
+    /**
+     * ⭐ LEG 2 — THE ALIASED SPELLING, REFUSED RATHER THAN RESOLVED.
+     *
+     * A `use App\Bridge\Tools\SeatKanbanUser as Roster;` makes the class token at every call
+     * site in that file `Roster`, and NO final-segment predicate can see it — measured: a
+     * planted aliased caller passing `$args['agent']` left this whole class GREEN. Teaching the
+     * walk to resolve import tables would buy the same guarantee for a per-file symbol table
+     * that has to be right about group imports, trait aliases and `class_alias`; refusing the
+     * alias buys it for four lines, and costs a spelling nothing in this tree uses.
+     */
+    public function test_no_file_in_app_imports_the_identity_class_under_an_alias(): void
+    {
+        /** @var array<string, string> $aliases */
+        $aliases = SourceScan::sitesInApp(self::aliasImportAt(...));
+
+        $this->assertSame(
+            [],
+            $aliases,
+            'a file under app/ imports `'.self::IDENTITY_CLASS.'` UNDER AN ALIAS, and that makes every '
+            .'call site in it invisible to this class\'s call-site census — the class token there is the '
+            .'alias, so the site is not in the population and its first argument is never read. That is '
+            .'the exact hole card#9170\'s operator approval cannot have: the self-only property is the '
+            .'call graph\'s, and this is a call the graph does not show. Spell the class instead; if the '
+            .'alias is genuinely needed, the census has to learn import tables first and that is a change '
+            .'to this guard, not a refactor of the file.',
+        );
+    }
+
+    /**
+     * LEG 2'S OWN CONTROL — the alias reader, both directions on a fixture whose answer is
+     * known. A `foreach (… as …)` and a trait `… as …` are the two `T_AS` shapes that would
+     * make this leg cry wolf; an import of a DIFFERENT class is the one that would make it
+     * vacuous if the class check were dropped.
+     */
+    public function test_the_alias_scanner_reads_an_import_of_this_class_and_ignores_every_other_as(): void
+    {
+        $source = <<<'PHP'
+        <?php
+
+        namespace App\Bridge\Check;
+
+        use App\Bridge\Tools\SeatKanbanUser as Roster;
+        use App\Bridge\Tools\BoardScopedRow as Row;
+        use App\Bridge\Tools\SeatKanbanUser;
+
+        class Fixture
+        {
+            use SomeTrait, OtherTrait { OtherTrait::run as runOther; }
+
+            public function f(): void
+            {
+                foreach ($rows as $row) {
+                    $id = SeatKanbanUser::forCallingAgent($agentName, 'tool');
+                }
+            }
+        }
+        PHP;
+
+        $this->assertSame(
+            ['Fixture.php::'.SourceScan::FILE_SCOPE.'#1' => 'Roster'],
+            SourceScan::sites($source, 'Fixture.php', self::aliasImportAt(...)),
+            'the alias reader no longer reads an import of this class the way this fixture states — and '
+            .'leg 2 is only as good as it: a reader that matched nothing would report every tree clean.',
+        );
+    }
+
+    /**
+     * ⭐ LEG 3 — WHICH FILES MAY NAME THE CLASS AT ALL, which is what closes the invocation
+     * shapes a call-site predicate cannot express. `call_user_func([SeatKanbanUser::class,
+     * 'forCallingAgent'], $args['agent'], 'tool')` is a call leg 1 does not see, because the
+     * tokens are a `::class` fetch inside an array literal and never a `<class>::<method>(`.
+     * Rather than grow the predicate a case per invocation shape — an enumeration whose next
+     * member is always unwritten — the census asks the question one level up: a file that does
+     * not NAME this class cannot invoke it by any spelling at all.
+     */
+    public function test_only_the_dispositioned_files_name_the_identity_class_in_app_code(): void
+    {
+        $files = [];
+        foreach (array_keys(SourceScan::sitesInApp(self::classMentionAt(...))) as $key) {
+            $files[explode('::', $key)[0]] = true;
+        }
+        $derived = array_keys($files);
+        sort($derived);
+        $declared = array_keys(self::NAMING_FILES);
+        sort($declared);
+
+        $this->assertSame(
+            $declared,
+            $derived,
+            'a file under app/ NAMES `'.self::IDENTITY_CLASS.'` in code and is not dispositioned. Naming it '
+            .'is not the defect; what the naming says is that this file could INVOKE the resolver in a shape '
+            .'the call-site census cannot read — a `::class` callable, a string, an alias — and the self-only '
+            .'property card#9170 was approved on is the call graph\'s alone. Establish what this file does '
+            .'with the class and disposition it here, or delete the reference. (A `{@see}` in a docblock is '
+            .'NOT a member: prose is dropped by the tokenizer before this census sees it.)',
         );
     }
 
@@ -255,6 +425,40 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
+     * ⛔ AN ID THAT NAMES TWO SEATS DOES NOT IDENTIFY THE CALLER, so it is an INSTALL-fault
+     * REFUSAL rather than an answer (PR #706 review). `assigned_user_id` is a kanban USER and
+     * not a seat, and nothing downstream can tell two seats sharing one apart: without this,
+     * seat `a` calling `board_take_card` on a card seat `b` holds is answered `taken: true,
+     * already_held: true` — it believes it holds work another seat is on, which is precisely
+     * the state the tool was filed to make visible. The install state is REACHABLE: the
+     * registry WARNS on a shared id and `bridge:check` reports it at exit 0.
+     *
+     * ⚠ THE FIRST ASSERTION IS THE CONTROL. A roster of three whose third seat still resolves
+     * is what says the refusal is about the COLLISION and not about the roster having grown —
+     * without it a resolver that refused every multi-agent install would pass this test.
+     */
+    public function test_the_identity_resolver_refuses_a_kanban_user_id_two_agents_declare(): void
+    {
+        $dir = sys_get_temp_dir().'/seat-identity-'.uniqid();
+        mkdir($dir, 0o700, true);
+        foreach (['a' => 500, 'b' => 500, 'solo' => 777] as $name => $id) {
+            file_put_contents($dir."/{$name}.yml", "identity:\n  kanban_user_id: {$id}\nsubscriptions: []\n");
+        }
+        config(['bridge.config_dir' => $dir]);
+
+        try {
+            $this->assertSame(777, SeatKanbanUser::forCallingAgent('solo', 'board_take_card'));
+
+            $this->expectException(ToolRefusalException::class);
+            $this->expectExceptionMessageMatches('/MORE THAN ONE agent \(a, b\).*NOTHING WAS WRITTEN.*INSTALL fault/s');
+            SeatKanbanUser::forCallingAgent('a', 'board_take_card');
+        } finally {
+            array_map('unlink', (array) glob($dir.'/*.yml'));
+            rmdir($dir);
+        }
+    }
+
+    /**
      * The tool that owns the one dispositioned site still exists and still names the door's
      * parameter — so a rename that moved the site out of the population reds here rather than
      * emptying the census quietly.
@@ -284,8 +488,10 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * {@see IDENTITY_CLASS}, and if so what is its first argument and was that variable
      * rebound earlier in the same body?
      *
-     * ⛔ The class token is matched EXACTLY, so `SomeOtherClass::forCallingAgent(` is not a
-     * site — the subject is this resolver, not a method name.
+     * ⛔ The class is matched on its FINAL `\`-SEGMENT ({@see namesIdentityClass}), so
+     * `SomeOtherClass::forCallingAgent(` is not a site — the subject is this resolver, not a
+     * method name — and neither is `MySeatKanbanUser::`, because the comparison is EQUALITY of
+     * that segment and not `str_ends_with` on the token (both pinned in the scanner control).
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
      * @param  int  $scopeStart  the index at which the enclosing body began
@@ -293,7 +499,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      */
     private static function identitySiteAt(array $tokens, int $index, int $scopeStart): ?array
     {
-        if (($tokens[$index][0] ?? null) !== T_STRING || $tokens[$index][1] !== self::IDENTITY_CLASS) {
+        if (! self::namesIdentityClass($tokens[$index] ?? null)) {
             return null;
         }
         if (($tokens[$index + 1][0] ?? null) !== T_DOUBLE_COLON) {
@@ -314,6 +520,58 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             'first_arg' => $firstIsBareVariable ? $first[1] : self::NOT_A_BARE_VARIABLE,
             'rebound' => $firstIsBareVariable && self::reboundBefore($tokens, $scopeStart, $index, $first[1]),
         ];
+    }
+
+    /**
+     * Does $token NAME this class, under any of the three spellings PHP 8 tokenises a class
+     * reference as — bare (`T_STRING`), namespace-qualified and fully-qualified (each ONE
+     * token since PHP 8)?
+     *
+     * ⛔ The FINAL `\`-segment must EQUAL the class name. `str_ends_with` on the token text
+     * would make `MySeatKanbanUser` this class, which is a guard reporting a defect in code
+     * that has nothing to do with it — and a guard that cries wolf is one somebody widens.
+     *
+     * @param  array{0: int|string, 1: string}|null  $token
+     */
+    private static function namesIdentityClass(?array $token): bool
+    {
+        if ($token === null || ! in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
+            return false;
+        }
+
+        $segments = explode('\\', $token[1]);
+
+        return end($segments) === self::IDENTITY_CLASS;
+    }
+
+    /**
+     * LEG 2'S PREDICATE: the alias, when the token at $index is the `as` of an import of THIS
+     * class. `use App\Bridge\Tools\SeatKanbanUser as Roster;` tokenises as the qualified name
+     * and then `T_AS`, so the class is read from the token BEFORE the `as` — which also covers
+     * the group form `use App\Bridge\Tools\{SeatKanbanUser as Roster};`. A `foreach (… as …)`
+     * and a trait `OtherTrait::run as runOther;` are not imports of this class and answer null
+     * (both pinned in this leg's own control).
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function aliasImportAt(array $tokens, int $index, int $scopeStart): ?string
+    {
+        if (($tokens[$index][0] ?? null) !== T_AS || ! self::namesIdentityClass($tokens[$index - 1] ?? null)) {
+            return null;
+        }
+
+        return $tokens[$index + 1][1] ?? '(no alias token)';
+    }
+
+    /**
+     * LEG 3'S PREDICATE: this class's name, wherever it is NAMED in code — a call, a `::class`
+     * fetch, an import, the declaration itself. Deliberately the widest of the three.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function classMentionAt(array $tokens, int $index, int $scopeStart): ?string
+    {
+        return self::namesIdentityClass($tokens[$index] ?? null) ? $tokens[$index][1] : null;
     }
 
     /**

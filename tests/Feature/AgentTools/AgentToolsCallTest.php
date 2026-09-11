@@ -3,7 +3,9 @@
 namespace Tests\Feature\AgentTools;
 
 use App\Bridge\Tools\BoardCallRefusal;
+use App\Bridge\Tools\BoardCorrectCardTool;
 use App\Bridge\Tools\BoardMyCardsTool;
+use App\Bridge\Tools\BoardTakeCardTool;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -2380,20 +2382,41 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * @return list<array{string, mixed}>
+     * ⛔ THE KEYS ARE DERIVED FROM `BoardCorrectCardTool::FIELD_OWNERS`, NOT MIRRORED — and the
+     * mirror had already failed silently: card#9170 added `assignee` to the constant and not
+     * to this list, so the refusal it shipped was UNTESTED while a green provider read as
+     * coverage of the whole set. A restated set does not red when the set moves; a derived one
+     * cannot miss a member.
+     *
+     * ⚠ THE VALUES ARE NOT DERIVABLE and stay hand-written, which is fine BECAUSE THEY ARE NOT
+     * THE POPULATION: the refusal is by KEY and fires before any value is read, so a key with
+     * no entry here is exercised with the default rather than skipped. Realistic types are
+     * kept for the keys that have one so the case reads like a call a seat would actually make.
+     *
+     * @return array<string, array{string, mixed}>
      */
     public static function bridgeOwnedFieldCases(): array
     {
-        return [
-            ['workflow_stage_id', 51], ['column', 'shipped'], ['stage', 'in_review'], ['move', 'done'],
-            ['swimlane_id', 9], ['board_id', 999], ['payload', ['origin' => 'x']],
-            ['dl_number', 'DL-1'], ['pr_number', 12], ['pr_url', 'https://example.test/1'],
-            ['issue_number', 3], ['issue_url', 'https://example.test/i/3'], ['version', 'v1.0.0'],
-            ['origin', 'consumer-driven'], ['external_id', '12345'], ['external_link', 'https://example.test'],
-            ['type', 'feature'], ['card_type_id', 3], ['triaged', true], ['block_reason', 'blocked'],
-            ['archived', true], ['archived_at', '2026-09-01'], ['_action', 'archive'],
-            ['priority', 5], ['due_date', '2026-09-30'], ['assigned_user_id', 3],
+        /** @var array<string, string> $owners */
+        $owners = (new \ReflectionClassConstant(BoardCorrectCardTool::class, 'FIELD_OWNERS'))->getValue();
+
+        $values = [
+            'workflow_stage_id' => 51, 'column' => 'shipped', 'stage' => 'in_review', 'move' => 'done',
+            'swimlane_id' => 9, 'board_id' => 999, 'payload' => ['origin' => 'x'],
+            'dl_number' => 'DL-1', 'pr_number' => 12, 'pr_url' => 'https://example.test/1',
+            'issue_number' => 3, 'issue_url' => 'https://example.test/i/3', 'version' => 'v1.0.0',
+            'origin' => 'consumer-driven', 'external_id' => '12345', 'external_link' => 'https://example.test',
+            'type' => 'feature', 'card_type_id' => 3, 'triaged' => true, 'block_reason' => 'blocked',
+            'archived' => true, 'archived_at' => '2026-09-01', '_action' => 'archive',
+            'priority' => 5, 'due_date' => '2026-09-30', 'assigned_user_id' => 3, 'assignee' => 3,
         ];
+
+        $cases = [];
+        foreach (array_keys($owners) as $field) {
+            $cases[$field] = [$field, $values[$field] ?? 'a value this tool does not own'];
+        }
+
+        return $cases;
     }
 
     #[DataProvider('bridgeOwnedFieldCases')]
@@ -3388,18 +3411,31 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
+     * ⛔ DERIVED FROM THE CONSTANT, NEVER MIRRORED. A hand-written list covered 5 of the 9
+     * spellings `BoardTakeCardTool::USER_NAMING_ARGS` refuses (`assign`, `user`, `agent_name`
+     * and `seat` had no arm), so the refusal a reviewer read as measured over the whole set
+     * was measured over half of it — and the next key added to the constant would have
+     * arrived untested in exactly the same silence. Reflection reads a private constant, so
+     * the visibility that keeps the set out of the tool's contract does not cost the guard.
+     *
+     * The casefolded arm is the one case NOT in the constant and is stated as an extra: the
+     * tool lowercases the key before the lookup, which is a property of the REFUSAL rather
+     * than of the set.
+     *
      * @return array<string, array{string}>
      */
     public static function userNamingArguments(): array
     {
-        return [
-            'assigned_user_id' => ['assigned_user_id'],
-            'assignee' => ['assignee'],
-            'user_id' => ['user_id'],
-            'kanban_user_id' => ['kanban_user_id'],
-            'agent' => ['agent'],
-            'ASSIGNED_USER_ID (casefolded)' => ['ASSIGNED_USER_ID'],
-        ];
+        /** @var list<string> $keys */
+        $keys = (new \ReflectionClassConstant(BoardTakeCardTool::class, 'USER_NAMING_ARGS'))->getValue();
+
+        $cases = [];
+        foreach ($keys as $key) {
+            $cases[$key] = [$key];
+        }
+        $cases['ASSIGNED_USER_ID (casefolded)'] = ['ASSIGNED_USER_ID'];
+
+        return $cases;
     }
 
     /**
@@ -3606,6 +3642,28 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(422);
         $error = (string) $res->json('error');
         $this->assertStringContainsString('identity.kanban_user_id', $error);
+        $this->assertStringContainsString('INSTALL fault', $error);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⛔ THE SAME FAULT FROM THE DOOR: a `kanban_user_id` two agents declare is refused BEFORE
+     * any board request. `assigned_user_id` names a kanban USER, not a seat — so under a
+     * shared id this seat would be told it holds a card the OTHER seat is working
+     * (`already_held: true`, 200, nothing written), which is the collision the tool exists to
+     * surface being reported as its own success.
+     */
+    public function test_take_refuses_when_two_agents_declare_this_seat_s_kanban_user_id(): void
+    {
+        File::put($this->dir.'/twin.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('MORE THAN ONE agent', $error);
+        $this->assertStringContainsString('me, twin', $error, 'the colliding agents are NAMED — an operator cannot fix a collision it has to go and find');
         $this->assertStringContainsString('INSTALL fault', $error);
         Http::assertNothingSent();
     }

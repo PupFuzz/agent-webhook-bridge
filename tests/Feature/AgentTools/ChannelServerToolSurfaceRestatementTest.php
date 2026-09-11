@@ -163,6 +163,80 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         }
     }
 
+    /**
+     * ⭐ THE SAME SET GUARD, TURNED ON THE PROSE — because the channel server was never the
+     * only copy. Six tracked surfaces restated the shipped tool set, four of them as a
+     * CARDINAL (*"four tools"*, *"the fourth tool"*), and a cardinal is a restatement of
+     * whatever it counted (canon #16): it is not a false claim yet, it is a false claim with a
+     * maintenance schedule, and it comes due on the day the fifth tool ships — which is
+     * exactly the day nobody is reading the docs for the ones that already work. ⭐ THE
+     * CARDINALS ARE GONE, and what replaced them is `docs/board-tools.md`'s TOOL TABLE, held
+     * here against the registry in BOTH directions. A table is a surface a guard can read.
+     *
+     * ⚠ This one is set EQUALITY, not containment: a row for a tool the bridge does NOT
+     * register is the same defect the other way round — a seat reads the doc, calls the tool
+     * and gets an unknown-tool refusal from a bridge that never had it.
+     */
+    public function test_the_board_tools_doc_table_lists_exactly_the_tools_the_bridge_registers(): void
+    {
+        $doc = (string) file_get_contents(base_path('docs/board-tools.md'));
+        $this->assertGreaterThan(
+            0,
+            preg_match_all('/^\| `(board_[a-z_]+)` \| (?:read|write) \|/m', $doc, $matches),
+            'docs/board-tools.md no longer carries a tool table this test can read — re-anchor it rather '
+            .'than deleting the assertion: an extraction that matches nothing reports every doc complete',
+        );
+
+        $listed = array_values(array_unique($matches[1]));
+        sort($listed);
+
+        $this->assertSame(
+            (new BoardToolsRegistry)->known(),
+            $listed,
+            'the tool table in docs/board-tools.md is not the set the bridge registers. A tool the bridge '
+            .'ships and the doc omits is one no operator knows to enable; a tool the doc lists and the '
+            .'bridge does not register is a call a seat will make and get refused for. The table is the '
+            .'surface that replaced the prose CARDINALS this doc used to carry, so it is the thing that '
+            .'has to stay true.',
+        );
+    }
+
+    /**
+     * The prose surfaces that name the tool SET rather than counting it. Each must NAME every
+     * registered tool — weaker than the table's set equality (this asks containment, anywhere
+     * in the file), and deliberately so: these are sentences and headings whose wording is
+     * free, and what must not happen is a new tool going unmentioned on a page whose whole
+     * subject is what the door offers.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function toolSetProseSurfaces(): array
+    {
+        return array_map(
+            fn (string $doc): array => [$doc],
+            array_combine(
+                $docs = ['docs/board-tools.md', 'docs/config-schema.md', 'docs/multi-host.md', 'examples/channel-servers/README.md'],
+                $docs,
+            ),
+        );
+    }
+
+    #[DataProvider('toolSetProseSurfaces')]
+    public function test_every_tool_the_bridge_registers_is_named_by_every_doc_that_states_the_set(string $doc): void
+    {
+        $prose = (string) file_get_contents(base_path($doc));
+
+        foreach ((new BoardToolsRegistry)->known() as $tool) {
+            $this->assertStringContainsString(
+                $tool,
+                $prose,
+                "{$doc} states the board-tools set and does not name `{$tool}` — this page used to carry a "
+                .'CARDINAL instead, which is how a shipped tool stays invisible on a page an operator reads '
+                .'to find out what the door offers',
+            );
+        }
+    }
+
     #[DataProvider('tagTools')]
     public function test_the_channel_server_advertises_every_reserved_tag_the_bridge_refuses(string $tool): void
     {
