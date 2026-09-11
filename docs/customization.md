@@ -541,7 +541,7 @@ The classifier emits `ReactionTarget::make(handler: 'my_handler', ...)` and the 
   );
   ```
 
-- **`channel_push`** — POSTs the intent payload to a localhost channel endpoint (Claude Code channel MCP server). Closes the agent-idle gap by delivering events as `<channel>` tags within seconds instead of waiting for the next `bridge:inbox` poll.
+- **`channel_push`** — POSTs the intent payload to a localhost channel endpoint (Claude Code channel MCP server). Closes the agent-idle gap by PUSHING events to a live session's channel endpoint, which surfaces them as `<channel>` tags within seconds instead of waiting for the next `bridge:inbox` poll. ⚠ **The push is unconfirmed**: the endpoint answers once the notification is written to its transport and reports nothing back about what the session did with it, so nothing on this path establishes that the seat got it (card#9172/DL-370).
 
   **UDS transport (recommended for same-host setups):**
 
@@ -584,11 +584,13 @@ The classifier emits `ReactionTarget::make(handler: 'my_handler', ...)` and the 
 
   A working reference channel server is at [`examples/channel-servers/`](../examples/channel-servers/README.md) (single-file Node + `@modelcontextprotocol/sdk`).
 
-  **`channel_push` is a live-push optimization, not a replacement for `Intent` emission.** Emit an `Intent` for every event that must reach the agent — Intents land in `inbox.jsonl` as the durable backstop. The `channel_push` `ReactionTarget` is an additional "deliver now if a session is up" hop layered on top.
+  **Writing your own endpoint? Declare your delivery-receipt status on the response (card#9172/DL-370).** The bridge reads ONE response header off your 2xx — **`X-Channel-Delivery-Receipt`** — and logs what it says on the `bridge channel_push:` line, so an operator can see what the far end says it is able to establish. Send **`none`** when your transport hands you nothing back about what the session did with the notification: that is what the reference server sends, because `mcp.notification()` resolves at the WRITE to the stdio transport. Send whatever word fits your transport if it does hand you something. **An endpoint that sends no such header, or an empty one, is reported as having declared NOTHING** — by name, as the unknown it is, never resolved to either answer on its behalf. ⚠ **The bridge's own wording does not move with your declaration:** its line reads `accepted by transport (unconfirmed)` whatever you send, including a receipt you assert, because that sentence is about what THIS BRIDGE holds — a 2xx and nothing else. A declaration is REPORTED, never adopted.
+
+  **`channel_push` is a live-push optimization, not a replacement for `Intent` emission.** Emit an `Intent` for every event that must reach the agent — Intents land in `inbox.jsonl` as the durable backstop. The `channel_push` `ReactionTarget` is an additional "push now if a session is up" hop layered on top.
 
 #### Going event-driven — migrating off polling hooks
 
-The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for catch-up, `PreToolUse` / `Stop` for mid-session events). `channel_push` replaces those with live delivery:
+The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for catch-up, `PreToolUse` / `Stop` for mid-session events). `channel_push` replaces those with a live push:
 
 1. **Install channel server deps** (one-time, on the host running Claude Code):
 
@@ -619,7 +621,7 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
 
 6. **Remove the polling hooks** from `~/.claude/settings.json`. Strip `PreToolUse` and `Stop` entries that run `bridge:inbox`. **Keep `SessionStart`** — that's the catch-up path for events queued in `inbox.jsonl` while no session was up.
 
-7. **Verify:** `php artisan bridge:check`, then trigger a test event. `php artisan bridge:inspect <N>` shows the dispatch ledger — whether the push threw (connection refused = no session up, which is normal, and lands as a note beside a `delivered` row) or returned. ⛔ **A row that did not throw is not evidence the seat got it:** the push's success condition is a 2xx from the channel endpoint, which answers once the notification is written to its transport. `bridge:inspect` prints a legend saying so, and the `bridge dispatch:` / `bridge channel_push:` log lines for that event carry the same reading (card#9172).
+7. **Verify:** `php artisan bridge:check`, then trigger a test event. `php artisan bridge:inspect <N>` shows the dispatch ledger — whether the push threw (connection refused = no session up, which is normal, and lands as a note beside a `delivered` row) or returned. ⛔ **A row that did not throw is not evidence the seat got it:** the push's success condition is a 2xx from the channel endpoint, which answers once the notification is written to its transport. `bridge:inspect` prints a legend saying so; the dispatch logs `bridge dispatch: channel_push unconfirmed` for that event, and the per-push `bridge channel_push:` line — which reports what the endpoint itself declared — is written ONLY for a push that reached the transport, so a push that threw earlier (a bad endpoint, an unreadable token) has the note on the row and no such line at all (card#9172).
 
 8. **End-to-end smoke test:** from the dir with `.mcp.json`, start `claude --dangerously-load-development-channels server:kanbanboard-agent`, then in a separate terminal:
 
@@ -632,7 +634,7 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
 
    Expected (the `-i` is what prints the first two): HTTP **202** from curl, an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …`, and a `<channel source="kanbanboard-agent" ...>` tag in your Claude Code session within seconds. **The 202 is the transport's answer, not the session's** — it means the notification was written to the stdio transport, and nothing on this path reports back whether the session received it. The tag in your session is the only evidence that it did.
 
-> **Channels are CLI-only — there is no config auto-load.** `--dangerously-load-development-channels server:<KEY>` must be passed on **every** `claude` invocation; it cannot live in `settings.json`, `.mcp.json`, or any config file (the flag deliberately bypasses the channel allowlist, so loading a development channel requires an explicit per-session opt-in). Wrap it in a launcher so you don't retype it — see [`examples/start-channel-session.sh`](../examples/start-channel-session.sh), which also clears a stale socket and installs the channel-server deps on first run. **Live push only delivers while that session is up**; otherwise `channel_push` is best-effort (`done-with-note`) and `inbox.jsonl` is the backstop.
+> **Channels are CLI-only — there is no config auto-load.** `--dangerously-load-development-channels server:<KEY>` must be passed on **every** `claude` invocation; it cannot live in `settings.json`, `.mcp.json`, or any config file (the flag deliberately bypasses the channel allowlist, so loading a development channel requires an explicit per-session opt-in). Wrap it in a launcher so you don't retype it — see [`examples/start-channel-session.sh`](../examples/start-channel-session.sh), which also clears a stale socket and installs the channel-server deps on first run. **Live push only reaches a transport while that session is up**; otherwise `channel_push` is best-effort (`done-with-note`) and `inbox.jsonl` is the backstop.
 
 > **uid caveat.** The bridge pushes to exactly the `channel.socket` you configure — it never derives a path. The channel server computes its bind path from `$XDG_RUNTIME_DIR` (the interactive user's `/run/user/<uid>`), while the bridge runs as the PHP-FPM worker user. Setting `channel.socket` explicitly to the server's bind path makes the two agree regardless of uid.
 

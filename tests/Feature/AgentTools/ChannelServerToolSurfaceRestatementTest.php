@@ -5,6 +5,7 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Tools\CallerTagPolicy;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\BundledChannelServer;
 use Tests\TestCase;
 
 /**
@@ -70,7 +71,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
 
     private function toolDefinition(string $tool): string
     {
-        $src = (string) file_get_contents(base_path('examples/channel-servers/agent-webhook-bridge-channel.mjs'));
+        $src = BundledChannelServer::source();
         $start = strpos($src, "name: '{$tool}',");
         $this->assertNotFalse($start, "the channel server no longer defines {$tool} — a tool absent from TOOL_DEFINITIONS is unreachable from a seat");
         $end = strpos($src, self::TAG_TOOLS[$tool], $start);

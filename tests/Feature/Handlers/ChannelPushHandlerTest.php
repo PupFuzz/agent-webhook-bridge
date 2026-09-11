@@ -8,6 +8,8 @@ use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use ReflectionClassConstant;
+use Tests\Support\BundledChannelServer;
 use Tests\TestCase;
 
 class ChannelPushHandlerTest extends TestCase
@@ -61,8 +63,10 @@ class ChannelPushHandlerTest extends TestCase
         // reaching Log::info() breaks it, and an unbounded one turns each push into
         // whatever length the far end chose.
         //
-        // ⚠ Sibling sites exist and are NOT fixed here — the consolidation is filed
-        // separately; this asserts THIS call site only.
+        // ⚠ Sibling unscrubbed sites exist and are NOT fixed here — they are recorded on
+        // card#8433, the item that owns `SecretScrubber` itself; this asserts THIS call
+        // site only. (The first cut said "filed separately" without a pointer, and no such
+        // filing existed — checked before the sentence shipped.)
         Log::spy();
         $declared = 'Bearer sk-live-abcdefghijklmnopqrstuvwxyz0123456789 '.str_repeat('A', 500);
         Http::fake(['*' => Http::response('forwarded', 202, ['X-Channel-Delivery-Receipt' => $declared])]);
@@ -97,6 +101,33 @@ class ChannelPushHandlerTest extends TestCase
             fn (string $m, array $ctx) => str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
                 && str_contains($ctx['endpoint_declares'], 'declared nothing')
                 && ! str_contains($ctx['endpoint_declares'], 'X-Channel-Delivery-Receipt: none')
+        );
+    }
+
+    public function test_the_bundled_channel_server_sends_the_header_this_handler_parses(): void
+    {
+        // ⭐ THE JOIN THE SEAM HAD NO CHECK ON (card#9172, canon #7 CHECK). DL-370 Decision 4
+        // says the bridge READS the far end's declaration rather than restating a belief —
+        // but the HEADER NAME is itself a restatement on this side, and the two ends had
+        // nothing joining them. Measured before this leg existed: renaming the header on the
+        // server alone left `ChannelPushUnconfirmedTest`, `ChannelPushHandlerTest`,
+        // `ClientVersionTest` and `ChannelServerToolSurfaceRestatementTest` all green while
+        // production would report the shipped server as having "declared nothing" — the wire
+        // half of the card inert, with nothing red anywhere. The node suite reds at the
+        // DECLARING end; this is the leg at the end that PARSES it.
+        //
+        // The name is taken by reflection, not retyped: a literal here would be a third copy
+        // of the same string, and the assertion is that the name THIS HANDLER PARSES is the
+        // one the shipped server sends.
+        $header = (new ReflectionClassConstant(ChannelPushHandler::class, 'RECEIPT_HEADER'))->getValue();
+
+        $this->assertIsString($header);
+        $this->assertNotSame('', $header, 'the handler parses an empty header name, so the assertion below would pass on any file');
+        // assertTrue over str_contains, not assertStringContainsString: the haystack is a
+        // 50 KB source file and PHPUnit prints a failed haystack in full.
+        $this->assertTrue(
+            str_contains(BundledChannelServer::source(), "'{$header}'"),
+            "the bundled channel server does not send the {$header} header this handler parses, so the bridge would report the server this repo SHIPS as having declared nothing — rename it on both ends or neither",
         );
     }
 

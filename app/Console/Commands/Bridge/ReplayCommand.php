@@ -12,8 +12,8 @@ use App\Models\WebhookEvent;
  * Re-run dispatch for a stored event. Errored dispatch rows (processed_at null)
  * re-run; succeeded rows are skipped — so replay never re-fires a channel_push /
  * spawn_detached that a completed dispatch already sent. ⚠ `delivered` on such a row
- * does not mean the seat RECEIVED that push (card#9172/DL-370): a channel_push is
- * accepted by its transport and unconfirmed, which is why the skip is stated as
+ * does not mean the seat RECEIVED that push (card#9172/DL-370): a channel_push leg is
+ * unconfirmed — at best accepted by its transport — which is why the skip is stated as
  * "already sent" rather than "already delivered". The skip itself is unchanged, and it
  * still keys on `outcome`/`processed_at` exactly as before. --agent scopes to one agent;
  * --force clears processed_at first so succeeded rows re-run too.

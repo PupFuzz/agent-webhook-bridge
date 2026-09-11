@@ -106,7 +106,7 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 
 > Family-specific config (e.g. an `impl-ci-wake` family's `benign_conclusions` / CI-name patterns / `release_branch` / `impl_repos`) is read through `ClassifierConfig`'s generic typed accessors (`strings()` / `string()` / `section()` / `stringGroups()`), so a new family adds keys here **without** a schema/contract change.
 
-### `channel:` (optional) — where `channel_push` / `route_intents` delivers
+### `channel:` (optional) — where `channel_push` / `route_intents` pushes
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `socket` | abs path | `null` | Local UDS. Absolute, no `..`, no null byte (else throws). **Mutually exclusive** with `url`. **`${XDG_RUNTIME_DIR}` / `${uid}` expand at load (DL-039)** so you can write a uid-agnostic literal — e.g. `${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-<name>.sock` — instead of pinning `/run/user/<uid>/…` (which silently breaks live-wake when the install is restored on a host where the uid changed). `${XDG_RUNTIME_DIR}` resolves to `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when unset (PHP-FPM usually doesn't inherit it). An unresolvable token throws. `bridge:check` warns if the resolved parent dir is missing/non-writable. |

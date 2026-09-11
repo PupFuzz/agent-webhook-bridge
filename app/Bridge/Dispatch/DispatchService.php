@@ -300,6 +300,17 @@ final class DispatchService
                 // connection-refused is this handler's documented normal outcome. Either
                 // way the agent-facing leg is unconfirmed. WHICH failure it was is the
                 // `handler_note`'s to say, and that is unchanged.
+                //
+                // ⭐ THIS FLAG IS WIDER THAN "REACHED A TRANSPORT", AND THE LINE IT DRIVES
+                // IS WORDED FOR THE WIDER SET. `ChannelPushHandler::handle()` also raises
+                // ABOVE both `ChannelPushTransport::send()` calls — no endpoint configured,
+                // a method outside the allow-list, an unreadable `channel.token_path`, a
+                // classifier socket outside the DL-014 prefix — and on those arms nothing
+                // was written to any transport AND no `bridge channel_push:` line exists,
+                // because that line is logged only after a send returns. So the aggregate
+                // message below claims only what holds on EVERY arm of this flag, and the
+                // stronger `accepted by transport (unconfirmed)` is left to the per-push
+                // line, which is emitted exactly when it is true.
                 $unconfirmedPush = $unconfirmedPush || $target->handler === HandlerRegistry::CHANNEL_PUSH;
                 try {
                     if ($handler === null) {
@@ -435,13 +446,22 @@ final class DispatchService
         // where a confirmed leg is evidenced. The claim below is deliberately about THIS
         // BRIDGE's evidence, not about the endpoint's behaviour: what the far end declares
         // is the far end's to say, and ChannelPushHandler logs what it declared.
+        //
+        // ⛔ IT SAYS `channel_push unconfirmed`, NOT `accepted by transport`, AND THE
+        // DIFFERENCE IS THE POPULATION. The flag is set on the ATTEMPT, which includes the
+        // arms where `ChannelPushHandler::handle()` raised BEFORE any send — nothing was
+        // written to a transport there, so a line saying otherwise would assert an
+        // observation this bridge never made, which is the card's own defect re-minted one
+        // word over. Both pointers below are conditional for the same reason: the
+        // `bridge channel_push:` line exists only for a leg that reached the transport, and
+        // `handler_note` is present only when a leg raised.
         Log::info(
-            $unconfirmedPush ? 'bridge dispatch: accepted by transport (unconfirmed)' : 'bridge dispatch: delivered',
+            $unconfirmedPush ? 'bridge dispatch: channel_push unconfirmed' : 'bridge dispatch: delivered',
             array_filter([
                 'agent' => $dispatch->agent_name,
                 'event' => $dispatch->webhook_event_id,
                 'unconfirmed' => $unconfirmedPush
-                    ? 'a channel_push leg ran and the bridge holds no delivery receipt for it — see the `bridge channel_push:` line for what that endpoint declared'
+                    ? 'a channel_push leg ran and the bridge holds no receipt that the seat received it; a leg that reached the transport logs its own `bridge channel_push:` line with what that endpoint declared, and a leg that raised — at the transport or before it — is named in `handler_note`'
                     : null,
                 'handler_note' => $note,
                 'reason' => $reason,

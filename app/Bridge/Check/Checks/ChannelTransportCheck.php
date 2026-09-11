@@ -34,8 +34,10 @@ use App\Bridge\Support\UntrustedPathContents;
  * - The LIVENESS PROBE is the one leg that distinguishes a live consumer from a stale
  *   socket. A present socket file proves nothing — the bridge would still push HTTP 202
  *   at a dead endpoint and record the dispatch as done. ⚠ Since card#9172/DL-370 it no
- *   longer CALLS that `delivered`: a push reports `accepted by transport (unconfirmed)`,
- *   which is what a 202 on this transport establishes and no more. That narrows what an
+ *   longer CALLS that `delivered`: a dispatch that ran one logs
+ *   `bridge dispatch: channel_push unconfirmed`, and a push that reached the transport
+ *   adds its own `bridge channel_push: accepted by transport (unconfirmed)` line — which
+ *   is what a 202 on this transport establishes and no more. That narrows what an
  *   operator can misread out of the ledger; it is not a substitute for this leg, which is
  *   the only one that goes and looks.
  *

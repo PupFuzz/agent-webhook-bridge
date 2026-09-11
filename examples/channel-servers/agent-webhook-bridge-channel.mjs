@@ -861,8 +861,10 @@ export { VALID_META_KEY };
 // other channel to learn that from. So a 202 here means ACCEPTED BY TRANSPORT, never
 // `delivered` — and whether a session that is mid-turn sees the notification at its next
 // turn boundary or never sees it at all is NOT ESTABLISHED, so this server claims
-// neither. Two surfaces carry the one declaration because they have two different
-// readers, and both are derived from the constants below rather than restated: the
+// neither. The declaration goes out on every surface that has its own reader, and each is
+// DERIVED from the constants below rather than restated — so the surface set is whatever
+// `grep -nE 'DELIVERY_RECEIPT_HEADER|ACCEPTED_UNCONFIRMED' <this file>` returns, never a
+// number written here that the next surface added would falsify. Today the readers are: the
 // HEADER is what the bridge parses (App\Bridge\Handlers\ChannelPushHandler reads it and
 // reports what this end declared, or that this end declared nothing), and the BODY is
 // what an operator sees running the README's curl smoke test. A comment alone would not

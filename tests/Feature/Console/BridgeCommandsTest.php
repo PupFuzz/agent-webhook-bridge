@@ -2410,10 +2410,15 @@ class BridgeCommandsTest extends TestCase
     {
         // card#9172. `bridge:inspect` renders the STORED outcome verbatim, and `delivered`
         // there reads as "the seat got it" while the bridge only ever held "every handler
-        // returned". A `channel_push` leg is accepted by transport and unconfirmed — but
-        // the ledger records no handler identity, so this table CANNOT relabel per row
-        // without inventing which legs ran. It states what the word covers instead, and
-        // says the row cannot answer per leg.
+        // returned". A `channel_push` leg is unconfirmed — but the ledger records no handler
+        // identity, so this table CANNOT relabel per row without inventing which legs ran.
+        // It states what the word covers instead, and says the row cannot answer per leg.
+        //
+        // ⛔ THE POINTER IS PINNED, NOT JUST THE HEDGE. The legend's job is to send an
+        // operator somewhere that CAN answer, and its first cut sent them to the aggregate
+        // `bridge dispatch:` line and to a `bridge channel_push:` line that is not written
+        // when the push raised early. `kanban_move_card: moved` is asserted below because
+        // it is the line that actually evidences a confirmed leg.
         //
         // ⛔ NOT PRINTED OVER A TABLE WITH NO DELIVERED ROW, which is what makes the legend
         // a reading of the rows rather than a banner: the dropped-only arm below is the
@@ -2428,9 +2433,11 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $event->id]));
         $out = Artisan::output();
         $this->assertStringContainsString('delivered', $out);                     // the stored value still prints
-        $this->assertStringContainsString('accepted by transport (unconfirmed)', $out);
+        $this->assertStringContainsString('`channel_push` leg is UNCONFIRMED', $out);
         $this->assertStringContainsString('not a read receipt', $out);
-        $this->assertStringContainsString('does not record which handlers ran', $out);
+        $this->assertStringContainsString('records no handler identity', $out);
+        // the line an operator is sent to must be one that can answer
+        $this->assertStringContainsString('kanban_move_card: moved', $out);
 
         $dropped = WebhookEvent::create([
             'delivery_id' => 'evt-dropped', 'provider' => 'kanban', 'scope_id' => '5',
@@ -2444,7 +2451,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $dropped->id]));
         $droppedOut = Artisan::output();
         $this->assertStringContainsString('dropped', $droppedOut);
-        $this->assertStringNotContainsString('accepted by transport (unconfirmed)', $droppedOut);
+        $this->assertStringNotContainsString('`channel_push` leg is UNCONFIRMED', $droppedOut);
     }
 
     public function test_replay_reprocesses_an_errored_dispatch(): void

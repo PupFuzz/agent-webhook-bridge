@@ -174,6 +174,15 @@ final class ChannelPushHandler implements Handler
      * is not established here, and this line claims neither. The whole point is that the
      * question has no answer on this path, which is why it is stated rather than left for
      * an operator to read out of a bare success.
+     *
+     * ⛔ THE MESSAGE IS FIXED; ONLY `endpoint_declares` VARIES. It reads
+     * `accepted by transport (unconfirmed)` whatever the far end declared, INCLUDING an
+     * endpoint that declares it holds a receipt — because the claim is about what THIS
+     * BRIDGE holds, and this bridge holds a 2xx and nothing else either way. An endpoint's
+     * declaration is reported, never adopted: adopting one would put the bridge back to
+     * asserting a delivery it did not observe, sourced from the party with the least
+     * interest in contradicting itself. If a receipt is ever to be BELIEVED here it needs
+     * a protocol that says what it ranges over, which is not this header.
      */
     private function reportAcceptance(Response $response, ReactionTarget $target, AgentConfig $agent): void
     {
@@ -188,6 +197,11 @@ final class ChannelPushHandler implements Handler
         // so it survives the truncation and the line still says which declaration it is
         // reporting. The declared-nothing arm below is text the BRIDGE composed and is
         // deliberately not truncated.
+        // ⚠ `Response::header()` RENDERS THREE STATES AS TWO, and the arms below are
+        // worded to that: an ABSENT header and a PRESENT-BUT-EMPTY one are both '', so the
+        // else-arm says the response carries no non-empty declaration rather than claiming
+        // the endpoint sent no header; repeats of one name arrive joined with ', ', which
+        // the scrub-and-bound pass below treats as the single value it looks like.
         $declared = $response->header(self::RECEIPT_HEADER);
 
         Log::info('bridge channel_push: accepted by transport (unconfirmed)', [
@@ -196,8 +210,8 @@ final class ChannelPushHandler implements Handler
             'status' => $response->status(),
             'endpoint_declares' => $declared !== ''
                 ? mb_strimwidth(self::RECEIPT_HEADER.': '.SecretScrubber::text($declared), 0, 200, '…')
-                : 'declared nothing — this endpoint sends no '.self::RECEIPT_HEADER
-                    .' header, so whether it can confirm a seat received a push is unknown to the bridge',
+                : 'declared nothing — this response carries no non-empty '.self::RECEIPT_HEADER
+                    .' header, so whether this endpoint can confirm a seat received a push is unknown to the bridge',
         ]);
     }
 

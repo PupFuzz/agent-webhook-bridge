@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Mockery;
+use Tests\Fixtures\LogIntentClassifier;
 use Tests\TestCase;
 
 /**
@@ -86,7 +87,7 @@ class ChannelPushUnconfirmedTest extends TestCase
         );
     }
 
-    public function test_a_channel_push_dispatch_is_logged_as_accepted_by_transport_unconfirmed(): void
+    public function test_a_channel_push_dispatch_is_logged_as_channel_push_unconfirmed(): void
     {
         Http::fake(['*' => Http::response('forwarded', 202)]);
         $this->writeAgent(EventDrivenClassifier::class, withChannel: true);
@@ -98,10 +99,10 @@ class ChannelPushUnconfirmedTest extends TestCase
         // consistent with a dispatch that pushed nothing at all.
         Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
         Log::shouldHaveReceived('info')->withArgs(
-            fn (string $m, array $ctx) => str_contains($m, 'bridge dispatch: accepted by transport (unconfirmed)')
+            fn (string $m, array $ctx) => $m === 'bridge dispatch: channel_push unconfirmed'
                 && isset($ctx['unconfirmed'])
                 && str_contains($ctx['unconfirmed'], 'channel_push')
-                && str_contains($ctx['unconfirmed'], 'no delivery receipt')
+                && str_contains($ctx['unconfirmed'], 'no receipt that the seat received it')
         );
         // ⛔ THE FULL 2-ARG FORM IS LOAD-BEARING — do not "simplify" it back to one element.
         // `Log::info()` is called with (message, context), and a 1-element expectation goes
@@ -133,7 +134,7 @@ class ChannelPushUnconfirmedTest extends TestCase
 
         Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
         Log::shouldHaveReceived('info')->withArgs(
-            fn (string $m, array $ctx) => $m === 'bridge dispatch: accepted by transport (unconfirmed)'
+            fn (string $m, array $ctx) => $m === 'bridge dispatch: channel_push unconfirmed'
                 && isset($ctx['unconfirmed'])
                 && isset($ctx['handler_note'])
                 && str_contains($ctx['handler_note'], '503')
@@ -158,6 +159,64 @@ class ChannelPushUnconfirmedTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(
             fn (string $m, array $ctx) => $m === 'bridge dispatch: delivered' && ! isset($ctx['unconfirmed'])
         );
+    }
+
+    public function test_a_push_that_raised_before_any_transport_claims_no_transport_acceptance(): void
+    {
+        // ⭐ THE ARM THE FIRST CUT HAD NO TEST FOR, and the one that decided the wording.
+        // `$unconfirmedPush` is set on the ATTEMPT, before the `try` — so it also covers
+        // every raise out of `ChannelPushHandler::handle()` that happens ABOVE both
+        // `ChannelPushTransport::send()` calls: no endpoint configured (this case), a
+        // method outside the allow-list, an unreadable `channel.token_path` (the live
+        // state `ChannelTokenPathCheck` exists to report), a classifier socket outside the
+        // DL-014 prefix. NOTHING is written to any transport on those arms, so a line
+        // reading `accepted by transport` would assert an observation the bridge never
+        // made — this card's own defect, re-minted one word over — and the
+        // `bridge channel_push:` line it used to send the operator to is never emitted,
+        // because `reportAcceptance()` runs only after a send RETURNS.
+        //
+        // The agent has no `channel:` block, so the classifier's channel_push target
+        // carries no socket/url and the handler raises at its endpoint check.
+        Http::fake(['*' => Http::response('forwarded', 202)]);
+        $this->writeAgent(EventDrivenClassifier::class, withChannel: false);
+        Log::spy();
+
+        $this->dispatch();
+
+        // Without this the assertions below are equally consistent with a push that went out.
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => $m === 'bridge dispatch: channel_push unconfirmed'
+                // ⛔ NEITHER THE MESSAGE NOR THE CONTEXT MAY CLAIM A TRANSPORT ACCEPTED THIS.
+                && ! str_contains($m.' '.$ctx['unconfirmed'], 'accepted by transport')
+                // Presence witnesses beside the absence one: the context points at the key
+                // that IS written on this arm, and that key names the real failure.
+                && str_contains($ctx['unconfirmed'], 'handler_note')
+                && str_contains($ctx['handler_note'], "channel_push: payload must specify 'socket' or 'url'")
+        );
+        // The corroborating line the context used to promise unconditionally does not exist here.
+        Log::shouldNotHaveReceived('info', ['bridge channel_push: accepted by transport (unconfirmed)', Mockery::any()]);
+    }
+
+    public function test_a_best_effort_leg_that_is_not_a_push_still_reads_as_delivered(): void
+    {
+        // ⛔ THE NO-PUSH ARM ABOVE DOES NOT RANGE OVER THE POPULATION DECISION 1 CLAIMS.
+        // `InboxOnlyClassifier` emits intents and NO ReactionTargets, so the best-effort
+        // loop that sets the flag never executes a single iteration — measured: mutating
+        // the assignment inside that loop to an unconditional `true` leaves that arm green.
+        // Decision 1 says "every OTHER dispatch logs `bridge dispatch: delivered`", whose
+        // members are dispatches that RUN best-effort handlers, so one is exercised here:
+        // `log_intent` is a best-effort target that is not a push, and it must not pick up
+        // the hedge from a flag that keys on the handler name.
+        $this->writeAgent(LogIntentClassifier::class, withChannel: false);
+        Log::spy();
+
+        $this->dispatch();
+
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => $m === 'bridge dispatch: delivered' && ! isset($ctx['unconfirmed'])
+        );
+        Log::shouldNotHaveReceived('info', ['bridge dispatch: channel_push unconfirmed', Mockery::any()]);
     }
 
     public function test_the_stored_outcome_enum_value_is_unchanged_by_the_wording(): void
