@@ -7,7 +7,6 @@ use App\Bridge\Check\Checks\SshPinnedLineCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Console\Commands\Bridge\BridgeCommand;
 
 /**
  * WHAT AN AGENT SHOULD RUN NEXT to finish enabling board tools, per agent (card#8959,
@@ -29,8 +28,8 @@ use App\Console\Commands\Bridge\BridgeCommand;
  * was falsified by `bridge:jobs install-tick` (card#9058) and again by `bridge:provision`'s
  * confirmed `identity_id` offer (card#9141). Both are MUTATING commands an operator runs by
  * hand, and both refuse rather than block where they cannot ask
- * ({@see BridgeCommand::canPromptToConfirm()} — install-tick's
- * own copy of that predicate is card#9255). The census is not re-synced here: a claim about
+ * (`App\Console\Commands\Bridge\BridgeCommand::canPromptToConfirm()` owns what that
+ * means — install-tick's own copy of that predicate is card#9255). The census is not re-synced here: a claim about
  * the whole of `app/` has no business in the docblock of one renderer, and what is
  * load-bearing for this block is the sentence above it.
  *

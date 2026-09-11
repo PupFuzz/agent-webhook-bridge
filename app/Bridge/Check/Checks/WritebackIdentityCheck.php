@@ -73,8 +73,16 @@ final class WritebackIdentityCheck implements Check
 
         $identity = $ctx->writeback->identityId;
         if ($identity === null) {
+            // ⚠ THE REMEDY IS CONDITIONAL, AND THIS READER IS THE CONDITION'S LOSING SIDE.
+            // `bridge:check` must run headless ({@see \App\Bridge\Check\NextSteps}), so the
+            // seat most likely to read this line is the one `bridge:provision` will refuse to
+            // ask — promising it an offer unqualified would send it to a command that prints
+            // the recipe instead. The condition is stated rather than the reader GUESSED AT:
+            // this leg cannot tell whether the seat reading it has a terminal, so it names
+            // both branches instead of asserting one.
             yield Finding::warn('writeback.json: no identity_id — set it so the writeback card_updated webhook is auto echo-suppressed (else it loops back). '
-                .'`php artisan bridge:provision` OFFERS the value resolved from the writeback token (confirm it, it does not write unasked); docs/writeback.md § 2 has the by-hand recipe.');
+                .'At a terminal, `php artisan bridge:provision` OFFERS the value resolved from the writeback token (confirm it, it does not write unasked). '
+                .'With no terminal — a script, a pipe, or an agent session — it makes no call at all and prints the by-hand recipe, which is docs/writeback.md § 2.');
 
             return;
         }

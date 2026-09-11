@@ -3,7 +3,7 @@
 namespace Tests\Feature\Provision;
 
 use App\Bridge\Provision\WritebackIdentityOffer;
-use App\Bridge\Support\KeyboardProbe;
+use App\Bridge\Support\TerminalProbe;
 use App\Bridge\Support\TokenPath;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Http\Client\ConnectionException;
@@ -11,7 +11,10 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\ConsoleOutput;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\Question;
 use Tests\TestCase;
@@ -29,6 +32,20 @@ use Throwable;
  * them, and a wrong-but-specific cause sends an operator to the wrong repair (canon #10).
  * There is deliberately no count here: a number in prose is a restatement of the method list
  * and goes stale the first time an arm is added — which it already did once.
+ *
+ * ⛔ TWO PROPERTIES OF THIS FILE ARE RE-DERIVED BY MUTATION RATHER THAN BY READING IT, because
+ * both were violated by arms that looked right, and a reviewer re-reading 30-odd methods is
+ * how they stayed violated:
+ *  1. NO ARM MAY BE ABSENCE-ONLY. Mutate `ProvisionCommand::handle()` to `return self::SUCCESS;`
+ *     and run this file: every test that still PASSES while exercising the command is an arm
+ *     that certifies a no-op. Three were, and each now carries the webhook POST (or its own
+ *     cause line) as the presence witness. The unit arms that never call the command are not
+ *     members — they have their own witness.
+ *  2. NO CAUSE ASSERTION MAY MATCH MORE THAN ONE CAUSE. Replace one resolver cause string with
+ *     another's and re-run: an arm that stays green is not testing the cause it is named for.
+ *     `'display name'`, `'401'` and `'403'` were such arms; each now asserts words unique to
+ *     its own cause. `'docs/writeback.md'` is deliberately NOT unique — it asserts the recipe
+ *     is pointed at, which every fallback owes.
  */
 class WritebackIdentityOfferTest extends TestCase
 {
@@ -67,21 +84,30 @@ class WritebackIdentityOfferTest extends TestCase
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
         ]);
         // ⛔ PINNED IN BOTH DIRECTIONS, NEVER INHERITED FROM THE RUNNER. Whether phpunit's
-        // own stdin is a terminal differs between a developer's shell and CI, so a test
-        // that read the real predicate would take one branch here and the other there.
-        $this->withKeyboard(true);
+        // own stdin and stdout are terminals differs between a developer's shell and CI, so a
+        // test that read the real predicate would take one branch here and the other there.
+        $this->withTerminal();
     }
 
-    /** Bind the one host fact this command's confirmation gate reads. */
-    private function withKeyboard(bool $present): void
+    /**
+     * Bind the host facts the confirmation gate reads. The two are driven SEPARATELY on
+     * purpose: each is one necessary condition, and an arm that moved both at once could not
+     * tell which term produced the answer — which is how a one-term gate passed for two rounds.
+     */
+    private function withTerminal(bool $keyboard = true, bool $screen = true): void
     {
-        $this->app->instance(KeyboardProbe::class, new class($present) implements KeyboardProbe
+        $this->app->instance(TerminalProbe::class, new class($keyboard, $screen) implements TerminalProbe
         {
-            public function __construct(private readonly bool $present) {}
+            public function __construct(private readonly bool $keyboard, private readonly bool $screen) {}
 
             public function hasKeyboard(): bool
             {
-                return $this->present;
+                return $this->keyboard;
+            }
+
+            public function hasScreen(): bool
+            {
+                return $this->screen;
             }
         });
     }
@@ -374,6 +400,9 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertSame(4242, $this->identityInFile());
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
         $this->assertStringNotContainsString('identity_id', $output);
+        // 4242 is in the file because this test PUT it there, so it witnesses nothing on its
+        // own — the POST is what says the command ran and chose not to offer.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
     }
 
     public function test_no_writeback_config_at_all_resolves_nothing(): void
@@ -388,21 +417,21 @@ class WritebackIdentityOfferTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
     }
 
-    // ------------------------------------------------- the confirmation gate needs a keyboard
+    // ------------------- the confirmation gate: a human who SEES the question and can ANSWER it
 
     /**
      * ⛔ THE FLAG AN OPERATOR REACHES FOR TO MEAN "DO NOT INTERACT WITH ME" MUST STOP THE
-     * OFFER, AND A KEYBOARD FAKE CANNOT SEE THIS. The probe answers *is stdin a terminal*;
+     * OFFER, AND A TERMINAL FAKE CANNOT SEE THIS. The probe answers *is this a terminal*;
      * under `--no-interaction` at a real terminal it answers YES and is RIGHT to — so a gate
      * that consults only the probe prepares the offer, makes bearer-authenticated requests,
      * and then has `confirm()` silently take the NO default. Measured at a real pty before
-     * the fix: two `users/current.json` requests and no prompt. The keyboard here is
-     * deliberately bound PRESENT, so the only thing that can produce the right answer is the
-     * gate's OTHER term — this is a test of the composition, not of the fake.
+     * the fix: two `users/current.json` requests and no prompt. The terminal here is
+     * deliberately bound FULLY PRESENT, so the only thing that can produce the right answer is
+     * the gate's interactivity term — this is a test of the composition, not of the fake.
      */
     public function test_the_no_interaction_flag_stops_the_offer_even_with_a_keyboard_present(): void
     {
-        $this->withKeyboard(true);
+        $this->withTerminal(keyboard: true, screen: true);
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
@@ -416,13 +445,16 @@ class WritebackIdentityOfferTest extends TestCase
     }
 
     /**
-     * The same term, through the OTHER flag that clears it — and here the console is silent,
-     * so the request count is the whole assertion. A run that prints nothing at all must not
-     * be reaching out with the writeback bearer.
+     * The same term, through the OTHER flag that clears it. ⛔ THE CONSOLE IS SILENT HERE, SO
+     * EVERY ASSERTION IS AN ABSENCE — and an all-absence test certifies whatever replaces the
+     * behaviour: mutating `handle()` to a whole-command no-op under `-q` left this test GREEN.
+     * The webhook POST is therefore asserted as the PRESENCE witness that the command ran at
+     * all, exactly as the `--no-interaction` sibling above does, so the absences mean
+     * "the offer declined to fire" rather than "nothing happened".
      */
     public function test_quiet_stops_the_offer_even_with_a_keyboard_present(): void
     {
-        $this->withKeyboard(true);
+        $this->withTerminal(keyboard: true, screen: true);
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
@@ -431,18 +463,19 @@ class WritebackIdentityOfferTest extends TestCase
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
         $this->assertSame([], $this->prompts->getArrayCopy());
         $this->assertNull($this->identityInFile());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
     }
 
     /**
-     * ⛔ THE CONFIRMATION IS THE GATE, SO THE GATE MUST BE A HUMAN. `$input->isInteractive()`
-     * is FALSE only for `--no-interaction`/`-n`/`-q`, so under a pipe it stays true and
-     * `QuestionHelper` READS STDIN: `printf 'yes\n' |` answers for nobody, and a pipe that
-     * never writes blocks the command. Both measured. With no keyboard the offer is not made
-     * at all — no question, no request, the by-hand recipe instead.
+     * ⛔ THE CONFIRMATION IS THE GATE, SO THE GATE MUST BE A HUMAN. Interactivity being enabled
+     * is not a human: under a pipe it stays enabled and `QuestionHelper` READS STDIN —
+     * `printf 'yes\n' |` answers for nobody, and a pipe that never writes blocks the command.
+     * Both measured. With no keyboard the offer is not made at all — no question, no request,
+     * the by-hand recipe instead.
      */
     public function test_with_no_keyboard_it_asks_nothing_calls_nothing_and_prints_the_recipe(): void
     {
-        $this->withKeyboard(false);
+        $this->withTerminal(keyboard: false, screen: true);
         $this->seedWritebackWithoutIdentity();
         $this->fakeResolvedUser();
 
@@ -454,6 +487,53 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertStringContainsString('users/current.json', $output);
         $this->assertNull($this->identityInFile());
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ A GATE THAT ONLY ESTABLISHES THE ANSWER CAN COME BACK IS NOT A GATE. The question
+     * `Command::confirm()` renders goes to STDOUT — `Illuminate\Console\OutputStyle` is not a
+     * `ConsoleOutputInterface`, so `QuestionHelper::ask`'s stderr diversion never fires (pinned
+     * by the test below). So `php artisan bridge:provision | tee setup.log` at a terminal used
+     * to pass the gate, make a bearer-authenticated request, write the question into the LOG
+     * FILE, and then block on the tty with nothing on the operator's screen — a hang, from the
+     * operator's side. The keyboard is bound PRESENT and interaction is left enabled, so the
+     * only term that can produce the right answer here is the screen.
+     */
+    public function test_a_redirected_stdout_stops_the_offer_even_with_a_keyboard_present(): void
+    {
+        $this->withTerminal(keyboard: true, screen: false);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertSame([], $this->prompts->getArrayCopy(), 'a question nobody can see must not be asked');
+        $this->assertStringContainsString('cannot ask for confirmation', $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertNull($this->identityInFile());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ THE GATE READS STDOUT BECAUSE THAT IS WHERE THE QUESTION GOES, AND THAT IS A VENDOR
+     * FACT THIS REPO DOES NOT CONTROL. `QuestionHelper::ask` diverts a question to stderr only
+     * when the output it is handed IS a `ConsoleOutputInterface`; the object
+     * `Illuminate\Console\Command::run()` builds and `confirm()` calls is an
+     * `Illuminate\Console\OutputStyle`, which is not one. Measured end to end with the streams
+     * redirected to separate files: the prompt landed on stdout with stderr empty, while a raw
+     * `ConsoleOutput` through the same helper — the positive control — landed on stderr.
+     *
+     * If a future Laravel or Symfony moves that, the screen term above is reading the wrong
+     * stream and silently gates on something the operator can still see. This reds there.
+     */
+    public function test_the_confirmation_is_rendered_to_stdout_which_is_the_stream_the_gate_reads(): void
+    {
+        $style = new OutputStyle(new ArrayInput([]), new ConsoleOutput);
+
+        $this->assertNotInstanceOf(ConsoleOutputInterface::class, $style, 'OutputStyle became a ConsoleOutputInterface: QuestionHelper now diverts the prompt to STDERR, so TerminalProbe::hasScreen() is testing the wrong stream');
+        // The control: the assertion above discriminates only if something in this pair IS one.
+        $this->assertInstanceOf(ConsoleOutputInterface::class, new ConsoleOutput);
     }
 
     public function test_dry_run_names_the_gap_without_calling_the_api(): void
@@ -521,9 +601,9 @@ class WritebackIdentityOfferTest extends TestCase
      */
     private function assertFellBackTo(string $namedCause): void
     {
-        // Interactive, with a keyboard: every arm below must be reached through its OWN
-        // cause. Run under `--no-interaction` these all report the can't-ask cause instead,
-        // which is correct behaviour and a useless test.
+        // Interactive, at a full terminal: every arm below must be reached through its OWN
+        // cause. Run where the command may not ask, these all report the can't-ask cause
+        // instead, which is correct behaviour and a useless test.
         $output = $this->runConsole(false);
 
         $this->assertStringContainsString($namedCause, $output);
@@ -561,7 +641,7 @@ class WritebackIdentityOfferTest extends TestCase
         File::delete(TokenPath::forWriteback($this->dir, 'kanban'));
         $this->fakeResolvedUser();
 
-        $this->assertFellBackTo('no writeback token');
+        $this->assertFellBackTo('there is no writeback token at');
     }
 
     public function test_fail_soft_unreachable_api(): void
@@ -569,7 +649,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => throw new ConnectionException('cURL error 6: Could not resolve host: kanban.example.com'));
 
-        $this->assertFellBackTo('did not answer');
+        $this->assertFellBackTo('the API did not answer');
     }
 
     public function test_fail_soft_401(): void
@@ -577,7 +657,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['message' => 'Unauthenticated.'], 401));
 
-        $this->assertFellBackTo('401');
+        $this->assertFellBackTo('the API rejected that token (401)');
     }
 
     public function test_fail_soft_403(): void
@@ -585,7 +665,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['message' => 'Forbidden.'], 403));
 
-        $this->assertFellBackTo('403');
+        $this->assertFellBackTo('the API refused that token (403)');
     }
 
     public function test_fail_soft_body_is_not_json(): void
@@ -623,7 +703,7 @@ class WritebackIdentityOfferTest extends TestCase
         $this->seedWritebackWithoutIdentity();
         $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'email' => self::EMAIL]]));
 
-        $this->assertFellBackTo('display name');
+        $this->assertFellBackTo('carried no display name at `.data.name`');
     }
 
     public function test_a_fail_soft_arm_prints_no_part_of_the_response_body(): void
@@ -633,6 +713,9 @@ class WritebackIdentityOfferTest extends TestCase
 
         $output = $this->runConsole(false);
 
+        // The witness FIRST: an empty output contains no secret either, so without this the
+        // two absences below pass against a command that never printed anything at all.
+        $this->assertStringContainsString('carried no numeric `.data.id`', $output);
         $this->assertStringNotContainsString(self::EMAIL, $output);
         $this->assertStringNotContainsString(self::WRITEBACK_TOKEN, $output);
     }

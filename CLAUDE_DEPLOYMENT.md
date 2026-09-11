@@ -83,10 +83,12 @@ php artisan bridge:provision                      # register kanban webhook subs
                                                   # writeback.json exists and declares no identity_id, this also
                                                   # OFFERS the value resolved from the writeback token (DL-369) —
                                                   # confirm it against the display name it prints. It writes nothing
-                                                  # unasked, and it only ASKS where it MAY: stdin a terminal, and not
-                                                  # --no-interaction/-q. Otherwise (a pipe, cron, a script, or either
-                                                  # flag) it makes NO call at all and prints the by-hand recipe
-                                                  # instead. docs/writeback.md § 2
+                                                  # unasked, and it only ASKS where a human will SEE the question and
+                                                  # can ANSWER it — BridgeCommand::canPromptToConfirm() owns that
+                                                  # predicate and the flags are not re-spelled here. Anywhere else (a
+                                                  # pipe, a redirect, cron, a script, or a run told to skip prompts) it
+                                                  # makes NO call at all and prints the by-hand recipe instead.
+                                                  # docs/writeback.md § 2
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its
                                                   # session? YES -> run this; it prints a paste-ready board_tools:

@@ -157,13 +157,12 @@ class ProvisionCommand extends BridgeCommand
      * this command as the remedy.
      *
      * ⛔ THE CONFIRMATION IS THE GATE, AND {@see BridgeCommand::canPromptToConfirm()} DECIDES
-     * WHETHER THIS RUN MAY ASK AT ALL. Two revisions of this comment were wrong before it
-     * held, both measured false at the real command rather than reasoned away: `confirm()`
-     * alone let a piped `yes` write unattended and let a held pipe block; and the keyboard
-     * probe alone let `--no-interaction` prepare the offer and make bearer-authenticated API
-     * calls before `confirm()` silently declined. Where this run may not ask, the offer is
-     * not prepared AT ALL — no request, no question. There is still deliberately no `--yes`:
-     * an unattended accept is the silent write the offer shape exists to prevent.
+     * WHETHER THIS RUN MAY ASK AT ALL — including what "may ask" means, which is stated there
+     * and deliberately not restated here; three revisions of this comment were wrong before it
+     * held, each falsified by measurement at the real command rather than reasoned away.
+     * Where this run may not ask, the offer is not prepared AT ALL — no request, no question.
+     * There is still deliberately no `--yes`: an unattended accept is the silent write the
+     * offer shape exists to prevent.
      *
      * @param  list<AgentConfig>  $agents  UNFILTERED by --agent: the identity is install-scoped,
      *                                     and a narrowed comparison population would report a

@@ -10,7 +10,6 @@ use App\Bridge\Support\FileContents;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\WritebackConfig;
-use App\Console\Commands\Bridge\BridgeCommand;
 use Throwable;
 
 /**
@@ -69,8 +68,10 @@ final class WritebackIdentityOffer
     /**
      * @param  list<string>  $otherTokenPaths  every OTHER kanban token this install's config
      *                                         names, for the same-user comparison
-     * @param  bool  $canConfirm  whether this run may ASK a human — both terms of
-     *                            {@see BridgeCommand::canPromptToConfirm()}.
+     * @param  bool  $canConfirm  whether a human will SEE this run's question and can ANSWER it.
+     *                            `App\Console\Commands\Bridge\BridgeCommand::canPromptToConfirm()`
+     *                            owns that predicate, its terms and the measurements behind them;
+     *                            nothing here restates them, and no count of them is written.
      *                            False ⇒ no offer is prepared AT ALL, and no request is made
      */
     public function prepare(string $configDir, string $writebackTokenPath, string $apiBaseUrl, array $otherTokenPaths, bool $canConfirm): WritebackIdentityOfferPlan
@@ -81,19 +82,18 @@ final class WritebackIdentityOffer
 
         // ⛔ CANNOT ASK ⇒ NO OFFER, AND THE CHECK IS FIRST — before the token read and before
         // the request. An offer nobody can answer is not a cheaper offer, it is two defects,
-        // and BOTH were measured at the real command: under a pipe `QuestionHelper` reads
-        // stdin, so a piped `yes` WRITES with no human present and a pipe that never writes
-        // BLOCKS (DL-352 rejected an interactive `bridge:provision` for exactly that failure
-        // mode); and under `--no-interaction`/`-q` a run that asks nothing still reached out
-        // with the writeback bearer twice before declining itself, silently under `-q`.
-        // ⚠ The cause is stated as the DISJUNCTION it is: this method is handed one bit, and
-        // naming either half specifically would be the wrong cause half the time.
+        // and every one of them was measured at the real command rather than reasoned about;
+        // the gate that decides this bit owns the evidence and the reasons.
+        // ⚠ The cause is stated as the DISJUNCTION it is: this method is handed ONE BIT, so
+        // naming any single half specifically would be the wrong cause most of the time. It
+        // names the CONDITIONS asking needs, not a list of flags that would drift from them.
         if (! $canConfirm) {
             return $this->fallback(
                 $configDir,
                 $apiBaseUrl,
-                'this run cannot ask for confirmation — it was told not to interact (--no-interaction / -q), or stdin is '
-                    .'not a terminal — and this value is never written unconfirmed',
+                'this run cannot ask for confirmation — asking needs a terminal it can print the question to and read '
+                    .'the answer from, and a run that was not told to skip prompts (-n / -q / --silent / a negative '
+                    .'SHELL_VERBOSITY) — and this value is never written unconfirmed',
             );
         }
 

@@ -29,8 +29,9 @@ python3 bin/decision-log.py next                    # allocate the next DL-NNN b
 php artisan bridge:check                 # validate the install (dirs, DB connectivity, agent YAMLs)
 php artisan bridge:provision             # idempotent webhook subscription setup (--reconcile fixes drift). Also OFFERS a
                                          # missing writeback identity_id, resolved from the writeback token and written
-                                         # only on confirmation, and only where it MAY ask — a terminal, and not
-                                         # --no-interaction/-q (DL-369) — docs/writeback.md § 2
+                                         # only on confirmation, and only where it MAY ask — a human who will SEE the
+                                         # question and can ANSWER it, which BridgeCommand::canPromptToConfirm() owns
+                                         # and this line deliberately does not re-spell (DL-369) — docs/writeback.md § 2
 php artisan bridge:provision-tools       # mint per-agent board-tools bearers (DL-217; idempotent, collision-checked). The
                                          # command bridge:check's NEXT STEPS block names for an agent that is not wired
                                          # end to end (DL-352) — docs/board-tools.md. For an SSH-transport agent it mints

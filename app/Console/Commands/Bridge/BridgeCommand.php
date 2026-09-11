@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
-use App\Bridge\Support\KeyboardProbe;
+use App\Bridge\Support\TerminalProbe;
 use Illuminate\Console\Command;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -17,24 +17,36 @@ use Throwable;
 abstract class BridgeCommand extends Command
 {
     /**
-     * May this run ASK the operator to confirm something — the shared predicate for every
-     * `bridge:*` command that gates a mutation behind a confirmation.
+     * WILL A HUMAN SEE THIS QUESTION, AND CAN THEY ANSWER IT? That one sentence is the whole
+     * of what this predicate decides, and it is what every `bridge:*` command that gates a
+     * mutation behind a confirmation must ask before it prepares one. It is not "is there a
+     * tty", not "is interaction enabled", and not "is there a keyboard" — each of those is one
+     * necessary condition, each has been SHIPPED ALONE IN THIS REPO AS THE WHOLE GATE, and
+     * each was then falsified by measurement:
      *
-     * ⛔ BOTH TERMS, AND EACH CATCHES WHAT THE OTHER CANNOT. Measured at a real pty, and
-     * every one-term spelling was shipped and then falsified in this repo:
-     *  - `isInteractive()` ALONE is not a keyboard. It is false only for
-     *    `--no-interaction`/`-n`/`-q`, so under a PIPE it stays true and `QuestionHelper`
-     *    goes on to read stdin — a piped `yes` answers for nobody, and a pipe that never
-     *    writes blocks the command.
-     *  - {@see KeyboardProbe} ALONE is not consent. Under `--no-interaction` AT A TERMINAL
-     *    it answers true and is right to; the operator has simply said do not interact —
-     *    and a gate consulting only the probe prepared an offer, made bearer-authenticated
-     *    API calls, and then had `confirm()` silently take the NO default. Under `-q` it
-     *    did that with a completely silent console.
+     *  - `isInteractive()` ALONE is not a human. Under a PIPE it stays true and
+     *    `QuestionHelper` goes on to read stdin — `printf 'yes\n' |` answered for nobody and
+     *    WROTE, and a pipe that never writes blocked the command.
+     *  - {@see TerminalProbe::hasKeyboard()} ALONE is not consent. Under `-n` AT A TERMINAL a
+     *    keyboard is present and the operator has still said do not interact — a gate reading
+     *    only the probe prepared an offer and made bearer-authenticated API calls before
+     *    `confirm()` silently took the NO default, and under `-q` it did that with a silent console.
+     *  - Both of those together are still only "an answer CAN COME BACK". They say nothing
+     *    about whether the question ARRIVES. `Illuminate\Console\OutputStyle` does not
+     *    implement `ConsoleOutputInterface`, so `QuestionHelper::ask`'s `getErrorOutput()`
+     *    diversion never fires and the question is written to STDOUT (measured, with a raw
+     *    `ConsoleOutput` as the positive control that DOES divert to stderr). So under
+     *    `php artisan bridge:provision | tee setup.log` at a terminal the gate passed, the
+     *    request was made, the question landed in the log file, and the command blocked on the
+     *    tty with nothing on screen — indistinguishable from a hang.
      *
-     * ⚑ NOT NAMED `hasKeyboard()`, deliberately: under `-n` at a terminal a keyboard IS
-     * present and this returns false, so that name would be a false claim about what it
-     * decides — the exact defect class this predicate exists to close.
+     * ⚑ WHY THE INTERACTIVITY TERM IS NOT SPELLED OUT AS A FLAG LIST. `Application::configureIO`
+     * clears `isInteractive()` for `--no-interaction`/`-n` AND for any negative shell verbosity
+     * — `-q`, `--silent`, or an inherited `SHELL_VERBOSITY<0`. An enumeration of those flags is
+     * a restatement that has already drifted once in this repo, so the flags are named nowhere
+     * else: surfaces that need the rule point HERE, and what they state is the PROPERTY —
+     * this run may ask only where a human is at a terminal on both ends and has not said
+     * otherwise.
      *
      * ⚠ `bridge:jobs install-tick` HAS a second copy already — same class, and its message
      * says "no TTY" over an `isInteractive()` test (measured live: a piped `yes` installs a
@@ -44,8 +56,11 @@ abstract class BridgeCommand extends Command
      */
     protected function canPromptToConfirm(): bool
     {
+        $terminal = $this->laravel->make(TerminalProbe::class);
+
         return $this->input->isInteractive()
-            && $this->laravel->make(KeyboardProbe::class)->hasKeyboard();
+            && $terminal->hasKeyboard()
+            && $terminal->hasScreen();
     }
 
     /**
