@@ -79,7 +79,16 @@ mysql -u kanban -p -e "CREATE DATABASE agent_webhook_bridge_<agent> CHARACTER SE
 php artisan bridge:check                          # validate .env, dirs, DB connectivity, agent YAMLs — STOP if non-zero
 php artisan migrate --force
 php artisan optimize                              # config/route cache
-php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent)
+php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent). Where
+                                                  # writeback.json exists and declares no identity_id, this also
+                                                  # OFFERS the value resolved from the writeback token (DL-369) —
+                                                  # confirm it against the display name it prints. It writes nothing
+                                                  # unasked, and it only ASKS where a human will SEE the question and
+                                                  # can ANSWER it — BridgeCommand::canPromptToConfirm() owns that
+                                                  # predicate and the flags are not re-spelled here. Anywhere else (a
+                                                  # pipe, a redirect, cron, a script, or a run told to skip prompts) it
+                                                  # makes NO call at all and prints the by-hand recipe instead.
+                                                  # docs/writeback.md § 2
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its
                                                   # session? YES -> run this; it prints a paste-ready board_tools:
@@ -328,7 +337,8 @@ php artisan bridge:stats                              # event/dispatch counts; e
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
-php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
+php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift);
+                                                                            #   offers a missing writeback identity_id (DL-369)
 php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
                                                       # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
                                                       # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
