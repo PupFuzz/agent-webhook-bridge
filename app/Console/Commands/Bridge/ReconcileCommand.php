@@ -487,7 +487,15 @@ class ReconcileCommand extends BridgeCommand
             case TrackedRefKind::PrUrl:
                 $owner = $byCanonRepo[$ref->canonRepo] ?? null;
                 if ($owner === null) {
-                    $this->line("card {$cardId}: pr_url repo {$ref->canonRepo} is not in scope for this board (unmapped, or excluded by --repo) — skipped");
+                    // ⛔ ESCAPED (card#9121, DL-366 Decision 12): `canonRepo` is parsed out of
+                    // a CARD's `pr_url` by `([^/]+/[^/]+?)`, which admits every byte but `/`,
+                    // and `canonicalizeSource()` reduces no byte class — so on THIS arm it is
+                    // still the card author's bytes. Past this branch it has been MATCHED
+                    // against `$byCanonRepo`, whose keys are this install's own mappings, so
+                    // the later lines print a value from a closed set this install owns and
+                    // are deliberately left as prose (declaring them would say this install
+                    // does not vouch for its own writeback.json).
+                    $this->line("card {$cardId}: pr_url repo ".UntrustedText::forOperator($ref->canonRepo).' is not in scope for this board (unmapped, or excluded by --repo) — skipped');
                     $this->skipped++;
 
                     return $none;

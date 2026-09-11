@@ -4,7 +4,6 @@ namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\Finding;
-use App\Bridge\Support\UntrustedText;
 use App\Console\Commands\Bridge\CheckCommand;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Filesystem\Filesystem;
@@ -12,6 +11,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\TestCase;
 
 /**
@@ -38,16 +38,7 @@ use Tests\TestCase;
  */
 class UntrustedSpanCoverageTest extends TestCase
 {
-    /**
-     * The class {@see UntrustedText::forOperator()} escapes, MINUS the
-     * newline the console itself writes between findings.
-     *
-     * `\n` is the one member a rendered buffer legitimately contains — `line()`/`warn()`
-     * terminate every finding with one — so it is excluded here and NOWHERE ELSE. `\r` and
-     * `\t` are NOT excluded: neither appears in any sentence this install wrote, and `\r`
-     * alone returns the cursor to column 0 and overwrites the line above it.
-     */
-    private const LIVE_CONTROL = '/[\x00-\x09\x0B-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u';
+    use AssertsNoLiveControlByte;
 
     private string $tmp;
 
@@ -226,27 +217,6 @@ class UntrustedSpanCoverageTest extends TestCase
     }
 
     // ---- plumbing ----
-
-    /**
-     * ⛔ THE ASSERTION, spelled once. It is a CENSUS over the rendered line, and it reports
-     * the offending byte by name — a bare `assertDoesNotMatchRegularExpression` on a buffer
-     * carrying an erase-line prints a mangled diagnostic on the terminal reading it.
-     */
-    private function assertNoLiveControlByte(string $rendered, string $case = ''): void
-    {
-        $hits = [];
-        if (preg_match_all(self::LIVE_CONTROL, $rendered, $m) > 0) {
-            foreach ($m[0] as $byte) {
-                $hits[] = sprintf('U+%04X', (int) mb_ord($byte, 'UTF-8'));
-            }
-        }
-
-        $this->assertSame([], $hits, trim(
-            ($case === '' ? '' : "[{$case}] ")
-            .'live control codepoints reached the operator terminal: '.implode(' ', $hits)
-            .' — in: '.addcslashes($rendered, "\0..\37\177..\377")
-        ));
-    }
 
     /** @return array{string, string} the deployment realpath and the rendered report */
     private function probeStraddle(): array

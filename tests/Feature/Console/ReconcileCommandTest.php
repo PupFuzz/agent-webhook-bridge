@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,7 @@ use Tests\TestCase;
  */
 class ReconcileCommandTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use RefreshDatabase;
 
     private string $dir;
@@ -488,13 +490,45 @@ class ReconcileCommandTest extends TestCase
             $output,
             'the relayed body must not be able to start a line of its own',
         );
-        // THE CENSUS. `\n` is excluded — the console writes one per line — and nothing else
-        // is: no sentence this install wrote carries a `\r` or a `\t`.
-        $this->assertSame(
-            0,
-            preg_match_all('/[\x00-\x09\x0B-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u', $output),
-            'a live control byte reached the operator terminal: '.addcslashes($output, "\0..\37\177..\377"),
-        );
+        // THE CENSUS, spelled once for every producer that has one (canon #5). `\n` is
+        // excluded — the console writes one per line — and nothing else is: no sentence this
+        // install wrote carries a `\r` or a `\t`.
+        $this->assertNoLiveControlByte($output);
+    }
+
+    /**
+     * ⛔ A CARD'S OWN `pr_url` CAN CARRY THE SAME ATTACK, and no exception is involved
+     * (card#9121, DL-366 Decision 12).
+     *
+     * The sibling of `WritebackSourceCoverageCheck`'s card-field arm, found by auditing the
+     * SHAPE rather than the mechanism (canon #7): `ExternalReferenceNormalizer`'s URL parse
+     * is `([^/]+/[^/]+?)`, which admits every byte but `/`, and `canonicalizeSource()` then
+     * trims, lower-cases and cuts — reducing NO byte class. So the `owner/repo` this command
+     * prints for an OUT-OF-SCOPE card is bytes the card's author chose, relayed to the
+     * operator's terminal on the ordinary success path of a board read.
+     *
+     * ⚑ IT IS THE OUT-OF-SCOPE ARM SPECIFICALLY, and the in-scope arms are deliberately NOT
+     * changed: past this point `$cardRepo` has been MATCHED against `$byCanonRepo`, whose
+     * keys are this install's own `writeback.json` mappings, so every later line prints a
+     * value from a closed set this install owns. Here the lookup MISSED, which is precisely
+     * why the unreduced value is still in hand.
+     *
+     * ⚠ An ESC would be blocked upstream by nothing at all here — unlike the relayed
+     * exception bodies, which Guzzle's `bodySummary` gate fails closed on. Nothing filters
+     * this path, so the payload is the full erase-line.
+     */
+    public function test_an_out_of_scope_pr_url_repo_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => "https://github.com/evil/\x1b[2K\rALL CLEAR/pull/3"])], []);
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        // PRESENCE WITNESS — the operator still learns WHICH repo was out of scope.
+        $this->assertStringContainsString('is not in scope for this board', $output);
+        $this->assertStringContainsString('pr_url repo evil/\\x1B[2k all clear', $output);
+        $this->assertNoLiveControlByte($output);
     }
 
     public function test_no_writeback_config_fails(): void
