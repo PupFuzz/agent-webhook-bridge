@@ -28,13 +28,20 @@ use Tests\TestCase;
  * scan and the number appears in no sentence anywhere.
  *
  * WHAT IT COUNTS: calls to `->readBoardCards(` per file under `app/`, over comment-stripped
- * source. That method is the one door `KanbanClient` hands RAW API rows out of; the rows are
- * whatever kanban returned, so every string in one was chosen by whoever wrote the card.
+ * source. That is ONE door — the whole-board raw read — and the rows it hands back are
+ * whatever kanban returned, so a string in one may have been chosen by whoever wrote the card.
  *
- * WHAT IT DOES NOT DO, because the last three rounds were lost to unstated bounds:
- *  - **It does not claim a reader is safe.** The ruling is prose, per VALUE, per reader.
- *  - **It does not cover foreign card data arriving by any OTHER door** — the correlation
- *    lookups, a single-card `getCard`, a webhook payload. It covers the raw-row door only.
+ * ⛔ WHAT IT DOES NOT DO. These are bounds, not caveats: the last three review rounds on this
+ * class were all lost to a sentence that read wider than what stood behind it.
+ *  - **It does not claim a reader is safe.** The ruling is prose, per VALUE, per reader, and
+ *    a ruling naming a value is a claim about that value and about nothing beside it.
+ *  - ⚠ **IT IS ONE DOOR, NOT THE RAW-ROW SURFACE.** `KanbanClient` has other PUBLIC methods
+ *    that also return raw card rows, and NONE of them is in this population or ruled on
+ *    anywhere: that wider door set is recorded on card#9251 as an open, unruled question.
+ *    Do not read this pin as "raw rows are accounted for".
+ *  - **A row value that leaves for a LOG or the divergence ledger is named in the ruling and
+ *    is not made safe here.** Those are different sinks; DL-366's escape is shaped for a
+ *    terminal line and is an encoder for nothing else.
  *  - **It is lexical.** A dynamic call would be counted nowhere.
  */
 class RawBoardRowReaderTest extends TestCase
@@ -48,24 +55,30 @@ class RawBoardRowReaderTest extends TestCase
     private const READERS = [
         'app/Bridge/Check/Checks/WritebackSourceCoverageCheck.php' => [
             'reads' => 1,
-            'ruling' => 'TERMINAL sink (a `Finding`). `id`, `payload.dl_number` and the `source` derived from '
-                .'`payload.repo` reach the operator and are DECLARED as `Untrusted` spans; nothing else in the '
-                .'row is read. Pinned end to end by `ForeignCardFieldRenderTest`.',
+            'ruling' => 'TERMINAL sink (a `Finding`). Three values reach the operator and all three are '
+                .'DECLARED as `Untrusted` spans: `id`, `payload.dl_number`, and the `source` derived from '
+                .'`payload.repo`/`external_link`. `external_link` is read and feeds that `source`; it lands '
+                .'on no line of its own. Pinned end to end by `ForeignCardFieldRenderTest`.',
         ],
         'app/Console/Commands/Bridge/ReconcileCommand.php' => [
             'reads' => 1,
             'ruling' => 'TERMINAL sink (direct console writes, so this command IS the renderer). Four values '
-                .'leave a row onto a line and each is escaped at its write: the `pr_url` REPO on the '
-                .'out-of-scope arm, the raw `pr_url` at both writes of `evidence`, and `dl_number` on the '
-                .'`DlOnly` arm. `id` and `pr_number` reach the line as `int`; `workflow_stage_id` is compared, '
-                .'never printed. Pinned by `ReconcileCommandTest`.',
+                .'reach a line and each is escaped at its write: the `pr_url` REPO on the out-of-scope arm, '
+                .'the raw `pr_url` at both writes of `evidence`, and `dl_number` on the `DlOnly` arm. `id` and '
+                .'`pr_number` reach a line as `int`; `workflow_stage_id` is compared, never printed. Pinned by '
+                .'`ReconcileCommandTest`. ⚠ ONE MORE VALUE LEAVES THE ROW AND IS NOT MADE SAFE HERE: '
+                .'`board_id`, taken RAW by `MappedBoardGuard::boardContext()`, which reaches a `Log::info` '
+                .'context and, on a divergence, a `writeback_board_divergences` row. Its sink is not a '
+                .'terminal — but `bridge:stats` later PRINTS that stored column, so the question is real and '
+                .'is recorded unruled on card#9251 rather than answered here.',
         ],
         'app/Bridge/Handlers/KanbanPromoteReleasedHandler.php' => [
             'reads' => 1,
-            'ruling' => 'LOG / alert-channel sink, never a terminal. No STRING from a row leaves: `id` is '
-                .'`(int)`, the PR reference is resolved to an `int` through `TrackedCardRef`, and '
-                .'`workflow_stage_id` is compared. Every alert and log context value is this install\'s own '
-                .'repo, board or stage.',
+            'ruling' => 'LOG / alert-channel sink, never a terminal. `id` is `(int)`, the PR reference '
+                .'resolves to an `int` through `TrackedCardRef`, `workflow_stage_id` is compared and '
+                .'`PinGuard::isPinned()` returns a `bool`. ⚠ `board_id` leaves RAW through '
+                .'`MappedBoardGuard::boardContext()` into a log context and the divergence ledger — the same '
+                .'value and the same open question as the reconcile entry above (card#9251).',
         ],
         'app/Bridge/Standup/StandupService.php' => [
             'reads' => 1,
@@ -100,18 +113,20 @@ class RawBoardRowReaderTest extends TestCase
     }
 
     /**
-     * ⚑ THE OTHER DOOR IS SHUT BY THE LANGUAGE, not by this pin's prose.
+     * ⚑ THE WHOLE-BOARD READ'S INTERNAL TWIN IS SHUT BY THE LANGUAGE, not by this pin's prose.
      *
-     * `KanbanClient::correlationCards()` also holds raw rows. It is PRIVATE, so its callers
-     * are the same file and the population above is the whole external surface — asserted
-     * rather than stated, because "it is private" is exactly the kind of sentence that goes
-     * stale in a refactor with nothing red to say so.
+     * `KanbanClient::correlationCards()` runs the same whole-board read and returns its rows.
+     * It is PRIVATE, so a caller in `app/` cannot reach a whole-board raw read through it
+     * without that showing up as a language-level change. ⚠ THAT IS ALL THIS ESTABLISHES —
+     * it is NOT a statement that `READERS` is the whole raw-row surface, which it is not (see
+     * the bound in the class docblock). It is asserted rather than written down because "it is
+     * private" is exactly the kind of sentence that goes stale in a refactor with nothing red.
      */
-    public function test_the_client_internal_row_door_stays_private(): void
+    public function test_the_whole_board_reads_internal_twin_stays_private(): void
     {
         $this->assertTrue(
             (new ReflectionMethod(KanbanClient::class, 'correlationCards'))->isPrivate(),
-            'correlationCards() has been opened up — it hands out raw board rows too, so READERS above is no longer the whole external surface',
+            'correlationCards() has been opened up — it runs the same whole-board read, so a caller can now reach raw rows without appearing in READERS',
         );
     }
 
