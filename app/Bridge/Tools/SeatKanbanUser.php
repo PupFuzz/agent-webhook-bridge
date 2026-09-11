@@ -67,6 +67,25 @@ use Illuminate\Support\Facades\Log;
  * surfaces that at exit 0, so an install runs in it. This class is the door's last chance to
  * say so, and it refuses rather than write a claim it cannot attribute.
  *
+ * ⛔ THERE IS NO SUPPORTED WAY TO DECLARE THE SHARING DELIBERATE, AND THAT IS A RULING RATHER
+ * THAN A MISSING FEATURE (card#9170 operator gate). `shared-identities.json` declares a shared
+ * **github** account and there is deliberately no kanban analogue: the github case is
+ * declarable because something else supplies the attribution afterwards (a custom classifier
+ * re-attributes, which is why a shared github account resolves to a null name ON PURPOSE).
+ * Nothing re-attributes on the kanban axis, so a declaration could only record that the
+ * brokenness is intended — and the brokenness is not local to this door: `AgentRegistry`
+ * excludes BOTH colliding agents from `byKanbanUid`, so a shared id already resolves to
+ * NOBODY on every consumer of it, kanban wake-routing included. The remedy is one line and it
+ * is the same one the registry's own warning gives: a distinct `identity.kanban_user_id` per
+ * agent. `docs/config-schema.md`'s `kanban_user_id` row OWNS that position; it is pointed at
+ * rather than restated.
+ *
+ * ⚠ AND THE REFUSAL'S GUARANTEE IS INSTALL-LOCAL — a bound on the check, not a hole in it.
+ * The scan is one roster: {@see SubscriptionRegistry} globs a single `config_dir`, so two
+ * SEPARATE bridge installs whose YAMLs declare the same `kanban_user_id` collide on the board
+ * and are invisible to each other here. Nothing in this tree can see that, which is why it is
+ * stated rather than implied; within one roster the refusal is fail-closed.
+ *
  * EVERY FAILURE IS AN INSTALL FAULT, NAMED AS ONE, AND PERMANENT. A seat cannot fix any of
  * them by changing its arguments, so each is a {@see ToolRefusalException} (422-class)
  * carrying the config key or file the operator must go and look at — never a bare refusal

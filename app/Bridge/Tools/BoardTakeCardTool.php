@@ -30,9 +30,14 @@ use Illuminate\Support\Facades\Log;
  * accepted an `assigned_user_id` — even a validated one — would put "a seat may claim
  * only for itself" one forgotten branch away from false, letting one seat assign work to
  * another or impersonate a take. Here there is no expressible call that writes another
- * seat's id. Every argument that NAMES a user is refused BY NAME
- * ({@see USER_NAMING_ARGS}) rather than ignored, so a caller that tries learns why
- * instead of believing it assigned somebody.
+ * seat's id. ⚠ AND THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST: `card_id` is
+ * the whole of it, and EVERY other key throws before any board request. What
+ * {@see USER_NAMING_ARGS} changes is the MESSAGE and never the outcome — the spellings it
+ * enumerates are refused in a sentence that names the key and says why the tool will never
+ * have it, and every other unknown key (`owner`, `assigned_to`, a casefolded or padded
+ * spelling) is refused just as hard by the generic arm, which also says the assignee comes
+ * from the bridge identity and never from the arguments. No caller is left believing it
+ * assigned somebody either way.
  *
  * ⭐ AND IT LOOKS UP EXACTLY ONE SEAT: ITS OWN. The bridge therefore never needs, and must
  * never grow, a fleet-wide seat→kanban-user map — see {@see SeatKanbanUser} for why that
@@ -140,6 +145,12 @@ final class BoardTakeCardTool implements Tool
      * left to the generic unknown-argument refusal because the generic one says "this
      * tool accepts `card_id`", which reads as a spelling mistake — and the caller sending
      * one of these has a MODEL of the tool that is wrong in the one way that matters.
+     *
+     * ⛔ IT IS A MESSAGE-QUALITY LIST, NOT A BOUNDARY, and reading it as one inverts where
+     * the guarantee lives. The boundary is {@see refuseForeignArguments}'s accept set — the
+     * single exact key `card_id` — so a user-naming spelling absent from this list is refused
+     * too, generically, before any board request. Adding a spelling here buys a better
+     * sentence; it does not widen or narrow what this tool accepts.
      *
      * @var list<string>
      */

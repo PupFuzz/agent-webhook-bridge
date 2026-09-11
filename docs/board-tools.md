@@ -621,9 +621,14 @@ through the one privileged seat, which is the serial hub this door exists to rem
 > away from false, and one seat could assign work to another or impersonate a take. Here
 > there is no expressible call that writes another seat's id.
 >
-> Sending `assigned_user_id`, `assignee`, `user_id`, `kanban_user_id`, `agent` or any other
-> user-naming key is **refused by name** (422) **before any board request is made** — never
-> silently ignored, which would leave you believing you had assigned somebody.
+> `card_id` is the whole accepted set, so **every** other key is refused (422) **before any
+> board request is made** — never silently ignored, which would leave you believing you had
+> assigned somebody. The user-naming spellings the tool enumerates (`assigned_user_id`,
+> `assignee`, `user_id`, `kanban_user_id`, `agent`, and the rest of `USER_NAMING_ARGS`) are
+> refused in a sentence that **names the key** and says why it will never exist; anything else
+> — `owner`, `assigned_to`, a padded or casefolded spelling — gets the generic unknown-argument
+> refusal, which also says the assignee comes from your bridge identity and never from your
+> arguments. The list changes the message, not the outcome.
 >
 > **Assigning work to a DIFFERENT seat is not something any board tool can do.** That is
 > your operator's, with `kbcard patch --assign <seat>` on a box that holds the seat map.
@@ -671,6 +676,18 @@ own success. The response carries `already_held: true`, and no PATCH is sent.
 real value meaning *unassigned* and is the ordinary case. An **absent** or unreadable field
 means this call cannot tell an unclaimed card from one another seat is working, so it
 refuses rather than risk overwriting a claim — an install fault, named as one.
+
+**⛔ Your `identity.kanban_user_id` must be YOURS ALONE, and this tool is where a shared one
+stops.** If two agent YAMLs in this bridge's config dir declare the same `kanban_user_id`,
+every `board_take_card` call from either seat is **refused (422) before any board request**,
+naming the colliding agents and the config key — because an id that names two seats does not
+say WHICH seat holds the card, and a claim recorded under it tells every other seat that
+*somebody* holds the work without saying who, which is the one question this tool exists to
+answer. ⚠ **Sharing a `kanban_user_id` is an install fault with no supported form** — unlike
+`github_user_id`, it cannot be declared deliberate, and the collision already makes the id
+resolve to nobody everywhere else in the bridge. `bridge:check` warns on it ahead of time (at
+exit 0). [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-upstream-ids)
+owns that rule and the reasoning; it is not restated here.
 
 **⚠ A PINNED card still takes a claim, and that is a ruling.** The DL-178 hold governs a
 card's stage, its lifecycle and the fields `PinGuard::PINNED_FIELDS` names — which is

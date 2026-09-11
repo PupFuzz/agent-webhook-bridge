@@ -14,8 +14,9 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * board_correct_card (DL-326, card#8378) — CORRECT a card the calling agent
- * ITSELF filed. The third tool beside {@see BoardMyCardsTool} (read) and
- * {@see BoardCreateCardTool} (create), and the one that stops duplicate-minting
+ * ITSELF filed. The CORRECTION verb on the board-tools door — {@see BoardToolsRegistry} is
+ * the shipped set, and is deliberately not restated as an ordinal here — and the one that
+ * stops duplicate-minting
  * from being a seat's only available response to its own wrong card: before this,
  * an impl seat's whole board surface was create + read, so a card minted with a
  * wrong title could only be answered with a SECOND card — which then defeats every
