@@ -1470,7 +1470,12 @@ class CheckGoldenTest extends TestCase
             // the `'*'` catch-all below: that answers `{"data": []}`, which is not a hook list
             // and correctly reports `unvalidated` — a could-not-look line on a fixture whose
             // subject is the writeback move leg, saying nothing about either.
-            '*/repos/owner/repo/hooks*' => Http::response([['id' => 1, 'config' => ['url' => 'https://bridge.example.com/github?b=owner/repo']]]),
+            // ⚠ THE `/webhooks` SEGMENT IS LOAD-BEARING (card#9150 r6): this stub must be a URL
+            // that would ACTUALLY deliver to the pinned install, and `BRIDGE_RECEIVER_BASE_URL`
+            // already ends in the receiver path. Spelled without it — as it was — the hook
+            // matched a receiver URL that reaches no route in this app, so the fixture's green
+            // line was asserting a delivery that could never happen.
+            '*/repos/owner/repo/hooks*' => Http::response([['id' => 1, 'config' => ['url' => 'https://bridge.example.com/webhooks/github?b=owner/repo']]]),
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                 ['id' => 50, 'name' => 'In Progress', 'position' => 1024.0],

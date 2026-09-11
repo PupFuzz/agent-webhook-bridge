@@ -10,6 +10,7 @@ use App\Bridge\Provision\GitHubWebhookProbeKind;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretPath;
+use Illuminate\Routing\Router;
 
 /**
  * Does every DECLARED github subscription still have a LIVE webhook on the repo pointing at
@@ -52,9 +53,34 @@ use App\Bridge\Support\SecretPath;
  * live consumer install, which registers `?b=PupFuzz%2Fmezzanine`: the receiver routes that
  * identically to the unencoded spelling, so the hook was healthy and this leg called it
  * MISSING — a `fail` that reds a working install, which inverts the ruling the whole leg
- * rests on. `deliversTo()` compares the endpoint byte for byte and the query as PARSED
- * parameters, which is the receiver's own routing; `ReceiverUrl` owns why provision keeps
- * the exact one and why `%252F` still reads as absent.
+ * rests on. ⛔ WHAT `deliversTo()` TREATS AS ONE HOOK IS NOT RESTATED HERE, and the copy that
+ * stood here was WRONG — it said the endpoint was compared *byte for byte*, which stopped being
+ * true when the predicate started folding scheme/host case, the default port, trailing slashes
+ * and percent-encoding in the path (r3/r4). {@see ReceiverUrl::deliversTo()} owns the rule, its
+ * evidence, and the residual it does NOT close; a second copy of it here is a claim nothing reds
+ * on when the predicate moves.
+ *
+ * ⛔ AND IT ASKS WHETHER THE URL IT COMPOSES REACHES THIS APP AT ALL, BEFORE IT ASKS GITHUB
+ * ANYTHING (card#9150 r6). {@see ReceiverUrl::deliversTo()} is SYMMETRIC — it compares two URLs
+ * and cannot ask whether either of them is this install's receiver — so a mis-set
+ * `BRIDGE_RECEIVER_BASE_URL` produced a SILENT FALSE-`ok`: the operator pastes the payload URL
+ * exactly as the `fail` line below and `docs/writeback.md` instruct, which makes the hook GitHub
+ * holds byte-equal to the URL this install composes, the comparison says YES, and every delivery
+ * answers 404 forever. Measured: base `https://bridge.example.com` (no receiver path) and
+ * `…/webhooks/webhooks` (the doubled path `docs/writeback.md` records as a shipped defect) both
+ * compared equal and both reach no route. {@see ReceiverUrl::reachesThisInstall()} is asked once
+ * per scope, against this app's own router, and a scope whose composed URL does not reach it is
+ * NOT probed.
+ *
+ * ⚠ THAT ARM IS `unvalidated` AND DELIBERATELY NOT `fail`, under the severity rule's limb (c) —
+ * a comparison leg whose comparand does not resolve into the namespace being compared against —
+ * which is the same limb, on the same field, as the missing-base-url arm twenty lines below it.
+ * The install IS broken, and the line says so in as many words; what this leg did not do is
+ * MEASURE the repo's webhook, so it must not claim to have. ⛔ The second reason is that the
+ * route table is not the whole delivery path: an install behind a proxy that REWRITES the
+ * request path would answer `false` here and deliver perfectly, and nothing on this box can
+ * measure that hop — so a `fail` would red a healthy install on a premise this leg cannot
+ * establish, which is the exact inversion r1 shipped and was corrected for.
  *
  * ⛔ IT NEVER ENUMERATES THE FLEET. The repo's hook list carries every OTHER install's
  * receiver endpoint; the match happens inside `App\Bridge\Writeback\GitHubReadClient` and
@@ -107,11 +133,38 @@ final class GitHubWebhookSubscriptionCheck implements Check
             return;
         }
 
-        $probe = new GitHubWebhookProbe;
-        foreach ($scopes as $scope => $agents) {
-            $scope = (string) $scope;
-            $who = 'subscribed by '.implode(', ', $agents);
+        // ⛔ THE COMPOSED URL IS CHECKED AGAINST THIS APP'S OWN ROUTER BEFORE ANY OF IT IS
+        // COMPARED TO ANYTHING. See the class docblock for the silent false-`ok` this closes.
+        // It is per SCOPE rather than once per run because the composition is per scope — the
+        // scope rides in the query the receiver reads — and the verdict is REPORTED once,
+        // because the cause is one config value and the operator has one action to take.
+        $routes = app(Router::class)->getRoutes();
+        $reachable = [];
+        $unreachable = [];
+        foreach ($scopes as $rawScope => $agents) {
+            $scope = (string) $rawScope;
             $receiverUrl = ReceiverUrl::for($receiverBaseUrl, 'github', $scope);
+            if (ReceiverUrl::reachesThisInstall($receiverUrl, 'github', $scope, $routes)) {
+                $reachable[] = [$scope, $agents, $receiverUrl];
+
+                continue;
+            }
+            $unreachable[] = $scope;
+        }
+
+        if ($unreachable !== []) {
+            // A COMPARISON LEG WHOSE COMPARAND DOES NOT RESOLVE (Severity limb (c)), exactly as
+            // the missing-base-url arm above: a receiver URL that is not this install's is not a
+            // value the repo's hook list can be compared against. ⛔ The configured VALUE is not
+            // printed, for the reason the whole leg does not print it — the remedy names the
+            // SHAPE, which is what the operator was told to paste and is the one form that
+            // cannot echo a credential somebody put in that URL's userinfo.
+            yield Finding::unvalidated('github webhook: the URL this install composes for its own receiver — <BRIDGE_RECEIVER_BASE_URL>/github?b=<scope> — reaches NO route in THIS application, so a delivery to it is refused before the receiver ever reads the scope and NO webhook anywhere can deliver here. This run did NOT ask GitHub about the live webhook(s) of '.count($unreachable).' subscribed github repo(s) ('.implode(', ', $unreachable).'), because comparing a repo\'s hook URLs against a receiver URL that is not this install\'s would report a hook as HEALTHY for deliveries that feed nothing. Fix BRIDGE_RECEIVER_BASE_URL in this install\'s .env — it is the receiver\'s PUBLIC BASE and ALREADY ENDS IN the receiver path (see .env.example, and docs/writeback.md section The repo webhook) — then re-run bridge:check. If this install is served behind something that REWRITES the request path, this leg cannot see that hop and this line is what that looks like from here.');
+        }
+
+        $probe = new GitHubWebhookProbe;
+        foreach ($reachable as [$scope, $agents, $receiverUrl]) {
+            $who = 'subscribed by '.implode(', ', $agents);
             $result = $probe->probe($scope, $receiverUrl);
 
             // AN EXHAUSTIVE `match`, NOT A `switch`, and the difference is the point: a
@@ -148,9 +201,12 @@ final class GitHubWebhookSubscriptionCheck implements Check
         // NO TRAILING `Silence` DECLARATION, deliberately: the `match` above is exhaustive
         // and every arm is yielded, and the loop is only entered when the scope map is
         // non-empty, so there is no silent exit path here to declare. The one silent path is
-        // the empty-map return above, which declares itself. If a future edit adds a
-        // `continue`, the run reports an UNDECLARED silence rather than passing — which is
-        // the mechanism working, not a gap.
+        // the empty-map return above, which declares itself. ⚠ THE r6 PARTITION DOES NOT OPEN A
+        // SECOND ONE: a scope leaves `$reachable` only into `$unreachable`, and a non-empty
+        // `$unreachable` has already yielded — so the run can reach the end of this method
+        // having said nothing only when it said nothing about nothing. If a future edit adds a
+        // `continue` that lands in neither list, the run reports an UNDECLARED silence rather
+        // than passing — which is the mechanism working, not a gap.
     }
 
     /**
@@ -200,6 +256,17 @@ final class GitHubWebhookSubscriptionCheck implements Check
     /**
      * Record a MEASURED-absent hook for the NEXT STEPS block and compose its `fail`.
      *
+     * ⛔ THIS MESSAGE RESTATES {@see ReceiverUrl::deliversTo()}'s RULE AND HAS TO, which is why
+     * it is GUARDED rather than replaced by a pointer (canon #16): the reader is an operator
+     * staring at a terminal, and they cannot follow a `{@see}`. Every other copy of that rule
+     * in this repo was deleted in favour of the one owner; this one is corrected in place and
+     * `GitHubWebhookSubscriptionCheckTest::test_the_fail_lines_normalisation_note_is_true_of_the_predicate`
+     * asserts each clause of it AGAINST THE PREDICATE, so the text cannot drift from the
+     * behaviour it describes without something going red. ⚠ It said *byte for byte* of the
+     * endpoint from r1 until r6 while the predicate had folded case, the default port, trailing
+     * slashes and path encoding since r3 — an operator reading it was told their hook must be
+     * byte-identical while four documented spellings are not.
+     *
      * ⛔ THE PUBLICATION AND THE FINDING ARE ONE ACT. `CheckContext::$githubWebhooksMissing`
      * is what the NEXT STEPS block reads to instruct an operator to go add a webhook, and an
      * entry published for anything other than a completed read would send them to re-create a
@@ -213,7 +280,7 @@ final class GitHubWebhookSubscriptionCheck implements Check
     {
         $ctx->githubWebhooksMissing[] = ['scope' => $scope, 'agents' => $agents];
 
-        return Finding::fail("github webhook: {$scope} has NO repo webhook delivering to this install's receiver — this run READ the repo's whole hook list with the token from {$source} and none of its delivery URLs is <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}. Nothing upstream will wake this install for that scope ({$who}): events reach it late through a periodic sweep, or not at all. bridge:provision CANNOT fix this — it provisions the kanban provider only, and a github webhook lives in the repo's own settings. Add it by hand in the repo's Settings then Webhooks: payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}, content type application/json, secret = the per-scope HMAC secret file{$this->secretPathClause($ctx, $scope)} — then re-run bridge:check. See docs/writeback.md section The repo webhook. NOTE the match is on the receiver ENDPOINT byte for byte plus the query's decoded parameters, so `?b=owner%2Frepo` and `?b=owner/repo` are the same hook — but a DOUBLE-encoded scope (%252F) is not, because the receiver would refuse that delivery with invalid_scope, and neither is a hook carrying any extra query parameter.");
+        return Finding::fail("github webhook: {$scope} has NO repo webhook delivering to this install's receiver — this run READ the repo's whole hook list with the token from {$source} and none of its delivery URLs is <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}. Nothing upstream will wake this install for that scope ({$who}): events reach it late through a periodic sweep, or not at all. bridge:provision CANNOT fix this — it provisions the kanban provider only, and a github webhook lives in the repo's own settings. Add it by hand in the repo's Settings then Webhooks: payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}, content type application/json, secret = the per-scope HMAC secret file{$this->secretPathClause($ctx, $scope)} — then re-run bridge:check. See docs/writeback.md section The repo webhook. NOTE the match is on WHAT THIS RECEIVER WOULD ROUTE, not on the bytes: scheme and host are compared case-insensitively, an explicit :443 or :80 is dropped, trailing slashes on the path are ignored, the path is percent-decoded, and the query is compared as decoded parameters — so `?b=owner%2Frepo` and `?b=owner/repo` are the same hook, and so is a URL that ends in a #fragment. These are NOT the same hook, each because the receiver would refuse the delivery: a DOUBLE-encoded scope (%252F), which arrives as a literal % and is answered invalid_scope; a hook carrying any extra query parameter; and a hook whose URL puts a # BEFORE the ?, since a fragment is never transmitted and that delivery carries no scope at all.");
     }
 
     /**

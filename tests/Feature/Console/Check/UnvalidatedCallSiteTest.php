@@ -302,16 +302,24 @@ class UnvalidatedCallSiteTest extends TestCase
         // few lines below already routes through `PathVisibility` for its unseeable half
         // and keeps `fail` for its measured half. This is the third state neither covered.
         'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
-        // card#9150. FOUR sites, and each is a DIFFERENT way this run failed to enumerate a
+        // card#9150. FIVE sites, and each is a DIFFERENT way this run failed to enumerate a
         // repo's webhooks: no receiver URL to look for (the comparand did not resolve — limb
-        // (c)); no token resolved for the repo; the hook-list read got a non-2xx; and the read
-        // did not complete or came back as something that is not a hook list. All four are
+        // (c)); the composed receiver URL reaches no route in this app, so the comparand
+        // resolves to a URL that is not this install's receiver (limb (c) again, and the r6
+        // addition); no token resolved for the repo; the hook-list read got a non-2xx; and the
+        // read did not complete or came back as something that is not a hook list. All five are
         // limb (a)/(c) and none is evidence the hook is gone.
-        //   THE FIFTH ARM IS DELIBERATELY ABSENT AND IS THE WHOLE POINT OF THE LEG: a hook
+        //   ⛔ THE r6 SITE WAS RULED AGAINST `fail` DELIBERATELY, and that ruling is the reason
+        // it belongs here rather than beside the measured absence. The install IS broken — no
+        // webhook anywhere can deliver to a URL that reaches no route — but this leg did not
+        // MEASURE the repo, and a `fail` would additionally rest on a premise this box cannot
+        // establish: the route table is not the whole delivery path, so an install behind
+        // something that rewrites the request path would be reddened while delivering perfectly.
+        //   THE SIXTH ARM IS DELIBERATELY ABSENT AND IS THE WHOLE POINT OF THE LEG: a hook
         // list READ TO THE END with no matching hook is a MEASURED absence and reports `fail`,
         // moving the exit code. If a future edit ever moves that arm into this list, the leg
         // has stopped answering the question it exists to answer.
-        'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 4,
+        'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 5,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

@@ -2,6 +2,10 @@
 
 namespace App\Bridge\Support;
 
+use Illuminate\Http\Request;
+use Illuminate\Routing\RouteCollectionInterface;
+use Throwable;
+
 /**
  * THE RECEIVER URL A `(provider, scope)` SUBSCRIPTION MUST POINT AT, and the predicate
  * that decides whether a live upstream subscription IS that one (card#9150).
@@ -33,6 +37,15 @@ namespace App\Bridge\Support;
  *     was reported missing, which inverts the ruling this whole leg rests on — `fail` was
  *     chosen because a deaf agent is a broken install, not to red a working one.
  *
+ * ⛔ AND A THIRD PREDICATE THAT IS NOT A MATCH AT ALL (card#9150 r6). {@see self::reachesThisInstall()}
+ * asks whether the URL {@see self::for()} COMPOSES would be received by THIS APP — the question
+ * neither comparison above can ask, because both are symmetric relations between two URLs and
+ * neither takes the app as an argument. Its absence was a SILENT false-`ok`: on a mis-set
+ * `BRIDGE_RECEIVER_BASE_URL` the hook an operator creates from the documented payload URL is
+ * byte-equal to what this install composes, so `deliversTo()` answers YES about two URLs that
+ * both reach nothing. It is `bridge:check`'s alone; provision has no use for it, because a
+ * subscription it registers is validated by the upstream that receives it.
+ *
  * ⛔ THE DIVERGENCE IS THE POINT AND IS STATED ON BOTH SIDES, because two copies of one rule
  * that quietly differ is the drift defect this fleet keeps filing. Neither predicate may be
  * "simplified" into the other: they answer different questions — *is this the subscription I
@@ -52,6 +65,70 @@ final class ReceiverUrl
     public static function for(string $receiverBaseUrl, string $provider, string $scopeId): string
     {
         return rtrim($receiverBaseUrl, '/')."/{$provider}?b={$scopeId}";
+    }
+
+    /**
+     * Would the URL {@see self::for()} COMPOSES actually be RECEIVED BY THIS APP — the
+     * question the two match predicates structurally cannot ask (card#9150 r6).
+     *
+     * ⛔ THE DEFECT THIS CLOSES IS THE ONE {@see self::deliversTo()} CANNOT SEE, BECAUSE THAT
+     * PREDICATE IS SYMMETRIC. It compares two URLs and never asks whether either of them is
+     * this install's receiver — so feed it a live hook and a receiver composed from a mis-set
+     * `BRIDGE_RECEIVER_BASE_URL` and they can be EQUAL, which an operator who pastes the
+     * payload URL exactly as `bridge:check` and `docs/writeback.md` instruct makes equal BY
+     * CONSTRUCTION. Measured: base `https://bridge.example.com` composes `…/github?b=<scope>`
+     * and base `…/webhooks/webhooks` composes `…/webhooks/webhooks/github?b=<scope>`; both
+     * compared `true` and both answer `NotFoundHttpException` at this app. That is a SILENT
+     * false-`ok` — the agent is deaf, `bridge:check` is green, and no surface says so — which
+     * is the exact failure the whole leg exists to prevent.
+     *
+     * ⭐ THE ORACLE IS THE RECEIVER'S OWN ROUTER, NEVER A RULE ABOUT PATHS SOMEBODY WROTE.
+     * `$routes` is this app's compiled route collection, and the two terms below are exactly
+     * what `App\Http\Middleware\VerifyHmacSignature` reads before it will accept a delivery:
+     * the `{provider}` segment the route binds, and the scope it takes out of
+     * `$request->query('b')`.
+     *
+     * ⛔ ROUTE MATCHING ALONE IS **NOT** THE PREDICATE, and the second term is not decoration.
+     * A base carrying its own query — `…/webhooks/github?z=1` — matches the route perfectly
+     * and swallows the composed `?b=` INSIDE that query's value, so the middleware reads no
+     * scope at all and answers `invalid_scope` 400. Measured through `Request::create()`:
+     * the route resolves, `query('b')` is `null`, the delivery feeds nothing.
+     * `ReceiverUrlRoutingAgreementTest` generates that member and reds on a route-only
+     * implementation of this method.
+     *
+     * ⛔ THE ROUTE COLLECTION IS A PARAMETER, NOT AN `app('router')` CALL, so this class keeps
+     * its total independence from the container: `bridge:provision` uses it too, and a Support
+     * primitive that resolves its own collaborators cannot be reasoned about from its
+     * arguments — nor pointed at a route table other than the ambient one by a test.
+     *
+     * ⚠ WHAT IT CANNOT SEE, AND WHY A CALLER MUST NOT RENDER `false` AS A FAULT OF THE WEBHOOK.
+     * This compares the composed URL's PATH against this app's own route table, which is the
+     * real delivery path only while the app is served at the root of the host the base URL
+     * names — the deployment `CLAUDE_DEPLOYMENT.md` documents (an Apache vhost whose
+     * DocumentRoot is the app's `public/`, routing `/webhooks/*`). An install behind a proxy
+     * that REWRITES the path would answer `false` here and deliver perfectly well, and nothing
+     * on this box can measure that hop — the same class of unmeasurable as the scheme, host and
+     * port, which {@see self::deliversTo()} holds fixed for the same reason. That is why
+     * `App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck` renders it `unvalidated`
+     * (Severity limb (c) — a comparison leg whose comparand does not resolve into the namespace
+     * being compared against) and never `fail`.
+     */
+    public static function reachesThisInstall(string $receiverUrl, string $provider, string $scopeId, RouteCollectionInterface $routes): bool
+    {
+        try {
+            $request = Request::create($receiverUrl, 'POST', [], [], [], [], '{}');
+            $route = $routes->match($request);
+        } catch (Throwable) {
+            // EVERY way this app can decline the URL is one answer — it does not deliver here.
+            // `match()` throws for no route and for a route registered under another verb, and
+            // `Request::create()` itself throws on a URI the framework will not build at all.
+            // Distinguishing them would be inventing a vocabulary no caller can act on
+            // differently: the remedy for all of them is the same env var.
+            return false;
+        }
+
+        return $route->parameter('provider') === $provider
+            && $request->query('b') === $scopeId;
     }
 
     /**

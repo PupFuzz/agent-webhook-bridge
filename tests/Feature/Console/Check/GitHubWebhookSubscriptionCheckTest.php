@@ -4,6 +4,7 @@ namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\NextSteps;
+use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Validation\ScopeId;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
@@ -42,8 +43,17 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
 
     private const SCOPE = 'owner/repo';
 
-    /** What a correctly-configured hook on this fixture's repo delivers to. */
-    private const RECEIVER = 'https://bridge.example.com/github?b=owner/repo';
+    /**
+     * What a correctly-configured hook on this fixture's repo delivers to.
+     *
+     * ⛔ THE `/webhooks` SEGMENT IS NOT DECORATION, and its absence was a live hole in this
+     * file until r6: `BRIDGE_RECEIVER_BASE_URL` ALREADY ENDS IN THE RECEIVER PATH, so the base
+     * this fixture used to declare (`https://bridge.example.com`) composed `…/github?b=…`,
+     * which reaches NO route in this app. Every assertion here was therefore made over a URL
+     * family that could never have delivered to anything — and the leg happily reported `ok`
+     * and `fail` about it, which is precisely the defect r6 closes.
+     */
+    private const RECEIVER = 'https://bridge.example.com/webhooks/github?b=owner/repo';
 
     /**
      * ANOTHER install's receiver, planted in the fixture's hook list.
@@ -53,7 +63,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
      * operator log. The value is distinctive so an assertion over the whole output can prove
      * it never escaped.
      */
-    private const FOREIGN_RECEIVER = 'https://someone-elses-bridge.example.net/github?b=owner/repo';
+    private const FOREIGN_RECEIVER = 'https://someone-elses-bridge.example.net/webhooks/github?b=owner/repo';
 
     protected function tearDown(): void
     {
@@ -81,7 +91,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // that identically to the unencoded spelling, so the hook is HEALTHY — and under the
         // first cut's byte equality this leg reported it missing and moved the exit code,
         // reddening a working install. That inverts the ruling the whole leg rests on.
-        $this->bootGithubInstall($this->hookPage(['https://bridge.example.com/github?b=owner%2Frepo']));
+        $this->bootGithubInstall($this->hookPage(['https://bridge.example.com/webhooks/github?b=owner%2Frepo']));
 
         [$exit, $doc] = $this->runJson();
 
@@ -115,7 +125,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // (`%` is outside its character class) — so that hook delivers NOTHING and answers
         // `invalid_scope` 400. Reporting it as absent is the CORRECT verdict: it is exactly
         // the deaf-agent state the `fail` arm exists to name, not a false negative.
-        $this->bootGithubInstall($this->hookPage(['https://bridge.example.com/github?b=owner%252Frepo']));
+        $this->bootGithubInstall($this->hookPage(['https://bridge.example.com/webhooks/github?b=owner%252Frepo']));
 
         [$exit, $doc] = $this->runJson();
 
@@ -135,10 +145,10 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // a literal `ScopeId` refuses, which is why the arm above is a `fail`.
         $decoded = fn (string $url): ?string => Request::create($url, 'POST')->query('b');
 
-        $this->assertSame('owner/repo', $decoded('https://bridge.example.com/github?b=owner%2Frepo'));
-        $this->assertSame('owner/repo', $decoded('https://bridge.example.com/github?b=owner/repo'));
+        $this->assertSame('owner/repo', $decoded('https://bridge.example.com/webhooks/github?b=owner%2Frepo'));
+        $this->assertSame('owner/repo', $decoded('https://bridge.example.com/webhooks/github?b=owner/repo'));
 
-        $double = $decoded('https://bridge.example.com/github?b=owner%252Frepo');
+        $double = $decoded('https://bridge.example.com/webhooks/github?b=owner%252Frepo');
         $this->assertSame('owner%2Frepo', $double);
         $this->assertFalse(
             ScopeId::matches((string) $double),
@@ -169,9 +179,91 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // The bound the leg can still be wrong on is PRINTED, because the operator is the
         // only one who can see the hook. Since card#9150 r1 that bound is NARROWER than the
         // exact match it replaced — encoding no longer counts as a difference — so the line
-        // names what does.
+        // names what does. What each clause CLAIMS is asserted against the predicate itself in
+        // `test_the_fail_lines_normalisation_note_is_true_of_the_predicate`.
         $this->assertStringContainsString('`?b=owner%2Frepo` and `?b=owner/repo` are the same hook', $finding['message']);
-        $this->assertStringContainsString('DOUBLE-encoded scope (%252F) is not', $finding['message']);
+        $this->assertStringContainsString('DOUBLE-encoded scope (%252F)', $finding['message']);
+
+        // ⛔ AND THE CLAIM THAT WAS FALSE FROM r1 TO r6 MAY NOT COME BACK. The line said the
+        // endpoint was matched *byte for byte* while the predicate had been folding scheme and
+        // host case, the default port, trailing slashes and path percent-encoding since r3 —
+        // so an operator was told their hook had to be byte-identical when four documented
+        // spellings are not. An absence assertion alone would certify whatever replaced it,
+        // which is why it sits BESIDE the presence witnesses above.
+        $this->assertStringNotContainsString('byte for byte', $finding['message']);
+    }
+
+    public function test_the_fail_lines_normalisation_note_is_true_of_the_predicate(): void
+    {
+        // ⛔ THE GUARD ON THE ONE RESTATEMENT THAT CANNOT BECOME A POINTER (canon #16). The
+        // `fail` line is read by an OPERATOR at a terminal, who cannot follow a `{@see}` to
+        // `ReceiverUrl::deliversTo()`, so this copy of the normalisation rule is corrected in
+        // place — and every other copy in the repo was deleted in favour of that owner. What
+        // keeps this one honest is not proofreading: each clause below is asserted BOTH as text
+        // in the shipped line AND as behaviour of the predicate the line describes, so the two
+        // cannot drift apart in either direction without going red.
+        $this->bootGithubInstall($this->hookPage([self::FOREIGN_RECEIVER]));
+        [, $doc] = $this->runJson();
+        $message = $this->onlyFinding($doc)['message'];
+
+        $receiver = self::RECEIVER;
+        foreach ([
+            // [what the line says, the URL it says it about, the verdict it claims]
+            ['`?b=owner%2Frepo` and `?b=owner/repo` are the same hook', 'https://bridge.example.com/webhooks/github?b=owner%2Frepo', true],
+            ['trailing slashes on the path are ignored', 'https://bridge.example.com/webhooks/github/?b=owner/repo', true],
+            ['scheme and host are compared case-insensitively', 'HTTPS://BRIDGE.Example.COM/webhooks/github?b=owner/repo', true],
+            ['an explicit :443 or :80 is dropped', 'https://bridge.example.com:443/webhooks/github?b=owner/repo', true],
+            ['the path is percent-decoded', 'https://bridge.example.com/webhooks/git%68ub?b=owner/repo', true],
+            ['so is a URL that ends in a #fragment', 'https://bridge.example.com/webhooks/github?b=owner/repo#frag', true],
+            ['a DOUBLE-encoded scope (%252F)', 'https://bridge.example.com/webhooks/github?b=owner%252Frepo', false],
+            ['a hook carrying any extra query parameter', 'https://bridge.example.com/webhooks/github?b=owner/repo&x=1', false],
+            ['a hook whose URL puts a # BEFORE the ?', 'https://bridge.example.com/webhooks/github#x?b=owner/repo', false],
+        ] as [$clause, $url, $claimed]) {
+            $this->assertStringContainsString($clause, $message, 'the fail line no longer states this rule');
+            $this->assertSame(
+                $claimed,
+                ReceiverUrl::deliversTo($url, $receiver),
+                "the fail line tells the operator `{$clause}`, and the predicate it describes disagrees about {$url}",
+            );
+        }
+    }
+
+    public function test_a_receiver_url_that_reaches_no_route_is_unvalidated_and_asks_github_nothing(): void
+    {
+        // ⭐ THE r6 DEFECT, END TO END AND FROM THE OPERATOR'S SIDE. `BRIDGE_RECEIVER_BASE_URL`
+        // already ends in the receiver path; set to the bare host it composes `…/github?b=…`,
+        // which reaches NO route here. The operator then pastes the payload URL exactly as the
+        // `fail` line and docs/writeback.md instruct, so GitHub holds a hook whose URL is
+        // BYTE-EQUAL to what this install composes — `deliversTo()` is symmetric and says YES —
+        // and this leg reported a live webhook while every delivery answered 404. Silent: `ok`,
+        // exit 0, deaf agent, nothing anywhere saying so.
+        //
+        // `null` registers no HTTP stub, so `Http::preventStrayRequests()` is the control: a leg
+        // that asked GitHub anything here would throw rather than pass.
+        $this->bootGithubInstall(null, receiverBaseUrl: 'https://bridge.example.com');
+
+        [$exit, $doc] = $this->runJson();
+
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('unvalidated', $finding['severity']);
+        $this->assertStringContainsString('reaches NO route in THIS application', $finding['message']);
+        $this->assertStringContainsString('BRIDGE_RECEIVER_BASE_URL', $finding['message']);
+        $this->assertStringContainsString(self::SCOPE, $finding['message']);
+
+        // ⛔ BOTH WRONG ANSWERS ARE ASSERTED ABSENT, because this state is neither of them: it
+        // is not a live hook (the `ok` this shipped as) and it is not a MEASURED absence (the
+        // `fail` that would send an operator to re-create a webhook that may be perfectly fine).
+        $this->assertStringNotContainsString('a live repo webhook delivers to this install', $finding['message']);
+        $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+
+        // ⚠ THE EXIT CODE DOES NOT MOVE. This leg measured nothing about the repo — and the
+        // route table is not the whole delivery path, since a proxy that rewrites it is
+        // unmeasurable from here — so `unvalidated` is the limb (c) verdict, not `fail`.
+        $this->assertSame(0, $exit);
+
+        // And an unmeasured read publishes no NEXT STEPS webhook entry, for the same reason the
+        // 403 arm does not: the remedy it would print is "go add a webhook", which is wrong.
+        $this->assertNotContains('github_webhook_missing', array_column($doc['next_steps'], 'state'));
     }
 
     public function test_a_403_on_the_hook_list_is_unvalidated_and_does_not_collapse_into_the_fail_arm(): void
@@ -455,12 +547,15 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
      *                                no stub at all, for the fixtures that must not reach the
      *                                network
      */
-    private function bootGithubInstall(mixed $hooksResponse, bool $withToken = true, ?string $scope = null): void
+    private function bootGithubInstall(mixed $hooksResponse, bool $withToken = true, ?string $scope = null, ?string $receiverBaseUrl = null): void
     {
         $scope ??= self::SCOPE;
-        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooksResponse, $withToken, $scope) {
+        $this->bootGoldenInstall('github-webhook-subscription', function (GoldenInstall $i) use ($hooksResponse, $withToken, $scope, $receiverBaseUrl) {
             $i->boot()->agent('gh-agent', "identity:\n  github_user_id: 555\n"
                 ."subscriptions:\n  - provider: github\n    scopes: [\"{$scope}\"]\n");
+            if ($receiverBaseUrl !== null) {
+                config(['bridge.receiver_base_url' => $receiverBaseUrl]);
+            }
             if ($withToken) {
                 $i->secret('github/token', 'gh-token');
             }
