@@ -79,8 +79,17 @@ class ReceiverUrlRoutingAgreementTest extends TestCase
             $head = substr($canonical, 0, $i);
             $tail = substr($canonical, $i + 1);
 
-            // Percent-encode this one character.
-            $out[] = $head.'%'.strtoupper(bin2hex($char)).$tail;
+            // ⛔ NOT THE LEADING SLASH. Encoding index 0 yields `%2Fwebhooks/github`, which is
+            // no longer a PATH at all: appended to the host it makes the authority
+            // `bridge.example.com%2Fwebhooks`, and the framework rejects the URI outright
+            // (`Invalid URI: Host is malformed`). That is outside this population by
+            // definition — these are spellings of the path, with the authority held fixed —
+            // and generating it asserted nothing while erroring the run. ⚠ CI caught it and
+            // this box did not report it, for a reason worth knowing: an ERROR is not a
+            // FAILURE, and a summary that reads only the failure count calls such a run green.
+            if ($i > 0) {
+                $out[] = $head.'%'.strtoupper(bin2hex($char)).$tail;
+            }
 
             // Duplicate this one slash.
             if ($char === '/') {
@@ -167,9 +176,13 @@ class ReceiverUrlRoutingAgreementTest extends TestCase
      */
     private function routeIdentity(string $url): ?string
     {
-        $request = Request::create($url, 'POST', [], [], [], [], '{}');
-
+        // ⛔ THE CONSTRUCTION IS INSIDE THE TRY, and it was not: a URL the framework refuses
+        // to build at all threw straight out of the data set and ERRORED the run instead of
+        // answering *this does not route*. The oracle must be TOTAL over whatever the
+        // generator produces, or a transform nobody has thought of yet takes the suite down
+        // rather than reporting a verdict.
         try {
+            $request = Request::create($url, 'POST', [], [], [], [], '{}');
             $route = app('router')->getRoutes()->match($request);
         } catch (\Throwable) {
             return null;
