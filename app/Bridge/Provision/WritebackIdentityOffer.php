@@ -86,7 +86,13 @@ final class WritebackIdentityOffer
         // the gate that decides this bit owns the evidence and the reasons.
         // ⚠ The cause is stated as the DISJUNCTION it is: this method is handed ONE BIT, so
         // naming any single half specifically would be the wrong cause most of the time. It
-        // names the CONDITIONS asking needs, not a list of flags that would drift from them.
+        // states the CONDITIONS asking needs — and then, for the skip-prompts half ONLY, it
+        // does spell the flags out, because an operator staring at this line cannot follow a
+        // pointer the way a doc reader can. ⛔ That makes this the ONE restatement of the flag
+        // list the repo keeps outside the predicate, so it is GUARDED rather than trusted:
+        // `Tests\Unit\Docs\InteractivityFlagListGuardTest` re-derives the set from
+        // `Application::configureIO` itself and reds if this string stops naming a condition
+        // that clears interactivity. Do not add a second such copy; point at the predicate.
         if (! $canConfirm) {
             return $this->fallback(
                 $configDir,

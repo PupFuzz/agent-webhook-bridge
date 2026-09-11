@@ -43,16 +43,26 @@ abstract class BridgeCommand extends Command
      * ⚑ WHY THE INTERACTIVITY TERM IS NOT SPELLED OUT AS A FLAG LIST. `Application::configureIO`
      * clears `isInteractive()` for `--no-interaction`/`-n` AND for any negative shell verbosity
      * — `-q`, `--silent`, or an inherited `SHELL_VERBOSITY<0`. An enumeration of those flags is
-     * a restatement that has already drifted once in this repo, so the flags are named nowhere
-     * else: surfaces that need the rule point HERE, and what they state is the PROPERTY —
-     * this run may ask only where a human is at a terminal on both ends and has not said
-     * otherwise.
+     * a restatement, and every DOC restatement this repo has written has drifted from it — the
+     * two this card shipped were already narrower than the predicate on the day they were
+     * written, each inside the same sentence that claimed not to re-enumerate. So there are
+     * exactly TWO copies of the flag list left and both are accounted for: THIS one, which
+     * owns the rule, and the operator-facing fallback message in
+     * `App\Bridge\Provision\WritebackIdentityOffer`. That second copy is load-bearing —
+     * an operator reading a console line cannot follow a `{@see}` — so DELETE-and-point is
+     * not available for it and it is GUARDED instead: `Tests\Unit\Docs\InteractivityFlagListGuardTest`
+     * re-derives the flag set from `Application::configureIO` ITSELF and reds both on a copy
+     * that drops a condition and on a THIRD copy appearing anywhere in the tree. Every other
+     * surface states the PROPERTY and points HERE — this run may ask only where a human is at
+     * a terminal on both ends and has not said otherwise.
      *
      * ⚠ `bridge:jobs install-tick` HAS a second copy already — same class, and its message
      * says "no TTY" over an `isInteractive()` test (measured live: a piped `yes` installs a
      * crontab line with no human present; a held pipe blocks). It is deliberately NOT
      * migrated here: changing what an already-shipped command refuses is an acceptance
-     * change, and that is operator-gated — **card#9255**.
+     * change, and that is operator-gated — **card#9255**. ⚠ That migration is also the point
+     * at which the screen half's measurement seam starts to matter — `App\Bridge\Support\SystemTerminalProbe`
+     * owns why fd 1 and `$this->output` can diverge and what to do about it then.
      */
     protected function canPromptToConfirm(): bool
     {

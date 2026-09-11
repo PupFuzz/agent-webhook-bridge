@@ -78,11 +78,15 @@ final class WritebackIdentityCheck implements Check
             // seat most likely to read this line is the one `bridge:provision` will refuse to
             // ask — promising it an offer unqualified would send it to a command that prints
             // the recipe instead. The condition is stated rather than the reader GUESSED AT:
-            // this leg cannot tell whether the seat reading it has a terminal, so it names
-            // both branches instead of asserting one.
+            // this leg cannot tell whether the seat reading it can be asked, so it states the
+            // CONDITIONS rather than asserting one branch. ⚠ It states them as the PROPERTY
+            // and does not spell the flags — the predicate owns that list, and the one copy
+            // of it the repo keeps is the operator-facing fallback message
+            // ({@see \App\Bridge\Provision\WritebackIdentityOffer}), guarded by
+            // `Tests\Unit\Docs\InteractivityFlagListGuardTest`.
             yield Finding::warn('writeback.json: no identity_id — set it so the writeback card_updated webhook is auto echo-suppressed (else it loops back). '
-                .'At a terminal, `php artisan bridge:provision` OFFERS the value resolved from the writeback token (confirm it, it does not write unasked). '
-                .'With no terminal — a script, a pipe, or an agent session — it makes no call at all and prints the by-hand recipe, which is docs/writeback.md § 2.');
+                .'At a terminal, on a run that was not told to skip prompts, `php artisan bridge:provision` OFFERS the value resolved from the writeback token (confirm it, it does not write unasked). '
+                .'Anywhere else — no terminal (a script, a pipe, an agent session), or a run told to skip prompts — it makes no call at all and prints the by-hand recipe, which is docs/writeback.md § 2.');
 
             return;
         }
