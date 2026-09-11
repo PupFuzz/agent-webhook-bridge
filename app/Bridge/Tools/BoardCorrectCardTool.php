@@ -59,10 +59,15 @@ use Illuminate\Support\Facades\Log;
  * it. The response therefore reports no lane — it reports only what was checked.
  *
  * WHAT IS CORRECTABLE: `name`, `description`, `tags` — the caller-owned content,
- * and nothing else. Everything a caller might name that this tool does not own is
- * refused BY NAME with its owner ({@see FIELD_OWNERS}), never ignored: a silently
- * dropped argument leaves the seat believing it corrected something it did not,
- * which is the "refuse loudly, never silently no-op" this card was filed on. ⛔ The
+ * and nothing else. ⚠ THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST:
+ * `card_id` plus those three keys is the whole of it, and every other key throws
+ * before any write. What {@see FIELD_OWNERS} changes is the MESSAGE, never the
+ * outcome — the keys it enumerates are refused in a sentence naming the owning
+ * tool, and every other unnamed key is refused just as hard by the generic
+ * `unknown argument` arm ({@see refuseForeignArguments}). Never silently ignored
+ * either way: a silently dropped argument leaves the seat believing it corrected
+ * something it did not, which is the "refuse loudly, never silently no-op" this
+ * card was filed on. ⛔ The
  * offered set is deliberately NARROWER than `kbcard patch`'s corrective setters —
  * `type`, `external_id` and `origin` are refused — because THIS TOOL MUST NEVER
  * WRITE A FIELD `board_create_card` WOULD REFUSE AT BIRTH. A wider correction

@@ -69,14 +69,20 @@ use Tests\TestCase;
  *
  * So, re-derived every run:
  *  1. **THE CALL SITES.** Every `<class>::<method>(` call in the population, on PHP's own
- *     tokenizer ({@see SourceScan::sites}), where `<class>` is any token whose final
- *     `\`-segment EQUALS {@see IDENTITY_CLASS} — so a mention in a docblock or a `{@see}` is
- *     excluded by CONSTRUCTION and a qualified spelling is INCLUDED by it. Sites are keyed
+ *     tokenizer ({@see SourceScan::sites}), where `<class>` is any of the FOUR class-name-
+ *     reference tokens PHP 8 tokenises (`T_STRING`, `T_NAME_QUALIFIED`,
+ *     `T_NAME_FULLY_QUALIFIED`, `T_NAME_RELATIVE`) whose final `\`-segment EQUALS
+ *     {@see IDENTITY_CLASS} — so a mention in a docblock or a `{@see}` is excluded by
+ *     CONSTRUCTION and a qualified spelling is INCLUDED by it. That set is CLOSED: PHP 8 has
+ *     no fifth class-name token, so this enumeration terminates rather than chasing a
+ *     spelling ({@see namesIdentityClass}). Sites are keyed
  *     `<repo-relative path>::<enclosing function>#<ordinal>`.
- *  2. **NO ALIASED IMPORT ANYWHERE IN THE POPULATION** — the one spelling leg 1 cannot see,
- *     because after `use … as Roster;` the class token at the call site is `Roster`. It is
- *     REFUSED rather than resolved: the remediation is to spell the class, not to teach the
- *     walk import tables ({@see test_no_file_in_the_population_imports_the_identity_class_under_an_alias}).
+ *  2. **NO ALIASED IMPORT ANYWHERE IN THE POPULATION** — one spelling leg 1 cannot see by
+ *     DESIGN, because after `use … as Roster;` the class token at the call site is `Roster`.
+ *     It is REFUSED rather than resolved: the remediation is to spell the class, not to teach
+ *     the walk import tables ({@see test_no_file_in_the_population_imports_the_identity_class_under_an_alias}).
+ *     (A string-spelled call is the OTHER spelling leg 1 cannot see, by the same design —
+ *     that one is leg 3's, immediately below.)
  *  3. **WHICH FILES MAY NAME THE CLASS AT ALL** ({@see NAMING_FILES}), which is what closes
  *     INDIRECT invocation from a new file — a `[SeatKanbanUser::class, 'forCallingAgent']`
  *     callable handed to `call_user_func`, say — without teaching the walk to resolve
@@ -98,7 +104,15 @@ use Tests\TestCase;
  *    is the name every board tool receives the door-derived value under, and the rebind leg
  *    closes the obvious defeat (`$agentName = $args['agent'];` earlier in the body). It does
  *    NOT prove the dispatcher still derives that value from a door — that is
- *    `AgentToolsCallTest` / `ToolsCallCommandTest`'s, and those drive real doors.
+ *    `AgentToolsCallTest` / `ToolsCallCommandTest`'s, and those drive real doors. ⚠ THOSE TESTS
+ *    PROVE THE TWO DOORS DERIVE THE NAME; THEY DO NOT PROVE {@see BoardTakeCardTool::call} HAS
+ *    NO OTHER CALLER. That population is `BoardTakeCardTool::call`'s own call sites, not
+ *    {@see IDENTITY_CLASS}'s, and this class does not walk it — read at source instead,
+ *    presently exactly one, {@see BoardToolDispatcher} (`command grep -rn "BoardTakeCardTool"
+ *    app/` returns only the registry entry, this docblock's `{@see}`s and that one call). A
+ *    second caller of the TOOL — not of {@see IDENTITY_CLASS} — that passed a payload-derived
+ *    name would be invisible to all three legs below, exactly as a second caller of
+ *    {@see IDENTITY_CLASS} itself was before this class existed; nothing today makes one.
  *  - **Control flow is not modelled**: the rebind test is textual and body-scoped, exactly as
  *    `PinnedFieldWriteCoverageTest`'s consult test is. A rebind in a nested closure counts
  *    (it is in the same body); one in a called method does not.
@@ -125,8 +139,12 @@ use Tests\TestCase;
  *        reds (planted, watched).
  *     3. **A FILE THIS REPOSITORY DOES NOT TRACK.** {@see populationFiles} is `git ls-files`,
  *        so an uncommitted working-copy file is outside the population and was measured green.
- *        The verdict is about the tree AS COMMITTED — which is the tree a review reads, and
- *        the direction this should fail in.
+ *        That is the RIGHT direction, not merely the measured one: the alternative — a
+ *        filesystem walk — needs a hand-maintained exclusion list for `vendor/`,
+ *        `bootstrap/cache/` and compiled views, and the next member of that list is always the
+ *        one nobody wrote down — the exact enumerated-population defect this whole class exists
+ *        to close. Swapping the derived population for a hand-maintained exemption list would
+ *        re-mint that bug inside the guard built to prevent it.
  *    ⚠ Written as three shapes and not as "and nothing else": the matrix is what this list
  *    reports, so a spelling nobody has planted is unmeasured rather than closed.
  *  - **`tests/` and `vendor/` are not in the population.** A test double is not a door, and
@@ -294,9 +312,25 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 $id = Tools\SeatKanbanUser::forCallingAgent($agentName, 'tool');
             }
 
+            public function namespaceRelative(): void
+            {
+                $id = namespace\SeatKanbanUser::forCallingAgent($agentName, 'tool');
+            }
+
             public function aLongerNameIsADifferentClass(): void
             {
                 $id = \App\Other\MySeatKanbanUser::forCallingAgent($args['agent'], 'tool');
+            }
+
+            public function caseVariant(): void
+            {
+                $id = \App\Bridge\Tools\seatkanbanuser::forCallingAgent($agentName, 'tool');
+            }
+
+            public function caseFoldedLongerNameIsStillADifferentClass(): void
+            {
+                $id = \App\Other\myseatkanbanuser::forCallingAgent($args['agent'], 'tool');
+                $other = \App\Bridge\Tools\seatkanbanuserfactory::forCallingAgent($args['agent'], 'tool');
             }
 
             public function anAliasIsNotVisibleToThisLeg(): void
@@ -321,16 +355,26 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 // has no key at all: a DIFFERENT class with the same method name is not a site.
                 'Fixture.php::twoInOneBody#1' => ['first_arg' => '$agentName', 'rebound' => false],
                 'Fixture.php::twoInOneBody#2' => ['first_arg' => '$nope', 'rebound' => false],
-                // ⭐ THE TWO SPELLINGS THE FIRST CUT WAS BLIND TO, each measured GREEN as a
-                // planted second caller before the predicate was widened. PHP 8 emits each
-                // qualified name as ONE token, so a predicate reading `T_STRING` saw neither.
+                // ⭐ THE THREE SPELLINGS THE FIRST CUT WAS BLIND TO, each measured GREEN as a
+                // planted second caller before the predicate was widened to cover it. PHP 8
+                // emits each as ONE token, so a predicate reading `T_STRING` alone saw none of
+                // them. `namespaceRelative` is `T_NAME_RELATIVE` — the fourth and LAST
+                // class-name-reference token PHP 8 defines; this `in_array` is now exhaustive.
                 'Fixture.php::fullyQualified#1' => ['first_arg' => self::NOT_A_BARE_VARIABLE, 'rebound' => false],
                 'Fixture.php::namespaceQualified#1' => ['first_arg' => '$agentName', 'rebound' => false],
-                // ⛔ AND THE TWO NON-MEMBERS THAT KEEP THE WIDENING HONEST, neither with a key:
-                // `MySeatKanbanUser` is a DIFFERENT class (final-segment EQUALITY, not
-                // `str_ends_with`), and an ALIASED call is invisible here BY DESIGN — leg 2
-                // refuses the import outright rather than resolving it, which is the only
-                // reason this arm is allowed to be absent.
+                'Fixture.php::namespaceRelative#1' => ['first_arg' => '$agentName', 'rebound' => false],
+                // ⭐ CASE-INSENSITIVE, matching PHP's own class-name resolution — measured to
+                // execute WARM (something else in the same process already loaded the real
+                // class) and throw COLD (PSR-4 is case-sensitive on this filesystem); neither
+                // direction makes the call unreachable, only conditional.
+                'Fixture.php::caseVariant#1' => ['first_arg' => '$agentName', 'rebound' => false],
+                // ⛔ AND THE THREE NON-MEMBERS THAT KEEP THE WIDENING HONEST, none with a key:
+                // `MySeatKanbanUser` and its casefolded twin are DIFFERENT classes even under
+                // `strcasecmp` (final-segment EQUALITY, not `str_ends_with` — casefolding
+                // widens which BYTES match, never where the segment boundary falls), and an
+                // ALIASED call is invisible here BY DESIGN — leg 2 refuses the import outright
+                // rather than resolving it, which is the only reason that arm is allowed to be
+                // absent.
             ],
             SourceScan::sites($source, 'Fixture.php', self::identitySiteAt(...)),
             'the scanner no longer reads a `'.self::IDENTITY_CLASS.'::` call the way this fixture states, and '
@@ -593,6 +637,17 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             {
                 $cls = "App\\Bridge\\Tools\\SeatKanban\x55ser";
             }
+
+            public function caseVariant(): void
+            {
+                $cls = 'app\bridge\tools\seatkanbanuser';
+            }
+
+            public function caseFoldedLongerNameIsStillADifferentClass(): void
+            {
+                $cls = 'app\other\myseatkanbanuser';
+                $other = 'seatkanbanuserfactory';
+            }
         }
         PHP;
 
@@ -609,15 +664,19 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 'Fixture.php::heredoc#1' => "        App\\Bridge\\Tools\\SeatKanbanUser\n",
                 'Fixture.php::aliasedAtRuntime#1' => "'App\\Bridge\\Tools\\SeatKanbanUser'",
                 'Fixture.php::reflected#1' => "'App\\Bridge\\Tools\\SeatKanbanUser'",
-                // ⛔ NO KEY for longerNameIsADifferentClass, fragments or escaped. The first
-                // is the widening kept honest (final-segment EQUALITY, not str_contains); the
-                // other two are the measured residual, stated in § STATED BOUNDS.
+                // ⭐ CASE-INSENSITIVE, matching PHP's own class-name resolution — measured to
+                // execute (warm) rather than reasoned about; § STATED BOUNDS now names it.
+                'Fixture.php::caseVariant#1' => "'app\\bridge\\tools\\seatkanbanuser'",
+                // ⛔ NO KEY for longerNameIsADifferentClass, caseFoldedLongerNameIsStillADifferentClass,
+                // fragments or escaped. The first two are the widening kept honest even under
+                // casefolding (final-segment EQUALITY, not str_contains); the last two are the
+                // measured residual, stated in § STATED BOUNDS.
             ],
             SourceScan::sites($source, 'Fixture.php', self::classMentionAt(...)),
             'leg 3 no longer reads a class name spelled as a STRING the way this fixture states. '
             .'A file can invoke this resolver through a string class name with no name token in it '
             .'at all, which is how a new caller went green through all three legs once already — '
-            .'and the two absent arms are the bound that replaced the false one.',
+            .'and the absent arms are the bound that replaced the false one, unmoved by casefolding.',
         );
     }
 
@@ -757,25 +816,45 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * Does $token NAME this class, under any of the three spellings PHP 8 tokenises a class
-     * reference as — bare (`T_STRING`), namespace-qualified and fully-qualified (each ONE
-     * token since PHP 8)?
+     * Does $token NAME this class, under any of the FOUR spellings PHP 8 tokenises a class
+     * reference as — bare (`T_STRING`), namespace-qualified (`T_NAME_QUALIFIED`),
+     * fully-qualified (`T_NAME_FULLY_QUALIFIED`), or namespace-relative (`T_NAME_RELATIVE`,
+     * `namespace\Foo`) — each ONE token since PHP 8?
+     *
+     * ⛔ THIS SET IS CLOSED BY THE LANGUAGE. PHP 8 defines exactly these four class-name-
+     * reference token constants — there is no fifth — so completing this `in_array` is a
+     * finite, terminating fix rather than another instance of an open-ended spelling chase.
+     * A `T_NAME_RELATIVE` call (`namespace\SeatKanbanUser::forCallingAgent(...)`) executes
+     * COLD — no autoload trick, no warm class table — and was invisible to all three legs
+     * before this arm was added, including a plant INSIDE the one file leg 1 watches most
+     * closely ({@see BoardTakeCardTool}), where leg 1 did not move.
      *
      * ⛔ The FINAL `\`-segment must EQUAL the class name. `str_ends_with` on the token text
      * would make `MySeatKanbanUser` this class, which is a guard reporting a defect in code
      * that has nothing to do with it — and a guard that cries wolf is one somebody widens.
      *
+     * ⭐ THE COMPARISON IS CASE-INSENSITIVE, matching PHP's own class-name resolution rather
+     * than a stricter rule this guard invents. Measured: `seatkanbanuser::forCallingAgent(…)`
+     * — a name token, not a string — was invisible to a strict `===` and DOES execute when
+     * something else in the same process already loaded the real class (PSR-4 autoloading is
+     * case-SENSITIVE on a case-sensitive filesystem, so it throws cold; nothing about that
+     * makes the call unreachable, only conditional). `strcasecmp` keeps the identifier-
+     * BOUNDARY property that makes this safe: it compares the WHOLE final segment, so
+     * `myseatkanbanuser` folds to a match while `seatkanbanuserfactory` and
+     * `myseatkanbanuser2` do not — casefolding widens WHICH BYTES match, never WHERE the
+     * segment boundary falls (pinned in the fixture below).
+     *
      * @param  array{0: int|string, 1: string}|null  $token
      */
     private static function namesIdentityClass(?array $token): bool
     {
-        if ($token === null || ! in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
+        if ($token === null || ! in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NAME_RELATIVE], true)) {
             return false;
         }
 
         $segments = explode('\\', $token[1]);
 
-        return end($segments) === self::IDENTITY_CLASS;
+        return strcasecmp((string) end($segments), self::IDENTITY_CLASS) === 0;
     }
 
     /**
@@ -828,7 +907,12 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      *
      * ⭐ WHOLE IDENTIFIER, not `str_contains`: `'App\Other\MySeatKanbanUser'` and
      * `'SeatKanbanUserFactory'` are DIFFERENT classes, and leg 1 already refuses to treat them
-     * as this one. A leg that cried wolf on them is a leg somebody widens.
+     * as this one. A leg that cried wolf on them is a leg somebody widens. ⭐ **CASE-
+     * INSENSITIVE for the same reason {@see namesIdentityClass} is**: PHP resolves a class
+     * name case-insensitively, so `'app\bridge\tools\seatkanbanuser::forcallingagent'`
+     * spells this class to PHP and must spell it to this predicate too. The `i` modifier
+     * folds ONLY the byte comparison — it does not touch the identifier-boundary lookaround,
+     * so `seatkanbanuserfactory` still fails the match (pinned in the fixture below).
      *
      * @param  array{0: int|string, 1: string}|null  $token
      */
@@ -841,7 +925,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
         $identifier = '[A-Za-z0-9_\x80-\xff]';
 
         return preg_match(
-            '/(?<!'.$identifier.')'.preg_quote(self::IDENTITY_CLASS, '/').'(?!'.$identifier.')/',
+            '/(?<!'.$identifier.')'.preg_quote(self::IDENTITY_CLASS, '/').'(?!'.$identifier.')/i',
             $token[1],
         ) === 1;
     }
