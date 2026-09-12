@@ -8,6 +8,7 @@ use App\Bridge\Check\OptInCheck;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolsScopeHeader;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -141,7 +142,13 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 $resp = Http::withToken($token)->acceptJson()->timeout(10)
                     ->post($endpoint, ['tool' => 'board_my_cards', 'args' => (object) []]);
             } catch (ConnectionException $e) {
-                yield Finding::fail("board_tools probe: agent {$name}: could NOT connect to {$endpoint} ({$e->getMessage()}) — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
+                // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and the reason is stated
+                // rather than claimed: this message is composed by the HTTP client, but
+                // `$endpoint` is an arbitrary operator-supplied URL and what a transport
+                // failure against it puts in the string is NOT established locally. The two
+                // bearer-read arms above are the contrast and stay UNESCAPED — their
+                // subject is this operator's own token file, which this install vouches for.
+                yield Finding::fail("board_tools probe: agent {$name}: could NOT connect to {$endpoint} (".UntrustedText::forOperator($e->getMessage()).") — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
 
                 continue;
             }
@@ -187,10 +194,22 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
         }
     }
 
+    /**
+     * The error detail this probe echoes, with the RESPONDER's own bytes escaped and the
+     * label this install wrote left alone (card#9200, DL-366).
+     *
+     * ⛔ BOTH ARMS ARE FOREIGN. `$endpoint` is an operator-supplied URL that this check does
+     * not otherwise constrain, and behind it the tool door relays a kanban response — so
+     * neither the envelope's `error` string nor the raw body is text this install authored.
+     * The escape is applied INSIDE the label rather than around the whole phrase so the
+     * label does not consume the span's own character cap.
+     */
     private function probeErrorDetail(Response $resp): string
     {
         $error = $resp->json('error');
 
-        return is_string($error) && $error !== '' ? "error: {$error}" : 'body: '.substr($resp->body(), 0, 200);
+        return is_string($error) && $error !== ''
+            ? 'error: '.UntrustedText::forOperator($error)
+            : 'body: '.UntrustedText::forOperator(substr($resp->body(), 0, 200));
     }
 }

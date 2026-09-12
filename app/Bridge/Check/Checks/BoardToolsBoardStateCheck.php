@@ -8,6 +8,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\UntrustedText;
 use Throwable;
 
 /**
@@ -117,7 +118,9 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
                 }
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
+            // `->throw()` makes this a `RequestException`, whose message carries the kanban
+            // RESPONSE BODY summary — see `WritebackBoardStateCheck` for the measurement.
+            yield Finding::unvalidated("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".UntrustedText::forOperator($e->getMessage()));
         }
     }
 }

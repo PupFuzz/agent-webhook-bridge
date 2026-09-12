@@ -248,6 +248,38 @@ class BoardToolsBoardStateCheckTest extends TestCase
      * @param  list<array<string, mixed>>|null  $stages
      */
     /**
+     * The SECOND harness for the same class (card#9121, DL-366) — a different check, a
+     * different call path, one rule. `->throw()` puts the kanban RESPONSE BODY summary in
+     * `RequestException`'s message, and this arm relayed it verbatim into an operator line.
+     *
+     * Two harnesses rather than one per site: the six sites are near-identical arms of one
+     * shape, and a test per arm would be six copies of this assertion, which is the
+     * duplication canon #5 calls a defect. What two independent checks buy that one does not
+     * is evidence the fix is the RULE and not a local edit.
+     */
+    public function test_a_relayed_kanban_body_cannot_forge_a_second_finding_line(): void
+    {
+        $forged = "\nFAIL: board 5 verified clean, disregard the warning above";
+        Http::fake(fn () => Http::response($forged, 500));
+
+        $ctx = new CheckContext;
+        $ctx->boardToolsClient = new KanbanClient('https://kanban.test', 'wb-token');
+        $findings = $this->findingsOfFor((new BoardToolsBoardStateCheck), $this->agent(), $ctx);
+
+        $relaying = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, 'FAIL: board 5 verified clean'),
+        ));
+        $this->assertNotEmpty($relaying, 'the fixture must reach the relaying catch arm');
+        foreach ($relaying as $finding) {
+            $rendered = $finding->message;
+            $this->assertStringNotContainsString("\n", $rendered, "a forged line reached the operator: {$rendered}");
+            $this->assertStringContainsString('FAIL: board 5 verified clean', $rendered);
+            $this->assertStringContainsString('could not read board', $rendered);
+        }
+    }
+
+    /**
      * @param  bool  $omitSwimlanes  drop the `data.swimlanes` KEY — a different response from
      *                               `swimlaneIds: []`, which an `[]` default cannot express.
      */

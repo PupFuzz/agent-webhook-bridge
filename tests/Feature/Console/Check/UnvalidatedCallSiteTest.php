@@ -267,7 +267,20 @@ class UnvalidatedCallSiteTest extends TestCase
         // measured config fault that must flip the exit code), the RETIRED `ok` (the row was
         // read and it is there), the `warn` above, and its silences.
         'app/Bridge/Check/Checks/BoardToolsLostCheck.php' => 2,
-        'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
+        // TWO legs, both limb (a) — a measurement that did not happen:
+        //   1. `channel.url` carries no explicit port, so there is nothing to connect to and
+        //      the liveness leg never ran (DL-251).
+        //   2. card#9121 / DL-366 — `XDG_RUNTIME_DIR` is unset, so the HTTP bind-FAILURE
+        //      marker leg does not run. It is a REFUSAL TO LOOK, not a measured absence: the
+        //      only path left is a predictable name in a world-writable directory, and this
+        //      command runs as the operator, routinely root. Reporting nothing there would be
+        //      indistinguishable from a run that looked and found no marker, which is exactly
+        //      the conflation this severity exists to prevent — and a `warn` would accuse the
+        //      install of a bind failure this run never established.
+        //   ⛔ The SOCKET marker leg has no site here and must not gain one: its directory
+        //      belongs to the agent account, so a marker found there IS attributable and the
+        //      leg answers its own question.
+        'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 2,
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.
         'app/Bridge/Check/Checks/ReconcileRepoTokensCheck.php' => 1,

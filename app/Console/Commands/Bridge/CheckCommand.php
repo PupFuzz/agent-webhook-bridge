@@ -66,6 +66,7 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\ConfigSeenLedger;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -473,7 +474,13 @@ class CheckCommand extends BridgeCommand
                         // `unvalidated` and not `warn` (DL-251): an envelope that cannot
                         // name its cause did not answer anything.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$e->getMessage()));
+                        // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and for the
+                        // envelope's OWN stated reason: the paragraph above says a check
+                        // throwing AFTER the client built lands here too, and those checks
+                        // read kanban through `->throw()` — so this arm can relay a
+                        // `RequestException` carrying a response-body summary. An envelope
+                        // that cannot name its cause cannot rule that cause out either.
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.UntrustedText::forOperator($e->getMessage())));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -1026,8 +1033,6 @@ class CheckCommand extends BridgeCommand
      */
     private function emitFinding(Finding $finding): bool
     {
-        $message = $finding->message;
-
         // Counted HERE — the single chokepoint every probe finding flows through, so any
         // future probe emitting the severity is tallied without touching its call site.
         if ($finding->severity === Severity::Unvalidated) {
@@ -1035,11 +1040,20 @@ class CheckCommand extends BridgeCommand
         }
 
         if (! $this->json) {
+            // ⛔ NOTHING IS ESCAPED HERE, AND THAT IS THE FIX (card#9200, DL-366). An earlier
+            // cut of this change escaped untrusted spans at THIS boundary, on the premise
+            // that `findings[].message` is a write contract the JSON document must carry
+            // byte-identically. `docs/check-json-contract.md` §2 falsifies that premise in
+            // bold — `message` strings are NOT part of the contract — and the premise was
+            // load-bearing: escaping at a SINK forces each producer to declare which span of
+            // its own sentence is foreign, which makes the escape opt-in and an omission
+            // invisible. The escape now happens where the foreign value is produced or
+            // interpolated, so this renderer has nothing left to do about it.
             match ($finding->severity) {
-                Severity::Fail => $this->error($message),
-                Severity::Warn => $this->warn($message),
-                Severity::Unvalidated => $this->line($message),
-                Severity::Ok => $this->info($message),
+                Severity::Fail => $this->error($finding->message),
+                Severity::Warn => $this->warn($finding->message),
+                Severity::Unvalidated => $this->line($finding->message),
+                Severity::Ok => $this->info($finding->message),
             };
         }
 

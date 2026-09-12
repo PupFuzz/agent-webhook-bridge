@@ -13,6 +13,7 @@ use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Support\UrlValidator;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Throwable;
@@ -129,7 +130,12 @@ class ProvisionCommand extends BridgeCommand
                         $rc = self::FAILURE;   // operator must act (re-run with --reconcile, or fix the secret)
                     }
                 } catch (Throwable $e) {
-                    $this->error("{$label} API error: {$e->getMessage()}");
+                    // ⛔ FOREIGN BYTES ON AN OPERATOR'S TERMINAL, escaped at the write for
+                    // the reason `ReconcileCommand`'s read arm spells out: this arm relays a
+                    // `RequestException` carrying the kanban RESPONSE BODY, there is no
+                    // `Finding` and no renderer in the path, and Guzzle's body-summary gate
+                    // passes `\r` (card#9121, DL-366).
+                    $this->error("{$label} API error: ".UntrustedText::forOperator($e->getMessage()));
                     $rc = self::FAILURE;
                 }
             }

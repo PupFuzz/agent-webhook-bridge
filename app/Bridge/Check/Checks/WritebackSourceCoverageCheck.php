@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\WritebackConfig;
 use Throwable;
 
@@ -98,11 +99,25 @@ final class WritebackSourceCoverageCheck implements Check
             try {
                 $read = $client->readBoardCards($boardId);
             } catch (Throwable $e) {
-                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".$e->getMessage());
+                // The kanban RESPONSE BODY summary rides in on `RequestException`'s
+                // message — see `WritebackBoardStateCheck`.
+                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".UntrustedText::forOperator($e->getMessage()));
 
                 continue;
             }
             $flagged = 0;
+            // ⛔ ESCAPED (card#9200, DL-366 Decision 12): `readBoardCards()` returns RAW API
+            // ROWS, so a card's `id`, its `payload.dl_number` and the `source` derived from
+            // its `payload.repo` are bytes a card's AUTHOR chose — on a mapped board that is
+            // anyone who can create a card. The `catch` above already rules this same
+            // response FOREIGN; its success path is the same principal.
+            //
+            // ⚠ `ExternalReferenceNormalizer::canonicalizeSource()` DOES NOT bring `$source`
+            // under Decision 7's "already reduced at ingest to a fixed shape" exemption, and
+            // the near-miss is why it is written down: it trims, lower-cases and cuts to 255
+            // characters, and reduces NO byte class — every codepoint the terminal escape
+            // exists to stop survives all three. `$boardId` and `$repos` are NOT escaped:
+            // both come from this install's own `writeback.json`.
             foreach ($read['cards'] as $card) {
                 $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
                 $dl = $payload['dl_number'] ?? null;
@@ -114,12 +129,12 @@ final class WritebackSourceCoverageCheck implements Check
                 $source = $refs->sourceFor($payload, $externalLink);
                 if ($source === null) {
                     if ($writeback->boardIsShared((int) $boardId)) {
-                        yield Finding::warn("writeback: card {$id} (DL {$dl}) on SHARED board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
+                        yield Finding::warn('writeback: card '.UntrustedText::forOperator($id).' (DL '.UntrustedText::forOperator((string) $dl).") on SHARED board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
                         $flagged++;
                     }
                     // non-shared board: the qualifier is omitted (DL-174) — null source correlates fine.
                 } elseif (! in_array($source, $repos, true)) {
-                    yield Finding::warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has source={$source}, which matches no repo mapped to that board (".implode(', ', $repos).') — no mapped event will move it.');
+                    yield Finding::warn('writeback: card '.UntrustedText::forOperator($id).' (DL '.UntrustedText::forOperator((string) $dl).") on board {$boardId} has source=".UntrustedText::forOperator($source).', which matches no repo mapped to that board ('.implode(', ', $repos).') — no mapped event will move it.');
                     $flagged++;
                 }
             }

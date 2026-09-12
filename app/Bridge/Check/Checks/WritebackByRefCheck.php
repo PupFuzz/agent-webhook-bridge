@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Throwable;
 
@@ -66,7 +67,9 @@ final class WritebackByRefCheck implements Check
                 yield Finding::ok('writeback: by-ref reachable (correlation=ref)');
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated('writeback: could not probe by-ref reachability — '.$e->getMessage());
+            // The kanban RESPONSE BODY summary rides in on `RequestException`'s message —
+            // see `WritebackBoardStateCheck`.
+            yield Finding::unvalidated('writeback: could not probe by-ref reachability — '.UntrustedText::forOperator($e->getMessage()));
         }
     }
 }

@@ -10,6 +10,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -37,6 +38,7 @@ use Tests\TestCase;
  */
 class ChannelTransportCheckTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use MaterializesChecks;
 
     private string $dir;
@@ -45,6 +47,16 @@ class ChannelTransportCheckTest extends TestCase
     private $server = null;
 
     private string|false $origXdg;
+
+    /**
+     * A marker this test planted in the REAL `/tmp`, removed in tearDown.
+     *
+     * ⛔ IT HAS TO BE THE REAL `/tmp`, which is the whole subject: the leg under test used
+     * to compose its path there when `XDG_RUNTIME_DIR` was unset, and pointing the test at
+     * a temp dir would assert about a path the defect never used. The PORT is derived from
+     * this process's pid so two parallel checkouts on one box cannot plant the same path.
+     */
+    private ?string $plantedTmpMarker = null;
 
     protected function setUp(): void
     {
@@ -65,6 +77,9 @@ class ChannelTransportCheckTest extends TestCase
             fclose($this->server);
         }
         $this->origXdg === false ? putenv('XDG_RUNTIME_DIR') : putenv('XDG_RUNTIME_DIR='.$this->origXdg);
+        if ($this->plantedTmpMarker !== null && is_file($this->plantedTmpMarker)) {
+            @unlink($this->plantedTmpMarker);
+        }
         File::deleteDirectory($this->dir);
         parent::tearDown();
     }
@@ -437,6 +452,125 @@ class ChannelTransportCheckTest extends TestCase
         $this->assertSame(Severity::Ok, $findings[0]->severity);
     }
 
+    /**
+     * ⭐ THE WEAKEST PATH IN THIS FILE IS NOT WALKED AT ALL ANY MORE (card#9121, DL-366).
+     *
+     * With `XDG_RUNTIME_DIR` unset the leg used to compose `/tmp/agent-webhook-bridge-
+     * channel-<agent>.http-<port>.FAILED` — a PREDICTABLE name in a WORLD-WRITABLE directory
+     * — and read it as the operator, routinely root. Guarding that read was never enough:
+     * a PLAIN REGULAR FILE planted there passes every check a reader can make and its bytes
+     * still land in root's report. There is no integrity to recover, so the leg refuses.
+     *
+     * THE PLANT IS REAL, not a stand-in. If the leg reads anything at all, this reds.
+     */
+    public function test_the_http_marker_leg_refuses_to_look_when_xdg_runtime_dir_is_unset(): void
+    {
+        putenv('XDG_RUNTIME_DIR');
+        $port = $this->tmpProbePort();
+        $this->plantedTmpMarker = "/tmp/agent-webhook-bridge-channel-prod-agent.http-{$port}.FAILED";
+        File::put($this->plantedTmpMarker, 'PLANTED-BY-ANOTHER-ACCOUNT-9121');
+
+        $findings = $this->httpFindings("http://127.0.0.1:{$port}/push", $this->probe(connected: false));
+
+        // WITHHELD FIRST, because that is the vulnerability: with the `/tmp` fallback in
+        // place this line is what reds, and it reds carrying the planted bytes.
+        foreach ($findings as $finding) {
+            $this->assertStringNotContainsString('PLANTED-BY-ANOTHER-ACCOUNT-9121', $finding->message);
+        }
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        // ...and neither does the tail, which asserts a session came up DEAF — a bind
+        // failure this run has not established, because it read no marker.
+        $this->assertStringNotContainsString('came up DEAF', $findings[0]->message);
+        // PRESENCE WITNESSES, so the two absences above are not the absence of a finding:
+        // the leg SAYS it did not run, names the cause, and names the remedy.
+        $this->assertStringContainsString('marker leg NOT RUN', $findings[0]->message);
+        $this->assertStringContainsString('XDG_RUNTIME_DIR is unset', $findings[0]->message);
+        $this->assertStringContainsString('set XDG_RUNTIME_DIR for the context the connector runs in', $findings[0]->message);
+        // The refusal bounds ONE leg, never the check: a deaf connector and a dead endpoint
+        // are different diagnoses and the operator still gets the second one.
+        $this->assertStringContainsString('not answering', $findings[1]->message);
+        // The file is still there — nothing about this test's own plumbing removed it, so
+        // the withholding above is the leg's doing.
+        $this->assertFileExists($this->plantedTmpMarker);
+    }
+
+    /** An EMPTY `XDG_RUNTIME_DIR` composed `/tmp` too, so it refuses on the same arm. */
+    public function test_the_http_marker_leg_refuses_when_xdg_runtime_dir_is_empty(): void
+    {
+        putenv('XDG_RUNTIME_DIR=');
+        $port = $this->tmpProbePort();
+        $this->plantedTmpMarker = "/tmp/agent-webhook-bridge-channel-prod-agent.http-{$port}.FAILED";
+        File::put($this->plantedTmpMarker, 'PLANTED-BY-ANOTHER-ACCOUNT-9121');
+
+        $findings = $this->httpFindings("http://127.0.0.1:{$port}/push", $this->probe(connected: false));
+
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringNotContainsString('PLANTED-BY-ANOTHER-ACCOUNT-9121', $findings[0]->message);
+        $this->assertStringContainsString('marker leg NOT RUN', $findings[0]->message);
+    }
+
+    /**
+     * ⛔ THE SOCKET LEG IS UNAFFECTED, and that asymmetry is the decision rather than an
+     * oversight: the socket marker's directory belongs to the AGENT ACCOUNT — a trust
+     * relationship the install already has, since that account's connector is the thing the
+     * marker reports on — while `/tmp` belongs to everyone. `XDG_RUNTIME_DIR` is unset here
+     * to prove the refusal keys on the HTTP path's composition and not on the env var.
+     */
+    public function test_the_socket_marker_leg_still_reads_with_no_xdg_runtime_dir(): void
+    {
+        putenv('XDG_RUNTIME_DIR');
+        $socket = $this->dir.'/agent.sock';
+        File::put($socket.'.FAILED', 'EADDRINUSE');
+
+        $findings = $this->socketFindings($socket, $this->probe(connected: false));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString("channel bind-FAILURE marker at {$socket}.FAILED (EADDRINUSE)", $findings[0]->message);
+    }
+
+    /**
+     * THE DETAIL IS DECLARED UNTRUSTED, AND THE MESSAGE IS STILL VERBATIM (card#9121,
+     * DL-366, card#9200) — the marker's detail is bytes the connector's ACCOUNT wrote into a
+     * file this process reads as the operator, and the escape is applied at the interpolation
+     * in this check rather than deferred to a renderer.
+     */
+    public function test_the_marker_detail_is_escaped_on_both_transports(): void
+    {
+        $payload = "\x1b[2JEADDRINUSE";
+        $marker = $this->dir.'/run/agent-webhook-bridge-channel-prod-agent.http-8765.FAILED';
+        File::put($marker, $payload);
+        $socket = $this->dir.'/agent.sock';
+        File::put($socket.'.FAILED', $payload);
+
+        $http = $this->httpFindings('http://127.0.0.1:8765/push', $this->probe(connected: false));
+        $unix = $this->socketFindings($socket, $this->probe(connected: false));
+
+        foreach (['http' => $http[0], 'unix' => $unix[0]] as $transport => $finding) {
+            $this->assertForeignValueEscapedInto($finding->message, $payload, $transport);
+            // ⛔ AND THE RAW BYTES ARE GONE FROM THE MESSAGE ITSELF, which is the half that
+            // changed: `--format=json` reads this field, and it no longer hands a machine
+            // consumer an erase-line. `message` is not a write contract —
+            // `docs/check-json-contract.md` §2 — so this is a rewording that surface licenses.
+            $this->assertStringNotContainsString($payload, $finding->message, "{$transport}: the raw bytes must not survive into the message");
+        }
+    }
+
+    /** No detail, nothing foreign in the sentence — so no echo clause at all. */
+    public function test_an_empty_marker_echoes_no_detail(): void
+    {
+        $marker = $this->dir.'/run/agent-webhook-bridge-channel-prod-agent.http-8765.FAILED';
+        File::put($marker, '   ');
+
+        $findings = $this->httpFindings('http://127.0.0.1:8765/push', $this->probe(connected: false));
+
+        // The parenthesised detail is the ONLY `(` this line can carry, so its absence is the
+        // assertion — and a whitespace-only detail must not render as an empty `()` either.
+        $this->assertStringNotContainsString('(', $findings[0]->message);
+        $this->assertStringContainsString('channel bind-FAILURE marker at ', $findings[0]->message);
+    }
+
     // ---- neither ----
 
     /**
@@ -459,6 +593,15 @@ class ChannelTransportCheckTest extends TestCase
     }
 
     // ---- plumbing ----
+
+    /**
+     * A port unique to this OS process, so the REAL `/tmp` plant above cannot collide with
+     * a parallel checkout running the same test on the same box.
+     */
+    private function tmpProbePort(): int
+    {
+        return 40000 + (getmypid() % 20000);
+    }
 
     /** A real listening unix socket, closed in tearDown. */
     private function listeningSocket(): string
