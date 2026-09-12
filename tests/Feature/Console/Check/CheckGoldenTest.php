@@ -1188,9 +1188,12 @@ class CheckGoldenTest extends TestCase
         // ⚑ THE LITERAL MOVES WITH THE REGISTERED SET, IN THE SAME COMMIT — 39 until
         // card#8683 / DL-345 registered `standup.posture`, 41 until card#9150 / DL-368
         // registered `github.webhook_subscription` and card#9152 / DL-373 registered
-        // `agent.coordination_identity`. ⛔ THOSE TWO LANDED TOGETHER, so the total moved
-        // 41 → 43 in one merge and the 42 each branch carried alone was never a state of this
-        // tree: a merge that took either side's figure would have been a clean-looking no-op.
+        // `agent.coordination_identity`. ⛔ THOSE TWO LANDED TOGETHER, in one merge, each
+        // having moved the total by one on its own branch — so the figure each branch carried
+        // ALONE was never a state of this tree, and the two branches had moved it to the SAME
+        // wrong value by different routes. Git raised no conflict on most copies of it,
+        // because both sides matched. A merge that took either side's figure, or that
+        // re-typed a total instead of re-deriving one, would have been a clean-looking no-op.
         // Deriving it from the registration list instead would make this term agree with that
         // one by construction and stop being a second statement of the fact. ⛔ THE FIGURE IS
         // THEREFORE IN THE ASSERTION AND DELIBERATELY NOT IN THIS PROSE: the sentence above
