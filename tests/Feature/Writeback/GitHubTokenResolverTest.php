@@ -4,6 +4,7 @@ namespace Tests\Feature\Writeback;
 
 use App\Bridge\Writeback\GitHubTokenResolver;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -167,6 +168,53 @@ class GitHubTokenResolverTest extends TestCase
         $r = $this->resolver()->resolveFor('owner/repo');
         $this->assertFalse($r->ok());
         $this->assertStringContainsString('boom', (string) $r->problem);
+    }
+
+    /**
+     * ⛔⭐ THE SUBPROCESS'S STDERR IS FOREIGN TEXT, AND IT IS ESCAPED AT THIS PRODUCER
+     * (card#9200, DL-366) — so `TokenResolution::$problem` is a `string` that MEANS "safe to
+     * print" and none of its three consumers has to remember anything.
+     *
+     * ⭐ DRIVEN THROUGH A REAL SUBPROCESS, not a `Process::fake`, because what is under test
+     * is that bytes crossing a real pipe are reduced before they land in the field. Both
+     * stderr arms are covered: a NON-ZERO exit, and the exit-0-with-stderr arm the unreadable
+     * `*_file` path takes — an earlier revision of this resolver escaped one and not the
+     * other, which is the shape of omission the move to the producer exists to end.
+     *
+     * ⚑ The CONTROL is the third assertion: the stub must actually put the bytes on the pipe,
+     * or the two above would pass against a helper that emitted nothing.
+     *
+     * @param  string  $stub  the helper body, and the arm it drives
+     */
+    #[DataProvider('hostileStderrArms')]
+    public function test_a_hostile_subprocess_stderr_is_escaped_into_the_problem(string $case, string $stub): void
+    {
+        putenv('GH_TOKEN=ghp_env');
+        $this->useStub($stub);
+
+        $r = $this->resolver()->resolveFor('owner/repo');
+        $problem = (string) $r->problem;
+
+        $this->assertFalse($r->ok(), "[{$case}] the arm must fail loud, or it never reaches the field");
+        // No live member of the escaped class survives into the field.
+        $this->assertSame(0, preg_match_all('/[\x00-\x09\x0B-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u', $problem), "[{$case}] a live control codepoint reached TokenResolution::\$problem");
+        // PRESENCE WITNESS — an absence-only assertion is satisfied by a resolver that
+        // DROPPED the helper's diagnosis, which is the one thing an operator needs here.
+        $this->assertStringContainsString('nope', $problem, "[{$case}] the diagnosis must survive");
+        $this->assertStringContainsString('\x1B[2J', $problem, "[{$case}] the escaped form must be present");
+        // And the bridge's OWN prose around it is untouched — this escapes the span, never
+        // the sentence.
+        $this->assertStringContainsString('owner/repo', $problem, "[{$case}] the bridge's own prose must survive verbatim");
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function hostileStderrArms(): iterable
+    {
+        // \033[2J is an erase-display; \342\200\256 is U+202E RIGHT-TO-LEFT OVERRIDE.
+        $payload = "printf 'nope \\033[2J\\342\\200\\256 done\\n' >&2";
+
+        yield 'non-zero exit' => ['non-zero exit', "#!/bin/sh\n{$payload}\nexit 3\n"];
+        yield 'exit 0 with stderr (unreadable *_file)' => ['exit 0 with stderr', "#!/bin/sh\n{$payload}\nexit 0\n"];
     }
 
     public function test_store_unreadable_keyfile_fails_loud_not_fallthrough(): void
