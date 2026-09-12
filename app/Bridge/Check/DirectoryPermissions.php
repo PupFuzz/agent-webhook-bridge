@@ -4,7 +4,6 @@ namespace App\Bridge\Check;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
-use App\Bridge\Support\Provenance;
 
 /**
  * The verdict on a directory holding secrets (DL-014) — group/world-accessible, absent,
@@ -86,7 +85,7 @@ final class DirectoryPermissions
         clearstatcache(true, $dir);
 
         if (! file_exists($dir)) {
-            return PathVisibility::unverifiedUnlessVisible($dir, Provenance::ownConfig("{$label} {$dir}"))
+            return PathVisibility::unverifiedUnlessVisible($dir, "{$label} {$dir}")
                 ?? Finding::warn("{$label} {$dir} does not exist, so its mode could not be checked and nothing can be read from it — create it (chmod 700), or correct the setting that points here");
         }
 

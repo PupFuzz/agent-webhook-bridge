@@ -23,17 +23,6 @@ use Tests\TestCase;
  * `PathVisibility::notVisibleFinding(` (a caller whose failed read already decided).
  * Removing a guard, or adding one, reds this test and forces a deliberate update.
  *
- * ⭐ AND SINCE card#9121 IT COUNTS THE PROVENANCE SPLIT TOO — how many of each file's
- * adoptions pass `Provenance::ownConfig(` and how many pass `Provenance::carrying(`
- * (DL-366 Decision 10). The guard's `$display` reaches an operator's terminal, and the
- * `Provenance` argument is the ONLY thing that decides whether it is escaped there — so a
- * site flipping `carrying` → `ownConfig` on a display that carries foreign bytes is a live
- * security regression that the count above, the type system and every prose census are all
- * blind to (the call still type-checks, the guard count does not move, and the flat
- * `Finding::$message` is byte-identical). ⛔ It also makes the split DERIVED rather than
- * restated: DL-366 and the CHANGELOG name this test instead of carrying a figure, after the
- * figure they did carry ("ten call sites … the other eight") was measured WRONG.
- *
  * BOTH DOORS COUNT BECAUSE THE PIN IS ABOUT THE VERDICT, NOT THE STAT. The second door
  * arrived with card#5698's channel-token slice, where the classification happens inside
  * `ChannelToken::read` and re-statting at the check would measure the file a second time.
@@ -58,7 +47,7 @@ use Tests\TestCase;
 class PathVisibilityAdoptionTest extends TestCase
 {
     /**
-     * Every `app/` file that adopts the guard, with its call count and its provenance split.
+     * Every `app/` file that adopts the guard, with its call count.
      *
      * DELIBERATELY NOT HERE, and both are reasoned decisions rather than oversights:
      *  - `InstallConfigDirCheck` — its `fail` is earned in BOTH worlds, because
@@ -71,34 +60,34 @@ class PathVisibilityAdoptionTest extends TestCase
      *  - `AgentApiTokenCheck` — its message already says "not readable", which is true
      *    under EACCES and ENOENT alike. A claim its evidence supports is not this defect.
      *
-     * @var array<string, array{guards: int, own: int, carrying: int}>
+     * @var array<string, int>
      */
     private const ADOPTERS = [
         // The channel snapshot legs — the original implementation, now a consumer of the
         // hoisted guard. TWO populations whose traversability is an independent question:
         // the configured path, and the deployed directory.
-        'app/Bridge/Support/ChannelSnapshotProbe.php' => ['guards' => 2, 'own' => 0, 'carrying' => 2],
+        'app/Bridge/Support/ChannelSnapshotProbe.php' => 2,
         // channel.socket parent dir — "does not exist" also sent the operator to repoint
         // channel.socket, which is the wrong action when the dir is merely unseeable.
-        'app/Bridge/Check/Checks/ChannelTransportCheck.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
         // writeback alert-channel socket parent dir.
-        'app/Bridge/Check/Checks/WritebackAlertChannelCheck.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Check/Checks/WritebackAlertChannelCheck.php' => 1,
         // per-(provider, scope) webhook secret — "run bridge:provision" is likewise the
         // wrong action for a secret that exists but cannot be seen.
-        'app/Bridge/Check/Checks/AgentWebhookSecretCheck.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Check/Checks/AgentWebhookSecretCheck.php' => 1,
         // the kanban writeback token.
-        'app/Bridge/Check/Checks/WritebackTokenCheck.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Check/Checks/WritebackTokenCheck.php' => 1,
         // the board-tools bearer. The only adopter whose pre-fix severity was `fail`, so
         // it is the one where the overclaim flipped bridge:check's EXIT CODE.
-        'app/Bridge/Tools/BoardToolAgentResolver.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
         // the shared secret-dir permission verdict (card#5774). The only adopter that is a
         // PRIMITIVE rather than a check: a failed `fileperms()` meant "measured and clean"
         // here, so the guard sits at the return value both dir checks read.
-        'app/Bridge/Check/DirectoryPermissions.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Check/DirectoryPermissions.php' => 1,
         // the channel auth token (card#5698 sub-shape 2) — the only adopter through the
         // MESSAGE door: `ChannelToken::read` already classified why it failed, so this leg
         // has the answer and must not re-measure to render it.
-        'app/Bridge/Check/Checks/ChannelTokenPathCheck.php' => ['guards' => 1, 'own' => 1, 'carrying' => 0],
+        'app/Bridge/Check/Checks/ChannelTokenPathCheck.php' => 1,
     ];
 
     public function test_the_guard_adoption_sites_are_exactly_these(): void
@@ -116,15 +105,14 @@ class PathVisibilityAdoptionTest extends TestCase
         $this->assertSame(
             $expected,
             $found,
-            "the set of PathVisibility adoption sites, or their PROVENANCE SPLIT, has MOVED.\n".
+            "the set of PathVisibility adoption sites has MOVED.\n".
             "A REMOVED guard means that leg is asserting absence off a bare stat again — the exact defect card#5698 closed.\n".
-            "A `carrying` that became an `ownConfig` means a display this install does NOT vouch for stopped being escaped on the operator's terminal (card#9121, DL-366 Decision 10) — nothing else anywhere reds on that.\n".
-            'A NEW site is fine: add it to the list in the same commit, with its ruling.',
+            'A NEW one is fine: add it to the list in the same commit.',
         );
     }
 
     /**
-     * @return array<string, array{guards: int, own: int, carrying: int}>
+     * @return array<string, int>
      */
     private function adoptionSitesUnderApp(): array
     {
@@ -137,14 +125,10 @@ class PathVisibilityAdoptionTest extends TestCase
                 continue;
             }
             $code = $this->codeWithoutComments($file->getPathname());
-            $row = [
-                'guards' => substr_count($code, 'PathVisibility::unverifiedUnlessVisible(')
-                    + substr_count($code, 'PathVisibility::notVisibleFinding('),
-                'own' => substr_count($code, 'Provenance::ownConfig('),
-                'carrying' => substr_count($code, 'Provenance::carrying('),
-            ];
-            if ($row['guards'] > 0 || $row['own'] > 0 || $row['carrying'] > 0) {
-                $counts[str_replace(base_path().'/', '', $file->getPathname())] = $row;
+            $n = substr_count($code, 'PathVisibility::unverifiedUnlessVisible(')
+                + substr_count($code, 'PathVisibility::notVisibleFinding(');
+            if ($n > 0) {
+                $counts[str_replace(base_path().'/', '', $file->getPathname())] = $n;
             }
         }
 

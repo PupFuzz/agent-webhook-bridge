@@ -6,7 +6,6 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\WritebackByRefCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
@@ -108,9 +107,12 @@ class WritebackByRefCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
-        $this->assertStringContainsString($forged, $findings[0]->message, 'the fixture must actually plant the line');
+        // ⚑ THE NON-VACUITY WITNESS IS ON THE FIXTURE, NOT ON THE MESSAGE. The escape now
+        // happens at the interpolation, so the finding's own message can never carry the raw
+        // newline — asserting its presence there would be asserting the defect.
+        $this->assertStringContainsString("\n", $forged, 'the fixture must actually plant the line');
 
-        $rendered = UntrustedText::render($findings[0]->segments);
+        $rendered = $findings[0]->message;
         $this->assertStringNotContainsString("\n", $rendered, "a forged line reached the operator: {$rendered}");
         // PRESENCE WITNESS: the text is still THERE, on one line — the fix is not a drop.
         $this->assertStringContainsString('FAIL: board 5 verified clean', $rendered);

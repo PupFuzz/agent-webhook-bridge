@@ -41,13 +41,16 @@ use Tests\TestCase;
  * a relay — foreign or not — reds this and forces the author to write down which it is. That
  * is the whole point: the defect was never a wrong ruling, it was a site nobody ruled on.
  *
- * ⛔ THE TWO ROUTES TO THE ONE RULE, because a reader will otherwise take the second for a
- * second implementation. `App\Bridge\Support\UntrustedText` owns the rule (NAMED, not
- * imported: this class asserts over SOURCE, and an import would put the literal it greps for
- * into its own file). A command that yields a `Finding` declares the span positionally and
- * the TERMINAL renderer applies the rule; a command that writes the console directly IS the
- * renderer, so it calls `UntrustedText::forOperator()` at the write. One rule, one owner, two
- * entry points — not two rules.
+ * ⛔ ONE ROUTE TO THE ONE RULE, and an earlier revision of this docblock described two
+ * (card#9200). `App\Bridge\Support\UntrustedText` owns the rule (NAMED, not imported: this
+ * class asserts over SOURCE, and an import would put the literal it greps for into its own
+ * file). It used to be applied at TWO entry points — a command writing the console called it
+ * at the write, while a command yielding a `Finding` declared the span positionally and let
+ * the terminal renderer apply it — and the second route existed only to keep
+ * `findings[].message` byte-stable for a write contract `docs/check-json-contract.md` §2
+ * says does not exist. That premise being false is what made the escape opt-in per call site,
+ * so the renderer route is gone: EVERY arm here escapes at the interpolation, `Finding` or
+ * not. Which is why `CheckCommand`'s adopting count is no longer 0.
  *
  * WHAT IT DOES NOT DO, stated plainly rather than left to be assumed:
  *  - **It cannot tell anyone a relay is foreign.** The ruling is prose, per entry, below —
@@ -91,10 +94,10 @@ class ForeignRelayAdoptionTest extends TestCase
             'ruling' => '✔ NOT FOREIGN ×2 — a PDO/driver error from THIS install\'s own database.',
         ],
         'Bridge/CheckCommand.php' => [
-            'relays' => 4, 'escaped' => 0,
+            'relays' => 4, 'escaped' => 1,
             'ruling' => '⛔ FOREIGN ×1 — the writeback board-visibility fail-soft envelope, relaying the kanban '
-                .'response body. It takes the OTHER route — a `Finding` with an `Untrusted` segment, escaped by '
-                .'the terminal renderer — which is why this file escapes nothing here and its adopting count is 0. '
+                .'response body, escaped AT THE INTERPOLATION like every other arm in this table (card#9200: this '
+                .'entry read `escaped => 0` while the escape was deferred to the terminal renderer). '
                 .'✔ NOT FOREIGN ×3 — an agent YAML parse fault, a `writeback.json` parse fault, and the writeback '
                 .'client factory\'s own token-file diagnosis.',
         ],
@@ -103,10 +106,17 @@ class ForeignRelayAdoptionTest extends TestCase
             'ruling' => '✔ NOT FOREIGN ×1 — a `JobSpecException` over options the operator typed.',
         ],
         'Bridge/ProvisionCommand.php' => [
-            'relays' => 3, 'escaped' => 1,
+            'relays' => 4, 'escaped' => 1,
             'ruling' => '⛔ FOREIGN ×1 — the `API error` arm, relaying the kanban response body summary from '
-                .'`WebhookProvisioner::ensure()`\'s live calls. ✔ NOT FOREIGN ×2 — local secret-file permission '
-                .'and read faults, on paths this install configured.',
+                .'`WebhookProvisioner::ensure()`\'s live calls. ✔ NOT FOREIGN ×3 — local secret-file permission '
+                .'and read faults on paths this install configured, and the identity_id WRITE arm (DL-369), whose '
+                .'own comment rules it: `WritebackIdentityOffer::commit()` throws only a `ConfigException` or a '
+                .'file-write fault, so no upstream response body can reach it. ⚑ THE FOURTH RELAY ARRIVED FROM '
+                .'`dev` WHILE THIS BRANCH WAS PARKED and this entry read 3 — which is what the pin is for. Ruled '
+                .'by reading the arm, not by moving the number: `KanbanIdentityResolver` reads the identity itself '
+                .'WITHOUT `->throw()`, takes only `$response->status()` on a non-2xx, scrubs its one '
+                .'`ConnectionException` relay, and REFUSES an unrenderable display name at the resolver rather '
+                .'than escaping it at a render — so nothing it hands back carries remote bytes either.',
         ],
         'Bridge/ProvisionToolsCommand.php' => [
             'relays' => 1, 'escaped' => 0,

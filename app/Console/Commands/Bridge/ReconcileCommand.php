@@ -406,7 +406,7 @@ class ReconcileCommand extends BridgeCommand
         // report a withheld move on every release PR and withhold nothing.
         // `PrOutcome::requiresClosure()` still owns WHICH outcomes are gated — this
         // placement narrows where the answer can matter, never what the answer is.
-        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title'], $pr['head_ref'], $outcome, $cardId, $payload, $refs)) {
+        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching(), $outcome, $cardId, $payload, $refs)) {
             // The REVERT arm exists because the default sentence is FALSE about a revert
             // (card#8306): GitHub quotes the original title and wraps the original ref, so
             // the ref usually DOES name this card and the title usually DOES carry a
@@ -421,10 +421,16 @@ class ReconcileCommand extends BridgeCommand
             // the arm at all because it re-derives the identical proposition on a schedule —
             // a term on one path and not the other is the DL-305 §6 drift, and here the
             // divergence would be in the OPERATOR-FACING text rather than in the verdict.
+            // ⛔ `head_ref` REACHES THIS LINE THROUGH `forOperator()` AND COULD NOT REACH IT
+            // ANY OTHER WAY (card#9200, DL-366): it is a `ForeignText`, so the interpolation
+            // these two arms used to carry is now a phpstan error and a runtime `Error`. The
+            // MATCHERS take the raw bytes, which is the whole reason the value is a type here
+            // and not escaped at the client.
+            $ref = $pr['head_ref']->forOperator();
             $this->line(match (true) {
-                NoCloseGrammar::marks($pr['title']) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
-                RevertGrammar::isRevert($pr['title'], $pr['head_ref']) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$pr['head_ref']}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
-                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
+                NoCloseGrammar::marks($pr['title']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
+                RevertGrammar::isRevert($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$ref}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
+                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$ref}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
             });
             $this->skipped++;
 

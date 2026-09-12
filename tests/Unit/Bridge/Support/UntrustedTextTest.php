@@ -3,7 +3,6 @@
 namespace Tests\Unit\Bridge\Support;
 
 use App\Bridge\Support\Finding;
-use App\Bridge\Support\Untrusted;
 use App\Bridge\Support\UntrustedText;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -12,10 +11,10 @@ use PHPUnit\Framework\TestCase;
  * The rule that makes a string this install did NOT author safe on an operator's terminal
  * (card#9121, DL-366).
  *
- * THE SUBJECT IS THE RULE, NOT ITS ONE CALLER. `CheckCommand::emitFinding()` applying it,
- * and `--format=json` NOT applying it, are the renderer's properties and are asserted at
- * the renderer (`UntrustedFindingDetailTest`). What is here is what the rule does to bytes,
- * because that is the part a second caller will inherit unread.
+ * THE SUBJECT IS THE RULE, NOT ITS CALLERS. Where it is applied — at the producer, or at
+ * the interpolation — is each producer's property and is asserted at each producer. What is
+ * here is what the rule does to bytes, because that is the part a second caller inherits
+ * unread.
  *
  * ⚠ THE CONTROL EVERY ASSERTION HERE NEEDS IS THE UNTOUCHED CASE, and it is deliberately
  * the first test: a rule that mangled every input would satisfy every "the payload is not
@@ -187,8 +186,8 @@ class UntrustedTextTest extends TestCase
     }
 
     /**
-     * ⛔ THE THREE SHAPES THAT LEAKED WHILE A RENDERER STILL HAD TO FIND ITS SPANS, asserted
-     * over the segment list that ended the search (card#9121, DL-366).
+     * ⛔ THE THREE SHAPES THAT LEAKED WHILE A RENDERER STILL HAD TO FIND ITS SPANS, KEPT AS
+     * REGRESSION FIXTURES OVER THE COMPOSITION THAT REPLACED IT (card#9121, card#9200).
      *
      * Each is the live `ChannelSnapshotProbe::versionLeg()` composition — a deployment PATH
      * and a `package.json` `version`, both chosen by the same principal, with the bridge's
@@ -204,75 +203,84 @@ class UntrustedTextTest extends TestCase
      *      to the whole message, which stripped the spaces out of the bridge's own prose),
      *      and skipping puts the span's RAW bytes — `\r` and `\t` among them — on the line.
      *
-     * ⚠ ASSERTED ON A CENSUS OF LIVE CONTROL BYTES, never only on the escaped form being
-     * present: every broken renderer above escaped SOME of the spans, so an assertion that
-     * merely finds `\x1B` somewhere passes on all of them. A presence witness sits beside
-     * each census, because a renderer that dropped the span would satisfy the census alone.
+     * ⭐ ALL THREE ARE NOW UNREACHABLE BY CONSTRUCTION, and that is the claim this leg makes
+     * an executing fact rather than an argument. Each producer escapes its own foreign value
+     * AT THE INTERPOLATION and concatenates the result, so there is no search, no key set and
+     * no skip: containment cannot arise because no value is looked for inside another,
+     * the straddle cannot arise because the bridge's prose is never a match candidate, and an
+     * empty rendering is just an empty string in a concatenation. ⚠ THE FIXTURES ARE KEPT
+     * ANYWAY — they were arrived at by measurement, and a structural argument for why a
+     * defect class cannot recur is worth exactly as much as the test that keeps re-checking it.
      *
-     * @param  list<string|Untrusted>  $segments
+     * ⚠ ASSERTED ON A CENSUS OF LIVE CONTROL BYTES, never only on the escaped form being
+     * present: every broken renderer above escaped SOME of the values, so an assertion that
+     * merely finds `\x1B` somewhere passes on all of them. A presence witness sits beside
+     * each census, because a producer that dropped the value would satisfy the census alone.
      */
     #[DataProvider('leakingCompositions')]
-    public function test_no_declared_span_escapes_the_render(string $case, array $segments, string $witness): void
+    public function test_no_foreign_value_escapes_the_composition(string $case, string $path, string $version, string $witness): void
     {
-        $rendered = UntrustedText::render($segments);
+        // The live composition, in the shape the producer now writes it.
+        $composed = 'snapshot at '.UntrustedText::forOperator($path)
+            .' is STALE (deployed '.UntrustedText::forOperator($version).' < bundled 9.9.9)';
 
-        $this->assertSame(0, preg_match_all('/[\x00-\x09\x0B-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u', $rendered), "[{$case}] a live control byte survived");
-        $this->assertStringContainsString($witness, $rendered, "[{$case}] presence witness");
+        $this->assertSame(0, preg_match_all('/[\x00-\x09\x0B-\x1F\x7F]|[\x{0080}-\x{009F}]|\p{Cf}/u', $composed), "[{$case}] a live control byte survived");
+        $this->assertStringContainsString($witness, $composed, "[{$case}] presence witness");
         // The bridge's OWN prose is untouched, which is what makes the census a measurement
-        // of the spans and not of a renderer that mangled the whole line.
-        $this->assertStringContainsString('is STALE (deployed ', $rendered, "[{$case}] the prose must survive verbatim");
+        // of the foreign values and not of a pass that mangled the whole line.
+        $this->assertStringContainsString('is STALE (deployed ', $composed, "[{$case}] the prose must survive verbatim");
     }
 
-    /** @return iterable<string, array{string, list<string|Untrusted>, string}> */
+    /** @return iterable<string, array{string, string, string, string}> */
     public static function leakingCompositions(): iterable
     {
         $path = "/deploy/ch\x1bx";
-        $stale = static fn (string $p, string $v): array => [
-            'snapshot at ', Untrusted::span($p), ' is STALE (deployed ', Untrusted::span($v), ' < bundled 9.9.9)',
-        ];
 
         yield 'containment — the version quotes the whole path' => [
             'containment',
-            $stale($path, "0.0 from {$path} \x1b[2K\x1b[1;31m"),
+            $path,
+            "0.0 from {$path} \x1b[2K\x1b[1;31m",
             '0.0 from /deploy/ch\x1Bx \x1B[2K\x1B[1;31m',
         ];
         yield 'straddle — the version quotes the prose plus the path prefix' => [
             'straddle',
-            $stale($path, 'snapshot at /deploy/ch'),
+            $path,
+            'snapshot at /deploy/ch',
             'ch\x1Bx is STALE',
         ];
         yield 'empty rendering — a whitespace-only version' => [
             'empty rendering',
-            $stale($path, "\n\t "),
+            $path,
+            "\n\t ",
             'ch\x1Bx is STALE (deployed  < bundled',
         ];
     }
 
     /**
-     * ⭐ THE ORDER A PRODUCER DECLARES ITS SPANS IN IS NOT A FREE VARIABLE ANY MORE, and this
-     * is the leg that says so as an executing fact.
+     * ⭐ THE ORDER TWO FOREIGN VALUES APPEAR IN IS NOT A FREE VARIABLE, and this is the leg
+     * that says so as an executing fact.
      *
      * Under the value-matching design a finding carried a LIST of span values beside a flat
      * message, so "which was declared first" was a real degree of freedom the renderer had to
      * be argued to be independent of — and round 2's defence of `strtr()` rested on exactly
-     * that argument, correctly, while the renderer was leaking for a different reason. Here
-     * the declaration IS the position, so the same two foreign values in the opposite
-     * arrangement is a DIFFERENT MESSAGE and both render clean. There is no ordering left to
-     * get wrong, and no argument left to make.
+     * that argument, correctly, while the renderer was leaking for a different reason. With
+     * each value escaped at its own interpolation there is no shared pass for an ordering to
+     * matter to: both arrangements are two independent function calls.
      */
-    public function test_the_same_two_foreign_values_render_clean_in_either_arrangement(): void
+    public function test_the_same_two_foreign_values_are_clean_in_either_arrangement(): void
     {
         $path = "/deploy/ch\x1bx";
         $version = 'snapshot at /deploy/ch';
 
         foreach ([
-            'path then version' => ['snapshot at ', Untrusted::span($path), ' is STALE (deployed ', Untrusted::span($version), ')'],
-            'version then path' => ['snapshot at ', Untrusted::span($version), ' is STALE (deployed ', Untrusted::span($path), ')'],
-        ] as $case => $segments) {
-            $rendered = UntrustedText::render($segments);
-            $this->assertSame(0, substr_count($rendered, "\x1b"), "[{$case}] a live ESC survived");
-            $this->assertStringContainsString('ch\x1Bx', $rendered, "[{$case}] presence witness");
-            $this->assertStringContainsString('is STALE (deployed ', $rendered, "[{$case}] the prose must survive verbatim");
+            'path then version' => [$path, $version],
+            'version then path' => [$version, $path],
+        ] as $case => [$first, $second]) {
+            $composed = 'snapshot at '.UntrustedText::forOperator($first)
+                .' is STALE (deployed '.UntrustedText::forOperator($second).')';
+            $this->assertSame(0, substr_count($composed, "\x1b"), "[{$case}] a live ESC survived");
+            $this->assertStringContainsString('ch\x1Bx', $composed, "[{$case}] presence witness");
+            $this->assertStringContainsString('is STALE (deployed ', $composed, "[{$case}] the prose must survive verbatim");
         }
     }
 
@@ -314,35 +322,36 @@ class UntrustedTextTest extends TestCase
     }
 
     /**
-     * A value interpolated TWICE is TWO segments, and each is rendered at its own position.
-     * Under value matching this was one declaration and a replace-all — the same output by a
-     * mechanism that also rewrote any occurrence the producer never declared, including one
-     * an attacker arranged to appear inside the bridge's own prose.
+     * A value interpolated TWICE is escaped at both places it lands. Under value matching this
+     * was one declaration and a replace-all — the same output by a mechanism that also rewrote
+     * any occurrence the producer never declared, including one an attacker arranged to appear
+     * inside the bridge's own prose.
      */
     public function test_a_value_that_lands_twice_is_escaped_at_both_positions(): void
     {
         $raw = "\x1b[2Jwiped";
+        $echo = UntrustedText::forOperator($raw);
 
         $this->assertSame(
             'marker at /run/x (\x1B[2Jwiped) — and again: \x1B[2Jwiped',
-            UntrustedText::render(['marker at /run/x (', Untrusted::span($raw), ') — and again: ', Untrusted::span($raw)]),
+            "marker at /run/x ({$echo}) — and again: {$echo}",
         );
     }
 
     /**
-     * ⛔ THE RENDER IS THE IDENTITY ON PROSE THIS INSTALL WROTE, which is every finding the
-     * bridge composed for itself — so the whole terminal report is byte-unchanged by this
-     * rule existing, and a regression in it would be a regression in `bridge:check`'s output.
-     *
-     * Driven off a real `Finding`'s own segments rather than a literal, because what must be
-     * the identity is the path a finding actually takes to the terminal.
+     * ⛔ `Finding` ESCAPES NOTHING, and it must not start: a finding's message is a sentence
+     * the producer already composed, the bridge's own prose routinely runs past
+     * {@see UntrustedText::MAX_CHARS}, and a whole-message pass would truncate sentences this
+     * install wrote and vouches for. The escape is the PRODUCER's, applied to the foreign
+     * span; every finding the bridge composed for itself is byte-unchanged by this rule
+     * existing, and a regression in that would be a regression in `bridge:check`'s output.
      */
-    public function test_the_render_is_the_identity_on_a_finding_that_declared_nothing(): void
+    public function test_a_finding_carries_its_message_byte_for_byte(): void
     {
-        $finding = Finding::warn("agent prod-agent: channel.socket parent dir /run/user/1000 does not exist\n");
+        $prose = "agent prod-agent: channel.socket parent dir /run/user/1000 does not exist\n";
 
-        $this->assertSame($finding->message, UntrustedText::render($finding->segments));
-        $this->assertSame('', UntrustedText::render([]));
-        $this->assertSame('', UntrustedText::render([Untrusted::span('')]));
+        $this->assertSame($prose, Finding::warn($prose)->message);
+        // The empty case, which the cap and the trim both have to survive.
+        $this->assertSame('', UntrustedText::forOperator(''));
     }
 }

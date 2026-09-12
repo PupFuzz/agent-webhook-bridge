@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Http\Client\RequestException;
 use Throwable;
 
@@ -57,7 +58,18 @@ final class GitHubRepoProbe
 
             return GitHubRepoProbeResult::http($status, self::hintFor($status), $source);
         } catch (Throwable $e) {   // timeout / connection — NOT a token-validity signal
-            return GitHubRepoProbeResult::network($e->getMessage(), $source);
+            // ⛔ ESCAPED HERE, AT THE PRODUCER (card#9200, DL-366), so
+            // `GitHubRepoProbeResult::$networkMessage` is a `string` that MEANS "safe to
+            // print" for both of its consumers and any third.
+            // ⚠ WHETHER REMOTE BYTES CAN REACH THIS ARM AT ALL IS *PROBABLE, NOT PROVEN*, and
+            // it is escaped BECAUSE it is unproven rather than because a path was measured:
+            // the arm above takes `$e->response->status()` (an `int`) plus bridge prose, so a
+            // Laravel `RequestException` — the shape that DOES embed a response-body summary
+            // — never lands here; what lands here is a `ConnectionException` whose message is
+            // cURL/Guzzle prose. Ruling it a non-member would require enumerating every
+            // `Throwable` Guzzle can raise, which was NOT done. One escape of a value nobody
+            // prints raw costs nothing; a wrong non-membership ruling costs a live defect.
+            return GitHubRepoProbeResult::network(UntrustedText::forOperator($e->getMessage()), $source);
         }
     }
 

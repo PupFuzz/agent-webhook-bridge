@@ -4,7 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\Untrusted;
+use App\Bridge\Support\UntrustedText;
 
 /**
  * The offline SSH-transport pinned-line + sshd-posture probe for `bridge:check`
@@ -61,7 +61,7 @@ final class SshTransportProbe
 {
     /**
      * How many BYTES of the matched line's key-algorithm field an operator message may
-     * echo. {@see self::keyAlgorithmSegments()} owns the reason it is bounded at all.
+     * echo. {@see self::keyAlgorithmForMessage()} owns the reason it is bounded at all.
      * The figure is DERIVED, not picked: the longest key type OpenSSH defines is
      * `sk-ecdsa-sha2-nistp256-cert-v01@openssh.com` — 43 ASCII bytes (`ssh -Q key`,
      * OpenSSH 9.6p1) — so 64 cannot truncate a real algorithm name, only a field that is
@@ -247,13 +247,11 @@ final class SshTransportProbe
         }
 
         if ($this->env->fipsEnabled()) {
-            // The `unknown` arm echoes nothing foreign and therefore declares nothing — see
-            // keyAlgorithmSegments(), which is where that branch lives now.
-            $algorithm = $this->keyAlgorithmSegments($line->keyAlgorithm);
+            $algorithm = $this->keyAlgorithmForMessage($line->keyAlgorithm);
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = Finding::fail(["FIPS mode is enabled but the pinned key for agent {$agentName} is ", ...$algorithm, ' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)']);
+                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is {$algorithm} — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)");
             } else {
-                $findings[] = Finding::ok(["the pinned key for agent {$agentName} (", ...$algorithm, ') is FIPS-approved']);
+                $findings[] = Finding::ok("the pinned key for agent {$agentName} ({$algorithm}) is FIPS-approved");
             }
         }
 
@@ -279,31 +277,21 @@ final class SshTransportProbe
     {
         $r = $this->env->sshRoundTrip($target, (string) json_encode(['tool' => 'board_my_cards']));
         if ($r['exit'] !== 0) {
-            // DECLARED, NOT ESCAPED HERE (card#9121, DL-366). Everything this leg echoes
-            // below crossed the wire from a REMOTE host: its stderr, its stdout, and the
-            // `error` string inside its envelope are bytes THAT host chose, and each was
-            // being interpolated verbatim into a line on the operator's terminal. The rule
-            // that makes them safe there has one owner — `UntrustedText` (NAMED, not
-            // `{@see}`-linked and not spelled out: pint's docblock fixer turns a qualified
-            // reference into a real `use`, and importing a `Support` class here for a
-            // comment would add an import nothing executes) — and the renderer applies it;
-            // these sites say only WHERE the foreign span is, which is the one fact no
-            // renderer can recover from a flat message string.
-            $stderr = trim($r['stderr']);
-
-            return [Finding::fail(["ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ", Untrusted::span($stderr), ')'])];
+            // ⛔ ESCAPED AT THE INTERPOLATION (card#9200, DL-366). Everything this leg
+            // echoes below crossed the wire from a REMOTE host: its stderr, its stdout, and
+            // the `error` string inside its envelope are bytes THAT host chose, and each was
+            // being interpolated verbatim into a line on the operator's terminal.
+            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".UntrustedText::forOperator(trim($r['stderr'])).')')];
         }
 
         $decoded = json_decode($r['stdout'], true);
         if (! is_array($decoded) || ! array_key_exists('ok', $decoded)) {
-            $snippet = substr(trim($r['stdout']), 0, 200);
-
-            return [Finding::fail(["ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ", Untrusted::span($snippet)])];
+            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".UntrustedText::forOperator(substr(trim($r['stdout']), 0, 200)))];
         }
         if ($decoded['ok'] !== true) {
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
-            return [Finding::fail(["ssh {$target}: board_my_cards did not succeed (error: ", Untrusted::span($error), ')'])];
+            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: ".UntrustedText::forOperator($error).')')];
         }
 
         $result = $decoded['result'] ?? null;
@@ -572,48 +560,25 @@ final class SshTransportProbe
      * failed encode for the whole response — and that consequence belongs to ITS renderer,
      * which sets no substitute flag. It is not this one's, and reading it across was wrong.
      *
-     * ⛔ IT RETURNS SEGMENTS, NOT A STRING (card#9121, DL-366). The token is foreign and it
-     * is wrapped in backticks this install wrote, so the foreign part is INTERIOR to the
-     * phrase. A flat string would hand the renderer a sentence with the seam erased and ask
-     * it to find the token again by substring search; that is the design this change exists
-     * to end. The `unknown` arm carries no span because it echoes nothing.
-     *
-     * @return list<string|Untrusted>
+     * ⛔ THE TOKEN IS ESCAPED HERE (card#9200, DL-366). The bytes are foreign for the reason
+     * DL-363 established about this file: `authorized_keys` lives under the INSPECTED
+     * account's home, so that account chose them, and `bridge:check` reads it routinely as
+     * root. The echo cap bounds the LENGTH; it validates no shape, so an ESC or a bidi
+     * override in the algorithm token reached the terminal intact. ⚑ The cut is taken on the
+     * RAW field and the escape applied to the cut, in that order: the cap is a bound on what
+     * the FILE held, and measuring it on an escaped string would report a 43-byte algorithm
+     * name as truncated because one `\x{202E}` renders eight wide. The `unknown` arm echoes
+     * nothing foreign and is escaped nowhere.
      */
-    private function keyAlgorithmSegments(?string $algorithm): array
+    private function keyAlgorithmForMessage(?string $algorithm): string
     {
-        $cut = $this->keyAlgorithmEcho($algorithm);
-        if ($cut === null) {
-            return ['`unknown`'];
+        if ($algorithm === null) {
+            return '`unknown`';
         }
 
-        return $cut === $algorithm
-            ? ['`', Untrusted::span($cut), '`']
-            : ['`', Untrusted::span($cut), '` (truncated)'];
-    }
+        $cut = mb_strcut($algorithm, 0, self::KEY_ALGORITHM_ECHO_MAX, 'UTF-8');
+        $echo = '`'.UntrustedText::forOperator($cut).'`';
 
-    /**
-     * The BOUNDED echo of the key algorithm — the exact bytes that reach the operator's
-     * line — or null when nothing foreign does (card#9121, DL-366).
-     *
-     * ⭐ ONE DERIVATION, CALLED BY THE COMPOSING METHOD, never a second cut beside it. Both
-     * the phrase's text and its `(truncated)` tail turn on whether this cut equals the raw
-     * field, so a sibling that re-derived the same `mb_strcut` could disagree with it about
-     * that. ⚑ It is no longer load-bearing for the ESCAPE — {@see self::keyAlgorithmSegments()}
-     * wraps this return value at the position it occupies, so there is nothing to match and
-     * a drift could not silently un-escape anything. It was, under the value-matching
-     * renderer this replaced, and that is the sentence this docblock used to carry.
-     *
-     * The bytes are foreign for the reason DL-363 established about this file:
-     * `authorized_keys` lives under the INSPECTED account's home, so that account chose
-     * them, and `bridge:check` reads it routinely as root. The echo cap bounds the LENGTH;
-     * it validates no shape, so an ESC or a bidi override in the algorithm token reached the
-     * terminal intact.
-     */
-    private function keyAlgorithmEcho(?string $algorithm): ?string
-    {
-        return $algorithm === null
-            ? null
-            : mb_strcut($algorithm, 0, self::KEY_ALGORITHM_ECHO_MAX, 'UTF-8');
+        return $cut === $algorithm ? $echo : $echo.' (truncated)';
     }
 }

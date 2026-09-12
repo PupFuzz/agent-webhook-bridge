@@ -7,7 +7,6 @@ use App\Bridge\Check\Checks\BoardToolsBoardStateCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -273,7 +272,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         ));
         $this->assertNotEmpty($relaying, 'the fixture must reach the relaying catch arm');
         foreach ($relaying as $finding) {
-            $rendered = UntrustedText::render($finding->segments);
+            $rendered = $finding->message;
             $this->assertStringNotContainsString("\n", $rendered, "a forged line reached the operator: {$rendered}");
             $this->assertStringContainsString('FAIL: board 5 verified clean', $rendered);
             $this->assertStringContainsString('could not read board', $rendered);

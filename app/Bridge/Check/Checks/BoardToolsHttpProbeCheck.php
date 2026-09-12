@@ -8,7 +8,7 @@ use App\Bridge\Check\OptInCheck;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\Untrusted;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolsScopeHeader;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -142,15 +142,13 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 $resp = Http::withToken($token)->acceptJson()->timeout(10)
                     ->post($endpoint, ['tool' => 'board_my_cards', 'args' => (object) []]);
             } catch (ConnectionException $e) {
-                // DECLARED PRECAUTIONARILY (card#9121, DL-366), and the reason is stated
+                // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and the reason is stated
                 // rather than claimed: this message is composed by the HTTP client, but
                 // `$endpoint` is an arbitrary operator-supplied URL and what a transport
                 // failure against it puts in the string is NOT established locally. The two
-                // bearer-read arms above are the contrast and stay UNDECLARED — their
+                // bearer-read arms above are the contrast and stay UNESCAPED — their
                 // subject is this operator's own token file, which this install vouches for.
-                $connectError = $e->getMessage();
-
-                yield Finding::fail(["board_tools probe: agent {$name}: could NOT connect to {$endpoint} (", Untrusted::span($connectError), ") — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call."]);
+                yield Finding::fail("board_tools probe: agent {$name}: could NOT connect to {$endpoint} (".UntrustedText::forOperator($e->getMessage()).") — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
 
                 continue;
             }
@@ -167,18 +165,14 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 continue;
             }
             if (! $resp->successful()) {
-                [$label, $detail] = $this->probeErrorDetail($resp);
-
-                yield Finding::fail(["board_tools probe: agent {$name}: {$endpoint} → HTTP {$status} — the tool call did not succeed ({$label}", Untrusted::span($detail), ').']);
+                yield Finding::fail("board_tools probe: agent {$name}: {$endpoint} → HTTP {$status} — the tool call did not succeed ({$this->probeErrorDetail($resp)}).");
 
                 continue;
             }
 
             $result = $resp->json('result');
             if (! is_array($result)) {
-                [$label, $detail] = $this->probeErrorDetail($resp);
-
-                yield Finding::fail(["board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$label}", Untrusted::span($detail), ').']);
+                yield Finding::fail("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$this->probeErrorDetail($resp)}).");
 
                 continue;
             }
@@ -201,29 +195,21 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
     }
 
     /**
-     * The error detail this probe echoes, SPLIT into the label this install wrote and the
-     * span the RESPONDER did (card#9121, DL-366).
+     * The error detail this probe echoes, with the RESPONDER's own bytes escaped and the
+     * label this install wrote left alone (card#9200, DL-366).
      *
-     * ⭐ ONE READER RETURNING BOTH HALVES, never a second method beside this one that
-     * re-derives the foreign half. The declaration is matched by exact substring at render
-     * time, so a sibling deriving `substr($resp->body(), 0, 200)` a second time could drift
-     * and the escape would then silently not apply — a guard failing open with nothing red.
-     * Splitting rather than concatenating also keeps the label out of the span's own
-     * character cap, so a legitimate 200-byte body is not reported as truncated.
-     *
-     * ⛔ The span is FOREIGN on both arms. `$endpoint` is an operator-supplied URL that this
-     * check does not otherwise constrain, and behind it the tool door relays a kanban
-     * response — so neither the envelope's `error` string nor the raw body is text this
-     * install authored.
-     *
-     * @return array{0: string, 1: string} the label, then the responder's own bytes
+     * ⛔ BOTH ARMS ARE FOREIGN. `$endpoint` is an operator-supplied URL that this check does
+     * not otherwise constrain, and behind it the tool door relays a kanban response — so
+     * neither the envelope's `error` string nor the raw body is text this install authored.
+     * The escape is applied INSIDE the label rather than around the whole phrase so the
+     * label does not consume the span's own character cap.
      */
-    private function probeErrorDetail(Response $resp): array
+    private function probeErrorDetail(Response $resp): string
     {
         $error = $resp->json('error');
 
         return is_string($error) && $error !== ''
-            ? ['error: ', $error]
-            : ['body: ', substr($resp->body(), 0, 200)];
+            ? 'error: '.UntrustedText::forOperator($error)
+            : 'body: '.UntrustedText::forOperator(substr($resp->body(), 0, 200));
     }
 }

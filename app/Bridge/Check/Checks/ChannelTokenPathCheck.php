@@ -11,7 +11,6 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
-use App\Bridge\Support\Provenance;
 use Throwable;
 
 /**
@@ -68,7 +67,7 @@ final class ChannelTokenPathCheck implements PerAgentCheck
             // contract and names no fault; it keeps the definite claim, because the reason
             // the read failed is then unknown rather than known-to-be-ours.
             yield match ($e instanceof ChannelTokenException ? $e->fault : null) {
-                ChannelTokenFault::NotVisible => PathVisibility::notVisibleFinding(Provenance::ownConfig("agent {$name}: channel auth token at {$tokenPath}")),
+                ChannelTokenFault::NotVisible => PathVisibility::notVisibleFinding("agent {$name}: channel auth token at {$tokenPath}"),
                 ChannelTokenFault::NotReadable => Finding::unvalidated("agent {$name}: channel auth token at {$tokenPath} exists but is not readable by THIS process — bridge:check reads it as the operator while channel_push reads it as the OS user the receiver runs as, so this leg could NOT determine whether the push will authenticate; re-run bridge:check as that user, or confirm the file is mode 600 owned by it"),
                 ChannelTokenFault::Missing,
                 ChannelTokenFault::InsecurePerms,

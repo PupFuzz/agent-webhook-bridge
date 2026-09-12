@@ -4,7 +4,6 @@ namespace Tests\Unit\Tools;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\AuthorizedKeysRead;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Tools\SshTransportProbe;
@@ -767,11 +766,11 @@ class SshTransportProbeTest extends TestCase
 
         $echoing = array_values(array_filter(
             $findings,
-            static fn (Finding $f): bool => str_contains($f->message, "\x1b[2J"),
+            static fn (Finding $f): bool => str_contains($f->message, '\x1B[2J'),
         ));
         $this->assertNotEmpty($echoing, "the {$field} fixture must reach an arm that echoes it");
         foreach ($echoing as $finding) {
-            $rendered = UntrustedText::render($finding->segments);
+            $rendered = $finding->message;
             // PRESENCE WITNESS, not merely an absence: an absence-only assertion is
             // satisfied by a change that DROPPED the detail, which would withhold the one
             // part of the line naming the actual remote fault.
@@ -820,8 +819,7 @@ class SshTransportProbeTest extends TestCase
 
         $fail = $this->firstMatching($findings, 'a FIPS sshd rejects it');
         $this->assertNotNull($fail);
-        $this->assertStringContainsString("\x1b", $fail->message, 'the fixture must actually plant the bytes');
-        $rendered = UntrustedText::render($fail->segments);
+        $rendered = $fail->message;
         // Asserted on the ESCAPE and not on the whole token: `AuthorizedKeysLine` lowercases
         // the algorithm field (key algorithms are case-insensitive to sshd), so pinning the
         // literal here would be pinning that normalisation, which is not this test's subject.

@@ -17,7 +17,6 @@ use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\MaterializesChecks;
-use Tests\Support\ReadsDeclaredSpans;
 use Tests\TestCase;
 
 /**
@@ -51,7 +50,6 @@ class ForeignCardFieldRenderTest extends TestCase
 {
     use AssertsNoLiveControlByte;
     use MaterializesChecks;
-    use ReadsDeclaredSpans;
 
     private const BOARD = 8;
 
@@ -82,11 +80,18 @@ class ForeignCardFieldRenderTest extends TestCase
         $this->assertNoLiveControlByte($rendered);
         // PRESENCE WITNESS ×2 — absence alone is satisfied by a renderer that dropped both spans.
         $this->assertSame(2, substr_count($rendered, '\x1B[2K'), 'both spans must survive in ESCAPED form');
-        // The declaration is POSITIONAL, and both positions are declared.
-        $this->assertSame(['7'.self::PAYLOAD, '42'.self::PAYLOAD], $this->declaredSpans($findings[0]));
-        // ⛔ AND THE JSON WRITE CONTRACT IS UNTOUCHED: `Finding::$message` still carries the
-        // raw bytes, which is also the witness that the fixture planted them at all.
-        $this->assertStringContainsString("\x1b[2K\r", $findings[0]->message);
+        // ⛔ AND `--format=json` NO LONGER CARRIES THE RAW BYTES EITHER, which is the half
+        // this change reverses on purpose (card#9200). The earlier cut escaped at the
+        // TERMINAL renderer to keep `Finding::$message` byte-stable, justified by a write
+        // contract that `docs/check-json-contract.md` §2 denies exists — *"`message` strings
+        // are NOT part of the contract"* — and that false premise is what forced the escape
+        // to be declared per call site. Escaping at the producer means a machine consumer
+        // rendering a `message` to its own terminal no longer receives an erase-line, which
+        // is a strict improvement and a rewording §2's table licenses outright.
+        $this->assertStringNotContainsString("\x1b[2K\r", $findings[0]->message);
+        // ⚑ THE NON-VACUITY WITNESS MOVES TO THE FIXTURE: the message can no longer hold the
+        // raw bytes, so their presence there is not available as proof the payload was planted.
+        $this->assertStringContainsString("\x1b[2K\r", self::PAYLOAD);
     }
 
     /**
@@ -105,13 +110,16 @@ class ForeignCardFieldRenderTest extends TestCase
         $this->assertStringContainsString('matches no repo mapped to that board (owner/repo, owner/second)', $rendered);
         $this->assertNoLiveControlByte($rendered);
         $this->assertStringContainsString('has source=evil/\x1B[2k writeback: all clear,', $rendered);
-        // The two NON-foreign values on the same line stay prose: the board id and the
-        // mapped-repo list are this install's own `writeback.json`, and declaring them would
-        // say this install does not vouch for what this install wrote.
-        $this->assertSame(['9', '43', 'evil/'.mb_strtolower(self::PAYLOAD)], $this->declaredSpans($findings[0]));
-        // The raw bytes survive into `$message` verbatim — LOWER-CASED, because
-        // `canonicalizeSource()` ran, which is also the witness that it reduced no byte class.
-        $this->assertStringContainsString(mb_strtolower(self::PAYLOAD), $findings[0]->message);
+        // The two NON-foreign values on the same line stay prose and stay UNESCAPED: the
+        // board id and the mapped-repo list are this install's own `writeback.json`, and
+        // escaping them would say this install does not vouch for what this install wrote.
+        $this->assertStringContainsString('board 8', $rendered);
+        $this->assertStringContainsString('(owner/repo, owner/second)', $rendered);
+        // ⚑ `canonicalizeSource()` REDUCED NO BYTE CLASS, which is the claim this arm rests
+        // on — it lower-cased and passed every codepoint through. Witnessed on the FIXTURE's
+        // own lower-cased form reaching the line in ESCAPED shape, since the raw bytes no
+        // longer survive into `$message` for the assertion to read there.
+        $this->assertForeignValueEscapedInto($findings[0]->message, 'evil/'.mb_strtolower(self::PAYLOAD));
     }
 
     /**

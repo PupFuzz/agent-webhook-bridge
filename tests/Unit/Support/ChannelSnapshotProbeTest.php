@@ -9,12 +9,12 @@ use App\Bridge\Support\UntrustedText;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use Tests\Support\ReadsDeclaredSpans;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\SkipsAsRoot;
 
 class ChannelSnapshotProbeTest extends TestCase
 {
-    use ReadsDeclaredSpans;
+    use AssertsNoLiveControlByte;
     use SkipsAsRoot;
 
     private string $tmp;
@@ -317,18 +317,20 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $findings = ChannelSnapshotProbe::probe($this->deployment($payload), $this->reference('9.9.9'));
 
+        // ⚑ FILTERED ON THE ESCAPED FORM, because that is what the message now carries: the
+        // producer escapes at the interpolation, so a filter on the RAW payload would match
+        // nothing and the loop below would assert over an empty set at exit 0.
         $echoing = array_values(array_filter(
             $findings,
-            static fn (Finding $f): bool => str_contains($f->message, $payload),
+            static fn (Finding $f): bool => str_contains($f->message, UntrustedText::forOperator($payload)),
         ));
         $this->assertNotEmpty($echoing, 'the fixture must actually reach an arm that echoes the version');
         foreach ($echoing as $finding) {
-            $this->assertContains($payload, $this->declaredSpans($finding), "undeclared foreign span in: {$finding->message}");
-
             // PRESENCE WITNESS, not an absence: an absence-only assertion is satisfied by a
-            // renderer that dropped the detail entirely, which would certify a regression
+            // producer that dropped the detail entirely, which would certify a regression
             // that withholds the one part of the line naming the real fault.
-            $rendered = UntrustedText::render($finding->segments);
+            $this->assertForeignValueEscapedInto($finding->message, $payload);
+            $rendered = $finding->message;
             $this->assertStringContainsString('\x1B[2J', $rendered);
             $this->assertStringContainsString('\x{202E}', $rendered);
             $this->assertStringContainsString('agent prod-agent: channel socket live', $rendered);
@@ -356,23 +358,25 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $echoing = array_values(array_filter(
             $findings,
-            static fn (Finding $f): bool => str_contains($f->message, $deployed),
+            static fn (Finding $f): bool => str_contains($f->message, UntrustedText::forOperator($deployed)),
         ));
         $this->assertNotEmpty($echoing, 'the fixture must reach the legs that name the deployment path');
         foreach ($echoing as $finding) {
-            $this->assertContains($deployed, $this->declaredSpans($finding), "undeclared foreign span in: {$finding->message}");
-            $rendered = UntrustedText::render($finding->segments);
+            $this->assertForeignValueEscapedInto($finding->message, $deployed);
+            $rendered = $finding->message;
             $this->assertStringContainsString('dep\x1B[2Jloy\x{202E}ed', $rendered);
             $this->assertStringNotContainsString("\x1b", $rendered);
         }
     }
 
     /**
-     * ⛔ THE GUARD BUILDS THE FINDING, SO THE GUARD MUST CARRY THE DECLARATION (card#9121,
-     * DL-366). `PathVisibility::unverifiedUnlessVisible()` interpolates the path this file
-     * hands it and returns a `?Finding` — so a `Finding::` grep over THIS file cannot see
-     * it, which is exactly how the first sweep declared `$resolved` two branches below and
-     * left these two sites echoing the same value raw.
+     * ⛔ THE GUARD BUILDS THE FINDING, SO THIS FILE MUST HAND IT A SAFE DISPLAY (card#9121,
+     * DL-366, card#9200). `PathVisibility::unverifiedUnlessVisible()` interpolates the display
+     * this file hands it and returns a `?Finding` — so a `Finding::` grep over THIS file cannot
+     * see it, which is exactly how the first sweep escaped `$resolved` two branches below and
+     * left these two sites echoing the same value raw. ⚑ The guard's `$display` parameter is a
+     * plain `string` again: the caller escapes before handing it over, so the guard has nothing
+     * to rule on and needed no sum type to force a ruling it can no longer make wrongly.
      *
      * ⚑ THE SHAPE IS THE ONE `PathVisibility`'s OWN DOCBLOCK CALLS ROUTINE — an ancestor
      * denying traversal, the bridge running as a different OS user than the agent — not a
@@ -394,9 +398,12 @@ class ChannelSnapshotProbeTest extends TestCase
             $this->assertCount(1, $findings);
             $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
             $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
-            $this->assertStringContainsString("\x1b", $findings[0]->message, 'the fixture must actually plant the bytes');
+            // ⚑ NON-VACUITY WITNESS ON THE FIXTURE. The escape now happens before the value
+            // reaches the guard, so the finding's message can never carry the raw ESC —
+            // asserting its presence THERE would be asserting the defect.
+            $this->assertStringContainsString("\x1b", (string) readlink($this->tmp.'/link'), 'the link target must actually carry the bytes');
 
-            $rendered = UntrustedText::render($findings[0]->segments);
+            $rendered = $findings[0]->message;
             $this->assertStringContainsString('ch\x1Bx\x{202E}', $rendered);
             $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
         } finally {
@@ -422,7 +429,7 @@ class ChannelSnapshotProbeTest extends TestCase
 
             $this->assertCount(1, $findings);
             $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
-            $rendered = UntrustedText::render($findings[0]->segments);
+            $rendered = $findings[0]->message;
             $this->assertStringContainsString('dep\x1Bloy\x{202E}', $rendered);
             $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
         } finally {
@@ -431,11 +438,15 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
-     * ⛔ THE OVERLAP CASE, DRIVEN THROUGH THE REAL LEG. `versionLeg()` is where two spans
-     * chosen by the SAME principal are declared on one finding, and where a version that
-     * quotes the deployment path makes one a substring of the other — the shape a per-span
+     * ⛔ THE OVERLAP CASE, DRIVEN THROUGH THE REAL LEG. `versionLeg()` is where two foreign
+     * values chosen by the SAME principal land on one finding, and where a version that quotes
+     * the deployment path makes one a substring of the other — the shape a per-span
      * replacement loop silently half-applies. The two probe tests above this one each make
      * ONE value hostile and the other benign, which is exactly why neither caught it.
+     * ⚑ KEPT AFTER THE OVERLAP BECAME UNREACHABLE (card#9200): with each value escaped at its
+     * own interpolation there is no replacement pass for one to be a substring inside, so this
+     * asserts a structural property rather than hunting a live defect. It was arrived at by
+     * measurement and it stays.
      */
     public function test_a_version_that_quotes_the_deployment_path_is_still_fully_escaped(): void
     {
@@ -448,28 +459,34 @@ class ChannelSnapshotProbeTest extends TestCase
 
         // Anchored on the ERASE-LINE, which lives only in the VERSION: the deployment
         // directory's own name also carries an ESC, so every leg naming the path matches a
-        // bare `\x1b` filter and the two-declaration arm would not be isolated.
+        // bare ESC filter and the two-value arm would not be isolated. ⚑ Anchored on its
+        // ESCAPED form, because that is what the message now carries — a filter on the raw
+        // bytes would match nothing and the loop below would assert over an empty set at rc 0.
         $versionLeg = array_values(array_filter(
             $findings,
-            static fn (Finding $f): bool => str_contains($f->message, "\x1b[2K"),
+            static fn (Finding $f): bool => str_contains($f->message, UntrustedText::forOperator("\x1b[2K")),
         ));
-        $this->assertNotEmpty($versionLeg, 'the fixture must reach the arm that echoes both spans');
+        $this->assertNotEmpty($versionLeg, 'the fixture must reach the arm that echoes both foreign values');
         foreach ($versionLeg as $finding) {
-            // THREE POSITIONS, not two values: the deployment path lands twice (once as the
-            // subject, once inside the re-sync command) and the version once. Under the
-            // value-matching renderer this read 2, because a declaration was a value and a
-            // replace-all covered every occurrence of it by accident; a position is
-            // per-occurrence, so the count is the number of places on the operator's line.
-            $this->assertSame([$deployed, $version, $deployed], $this->declaredSpans($finding));
-            $rendered = UntrustedText::render($finding->segments);
-            $this->assertStringContainsString('\x1B[2K\x1B[1;31m', $rendered);
+            // ⛔ ASSERTED AS THE PROPERTY, NOT AS AN OCCURRENCE COUNT, and the count is what
+            // this leg tried first (card#9200). The path lands in THREE places on this line —
+            // as the subject, inside the re-sync command, and inside the VERSION, which quotes
+            // it — so any pinned figure is really a restatement of how many times the fixture's
+            // own version string happens to name the directory, and it moves when the fixture
+            // does. What must hold is that NO occurrence survives raw, whichever of them a
+            // future producer adds or drops: the raw path carries an ESC, so the live-control
+            // census below is what discriminates a half-escaped line, and it does it without a
+            // number.
+            $this->assertSame(0, substr_count($finding->message, $deployed), 'a raw path occurrence survived');
+            $this->assertForeignValueEscapedInto($finding->message, $deployed);
+            $this->assertForeignValueEscapedInto($finding->message, $version);
+            $this->assertStringContainsString('\x1B[2K\x1B[1;31m', $finding->message);
         }
 
         // EVERY finding of the run, not just that arm: nothing on the operator's report may
-        // carry a live control byte once the declarations are applied.
+        // carry a live control byte once each producer has escaped its own foreign values.
         foreach ($findings as $finding) {
-            $rendered = UntrustedText::render($finding->segments);
-            $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+            $this->assertNoLiveControlByte($finding->message);
         }
     }
 

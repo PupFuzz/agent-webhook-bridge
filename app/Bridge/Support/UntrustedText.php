@@ -3,40 +3,46 @@
 namespace App\Bridge\Support;
 
 /**
- * ONE OWNER for the rule that turns a string this install did NOT author into something
- * safe to put on an operator's terminal (card#9121, DL-366).
+ * ONE OWNER for the rule that turns a string with NO DECLARABLE GRAMMAR, written by a
+ * principal this install did not author, into something safe to put on an operator's
+ * terminal (card#9121, card#9200, DL-366).
  *
- * ⭐ WHY IT IS A PRIMITIVE AND NOT A LINE AT THE ONE CALL SITE THAT NEEDS IT TODAY. The
- * channel bind-FAILURE marker is the first finding detail written by a foreign principal;
- * it will not be the last (an operator-supplied `--pubkey-from` file's contents, a remote
- * error body, a foreign config's parse error). Escaping at each site is the second
- * divergent implementation of one behaviour, which is canon #5's defect — so the rule
- * lives here, the RENDERER applies it, and a call site's only job is to DECLARE which span
- * of its message it did not author — BY POSITION, by composing that message as a list of
- * segments with the foreign parts wrapped in {@see Untrusted}. {@see self::render()} owns
- * why nothing is searched for, and {@see Untrusted} owns the three defects that taught it.
+ * ⛔ IT IS NOT THE ONLY OWNER OF "MAKE A FOREIGN STRING SAFE TO PRINT", and the earlier
+ * revision of this docblock that claimed it was annexed a job another class does better
+ * (card#9200, canon #5). The DISCRIMINATOR IS WHETHER THE VALUE HAS A CLOSED GRAMMAR:
+ *  - a value whose legal alphabet can be DECLARED, and for which "not reported" is a
+ *    legitimate answer, belongs to a WHITELIST that fails closed. `ClientVersion`, under
+ *    `App\Bridge\Tools`, is that owner and is not a duplicate of this one (NAMED and split
+ *    from its namespace, never `{@see}`-linked: pint turns a docblock FQCN into a real `use`,
+ *    which would make a `Support` primitive depend on a `Tools` consumer);
+ *  - a value that is PROSE — a remote error body, a subprocess's stderr, a branch ref —
+ *    has no alphabet that can be declared without destroying the diagnostic, so it belongs
+ *    to this ESCAPE.
+ * ⭐ THE ASYMMETRY IS THE REASON, not a preference: A WHITELIST'S BLIND SPOT IS ENUMERABLE
+ * (exactly what it admits); AN ESCAPE'S IS UNBOUNDED (whatever its author failed to think
+ * of). That is why `ClientVersion` has no U+3164 problem and this class does — see the
+ * `\p{C}` bound below. Prefer a whitelist wherever a value's shape permits one.
  *
- * ⛔ IT IS NOT APPLIED IN `Finding`'s CONSTRUCTOR, DELIBERATELY, and the reason is a write
- * contract. `bridge:check --format=json` carries `findings[].message` verbatim, machine
- * consumers already read it, and sanitising at construction would change those bytes for
- * every consumer at once — a shape change with no schema bump to warn anyone. The escape
- * is therefore a property of the TERMINAL rendering only: `CheckCommand::emitFinding()`
- * calls this on the way to `error()`/`warn()`/`line()`/`info()`, and the JSON document
- * reads `Finding::$message` untouched. `CheckJsonRenderer` is NAMED, never
- * `{@see}`-linked: pint would turn the FQCN into a real `use` and invert the layering.
+ * ⭐ IT IS APPLIED WHERE THE FOREIGN VALUE IS PRODUCED OR INTERPOLATED — NOT AT A SINK
+ * (card#9200). An earlier cut of this change applied it in `CheckCommand::emitFinding()`
+ * and had each producer declare, per call site, which SPAN of its own sentence was foreign.
+ * That was justified by one premise: that `findings[].message` is a write contract
+ * `--format=json` must carry byte-identically. ⛔ THE PREMISE IS FALSE, and this repo's own
+ * `docs/check-json-contract.md` §2 falsifies it in bold — *"`message` strings are NOT part
+ * of the contract"*, reworded before and to be reworded again, and `CheckJsonContractTest`
+ * deliberately does not pin them. An escape IS a rewording, and §2's table licenses one
+ * explicitly. The premise was load-bearing, not decorative: escaping at a SINK is what
+ * forced per-call-site declaration, which made the escape OPT-IN, which made an omission
+ * invisible — the defect card#9200 records, measured three times on three populations that
+ * each excluded the class the next round found.
  *
  * ⚠ WHAT THIS DOES NOT CLOSE, stated because an unstated bound reads as a guarantee:
- *  - **`--format=json` still carries the raw bytes.** That is the contract above, not an
- *    oversight. A consumer that renders those strings to a terminal owns this same rule at
- *    its own boundary; the document's own `message` bound (operator prose, never part of
- *    the contract) is where that is written down for consumers.
- *  - **It only sanitises DECLARED spans.** A future call site that interpolates a foreign
- *    string into a plain prose segment, rather than wrapping it in {@see Untrusted}, gets no
- *    protection, and nothing here can see that omission — a string segment is indivisible by
- *    the time a renderer holds it. The guard against that is review of the call site, not
- *    this class. ⚑ What IS closed, and was not under the value-matching design this
- *    replaced, is the span that IS declared: it can no longer be missed, straddled or
- *    skipped, because {@see self::render()} performs no matching at all.
+ *  - **THE INGRESS DOOR ITSELF.** A new client, `Process` run or foreign-file read that
+ *    returns a bare `string` re-mints the class, and nothing here can see it. What the
+ *    move to the producer buys is a reduction — from every line that prints a foreign value
+ *    to the handful of classes that READ one — never elimination. `Throwable::getMessage()`
+ *    is the hard floor: PHP gives no way to retype it, so a `catch` that relays a remote
+ *    error body still has to call this function on purpose.
  *  - **It is not an escape for any other sink.** These bytes are shaped for a terminal
  *    line. Anything writing a finding to HTML, a shell argument or a log format owns its
  *    own encoding.
@@ -72,6 +78,9 @@ final class UntrustedText
      * It is a DISPLAY bound layered over {@see UntrustedPathContents::MAX_BYTES}, which is
      * the READ bound: the reader stops a root process consuming an unbounded file, this
      * stops what it did read from filling an operator's screen.
+     *
+     * ⛔ IT IS THEREFORE NEVER APPLIED TO A WHOLE FINDING MESSAGE: callers escape the foreign
+     * SPAN and concatenate, they do not escape the sentence.
      */
     public const MAX_CHARS = 200;
 
@@ -189,44 +198,5 @@ final class UntrustedText
         $sourceChars = mb_strlen($scrubbed, 'UTF-8');
 
         return mb_substr($text, 0, self::MAX_CHARS, 'UTF-8')." [TRUNCATED, {$sourceChars} SOURCE CHARS]";
-    }
-
-    /**
-     * A finding's SEGMENTS, rendered as one operator line: this install's own prose verbatim,
-     * every {@see Untrusted} span through {@see self::forOperator()}.
-     *
-     * ⛔ NOTHING IS SEARCHED FOR, AND THAT IS THE WHOLE PROPERTY. Two earlier cuts of this
-     * change declared each span by VALUE and re-found it here — one with a per-span
-     * `str_replace` loop, one with a single `strtr()` map — and BOTH shipped a live
-     * `ESC [ 2 K` erase-line onto root's terminal, by different mechanisms, each with a green
-     * suite. {@see Untrusted} records all three failures and why no third matching strategy
-     * could be sound: a search reconstructs a position from bytes the attacker chose, and the
-     * prose it has to disambiguate against is public, because it is in the message their
-     * bytes are going into.
-     *
-     * What replaces the argument is arithmetic. Each segment is rendered exactly once, in
-     * order, independent of every other segment — so COVERAGE is not a property of the input
-     * (which an attacker picks) but of the loop (which they do not). A span cannot be eaten
-     * by a neighbour's match, cannot be skipped because its rendering is empty, and cannot be
-     * re-processed: there is no match, no skip and no second pass to exploit.
-     *
-     * ⚑ A SPAN WHOSE RENDERING IS EMPTY RENDERS EMPTY, and needs no special case any more.
-     * Under value matching it needed one and got the wrong one twice: an empty replacement is
-     * a DELETION applied to every occurrence, which stripped the spaces out of the bridge's
-     * own prose (a `version` of `" "` sufficed), and the fix — dropping the pair — put the
-     * span's RAW bytes back on the line, `\r` and `\t` included. Here the span is at a
-     * position and its rendering goes at that position, whatever its length; the prose either
-     * side is not reachable from it at all.
-     *
-     * @param  list<string|Untrusted>  $segments
-     */
-    public static function render(array $segments): string
-    {
-        $line = '';
-        foreach ($segments as $segment) {
-            $line .= $segment instanceof Untrusted ? self::forOperator($segment->raw) : $segment;
-        }
-
-        return $line;
     }
 }

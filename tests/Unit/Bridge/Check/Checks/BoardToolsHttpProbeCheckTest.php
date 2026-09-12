@@ -7,13 +7,12 @@ use App\Bridge\Check\Checks\BoardToolsHttpProbeCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\UntrustedText;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\MaterializesChecks;
-use Tests\Support\ReadsDeclaredSpans;
 use Tests\TestCase;
 
 /**
@@ -35,8 +34,8 @@ use Tests\TestCase;
  */
 class BoardToolsHttpProbeCheckTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use MaterializesChecks;
-    use ReadsDeclaredSpans;
 
     private const ENDPOINT = 'https://bridge.test/agent-tools/call';
 
@@ -407,11 +406,11 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $echoing = array_values(array_filter(
             $findings,
-            static fn (Finding $f): bool => str_contains($f->message, "\x1b[2J"),
+            static fn (Finding $f): bool => str_contains($f->message, '\x1B[2J'),
         ));
         $this->assertNotEmpty($echoing, 'the fixture must reach an arm that echoes the responder detail');
         foreach ($echoing as $finding) {
-            $rendered = UntrustedText::render($finding->segments);
+            $rendered = $finding->message;
             // PRESENCE WITNESS, not merely an absence: an absence-only assertion is also
             // satisfied by a change that DROPPED the detail, which would withhold the one
             // part of the line naming the actual fault.
@@ -450,10 +449,9 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertContains(self::FOREIGN_PAYLOAD, $this->declaredSpans($findings[0]));
-        $rendered = UntrustedText::render($findings[0]->segments);
-        $this->assertStringContainsString('\x1B[2J', $rendered);
-        $this->assertStringNotContainsString("\x1b", $rendered);
+        $this->assertForeignValueEscapedInto($findings[0]->message, self::FOREIGN_PAYLOAD);
+        $this->assertStringContainsString('\x1B[2J', $findings[0]->message);
+        $this->assertStringNotContainsString("\x1b", $findings[0]->message);
     }
 
     private function httpAgent(string $name, ?string $tokenPath = null): AgentConfig

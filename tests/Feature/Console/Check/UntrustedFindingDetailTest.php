@@ -12,6 +12,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use App\Console\Commands\Bridge\CheckCommand;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Support\Facades\File;
@@ -24,22 +25,26 @@ use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
- * THE TWO HALVES OF THE UNTRUSTED-DETAIL DECISION, asserted against each other (card#9121,
- * DL-366): the TERMINAL render escapes and caps a span a check declared it did not author,
- * and `--format=json` carries that same span BYTE FOR BYTE.
+ * BOTH SURFACES OF THE UNTRUSTED-DETAIL DECISION, asserted against each other (card#9121,
+ * DL-366, card#9200): the check escapes the foreign detail AT THE INTERPOLATION, so the
+ * TERMINAL line and the `--format=json` document carry the SAME escaped bytes.
  *
- * ⭐ WHY BOTH IN ONE CLASS. They are not two properties, they are one decision with a cost
- * on each side, and a suite that asserted them apart would let either drift into the other's
- * file without anything reading the pair. The JSON document is a WRITE CONTRACT that machine
- * consumers already parse, so sanitising at construction would change their bytes with no
- * schema bump to warn them; the terminal is where a control sequence actually does harm. So
- * the escape lives in the renderer, and the raw bytes stay in the document — deliberately,
- * with the consequence written down rather than glossed.
+ * ⛔ THIS CLASS PREVIOUSLY ASSERTED THE OPPOSITE, and the reversal is the point (card#9200).
+ * Its earlier thesis was that `findings[].message` is a WRITE CONTRACT machine consumers
+ * already parse, so the escape had to live in the terminal renderer and the raw bytes had to
+ * stay in the document. ⛔ `docs/check-json-contract.md` §2 falsifies that premise in bold —
+ * *"`message` strings are NOT part of the contract"*, reworded before and to be reworded
+ * again, with `CheckJsonContractTest` deliberately not pinning them — and its own table lists
+ * a reworded `message` as *"not a contract change at all"*. An escape is a rewording.
+ * ⭐ THE PREMISE WAS LOAD-BEARING, which is why this file changes rather than just its prose:
+ * escaping at a SINK forces every producer to declare which span of its own sentence is
+ * foreign, which makes the escape OPT-IN, which makes an omission invisible. That is the
+ * defect card#9200 records. Escaping at the interpolation removes the declaration, and the
+ * document stops handing a machine consumer an erase-line as a bonus.
  *
  * ⚠ EVERY ASSERTION HERE IS DRIVEN BY THE REAL CHECK OVER A REAL PLANTED MARKER, never by a
- * hand-built `Finding`. What is under test includes whether the CALL SITE declares its span
- * at all, and a synthetic finding would assert the renderer over a declaration this suite
- * wrote itself.
+ * hand-built `Finding`. What is under test includes whether the CALL SITE escapes at all, and
+ * a synthetic finding would assert a property this suite had written in itself.
  */
 class UntrustedFindingDetailTest extends TestCase
 {
@@ -68,7 +73,7 @@ class UntrustedFindingDetailTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_the_terminal_render_escapes_and_caps_a_declared_untrusted_span(): void
+    public function test_the_terminal_line_carries_the_foreign_detail_escaped(): void
     {
         $finding = $this->plantedMarkerFinding();
         $buffer = $this->emit($finding);
@@ -84,26 +89,31 @@ class UntrustedFindingDetailTest extends TestCase
         $this->assertStringContainsString('rm the marker once resolved.', $buffer);
     }
 
-    public function test_the_same_bytes_pass_through_when_no_call_site_declared_them(): void
+    public function test_the_same_bytes_pass_through_when_no_producer_escaped_them(): void
     {
-        // ⭐ THE DISCRIMINATING CONTROL for the test above. An identical payload inside a
-        // finding that declared NOTHING still reaches the terminal raw — so the assertion
-        // above is measuring the DECLARATION path and not some property of the buffer, the
-        // severity arm, or the output style.
+        // ⭐ THE DISCRIMINATING CONTROL for the test above. An identical payload interpolated
+        // into a finding by a producer that escaped NOTHING still reaches the terminal raw —
+        // so the assertion above is measuring the ESCAPE and not some property of the buffer,
+        // the severity arm, or the output style. ⛔ `Finding` must never start escaping to
+        // make this go away: it holds a sentence the producer already composed, the bridge's
+        // own prose runs past `UntrustedText::MAX_CHARS`, and a whole-message pass would
+        // truncate sentences this install wrote and vouches for.
         //
         // ⚠ It is also this change's own honest bound, stated as an executing fact rather
-        // than as prose: a future call site that interpolates a foreign string into a plain
-        // PROSE segment, rather than wrapping it in `App\Bridge\Support\Untrusted`, gets no
-        // protection, and nothing can see that omission. Review of the call site is the
-        // guard; this is not it. ⚑ What the positional design DID close is the span that IS
-        // declared — it can no longer be missed, straddled or skipped by a renderer's
-        // search, because there is no search (DL-366 Decision 8).
+        // than as prose: THE INGRESS DOOR IS NOT CLOSED. A new client, `Process` run or
+        // foreign-file read that returns a bare `string`, interpolated without a call to
+        // `App\Bridge\Support\UntrustedText`, gets no protection, and nothing can see that
+        // omission. What the move to the producer buys is a reduction — from every line that
+        // prints a foreign value to the handful of classes that READ one — never elimination.
+        // Where the value is ALSO matched on and so cannot be escaped at its producer,
+        // `App\Bridge\Support\ForeignText` closes it by construction instead, and
+        // `ForeignTextTest` owns that half.
         $buffer = $this->emit(Finding::warn('agent prod-agent: '.self::PAYLOAD));
 
         $this->assertStringContainsString("\x1b[2J", $buffer);
     }
 
-    public function test_a_declared_span_past_the_cap_is_truncated_on_the_terminal_only(): void
+    public function test_a_foreign_detail_past_the_cap_is_truncated_on_both_surfaces(): void
     {
         $long = str_repeat('E', 500);
         $finding = $this->plantedMarkerFinding($long);
@@ -112,19 +122,30 @@ class UntrustedFindingDetailTest extends TestCase
         // so. Escaping is the identity on this payload, so this leg cannot tell the two
         // figures apart — `UntrustedTextTest` owns the one that can.
         $this->assertStringContainsString('[TRUNCATED, 500 SOURCE CHARS]', $this->emit($finding));
-        // The FINDING is untouched, which is what the JSON test below depends on.
-        $this->assertStringContainsString("({$long})", $finding->message);
+        // ⛔ AND THE CAP IS ON THE FINDING TOO, which is the half that moved (card#9200): the
+        // escape is the producer's, so there is no second, unbounded copy of the detail left
+        // for `--format=json` to carry. An operator and a machine consumer read the same
+        // 200-character bound, and neither is handed the other 300 characters.
+        $this->assertStringNotContainsString("({$long})", $finding->message);
+        $this->assertStringContainsString('[TRUNCATED, 500 SOURCE CHARS]', $finding->message);
     }
 
     /**
-     * ⛔ THE JSON DOCUMENT MUST BE BYTE-IDENTICAL TO WHAT IT WAS BEFORE THIS CHANGE.
+     * ⛔ THE JSON DOCUMENT CARRIES THE ESCAPED FORM, AND THE RAW CONTROL BYTES ARE GONE FROM
+     * IT — the reversal card#9200 makes, asserted as bytes rather than argued.
      *
-     * Anchored on a LITERAL composition rather than on the finding object, so a sanitiser
-     * that crept into `Finding` (or into the JSON renderer) reds here instead of moving both
-     * sides of an `assertSame` together. The tail is read from the check's own constant, not
-     * re-typed, so this asserts the document and not a third copy of that sentence.
+     * Anchored on a LITERAL composition rather than on the finding object, so an escape that
+     * crept OUT of the producer (or a second one that crept into the JSON renderer) reds here
+     * instead of moving both sides of an `assertSame` together. The expected span is DERIVED
+     * by calling the escape rather than typed out, because a hand-written `\x1B[2J` in a test
+     * is a second implementation of the rule. The tail is read from the check's own constant,
+     * so this asserts the document and not a third copy of that sentence.
+     *
+     * ⚠ `schema` DOES NOT MOVE, and the reason is §2's table, not an absence of change: a
+     * reworded `message` is listed there as *"not a contract change at all"*. The adjacent
+     * test asserts the version as an executing fact.
      */
-    public function test_the_json_document_carries_the_declared_span_byte_for_byte(): void
+    public function test_the_json_document_carries_the_escaped_span_and_not_the_raw_bytes(): void
     {
         $finding = $this->plantedMarkerFinding();
         $marker = $this->dir.'/run/agent-webhook-bridge-channel-prod-agent.http-8765.FAILED';
@@ -142,16 +163,16 @@ class UntrustedFindingDetailTest extends TestCase
         );
 
         $this->assertSame(
-            "agent prod-agent: channel bind-FAILURE marker at {$marker} (".self::PAYLOAD.')'.$tail,
+            "agent prod-agent: channel bind-FAILURE marker at {$marker} (".UntrustedText::forOperator(self::PAYLOAD).')'.$tail,
             $document['findings_outside_registry'][0]['message'],
         );
         // Spelled out separately, because the composed literal above is easy to read past:
-        // the raw control bytes ARE in the document, and that is the contract.
-        $this->assertStringContainsString("\x1b[2J", $document['findings_outside_registry'][0]['message']);
-        $this->assertStringNotContainsString('\x1B', $document['findings_outside_registry'][0]['message']);
+        // NO raw control byte is in the document any more, and the escaped form IS.
+        $this->assertStringNotContainsString("\x1b", $document['findings_outside_registry'][0]['message']);
+        $this->assertStringContainsString('\x1B[2J', $document['findings_outside_registry'][0]['message']);
     }
 
-    public function test_the_encoded_json_escapes_the_control_bytes_as_json_and_keeps_the_schema(): void
+    public function test_the_encoded_json_has_no_control_byte_left_to_escape_and_keeps_the_schema(): void
     {
         $encoded = (new CheckJsonRenderer)->encode(
             true,
@@ -163,13 +184,20 @@ class UntrustedFindingDetailTest extends TestCase
             [],
         );
 
-        // JSON's own escaping, which is what makes the document parseable — and is NOT this
-        // change's escape: a backslash-u001b sequence decodes back to the ESC byte for any consumer.
-        $this->assertStringContainsString('\\u001b[2J', $encoded);
+        // ⛔ JSON'S OWN `\u001b` ESCAPE IS THE ONE THIS FILE USED TO ASSERT WAS PRESENT, and
+        // it was never protection: a `\u001b` sequence decodes straight back to the ESC byte
+        // for any consumer that parses the document and prints the string. There is now no
+        // control byte left in the message for JSON to encode, so it is absent — which is the
+        // difference between a document that is parseable and one that is safe to print.
+        $this->assertStringNotContainsString('\\u001b', $encoded);
         $decoded = json_decode($encoded, true, flags: JSON_THROW_ON_ERROR);
         $this->assertIsArray($decoded);
-        $this->assertSame(1, $decoded['schema'], 'an added finding shape must not move the schema version');
-        $this->assertStringContainsString("\x1b[2J", $decoded['findings_outside_registry'][0]['message']);
+        // ⚠ `schema` STAYS 1 on §2's reworded-`message` row, which that table calls "not a
+        // contract change at all" — not because nothing changed. No key is added or removed,
+        // no type moves, and no severity is invented.
+        $this->assertSame(1, $decoded['schema'], 'a reworded message must not move the schema version');
+        $this->assertStringNotContainsString("\x1b", $decoded['findings_outside_registry'][0]['message']);
+        $this->assertStringContainsString('\x1B[2J', $decoded['findings_outside_registry'][0]['message']);
     }
 
     /**

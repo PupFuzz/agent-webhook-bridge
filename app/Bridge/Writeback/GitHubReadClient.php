@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\ForeignText;
 use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
@@ -197,6 +198,19 @@ final class GitHubReadClient
      * or, worse here, decline one the event path made. GitHub retains `head.ref` on the PR
      * record after the branch is DELETED (which is the normal post-merge state of every PR
      * this leg reads), so it is available on the whole population; `head.repo` is the field
+     * ⛔ `title` AND `head_ref` ARE THE TWO FIELDS ON THIS PROJECTION A STRANGER CHOOSES,
+     * so they leave here as {@see ForeignText} and not as `string` (card#9200, DL-366). Both
+     * are authored by whoever opened the PR — on a public repo, anyone with a fork — and
+     * MEASURED, not assumed: GitHub accepts a branch ref carrying U+202E and U+200B and
+     * returns it byte-identical (card#9266). They are the two that cannot simply be escaped
+     * here, because `RevertGrammar` and `NoCloseGrammar` match on the RAW bytes and an
+     * escaped ref would match nothing; `ForeignText` keeps the raw bytes reachable through a
+     * named, pinned accessor while making an interpolation a build error. ⚑ THE OTHER FIVE
+     * KEYS STAY `string` BECAUSE THEIR AUTHOR IS GITHUB, NOT THE PR'S OPENER: `state`,
+     * `merged` and `merge_commit_sha` are generated, `html_url` is composed by GitHub from
+     * the repo and number, and `base_ref` names a branch that must already exist in the BASE
+     * repo — a fork's opener cannot create one there.
+     *
      * that goes null on a deleted fork, and nothing here reads it. An absent ref reads as
      * `''`, which names no card: the safe direction, and the same one the title takes.
      *
@@ -210,7 +224,7 @@ final class GitHubReadClient
      * the two apart, and {@see warnUnreadableBody} names the cause here for the callers that
      * cannot.
      *
-     * @return array{state: string, merged: ?bool, base_ref: string, html_url: string, merge_commit_sha: string, title: string, head_ref: string}
+     * @return array{state: string, merged: ?bool, base_ref: string, html_url: string, merge_commit_sha: string, title: ForeignText, head_ref: ForeignText}
      */
     public function getPull(string $repo, int $number): array
     {
@@ -233,8 +247,8 @@ final class GitHubReadClient
             'base_ref' => is_string($base) ? $base : '',
             'html_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
             'merge_commit_sha' => is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '',
-            'title' => is_string($pr['title'] ?? null) ? $pr['title'] : '',
-            'head_ref' => is_string($head) ? $head : '',
+            'title' => ForeignText::of(is_string($pr['title'] ?? null) ? $pr['title'] : ''),
+            'head_ref' => ForeignText::of(is_string($head) ? $head : ''),
         ];
     }
 

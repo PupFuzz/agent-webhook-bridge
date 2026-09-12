@@ -16,8 +16,11 @@ use App\Bridge\Support\UntrustedText;
  * line holds no live control codepoint, whatever put it there.
  *
  * ⚠ ABSENCE ALONE IS NOT THE ASSERTION. A renderer that dropped the span entirely would
- * satisfy it, so every caller pairs this with a PRESENCE witness for the ESCAPED form.
- * That pairing is the caller's job — it is per-payload and cannot live here.
+ * satisfy it, so the census is always paired with a PRESENCE witness for the ESCAPED form.
+ * {@see self::assertForeignValueEscapedInto()} is that pairing, hoisted here at its second
+ * caller once the escape moved to the producer (card#9200) and every per-producer pin needed
+ * the identical two-legged assertion — a caller that writes only one of the two legs is the
+ * shape this trait's own docblock warns about.
  *
  * ⭐ HOISTED AT THE SECOND REAL CALLER (canon #5), not at the first: it began as
  * `UntrustedSpanCoverageTest`'s private method, over the channel-probe producer, and the
@@ -57,5 +60,29 @@ trait AssertsNoLiveControlByte
             .'live control codepoints reached the operator terminal: '.implode(' ', $hits)
             .' — in: '.addcslashes($rendered, "\0..\37\177..\377")
         ));
+    }
+
+    /**
+     * The two-legged assertion every per-producer pin owes: the operator line carries NO live
+     * member of the escaped class, AND it carries the foreign value's ESCAPED form IN FULL.
+     *
+     * ⛔ THE PRESENCE LEG IS WHY THIS IS NOT A BARE CENSUS. An absence-only assertion is also
+     * satisfied by a producer that DROPPED the value, which would withhold the one part of the
+     * line naming the actual fault — so the escaped rendering is asserted as a substring, and
+     * the expectation is DERIVED by calling the escape rather than written out as a literal
+     * (a hand-written `\x{202E}` is a second implementation of the escape, and it drifts).
+     *
+     * ⚑ IT REPLACES THE SPAN-LIST READBACK the value-declaring design needed. That helper
+     * could only assert a producer had DECLARED a span; this asserts the OUTCOME, which is
+     * strictly stronger and does not care where in the sentence the value landed.
+     */
+    protected function assertForeignValueEscapedInto(string $rendered, string $raw, string $case = ''): void
+    {
+        $this->assertNoLiveControlByte($rendered, $case);
+        $this->assertStringContainsString(
+            UntrustedText::forOperator($raw),
+            $rendered,
+            trim(($case === '' ? '' : "[{$case}] ").'the foreign value did not reach the line in escaped form — a DROP satisfies an absence-only assertion, which is why this leg exists; line: '.addcslashes($rendered, "\0..\37\177..\377")),
+        );
     }
 }

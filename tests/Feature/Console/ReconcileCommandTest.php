@@ -945,6 +945,56 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    /**
+     * ⛔⭐ THE MEASURED card#9266 HARM, CLOSED, ON THE REAL SURFACE — a stranger's branch ref
+     * reaching ROOT's terminal on the ordinary success path of a healthy run, exit 0.
+     *
+     * The hostile ref is the one card#9266 measured GitHub ACCEPTING and returning
+     * byte-identical, so this is remotely reachable by anyone who can open a fork PR — not
+     * gated on local push rights. Both of the skip-line arms that name the ref are driven
+     * here (`RevertGrammar` matches the `revert-` ref, so this fixture takes the revert arm;
+     * the default arm is the sibling below).
+     *
+     * ⚑ DRIVEN THROUGH THE COMMAND, never through `ForeignText` directly: what is under test
+     * is that the PRODUCER hands back a type the command CANNOT interpolate, which is a fact
+     * about the two files together. `ForeignTextTest` owns the type's own properties.
+     *
+     * ⚠ ONE `expectsOutputToContain` PER RUN — the first matcher consumes the line, so the
+     * escaped-ref witness and the no-live-ESC census cannot both be matchers. The census is
+     * asserted on the buffer the run wrote.
+     */
+    public function test_a_hostile_head_ref_reaches_the_skip_line_escaped(): void
+    {
+        $this->writeWriteback();
+        $hostile = "revert-611-card-5-\u{202E}tegdiw\u{200B}\x1B[2J";
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'Revert "work (Closes card#5)"', 'head' => ['ref' => $hostile],
+        ]]);
+
+        // PRESENCE WITNESS: the ref is still on the line, in escaped form — the fix is not a
+        // drop, and an operator reading a skip line can still see which branch it was about.
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('\x{202E}tegdiw\x{200B}\x1B[2J')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⚑ THE NON-VACUITY CONTROL for the leg above, and it is a control over the FIXTURE rather
+     * than over the code: the hostile ref must actually carry the bytes the escape exists to
+     * remove, or the assertion above would pass against a ref that never had any.
+     */
+    public function test_the_hostile_ref_fixture_actually_carries_control_bytes(): void
+    {
+        $hostile = "revert-611-card-5-\u{202E}tegdiw\u{200B}\x1B[2J";
+
+        $this->assertStringContainsString("\x1B", $hostile);
+        $this->assertStringContainsString("\u{202E}", $hostile);
+        $this->assertStringContainsString("\u{200B}", $hostile);
+    }
+
     public function test_the_backstop_still_reconciles_the_reverted_original(): void
     {
         // ⛔ THE CONTROL, one variable away: the SAME title and the SAME branch without

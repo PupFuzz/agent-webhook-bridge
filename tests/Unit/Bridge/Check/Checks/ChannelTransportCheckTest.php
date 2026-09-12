@@ -10,8 +10,8 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\UntrustedPathContents;
 use Illuminate\Support\Facades\File;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\MaterializesChecks;
-use Tests\Support\ReadsDeclaredSpans;
 use Tests\TestCase;
 
 /**
@@ -38,8 +38,8 @@ use Tests\TestCase;
  */
 class ChannelTransportCheckTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use MaterializesChecks;
-    use ReadsDeclaredSpans;
 
     private string $dir;
 
@@ -532,12 +532,11 @@ class ChannelTransportCheckTest extends TestCase
 
     /**
      * THE DETAIL IS DECLARED UNTRUSTED, AND THE MESSAGE IS STILL VERBATIM (card#9121,
-     * DL-366) — the two halves of the same decision. The call site records WHERE the
-     * foreign span is; it escapes nothing, because escaping here would change the bytes
-     * `--format=json` hands to consumers already parsing them. The escape is the terminal
-     * renderer's, and `UntrustedFindingDetailTest` owns that half.
+     * DL-366, card#9200) — the marker's detail is bytes the connector's ACCOUNT wrote into a
+     * file this process reads as the operator, and the escape is applied at the interpolation
+     * in this check rather than deferred to a renderer.
      */
-    public function test_the_marker_detail_is_declared_untrusted_on_both_transports(): void
+    public function test_the_marker_detail_is_escaped_on_both_transports(): void
     {
         $payload = "\x1b[2JEADDRINUSE";
         $marker = $this->dir.'/run/agent-webhook-bridge-channel-prod-agent.http-8765.FAILED';
@@ -549,20 +548,27 @@ class ChannelTransportCheckTest extends TestCase
         $unix = $this->socketFindings($socket, $this->probe(connected: false));
 
         foreach (['http' => $http[0], 'unix' => $unix[0]] as $transport => $finding) {
-            $this->assertSame([$payload], $this->declaredSpans($finding), "{$transport}: the marker detail must be declared untrusted");
-            $this->assertStringContainsString("({$payload})", $finding->message, "{$transport}: the message must still carry the raw bytes");
+            $this->assertForeignValueEscapedInto($finding->message, $payload, $transport);
+            // ⛔ AND THE RAW BYTES ARE GONE FROM THE MESSAGE ITSELF, which is the half that
+            // changed: `--format=json` reads this field, and it no longer hands a machine
+            // consumer an erase-line. `message` is not a write contract —
+            // `docs/check-json-contract.md` §2 — so this is a rewording that surface licenses.
+            $this->assertStringNotContainsString($payload, $finding->message, "{$transport}: the raw bytes must not survive into the message");
         }
     }
 
-    /** No detail, nothing foreign in the sentence — so nothing is declared. */
-    public function test_an_empty_marker_declares_no_untrusted_span(): void
+    /** No detail, nothing foreign in the sentence — so no echo clause at all. */
+    public function test_an_empty_marker_echoes_no_detail(): void
     {
         $marker = $this->dir.'/run/agent-webhook-bridge-channel-prod-agent.http-8765.FAILED';
         File::put($marker, '   ');
 
         $findings = $this->httpFindings('http://127.0.0.1:8765/push', $this->probe(connected: false));
 
-        $this->assertSame([], $this->declaredSpans($findings[0]));
+        // The parenthesised detail is the ONLY `(` this line can carry, so its absence is the
+        // assertion — and a whitespace-only detail must not render as an empty `()` either.
+        $this->assertStringNotContainsString('(', $findings[0]->message);
+        $this->assertStringContainsString('channel bind-FAILURE marker at ', $findings[0]->message);
     }
 
     // ---- neither ----

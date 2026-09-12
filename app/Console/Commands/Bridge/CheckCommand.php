@@ -66,7 +66,6 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\Untrusted;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\ConfigSeenLedger;
@@ -475,14 +474,13 @@ class CheckCommand extends BridgeCommand
                         // `unvalidated` and not `warn` (DL-251): an envelope that cannot
                         // name its cause did not answer anything.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        // DECLARED PRECAUTIONARILY (card#9121, DL-366), and for the
+                        // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and for the
                         // envelope's OWN stated reason: the paragraph above says a check
                         // throwing AFTER the client built lands here too, and those checks
                         // read kanban through `->throw()` — so this arm can relay a
                         // `RequestException` carrying a response-body summary. An envelope
                         // that cannot name its cause cannot rule that cause out either.
-                        $relayed = $e->getMessage();
-                        $this->emitUnattributed(Finding::unvalidated(['writeback: skipped board-visibility probe — ', Untrusted::span($relayed)]));
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.UntrustedText::forOperator($e->getMessage())));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -1026,14 +1024,6 @@ class CheckCommand extends BridgeCommand
      * fall-through, which is the shape that let an unknown severity print green in
      * the first place — one level over. A fifth case reds phpstan at both.
      *
-     * UNTRUSTED SPANS ARE ESCAPED HERE AND NOWHERE ELSE (card#9121, DL-366). A finding may
-     * carry bytes a foreign principal wrote — today the channel bind-FAILURE marker's
-     * detail — and this is the boundary where they become a terminal line. The rule lives
-     * in `App\Bridge\Support\UntrustedText` so a second producer does not re-implement it,
-     * and it is applied INSIDE the format gate below: `--format=json` carries
-     * `Finding::$message` verbatim to consumers already parsing it, so sanitising it here
-     * would be a shape change with no schema bump to warn them.
-     *
      * ONLY THE RENDER ARM IS GATED ON THE FORMAT (DL-249 stage 9); the tally and the
      * RETURN run either way, and that asymmetry is the exit contract's guarantee. A
      * `--format=json` run walks the identical decision path — the same checks, the same
@@ -1050,22 +1040,20 @@ class CheckCommand extends BridgeCommand
         }
 
         if (! $this->json) {
-            // THE ONE PLACE UNTRUSTED FINDING DETAIL IS MADE SAFE FOR A TERMINAL
-            // (card#9121, DL-366), and it is INSIDE the format gate on purpose: the JSON
-            // document reads `Finding::$message` and must stay byte-identical for the
-            // consumers already parsing it, so the escape is a property of the terminal
-            // rendering and of nothing else. The rule itself is `UntrustedText`'s, applied
-            // to the SEGMENTS a check composed its message from — its own prose verbatim,
-            // each declared foreign span through the escape, at the position it occupies.
-            // Nothing is searched for; a message with no declared span renders to the same
-            // bytes it always did, so this is a no-op on every finding the bridge wrote.
-            $message = UntrustedText::render($finding->segments);
-
+            // ⛔ NOTHING IS ESCAPED HERE, AND THAT IS THE FIX (card#9200, DL-366). An earlier
+            // cut of this change escaped untrusted spans at THIS boundary, on the premise
+            // that `findings[].message` is a write contract the JSON document must carry
+            // byte-identically. `docs/check-json-contract.md` §2 falsifies that premise in
+            // bold — `message` strings are NOT part of the contract — and the premise was
+            // load-bearing: escaping at a SINK forces each producer to declare which span of
+            // its own sentence is foreign, which makes the escape opt-in and an omission
+            // invisible. The escape now happens where the foreign value is produced or
+            // interpolated, so this renderer has nothing left to do about it.
             match ($finding->severity) {
-                Severity::Fail => $this->error($message),
-                Severity::Warn => $this->warn($message),
-                Severity::Unvalidated => $this->line($message),
-                Severity::Ok => $this->info($message),
+                Severity::Fail => $this->error($finding->message),
+                Severity::Warn => $this->warn($finding->message),
+                Severity::Unvalidated => $this->line($finding->message),
+                Severity::Ok => $this->info($finding->message),
             };
         }
 

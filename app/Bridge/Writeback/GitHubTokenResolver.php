@@ -5,6 +5,7 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Support\PathHelper;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Support\Facades\Process;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
@@ -115,7 +116,16 @@ final class GitHubTokenResolver
         }
 
         if (! $result->successful()) {
-            $err = trim($result->errorOutput());
+            // ⛔ ESCAPED HERE, AT THE PRODUCER, so `TokenResolution::$problem` is a `string`
+            // that MEANS "safe to print" and no consumer of it has to remember (card#9200,
+            // DL-366). These are a SUBPROCESS's stderr bytes: `git-credential-coord` is a
+            // separate program, and what it writes there can include an error relayed from a
+            // store file or a remote. `$problem` is composed prose, so the escape goes round
+            // the foreign SPAN and not round the sentence — the bridge's own words must not
+            // consume the span's character cap. Three consumers print this field
+            // (`ReconcileCommand`, `ReconcileRepoTokensCheck`, `GitHubWebhookSubscriptionCheck`)
+            // and none of them can now get it wrong, including one added tomorrow.
+            $err = UntrustedText::forOperator(trim($result->errorOutput()));
 
             return TokenResolution::problem("git-credential-coord get failed for {$repo} (exit {$result->exitCode()})".($err !== '' ? ": {$err}" : ''));
         }
@@ -132,7 +142,7 @@ final class GitHubTokenResolver
         // No password line. Non-empty stderr ⇒ a helper-side error (an unreadable
         // `*_file`) that must FAIL LOUD per the framework fail-loud-on-`*_file`
         // contract; empty stderr ⇒ genuinely unmapped → fall through to GH_TOKEN.
-        $err = trim($result->errorOutput());
+        $err = UntrustedText::forOperator(trim($result->errorOutput()));
         if ($err !== '') {
             return TokenResolution::problem("git-credential-coord could not resolve {$repo}: {$err}");
         }
