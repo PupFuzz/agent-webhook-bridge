@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
@@ -84,6 +85,11 @@ class AgentToolsCallTest extends TestCase
      */
     private function callTool(array $body, ?string $bearer = null, array $server = [])
     {
+        // Each call models its own FPM request, i.e. its own process, which is what the
+        // write-once seat seal is scoped to (card#9170). Seven tests in this class drive the
+        // door twice on purpose; in production those are two processes.
+        CallingSeatSeal::forANewServingProcess();
+
         $bearer ??= $this->token;
         $server = array_merge(['REMOTE_ADDR' => '127.0.0.1'], $server);
         if ($bearer !== '') {

@@ -12,29 +12,31 @@ use Illuminate\Support\Facades\Log;
  * server-side resolution that lets {@see BoardTakeCardTool} write an assignee without ever
  * taking a user id from the payload.
  *
- * ⛔⭐ READ THIS BEFORE YOU CALL IT — WHAT IS AND IS NOT GUARANTEED, because an earlier
- * revision of this docblock got it WRONG and the correction is the useful part. It said
- * *"there is no parameter a caller can influence"* and *"nothing here can look up another
- * agent"*. **Both were false OF THIS CLASS.** {@see forCallingAgent} iterates the whole
- * roster and matches on the name it is handed, so handed any agent's name it returns that
- * agent's id — measured on a three-agent roster, it answers 111, 222 and 333 for `me`,
- * `other` and `pm`. What does not exist is a fleet-wide seat→kanban-user MAP ARTIFACT; what
- * this class is, is a lookup that would serve one.
+ * ⛔⭐ READ THIS BEFORE YOU CALL IT — WHAT IS AND IS NOT GUARANTEED. There is NO agent-name
+ * parameter: {@see forCallingSeat} reads {@see CallingSeat}, the write-once seat the front
+ * door sealed at dispatch entry, and there is no expressible call that asks it about anybody
+ * else. ⚠ The lookup UNDERNEATH is still a whole-roster scan matching on a name — that has
+ * not changed and is not a defect; what changed is that no caller supplies the name.
  *
- * ⭐ SO THE SELF-ONLY PROPERTY IS A PROPERTY OF THE CALL GRAPH, NOT OF THIS SIGNATURE, and
- * saying so plainly is the point: it holds because EVERY call site passes the `$agentName`
- * the DOOR derived (from the bearer on http, from the pinned ssh forced command) and never a
- * value from the request body. That is one site today —
- * {@see BoardTakeCardTool::call} — and one site is exactly the distance between the property
- * and being false. So it is not left to be remembered:
- * `Tests\Feature\AgentTools\SeatIdentityCallSiteGuardTest` GUARDS it — and that class OWNS
- * the census. What it derives, which SPELLINGS of a call its predicate can see and which one
- * it refuses outright, and what it still cannot reach, are stated THERE and deliberately not
- * restated here: this paragraph used to carry a copy, and the copy went on asserting the
- * census was complete while the predicate was blind to two of the three ways a second caller
- * can be spelled. A second caller is a REVIEW EVENT, not a silence — which is
- * what DL-372's own argument demands, having rejected a validated `assigned_user_id`
- * argument for putting the property *"one forgotten branch away from being false"*.
+ * ⛔⭐ AND THAT IS A REVERSAL OF DL-372 DECISION 7, MADE ON MEASUREMENT AND APPROVED BY THE
+ * OPERATOR — the correction is the useful part. Until this change the self-only property was
+ * a property of the CALL GRAPH, held by a source-code census asserting that every call site
+ * passed the door-derived `$agentName`. **That census could not hold.** Measured, executing,
+ * with the suite green: a reference alias (`$ref = &$agentName; $ref = $args['agent'];`)
+ * defeats the rebind leg, and eleven further shapes do too — `extract()`, variable variables,
+ * by-reference out-params (`preg_match`, `sscanf`), `foreach` binding, destructuring, `??=`,
+ * a closure parameter of the same name — several of which leave NO `$agentName =` token in
+ * the body at all. Closing that textually is data-flow analysis, and there is no grammar that
+ * bounds it. A parameter that must not be poisoned is the wrong shape for the guarantee, so
+ * the parameter is GONE.
+ *
+ * ⭐ THE PROPERTY IS NOW A ONE-SHOT STATE'S, AND THE REGRESS BOTTOMS OUT ON IT. DL-372 was
+ * right that no VALUE can carry this guarantee in PHP — whatever mints a value, something
+ * else can mint another. A state that may be written ONCE PER PROCESS is not a value: a
+ * second write is a THROW, both orderings fail closed, and the forger's problem stops being
+ * "can I construct one" and becomes "can I be first" — which it can only lose loudly.
+ * {@see CallingSeat} owns that argument and its bounds (reflection, the process model);
+ * they are stated there and deliberately not restated here.
  *
  * ⛔ AND IT IS STILL NOT A SEAT MAP, in the sense that matters across the repo boundary
  * (canon #7). It answers name → id, from THIS install's own roster, for a name this install
@@ -44,18 +46,20 @@ use Illuminate\Support\Facades\Log;
  * and a change that gave this class an enumeration or a reverse lookup would be minting
  * exactly the shared table the design exists to avoid.
  *
- * ⚠ IT RE-READS THE ROSTER RATHER THAN BEING THREADED THROUGH {@see Tool::call}. The
- * alternative — an extra parameter on the tool interface, or a value object carrying the
- * door-derivation in its TYPE — is a breaking change to a contract operators register their
- * own tools against, for a value only this tool needs; and PHP has no friend visibility, so
- * a "only the doors may mint it" type is not expressible anyway: a private constructor only
- * forces minting through a factory whose argument types (`ResolvedBoardToolAgent`,
- * `AgentConfig`) any code in the app can hold. The guard above is falsifiable and has been
- * watched fail; that type would not have been. And
- * and the read is the SAME authoritative source both front doors already used to
- * authenticate this very call, so it cannot answer about a different roster than the one
- * that resolved the agent. What it CAN see is a roster that changed between the two reads,
- * which is why {@see NOT_IN_ROSTER} is a real state and not a defensive one.
+ * ⚠ IT RE-READS THE ROSTER RATHER THAN BEING THREADED THROUGH {@see Tool::call}, and
+ * {@see Tool::call}'s SIGNATURE IS UNTOUCHED BY THIS CHANGE — the seat travels in a static,
+ * not in a new parameter, so the extension point operators register their own tools against
+ * does not move. ⛔ Two of DL-372's three stated reasons for declining a typed
+ * door-derivation were measured FALSE and are not repeated here: the name ALREADY travels
+ * through `Tool::call` as `$agentName`, and *"documented extension point"* is documented in
+ * 0 of the 5 docs consulted. The third — PHP has no friend visibility, so a private
+ * constructor only forces minting through a factory whose argument types
+ * (`ResolvedBoardToolAgent`, `AgentConfig`) any code in the app can hold — was measured TRUE,
+ * and it is why the answer is a one-shot STATE and not a value object. The read itself is the
+ * SAME authoritative source both front doors already used to authenticate this very call, so
+ * it cannot answer about a different roster than the one that resolved the agent. What it CAN
+ * see is a roster that changed between the two reads, which is why {@see NOT_IN_ROSTER} is a
+ * real state and not a defensive one.
  *
  * ⛔ AND A `kanban_user_id` DECLARED BY MORE THAN ONE AGENT IS ONE OF THOSE FAULTS, because
  * an id that names two seats does not identify the CALLER. `assigned_user_id` is a kanban
@@ -101,24 +105,32 @@ final class SeatKanbanUser
     private const SHARED_KANBAN_USER_ID = 'shared_kanban_user_id';
 
     /**
-     * The kanban user id declared for $callingAgentName, or a named INSTALL-fault refusal.
+     * The kanban user id declared for THE SEAT THIS PROCESS IS SERVING, or a named
+     * INSTALL-fault refusal.
      *
-     * ⛔ IT ANSWERS ABOUT WHATEVER NAME IT IS HANDED. The method is named for its ONE
-     * legitimate argument rather than for what it mechanically does, so a call site passing
-     * anything else READS wrong — but a name is not a check, and the check is the call-site
-     * guard the class docblock names.
+     * ⛔ THERE IS NO NAME PARAMETER, AND THAT ABSENCE IS THE GUARANTEE. The seat comes from
+     * {@see CallingSeat::name()}, which only a front door establishes and only once — so
+     * "which seat" is not a value any caller of this method supplies, gets wrong, or can be
+     * talked into supplying.
      *
-     * @param  string  $callingAgentName  the agent name the DOOR derived — the bearer's
-     *                                    (http) or the pinned forced command's (ssh). Never
-     *                                    a value read out of the request body, and never
-     *                                    another agent's.
+     * ⚠ AND THE RUNTIME DOES NOT ENFORCE THAT — MEASURED, PHP 8.5.9. A call site written
+     * `forCallingSeat($args['agent'], 'zz')` does NOT raise `ArgumentCountError`: PHP raises
+     * that for too FEW arguments to a userland function and silently IGNORES extra ones, so
+     * the payload binds to `$tool` and is spliced into a refusal MESSAGE. The identity is
+     * untouched either way — that is the point of the seat not being a parameter — but the
+     * rejection comes from **phpstan at level 7** (`arguments.count`) and from
+     * `SeatIdentityCallSiteGuardTest`'s set-equality census, never from the language.
+     *
      * @param  string  $tool  the tool name every message is prefixed with, so the seat reads
      *                        a refusal from the tool it called rather than from a helper
      *
      * @throws ToolRefusalException
+     * @throws \LogicException if no front door established a seat for this process
      */
-    public static function forCallingAgent(string $callingAgentName, string $tool): int
+    public static function forCallingSeat(string $tool): int
     {
+        $callingAgentName = CallingSeat::name();
+
         try {
             $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
         } catch (ConfigException $e) {

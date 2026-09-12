@@ -23,10 +23,11 @@ use Illuminate\Support\Facades\Log;
  *
  * ⛔⭐ THE ID IS RESOLVED FROM THE AGENT REGISTRY AND THERE IS NO ARGUMENT FOR IT. This
  * tool accepts `card_id` AND NOTHING ELSE; the value written is
- * {@see SeatKanbanUser::forCallingAgent}'s answer for the agent name the DOOR derived (from the
- * bearer, or from the pinned ssh forced command) — never a value that travelled in the
- * request. That is the constraint the whole feature rests on, and it is a CONSTRUCTION,
- * not a validation: this door is driven by a lower-trust principal, and a tool that
+ * {@see SeatKanbanUser::forCallingSeat}'s answer for the seat the DOOR sealed at dispatch
+ * entry ({@see CallingSeat}) — never a value that travelled in the request, and not even a
+ * name this method could pass, because that method takes none. That is the constraint the
+ * whole feature rests on, and it is a CONSTRUCTION, not a validation: this door is driven
+ * by a lower-trust principal, and a tool that
  * accepted an `assigned_user_id` — even a validated one — would put "a seat may claim
  * only for itself" one forgotten branch away from false, letting one seat assign work to
  * another or impersonate a take. Here there is no expressible call that writes another
@@ -176,7 +177,7 @@ final class BoardTakeCardTool implements Tool
         // than as a board lookup that went nowhere.
         $this->refuseForeignArguments($args);
         $cardId = $this->requireCardId($args);
-        $userId = SeatKanbanUser::forCallingAgent($agentName, $this->name());
+        $userId = SeatKanbanUser::forCallingSeat($this->name());
 
         $boardId = (int) $cfg->boardId;
         [$row, $lane] = $this->takeableRow($client, $cfg, $boardId, $cardId, $agentName);

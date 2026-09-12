@@ -5,10 +5,10 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Tools\BoardTakeCardTool;
 use App\Bridge\Tools\BoardToolDispatcher;
-use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\SeatKanbanUser;
 use App\Bridge\Tools\Tool;
 use PHPUnit\Framework\Assert;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
 
@@ -16,135 +16,107 @@ use Tests\TestCase;
  * THE STRUCTURAL ENFORCER FOR THE ONE PROPERTY card#9170's OPERATOR APPROVAL RESTS ON:
  * a seat may set the assignee to ITS OWN kanban user and no other.
  *
- * ⭐ WHY IT EXISTS, and the adversarial review that found the gap is the argument.
- * DL-372 argued the property was a CONSTRUCTION rather than a validation — it rejected a
- * validated `assigned_user_id` argument for putting the property *"one forgotten branch
- * away from being false"*. As first shipped, {@see SeatKanbanUser} carried a docblock
- * asserting, twice, that nothing there could look up another agent. **That was false of the
- * class.** {@see SeatKanbanUser::forCallingAgent} iterates the whole roster and matches on
- * the name it is handed, so it answers about ANY agent — a three-agent roster returns three
- * different ids for three different names. The self-only property was, and is, a property of
- * the CALL GRAPH: it holds because every call site passes the `$agentName` the DOOR derived.
- * There was exactly one such site and nothing that would red if a second appeared — which is
- * the same distance the DL rejected, wearing a different hat.
+ * ⛔⭐ READ THIS FIRST: THIS CLASS IS NO LONGER THE BOUNDARY, AND IT IS MUCH SMALLER THAN IT
+ * WAS. Until round 5 the property was the CALL GRAPH's and this census WAS the whole
+ * guarantee: it derived every `SeatKanbanUser::` call site and asserted that each passed the
+ * door-derived `$agentName`, unrebound. **That leg is RETIRED because it was measured
+ * UNCLOSEABLE**, and the measurement is the useful part, not the conclusion. A reference
+ * alias — `$ref = &$agentName; $ref = $args['agent'];` — defeats the rebind leg while the
+ * first argument still reads `$agentName`, and it EXECUTES: it returns another seat's id with
+ * this class green. Eleven further shapes do the same (`extract()`, a variable variable,
+ * by-reference out-params such as `preg_match` and `sscanf`, `foreach` binding,
+ * list-destructuring, `??=`, a closure parameter of the same name), several of which put no
+ * `$agentName =` token in the body at all. Closing that textually is data-flow analysis, and
+ * unlike PHP 8's class-name token set — which is CLOSED at four, which is why THAT widening
+ * was allowed to terminate — there is no grammar that bounds this one. A census whose next
+ * hole is always unwritten is the defect it was built to prevent, wearing the guard's hat.
  *
- * ⛔ AND THE TWO ALTERNATIVES DL-372 PARKS ARE BOTH NATURAL SECOND CALLERS — a
- * `board_release_card` sibling, and rendering a seat NAME beside `assigned_user_id` in
- * `board_my_cards`. Neither is hypothetical; both are written down as things somebody may
- * come back and build.
+ * ⭐ SO THE ARGUMENT IS GONE. {@see SeatKanbanUser::forCallingSeat} takes `$tool` and NOTHING
+ * ELSE; the seat comes from {@see CallingSeat}, a WRITE-ONCE process-local state the front
+ * door seals at {@see BoardToolDispatcher::dispatch}'s first statement. Every one of the
+ * twelve shapes above is a way of poisoning an argument, and none of them has a subject any
+ * more. ⛔ This REVERSES DL-372 Decision 7, with the operator's explicit approval, and the
+ * reversal is narrow: that decision declined a `DerivedAgentName` VALUE OBJECT, and its leg
+ * (a) — PHP has no friend visibility, so the mint regress does not bottom out on a value —
+ * was re-measured TRUE and is not what changed. A one-shot STATE is not a value: a second
+ * write is a THROW, so the regress bottoms out on ORDERING, and both orderings fail closed
+ * (a rogue that arrives second loses; a rogue that arrives FIRST makes the DOOR's own
+ * establish throw, which 500s the request and writes nothing). Legs (b) and (c) were measured
+ * FALSE — the name already travels through `Tool::call`, and *"documented extension point"*
+ * is documented in 0 of the 5 docs consulted — and, load-bearing here, **`Tool::call`'s
+ * signature is untouched by this design**, so the contract-breakage cost is zero.
  *
- * ⭐ WHY A GUARD AND NOT A TYPE. The reviewer's preferred fix was a `DerivedAgentName` value
- * object *"only the two front doors can mint"*, so that the signature carries the guarantee.
- * That was measured against the language and DECLINED, on mechanism rather than cost:
- *  - **PHP has no friend or package visibility.** A private constructor forces minting
- *    through a factory, and the factory's argument types (`ResolvedBoardToolAgent`,
- *    `AgentConfig`) are both constructible or loadable by any code in `app/`. "Only the doors
- *    can mint it" is not expressible; what would ship is a type that LOOKS like a guarantee.
- *  - **The value object has to reach the tool**, which means `Tool::call`'s signature — a
- *    documented extension point operators register their own tools against
- *    ({@see BoardToolsRegistry::register}). Breaking it buys a soft
- *    guarantee.
- *  - **This guard is FALSIFIABLE and has been watched fail** (both directions, below); the
- *    type would not have been. Canon #9: a pass is evidence only if failure was possible.
- * If a future change does thread a derived-name type through the door, this class is what
- * says the call graph still holds while that lands — it is not an alternative to it.
+ * ⛔ WHAT THIS CLASS IS NOW: BELT-AND-BRACES, AND THAT IS THE HONEST WORD FOR IT. Nothing
+ * below is load-bearing for the self-only property — the state is — and each leg is kept for
+ * a stated second reason:
+ *  1. **THE `CallingSeat` CENSUS** ({@see CALLING_SEAT_SITES}) — set equality, both
+ *     directions, over every `CallingSeat::<method>(` call site in the population. A NEW
+ *     `establish` site is a REVIEW EVENT: it cannot silently win (whichever of the two runs
+ *     second throws), but a process that establishes twice is a process whose board-tools
+ *     call dies at a 500, so it is a liveness defect worth seeing before it ships. A new
+ *     `name()` reader resolves the SAME seat and is reviewable for a different reason: the id
+ *     it returns is an identity, and a second consumer of an identity is a design question.
+ *  2. **THE `SeatKanbanUser` CENSUS** ({@see DISPOSITIONED}) — set equality only; there is no
+ *     argument left to check. A second resolver call site is no longer a security event, and
+ *     the assertion is kept because a second CONSUMER of a seat's kanban id still deserves to
+ *     be read by somebody.
+ *  3. **NO ALIASED IMPORT** of the resolver anywhere in the population — the one spelling
+ *     legs 1 and 2 cannot see by DESIGN, refused rather than resolved.
+ *  4. **WHICH FILES MAY NAME THE RESOLVER AT ALL** ({@see NAMING_FILES}) — kept, because it
+ *     is the only leg that sees an INDIRECT invocation (a `::class` callable array, a class
+ *     name spelled as a string), and because a new file naming the class is still the
+ *     cheapest possible review trigger.
  *
- * ⛔⭐ THE POPULATION IS THREE LEGS, AND IT IS THREE BECAUSE THE FIRST CUT WAS BLIND TO TWO
- * OF THE THREE WAYS A SECOND CALLER CAN BE SPELLED. That cut required a `T_STRING` whose text
- * was exactly `SeatKanbanUser`; an adversarial review planted each spelling in `app/` in turn
- * and MEASURED the guard: unqualified → RED (it worked), while `\App\Bridge\Tools\SeatKanbanUser::`
- * and `use … as Roster;` each left the WHOLE class GREEN. PHP 8 emits a qualified name as ONE
- * `T_NAME_QUALIFIED` / `T_NAME_FULLY_QUALIFIED` token, and an alias replaces the class token
- * outright — and a fully-qualified reference is the NATURAL reflex from `app/Providers`,
- * `app/Console` or `app/Bridge/Check`, which is precisely where a second caller gets written.
- * ⛔ ONE POPULATION FOR ALL THREE LEGS, AND IT IS NOT `app/` — that was a second, separate
- * hole, measured the same way: a fully-qualified call appended to `routes/console.php` left
- * the whole class GREEN, and an `Artisan::command` that resolves a seat id is exactly where
- * somebody writes one. The population is therefore {@see populationFiles} — **every `*.php`
- * file this repository TRACKS, except `tests/` and `vendor/`** — derived from `git ls-files`
- * on every run rather than from a list of roots, so a PHP root that does not exist yet is in
- * it the day it is added. ⚠ The three legs MUST share it: leg 3 alone would red on a new
- * `routes/` caller, but dispositioning that file into {@see NAMING_FILES} would then exempt
- * it from the RULE, because legs 1 and 2 would never have looked there.
+ * ⛔ ONE POPULATION FOR EVERY LEG, AND IT IS NOT `app/` — measured, not assumed: a
+ * fully-qualified call appended to `routes/console.php` left this whole class GREEN when the
+ * population was `app/` alone, and an `Artisan::command` that resolves a seat id is exactly
+ * where somebody writes one. The population is {@see populationFiles} — **every `*.php` file
+ * this repository TRACKS, except `tests/` and `vendor/`** — derived from `git ls-files` on
+ * every run rather than from a list of roots, so a PHP root that does not exist yet is in it
+ * the day it is added. ⚠ The legs MUST share it: leg 4 alone would red on a new `routes/`
+ * caller, but dispositioning that file would then exempt it from legs 1–3.
  *
- * So, re-derived every run:
- *  1. **THE CALL SITES.** Every `<class>::<method>(` call in the population, on PHP's own
- *     tokenizer ({@see SourceScan::sites}), where `<class>` is any of the FOUR class-name-
- *     reference tokens PHP 8 tokenises (`T_STRING`, `T_NAME_QUALIFIED`,
- *     `T_NAME_FULLY_QUALIFIED`, `T_NAME_RELATIVE`) whose final `\`-segment EQUALS
- *     {@see IDENTITY_CLASS} — so a mention in a docblock or a `{@see}` is excluded by
- *     CONSTRUCTION and a qualified spelling is INCLUDED by it. That set is CLOSED: PHP 8 has
- *     no fifth class-name token, so this enumeration terminates rather than chasing a
- *     spelling ({@see namesIdentityClass}). Sites are keyed
- *     `<repo-relative path>::<enclosing function>#<ordinal>`.
- *  2. **NO ALIASED IMPORT ANYWHERE IN THE POPULATION** — one spelling leg 1 cannot see by
- *     DESIGN, because after `use … as Roster;` the class token at the call site is `Roster`.
- *     It is REFUSED rather than resolved: the remediation is to spell the class, not to teach
- *     the walk import tables ({@see test_no_file_in_the_population_imports_the_identity_class_under_an_alias}).
- *     (A string-spelled call is the OTHER spelling leg 1 cannot see, by the same design —
- *     that one is leg 3's, immediately below.)
- *  3. **WHICH FILES MAY NAME THE CLASS AT ALL** ({@see NAMING_FILES}), which is what closes
- *     INDIRECT invocation from a new file — a `[SeatKanbanUser::class, 'forCallingAgent']`
- *     callable handed to `call_user_func`, say — without teaching the walk to resolve
- *     callables. ⭐ **A name token is not the only way a file names a class**, and reading
- *     only name tokens was the round-2 hole: `call_user_func('App\Bridge\Tools\SeatKanbanUser::forCallingAgent', …)`
- *     spells it as a `T_CONSTANT_ENCAPSED_STRING`, which is the PLAINEST spelling of an
- *     indirect call and not an obfuscation at all. So leg 3 reads STRING TEXT too
- *     ({@see stringSpellsIdentityClass}) — the class name as a whole identifier, in the
- *     source text of any string token. A new file that so much as names this class, as a
- *     name token OR inside a string, is a review event.
- *
- * THE RULE, over that whole population: a site's FIRST argument must be the bare variable
- * `$agentName` — the parameter `Tool::call` receives from
- * {@see BoardToolDispatcher}, which receives it from a door — and that
- * variable must not be REBOUND anywhere in the enclosing body before the call.
+ * The predicate for legs 1 and 2 is ONE primitive ({@see staticCallSiteAt}) applied to two
+ * class names: every `<class>::<method>(` call in the population, on PHP's own tokenizer
+ * ({@see SourceScan::sites}), where `<class>` is any of the FOUR class-name-reference tokens
+ * PHP 8 tokenises (`T_STRING`, `T_NAME_QUALIFIED`, `T_NAME_FULLY_QUALIFIED`,
+ * `T_NAME_RELATIVE`) whose final `\`-segment EQUALS the subject class — so a mention in a
+ * docblock or a `{@see}` is excluded by CONSTRUCTION and a qualified spelling is INCLUDED by
+ * it. That set is CLOSED: PHP 8 has no fifth class-name token, so this enumeration terminates
+ * rather than chasing a spelling ({@see namesClass}). Sites are keyed
+ * `<repo-relative path>::<enclosing function>#<ordinal>` and carry the METHOD called.
  *
  * ⛔ STATED BOUNDS — what a green run says, and it is narrower than the class name.
- *  - **It checks the SPELLING of the argument and one way of corrupting it.** `$agentName`
- *    is the name every board tool receives the door-derived value under, and the rebind leg
- *    closes the obvious defeat (`$agentName = $args['agent'];` earlier in the body). It does
- *    NOT prove the dispatcher still derives that value from a door — that is
- *    `AgentToolsCallTest` / `ToolsCallCommandTest`'s, and those drive real doors. ⚠ THOSE TESTS
- *    PROVE THE TWO DOORS DERIVE THE NAME; THEY DO NOT PROVE {@see BoardTakeCardTool::call} HAS
- *    NO OTHER CALLER. That population is `BoardTakeCardTool::call`'s own call sites, not
- *    {@see IDENTITY_CLASS}'s, and this class does not walk it — read at source instead,
- *    presently exactly one, {@see BoardToolDispatcher} (`command grep -rn "BoardTakeCardTool"
- *    app/` returns only the registry entry, this docblock's `{@see}`s and that one call). A
- *    second caller of the TOOL — not of {@see IDENTITY_CLASS} — that passed a payload-derived
- *    name would be invisible to all three legs below, exactly as a second caller of
- *    {@see IDENTITY_CLASS} itself was before this class existed; nothing today makes one.
- *  - **Control flow is not modelled**: the rebind test is textual and body-scoped, exactly as
- *    `PinnedFieldWriteCoverageTest`'s consult test is. A rebind in a nested closure counts
- *    (it is in the same body); one in a called method does not.
- *  - ⛔⭐ **WHAT A GREEN RUN DOES NOT CLOSE — MEASURED, NOT COMPOSED, and that distinction is
- *    the round-2 finding rather than a flourish.** The previous bound was written by reasoning
- *    about the predicate ("no token-level census can see a name assembled at runtime") and it
- *    was FALSE in the direction that mattered: it put the residual *inside the two dispositioned
- *    files*, while a brand-new file calling
- *    `call_user_func('App\Bridge\Tools\SeatKanbanUser::forCallingAgent', $args['agent'], …)`
- *    — the plainest indirect call there is — was invisible to all three legs and the spelling
- *    was proven to EXECUTE, returning another seat's id. So this bound is now the output of a
- *    planted-caller matrix, one row per spelling, and every clause below is a row that was
- *    watched GREEN. Three shapes survive:
- *     1. **A name NO SINGLE STRING TOKEN SPELLS CONTIGUOUSLY.** Leg 3 reads the source text of
- *        a string, so the name must appear in one token, unescaped: `'App\Bridge\Tools\Seat'
+ *  - **It says nothing about whether the DISPATCHER still derives the name from a door.**
+ *    That is `AgentToolsCallTest` / `ToolsCallCommandTest`'s, and those drive real doors.
+ *    ⚠ THOSE TESTS PROVE THE TWO DOORS DERIVE THE NAME; THEY DO NOT PROVE
+ *    {@see BoardToolDispatcher::dispatch} HAS NO OTHER CALLER. That population is the
+ *    dispatcher's own call sites, not this class's, and no leg here walks it — read at source
+ *    instead, presently exactly two (`app/Http/Controllers/AgentTools/AgentToolsController.php`
+ *    and `app/Console/Commands/Bridge/ToolsCallCommand.php`, re-derived this round with
+ *    `command grep -rn -- "->dispatch(" app/ routes/`; the other hits are the unrelated event
+ *    dispatcher). ⭐ Since round 5 that gap is bounded rather than open: a second dispatcher
+ *    caller inside one process does not get to establish a second seat — it throws.
+ *  - **Reflection can still write {@see CallingSeat}'s private static.** Disclosed in that
+ *    class's own docblock and NOT claimed closed here; the suite itself takes that break, from
+ *    `tests/`, through `Tests\Support\CallingSeatSeal`.
+ *  - ⛔⭐ **WHAT A CENSUS RESIDUAL NOW COSTS, WHICH IS THE WHOLE REASON THE DESIGN MOVED.**
+ *    The spellings below are still invisible to these legs — that has not changed — but what
+ *    an invisible call could ACHIEVE has. Under the retired argument rule an unseen call site
+ *    silently returned another seat's id. Under the state, an unseen `CallingSeat::establish`
+ *    cannot install a name the door did not derive in ANY ordering, and an unseen
+ *    `SeatKanbanUser::forCallingSeat` can only ask about the seat the door sealed. The
+ *    residual is therefore a REVIEW gap, not a boundary gap. Measured, one row per spelling:
+ *     1. **A name NO SINGLE STRING TOKEN SPELLS CONTIGUOUSLY** — `'App\Bridge\Tools\Seat'
  *        .'KanbanUser'`, a name built from variables, a name read from `config()` at runtime,
  *        and `"App\Bridge\Tools\SeatKanban\x55ser"` were each planted and each stayed green.
- *        (Assembled from a class CONSTANT or a whole literal in a variable, it reds — the
- *        literal is still one token.)
- *     2. **A RUNTIME ALIAS REGISTERED BY A FILE THAT MAY ALREADY NAME THE CLASS.** A
+ *     2. **A RUNTIME ALIAS REGISTERED BY A FILE THAT MAY ALREADY NAME THE CLASS** — a
  *        `class_alias()` in {@see SeatKanbanUser} or `BoardTakeCardTool`, then invoked under
- *        the alias name from anywhere, stays green — those two files are in leg 3's set by
- *        disposition. From ANY other file the `class_alias` argument is a string and leg 3
- *        reds (planted, watched).
- *     3. **A FILE THIS REPOSITORY DOES NOT TRACK.** {@see populationFiles} is `git ls-files`,
+ *        the alias, stays green; from ANY other file the argument is a string and leg 4 reds.
+ *     3. **A FILE THIS REPOSITORY DOES NOT TRACK** — {@see populationFiles} is `git ls-files`,
  *        so an uncommitted working-copy file is outside the population and was measured green.
- *        That is the RIGHT direction, not merely the measured one: the alternative — a
- *        filesystem walk — needs a hand-maintained exclusion list for `vendor/`,
- *        `bootstrap/cache/` and compiled views, and the next member of that list is always the
- *        one nobody wrote down — the exact enumerated-population defect this whole class exists
- *        to close. Swapping the derived population for a hand-maintained exemption list would
- *        re-mint that bug inside the guard built to prevent it.
+ *        That is the RIGHT direction, not merely the measured one: a filesystem walk needs a
+ *        hand-maintained exclusion list whose next member is always the one nobody wrote down.
  *    ⚠ Written as three shapes and not as "and nothing else": the matrix is what this list
  *    reports, so a spelling nobody has planted is unmeasured rather than closed.
  *  - **`tests/` and `vendor/` are not in the population.** A test double is not a door, and
@@ -155,8 +127,11 @@ use Tests\TestCase;
  */
 class SeatIdentityCallSiteGuardTest extends TestCase
 {
-    /** The class whose call sites are the population. */
+    /** The resolver whose call sites legs 2–4 are about. */
     private const IDENTITY_CLASS = 'SeatKanbanUser';
+
+    /** The write-once seat the front door seals — leg 1's subject. */
+    private const CALLING_SEAT_CLASS = 'CallingSeat';
 
     /**
      * A FLOOR on {@see populationFiles}, never a count — so a `git ls-files` that answered
@@ -165,47 +140,174 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     private const MIN_POPULATION_FILES = 100;
 
     /**
-     * The ONE argument spelling a call site may pass: the parameter name every {@see Tool}
-     * receives the door-derived agent name under.
+     * ⭐ LEG 1 — EVERY `CallingSeat::` CALL SITE IN THE POPULATION, with the method it calls
+     * and the reason that site exists.
+     *
+     * ⛔ THIS IS NOT AN EXEMPTION LIST AND IT IS NOT THE BOUNDARY. The boundary is the
+     * write-once state itself: whichever `establish` runs second THROWS, so a call site this
+     * census never saw still cannot install a name the door did not derive. What the census
+     * buys is that a second `establish` is READ BY SOMEBODY before it ships — because the way
+     * it fails is a 500 on a live door, which is loud but late.
+     *
+     * @var array<string, array{method: string, why: string}>
      */
-    private const DOOR_DERIVED_ARGUMENT = '$agentName';
-
-    /** What {@see identitySiteAt} reports for a first argument that is not a bare variable. */
-    private const NOT_A_BARE_VARIABLE = '(not a bare variable at the call site)';
+    private const CALLING_SEAT_SITES = [
+        'app/Bridge/Tools/BoardToolDispatcher.php::dispatch#1' => [
+            'method' => 'establish',
+            'why' => 'THE SEAL, at the first statement of the one body BOTH front doors funnel into. `$agentName` here is the name the door derived — the bearer\'s on http, the pinned forced command\'s on ssh — and this is the last point at which it is still an argument.',
+        ],
+        'app/Bridge/Tools/SeatKanbanUser.php::forCallingSeat#1' => [
+            'method' => 'name',
+            'why' => 'THE ONLY READER: the resolver asks which seat this process is serving instead of taking a name from its caller. That question has exactly one answer per process and no parameter.',
+        ],
+    ];
 
     /**
      * Every `SeatKanbanUser::` call site in {@see populationFiles}, each with the reason it is
      * legitimate.
      *
-     * ⛔ THIS IS NOT AN EXEMPTION LIST. A site listed here still has to satisfy the rule; the
-     * list exists so that a site APPEARING or GOING is a red in its own right (set equality,
-     * both directions). Adding an entry does not make a violating site pass.
+     * ⛔ THIS IS NOT AN EXEMPTION LIST. The list exists so that a site APPEARING or GOING is a
+     * red in its own right (set equality, both directions). ⚠ Since round 5 a new site is a
+     * DESIGN question rather than a security one — the resolver answers only about the sealed
+     * seat, so a second caller cannot learn another seat's id by asking differently.
+     *
+     * ⛔⭐ AND THE OBVIOUS ASSUMPTION ABOUT A POISONED CALL IS WRONG — MEASURED, PHP 8.5.9 ON
+     * THIS HOST. `SeatKanbanUser::forCallingSeat($args['agent'], 'zz')` does NOT raise
+     * `ArgumentCountError`: PHP raises that for too FEW arguments to a userland function and
+     * silently IGNORES extra ones (`A::f('PAYLOAD', 'zz')` binds `'PAYLOAD'` to the single
+     * parameter and drops `'zz'`). So a planted poison binds to `$tool` — a refusal-message
+     * prefix — and the IDENTITY is untouched, because the seat was never a parameter. What
+     * rejects such a call site is phpstan at level 7 (`arguments.count`, watched red) and this
+     * set-equality census; nothing at runtime does, and saying otherwise would credit the
+     * language with a check it does not perform.
      *
      * @var array<string, string>
      */
     private const DISPOSITIONED = [
-        'app/Bridge/Tools/BoardTakeCardTool.php::call#1' => 'THE call site the self-only property rests on: `$agentName` is `Tool::call`\'s own parameter, which BoardToolDispatcher passes from the door that derived it (the bearer on http, the pinned forced command on ssh), and it is never rebound in this body. The id it returns is the ONLY value the tool writes to `assigned_user_id`.',
+        'app/Bridge/Tools/BoardTakeCardTool.php::call#1' => 'THE call site the feature rests on. It passes only the TOOL NAME (for the refusal message); the identity comes from `CallingSeat` inside the resolver. The id it returns is the ONLY value the tool writes to `assigned_user_id`.',
     ];
 
     /**
-     * LEG 3'S DISPOSITION: the files in the population that may NAME this class in CODE at
+     * LEG 4'S DISPOSITION: the files in the population that may NAME the resolver in CODE at
      * all (prose is dropped by the tokenizer, so a `{@see SeatKanbanUser}` in another file's
      * docblock is not a member — `BoardMyCardsTool` carries one and is deliberately absent).
      *
-     * ⛔ IT IS NOT A STYLE RULE. A file that names the class can INVOKE it in a way leg 1's
-     * predicate cannot read — a `::class` callable array, an alias, a string — so the answer
-     * to "which files may name it" is the answer to "where could a second caller hide".
+     * ⛔ IT IS NOT A STYLE RULE. A file that names the class can INVOKE it in a way the
+     * call-site predicate cannot read — a `::class` callable array, an alias, a string — so
+     * the answer to "which files may name it" is the answer to "where could a second caller
+     * hide".
      *
      * @var array<string, string>
      */
     private const NAMING_FILES = [
-        'app/Bridge/Tools/BoardTakeCardTool.php' => 'THE one caller — its single call site is dispositioned above and must pass the door-derived `$agentName`.',
+        'app/Bridge/Tools/BoardTakeCardTool.php' => 'THE one caller — its single call site is dispositioned above.',
         'app/Bridge/Tools/SeatKanbanUser.php' => 'the class\'s own declaration.',
     ];
 
     /**
-     * SET EQUALITY, both directions. A NEW call site is an unanswered question — does it pass
-     * a door-derived name? — and a MISSING one is a stale disposition.
+     * ⭐ LEG 1 — SET EQUALITY, BOTH DIRECTIONS, OVER EVERY `CallingSeat::` CALL SITE, AND THE
+     * METHOD EACH ONE CALLS.
+     *
+     * The method is part of the assertion and not decoration: a THIRD site that calls
+     * `establish` is a different event from a third site that calls `name`, and comparing keys
+     * alone would report them identically.
+     */
+    public function test_every_calling_seat_call_site_is_dispositioned(): void
+    {
+        /** @var array<string, string> $derived */
+        $derived = self::sitesInPopulation(self::callingSeatSiteAt(...));
+        ksort($derived);
+
+        $declared = array_map(
+            static fn (array $site): string => $site['method'],
+            self::CALLING_SEAT_SITES,
+        );
+        ksort($declared);
+
+        $this->assertSame(
+            $declared,
+            $derived,
+            'the set of `'.self::CALLING_SEAT_CLASS.'::` call sites in this repository is not the set this '
+            .'class dispositions. A NEW `establish` site is the one worth stopping for: the seat is WRITE-ONCE '
+            .'per process, so a second establish does not quietly win — whichever runs second THROWS and the '
+            .'call dies with nothing written — but that is a 500 on a live door, which is loud and LATE. '
+            .'Establish why a second front door exists (there are two today, and both reach the one dispatcher) '
+            .'and disposition it here, or route it through `BoardToolDispatcher::dispatch` like the others. '
+            .'A new `name` site resolves the SAME seat and is safe, but it is a second consumer of a seat '
+            .'IDENTITY, which is a design question somebody should answer out loud. A MISSING site is a stale '
+            .'disposition: delete the entry.',
+        );
+    }
+
+    /**
+     * LEG 1'S OWN CONTROL — the seat-call predicate, both directions on a fixture whose answer
+     * is known. Without it a scanner matching nothing reports a clean repo and one matching
+     * prose reports noise as defects; both wear the same green (canon #9).
+     */
+    public function test_the_calling_seat_scanner_reads_a_real_call_and_ignores_prose_and_other_classes(): void
+    {
+        $source = <<<'PHP'
+        <?php
+        class Fixture
+        {
+            /** A docblock naming CallingSeat::establish( in prose. */
+            public function theDoor(): void
+            {
+                // A comment naming CallingSeat::establish($rogue).
+                CallingSeat::establish($agentName);
+            }
+
+            public function theReader(): void
+            {
+                $seat = CallingSeat::name();
+            }
+
+            public function fullyQualified(): void
+            {
+                \App\Bridge\Tools\CallingSeat::establish($args['agent']);
+            }
+
+            public function caseVariant(): void
+            {
+                \App\Bridge\Tools\callingseat::establish($args['agent']);
+            }
+
+            public function aLongerNameIsADifferentClass(): void
+            {
+                MyCallingSeat::establish($args['agent']);
+            }
+
+            public function aClassConstantFetchIsNotACall(): void
+            {
+                $x = CallingSeat::class;
+            }
+        }
+        PHP;
+
+        $this->assertSame(
+            [
+                // Prose naming the call is NOT a site; the call below it is.
+                'Fixture.php::theDoor#1' => 'establish',
+                // The reader is a site too, and its METHOD is what tells the two apart.
+                'Fixture.php::theReader#1' => 'name',
+                // A qualified spelling is ONE token in PHP 8 and is read; the case-folded
+                // spelling matches PHP's own class resolution.
+                'Fixture.php::fullyQualified#1' => 'establish',
+                'Fixture.php::caseVariant#1' => 'establish',
+                // ⛔ NO KEY for `MyCallingSeat` (final-segment EQUALITY, not str_ends_with) or
+                // for a `::class` fetch, which is a reference and not a call.
+            ],
+            SourceScan::sites($source, 'Fixture.php', self::callingSeatSiteAt(...)),
+            'the seat-call scanner no longer reads a `'.self::CALLING_SEAT_CLASS.'::` call the way this '
+            .'fixture states, and leg 1 is only as good as it.',
+        );
+    }
+
+    /**
+     * LEG 2 — SET EQUALITY, both directions, over the resolver's own call sites.
+     *
+     * ⚠ BELT-AND-BRACES SINCE ROUND 5, and the message says so rather than overclaiming: the
+     * resolver takes no name, so a new site cannot ask about another seat.
      */
     public function test_every_seat_identity_call_site_is_dispositioned(): void
     {
@@ -218,124 +320,87 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             $declared,
             $derived,
             'the set of `'.self::IDENTITY_CLASS.'::` call sites in this repository is not the set this class '
-            .'dispositions. '
-            .'A NEW site is the shape card#9170\'s operator approval rests on: that class answers about WHATEVER '
-            .'agent name it is handed, so "a seat may claim only for itself" is a property of the CALL GRAPH and '
-            .'nothing else. Establish that the new site passes the door-derived `'.self::DOOR_DERIVED_ARGUMENT.'` '
-            .'and add it here WITH that reason — and if it passes anything else, that is a change to what the '
-            .'board-tools door lets one seat do to another, which is an operator decision and not a refactor. '
-            .'A MISSING site is a stale disposition: delete the entry.',
+            .'dispositions. A NEW site is no longer a way to write one seat\'s claim under another\'s — that '
+            .'resolver has no name parameter and answers only about the seat `CallingSeat` holds — so this is a '
+            .'DESIGN review rather than a security one: a second consumer of a seat\'s kanban user id should be '
+            .'read by somebody before it ships. Add it here WITH its reason. A MISSING site is a stale '
+            .'disposition: delete the entry.',
         );
     }
 
     /**
-     * THE RULE ITSELF, applied to whatever the derivation returns rather than to the list
-     * above — so a site cannot be made legitimate by being written down.
+     * LEG 2'S OWN CONTROL — both directions on one fixture whose answer is known. Without it
+     * a scanner matching nothing reports a clean repo, and one matching prose reports noise as
+     * defects; both wear the same green (canon #9).
+     *
+     * ⚠ The first-argument and rebind arms this fixture used to carry are GONE with the leg
+     * they pinned: there is no first argument to read once the resolver takes no name. What
+     * survives is every arm about WHICH CALLS ARE SEEN, which is the half legs 2 and 4 still
+     * depend on.
      */
-    public function test_no_seat_identity_call_site_passes_anything_but_the_door_derived_agent_name(): void
-    {
-        $violations = [];
-        foreach (self::sites() as $key => $site) {
-            if ($site['first_arg'] !== self::DOOR_DERIVED_ARGUMENT) {
-                $violations[$key] = 'first argument is '.$site['first_arg'];
-
-                continue;
-            }
-            if ($site['rebound']) {
-                $violations[$key] = 'passes '.self::DOOR_DERIVED_ARGUMENT.', but that variable is REBOUND earlier in the same body';
-            }
-        }
-
-        $this->assertSame(
-            [],
-            $violations,
-            'these `'.self::IDENTITY_CLASS.'::` call sites do not pass the agent name the DOOR derived. '
-            .'That class resolves whatever name it is given — hand it another seat\'s and it returns that '
-            .'seat\'s kanban user id — so a site passing anything else can write one seat\'s claim under '
-            .'another seat\'s identity, which is exactly what card#9170 was approved on the absence of. '
-            .'Pass `Tool::call`\'s own '.self::DOOR_DERIVED_ARGUMENT.' parameter, unmodified.',
-        );
-    }
-
-    /**
-     * THE INSTRUMENT'S OWN CONTROL — both directions on one fixture whose answer is known.
-     * Without it a scanner matching nothing reports a clean repo, and one matching prose
-     * reports noise as defects; both wear the same green (canon #9).
-     */
-    public function test_the_scanner_discriminates_a_real_call_from_prose_and_reads_its_first_argument(): void
+    public function test_the_scanner_discriminates_a_real_call_from_prose_and_reads_the_method_called(): void
     {
         $source = <<<'PHP'
         <?php
         class Fixture
         {
-            /** A docblock naming SeatKanbanUser::forCallingAgent( and $agentName. */
-            public function doorDerived(): void
+            /** A docblock naming SeatKanbanUser::forCallingSeat( and $agentName. */
+            public function proseIsNotASite(): void
             {
-                // A comment mentioning SeatKanbanUser::forCallingAgent($somethingElse, 'x').
-                $id = SeatKanbanUser::forCallingAgent($agentName, $this->name());
+                // A comment mentioning SeatKanbanUser::forCallingSeat('x').
+                $id = SeatKanbanUser::forCallingSeat($this->name());
             }
 
-            public function payloadDerived(): void
+            public function everyMethodOnTheClassIsASite(): void
             {
-                $id = SeatKanbanUser::forCallingAgent($args['agent'], 'tool');
-            }
-
-            public function literalName(): void
-            {
-                $id = SeatKanbanUser::forCallingAgent('other-seat', 'tool');
-            }
-
-            public function reboundFirst(): void
-            {
-                $agentName = $args['agent'];
-                $id = SeatKanbanUser::forCallingAgent($agentName, 'tool');
+                SeatKanbanUser::forCallingSeat('a');
+                SeatKanbanUser::somethingElse($nope, 'b');
             }
 
             public function anotherClassIsNotTheSubject(): void
             {
-                $x = SomeOtherClass::forCallingAgent($whatever, 'tool');
-            }
-
-            public function twoInOneBody(): void
-            {
-                SeatKanbanUser::forCallingAgent($agentName, 'a');
-                SeatKanbanUser::somethingElse($nope, 'b');
+                $x = SomeOtherClass::forCallingSeat('tool');
             }
 
             public function fullyQualified(): void
             {
-                $id = \App\Bridge\Tools\SeatKanbanUser::forCallingAgent($args['agent'], 'tool');
+                $id = \App\Bridge\Tools\SeatKanbanUser::forCallingSeat('tool');
             }
 
             public function namespaceQualified(): void
             {
-                $id = Tools\SeatKanbanUser::forCallingAgent($agentName, 'tool');
+                $id = Tools\SeatKanbanUser::forCallingSeat('tool');
             }
 
             public function namespaceRelative(): void
             {
-                $id = namespace\SeatKanbanUser::forCallingAgent($agentName, 'tool');
-            }
-
-            public function aLongerNameIsADifferentClass(): void
-            {
-                $id = \App\Other\MySeatKanbanUser::forCallingAgent($args['agent'], 'tool');
+                $id = namespace\SeatKanbanUser::forCallingSeat('tool');
             }
 
             public function caseVariant(): void
             {
-                $id = \App\Bridge\Tools\seatkanbanuser::forCallingAgent($agentName, 'tool');
+                $id = \App\Bridge\Tools\seatkanbanuser::forCallingSeat('tool');
+            }
+
+            public function aLongerNameIsADifferentClass(): void
+            {
+                $id = \App\Other\MySeatKanbanUser::forCallingSeat('tool');
             }
 
             public function caseFoldedLongerNameIsStillADifferentClass(): void
             {
-                $id = \App\Other\myseatkanbanuser::forCallingAgent($args['agent'], 'tool');
-                $other = \App\Bridge\Tools\seatkanbanuserfactory::forCallingAgent($args['agent'], 'tool');
+                $id = \App\Other\myseatkanbanuser::forCallingSeat('tool');
+                $other = \App\Bridge\Tools\seatkanbanuserfactory::forCallingSeat('tool');
             }
 
             public function anAliasIsNotVisibleToThisLeg(): void
             {
-                $id = Roster::forCallingAgent($args['agent'], 'tool');
+                $id = Roster::forCallingSeat('tool');
+            }
+
+            public function aClassConstantFetchIsNotACall(): void
+            {
+                $x = SeatKanbanUser::class;
             }
         }
         PHP;
@@ -343,38 +408,33 @@ class SeatIdentityCallSiteGuardTest extends TestCase
         $this->assertSame(
             [
                 // A docblock and a line comment name the call and are NOT sites.
-                'Fixture.php::doorDerived#1' => ['first_arg' => '$agentName', 'rebound' => false],
-                // A payload-derived argument is read, and read as itself.
-                'Fixture.php::payloadDerived#1' => ['first_arg' => self::NOT_A_BARE_VARIABLE, 'rebound' => false],
-                'Fixture.php::literalName#1' => ['first_arg' => self::NOT_A_BARE_VARIABLE, 'rebound' => false],
-                // The right spelling, defeated — the leg that stops the name being the check.
-                'Fixture.php::reboundFirst#1' => ['first_arg' => '$agentName', 'rebound' => true],
+                'Fixture.php::proseIsNotASite#1' => 'forCallingSeat',
                 // A second site in one body gets its own ordinal rather than inheriting the
                 // first's, and EVERY method on the class is a site — a future second resolver
                 // must not be able to arrive outside the census. ⛔ `anotherClassIsNotTheSubject`
                 // has no key at all: a DIFFERENT class with the same method name is not a site.
-                'Fixture.php::twoInOneBody#1' => ['first_arg' => '$agentName', 'rebound' => false],
-                'Fixture.php::twoInOneBody#2' => ['first_arg' => '$nope', 'rebound' => false],
+                'Fixture.php::everyMethodOnTheClassIsASite#1' => 'forCallingSeat',
+                'Fixture.php::everyMethodOnTheClassIsASite#2' => 'somethingElse',
                 // ⭐ THE THREE SPELLINGS THE FIRST CUT WAS BLIND TO, each measured GREEN as a
                 // planted second caller before the predicate was widened to cover it. PHP 8
                 // emits each as ONE token, so a predicate reading `T_STRING` alone saw none of
                 // them. `namespaceRelative` is `T_NAME_RELATIVE` — the fourth and LAST
                 // class-name-reference token PHP 8 defines; this `in_array` is now exhaustive.
-                'Fixture.php::fullyQualified#1' => ['first_arg' => self::NOT_A_BARE_VARIABLE, 'rebound' => false],
-                'Fixture.php::namespaceQualified#1' => ['first_arg' => '$agentName', 'rebound' => false],
-                'Fixture.php::namespaceRelative#1' => ['first_arg' => '$agentName', 'rebound' => false],
+                'Fixture.php::fullyQualified#1' => 'forCallingSeat',
+                'Fixture.php::namespaceQualified#1' => 'forCallingSeat',
+                'Fixture.php::namespaceRelative#1' => 'forCallingSeat',
                 // ⭐ CASE-INSENSITIVE, matching PHP's own class-name resolution — measured to
                 // execute WARM (something else in the same process already loaded the real
                 // class) and throw COLD (PSR-4 is case-sensitive on this filesystem); neither
                 // direction makes the call unreachable, only conditional.
-                'Fixture.php::caseVariant#1' => ['first_arg' => '$agentName', 'rebound' => false],
-                // ⛔ AND THE THREE NON-MEMBERS THAT KEEP THE WIDENING HONEST, none with a key:
+                'Fixture.php::caseVariant#1' => 'forCallingSeat',
+                // ⛔ AND THE FOUR NON-MEMBERS THAT KEEP THE WIDENING HONEST, none with a key:
                 // `MySeatKanbanUser` and its casefolded twin are DIFFERENT classes even under
                 // `strcasecmp` (final-segment EQUALITY, not `str_ends_with` — casefolding
-                // widens which BYTES match, never where the segment boundary falls), and an
-                // ALIASED call is invisible here BY DESIGN — leg 2 refuses the import outright
+                // widens which BYTES match, never where the segment boundary falls); an
+                // ALIASED call is invisible here BY DESIGN — leg 3 refuses the import outright
                 // rather than resolving it, which is the only reason that arm is allowed to be
-                // absent.
+                // absent; and a `::class` fetch is a reference, not a call.
             ],
             SourceScan::sites($source, 'Fixture.php', self::identitySiteAt(...)),
             'the scanner no longer reads a `'.self::IDENTITY_CLASS.'::` call the way this fixture states, and '
@@ -383,7 +443,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * ⭐ LEG 2 — THE ALIASED SPELLING, REFUSED RATHER THAN RESOLVED.
+     * ⭐ LEG 3 — THE ALIASED SPELLING, REFUSED RATHER THAN RESOLVED.
      *
      * A `use App\Bridge\Tools\SeatKanbanUser as Roster;` makes the class token at every call
      * site in that file `Roster`, and NO final-segment predicate can see it — measured: a
@@ -411,7 +471,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * LEG 2'S OWN CONTROL — the alias reader, both directions on a fixture whose answer is
+     * LEG 3'S OWN CONTROL — the alias reader, both directions on a fixture whose answer is
      * known. A `foreach (… as …)` and a trait `… as …` are the two `T_AS` shapes that would
      * make this leg cry wolf; an import of a DIFFERENT class is the one that would make it
      * vacuous if the class check were dropped.
@@ -444,24 +504,24 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             ['Fixture.php::'.SourceScan::FILE_SCOPE.'#1' => 'Roster'],
             SourceScan::sites($source, 'Fixture.php', self::aliasImportAt(...)),
             'the alias reader no longer reads an import of this class the way this fixture states — and '
-            .'leg 2 is only as good as it: a reader that matched nothing would report every tree clean.',
+            .'leg 3 is only as good as it: a reader that matched nothing would report every tree clean.',
         );
     }
 
     /**
-     * ⭐ LEG 3 — WHICH FILES MAY NAME THE CLASS AT ALL, which is what closes the invocation
+     * ⭐ LEG 4 — WHICH FILES MAY NAME THE CLASS AT ALL, which is what closes the invocation
      * shapes a call-site predicate cannot express. `call_user_func([SeatKanbanUser::class,
-     * 'forCallingAgent'], $args['agent'], 'tool')` is a call leg 1 does not see, because the
+     * 'forCallingSeat'], 'tool')` is a call leg 2 does not see, because the
      * tokens are a `::class` fetch inside an array literal and never a `<class>::<method>(`.
      * Rather than grow the predicate a case per invocation shape — an enumeration whose next
      * member is always unwritten — the census asks the question one level up.
      *
      * ⛔ AND THE QUESTION IT ASKS IS "DOES THIS FILE SPELL THE NAME", NOT "DOES IT HOLD A NAME
      * TOKEN" — a distinction this leg's first cut got wrong, and the correction is the useful
-     * part. It read {@see namesIdentityClass} alone, so a new file calling
+     * part. It read {@see namesClass} alone, so a new file calling
      * `call_user_func('App\Bridge\Tools\SeatKanbanUser::forCallingAgent', $args['agent'], …)`
      * — a `T_CONSTANT_ENCAPSED_STRING`, the plainest spelling of an indirect call, and the very
-     * shape this leg's own failure message claimed to close — was invisible to all three legs
+     * shape this leg's own failure message claimed to close — was invisible to every leg
      * and left the class green. The predicate now also reads STRING TEXT
      * ({@see stringSpellsIdentityClass}), and what is left after that is MEASURED rather than
      * asserted: see § STATED BOUNDS.
@@ -491,16 +551,23 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * The property the whole guard exists for, asserted DIRECTLY rather than left to be
-     * inferred from the call graph — and it is the assertion that makes the corrected
-     * docblock's confession checkable: this class DOES answer about another agent.
+     * ⭐ THE PROPERTY ITSELF, ASSERTED DIRECTLY — AND THIS IS THE INVERSION OF WHAT THIS CLASS
+     * USED TO ASSERT HERE.
      *
-     * ⚠ It is a statement about the CLASS, not a defect. If this ever stops holding — if
-     * `forCallingAgent` grows a way to refuse a name that is not the caller's — the call-site
-     * guard becomes belt-and-braces rather than the whole boundary, and THAT is the change
-     * worth reviewing.
+     * The retired test was `test_the_identity_resolver_answers_about_whatever_name_it_is_handed`,
+     * and it was TRUE of the old signature: handed `other` on a three-agent roster it returned
+     * 222. That was a confession, not a feature — it was why the self-only property had to be
+     * the call graph's. There is no name to hand any more, so the assertion turns over: the
+     * resolver answers about the ESTABLISHED SEAT and about nothing else.
+     *
+     * ⚠ BOTH LEGS ARE NEEDED AND NEITHER IS THE OTHER'S CONTROL. The BEHAVIOURAL leg (same
+     * roster, two different established seats, two different answers) says the seat is what
+     * decides — without it a resolver that always returned the first roster entry would pass.
+     * The STRUCTURAL leg (the method's parameter list) says there is no channel through which
+     * another name could arrive at all — without it, a resolver that took a name and merely
+     * happened not to be handed one in this test would pass.
      */
-    public function test_the_identity_resolver_answers_about_whatever_name_it_is_handed(): void
+    public function test_the_identity_resolver_answers_only_about_the_established_seat(): void
     {
         $dir = sys_get_temp_dir().'/seat-identity-'.uniqid();
         mkdir($dir, 0o700, true);
@@ -510,15 +577,35 @@ class SeatIdentityCallSiteGuardTest extends TestCase
         config(['bridge.config_dir' => $dir]);
 
         try {
-            $this->assertSame(111, SeatKanbanUser::forCallingAgent('me', 'board_take_card'));
+            CallingSeatSeal::establishedAs('other');
             $this->assertSame(
                 222,
-                SeatKanbanUser::forCallingAgent('other', 'board_take_card'),
-                'this is the measured fact the class docblock now states: handed another seat\'s name it '
-                .'returns that seat\'s id. The self-only guarantee is the call graph\'s, which is why the '
-                .'other tests in this class exist.'
+                SeatKanbanUser::forCallingSeat('board_take_card'),
+                'the resolver did not answer about the seat the door established.'
             );
-            $this->assertSame(333, SeatKanbanUser::forCallingAgent('pm', 'board_take_card'));
+            $this->assertSame(
+                222,
+                SeatKanbanUser::forCallingSeat('board_my_cards'),
+                'the answer moved between two calls in one process — the seat is WRITE-ONCE, so it must not.'
+            );
+
+            // The discriminator: the SAME roster, a different established seat, a different
+            // answer. Without this a resolver that always returned one fixed entry would pass
+            // the assertions above.
+            CallingSeatSeal::establishedAs('pm');
+            $this->assertSame(333, SeatKanbanUser::forCallingSeat('board_take_card'));
+
+            $this->assertSame(
+                ['tool'],
+                array_map(
+                    static fn (\ReflectionParameter $p): string => $p->getName(),
+                    (new \ReflectionMethod(SeatKanbanUser::class, 'forCallingSeat'))->getParameters(),
+                ),
+                'the resolver has grown a parameter beside `$tool`. The whole of card#9170\'s self-only '
+                .'property now rests on there being NO channel by which a caller supplies a seat — a name '
+                .'parameter, whatever it is called and however it is validated, restores the twelve poisoning '
+                .'shapes DL-372 Decision 7 was reversed over. That is an operator decision, not a refactor.'
+            );
         } finally {
             array_map('unlink', (array) glob($dir.'/*.yml'));
             rmdir($dir);
@@ -548,11 +635,13 @@ class SeatIdentityCallSiteGuardTest extends TestCase
         config(['bridge.config_dir' => $dir]);
 
         try {
-            $this->assertSame(777, SeatKanbanUser::forCallingAgent('solo', 'board_take_card'));
+            CallingSeatSeal::establishedAs('solo');
+            $this->assertSame(777, SeatKanbanUser::forCallingSeat('board_take_card'));
 
+            CallingSeatSeal::establishedAs('a');
             $this->expectException(ToolRefusalException::class);
             $this->expectExceptionMessageMatches('/MORE THAN ONE agent \(a, b\).*NOTHING WAS WRITTEN.*INSTALL fault/s');
-            SeatKanbanUser::forCallingAgent('a', 'board_take_card');
+            SeatKanbanUser::forCallingSeat('board_take_card');
         } finally {
             array_map('unlink', (array) glob($dir.'/*.yml'));
             rmdir($dir);
@@ -574,7 +663,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * ⭐ LEG 3'S OWN CONTROL FOR THE SPELLING IT WAS BLIND TO — both directions on one fixture
+     * ⭐ LEG 4'S OWN CONTROL FOR THE SPELLING IT WAS BLIND TO — both directions on one fixture
      * whose answer is known. Every MEMBER here is a shape that left the whole class green
      * before this leg read string text; every NON-MEMBER is a way the widening would cry wolf
      * or would answer about a different class.
@@ -653,7 +742,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
 
         $this->assertSame(
             [
-                // The plainest indirect call there is — and the shape leg 3's own failure
+                // The plainest indirect call there is — and the shape leg 4's own failure
                 // message already claimed to close while the predicate could not see it.
                 'Fixture.php::plainCallable#1' => "'App\\Bridge\\Tools\\SeatKanbanUser::forCallingAgent'",
                 'Fixture.php::doubleQuoted#1' => '"App\\\\Bridge\\\\Tools\\\\SeatKanbanUser"',
@@ -673,9 +762,9 @@ class SeatIdentityCallSiteGuardTest extends TestCase
                 // measured residual, stated in § STATED BOUNDS.
             ],
             SourceScan::sites($source, 'Fixture.php', self::classMentionAt(...)),
-            'leg 3 no longer reads a class name spelled as a STRING the way this fixture states. '
+            'leg 4 no longer reads a class name spelled as a STRING the way this fixture states. '
             .'A file can invoke this resolver through a string class name with no name token in it '
-            .'at all, which is how a new caller went green through all three legs once already — '
+            .'at all, which is how a new caller went green through every leg once already — '
             .'and the absent arms are the bound that replaced the false one, unmoved by casefolding.',
         );
     }
@@ -713,18 +802,21 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * @return array<string, array{first_arg: string, rebound: bool}>
+     * Every resolver call site in the population, keyed as {@see SourceScan::sites} keys them,
+     * valued with the METHOD called.
+     *
+     * @return array<string, string>
      */
     private static function sites(): array
     {
-        /** @var array<string, array{first_arg: string, rebound: bool}> $sites */
+        /** @var array<string, string> $sites */
         $sites = self::sitesInPopulation(self::identitySiteAt(...));
 
         return $sites;
     }
 
     /**
-     * THE POPULATION ALL THREE LEGS WALK: every `*.php` file this repository TRACKS, except
+     * THE POPULATION EVERY LEG WALKS: every `*.php` file this repository TRACKS, except
      * `tests/` and `vendor/`, repo-relative and sorted.
      *
      * ⛔ DERIVED FROM `git ls-files`, NOT FROM A LIST OF ROOTS, and that is the point rather
@@ -777,22 +869,44 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * THE PREDICATE this class owns: is the token at $index a static call on
-     * {@see IDENTITY_CLASS}, and if so what is its first argument and was that variable
-     * rebound earlier in the same body?
-     *
-     * ⛔ The class is matched on its FINAL `\`-SEGMENT ({@see namesIdentityClass}), so
-     * `SomeOtherClass::forCallingAgent(` is not a site — the subject is this resolver, not a
-     * method name — and neither is `MySeatKanbanUser::`, because the comparison is EQUALITY of
-     * that segment and not `str_ends_with` on the token (both pinned in the scanner control).
+     * LEG 2'S PREDICATE: a static call on {@see IDENTITY_CLASS}.
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
-     * @param  int  $scopeStart  the index at which the enclosing body began
-     * @return array{first_arg: string, rebound: bool}|null
      */
-    private static function identitySiteAt(array $tokens, int $index, int $scopeStart): ?array
+    private static function identitySiteAt(array $tokens, int $index, int $scopeStart): ?string
     {
-        if (! self::namesIdentityClass($tokens[$index] ?? null)) {
+        return self::staticCallSiteAt($tokens, $index, self::IDENTITY_CLASS);
+    }
+
+    /**
+     * LEG 1'S PREDICATE: a static call on {@see CALLING_SEAT_CLASS}.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function callingSeatSiteAt(array $tokens, int $index, int $scopeStart): ?string
+    {
+        return self::staticCallSiteAt($tokens, $index, self::CALLING_SEAT_CLASS);
+    }
+
+    /**
+     * THE ONE CALL-SITE PREDICATE BOTH CENSUSES USE: is the token at $index a static call on
+     * $class, and if so, which METHOD does it call?
+     *
+     * ⛔ ONE PRIMITIVE AND NOT TWO (canon #5). Two censuses over two classes differing only in
+     * a class name is exactly the shape where one of them silently learns a spelling the other
+     * does not — which is the defect the FOUR-token enumeration below exists to close, so
+     * minting a second copy of it would be re-minting the bug inside the fix.
+     *
+     * ⛔ The class is matched on its FINAL `\`-SEGMENT ({@see namesClass}), so
+     * `SomeOtherClass::forCallingSeat(` is not a site — the subject is the class, not a method
+     * name — and neither is `MySeatKanbanUser::`, because the comparison is EQUALITY of that
+     * segment and not `str_ends_with` (both pinned in the scanner controls).
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function staticCallSiteAt(array $tokens, int $index, string $class): ?string
+    {
+        if (! self::namesClass($tokens[$index] ?? null, $class)) {
             return null;
         }
         if (($tokens[$index + 1][0] ?? null) !== T_DOUBLE_COLON) {
@@ -804,19 +918,11 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             return null;
         }
 
-        $first = $tokens[$index + 4] ?? null;
-        $firstIsBareVariable = $first !== null
-            && $first[0] === T_VARIABLE
-            && in_array($tokens[$index + 5][1] ?? null, [',', ')'], true);
-
-        return [
-            'first_arg' => $firstIsBareVariable ? $first[1] : self::NOT_A_BARE_VARIABLE,
-            'rebound' => $firstIsBareVariable && self::reboundBefore($tokens, $scopeStart, $index, $first[1]),
-        ];
+        return $tokens[$index + 2][1];
     }
 
     /**
-     * Does $token NAME this class, under any of the FOUR spellings PHP 8 tokenises a class
+     * Does $token NAME $class, under any of the FOUR spellings PHP 8 tokenises a class
      * reference as — bare (`T_STRING`), namespace-qualified (`T_NAME_QUALIFIED`),
      * fully-qualified (`T_NAME_FULLY_QUALIFIED`), or namespace-relative (`T_NAME_RELATIVE`,
      * `namespace\Foo`) — each ONE token since PHP 8?
@@ -824,17 +930,17 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * ⛔ THIS SET IS CLOSED BY THE LANGUAGE. PHP 8 defines exactly these four class-name-
      * reference token constants — there is no fifth — so completing this `in_array` is a
      * finite, terminating fix rather than another instance of an open-ended spelling chase.
-     * A `T_NAME_RELATIVE` call (`namespace\SeatKanbanUser::forCallingAgent(...)`) executes
-     * COLD — no autoload trick, no warm class table — and was invisible to all three legs
-     * before this arm was added, including a plant INSIDE the one file leg 1 watches most
-     * closely ({@see BoardTakeCardTool}), where leg 1 did not move.
+     * A `T_NAME_RELATIVE` call (`namespace\SeatKanbanUser::forCallingSeat(...)`) executes
+     * COLD — no autoload trick, no warm class table — and was invisible to every leg
+     * before this arm was added, including a plant INSIDE the one file the call-site census
+     * watches most closely ({@see BoardTakeCardTool}), where it did not move.
      *
      * ⛔ The FINAL `\`-segment must EQUAL the class name. `str_ends_with` on the token text
      * would make `MySeatKanbanUser` this class, which is a guard reporting a defect in code
      * that has nothing to do with it — and a guard that cries wolf is one somebody widens.
      *
      * ⭐ THE COMPARISON IS CASE-INSENSITIVE, matching PHP's own class-name resolution rather
-     * than a stricter rule this guard invents. Measured: `seatkanbanuser::forCallingAgent(…)`
+     * than a stricter rule this guard invents. Measured: `seatkanbanuser::forCallingSeat(…)`
      * — a name token, not a string — was invisible to a strict `===` and DOES execute when
      * something else in the same process already loaded the real class (PSR-4 autoloading is
      * case-SENSITIVE on a case-sensitive filesystem, so it throws cold; nothing about that
@@ -842,11 +948,11 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * BOUNDARY property that makes this safe: it compares the WHOLE final segment, so
      * `myseatkanbanuser` folds to a match while `seatkanbanuserfactory` and
      * `myseatkanbanuser2` do not — casefolding widens WHICH BYTES match, never WHERE the
-     * segment boundary falls (pinned in the fixture below).
+     * segment boundary falls (pinned in the fixtures below).
      *
      * @param  array{0: int|string, 1: string}|null  $token
      */
-    private static function namesIdentityClass(?array $token): bool
+    private static function namesClass(?array $token, string $class): bool
     {
         if ($token === null || ! in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NAME_RELATIVE], true)) {
             return false;
@@ -854,11 +960,11 @@ class SeatIdentityCallSiteGuardTest extends TestCase
 
         $segments = explode('\\', $token[1]);
 
-        return strcasecmp((string) end($segments), self::IDENTITY_CLASS) === 0;
+        return strcasecmp((string) end($segments), $class) === 0;
     }
 
     /**
-     * LEG 2'S PREDICATE: the alias, when the token at $index is the `as` of an import of THIS
+     * LEG 3'S PREDICATE: the alias, when the token at $index is the `as` of an import of THIS
      * class. `use App\Bridge\Tools\SeatKanbanUser as Roster;` tokenises as the qualified name
      * and then `T_AS`, so the class is read from the token BEFORE the `as` — which also covers
      * the group form `use App\Bridge\Tools\{SeatKanbanUser as Roster};`. A `foreach (… as …)`
@@ -869,7 +975,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      */
     private static function aliasImportAt(array $tokens, int $index, int $scopeStart): ?string
     {
-        if (($tokens[$index][0] ?? null) !== T_AS || ! self::namesIdentityClass($tokens[$index - 1] ?? null)) {
+        if (($tokens[$index][0] ?? null) !== T_AS || ! self::namesClass($tokens[$index - 1] ?? null, self::IDENTITY_CLASS)) {
             return null;
         }
 
@@ -877,7 +983,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     }
 
     /**
-     * LEG 3'S PREDICATE: this class's name, wherever it is NAMED in code — a call, a `::class`
+     * LEG 4'S PREDICATE: this class's name, wherever it is NAMED in code — a call, a `::class`
      * fetch, an import, the declaration itself, OR the text of a string. Deliberately the
      * widest of the three.
      *
@@ -887,7 +993,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     {
         $token = $tokens[$index] ?? null;
 
-        return self::namesIdentityClass($token) || self::stringSpellsIdentityClass($token)
+        return self::namesClass($token, self::IDENTITY_CLASS) || self::stringSpellsIdentityClass($token)
             ? $tokens[$index][1]
             : null;
     }
@@ -895,9 +1001,9 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     /**
      * Does $token's SOURCE TEXT spell this class's name as a WHOLE IDENTIFIER?
      *
-     * ⛔ THIS IS LEG 3'S ONLY, AND IT IS DELIBERATELY NOT IN {@see namesIdentityClass}. A
+     * ⛔ THIS IS LEG 4'S ONLY, AND IT IS DELIBERATELY NOT IN {@see namesClass}. A
      * string is never a class token at a `<class>::<method>(` call site and never the name
-     * before a `use … as`, so widening the shared name predicate would buy legs 1 and 2
+     * before a `use … as`, so widening the shared name predicate would buy legs 1–3
      * nothing and would make their fixture controls answer about a shape they cannot reach.
      *
      * ⛔ IT MATCHES THE RAW TOKEN TEXT, ESCAPES UNRESOLVED, and that is a bound rather than an
@@ -906,9 +1012,9 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * planted and measured rather than reasoned about.
      *
      * ⭐ WHOLE IDENTIFIER, not `str_contains`: `'App\Other\MySeatKanbanUser'` and
-     * `'SeatKanbanUserFactory'` are DIFFERENT classes, and leg 1 already refuses to treat them
+     * `'SeatKanbanUserFactory'` are DIFFERENT classes, and the call-site census already refuses to treat them
      * as this one. A leg that cried wolf on them is a leg somebody widens. ⭐ **CASE-
-     * INSENSITIVE for the same reason {@see namesIdentityClass} is**: PHP resolves a class
+     * INSENSITIVE for the same reason {@see namesClass} is**: PHP resolves a class
      * name case-insensitively, so `'app\bridge\tools\seatkanbanuser::forcallingagent'`
      * spells this class to PHP and must spell it to this predicate too. The `i` modifier
      * folds ONLY the byte comparison — it does not touch the identifier-boundary lookaround,
@@ -928,28 +1034,5 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             '/(?<!'.$identifier.')'.preg_quote(self::IDENTITY_CLASS, '/').'(?!'.$identifier.')/i',
             $token[1],
         ) === 1;
-    }
-
-    /**
-     * Whether $variable is ASSIGNED anywhere in this body before the call — the leg that stops
-     * the argument's NAME from being the whole check. Textual and body-scoped, the same reach
-     * `PinnedFieldWriteCoverageTest`'s consult test has, and its bound is stated there and in
-     * this class's docblock.
-     *
-     * `=` only, and deliberately not `.=` / `??=`: those are token types of their own, and a
-     * compound assignment to this variable would fail the equality read anyway once it landed
-     * — what this leg is for is the plain `$agentName = <anything>` rebind.
-     *
-     * @param  list<array{0: int|string, 1: string}>  $tokens
-     */
-    private static function reboundBefore(array $tokens, int $scopeStart, int $call, string $variable): bool
-    {
-        for ($i = $scopeStart; $i < $call; $i++) {
-            if ($tokens[$i][0] === T_VARIABLE && $tokens[$i][1] === $variable && ($tokens[$i + 1][1] ?? null) === '=') {
-                return true;
-            }
-        }
-
-        return false;
     }
 }
