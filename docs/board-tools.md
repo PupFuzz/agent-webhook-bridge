@@ -1132,16 +1132,24 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 > come from `bridge:provision-tools --agent=<name>`.
 
 > **⭐ You do not have to remember to come here — `bridge:check` sends you.** Since DL-352
-> the command a fresh install already runs ends with a **NEXT STEPS** block naming every
-> agent whose board-tools enablement is incomplete, the state it stopped in, and the ONE
-> command to run next; `--format=json` carries the same entries as `next_steps[]`
-> (`{agent, state, command, doc}`). An install with nothing outstanding prints no block at
-> all, and the block never moves the exit code — it is output, not a verdict. **That block
-> is this section's entry point**, so the normal way in is to run `php artisan bridge:check`
-> and follow the line for your agent rather than to read all seven steps first.
+> the command a fresh install already runs ends with a **NEXT STEPS** block naming what is not
+> wired end to end, the state it stopped in, and the ONE command to run next; `--format=json`
+> carries the same entries as `next_steps[]`. ⛔ **The entry shape and the `state` vocabulary
+> are owned by [`docs/check-json-contract.md` § 7a](check-json-contract.md#7a-next_steps--what-to-run-next)
+> and are deliberately not restated here** — the key set stated in this paragraph was already
+> false one release later (card#9150 / DL-368 added `scope`), which is the drift the same
+> paragraph's own rule about state meanings exists to prevent.
+>
+> ⚠ **The block is no longer board-tools-only, and it no longer implies the run passed.** Since
+> DL-368 it also carries a `github_webhook_missing` entry, whose fault IS a `fail` — so an
+> install printing that entry exits non-zero. The block itself still yields no finding and
+> moves no exit code of its own; what changed is that a fault it points at can. An install with
+> nothing outstanding prints no block at all. **That block is this section's entry point**, so
+> the normal way in is to run `php artisan bridge:check` and follow the line for your agent
+> rather than to read all seven steps first.
 >
 > What each `state` means is defined ONCE, in
-> [`docs/check-json-contract.md § 7a`](check-json-contract.md#7a-next_steps--what-to-run-next-per-agent)
+> [`docs/check-json-contract.md § 7a`](check-json-contract.md#7a-next_steps--what-to-run-next)
 > (owner: `NextStepState`'s docblock) — not restated here. How they map onto the steps
 > below: `no_block` → steps 3–4; `bridge_side_incomplete` → the `bridge:provision-tools`
 > line the entry prints, then re-run; `bridge_side_unverified` → **re-run as the account

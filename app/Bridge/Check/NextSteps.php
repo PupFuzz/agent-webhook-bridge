@@ -9,8 +9,8 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 
 /**
- * WHAT AN AGENT SHOULD RUN NEXT to finish enabling board tools, per agent (card#8959,
- * DL-352).
+ * WHAT TO RUN NEXT to finish wiring this install, per agent (card#8959, DL-352 — widened
+ * past board tools by card#9150).
  *
  * WHAT IT CLOSES. A fresh install ends with a check inventory and a tally, and nothing in
  * it says the two-way board window EXISTS — so an impl agent that could read, file and
@@ -60,6 +60,13 @@ use App\Bridge\Support\Severity;
  * ⛔ IT CANNOT FLIP THE EXIT CODE, by construction and not by discipline: it returns
  * values and yields no {@see Finding}, and only a `fail` finding moves
  * `bridge:check`'s verdict. Nothing here changes what the command accepts or rejects.
+ *
+ * ⚠ THAT IS A STATEMENT ABOUT THIS DERIVATION, NOT ABOUT EVERY FAULT IT POINTS AT, and since
+ * card#9150 the difference is visible on one screen. The board-tools entries point at legs
+ * that never fail; a {@see NextStepState::GithubWebhookMissing} entry points at a leg that
+ * DOES, so an install printing one exits non-zero — because of the finding above it, never
+ * because of the line here. Reading the sentence above as *this block appearing means the run
+ * still passed* was true when it was written and is not any more.
  */
 final class NextSteps
 {
@@ -70,6 +77,17 @@ final class NextSteps
      * three sites is three chances to name a heading the doc no longer has.
      */
     public const DOC = 'docs/board-tools.md § Same-box enablement (Apache/FPM)';
+
+    /**
+     * The section that owns the github repo-webhook runbook (card#9150).
+     *
+     * A SECOND CONSTANT RATHER THAN A WIDENED FIRST ONE: the two states point at genuinely
+     * different runbooks, and one `doc` field covering both would have to name the shallower
+     * of them. Same rule as {@see self::DOC} otherwise — one constant, read by both renderers
+     * and by the tests, so a pointer restated at three sites cannot name a heading the doc no
+     * longer has.
+     */
+    public const WEBHOOK_DOC = 'docs/writeback.md § The repo webhook (one-time, in GitHub)';
 
     /**
      * The command that acts on every bridge-side state — it is transport-aware, so one
@@ -93,8 +111,13 @@ final class NextSteps
     private const RERUN_PRIVILEGED = 'sudo php artisan bridge:check';
 
     /**
-     * Derive one entry per agent whose board-tools enablement is incomplete, in config
-     * order.
+     * Derive one entry per OUTSTANDING ITEM, in config order.
+     *
+     * ⚠ THE UNIT IS NOT UNIFORMLY THE AGENT, and this docblock said it was until card#9150
+     * r3 — on the very method whose last statement is `array_merge($steps, self::webhookSteps($ctx))`.
+     * The board-tools half below is per AGENT; {@see self::webhookSteps()} is per
+     * **(agent, scope)**, because one repo's missing hook deafens every agent subscribed to
+     * it. `docs/check-json-contract.md` § 7a states that for the consumer.
      *
      * FIRST MATCH WINS, and the order of the arms is the order the work has to happen in:
      * an agent with no block cannot have a bearer fault, and an agent whose bridge half is
@@ -136,16 +159,75 @@ final class NextSteps
             $steps[] = new NextStep(
                 agent: $name,
                 state: $state,
-                command: match ($state) {
-                    NextStepState::NoBlock, NextStepState::BridgeSideIncomplete => self::PROVISION.$name,
-                    NextStepState::BridgeSideUnverified => self::RERUN_PRIVILEGED,
-                    // The seat's own wiring happens on the seat, which this box may not
-                    // touch — so the command a BRIDGE reader can run is the one that
-                    // re-asks the question once the seat has answered it by calling.
-                    NextStepState::SeatSideUnreported => 'php artisan bridge:check',
-                },
+                command: self::commandFor($state, $name),
                 doc: self::DOC,
             );
+        }
+
+        return array_merge($steps, self::webhookSteps($ctx));
+    }
+
+    /**
+     * The ONE command a step in `$state` names, for `$agent`.
+     *
+     * ⛔ ONE EXHAUSTIVE MATCH FOR THE WHOLE ENUM, called by BOTH halves of the derivation
+     * rather than one per half (card#9150). Two matches would each be exhaustive over the
+     * cases their own half can produce and would each need a dead arm for the other half's —
+     * a state's command decided in a branch nothing reaches, which is where a wrong command
+     * hides. Here every arm is live, so a sixth state is a phpstan error at exactly one site
+     * and has to be assigned deliberately.
+     */
+    private static function commandFor(NextStepState $state, string $agent): string
+    {
+        return match ($state) {
+            NextStepState::NoBlock, NextStepState::BridgeSideIncomplete => self::PROVISION.$agent,
+            NextStepState::BridgeSideUnverified => self::RERUN_PRIVILEGED,
+            // The seat's own wiring happens on the seat, which this box may not touch — so
+            // the command a BRIDGE reader can run is the one that re-asks the question once
+            // the seat has answered it by calling.
+            NextStepState::SeatSideUnreported => 'php artisan bridge:check',
+            // Same shape, one plane over: the remedy is repo-settings work no command on this
+            // box can perform (`bridge:provision` skips every non-kanban provider by design),
+            // so what is named is the re-ask.
+            NextStepState::GithubWebhookMissing => 'php artisan bridge:check',
+        };
+    }
+
+    /**
+     * One entry per (agent, scope) whose github webhook this run READ THE REPO'S HOOK LIST FOR
+     * and did not find (card#9150).
+     *
+     * ⛔ ITS INPUT IS THE MEASURED-ABSENT SET AND NOTHING ELSE. {@see CheckContext::$githubWebhooksMissing}
+     * is written only by the leg's `fail` arm, so an unmeasured scope cannot reach this block
+     * — the same discipline the board-tools half draws between a MEASURED fault and a bridge
+     * half this run could not read, applied to the one plane where the wrong call sends an
+     * operator to re-create a hook that is already there.
+     *
+     * ⚑ PER (AGENT, SCOPE), NOT PER SCOPE, and the duplication is the honest shape: the
+     * missing hook is one fault on the repo, but every agent subscribed to that repo is deaf
+     * because of it, and this block's unit is *what THIS agent owes*. The `fail` finding above
+     * is the one line about the repo; these are the one line per seat it silenced.
+     *
+     * THEY COME LAST, after every board-tools entry, because the block is read top-down and
+     * the board-tools half is the one an install works through in order. Within this half the
+     * order is the leg's own reporting order (config order, then subscription order), which is
+     * the order the findings above printed in.
+     *
+     * @return list<NextStep>
+     */
+    private static function webhookSteps(CheckContext $ctx): array
+    {
+        $steps = [];
+        foreach ($ctx->githubWebhooksMissing as $missing) {
+            foreach ($missing['agents'] as $agent) {
+                $steps[] = new NextStep(
+                    agent: $agent,
+                    state: NextStepState::GithubWebhookMissing,
+                    command: self::commandFor(NextStepState::GithubWebhookMissing, $agent),
+                    doc: self::WEBHOOK_DOC,
+                    scope: $missing['scope'],
+                );
+            }
         }
 
         return $steps;

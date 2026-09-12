@@ -3151,8 +3151,21 @@ class BridgeCommandsTest extends TestCase
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
-        $this->assertStringContainsString('41 registered', $out);
-        $this->assertStringContainsString('All 41 are accounted for', $out);
+        // ⛔ THE PROPERTY, NOT THE FIGURE (card#9150). This asserted `41 registered` and
+        // `All 41 are accounted for` as literals — a THIRD copy of a count already pinned
+        // twice on purpose (`CheckCommandRegistrationTest` by id, and
+        // `CheckGoldenTest::test_every_golden_file_carries_a_self_conserving_inventory_line`
+        // as the deliberate second statement, over every install shape at once). A third
+        // copy states nothing those two do not, and buys a red in a test whose SUBJECT is
+        // the tally's wording every time a leg is registered. What is load-bearing here is
+        // that the inventory line prints AT ALL and that its two halves agree, so that is
+        // what is asserted, off ONE match.
+        $this->assertSame(
+            1,
+            preg_match('/^checks: (\d+) registered · .*\. All (\d+) are accounted for/m', $out, $inv),
+            'the run printed no inventory line — every run must state what it covered',
+        );
+        $this->assertSame($inv[1], $inv[2], 'the inventory line\'s trailing total disagrees with its own registered count');
     }
 
     public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void

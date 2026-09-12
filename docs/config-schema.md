@@ -18,7 +18,7 @@ There are three configuration surfaces:
 | `BRIDGE_CONFIG_DIR` | abs path | `BRIDGE_DIR` | Override only when config lives elsewhere. Missing/not-a-dir → `bridge:check` **fails**; dispatch reads it per request. Group/world-accessible → **warn** (DL-014). |
 | `BRIDGE_SECRET_DIR` | abs path | `BRIDGE_DIR` | Holds HMAC secrets + tokens. Not set / not absolute → `bridge:check` **fails**. Group/world-accessible → **warn** (DL-014). Set to a path that does not exist → **warn**; set to a path this process cannot traverse to → **`unvalidated`** (DL-264 — the checking process commonly runs as a different OS user, and "absent" is not a conclusion it is entitled to draw); set to a path that EXISTS but is **not a directory** → **fails** (DL-265 — every secret and token resolves underneath it, so not one can be opened and no webhook can be verified; its mode is deliberately NOT reported, because `chmod 700` on a regular file is advice that would make things worse). These are reported only on a **split layout** (`secret_dir` ≠ `config_dir`); when the two are the same path the config-dir row above reports it, and the perms leg stays silent to avoid a duplicate line. |
 | `BRIDGE_INSTALL_SUFFIX` | string | `''` | `-prod` / `-dev` crosstalk marker. `InstallGuard` requires the DB name to **contain** the marker with `-`→`_` (i.e. `_prod` / `_dev`, as a substring) — else the receiver **5xx**s and `bridge:check` **fails** (DL-001). |
-| `BRIDGE_RECEIVER_BASE_URL` | http(s) URL | — | This bridge's public webhook URL (used by `bridge:provision`). Malformed → `bridge:check` **fails**. |
+| `BRIDGE_RECEIVER_BASE_URL` | http(s) URL | — | This bridge's public webhook URL (used by `bridge:provision`, and — since card#9150 / DL-368 — as the URL `bridge:check` looks for in a github repo's webhook list). Malformed → `bridge:check` **fails**. Unset with a github subscription declared → that leg reports **`unvalidated`**: there is no receiver URL to look for, so nothing was measured. |
 | `BRIDGE_KANBAN_API_BASE_URL` | http(s) URL | — | kanban API base. Malformed → `bridge:check` **fails**. |
 | `BRIDGE_GITHUB_API_BASE_URL` | http(s) URL | `https://api.github.com` | Only relevant if a github adapter calls the API. |
 | `BRIDGE_GITHUB_TOKEN_PATH` | abs path | — | `bridge:reconcile` GitHub read token (DL-184). Authoritative when set: a missing/blank/insecure file **fails loud** with no store/env fallback. Absent → the conventional `<secret_dir>/github/token`, then store-native, then `GH_TOKEN`. |
@@ -76,6 +76,20 @@ Each entry:
 | `event_filter` | list | `[]` (all) | e.g. `["task.*","comment.*"]`. |
 
 Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Only `kanban` is API-provisionable (`bridge:provision` skips github with a non-zero exit).
+
+⭐ **A `github` subscription is VERIFIED AGAINST THE REPO (card#9150 / DL-368).** Because `bridge:provision` cannot see github, a declared github scope and the repo's live webhook had no comparison anywhere in the product — a webhook deleted in repo settings left the agent deaf while every bridge-side surface stayed healthy. `bridge:check` now reads the repo's webhook list and looks for one that would DELIVER to `<BRIDGE_RECEIVER_BASE_URL>/github?b=<scope>` — the ⚠ below says what that does and does not treat as the same URL:
+
+| What this run established | `bridge:check` reports | Exit code |
+|---|---|---|
+| Read the whole hook list; a hook delivers here | **`ok`** — the green line is the witness that the read happened | unchanged |
+| Read the whole hook list; **no** hook delivers here | **`fail`** — a deaf agent is a broken install | ⚠ **non-zero** |
+| Could not read it — no token resolved, HTTP 401/403/404, a network failure, a 200 that is not a hook list | **`unvalidated`** — this measured nothing and is **not** evidence the hook is gone | unchanged |
+
+| Could not compose a receiver URL that reaches this app — `BRIDGE_RECEIVER_BASE_URL` unset, or set to a value whose composed URL matches no route here | **`unvalidated`** — nothing was asked of GitHub, because a hook can only be compared against a URL that IS this install's receiver | unchanged |
+
+⚠ **`BRIDGE_RECEIVER_BASE_URL` ALREADY ENDS IN THE RECEIVER PATH** (`https://<host>/webhooks` — see `.env.example`), and `bridge:check` composes `<base>/github?b=<scope>` from it. Set to the bare host, or with the path doubled, the composed URL reaches **no route in this app** — and because the operator is told to paste that same composed URL into GitHub, the hook and the comparand were byte-equal and the leg reported `ok` while every delivery 404'd. Since card#9150 r6 the composed URL is matched against this app's own router first, and a scope it cannot reach is not probed. ⚠ The check cannot see a proxy that REWRITES the request path; such an install gets this `unvalidated` line rather than a false `fail`, and the line says so.
+
+⚠ Listing a repo's webhooks needs a token with **`admin:repo_hook`** on that repo, resolved by the `BRIDGE_GITHUB_TOKEN_PATH` precedence below. An install whose token cannot enumerate hooks is supported and simply gets the `unvalidated` line. ⚠ **What counts as the SAME hook is `App\Bridge\Support\ReceiverUrl::deliversTo()`'s docblock to state, and is deliberately not restated here** — it is the receiver's own routing rather than a byte compare (this line used to say *byte for byte*, which had been false since the predicate started folding scheme/host case, the default port, trailing slashes and path encoding), and the `fail` line `bridge:check` prints carries the operator-facing summary. Setup and remedy: [`writeback.md`](writeback.md) § *The repo webhook (one-time, in GitHub)*.
 
 ### `echo_suppression:` (optional) — OTHER agents only (self is auto-seeded)
 | Key | Type | Default | Notes |

@@ -146,10 +146,13 @@ class CheckNextStepsTest extends TestCase
 
         $this->assertSame(
             [
-                ['agent' => 'agent-a', 'state' => 'no_block', 'command' => 'php artisan bridge:provision-tools --agent=agent-a', 'doc' => NextSteps::DOC],
-                ['agent' => 'agent-b', 'state' => 'seat_side_unreported', 'command' => 'php artisan bridge:check', 'doc' => NextSteps::DOC],
-                ['agent' => 'agent-d', 'state' => 'bridge_side_incomplete', 'command' => 'php artisan bridge:provision-tools --agent=agent-d', 'doc' => NextSteps::DOC],
-                ['agent' => 'agent-e', 'state' => 'bridge_side_unverified', 'command' => 'sudo php artisan bridge:check', 'doc' => NextSteps::DOC],
+                // `scope` is null on every board-tools state and is asserted so rather than
+                // omitted (card#9150): the key is ALWAYS present, and a test that skipped it
+                // here would green on a renderer that emitted it only sometimes.
+                ['agent' => 'agent-a', 'scope' => null, 'state' => 'no_block', 'command' => 'php artisan bridge:provision-tools --agent=agent-a', 'doc' => NextSteps::DOC],
+                ['agent' => 'agent-b', 'scope' => null, 'state' => 'seat_side_unreported', 'command' => 'php artisan bridge:check', 'doc' => NextSteps::DOC],
+                ['agent' => 'agent-d', 'scope' => null, 'state' => 'bridge_side_incomplete', 'command' => 'php artisan bridge:provision-tools --agent=agent-d', 'doc' => NextSteps::DOC],
+                ['agent' => 'agent-e', 'scope' => null, 'state' => 'bridge_side_unverified', 'command' => 'sudo php artisan bridge:check', 'doc' => NextSteps::DOC],
             ],
             $doc['next_steps'],
         );

@@ -167,6 +167,24 @@ enum CheckSlot: string
     case EventConsumer = 'event-consumer';
 
     /**
+     * The github SUBSCRIPTION plane (card#9150), after the event-follows-consumer leg and
+     * before the board-tools one: does each declared github subscription still have a live
+     * webhook on the repo pointing at this install's receiver?
+     *
+     * ITS OWN SLOT RATHER THAN THE TAIL OF {@see self::EventConsumer}, and the boundary is
+     * what each plane READS. That one reconciles this bridge's OWN inbound history against
+     * what its classifiers consume — entirely local, and silent on a scope nothing ever
+     * arrived for. This one is the only leg in the command that asks GITHUB about a github
+     * subscription, and it is precisely the scope nothing arrives for that it exists to
+     * explain. Folding them would put a network read inside a plane whose whole character is
+     * that it needs none.
+     *
+     * ⚑ IT MUST RUN BEFORE `NextSteps::derive()`: the block reads
+     * {@see CheckContext::$githubWebhooksMissing} to name the scope and the remedy.
+     */
+    case GithubWebhook = 'github-webhook';
+
+    /**
      * The HEAD of the board-tools plane: the scan for a DEFAULT-on `board_tools` block
      * that could not satisfy itself.
      *
