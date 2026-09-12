@@ -258,8 +258,11 @@ final class GitHubWebhookSubscriptionCheck implements Check
      *
      * ⛔ THIS MESSAGE RESTATES {@see ReceiverUrl::deliversTo()}'s RULE AND HAS TO, which is why
      * it is GUARDED rather than replaced by a pointer (canon #16): the reader is an operator
-     * staring at a terminal, and they cannot follow a `{@see}`. Every other copy of that rule
-     * in this repo was deleted in favour of the one owner; this one is corrected in place and
+     * staring at a terminal, and they cannot follow a `{@see}`. Every copy that carried the FALSE
+     * version of it became a pointer to the owner — ⚠ except `docs/writeback.md` § *The repo
+     * webhook*, which still restates PART of the rule beside its pointer, accurately today and
+     * unguarded; named here so this paragraph is not read as a claim that one copy survives.
+     * This one is corrected in place and
      * `GitHubWebhookSubscriptionCheckTest::test_the_fail_lines_normalisation_note_is_true_of_the_predicate`
      * asserts each clause of it AGAINST THE PREDICATE, so the text cannot drift from the
      * behaviour it describes without something going red. ⚠ It said *byte for byte* of the

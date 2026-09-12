@@ -198,7 +198,9 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // ⛔ THE GUARD ON THE ONE RESTATEMENT THAT CANNOT BECOME A POINTER (canon #16). The
         // `fail` line is read by an OPERATOR at a terminal, who cannot follow a `{@see}` to
         // `ReceiverUrl::deliversTo()`, so this copy of the normalisation rule is corrected in
-        // place — and every other copy in the repo was deleted in favour of that owner. What
+        // place — and every copy that carried the FALSE version of it became a pointer to that
+        // owner (⚠ except `docs/writeback.md`, which still restates part of the rule beside its
+        // pointer, accurately today and unguarded — named rather than glossed). What
         // keeps this one honest is not proofreading: each clause below is asserted BOTH as text
         // in the shipped line AND as behaviour of the predicate the line describes, so the two
         // cannot drift apart in either direction without going red.
