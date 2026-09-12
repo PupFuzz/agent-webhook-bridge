@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
@@ -2861,6 +2862,26 @@ class BridgeCommandsTest extends TestCase
         $out = Artisan::output();
         $this->assertSame(0, $code);
         $this->assertStringContainsString('shared by multiple agents', $out);
+    }
+
+    public function test_check_surfaces_a_coordination_agent_claiming_a_github_account_on_the_console(): void
+    {
+        // card#9152 / DL-373. The composition, not the check: the leg reads
+        // `CheckContext::$configs` and `CheckContext::$registry`, both of which the command
+        // publishes AFTER its per-agent loop — a leg registered one slot earlier would see
+        // an empty roster and report a clean install forever. Warn-level, so the exit code
+        // does not move.
+        File::put($this->dir.'/me.yml',
+            "identity:\n  github_user_id: 12000042\n"
+            ."subscriptions:\n  - provider: github\n    scopes: ['org/coord']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n");
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('agent me: identity.github_user_id = 12000042', $out);
+        $this->assertStringContainsString('THIS SEAT IS DEAF', $out);
     }
 
     public function test_check_warns_when_channel_socket_parent_dir_is_missing(): void

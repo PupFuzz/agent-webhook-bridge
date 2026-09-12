@@ -1153,11 +1153,17 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins 40 as the registered total, which the registration test pins BY ID.
+        // It also pins the registered TOTAL — the literal in the assertion below, which the
+        // registration test pins BY ID. ⚠ This sentence said `40` from card#8683 until
+        // card#9152 while the assertion read 41: a second copy of a figure the assertion
+        // already states, drifting on the first change that moved it (canon #16). The
+        // figure is DELETED from the prose rather than re-synced — there is one copy now,
+        // and it is the one that reds.
         // Two independent statements of the same fact on purpose: the id list catches a
         // check being swapped, this catches the operator-facing line disagreeing with it.
         // ⚑ THE LITERAL MOVES WITH THE REGISTERED SET, IN THE SAME COMMIT — it was 39 until
-        // card#8683 / DL-345 registered `standup.posture`. Deriving it from the registration
+        // card#8683 / DL-345 registered `standup.posture`, and 41 until card#9152 / DL-373
+        // registered `agent.coordination_identity`. Deriving it from the registration
         // list instead would make this term agree with that one by construction and stop
         // being a second statement of the fact.
         foreach (self::fixtures() as [$name]) {
@@ -1183,7 +1189,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(41, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame(42, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,

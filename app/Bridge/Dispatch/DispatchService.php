@@ -3,6 +3,7 @@
 namespace App\Bridge\Dispatch;
 
 use App\Bridge\Adapters\EventDto;
+use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\EmitsWritebackReactions;
@@ -144,6 +145,7 @@ final class DispatchService
             $gateReason = null;
             if ($this->isEcho($agent, $actor)) {
                 $gateReason = 'echo: own write';
+                $this->warnAccountEchoUnderReattribution($provider, $agent, $classifier, $actor, $event);
             } elseif (! $this->isSignal($agent, $actor)) {
                 $gateReason = 'actor is not a signal';
             }
@@ -335,6 +337,57 @@ final class DispatchService
                 $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush);
             }
         }
+    }
+
+    /**
+     * Warn when the ACCOUNT-keyed pre-classify echo gate fires for an agent whose
+     * classifier recovers the author AFTER classify (card#9152 / DL-373).
+     *
+     * WHY THIS IS A WARNING AND NOT A LINE IN THE LEDGER'S NOISE. On a shared upstream
+     * account the whole point of {@see App\Bridge\Classifiers\CoordinationClassifier}
+     * is that the account cannot decide whose write an event is — the `FROM:` line can,
+     * and only after classify. So the registry naming THIS agent from a github
+     * `sender.id` means one of two things, and both are worth an operator's attention:
+     * the account is genuinely this agent's alone (fine, and the seat's own posts are
+     * being suppressed exactly as intended), or it is the account several agents post
+     * under and has been claimed by one of them — in which case EVERY participant's post
+     * is dropped as this agent's own write and the seat is deaf with nothing else saying
+     * so. The drop is recorded at INFO like every other gate drop, which is what let the
+     * second case run silent on a live install; this line is what makes it greppable.
+     *
+     * ⛔ IT CHANGES NOTHING ABOUT THE DROP. The gate reason, the ledger row and the
+     * disposition are untouched — a diagnosis, not a decision.
+     *
+     * ⚑ NARROWER THAN THE GATE ON PURPOSE, ON THREE AXES, because each widening would
+     * make it fire where nothing is wrong:
+     *  - `github` only. A kanban actor id resolving to this agent is the ORDINARY
+     *    single-account model (DL-002 Path A) — a kanban-triage seat suppressing its own
+     *    card writes is this gate working, and this classifier serves that family too.
+     *  - the SELF-name arm only. A `treat_as_echo` match names ANOTHER agent, which is
+     *    ordinary cross-agent suppression and has nothing to do with attribution; a raw
+     *    `treat_as_echo_ids` match is the operator saying so by hand.
+     *  - `instanceof`, so a SUBCLASS of the shipped classifier is covered here. That is
+     *    the population `bridge:check`'s `agent.coordination_identity` leg cannot see,
+     *    which reads a config string and matches the FQCN exactly.
+     */
+    private function warnAccountEchoUnderReattribution(
+        string $provider,
+        AgentConfig $agent,
+        Classifier $classifier,
+        Actor $actor,
+        WebhookEvent $event,
+    ): void {
+        if ($provider !== 'github' || ! $classifier instanceof CoordinationClassifier || $actor->name !== $agent->agentName) {
+            return;
+        }
+
+        Log::warning('bridge dispatch: the account-keyed echo gate named the serving agent under a classifier that re-attributes after classify — check this install\'s identity config', [
+            'agent' => $agent->agentName,
+            'event' => $event->id,
+            'actor_id' => $actor->id,
+            'why' => 'this classifier exists because a github account can be shared by several agents, so it recovers the author from the body FROM: line AFTER classify — and that recovery is skipped whenever the registry has already named the actor. If account '.$actor->id.' is the one several agents post under, every participant\'s post is being dropped as this agent\'s own write and this seat receives nothing.',
+            'remedy' => 'run php artisan bridge:check and read the agent.coordination_identity leg. If the account is shared, delete identity.github_user_id from this agent\'s YAML or declare the account once in shared-identities.json. If the account is genuinely this agent\'s alone, nothing is wrong and this line is the expected suppression of its own write.',
+        ]);
     }
 
     private function isEcho(AgentConfig $agent, Actor $actor): bool

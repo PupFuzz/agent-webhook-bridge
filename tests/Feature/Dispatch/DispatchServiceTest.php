@@ -17,6 +17,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Tests\Fixtures\CoalescingTargetsClassifier;
 use Tests\Fixtures\DualTargetClassifier;
@@ -581,9 +582,160 @@ class DispatchServiceTest extends TestCase
 
         $d = AgentDispatch::firstOrFail();
         $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
-        $this->assertStringContainsString('reattributed', (string) $d->reason);
+        // ⭐ THE REASON STRING IS THE ASSERTION, NOT THE OUTCOME (card#9152). "my own post
+        // did not wake me" is satisfied by BOTH suppression paths, and one of them is a
+        // broken install: an agent YAML claiming the shared account inline drops every
+        // post — its own AND every counterparty's — at the pre-classify ACCOUNT gate,
+        // under the reason `echo: own write`. This leg would be GREEN on that install
+        // while the seat received nothing at all, which is what happened on a live one.
+        // The `(reattributed author)` half is the tell that the FROM:-line path is what
+        // ran, so it is asserted whole rather than by substring.
+        $this->assertSame('echo: own write (reattributed author)', (string) $d->reason);
         $this->assertSame(0, $this->inboxCount());
         Http::assertNothingSent();
+    }
+
+    // ---- card#9152 / DL-373: the config that makes the leg above pass for the wrong reason ----
+    //
+    // WHY THESE THREE ARE ONE GROUP. The acceptance a seat runs when it joins a roundtable
+    // has three legs: (1) a post reaches the channel, (2) my own post must not wake me, and
+    // (3) a counterparty's reply wakes me. Legs 2 and 3 are NOT INDEPENDENT — the single
+    // config line that makes leg 2 pass is what makes leg 3 impossible, so leg 2 alone
+    // certifies nothing. These pin both sides of that line at the dispatcher, on the SAME
+    // event: with the account claimed inline, an own post and a counterparty post are
+    // dropped under the SAME account-gate reason; with it absent, they part.
+
+    /**
+     * A coord seat whose YAML claims the shared roundtable account as its own identity —
+     * and therefore declares no `shared-identities.json`, since a shared declaration takes
+     * precedence in the registry and neutralizes the key.
+     */
+    private function writeAccountClaimingCoordAgent(): void
+    {
+        File::put($this->dir.'/me.yml',
+            "subscriptions:\n  - provider: github\n    scopes: ['org/coord']\n"
+            ."identity:\n  github_user_id: 12000042\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+            ."channel:\n  url: http://127.0.0.1:8788/\n");
+    }
+
+    public function test_an_inline_shared_account_id_suppresses_the_agents_own_post_at_the_account_gate(): void
+    {
+        // The event, the agent and the assertion of leg 2 are IDENTICAL to
+        // test_this_agents_own_comment_is_still_echo_dropped_end_to_end above; only the
+        // identity block differs. It is still DROPPED and the inbox is still empty — so
+        // "my own post must not wake me" holds — but the reason names the ACCOUNT path,
+        // which never consulted the body at all.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeAccountClaimingCoordAgent();
+
+        $this->dispatchCoord('evt-own', 'issue_comment.created', $this->coordComment(['from:me', 'to:all'], "FROM: me\nmy own post"));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertSame('echo: own write', (string) $d->reason);
+        $this->assertSame(0, $this->inboxCount());
+        Http::assertNothingSent();
+    }
+
+    public function test_an_inline_shared_account_id_drops_a_counterpartys_post_too_so_leg_3_cannot_pass(): void
+    {
+        // The structural deadness, stated as an outcome: a post by ANOTHER participant,
+        // addressed TO this agent, on a thread this agent did not open. The pair below
+        // runs the same event against the correct config and gets a wake, so the drop is
+        // attributable to the identity block and to nothing else in the fixture.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeAccountClaimingCoordAgent();
+
+        $this->dispatchCoord('evt-peer', 'issue_comment.created', $this->coordComment(['from:peer', 'to:me'], "FROM: peer\nping"));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertSame('echo: own write', (string) $d->reason);
+        $this->assertSame(0, $this->inboxCount());
+        Http::assertNothingSent();
+    }
+
+    public function test_the_same_counterparty_post_wakes_the_agent_on_the_correct_config(): void
+    {
+        // Leg 3, and the control for the leg above: identical event, identical classifier,
+        // identical channel — the account declared shared instead of claimed inline.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-peer', 'issue_comment.created', $this->coordComment(['from:peer', 'to:me'], "FROM: peer\nping"));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $d->outcome);
+        $this->assertSame(1, $this->inboxCount());
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
+    }
+
+    public function test_a_distinct_account_coord_install_suppresses_its_own_post_and_delivers_a_peers(): void
+    {
+        // ⛔ THE COUNTEREXAMPLE TO "AN INLINE github_user_id ON A COORDINATION AGENT IS
+        // ALWAYS WRONG", and the reason `bridge:check`'s agent.coordination_identity leg
+        // discloses what it cannot tell apart instead of convicting. Two coord agents, each
+        // with its OWN account, no shared-identities.json — the topology
+        // `docs/consumer-guide.md` § Coordination intents calls the default for an install
+        // that shares no account, and the one it rates the STRONGEST of the three
+        // attribution paths. Both halves work: the account that posted is suppressed for
+        // its own agent, and the other agent WAKES. A check that failed this config would
+        // red a documented, working install.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        foreach ([['me', 12000042], ['peer', 12000099]] as [$name, $uid]) {
+            File::put($this->dir."/{$name}.yml",
+                "subscriptions:\n  - provider: github\n    scopes: ['org/coord']\n"
+                ."identity:\n  github_user_id: {$uid}\n"
+                ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+                ."channel:\n  url: http://127.0.0.1:8788/\n");
+        }
+
+        $this->dispatcher()->dispatch('github', 'org/coord', new EventDto(
+            deliveryId: 'evt-peer', scopeId: 'org/coord', eventType: 'issue_comment.created', actorId: '12000099',
+        ), $this->coordComment(['from:peer', 'to:me'], "FROM: peer\nping"));
+
+        $mine = AgentDispatch::where('agent_name', 'me')->firstOrFail();
+        $theirs = AgentDispatch::where('agent_name', 'peer')->firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $mine->outcome);
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $theirs->outcome);
+        $this->assertSame('echo: own write', (string) $theirs->reason);
+        $this->assertSame(1, $this->inboxCount());
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
+    }
+
+    public function test_the_account_gate_firing_under_the_coordination_classifier_is_logged_at_warning(): void
+    {
+        // The INFO `dropped at gate` line is emitted for every gate and reads identically
+        // whether suppression was correct or the install is deaf — which is precisely why
+        // this ran silent on a live seat. The drop itself is unchanged; what is new is that
+        // an operator can grep for it.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        Log::spy();
+        $this->writeAccountClaimingCoordAgent();
+
+        $this->dispatchCoord('evt-peer', 'issue_comment.created', $this->coordComment(['from:peer', 'to:me'], "FROM: peer\nping"));
+
+        $eventId = WebhookEvent::firstOrFail()->id;
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg, $ctx) => str_contains((string) $msg, 'the account-keyed echo gate named the serving agent')
+            && ($ctx['agent'] ?? null) === 'me'
+            && ($ctx['event'] ?? null) === $eventId
+            && ($ctx['actor_id'] ?? null) === '12000042'
+            && str_contains((string) ($ctx['remedy'] ?? ''), 'agent.coordination_identity'))->once();
+    }
+
+    public function test_the_correct_shared_account_config_logs_no_such_warning(): void
+    {
+        // The other half of the pin: on a correctly-configured seat the account gate never
+        // fires at all, so a warning here would be noise an operator learns to ignore —
+        // and the leg above would stop discriminating anything.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        Log::spy();
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-own', 'issue_comment.created', $this->coordComment(['from:me', 'to:all'], "FROM: me\nmy own post"));
+
+        Log::shouldNotHaveReceived('warning', fn ($msg) => str_contains((string) $msg, 'the account-keyed echo gate named the serving agent'));
     }
 
     public function test_route_intents_attaches_bearer_token_and_never_persists_it(): void
