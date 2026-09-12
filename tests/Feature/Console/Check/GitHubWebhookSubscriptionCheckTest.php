@@ -307,11 +307,37 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringNotContainsString('a live repo webhook delivers to this install', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
 
-        // ⚠ THE EXIT CODE DOES NOT MOVE. This leg measured nothing about the repo — it asked
-        // GitHub nothing at all, which is limb (a) (a probe that was SKIPPED) and not limb (c),
-        // which this said until r7 — and the route table is not the whole delivery path, since
-        // a proxy that rewrites it is unmeasurable from here. So `unvalidated`, not `fail`.
-        $this->assertSame(0, $exit);
+        // ⚠ THIS LEG DOES NOT MOVE THE EXIT CODE, AND THE ASSERTION NOW SAYS THAT INSTEAD OF
+        // MEASURING IT THROUGH THE RUN'S EXIT (card#9280). This leg measured nothing about the
+        // repo — it asked GitHub nothing at all, which is limb (a) (a probe that was SKIPPED)
+        // and not limb (c), which this said until r7 — and the route table is not the whole
+        // delivery path, since a proxy that rewrites it is unmeasurable from here. So
+        // `unvalidated`, not `fail`, which the severity assertion above already pins.
+        //
+        // ⛔ IT USED TO ASSERT `$exit === 0`, AND THAT WAS THE WRONG INSTRUMENT FOR ITS OWN
+        // STATED PROPERTY — a proxy that held only while no OTHER leg failed on this install
+        // shape. Since card#9280 / DL-374 one does: `install.endpoint_urls` judges the config
+        // value against this app's route table and FAILS, so the run exits non-zero on exactly
+        // the install this fixture builds. Flipping the expected exit to 1 would have thrown
+        // away what the line was for, because it would then pass with this leg failing too.
+        // What replaces it is STRICTLY STRONGER: the run's `fail` findings are enumerated and
+        // the set of legs owning them must be exactly the endpoint-URLs leg. This reds if the
+        // github leg ever starts failing here (the thing the original guarded), AND reds if the
+        // endpoint-URLs leg ever stops.
+        $failOwners = [];
+        foreach ($doc['checks'] as $check) {
+            foreach ($check['findings'] as $f) {
+                if ($f['severity'] === 'fail') {
+                    $failOwners[$check['id']] = true;
+                }
+            }
+        }
+        $this->assertSame(
+            ['install.endpoint_urls'],
+            array_keys($failOwners),
+            'the red on a receiver base that reaches no route belongs to install.endpoint_urls and to no other leg',
+        );
+        $this->assertSame(1, $exit, 'the config fault is a fail, so the run must exit non-zero — that is card#9280');
 
         // And an unmeasured read publishes no NEXT STEPS webhook entry, for the same reason the
         // 403 arm does not: the remedy it would print is "go add a webhook", which is wrong.

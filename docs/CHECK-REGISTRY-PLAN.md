@@ -1106,7 +1106,8 @@ reports as a complete measurement — found while reading this stage's regen).
 **What migrated:** five checks — `install.config_dir` and `install.secret_dir` (the two directories
 the install is built on, each resolvable-then-secure), `install.inbox_config` (the surfacing
 layout/mode config), `install.endpoint_urls` (the receiver base URL and the kanban API base URL,
-under their two different floors) and `install.provider_adapters` (the B-15 provider ↔ adapter
+under their different floors — the receiver base gained a third, *does this compose a URL this
+app would route*, in card#9280 / DL-374) and `install.provider_adapters` (the B-15 provider ↔ adapter
 coverage leg) — into **three** new slots: `CheckSlot::Install`, `CheckSlot::Inbox` and
 `CheckSlot::Providers`.
 
