@@ -330,9 +330,12 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 
 ```bash
 php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220).
-                                                      # Ends with a NEXT STEPS block naming each agent whose board-tools enablement is
-                                                      # incomplete and the ONE command to run next (DL-352) — output only, exit unchanged,
-                                                      # silent when nothing is outstanding. --format=json carries it as next_steps[].
+                                                      # Ends with a NEXT STEPS block naming what is not wired end to end and the ONE
+                                                      # command to run next (DL-352) — silent when nothing is outstanding, and carried in
+                                                      # --format=json as next_steps[] (shape + state vocabulary: docs/check-json-contract.md
+                                                      # § 7a). ⚠ Since DL-368 it also covers github subscriptions whose repo webhook is
+                                                      # gone, and THAT fault is a `fail` — so an install printing that entry exits
+                                                      # non-zero. The block still emits no finding of its own; the leg above it does.
                                                       # ⛔ --probe-tools does NOT verify a seat's half: it stamps the same ledger row from
                                                       # this box (docs/board-tools.md step 6), so it clears the line without the seat calling.
 php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences + per-divergence history

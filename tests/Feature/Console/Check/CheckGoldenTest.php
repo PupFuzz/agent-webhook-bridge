@@ -674,6 +674,23 @@ class CheckGoldenTest extends TestCase
                 $this->githubEvent('issues.closed', 'e1');
 
                 return $default;
+
+                // ---- the github webhook subscription leg (card#9150) ----
+            case 'github-webhook-missing':
+                // THE SHAPE THE CARD EXISTS FOR, captured as the operator sees it: a declared
+                // github subscription whose repo carries no webhook delivering here. Every
+                // other surface for that subscription is healthy, which is exactly why it went
+                // unnoticed on a live install — so what this fixture pins is the two things
+                // that changed: the FAIL line (and with it a non-zero exit on an install that
+                // used to exit 0) and the NEXT STEPS entry naming the scope and the remedy.
+                $i->boot()->agent('gh-agent', "identity:\n  github_user_id: 555\n"
+                    ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n")
+                    ->secret('github/token', 'gh-token');
+                // An EMPTY list, not a stray request: the leg must have LOOKED and found
+                // nothing, which is the only state that earns the fail.
+                Http::fake(['*/repos/owner/repo/hooks*' => Http::response([])]);
+
+                return $default;
         }
 
         $this->fail("unknown golden fixture: {$name}");
@@ -732,6 +749,7 @@ class CheckGoldenTest extends TestCase
             'event-consumer-unconsumed-type',
             'event-consumer-nothing-arrived',
             'event-consumer-declaration-unreadable',
+            'github-webhook-missing',
         ]);
     }
 
@@ -921,6 +939,17 @@ class CheckGoldenTest extends TestCase
             'event-consumer-declaration-unreadable' => [
                 'threw when asked which events it consumes',
                 'could not be determined',
+            ],
+
+            // ---- the github webhook subscription leg (card#9150) ----
+            // THREE substrings, because this fixture's subject is three things that must
+            // travel together and any one alone would green on a broken half: the FAIL
+            // itself, the remedy that names what `bridge:provision` cannot do, and the NEXT
+            // STEPS entry — a leg nobody reads is the same defect as no leg.
+            'github-webhook-missing' => [
+                "github webhook: owner/repo has NO repo webhook delivering to this install's receiver",
+                'bridge:provision CANNOT fix this',
+                'next step 2/2 — gh-agent:',
             ],
         ];
     }
@@ -1153,19 +1182,21 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins the registered TOTAL — the literal in the assertion below, which the
-        // registration test pins BY ID. ⚠ This sentence said `40` from card#8683 until
-        // card#9152 while the assertion read 41: a second copy of a figure the assertion
-        // already states, drifting on the first change that moved it (canon #16). The
-        // figure is DELETED from the prose rather than re-synced — there is one copy now,
-        // and it is the one that reds.
-        // Two independent statements of the same fact on purpose: the id list catches a
-        // check being swapped, this catches the operator-facing line disagreeing with it.
-        // ⚑ THE LITERAL MOVES WITH THE REGISTERED SET, IN THE SAME COMMIT — it was 39 until
-        // card#8683 / DL-345 registered `standup.posture`, and 41 until card#9152 / DL-373
-        // registered `agent.coordination_identity`. Deriving it from the registration
-        // list instead would make this term agree with that one by construction and stop
-        // being a second statement of the fact.
+        // It also pins the registered TOTAL as a literal, which the registration test pins
+        // BY ID. Two independent statements of the same fact on purpose: the id list catches
+        // a check being swapped, this catches the operator-facing line disagreeing with it.
+        // ⚑ THE LITERAL MOVES WITH THE REGISTERED SET, IN THE SAME COMMIT — 39 until
+        // card#8683 / DL-345 registered `standup.posture`, 41 until card#9150 / DL-368
+        // registered `github.webhook_subscription` and card#9152 / DL-373 registered
+        // `agent.coordination_identity`. ⛔ THOSE TWO LANDED TOGETHER, so the total moved
+        // 41 → 43 in one merge and the 42 each branch carried alone was never a state of this
+        // tree: a merge that took either side's figure would have been a clean-looking no-op.
+        // Deriving it from the registration list instead would make this term agree with that
+        // one by construction and stop being a second statement of the fact. ⛔ THE FIGURE IS
+        // THEREFORE IN THE ASSERTION AND DELIBERATELY NOT IN THIS PROSE: the sentence above
+        // carried a hand-written `40` while the assertion said 41, i.e. the restatement had
+        // already drifted from the thing it describes, which is the whole reason a count
+        // belongs in exactly one place.
         foreach (self::fixtures() as [$name]) {
             $golden = $this->goldenFor($name);
 
@@ -1189,7 +1220,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(42, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame(43, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,
@@ -1438,6 +1469,17 @@ class CheckGoldenTest extends TestCase
             ->secret('github/token', 'gh-token');
         config(['bridge.writeback.correlation' => 'scan']);
         Http::fake($stubs + [
+            // card#9150: this shape places a github token AND declares a github scope, so it
+            // is the one that reaches the webhook leg. STUBBED EXPLICITLY rather than left to
+            // the `'*'` catch-all below: that answers `{"data": []}`, which is not a hook list
+            // and correctly reports `unvalidated` — a could-not-look line on a fixture whose
+            // subject is the writeback move leg, saying nothing about either.
+            // ⚠ THE `/webhooks` SEGMENT IS LOAD-BEARING (card#9150 r6): this stub must be a URL
+            // that would ACTUALLY deliver to the pinned install, and `BRIDGE_RECEIVER_BASE_URL`
+            // already ends in the receiver path. Spelled without it — as it was — the hook
+            // matched a receiver URL that reaches no route in this app, so the fixture's green
+            // line was asserting a delivery that could never happen.
+            '*/repos/owner/repo/hooks*' => Http::response([['id' => 1, 'config' => ['url' => 'https://bridge.example.com/webhooks/github?b=owner/repo']]]),
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                 ['id' => 50, 'name' => 'In Progress', 'position' => 1024.0],

@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -20,6 +21,14 @@ use Illuminate\Support\Facades\Log;
  *
  * Verb-only + throws on non-2xx: the caller (ReconcileCommand) decides that a
  * per-card 4xx/5xx is warn + skip, never abort the whole run.
+ *
+ * ⚑ IT IS NO LONGER PR-STATE ONLY (card#9150). {@see self::hasRepoWebhookFor} reads the
+ * repo's WEBHOOK list. It lives here rather than in a sibling client because everything
+ * that made this class the right shape for a PR read is the same for a hook read — the
+ * resolved-token constructor, the UA/Accept/api-version headers GitHub requires, the
+ * timeout, and throw-on-non-2xx so the caller owns the posture. A second read-only GitHub
+ * client would be a second place for those to drift (canon #5). What it is NOT is a
+ * write client: nothing here creates, edits or deletes a hook.
  */
 final class GitHubReadClient
 {
@@ -27,6 +36,20 @@ final class GitHubReadClient
 
     /** Kept under a human-interactive command's patience; a slow GitHub is skipped per card. */
     public const TIMEOUT_SECONDS = 15;
+
+    /** GitHub's maximum page size for `GET /repos/{repo}/hooks`; a smaller one only costs pages. */
+    private const HOOK_PAGE_SIZE = 100;
+
+    /**
+     * How many hook pages {@see self::hasRepoWebhookFor} will walk before giving up.
+     *
+     * A BOUND, NOT A BELIEF ABOUT REPOS. It exists so an unbounded loop cannot be driven by
+     * an upstream that keeps answering full pages; reaching it reports "I did not finish"
+     * (`null`), never "absent". At 100 per page that is 1,000 hooks on one repo — GitHub's
+     * own documented ceiling is far below it — so the honest answer at the cap is that
+     * something is answering this URL that is not a repo's hook list.
+     */
+    private const HOOK_PAGE_LIMIT = 10;
 
     /**
      * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
@@ -47,6 +70,105 @@ final class GitHubReadClient
     public function probeRepo(string $repo): void
     {
         $this->http()->get(self::API_BASE."/repos/{$repo}")->throw();
+    }
+
+    /**
+     * Does this repo carry a webhook whose delivery URL is `$receiverUrl`? (card#9150)
+     *
+     * ⛔ IT RETURNS A BOOLEAN, AND THAT IS A SECURITY BOUNDARY RATHER THAN A STYLE CHOICE.
+     * The hook list is the WHOLE FLEET's: every other install's receiver endpoint is in the
+     * response body. Matching INSIDE this method is what makes "no other endpoint can reach
+     * an operator log, a finding or a traceback" true by construction — a `list<string>`
+     * return would put that guarantee back on every caller's discipline, and the first
+     * caller to interpolate its result into a diagnostic would publish the fleet.
+     *
+     * ⭐ THE THIRD ANSWER IS THE POINT. `null` means THIS READ DID NOT ESTABLISH EITHER —
+     * the enumeration hit {@see self::HOOK_PAGE_LIMIT}, or a 200 came back carrying
+     * something other than a JSON list (a proxy, a cache, an auth portal — the class
+     * {@see self::warnUnreadableBody} exists for). Collapsing that into `false` would tell
+     * the caller the hook is GONE on evidence that measured nothing, and the caller
+     * (`GitHubWebhookSubscriptionCheck`, whose absent arm is a `fail` that moves
+     * `bridge:check`'s exit code) would red a healthy install off a bad proxy.
+     *
+     * Throws RequestException on any non-2xx, like every other read here: a 403 or 404 is a
+     * token that may not enumerate hooks on this repo, which is the caller's to classify —
+     * NOT an empty result (an unreadable API response is not an empty one).
+     */
+    public function hasRepoWebhookFor(string $repo, string $receiverUrl): ?bool
+    {
+        // ⛔ HOISTED ABOVE THE PAGE LOOP (card#9150 r3). Declared per page, its `return null`
+        // fired at the end of whichever page saw the unreadable entry and pre-empted every
+        // later page — so a malformed entry on page 1 SILENCED a real matching hook on page 2.
+        // Measured: 99 foreign + 1 unreadable on page 1, the match on page 2, answered
+        // `unvalidated` where `ok` was earned. The direction was safe (never a false `fail`),
+        // but the claim *a match still wins* was FALSE across a page boundary while three
+        // surfaces asserted it unconditionally.
+        $unreadableElement = false;
+
+        for ($page = 1; $page <= self::HOOK_PAGE_LIMIT; $page++) {
+            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
+                'per_page' => self::HOOK_PAGE_SIZE,
+                'page' => $page,
+            ])->throw()->json();
+
+            if (! is_array($body) || ! array_is_list($body)) {
+                self::warnUnreadableBody(
+                    "the webhook-list read for {$repo} returned a 200 whose body is not a JSON list of hooks — whether a hook points at this install is UNKNOWN, not false, and a consumer that reads it as \"no such hook\" would convict a healthy install",
+                    ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                );
+
+                return null;
+            }
+
+            // ⛔ AN ELEMENT THIS PROJECTION CANNOT READ MAKES THE ENUMERATION INCOMPLETE, and
+            // it must reach `null` rather than falling through to `false` (card#9150 r2). The
+            // container-level guard above already routes an unreadable 200 to `null`; before
+            // this, an entry with no readable `config.url` — the SAME cause, an upstream shape
+            // change — fell past these type tests into the short-page `return false` below and
+            // convicted the install. On a shape change that is EVERY install at once, every
+            // exit code moved, off a read that established nothing.
+            //
+            // ⚑ A MATCH STILL WINS. The flag is only consulted when no hook matched, so one
+            // malformed entry beside a readable matching one still answers `true` — an
+            // unreadable element casts doubt on an ABSENCE, never on a hit.
+            foreach ($body as $hook) {
+                $config = is_array($hook) ? ($hook['config'] ?? null) : null;
+                $url = is_array($config) ? ($config['url'] ?? null) : null;
+                if (! is_string($url)) {
+                    $unreadableElement = true;
+
+                    continue;
+                }
+                // `deliversTo`, NOT `matchesExactly` (card#9150 r1): a hook spelled
+                // `?b=owner%2Frepo` delivers here exactly as `?b=owner/repo` does, and this
+                // method's negative answer becomes a `fail` that moves an exit code.
+                // `ReceiverUrl` owns why the two predicates differ and why provision keeps
+                // the exact one.
+                if (ReceiverUrl::deliversTo($url, $receiverUrl)) {
+                    return true;
+                }
+            }
+
+            // A SHORT PAGE IS THE END OF THE LIST, which is what makes `false` an
+            // EXHAUSTED enumeration rather than "not on page 1" — the distinction the
+            // `fail` severity below this rests on. ⚑ The flag is consulted HERE, at the one
+            // place an ABSENCE is about to be asserted, so an unreadable entry anywhere in
+            // the walk unmakes that absence while never pre-empting a later page's match.
+            if (count($body) < self::HOOK_PAGE_SIZE) {
+                if ($unreadableElement) {
+                    self::warnUnreadableBody(
+                        "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
+                        ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                    );
+
+                    return null;
+                }
+
+                return false;
+            }
+        }
+
+        return null;
     }
 
     /**

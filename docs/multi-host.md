@@ -301,7 +301,7 @@ Expected (the `-i` is what prints the first two): HTTP **202**, an `X-Channel-De
 The channel-push wake path drawn above is A→B (the bridge pushes; the channel
 server surfaces). The two-way board tools (DL-217) reverse the direction for the
 call itself: an agent invokes one of the board tools (`board_my_cards` /
-`board_create_card` / `board_correct_card`), the channel
+`board_create_card` / `board_correct_card` / `board_take_card`), the channel
 server on B forwards `{tool, args, client_version}` to the bridge on A over HTTP,
 and the bridge replies. That B→A call does **not** ride the existing `-R` reverse tunnel (which
 only carries A→B pushes) — it needs its OWN **forward** (`-L`) tunnel that
