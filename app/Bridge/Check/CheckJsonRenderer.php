@@ -199,6 +199,11 @@ final class CheckJsonRenderer
     {
         return [
             'agent' => $step->agent,
+            // card#9150. AN ADDED KEY, SO THE SCHEMA VERSION DOES NOT MOVE, and ALWAYS
+            // PRESENT rather than emitted only on the state that fills it: a consumer that
+            // had to tell an absent key from a null would be handling two shapes for one
+            // field, which is the rule this document applies everywhere else.
+            'scope' => $step->scope,
             'state' => $step->state->value,
             'command' => $step->command,
             'doc' => $step->doc,

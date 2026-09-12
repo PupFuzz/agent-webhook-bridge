@@ -14,8 +14,9 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * board_correct_card (DL-326, card#8378) — CORRECT a card the calling agent
- * ITSELF filed. The third tool beside {@see BoardMyCardsTool} (read) and
- * {@see BoardCreateCardTool} (create), and the one that stops duplicate-minting
+ * ITSELF filed. The CORRECTION verb on the board-tools door — {@see BoardToolsRegistry} is
+ * the shipped set, and is deliberately not restated as an ordinal here — and the one that
+ * stops duplicate-minting
  * from being a seat's only available response to its own wrong card: before this,
  * an impl seat's whole board surface was create + read, so a card minted with a
  * wrong title could only be answered with a SECOND card — which then defeats every
@@ -58,10 +59,15 @@ use Illuminate\Support\Facades\Log;
  * it. The response therefore reports no lane — it reports only what was checked.
  *
  * WHAT IS CORRECTABLE: `name`, `description`, `tags` — the caller-owned content,
- * and nothing else. Everything a caller might name that this tool does not own is
- * refused BY NAME with its owner ({@see FIELD_OWNERS}), never ignored: a silently
- * dropped argument leaves the seat believing it corrected something it did not,
- * which is the "refuse loudly, never silently no-op" this card was filed on. ⛔ The
+ * and nothing else. ⚠ THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST:
+ * `card_id` plus those three keys is the whole of it, and every other key throws
+ * before any write. What {@see FIELD_OWNERS} changes is the MESSAGE, never the
+ * outcome — the keys it enumerates are refused in a sentence naming the owning
+ * tool, and every other unnamed key is refused just as hard by the generic
+ * `unknown argument` arm ({@see refuseForeignArguments}). Never silently ignored
+ * either way: a silently dropped argument leaves the seat believing it corrected
+ * something it did not, which is the "refuse loudly, never silently no-op" this
+ * card was filed on. ⛔ The
  * offered set is deliberately NARROWER than `kbcard patch`'s corrective setters —
  * `type`, `external_id` and `origin` are refused — because THIS TOOL MUST NEVER
  * WRITE A FIELD `board_create_card` WOULD REFUSE AT BIRTH. A wider correction
@@ -122,6 +128,14 @@ use Illuminate\Support\Facades\Log;
 final class BoardCorrectCardTool implements Tool
 {
     /**
+     * ⚠ ONE CONSTANT BECAUSE THE TWO THROW SITES MUST STAY BYTE-IDENTICAL — see
+     * {@see BoardCreateCardTool}'s `TITLE_REFUSAL` for the reasoning; `name` is the same
+     * shape one tool over (not-a-string at the HTTP door, empty-once-trimmed at the ssh
+     * door, one refusal either way).
+     */
+    private const NAME_REFUSAL = 'board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)';
+
+    /**
      * The arguments this tool accepts. Anything else is refused — see
      * {@see FIELD_OWNERS} for the ones refused with a named owner.
      *
@@ -163,7 +177,13 @@ final class BoardCorrectCardTool implements Tool
         '_action' => 'a lifecycle control key, not a field — not this tool\'s to send',
         'priority' => 'not part of this tool\'s contract',
         'due_date' => 'not part of this tool\'s contract',
-        'assigned_user_id' => 'not part of this tool\'s contract',
+        // card#9170: this one has an OWNER now rather than merely being outside the
+        // contract — and the sentence is load-bearing in a way the others are not. A seat
+        // reaching for `assigned_user_id` here is reaching for the one value the take door
+        // will never accept from a payload, so the refusal names the tool that does it AND
+        // says why no argument anywhere carries a user id.
+        'assigned_user_id' => '`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument',
+        'assignee' => '`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument',
     ];
 
     public function name(): string
@@ -298,28 +318,29 @@ final class BoardCorrectCardTool implements Tool
      * named caller-fixable refusal instead of a board 422 the seat reads as a retryable
      * `502 upstream board error`.
      *
-     * ⭐ THE DESCRIPTION IS TRIMMED, AND THAT IS WHAT MAKES "CLEAR" MEAN THE SAME THING
-     * ON BOTH DOORS FOR ASCII WHITESPACE. `TrimStrings` runs ahead of
-     * `ConvertEmptyStringsToNull` on the HTTP door only, so `"   "` arrives as null there
-     * (⇒ clear) and as three spaces over ssh (⇒ a card whose body is whitespace).
-     * Trimming here converges them for that class.
+     * ⭐ BOTH TEXT FIELDS ARE TRIMMED THROUGH {@see BoardToolArgs}, AND THAT IS WHAT MAKES
+     * ONE CALL MEAN ONE THING ON BOTH DOORS. `TrimStrings` runs ahead of
+     * `ConvertEmptyStringsToNull` on the HTTP door only, so a blank `description` arrives
+     * as null there (⇒ clear) and as its literal self over ssh (⇒ a card whose body is
+     * whitespace). Trimming here converges them — for `"   "` and, since card#9155, for
+     * the invisible-character class too.
      *
-     * ⛔ IT DOES NOT CONVERGE THEM IN GENERAL, AND AN EARLIER REVISION OF THIS DOCBLOCK
-     * CLAIMED IT DID (card#8985 r2). The middleware trims with `Str::trim`, whose
-     * `Str::INVISIBLE_CHARACTERS` set includes `\x{00A0}` and much else; PHP's `trim()`
-     * here strips ASCII whitespace only. **Measured:** a description of one non-breaking
-     * space arrives NULL at the HTTP door (⇒ clear) and survives `trim()` here, so over
-     * ssh it is WRITTEN as the card's body — the second meaning for one call that the
-     * paragraph above says is gone. `name` (and `board_create_card`'s `title`) have the
-     * same gap one step earlier: `trim($name) === ''` is FALSE for that value, so ssh
-     * accepts a visually blank title the HTTP door refuses.
+     * ⛔ WHICH TRIM IS LOAD-BEARING, AND AN EARLIER REVISION OF THIS DOCBLOCK CLAIMED A
+     * CONVERGENCE PHP'S `trim()` DOES NOT DELIVER (card#8985 r2). The middleware trims with
+     * `Str::trim`, whose `Str::INVISIBLE_CHARACTERS` set includes `\x{00A0}` and much else;
+     * PHP's ASCII `trim()` strips none of them. **Measured:** a description of one
+     * non-breaking space arrived NULL at the HTTP door (⇒ clear) and survived `trim()` here,
+     * so over ssh it was WRITTEN as the card's body; `name` (and `board_create_card`'s
+     * `title`) had the same gap one step earlier — `trim($name) === ''` is FALSE for that
+     * value, so ssh accepted a visually blank title the HTTP door refuses. {@see BoardToolArgs}
+     * closes it by delegating to the middleware's own `Str::trim` BY IDENTITY, for every tool
+     * at once, and owns the reasoning; this docblock deliberately does not restate the set.
      *
-     * ⚠ NOT FIXED HERE, DELIBERATELY. Closing it makes this door REFUSE input it accepts
-     * today — a change to what the system accepts, which is operator-gated in this repo —
-     * so it is filed as its own card rather than folded into an unrelated branch.
-     * `BoardMyCardsTool` normalises with `Str::trim` for the same class on a READ
-     * argument; that is one site converged, not this one, and the two are deliberately
-     * not described as a shared rule until the gate is answered.
+     * ⚠ WHAT IS STORED IS THE TRIMMED VALUE, which is what the HTTP door stores — there the
+     * middleware has already run when the controller reads `args`. `name`'s length bound
+     * deliberately stays on the value AS SENT: it is conservative that way (raw within the
+     * cap implies the trimmed value is), and moving it would make this door ACCEPT a padded
+     * over-long name it refuses today, which is a permissive change and its own gate.
      *
      * @param  array<string, mixed>  $args
      * @return array<string, string>
@@ -330,14 +351,23 @@ final class BoardCorrectCardTool implements Tool
 
         if (array_key_exists('name', $args)) {
             $name = $args['name'];
-            if (! is_string($name) || trim($name) === '') {
-                throw new ToolRefusalException('board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)');
+            // EMPTY is the middleware's definition, not PHP's ({@see BoardToolArgs}), and
+            // it is answered before the cap so a blank-and-over-long name refuses with the
+            // same sentence on both doors. ⚠ The cap itself stays on the value AS SENT and
+            // the TRIMMED value is what is written — see `requireTitle()` in
+            // {@see BoardCreateCardTool} for why that asymmetry is deliberate.
+            if (! is_string($name)) {
+                throw new ToolRefusalException(self::NAME_REFUSAL);
+            }
+            $trimmed = BoardToolArgs::trimmed($name);
+            if ($trimmed === '') {
+                throw new ToolRefusalException(self::NAME_REFUSAL);
             }
             $tooLong = BoardCallRefusal::overLongName($this->name(), 'name', $name, 'Nothing was written');
             if ($tooLong !== null) {
                 throw $tooLong;
             }
-            $fields['name'] = $name;
+            $fields['name'] = $trimmed;
         }
 
         if (array_key_exists('description', $args)) {
@@ -345,7 +375,7 @@ final class BoardCorrectCardTool implements Tool
             if ($description !== null && ! is_string($description)) {
                 throw new ToolRefusalException('board_correct_card: `description` must be a string, or null/"" to CLEAR it (omit `description` to leave it alone)');
             }
-            $fields['description'] = trim($description ?? '');
+            $fields['description'] = BoardToolArgs::trimmed($description ?? '');
         }
 
         return $fields;
@@ -393,7 +423,7 @@ final class BoardCorrectCardTool implements Tool
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $row = $this->matchingRow($live, $boardId, $cardId);
+        $row = BoardScopedRow::forCard($live, $boardId, $cardId);
         if ($row !== null) {
             if (! $this->stampedBy($row, $agentName)) {
                 Log::warning('board_correct_card: refused — the card is on the agent\'s board but does not carry its mint stamp', [
@@ -426,7 +456,7 @@ final class BoardCorrectCardTool implements Tool
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $retired = $this->matchingRow($archived, $boardId, $cardId);
+        $retired = BoardScopedRow::forCard($archived, $boardId, $cardId);
         if ($retired !== null && $this->stampedBy($retired, $agentName)) {
             throw new ToolRefusalException("board_correct_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, and un-retiring one is not this tool's to do, so nothing was written. Unarchive it if the work is live again.");
         }
@@ -451,27 +481,6 @@ final class BoardCorrectCardTool implements Tool
     private function notYoursMessage(int $cardId, int $boardId): string
     {
         return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards YOU filed (the bridge's `created-by:` mint stamp) on your own board. Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
-    }
-
-    /**
-     * The one row that IS this card on this board, or null. The rows are what
-     * establish the scope — never the fact that the call was made with a scoped
-     * query (an unrecognised term degrades to free text and still answers 200).
-     *
-     * @param  list<array<string, mixed>>  $rows
-     * @return array<string, mixed>|null
-     */
-    private function matchingRow(array $rows, int $boardId, int $cardId): ?array
-    {
-        foreach ($rows as $row) {
-            $id = $row['id'] ?? null;
-            $board = $row['board_id'] ?? null;
-            if (is_numeric($id) && (int) $id === $cardId && is_numeric($board) && (int) $board === $boardId) {
-                return $row;
-            }
-        }
-
-        return null;
     }
 
     /**

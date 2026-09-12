@@ -4,6 +4,7 @@ namespace App\Bridge\Provision;
 
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\TokenFile;
@@ -39,7 +40,17 @@ final class WebhookProvisioner
     ): ProvisionResult {
         $match = null;
         foreach ($client->listWebhooks($scopeId) as $live) {
-            if (($live['url'] ?? null) === $receiverUrl) {
+            // ⛔ BYTE EQUALITY, AND IT DIVERGES FROM `bridge:check`'s PREDICATE ON PURPOSE
+            // (card#9150 r1). That command's github leg asks a DIFFERENT question of a repo's
+            // hook list — *would this hook deliver here?* — and answers YES for a
+            // percent-encoded scope, because the receiver cannot tell the two spellings apart
+            // and a `fail` there reds a healthy install. This side WRITES: what counts as an
+            // already-existing subscription decides whether one is created, which is a change
+            // to what the system accepts and is deliberately NOT widened.
+            // `ReceiverUrl::deliversTo()` is the other half and names this one; a test pins
+            // that this predicate stays exact.
+            $url = $live['url'] ?? null;
+            if (ReceiverUrl::matchesExactly(is_string($url) ? $url : null, $receiverUrl)) {
                 $match = $live;
                 break;
             }

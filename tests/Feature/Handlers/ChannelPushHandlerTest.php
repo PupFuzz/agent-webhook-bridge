@@ -7,6 +7,9 @@ use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use ReflectionClassConstant;
+use Tests\Support\BundledChannelServer;
 use Tests\TestCase;
 
 class ChannelPushHandlerTest extends TestCase
@@ -29,6 +32,102 @@ class ChannelPushHandlerTest extends TestCase
         (new ChannelPushHandler)->handle(
             ReactionTarget::make('channel_push', 'card-1', payload: $payload),
             $this->agent($channelSocket),
+        );
+    }
+
+    public function test_reports_the_receipt_status_the_endpoint_declares(): void
+    {
+        // card#9172, canon #7 CHECK leg: the declaring end is the channel server, and the
+        // bridge READS its declaration rather than restating a belief about it. The
+        // shipped server answers `X-Channel-Delivery-Receipt: none` on its 202 — a 202
+        // means the notification was written to the stdio transport and nothing more.
+        Log::spy();
+        Http::fake(['*' => Http::response('forwarded', 202, ['X-Channel-Delivery-Receipt' => 'none'])]);
+
+        $this->push(['url' => 'http://localhost:8788/', 'kind' => 'new_card', 'subject_id' => '42']);
+
+        Http::assertSent(fn ($request) => $request->url() === 'http://localhost:8788/');
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
+                && $ctx['target_id'] === 'card-1'
+                && str_contains($ctx['endpoint_declares'], 'X-Channel-Delivery-Receipt: none')
+        );
+    }
+
+    public function test_the_declared_value_is_scrubbed_and_bounded_before_it_is_logged(): void
+    {
+        // `$declared` is a header the ENDPOINT controls, and this line runs once per push
+        // — the busiest operator-facing stream the bridge has. `SecretScrubber`'s own
+        // docblock states the invariant: every surface putting text the bridge did not
+        // compose into an operator-facing stream passes through it first. A raw header
+        // reaching Log::info() breaks it, and an unbounded one turns each push into
+        // whatever length the far end chose.
+        //
+        // ⚠ Sibling unscrubbed sites exist and are NOT fixed here — they are recorded on
+        // card#8433, the item that owns `SecretScrubber` itself; this asserts THIS call
+        // site only. (The first cut said "filed separately" without a pointer, and no such
+        // filing existed — checked before the sentence shipped.)
+        Log::spy();
+        $declared = 'Bearer sk-live-abcdefghijklmnopqrstuvwxyz0123456789 '.str_repeat('A', 500);
+        Http::fake(['*' => Http::response('forwarded', 202, ['X-Channel-Delivery-Receipt' => $declared])]);
+
+        $this->push(['url' => 'http://localhost:8788/', 'kind' => 'new_card', 'subject_id' => '42']);
+
+        Log::shouldHaveReceived('info')->withArgs(function (string $m, array $ctx): bool {
+            $logged = $ctx['endpoint_declares'];
+
+            return str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
+                // Bounded: the far end does not get to choose the line length.
+                && mb_strlen($logged) <= 200
+                // Scrubbed: the credential-shaped run is gone, and the header NAME still
+                // reads, so the bound is not doing the redacting by accident.
+                && ! str_contains($logged, 'sk-live-abcdefghijklmnopqrstuvwxyz0123456789')
+                && str_contains($logged, 'X-Channel-Delivery-Receipt:');
+        });
+    }
+
+    public function test_names_an_endpoint_that_declares_nothing_instead_of_assuming_for_it(): void
+    {
+        // THE OTHER HALF, and the one canon #7 calls NAME WHAT YOU CANNOT VERIFY: an
+        // operator-supplied channel server that sends no declaration has told the bridge
+        // nothing, and "no declaration" must not be rendered as either answer. Paired with
+        // the case above so a fix that hard-codes one string for both reds here.
+        Log::spy();
+        Http::fake(['*' => Http::response('forwarded', 202)]);
+
+        $this->push(['url' => 'http://localhost:8788/', 'kind' => 'new_card', 'subject_id' => '42']);
+
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $m, array $ctx) => str_contains($m, 'bridge channel_push: accepted by transport (unconfirmed)')
+                && str_contains($ctx['endpoint_declares'], 'declared nothing')
+                && ! str_contains($ctx['endpoint_declares'], 'X-Channel-Delivery-Receipt: none')
+        );
+    }
+
+    public function test_the_bundled_channel_server_sends_the_header_this_handler_parses(): void
+    {
+        // ⭐ THE JOIN THE SEAM HAD NO CHECK ON (card#9172, canon #7 CHECK). DL-370 Decision 4
+        // says the bridge READS the far end's declaration rather than restating a belief —
+        // but the HEADER NAME is itself a restatement on this side, and the two ends had
+        // nothing joining them. Measured before this leg existed: renaming the header on the
+        // server alone left `ChannelPushUnconfirmedTest`, `ChannelPushHandlerTest`,
+        // `ClientVersionTest` and `ChannelServerToolSurfaceRestatementTest` all green while
+        // production would report the shipped server as having "declared nothing" — the wire
+        // half of the card inert, with nothing red anywhere. The node suite reds at the
+        // DECLARING end; this is the leg at the end that PARSES it.
+        //
+        // The name is taken by reflection, not retyped: a literal here would be a third copy
+        // of the same string, and the assertion is that the name THIS HANDLER PARSES is the
+        // one the shipped server sends.
+        $header = (new ReflectionClassConstant(ChannelPushHandler::class, 'RECEIPT_HEADER'))->getValue();
+
+        $this->assertIsString($header);
+        $this->assertNotSame('', $header, 'the handler parses an empty header name, so the assertion below would pass on any file');
+        // assertTrue over str_contains, not assertStringContainsString: the haystack is a
+        // 50 KB source file and PHPUnit prints a failed haystack in full.
+        $this->assertTrue(
+            str_contains(BundledChannelServer::source(), "'{$header}'"),
+            "the bundled channel server does not send the {$header} header this handler parses, so the bridge would report the server this repo SHIPS as having declared nothing — rename it on both ends or neither",
         );
     }
 

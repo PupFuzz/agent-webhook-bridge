@@ -10,7 +10,9 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
+use Tests\Support\FakeToolsCallStdio;
 use Tests\TestCase;
 
 /**
@@ -86,6 +88,11 @@ class ToolsCallCommandTest extends TestCase
      */
     private function runCommand(?string $agent, string $stdin, array $server = [], ?ServingProcessEnvironment $process = null): array
     {
+        // One `bridge:tools-call` is one PROCESS in production, and the write-once seat seal
+        // is scoped to a process (card#9170). A test that runs the command twice is running
+        // it twice in ONE php process; this is what makes the second run honest.
+        CallingSeatSeal::forANewServingProcess();
+
         $saved = [];
         foreach ($server as $k => $v) {
             $saved[$k] = getenv($k);
@@ -553,60 +560,5 @@ class ToolsCallCommandTest extends TestCase
             });
             $this->assertSame(['description' => ''], $body, "a description of '{$sent}' must CLEAR the field on this door too");
         }
-    }
-}
-
-/**
- * Captures the three streams for the in-process command test — the seam that lets a
- * test read the REAL fd-1 bytes the command wrote, which is what the ssh channel
- * returns to the caller.
- */
-class FakeToolsCallStdio extends ToolsCallStdio
-{
-    /** @var resource */
-    private $inStream;
-
-    /** @var resource */
-    private $outStream;
-
-    /** @var resource */
-    private $errStream;
-
-    public function __construct(string $stdin)
-    {
-        $this->inStream = fopen('php://memory', 'r+');
-        fwrite($this->inStream, $stdin);
-        rewind($this->inStream);
-        $this->outStream = fopen('php://memory', 'r+');
-        $this->errStream = fopen('php://memory', 'r+');
-    }
-
-    public function in()
-    {
-        return $this->inStream;
-    }
-
-    public function out()
-    {
-        return $this->outStream;
-    }
-
-    public function err()
-    {
-        return $this->errStream;
-    }
-
-    public function capturedOut(): string
-    {
-        rewind($this->outStream);
-
-        return (string) stream_get_contents($this->outStream);
-    }
-
-    public function capturedErr(): string
-    {
-        rewind($this->errStream);
-
-        return (string) stream_get_contents($this->errStream);
     }
 }
