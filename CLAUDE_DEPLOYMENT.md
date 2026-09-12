@@ -79,7 +79,16 @@ mysql -u kanban -p -e "CREATE DATABASE agent_webhook_bridge_<agent> CHARACTER SE
 php artisan bridge:check                          # validate .env, dirs, DB connectivity, agent YAMLs — STOP if non-zero
 php artisan migrate --force
 php artisan optimize                              # config/route cache
-php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent)
+php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent). Where
+                                                  # writeback.json exists and declares no identity_id, this also
+                                                  # OFFERS the value resolved from the writeback token (DL-369) —
+                                                  # confirm it against the display name it prints. It writes nothing
+                                                  # unasked, and it only ASKS where a human will SEE the question and
+                                                  # can ANSWER it — BridgeCommand::canPromptToConfirm() owns that
+                                                  # predicate and the flags are not re-spelled here. Anywhere else (a
+                                                  # pipe, a redirect, cron, a script, or a run told to skip prompts) it
+                                                  # makes NO call at all and prints the by-hand recipe instead.
+                                                  # docs/writeback.md § 2
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its
                                                   # session? YES -> run this; it prints a paste-ready board_tools:
@@ -294,6 +303,8 @@ Each `(event, agent)` is one `agent_dispatches` row:
 - **done** — `processed_at` set. Intents were staged and handlers ran. If a *handler/push* failed (e.g. channel push to an idle agent — connection refused, which is NORMAL), the row is still **done** with `error_message` recording the note; the intent is already durable in `inbox.jsonl`, read via `bridge:inbox` when the agent returns. The webhook still 200s.
 - **errored** — `processed_at` null, `error_message` set. The classifier threw (a deterministic bug). The webhook still 200s (a 5xx would retry-storm an event that fails identically every time). Fix the classifier, reload FPM, then `bridge:replay <id>` — **while the event still has its payload** (default 7d; see § *Retention config (DL-199)* below).
 
+⛔ **`delivered` IS NOT A READ RECEIPT, and since card#9172/DL-370 the bridge stops implying it is.** The stored `outcome` is unchanged — every completed dispatch still writes `delivered`, because `bridge:replay`, its `--force` transitions and `bridge:standup` all key on that value. What changed is what the bridge SAYS: a dispatch that **attempted** a `channel_push` leg logs **`bridge dispatch: channel_push unconfirmed`** instead of `bridge dispatch: delivered` — including one whose push FAILED, since the push raises on any non-2xx (the endpoint reached and answering) and the leg is unconfirmed either way; the row's `error_message` still names which failure it was, and `bridge:inspect` prints a legend under the ledger table saying what the column does and does not evidence. ⚠ **`attempted` is wider than "reached a transport"**, and the wording is chosen for the wider set: the handler also raises ABOVE the send (no endpoint configured, a method outside the allow-list, an unreadable `channel.token_path`, a classifier socket outside the allowed dir), and on those arms nothing was written anywhere — which is why the dispatch line does not say *accepted by transport*. A **separate** `bridge channel_push: accepted by transport (unconfirmed)` line reports what the endpoint itself declared about delivery receipts (the shipped channel server declares it has none) and is written **only for a push that reached the transport**, so its absence beside a `channel_push unconfirmed` line means the leg failed before any write — read `error_message` for which. The reason is that `channel_push` treats a 2xx as its sole success condition and the channel endpoint answers as soon as the notification is **written to its transport**. ⚠ Whether a notification a mid-turn session never surfaces is dropped or merely deferred to its next turn boundary is **not established**, and nothing on this path claims either. ⚠ **Anything grepping the literal `bridge dispatch: delivered` on a live-wake install needs updating.**
+
 A **delivered** row's `reason` is non-null in exactly one case: **`echo: agent surface suppressed`** (DL-203) — a github event whose actor tripped an echo/signal gate, classified by a writeback-emitting classifier, had its agent-facing surface (inbox intent + channel push) stripped and only the machine writeback handlers ran. `error_message` stays handler-failure-only, and `bridge:replay`'s gate-DROPPED skip count is unaffected (the row is delivered, not dropped).
 
 ## Where things land
@@ -328,7 +339,8 @@ php artisan bridge:stats                              # event/dispatch counts; e
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
-php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
+php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift);
+                                                                            #   offers a missing writeback identity_id (DL-369)
 php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
                                                       # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
                                                       # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
@@ -421,7 +433,7 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
 | `jobs.tick_expected_every` | `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the freshness horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. |
 
 ⚠ **The jobs rule is NOT retention's rule.** A `min_pass_interval` / `max_per_pass` value outside its bound is **REFUSED, never clamped**: no pass runs on either ingress, `bridge:check`'s `jobs.posture` leg **FAILS** naming the key, and `bridge:tick` exits **non-zero** — where a misconfigured retention window prunes nothing, warns once a day and leaves the preflight reporting a posture. Same direction (a typo runs nothing), louder surface, because a crontab line has only an exit code to read.
-`bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
+`bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-SENT push / `spawn_detached` is never re-fired (sent, not delivered — a channel push carries no receipt, see the `delivered`-row note above). `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
 
 ⛔ **An event whose payload retention has NULLED is REFUSED (exit 1), not replayed** (DL-315). Replay cannot reconstruct a payload, and dispatching the empty one in its place is not a degraded replay — it stages a **fabricated** intent (`new card by <who>: <unnamed>`) to the agent's durable `inbox.jsonl`, wakes an event-driven seat with it, and stamps the errored dispatch `delivered`, erasing the record of the original failure. The refusal happens **before** any ledger write, `--force` included, so a refused run leaves every dispatch row exactly as it found it. `bridge:inspect <id>` still shows the row and names the cause; `bridge:stats` reports those rows as `errored (NOT replayable — event payload nulled by retention)` rather than counting them as replayable. **`retention.null_payloads_older_than` is therefore the replay window** — see the retention table above.
 

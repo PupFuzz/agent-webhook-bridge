@@ -15,6 +15,8 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\SystemChannelProbeEnvironment;
+use App\Bridge\Support\SystemTerminalProbe;
+use App\Bridge\Support\TerminalProbe;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\GitRefProbe;
@@ -111,6 +113,7 @@ class BridgeServiceProvider extends ServiceProvider
         // (DL-242 stage 5b) — the default connects for real; a test binds a fake so a
         // live-vs-dead endpoint (and the platform's own error text) is deterministic.
         $this->app->bind(ChannelProbeEnvironment::class, SystemChannelProbeEnvironment::class);
+        $this->app->bind(TerminalProbe::class, SystemTerminalProbe::class);
 
         // The store-cost seam behind the bridge:check retention posture (card#8374) —
         // the default queries the live database; the golden harness binds a pinned answer,

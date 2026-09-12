@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Support;
 
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -27,21 +28,26 @@ final class ChannelPushTransport
      * dead endpoint and `->throw()` surfaces a non-2xx so the caller's failure
      * path runs.
      *
+     * THE RESPONSE IS RETURNED, not swallowed, and that is what makes a 2xx here
+     * readable as the narrow thing it is (card#9172). `->throw()` makes a 2xx the
+     * SOLE success condition, so every caller's success path is built out of one,
+     * and a 2xx on a channel says only that the far end accepted the write. What
+     * more it does or does not promise is the far end's to DECLARE (canon #7) and
+     * the caller's to read off this response — never this transport's to assume.
+     *
      * @param  array<string, string>  $headers
      * @param  array<string, mixed>  $body
      */
-    public static function send(?string $socket, ?string $url, string $method, array $headers, array $body, float $timeout): void
+    public static function send(?string $socket, ?string $url, string $method, array $headers, array $body, float $timeout): Response
     {
         $request = Http::connectTimeout(1)->timeout($timeout)->withHeaders($headers);
 
         if ($socket !== null) {
-            $request->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
+            return $request->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
                 ->send($method, 'http://localhost/', ['json' => $body])
                 ->throw();
-
-            return;
         }
 
-        $request->send($method, (string) $url, ['json' => $body])->throw();
+        return $request->send($method, (string) $url, ['json' => $body])->throw();
     }
 }
