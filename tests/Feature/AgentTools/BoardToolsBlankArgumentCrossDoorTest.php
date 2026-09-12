@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
 use Tests\TestCase;
 
@@ -92,6 +93,10 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      */
     private function throughHttpDoor(array $call): array
     {
+        // Every test in this class drives BOTH doors, which in production is two processes —
+        // and the seat seal is per-process (card#9170).
+        CallingSeatSeal::forANewServingProcess();
+
         $this->writeAgent('http');
         $before = Http::recorded()->count();
 
@@ -117,6 +122,8 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      */
     private function throughSshDoor(array $call): array
     {
+        CallingSeatSeal::forANewServingProcess();
+
         $this->writeAgent('ssh');
         $before = Http::recorded()->count();
 

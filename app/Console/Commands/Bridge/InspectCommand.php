@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 
 /**
@@ -72,6 +73,37 @@ class InspectCommand extends BridgeCommand
             mb_strimwidth((string) ($d->reason ?? $d->error_message ?? ''), 0, 60, '…'),
         ])->values()->all();
         $this->table(['agent', 'outcome', 'processed_at', 'reason / error'], $rows);
+
+        // ⭐ WHAT THE WORD IN THAT COLUMN COVERS (card#9172, DL-370). `delivered` is the
+        // stored outcome and it reads as "the seat got it"; the bridge only ever held
+        // "every handler returned without throwing". A `channel_push` leg is unconfirmed —
+        // at best accepted by its transport, and on the arms where the handler raised above
+        // `ChannelPushTransport::send()` never written to one at all.
+        //
+        // ⛔ THE LEGEND NAMES THE LINES THAT ACTUALLY EVIDENCE A LEG, and the first cut
+        // named a breakdown that does not exist: it sent the operator to the
+        // `bridge dispatch:` line, which is ONE AGGREGATE per dispatch with no per-leg
+        // detail, and to `bridge channel_push:`, which is absent whenever the push raised
+        // before reaching the transport. A pointer to a line that cannot answer — or is not
+        // written — is the same defect as the word it was added to qualify.
+        //
+        // ⛔ SAID, NOT RELABELLED, and the ledger is why: the row records no handler
+        // identity, so this table cannot tell a push-only dispatch from one that also
+        // completed a card-move writeback — and a writeback DOES get a real receipt.
+        // Rewriting the column for every row would replace one false claim with its
+        // mirror image. Printed only when a delivered row is on screen, so it stays a
+        // reading of these rows rather than a banner.
+        if ($dispatches->contains(fn ($d): bool => $d->outcome === AgentDispatch::OUTCOME_DELIVERED)) {
+            $this->line('`delivered` = every handler for that dispatch returned. It is not a read receipt: a '
+                .'`channel_push` leg is UNCONFIRMED — at best its endpoint accepted the write (it answers once '
+                .'the notification is written to it and reports nothing about what the session did with it), and '
+                .'a push that raised before reaching a transport lands on a `delivered` row too. The ledger '
+                .'records no handler identity, so this table cannot say per row which legs ran — and neither can '
+                .'the `bridge dispatch:` log line, which is one aggregate per dispatch. The PER-HANDLER lines are '
+                .'where a leg is evidenced: `kanban_move_card: moved` is a real receipt from the kanban API, and '
+                .'`bridge channel_push:` reports what the endpoint declared — written only for a push that '
+                .'reached the transport.');
+        }
 
         return self::SUCCESS;
     }

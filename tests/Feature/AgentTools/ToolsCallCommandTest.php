@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\FakeToolsCallStdio;
 use Tests\TestCase;
@@ -87,6 +88,11 @@ class ToolsCallCommandTest extends TestCase
      */
     private function runCommand(?string $agent, string $stdin, array $server = [], ?ServingProcessEnvironment $process = null): array
     {
+        // One `bridge:tools-call` is one PROCESS in production, and the write-once seat seal
+        // is scoped to a process (card#9170). A test that runs the command twice is running
+        // it twice in ONE php process; this is what makes the second run honest.
+        CallingSeatSeal::forANewServingProcess();
+
         $saved = [];
         foreach ($server as $k => $v) {
             $saved[$k] = getenv($k);

@@ -254,9 +254,9 @@ final class DispatchService
             if ($agent->channel->routeIntents) {
                 foreach ($result->intents as $intent) {
                     $routed = ReactionTarget::make(
-                        handler: 'channel_push',
+                        handler: HandlerRegistry::CHANNEL_PUSH,
                         targetId: $intent->subjectId,
-                        debounceKey: 'channel_push:'.$intent->subjectId,
+                        debounceKey: HandlerRegistry::CHANNEL_PUSH.':'.$intent->subjectId,
                         payload: $intent->toArray(),
                     );
                     $targets[$routed->handler.'|'.$routed->debounceKey] = $routed;
@@ -288,7 +288,30 @@ final class DispatchService
 
             // Best-effort: a throw is a recorded note, not a delivery failure.
             $note = null;
+            $unconfirmedPush = false;
             foreach ($bestEffort as [$target, $handler]) {
+                // ⛔ SET ON THE ATTEMPT, NOT ON A RETURN (card#9172, operator-ruled). A
+                // raise out of `handle()` is NOT evidence the push went nowhere:
+                // `ChannelPushTransport::send()` ends in `->throw()`, which fires on ANY
+                // non-2xx — the endpoint reached and answering — and a read timeout can
+                // land after the write already did. Keying on "returned" therefore gave a
+                // FAILED push the strongest word and a possibly-successful 202 the hedged
+                // one, and it did so on the common case, because an idle seat's
+                // connection-refused is this handler's documented normal outcome. Either
+                // way the agent-facing leg is unconfirmed. WHICH failure it was is the
+                // `handler_note`'s to say, and that is unchanged.
+                //
+                // ⭐ THIS FLAG IS WIDER THAN "REACHED A TRANSPORT", AND THE LINE IT DRIVES
+                // IS WORDED FOR THE WIDER SET. `ChannelPushHandler::handle()` also raises
+                // ABOVE both `ChannelPushTransport::send()` calls — no endpoint configured,
+                // a method outside the allow-list, an unreadable `channel.token_path`, a
+                // classifier socket outside the DL-014 prefix — and on those arms nothing
+                // was written to any transport AND no `bridge channel_push:` line exists,
+                // because that line is logged only after a send returns. So the aggregate
+                // message below claims only what holds on EVERY arm of this flag, and the
+                // stronger `accepted by transport (unconfirmed)` is left to the per-push
+                // line, which is emitted exactly when it is true.
+                $unconfirmedPush = $unconfirmedPush || $target->handler === HandlerRegistry::CHANNEL_PUSH;
                 try {
                     if ($handler === null) {
                         throw new \RuntimeException("unknown handler '{$target->handler}'");
@@ -309,7 +332,7 @@ final class DispatchService
             if ($result->intents === [] && $targets === []) {
                 $this->markDropped($dispatch, 'classifier emitted no reactions');
             } else {
-                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null);
+                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush);
             }
         }
     }
@@ -376,7 +399,7 @@ final class DispatchService
             // numeric strings numerically, so a targetId of ' 7' would pair
             // against a subject of '7' and silently suppress a warn the inbox
             // cannot back. Ids are opaque to the bridge — only identity pairs.
-            if ($t->handler !== 'channel_push' || in_array($t->targetId, $subjectIds, true)) {
+            if ($t->handler !== HandlerRegistry::CHANNEL_PUSH || in_array($t->targetId, $subjectIds, true)) {
                 continue;
             }
             $key = $agent->agentName.'|'.$t->targetId;
@@ -393,7 +416,14 @@ final class DispatchService
         }
     }
 
-    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null): void
+    /**
+     * ⛔ WHAT IS SAID CHANGES; WHAT IS STORED DOES NOT (card#9172, DL-370). The
+     * `outcome` column keeps the SAME `delivered` value for every dispatch, channel_push
+     * or not — `bridge:replay`, its `--force` transitions and `bridge:standup` all key on
+     * it, and a second value or a widened enum is a different, larger question that was
+     * not authorised here. `ChannelPushUnconfirmedTest` pins the stored byte.
+     */
+    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null, bool $unconfirmedPush = false): void
     {
         $dispatch->update([
             'processed_at' => now(),
@@ -407,12 +437,36 @@ final class DispatchService
         // Info-level so the healthy live path is observable (it otherwise logs
         // nothing — only failures logged at WARNING) — DL-036. The reason key
         // marks a suppressed-surface delivery in the live log (DL-203).
-        Log::info('bridge dispatch: delivered', array_filter([
-            'agent' => $dispatch->agent_name,
-            'event' => $dispatch->webhook_event_id,
-            'handler_note' => $note,
-            'reason' => $reason,
-        ], static fn ($v) => $v !== null));
+        //
+        // ⭐ `delivered` IS A CLAIM ABOUT THE SEAT AND THE BRIDGE DOES NOT HOLD ONE for a
+        // channel_push leg: the transport treats a 2xx as the sole success condition and
+        // the channel endpoint answers as soon as it has WRITTEN the notification. So the
+        // line degrades to the weakest leg the dispatch actually ran — a dispatch that
+        // also moved a card says so under its own `kanban_move_card: moved` line, which is
+        // where a confirmed leg is evidenced. The claim below is deliberately about THIS
+        // BRIDGE's evidence, not about the endpoint's behaviour: what the far end declares
+        // is the far end's to say, and ChannelPushHandler logs what it declared.
+        //
+        // ⛔ IT SAYS `channel_push unconfirmed`, NOT `accepted by transport`, AND THE
+        // DIFFERENCE IS THE POPULATION. The flag is set on the ATTEMPT, which includes the
+        // arms where `ChannelPushHandler::handle()` raised BEFORE any send — nothing was
+        // written to a transport there, so a line saying otherwise would assert an
+        // observation this bridge never made, which is the card's own defect re-minted one
+        // word over. Both pointers below are conditional for the same reason: the
+        // `bridge channel_push:` line exists only for a leg that reached the transport, and
+        // `handler_note` is present only when a leg raised.
+        Log::info(
+            $unconfirmedPush ? 'bridge dispatch: channel_push unconfirmed' : 'bridge dispatch: delivered',
+            array_filter([
+                'agent' => $dispatch->agent_name,
+                'event' => $dispatch->webhook_event_id,
+                'unconfirmed' => $unconfirmedPush
+                    ? 'a channel_push leg ran and the bridge holds no receipt that the seat received it; a leg that reached the transport logs its own `bridge channel_push:` line with what that endpoint declared, and a leg that raised — at the transport or before it — is named in `handler_note`'
+                    : null,
+                'handler_note' => $note,
+                'reason' => $reason,
+            ], static fn ($v) => $v !== null)
+        );
     }
 
     private function markDropped(AgentDispatch $dispatch, string $reason): void
