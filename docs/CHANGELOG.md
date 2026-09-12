@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.85.0] - 2026-09-12
+
 ### Added
 
 - **card#9152 (DL-373)** — **an agent YAML that declares the SHARED coordination account as its own `identity.github_user_id` makes that seat structurally deaf, and nothing said so: `bridge:check` now reports the combination and the dispatcher now WARNS when the gate fires.** On a live peer install the seat received **zero** counterparty wakes while the webhook verified, the socket was live, `bridge:check` exited 0, and the documented join acceptance (*"my own post must not wake me"*) PASSED. The registry maps a github `sender.id` to an agent through exactly that key, so every participant's post resolved to one agent, the pre-classify echo gate dropped each as `echo: own write`, and `CoordinationClassifier`'s `FROM:`-line recovery never ran — it short-circuits the moment the registry has named an actor. **The acceptance could not catch it by construction:** under that config leg 2 CANNOT fail (everything is suppressed, so suppressing your own post is guaranteed), and the one config line that makes leg 2 green is what makes leg 3 (*a counterparty's reply wakes me*) impossible.
