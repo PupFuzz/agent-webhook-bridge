@@ -377,7 +377,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         return $path;
     }
 
-    // ─── untrusted-span DECLARATION (card#9121, DL-366) ───────────────────────
+    // ─── foreign text, ESCAPED AT THE INTERPOLATION (card#9121, card#9200, DL-366) ───
 
     /** An ANSI erase-display, a forged finding-shaped line, and an unterminated RTL override. */
     private const FOREIGN_PAYLOAD = "\x1b[2J\nagent prod-agent: channel socket live\u{202E}";
@@ -389,11 +389,11 @@ class BoardToolsHttpProbeCheckTest extends TestCase
      * the envelope's `error` string nor the raw body snippet is text this install authored,
      * and both were reaching the terminal verbatim.
      *
-     * ⚑ `probeErrorDetail()` returns the LABEL and the foreign span separately for two
-     * reasons, and both are asserted here by consequence: the declaration matches by exact
-     * substring, so a second derivation of the same `substr()` could drift and leave the
-     * escape silently unapplied; and folding `body: ` into the declared span would spend six
-     * of the span's own 200 characters, reporting a legitimate 200-byte body as truncated.
+     * ⚑ `probeErrorDetail()` escapes the RESPONDER's bytes INSIDE its label rather than
+     * wrapping the whole phrase, and the reason is the cap: folding `body: ` into the escaped
+     * span would spend six of that span's own 200 characters, reporting a legitimate 200-byte
+     * body as truncated. (It used to return the two halves separately so a renderer could
+     * match the foreign one; there is nothing left to match — card#9200.)
      *
      * @param  array<string, mixed>|string  $body
      */

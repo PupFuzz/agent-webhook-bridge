@@ -42,8 +42,8 @@ use Tests\TestCase;
  * stop survives all three operations. That is recorded here rather than left to be
  * re-derived, because the exemption is exactly what a future reader would reach for.
  *
- * THE ASSERTION IS THE SAME CENSUS `UntrustedSpanCoverageTest` uses over the channel probe —
- * driven end to end through the REAL check, the real `CheckRunner` and the real
+ * THE ASSERTION IS THE SHARED CENSUS IN `Tests\Support\AssertsNoLiveControlByte`, driven
+ * end to end through the REAL check, the real `CheckRunner` and the real
  * `CheckCommand::emitFinding()`, never through a message the test composed itself.
  */
 class ForeignCardFieldRenderTest extends TestCase

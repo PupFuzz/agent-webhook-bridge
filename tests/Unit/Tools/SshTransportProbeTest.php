@@ -738,7 +738,7 @@ class SshTransportProbeTest extends TestCase
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
     }
 
-    // ─── untrusted-span DECLARATION (card#9121, DL-366) ───────────────────────
+    // ─── foreign text, ESCAPED AT THE INTERPOLATION (card#9121, card#9200, DL-366) ───
 
     /**
      * An ANSI erase-display, a forged finding-shaped line and an unterminated RTL override:

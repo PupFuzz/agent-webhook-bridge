@@ -22,11 +22,11 @@ use App\Bridge\Support\UntrustedText;
  * the identical two-legged assertion — a caller that writes only one of the two legs is the
  * shape this trait's own docblock warns about.
  *
- * ⭐ HOISTED AT THE SECOND REAL CALLER (canon #5), not at the first: it began as
- * `UntrustedSpanCoverageTest`'s private method, over the channel-probe producer, and the
- * kanban card-field producer needs the identical census. A second copy of a
- * security-invariant assertion is the shape where one copy silently stops matching the
- * class the other one widened to.
+ * ⭐ HOISTED AT THE SECOND REAL CALLER (canon #5), not at the first: it began as one
+ * producer's private method and the kanban card-field producer needed the identical
+ * census. A second copy of a security-invariant assertion is the shape where one copy
+ * silently stops matching the class the other one widened to — which is also why the
+ * presence leg was folded in here rather than re-written at each caller.
  */
 trait AssertsNoLiveControlByte
 {
