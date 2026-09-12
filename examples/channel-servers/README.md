@@ -267,9 +267,12 @@ By default this server is one-way: the bridge pushes wake events, the server
 surfaces them as `notifications/claude/channel`, no reply. When board tools are
 advertised (tri-state — see `BRIDGE_CHANNEL_TOOLS` in the env table: `=1` force-on,
 or **unset with `BRIDGE_TOOLS_ENDPOINT` + a resolvable bearer**), the server ALSO
-advertises three request/response MCP tools — `board_my_cards`,
-`board_create_card` and `board_correct_card` (DL-326: correct a card YOU filed,
-instead of minting a second card to say the first one is wrong) — and acts as a
+advertises the bridge's request/response MCP tools — `board_my_cards`,
+`board_create_card`, `board_correct_card` (DL-326: correct a card YOU filed,
+instead of minting a second card to say the first one is wrong) and
+`board_take_card` (DL-372: claim a card for YOURSELF — the assignee is resolved from
+your bridge identity, never from the payload, so there is no argument for a user id
+and a seat can claim only for itself) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
 forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
 `Authorization: Bearer <token>` and returns the bridge's response verbatim.

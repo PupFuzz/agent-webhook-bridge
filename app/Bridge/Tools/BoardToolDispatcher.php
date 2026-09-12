@@ -71,6 +71,15 @@ final class BoardToolDispatcher
      */
     public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance, ?string $clientVersion): DispatchOutcome
     {
+        // card#9170 / DL-372 Decision 7 (REVERSED), AND IT IS THE FIRST STATEMENT ON PURPOSE.
+        // This is where a name stops being an argument and becomes the process's identity: the
+        // seat is sealed HERE, at the one point both front doors funnel through, so
+        // `SeatKanbanUser` has no parameter through which any other name can reach it. It is
+        // WRITE-ONCE and both orderings fail closed — see CallingSeat. ⛔ Nothing below may
+        // move it, and nothing above may have set it: a second establish throws out of this
+        // method with nothing written, which is the loud direction.
+        CallingSeat::establish($agentName);
+
         $transport = $cfg->transport;
         // card#8973 / DL-360, AT ENTRY AND NOT AT THE SUCCESS POINT BELOW — the two rows
         // answer different questions and that is why they are stamped in different places.

@@ -5,13 +5,16 @@ agent gets a small, channel-identity-scoped **request/response** surface over th
 same channel that already delivers wake events — so an impl seat with **no kanban
 token and no toolkit** can see and capture its own board work directly.
 
-Three tools ship today (two since DL-217; the correction tool since DL-326):
+The tools that ship today — the table is held against the bridge's own registry by
+`ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card YOU filed** — its `name`, `description` or `tags`. Scoped to cards carrying your own bridge-stamped `created-by:<you>`, on your own board; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card already held by a **different** user is **refused by name** and nothing is written. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -56,8 +59,13 @@ Three tools ship today (two since DL-217; the correction tool since DL-326):
 ## Discovering them
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
-`board_create_card` and `board_correct_card`, and the server's own `instructions`
-string names them.
+`board_create_card`, `board_correct_card` and `board_take_card`, and the server's own
+`instructions` string names them. ⚠ **A tool your seat's copy of the channel server
+predates is invisible to you and reports as missing** — the tool set is restated in that
+server's inline MCP schema (there is no pointer a model can follow), so a seat on an older
+snapshot lists fewer tools than the bridge serves. `bridge:check` compares the version your
+seat reports against the one this checkout bundles; `Tests\Feature\AgentTools\ChannelServerToolSurfaceRestatementTest`
+is what keeps the bundled copy from falling behind the registry in the first place.
 The channel server advertises on a **tri-state** (`BRIDGE_CHANNEL_TOOLS`):
 
 - `=1` → force ON.
@@ -104,6 +112,7 @@ never silently no-ops.
   ],                       // ordered by kanban's own `position`, not the payload's order
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
+                    "assigned_user_id": 42,   // who holds it, or null — see below
                     "dl_number": "DL-1", "pr_number": null, "updated_at": "...",
                     // the next two keys ONLY when include_description was passed:
                     "description": "...", "description_truncated": false } ],
@@ -128,6 +137,30 @@ never silently no-ops.
   "coord_cards_window": { /* total / returned / limit / truncated — NO stage_filter */ }
 }
 ```
+
+> ⭐ **`assigned_user_id` is on EVERY projected card (DL-372), and it is the RAW board
+> field.** It is what makes a claimed-but-unmoved card legible: a card whose column never
+> moved is otherwise indistinguishable from an unclaimed one, so two seats pull the same
+> work and neither finds out. `null` means **nobody holds it** — claim it with
+> [`board_take_card`](#board_take_card). A number you do not recognise means somebody
+> else does.
+>
+> ⚠ **It rides the `coord_cards` block too, and those cards are NOT takeable.** They are on
+> the separately configured coordination board, addressed to you by TAG rather than held in a
+> lane, and `board_take_card` is scoped to your own board and lanes (DL-372 Decision 3). The
+> attempt is refused write-free, and on an install with a coord leg the refusal names that as
+> the likely cause rather than sending your operator to audit the product board's membership.
+>
+> ⛔ **The bridge resolves NO NAME for that id, deliberately and permanently.** Doing so
+> would need a fleet-wide seat→kanban-user map — a table two products would both key on,
+> with nothing to red when they drift — and the whole design of this feature is that
+> neither side needs one: the bridge writes only its OWN seat's id, and a consumer that
+> knows a name for an id renders one from its own configuration (`kbcard` does, from its
+> board env). An id nothing maps is **reported**, never an error.
+>
+> ⚠ **Additive envelope change.** Every key this tool has ever emitted is still emitted
+> with the same meaning; this is a new key on each card. A consumer that enumerates card
+> keys strictly will see it.
 
 ⚠ **A board fault this tool cannot read past is a REFUSAL, never an empty window** —
 see [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339).
@@ -245,10 +278,14 @@ A card is a **delivery** surface, not just a tracking one — the scope written 
 is what a cold session needs to implement from. That body is off by default and
 opt-in per call:
 
-- **Default (no argument): the two keys are ABSENT**, not null — the projected CARD is
-  byte-identical to what it was before the argument existed. ⚠ The **response** is not,
-  and never was this claim: it has since grown the DL-302 board keys and card#8985's
-  window blocks.
+- **Default (no argument): the two keys are ABSENT**, not null — they are the only
+  conditional part of the card shape. ⛔ **This bullet used to claim the projected CARD was
+  byte-identical to what it was before the argument existed, and that claim is RETIRED
+  (DL-372), not re-scoped:** `assigned_user_id` joined every projected card unconditionally,
+  so the card is no longer the DL-217 one. What holds is the weaker, true statement — every
+  key this tool has ever emitted is still emitted, with the same meaning. The **response**
+  was never covered by the old claim either: it had already grown the DL-302 board keys and
+  card#8985's window blocks.
 - **Opt in when you are STARTING a card, not when polling.** A body runs ~2 KB and
   *every* card in your lane is returned, so a large lane multiplies the response
   many times over. The bridge pays nothing extra to fetch it (the kanban search row
@@ -522,7 +559,8 @@ a board it did not read. `tags_written` is present only when the call corrected 
 | `type` / `card_type_id` / `triaged` | `type:` is a reserved tag prefix and `triaged` is the triage pass's — both refused at create too |
 | `block_reason` | the writeback's pinned-card opt-out (DL-193) |
 | `archived` / `archived_at` / `_action` | a retire is a lifecycle act, not a field write |
-| `priority` / `due_date` / `assigned_user_id` | not part of this tool's contract |
+| `priority` / `due_date` | not part of this tool's contract |
+| `assigned_user_id` / `assignee` | **`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument** (DL-372). Named rather than left to the catch-all row below: a seat reaching for this key is reaching for the one value the take door will never accept from a payload, and *"unknown argument"* would read as a spelling mistake. |
 | anything else | `unknown argument …` — **nothing is silently ignored** |
 
 ⛔ **The offered set is deliberately NARROWER than `kbcard patch`'s corrective
@@ -558,13 +596,135 @@ owns it, and the rows above are what it means for a *correction* specifically.
 no card read-back, because the row that authorized the write already carried what the
 response reports. A not-found refusal costs two reads and no write.
 
+## `board_take_card`
+
+**Claim a card for yourself** (DL-372, card#9170). A card whose **column never moved** is
+indistinguishable from an unclaimed one, so two seats pull the same work and neither finds
+out. The board's native `assigned_user_id` is the answer to that, and until this tool the
+only writer of it was a human at a terminal — so every impl seat's claim had to route
+through the one privileged seat, which is the serial hub this door exists to remove.
+
+**Arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. **This is the only argument this tool has.** |
+
+> ⛔⭐ **THERE IS NO ARGUMENT FOR THE USER, AND THERE NEVER WILL BE.** The assignee is
+> resolved **server-side** from the agent registry — your own `identity.kanban_user_id`,
+> keyed on the agent name the DOOR derived from your bearer (HTTP) or from the pinned
+> forced command (ssh). Nothing that travelled in your request can influence it.
+>
+> That is a **construction**, not a validation, and the difference is the point: this door
+> is driven by a lower-trust principal, so a tool that accepted an `assigned_user_id` —
+> even a validated one — would put *"a seat may claim only for itself"* one forgotten branch
+> away from false, and one seat could assign work to another or impersonate a take. Here
+> there is no expressible call that writes another seat's id.
+>
+> `card_id` is the whole accepted set, so **every** other key is refused (422) **before any
+> board request is made** — never silently ignored, which would leave you believing you had
+> assigned somebody. The user-naming spellings the tool enumerates (`assigned_user_id`,
+> `assignee`, `user_id`, `kanban_user_id`, `agent`, and the rest of `USER_NAMING_ARGS`) are
+> refused in a sentence that **names the key** and says why it will never exist; anything else
+> — `owner`, `assigned_to`, a padded or casefolded spelling — gets the generic unknown-argument
+> refusal, which also says the assignee comes from your bridge identity and never from your
+> arguments. The list changes the message, not the outcome.
+>
+> **Assigning work to a DIFFERENT seat is not something any board tool can do.** That is
+> your operator's, with `kbcard patch --assign <seat>` on a box that holds the seat map.
+
+**⭐ Which cards you can take — the scoping rule, and it is NOT the correction tool's.**
+
+`board_correct_card` scopes on the `created-by:<you>` mint stamp, because correcting a card
+is only ever about a card you filed. A take is the opposite case: **the work somebody else
+queued for you is exactly what you are claiming**, so the mint stamp is deliberately not
+consulted. Two independent narrowings are checked instead, and **both** are required:
+
+1. **The card is on your configured board.** Established through a **board-scoped** search
+   (`q=board_id=<yours> id=<n>`), with the verdict read off the returned **rows** — never
+   off the fact that a scoped query was sent, because kanban drops a term it does not
+   recognise and still answers 200 (DL-323). The unscoped `GET /tasks/{id}.json` is never
+   used: your `card_id` is caller-supplied against an id space that is **global across every
+   board on the instance**.
+2. **The card is in a lane you work** — your own `swimlane_id`, or the configured
+   `shared_swimlane_id`. ⚠ That is the same **lane scope** `board_my_cards` reads, but it is
+   **not the same set of cards**, in either direction: `board_my_cards` **caps** its response
+   by card count (card#8985), so a card it did not list can still be takeable; and a card it
+   **does** list can be **refused** here because another user already holds it. What makes the
+   scope legible is the lane you work, not the listing you got.
+
+> ⛔ **Coordination cards are OUT of scope.** They live on a separately configured board and
+> are addressed by TAG rather than by lane, and reaching them would put a write on a second
+> board this door has never written to. Narrowing later is not available in the way widening
+> later is.
+
+**⛔ Refuse-on-conflict — that refusal IS the collision detector.**
+
+A card already held by a **different** kanban user is **refused** (422), the holder is
+**named**, and **nothing is written**. Treat it as *another seat is on this* — which is
+precisely the state the feature exists to make visible, because the column has not moved.
+
+**There is no override on this door.** Taking a card off another seat is a decision about
+somebody else's work; `kbcard patch --assign <seat> --steal` takes it from a human who can
+go and ask them, and this tool has no way to express it.
+
+**⭐ Re-taking a card you already hold SUCCEEDS and writes nothing.** The board already says
+what the call is asking it to say, so refusing would make a retry-safe operation fail on its
+own success. The response carries `already_held: true`, and no PATCH is sent.
+
+**⛔ A row that says nothing about who holds it is REFUSED.** `assigned_user_id: null` is a
+real value meaning *unassigned* and is the ordinary case. An **absent** or unreadable field
+means this call cannot tell an unclaimed card from one another seat is working, so it
+refuses rather than risk overwriting a claim — an install fault, named as one.
+
+**⛔ Your `identity.kanban_user_id` must be YOURS ALONE, and this tool is where a shared one
+stops.** If two agent YAMLs in this bridge's config dir declare the same `kanban_user_id`,
+every `board_take_card` call from either seat is **refused (422) before any board request**,
+naming the colliding agents and the config key — because an id that names two seats does not
+say WHICH seat holds the card, and a claim recorded under it tells every other seat that
+*somebody* holds the work without saying who, which is the one question this tool exists to
+answer. ⚠ **Sharing a `kanban_user_id` is an install fault with no supported form** — unlike
+`github_user_id`, it cannot be declared deliberate, and the collision already makes the id
+resolve to nobody everywhere else in the bridge. `bridge:check` warns on it ahead of time (at
+exit 0). [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-upstream-ids)
+owns that rule and the reasoning; it is not restated here.
+
+**⚠ A PINNED card still takes a claim, and that is a ruling.** The DL-178 hold governs a
+card's stage, its lifecycle and the fields `PinGuard::PINNED_FIELDS` names — which is
+`name` alone. The hold exists so a card stops changing **under** the operator through
+automation with no human in the loop; a take is a deliberate claim made by the caller, and
+knowing who is looking at a frozen card is useful rather than harmful.
+
+**Returns:**
+
+```jsonc
+{
+  "taken": true,
+  "card_id": 42,
+  "board_id": 10,             // observed: the row was accepted only because it carried this
+  "swimlane_id": 4,           // observed: the lane the card was accepted in
+  "assigned_user_id": 815,    // YOUR id, from this bridge's config for your agent
+  "already_held": false       // true ⇒ you already held it and NOTHING was written
+}
+```
+
+**⚠ It needs `task.update` on your board, and a narrowed role gets a permanent 403.**
+`assigned_user_id` is not `workflow_stage_id`, so kanban authorizes this PATCH as
+`task.update` rather than `task.move` (kanban DL-204) — the same ability
+`board_correct_card` takes. A writeback user on a custom board role without it is refused on
+**every** take, forever. That is reported as an **INSTALL FAULT by name**, enumerating the
+gates, never as a bare 403 you would retry.
+
+**Cost:** two requests on a successful take (one board-scoped lookup, one PATCH); **one**
+request when you already hold the card; two reads and no write on a not-found refusal.
+
 ## Errors
 
 | Status | Meaning |
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **all three tools** (DL-339, extending DL-326: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
+| 422 | A caller-fixable bad request (missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
@@ -582,7 +742,7 @@ two route classes are authorized differently:
 | **401** on any call | **422 refusal**, "revoked, rotated or replaced" | kanban's v3 API is `auth:sanctum`: a token it no longer knows is refused at the door on every subsequent call. **Install fault** — retrying is the one thing that cannot help. |
 | **403** on a card **SEARCH** | **422 refusal**, naming the token's **abilities** | kanban gates the API per token and a GET needs `read`. ⛔ Deliberately **not** board membership *on this route*: `tasks/search.json` floors the query to the caller's own boards and answers **200 with zero rows** for the rest. |
 | **403** on a **board-scoped** read (`boards/{id}/preload.json`) | **422 refusal**, naming the abilities **and** board **membership** | this route authorizes the BOARD itself, so a writeback user that is not a member of it is refused here — the one cause the search row above rules out. `board_my_cards` is the only tool that reads this route (its stage names, on your board and on the coord board). |
-| **403** on a WRITE | **422 refusal**, naming **every gate that can answer it** | the token's abilities, the writeback user's board role (`task.create` for a create, `task.update` for a correction), **and kanban's board write gate** — an archived or trashed board refuses every write whatever the token and role allow. `BoardCallRefusal::writeGatesClause()` is the ONE place they are enumerated (count them there, not here); a 403 cannot say which refused. |
+| **403** on a WRITE | **422 refusal**, naming **every gate that can answer it** | the token's abilities, the writeback user's board role (`task.create` for a create, `task.update` for a correction **or a take**), **and kanban's board write gate** — an archived or trashed board refuses every write whatever the token and role allow. `BoardCallRefusal::writeGatesClause()` is the ONE place they are enumerated (count them there, not here); a 403 cannot say which refused. |
 | **404** on a card **SEARCH** | **422 refusal**, "API-surface fault" | the ROUTE answered 404, which is a statement about the API surface rather than about a card (a card that is simply not yours is a different refusal, with its own message). |
 | **404** on a **board-scoped** read | **422 refusal**, "the BOARD itself" | the configured board id does not resolve on that route: no board carries it, or it is in the trash (that route does not resolve trashed boards). A missing API surface is the other, less likely candidate. |
 | **422** on a WRITE | **422 refusal**, bridge-authored | kanban's own validator rejected a VALUE you sent. Deterministic — and this is what keeps the mirrored length caps safe to go stale. ⛔ The board's response **body is never echoed**; the message is the bridge's own. |
