@@ -304,11 +304,13 @@ class UnvalidatedCallSiteTest extends TestCase
         'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
         // card#9150. FIVE sites, and each is a DIFFERENT way this run failed to enumerate a
         // repo's webhooks: no receiver URL to look for (the comparand did not resolve — limb
-        // (c)); the composed receiver URL reaches no route in this app, so the comparand
-        // resolves to a URL that is not this install's receiver (limb (c) again, and the r6
-        // addition); no token resolved for the repo; the hook-list read got a non-2xx; and the
-        // read did not complete or came back as something that is not a hook list. All five are
-        // limb (a)/(c) and none is evidence the hook is gone.
+        // (c)); the composed receiver URL reaches no route in this app, so GitHub is never
+        // ASKED about that scope (limb (a) — a probe that was SKIPPED, and the r6 addition;
+        // ⛔ this said limb (c) until r7, which was wrong: the comparand there resolves to one
+        // perfectly comparable URL and it is the MEASUREMENT that is missing); no token resolved
+        // for the repo; the hook-list read got a non-2xx; and the read did not complete or came
+        // back as something that is not a hook list. All five are limb (a)/(c) and none is
+        // evidence the hook is gone.
         //   ⛔ THE r6 SITE WAS RULED AGAINST `fail` DELIBERATELY, and that ruling is the reason
         // it belongs here rather than beside the measured absence. The install IS broken — no
         // webhook anywhere can deliver to a URL that reaches no route — but this leg did not

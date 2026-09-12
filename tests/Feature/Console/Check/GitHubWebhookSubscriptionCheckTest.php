@@ -193,14 +193,63 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringNotContainsString('byte for byte', $finding['message']);
     }
 
+    public function test_the_ok_lines_disclosure_is_true_of_the_predicate_that_cannot_see_the_host(): void
+    {
+        // ⛔ A GUARD, NOT A PROOFREAD (canon #16), and the one green line in this file that
+        // carries a disclosure. The AUTHORITY of the receiver base URL — scheme, host, port,
+        // userinfo — is INVISIBLE to {@see ReceiverUrl::reachesThisInstall()}, which matches a
+        // composed URL through this app's router and a router answers about PATH and QUERY
+        // only. So a base whose HOST is a typo, with the repo's hook pasted from that same
+        // typo, satisfies both predicates and reports `ok` while nothing ever arrives — the
+        // r6 arm closes the shape that reaches no route here, not this one.
+        //
+        // ⚑ `Severity`'s corollary (A) is what permits the disclosure on an `ok`: the doubt is
+        // about what the measured fact IMPLIES (world-ambiguity), never about whether the
+        // measurement happened, and nothing on this box can establish that a hostname resolves
+        // to this install. DL-368 bound (a) states the residual; until r7 it stated it only in
+        // the source, where the operator at a terminal cannot read it.
+        $typoBase = 'https://bridge.exmaple.com/webhooks';
+        $this->bootGithubInstall(
+            $this->hookPage([$typoBase.'/github?b='.self::SCOPE]),
+            receiverBaseUrl: $typoBase,
+        );
+
+        [$exit, $doc] = $this->runJson();
+        $finding = $this->onlyFinding($doc);
+
+        // The measured state the disclosure is about, asserted as a PRESENCE witness: this is a
+        // green line with a zero exit on an install the world does not reach.
+        $this->assertSame('ok', $finding['severity']);
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString(
+            'the scheme, host and port of BRIDGE_RECEIVER_BASE_URL are NOT checked',
+            $finding['message'],
+            'the ok line no longer discloses the axis its match cannot see',
+        );
+
+        // ...AND THE PREDICATE REALLY IS BLIND TO IT, which is what makes that clause a true
+        // statement rather than a decorative one. If a future round taught the reachability
+        // check to reject a foreign host, this assertion reds and the sentence above has to go
+        // with it — the drift cannot happen in either direction silently.
+        $this->assertTrue(
+            ReceiverUrl::reachesThisInstall(
+                ReceiverUrl::for($typoBase, 'github', self::SCOPE),
+                'github',
+                self::SCOPE,
+                app('router')->getRoutes(),
+            ),
+            'the ok line tells the operator the host is not checked, and the predicate disagrees',
+        );
+    }
+
     public function test_the_fail_lines_normalisation_note_is_true_of_the_predicate(): void
     {
         // ⛔ THE GUARD ON THE ONE RESTATEMENT THAT CANNOT BECOME A POINTER (canon #16). The
         // `fail` line is read by an OPERATOR at a terminal, who cannot follow a `{@see}` to
         // `ReceiverUrl::deliversTo()`, so this copy of the normalisation rule is corrected in
         // place — and every copy that carried the FALSE version of it became a pointer to that
-        // owner (⚠ except `docs/writeback.md`, which still restates part of the rule beside its
-        // pointer, accurately today and unguarded — named rather than glossed). What
+        // owner (⚠ including `docs/writeback.md`, whose PARTIAL restatement — every clause true,
+        // the SET incomplete — was deleted and pointed at the owner in r7). What
         // keeps this one honest is not proofreading: each clause below is asserted BOTH as text
         // in the shipped line AND as behaviour of the predicate the line describes, so the two
         // cannot drift apart in either direction without going red.
@@ -258,9 +307,10 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringNotContainsString('a live repo webhook delivers to this install', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
 
-        // ⚠ THE EXIT CODE DOES NOT MOVE. This leg measured nothing about the repo — and the
-        // route table is not the whole delivery path, since a proxy that rewrites it is
-        // unmeasurable from here — so `unvalidated` is the limb (c) verdict, not `fail`.
+        // ⚠ THE EXIT CODE DOES NOT MOVE. This leg measured nothing about the repo — it asked
+        // GitHub nothing at all, which is limb (a) (a probe that was SKIPPED) and not limb (c),
+        // which this said until r7 — and the route table is not the whole delivery path, since
+        // a proxy that rewrites it is unmeasurable from here. So `unvalidated`, not `fail`.
         $this->assertSame(0, $exit);
 
         // And an unmeasured read publishes no NEXT STEPS webhook entry, for the same reason the

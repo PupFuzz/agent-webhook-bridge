@@ -110,8 +110,10 @@ final class ReceiverUrl
      * on this box can measure that hop — the same class of unmeasurable as the scheme, host and
      * port, which {@see self::deliversTo()} holds fixed for the same reason. That is why
      * `App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck` renders it `unvalidated`
-     * (Severity limb (c) — a comparison leg whose comparand does not resolve into the namespace
-     * being compared against) and never `fail`.
+     * (Severity limb (a) — a read, probe or query that threw or was SKIPPED: on `false` that
+     * check asks GitHub nothing at all, so no comparison ever runs) and never `fail`. ⚠ THIS
+     * CITED LIMB (c) UNTIL r7 AND THAT WAS THE WRONG LIMB: the comparand here resolves to
+     * exactly one perfectly comparable URL: what is missing is the MEASUREMENT, not the value.
      */
     public static function reachesThisInstall(string $receiverUrl, string $provider, string $scopeId, RouteCollectionInterface $routes): bool
     {

@@ -72,9 +72,13 @@ use Illuminate\Routing\Router;
  * per scope, against this app's own router, and a scope whose composed URL does not reach it is
  * NOT probed.
  *
- * ⚠ THAT ARM IS `unvalidated` AND DELIBERATELY NOT `fail`, under the severity rule's limb (c) —
- * a comparison leg whose comparand does not resolve into the namespace being compared against —
- * which is the same limb, on the same field, as the missing-base-url arm twenty lines below it.
+ * ⚠ THAT ARM IS `unvalidated` AND DELIBERATELY NOT `fail`, under the severity rule's limb (a) —
+ * a read, probe or query that threw or was SKIPPED — because for an unreachable scope this leg
+ * asks GitHub NOTHING and no comparison ever runs. ⛔ IT IS NOT LIMB (c), WHICH THIS SAID UNTIL
+ * r7, AND THE MISSING-BASE-URL ARM BELOW IS NOT THE SAME LIMB: there the comparand is ABSENT,
+ * which is limb (c) exactly; here it resolves to exactly one perfectly comparable URL and the
+ * leg declines to USE it, because comparing a repo's hooks against a receiver that is not this
+ * install's would measure the wrong subject. Same config key, same verdict, different limb.
  * The install IS broken, and the line says so in as many words; what this leg did not do is
  * MEASURE the repo's webhook, so it must not claim to have. ⛔ The second reason is that the
  * route table is not the whole delivery path: an install behind a proxy that REWRITES the
@@ -153,9 +157,11 @@ final class GitHubWebhookSubscriptionCheck implements Check
         }
 
         if ($unreachable !== []) {
-            // A COMPARISON LEG WHOSE COMPARAND DOES NOT RESOLVE (Severity limb (c)), exactly as
-            // the missing-base-url arm above: a receiver URL that is not this install's is not a
-            // value the repo's hook list can be compared against. ⛔ The configured VALUE is not
+            // A MEASUREMENT THAT WAS SKIPPED (Severity limb (a)) — NOT limb (c), and NOT the
+            // same limb as the missing-base-url arm above, which has no comparand at all. Here
+            // the comparand resolves perfectly well; this leg refuses to ASK GitHub with it,
+            // because a receiver URL that is not this install's would report a hook as HEALTHY
+            // for deliveries that feed nothing. ⛔ The configured VALUE is not
             // printed, for the reason the whole leg does not print it — the remedy names the
             // SHAPE, which is what the operator was told to paste and is the one form that
             // cannot echo a credential somebody put in that URL's userinfo.
@@ -174,7 +180,7 @@ final class GitHubWebhookSubscriptionCheck implements Check
             // whole registry exists to remove.
             yield match ($result->kind) {
                 GitHubWebhookProbeKind::Present => Finding::ok(
-                    "github webhook: {$scope} — a live repo webhook delivers to this install's receiver ({$who}). This run READ the repo's hook list with the token from {$result->source} to establish that."
+                    "github webhook: {$scope} — a live repo webhook delivers to this install's receiver ({$who}). This run READ the repo's hook list with the token from {$result->source} to establish that. NOTE the hook was matched on the PATH and QUERY this app routes: the scheme, host and port of BRIDGE_RECEIVER_BASE_URL are NOT checked against how the world actually reaches this install, and nothing on this box can establish that — so a hook whose host is wrong in the same way the env var is wrong reads as delivering here."
                 ),
 
                 // The one arm that flips the exit code, and it is earned by an EXHAUSTED
@@ -259,9 +265,13 @@ final class GitHubWebhookSubscriptionCheck implements Check
      * ⛔ THIS MESSAGE RESTATES {@see ReceiverUrl::deliversTo()}'s RULE AND HAS TO, which is why
      * it is GUARDED rather than replaced by a pointer (canon #16): the reader is an operator
      * staring at a terminal, and they cannot follow a `{@see}`. Every copy that carried the FALSE
-     * version of it became a pointer to the owner — ⚠ except `docs/writeback.md` § *The repo
-     * webhook*, which still restates PART of the rule beside its pointer, accurately today and
-     * unguarded; named here so this paragraph is not read as a claim that one copy survives.
+     * version of it became a pointer to the owner. ⚠ `docs/writeback.md` § *The repo webhook*
+     * carried a PARTIAL restatement beside its pointer until r7 — every clause TRUE and the SET
+     * incomplete, since it omitted the percent-DECODED path and the fragment rule, so a reader
+     * enumerating from it concluded `/webhooks/git%68ub` was absent while the predicate answers
+     * present. It was DELETED and pointed at the owner rather than re-synced into a sixth copy,
+     * which is what `docs/config-schema.md` already did; this message is the only restatement
+     * that survives anywhere, and it is the one that cannot become a pointer.
      * This one is corrected in place and
      * `GitHubWebhookSubscriptionCheckTest::test_the_fail_lines_normalisation_note_is_true_of_the_predicate`
      * asserts each clause of it AGAINST THE PREDICATE, so the text cannot drift from the
