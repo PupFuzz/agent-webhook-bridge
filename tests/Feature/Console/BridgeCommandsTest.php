@@ -3172,8 +3172,18 @@ class BridgeCommandsTest extends TestCase
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
-        $this->assertStringContainsString('41 registered', $out);
-        $this->assertStringContainsString('All 41 are accounted for', $out);
+        // ⚑ THE TOTAL IS READ OFF THE LINE, NOT WRITTEN DOWN (card#9152). This assertion
+        // carried the literal `41` — a THIRD copy of the registered total, beside the id
+        // list in `Tests\Unit\Console\CheckCommandRegistrationTest` and the deliberate
+        // second statement in `Tests\Feature\Console\Check\CheckGoldenTest`, and unlike
+        // those two it was incidental to what this test is about: that the line PRINTS and
+        // that it ACCOUNTS for the whole registered set. So it now asserts that property —
+        // the head and the tail of the line name the same number — and a check added or
+        // removed no longer reds it for a reason it was never asserting.
+        $this->assertMatchesRegularExpression('/^checks: \d+ registered · /m', $out);
+        preg_match('/^checks: (\d+) registered · .*?\. All (\d+) are accounted for/m', $out, $inventory);
+        $this->assertNotEmpty($inventory, 'the inventory line did not render its accounting tail');
+        $this->assertSame($inventory[1], $inventory[2], 'the inventory line accounts for a different total than it registered');
     }
 
     public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void
