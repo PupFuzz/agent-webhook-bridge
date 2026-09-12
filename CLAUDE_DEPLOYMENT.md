@@ -112,9 +112,12 @@ cd ~/agent-webhook-bridge-<agent>
 git pull --ff-only
 # ⚠ Running a CUSTOM classifier/handler under app/Bridge/? Migrate it IN THIS STEP
 # if you're crossing a contract change — see the callout below.
-# ⚠ Files COPIED/hand-derived out of examples/ at install (the session launcher,
-# and on some hosts the channel-server .mjs) live OUTSIDE the repo — git pull
-# CANNOT update them. Reconcile each: see "Reconcile out-of-repo copies" below.
+# ⚠ When the pull above moves examples/channel-servers/, THAT PULL is what skews the
+# host: every per-agent SNAPSHOT taken from that directory is behind the reference
+# from here on, and nothing on the host announces it. Files COPIED/hand-derived out
+# of examples/ at install (the session launcher, and on some hosts the channel-server
+# .mjs) live OUTSIDE the repo — git pull CANNOT update them. Reconcile each: see
+# "Reconcile out-of-repo copies" below.
 composer install --no-dev --optimize-autoloader
 # ⚠ Channel server loading from THIS checkout? Reconcile its installed tree too —
 # node_modules is gitignored, so the pull moved package-lock.json and left the
@@ -179,7 +182,9 @@ diff <(jq -r .version <copy-dir>/package.json) <(jq -r .version examples/channel
 
 #### Multi-agent channel-server distribution (uniform provenance)
 
-A multi-agent host snapshots `examples/channel-servers/` once **per agent**, and those snapshots freeze at install version and drift silently — we've found copies several minor versions stale. This is **not an access problem** (agents can pull): the only catch is that **`gh` CLI auth ≠ git-credential auth**, so a `gh`-based reachability test can mislead — use plain `git`. The canonical reconcile, run per snapshot:
+> ⚠ **This procedure REQUIRES a bridge checkout on the host that holds the snapshot.** Every step below reads `examples/channel-servers/` out of a working tree pinned to a release tag, so a seat that consumes the **channel** rather than the **bridge** — running from a snapshot directory with no `agent-webhook-bridge` clone — has nothing to run step 1 against. That is a requirement of the procedure, not a property of your fleet: check it before you start, and if it does not hold, read *"No checkout on the host holding the snapshot"* below instead.
+
+A multi-agent host snapshots `examples/channel-servers/` once **per agent**, and those snapshots freeze at install version and drift silently — we've found copies several minor versions stale. **On a host that HAS the checkout, repo ACCESS is not what stops the reconcile**: the tree is already on disk and `git fetch` reaches the remote — the only catch is that **`gh` CLI auth ≠ git-credential auth**, so a `gh`-based reachability test can mislead, use plain `git`. ⛔ That is a claim about **permissions on a host that has a checkout**, and it is not the claim that every seat has one — those are different facts, and only the first one is established here. The canonical reconcile, run per snapshot:
 
 ```bash
 # in the repo checkout, pin to the release the fleet should run (NOT a moving branch):
@@ -189,6 +194,13 @@ cp -a examples/channel-servers/. <snapshot-dir>/ # overwrite the snapshot from t
 ```
 
 Do this **at a session boundary** (Claude Code not running for that agent): a live connector holds the old `.mjs` in memory, and swapping it mid-session risks live-wake. `package.json` `version` is the drift signal (DL-038) — if a snapshot's version is behind the tag's, it's stale.
+
+**No checkout on the host holding the snapshot.** The seat can read its own `package.json` `version`; what it has no local way to learn is what that value SHOULD be, because the comparison target — the checkout's `examples/channel-servers/package.json` — is the thing it does not have. So *"am I stale?"* is not answerable on that host, and the drift check and the reconcile above both read out of a directory that host does not have. What DOES work from there:
+
+- **The bridge can answer the staleness question on the seat's behalf.** The reference channel server sends its own snapshot version on **every board-tools call**, and `bridge:check`'s `client half REPORTED …` line prints that version beside the one this checkout bundles and WARNs when the seat is behind (DL-364). It compares a **reported** value rather than `stat`ing a directory, so it crosses OS users and hosts, unlike the `channel.server_path` legs. Have the seat make one board-tools call, then read the line on the bridge — [`docs/board-tools.md`](docs/board-tools.md) § *How it is wired (operator view)* owns that leg, including the states in which it reports no version at all (an absent report is **not** a stale seat).
+- **`bin/check-channel-snapshot.py` answers a DIFFERENT question** — *will this deployment launch* — and deliberately makes no claim about staleness (DL-237). It is stdlib-only and self-contained, so it runs on a seat with no checkout, but it is not a substitute for the version compare.
+
+**Re-syncing still needs the pinned tree on that host**, since the snapshot is a copy OF it: either give the host a checkout (`git clone` the repo, then `git checkout v<version>`) and run the reconcile above there, or have a host that already has one at that tag copy the tree across. The reconcile itself cannot be done from the snapshot alone.
 
 ### Smoke-test the receiver with a signed delivery
 
