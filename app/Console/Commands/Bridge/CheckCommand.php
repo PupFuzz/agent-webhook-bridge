@@ -11,6 +11,7 @@ use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\AgentApiTokenCheck;
 use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
+use App\Bridge\Check\Checks\AgentCoordinationIdentityCheck;
 use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
 use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
 use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
@@ -884,6 +885,7 @@ class CheckCommand extends BridgeCommand
                 new AgentTreatAsSignalCheck,
                 new AgentDefaultAgentCheck,
                 new SharedIdentitiesCheck,
+                new AgentCoordinationIdentityCheck,
             )
             ->register(
                 CheckSlot::Writeback,

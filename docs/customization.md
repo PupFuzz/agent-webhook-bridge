@@ -323,6 +323,8 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 
 This is the completion of the `shared_identities` design (DL-002): the registry preserves the null name on purpose so this recovery layer can re-attribute. See [`multi-agent.md`](multi-agent.md) § Path C for the full shared-identity walkthrough.
 
+⛔ **The recovery layer is switched OFF by an agent declaring the shared account as its own `identity.github_user_id`** — and nothing about the install looks wrong when it is. The registry names the actor from that key, `Actor.name` comes back non-null, and every recovery above is skipped: on a shared account that means **every participant's** post is dropped pre-classify as `echo: own write` and the seat receives nothing. `bridge:check`'s `agent.coordination_identity` leg reports the combination, and the two drop reasons are the tell that says which path fired — `echo: own write` is the raw account, `echo: own write (reattributed author)` is this layer. **They are not interchangeable strings**; a change that collapses them removes the only local evidence of which mechanism suppressed a post. See [`multi-agent.md` § Verifying a shared-account seat](multi-agent.md#verifying-a-shared-account-seat).
+
 ### Per-agent (recipient-aware) classification
 
 `classify()` receives the **serving agent** as `$ctx->agent` (an `AgentConfig`). On a single install fanning out to several agents, the dispatcher invokes `classify()` **once per subscribed agent** — so the classifier can make decisions that differ per recipient: most usefully, **dropping an event that isn't addressed to this agent** (DL-022).

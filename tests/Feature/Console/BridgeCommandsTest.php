@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
@@ -2863,6 +2864,26 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('shared by multiple agents', $out);
     }
 
+    public function test_check_surfaces_a_coordination_agent_claiming_a_github_account_on_the_console(): void
+    {
+        // card#9152 / DL-373. The composition, not the check: the leg reads
+        // `CheckContext::$configs` and `CheckContext::$registry`, both of which the command
+        // publishes AFTER its per-agent loop — a leg registered one slot earlier would see
+        // an empty roster and report a clean install forever. Warn-level, so the exit code
+        // does not move.
+        File::put($this->dir.'/me.yml',
+            "identity:\n  github_user_id: 12000042\n"
+            ."subscriptions:\n  - provider: github\n    scopes: ['org/coord']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n");
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('agent me: identity.github_user_id = 12000042', $out);
+        $this->assertStringContainsString('THIS SEAT IS DEAF', $out);
+    }
+
     public function test_check_warns_when_channel_socket_parent_dir_is_missing(): void
     {
         // DL-039: a channel.socket whose parent dir doesn't exist makes live-wake
@@ -3151,15 +3172,16 @@ class BridgeCommandsTest extends TestCase
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
-        // ⛔ THE PROPERTY, NOT THE FIGURE (card#9150). This asserted `41 registered` and
-        // `All 41 are accounted for` as literals — a THIRD copy of a count already pinned
-        // twice on purpose (`CheckCommandRegistrationTest` by id, and
-        // `CheckGoldenTest::test_every_golden_file_carries_a_self_conserving_inventory_line`
-        // as the deliberate second statement, over every install shape at once). A third
-        // copy states nothing those two do not, and buys a red in a test whose SUBJECT is
-        // the tally's wording every time a leg is registered. What is load-bearing here is
-        // that the inventory line prints AT ALL and that its two halves agree, so that is
-        // what is asserted, off ONE match.
+        // ⛔⚑ THE PROPERTY, NOT THE FIGURE — card#9150 and card#9152 made this same removal
+        // independently on their own branches, and this is the composition of both rather than
+        // either one taken whole. The assertion carried the literal `41`: a THIRD copy of the
+        // registered total, beside the id list in `Tests\Unit\Console\CheckCommandRegistrationTest`
+        // and the deliberate second statement in `Tests\Feature\Console\Check\CheckGoldenTest`.
+        // A third copy states nothing those two do not, and unlike them it was incidental to
+        // what this test is ABOUT — that the inventory line prints at all, and that its head and
+        // its tail name the same number — so it bought a red here every time a leg was
+        // registered. That property is what is asserted now, off ONE match, and a check added
+        // or removed no longer reds this test for a reason it was never asserting.
         $this->assertSame(
             1,
             preg_match('/^checks: (\d+) registered · .*\. All (\d+) are accounted for/m', $out, $inv),

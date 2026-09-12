@@ -71,6 +71,7 @@ class CheckCommandRegistrationTest extends TestCase
         'agent.treat_as_signal',
         'agent.default_agent',
         'agent.shared_identities',
+        'agent.coordination_identity',
         // writeback config plane (stage 3a)
         'writeback.config',
         'writeback.identity',
