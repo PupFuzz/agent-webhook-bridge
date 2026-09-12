@@ -14,8 +14,9 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * board_correct_card (DL-326, card#8378) — CORRECT a card the calling agent
- * ITSELF filed. The third tool beside {@see BoardMyCardsTool} (read) and
- * {@see BoardCreateCardTool} (create), and the one that stops duplicate-minting
+ * ITSELF filed. The CORRECTION verb on the board-tools door — {@see BoardToolsRegistry} is
+ * the shipped set, and is deliberately not restated as an ordinal here — and the one that
+ * stops duplicate-minting
  * from being a seat's only available response to its own wrong card: before this,
  * an impl seat's whole board surface was create + read, so a card minted with a
  * wrong title could only be answered with a SECOND card — which then defeats every
@@ -58,10 +59,15 @@ use Illuminate\Support\Facades\Log;
  * it. The response therefore reports no lane — it reports only what was checked.
  *
  * WHAT IS CORRECTABLE: `name`, `description`, `tags` — the caller-owned content,
- * and nothing else. Everything a caller might name that this tool does not own is
- * refused BY NAME with its owner ({@see FIELD_OWNERS}), never ignored: a silently
- * dropped argument leaves the seat believing it corrected something it did not,
- * which is the "refuse loudly, never silently no-op" this card was filed on. ⛔ The
+ * and nothing else. ⚠ THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST:
+ * `card_id` plus those three keys is the whole of it, and every other key throws
+ * before any write. What {@see FIELD_OWNERS} changes is the MESSAGE, never the
+ * outcome — the keys it enumerates are refused in a sentence naming the owning
+ * tool, and every other unnamed key is refused just as hard by the generic
+ * `unknown argument` arm ({@see refuseForeignArguments}). Never silently ignored
+ * either way: a silently dropped argument leaves the seat believing it corrected
+ * something it did not, which is the "refuse loudly, never silently no-op" this
+ * card was filed on. ⛔ The
  * offered set is deliberately NARROWER than `kbcard patch`'s corrective setters —
  * `type`, `external_id` and `origin` are refused — because THIS TOOL MUST NEVER
  * WRITE A FIELD `board_create_card` WOULD REFUSE AT BIRTH. A wider correction
@@ -171,7 +177,13 @@ final class BoardCorrectCardTool implements Tool
         '_action' => 'a lifecycle control key, not a field — not this tool\'s to send',
         'priority' => 'not part of this tool\'s contract',
         'due_date' => 'not part of this tool\'s contract',
-        'assigned_user_id' => 'not part of this tool\'s contract',
+        // card#9170: this one has an OWNER now rather than merely being outside the
+        // contract — and the sentence is load-bearing in a way the others are not. A seat
+        // reaching for `assigned_user_id` here is reaching for the one value the take door
+        // will never accept from a payload, so the refusal names the tool that does it AND
+        // says why no argument anywhere carries a user id.
+        'assigned_user_id' => '`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument',
+        'assignee' => '`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument',
     ];
 
     public function name(): string
@@ -411,7 +423,7 @@ final class BoardCorrectCardTool implements Tool
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $row = $this->matchingRow($live, $boardId, $cardId);
+        $row = BoardScopedRow::forCard($live, $boardId, $cardId);
         if ($row !== null) {
             if (! $this->stampedBy($row, $agentName)) {
                 Log::warning('board_correct_card: refused — the card is on the agent\'s board but does not carry its mint stamp', [
@@ -444,7 +456,7 @@ final class BoardCorrectCardTool implements Tool
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $retired = $this->matchingRow($archived, $boardId, $cardId);
+        $retired = BoardScopedRow::forCard($archived, $boardId, $cardId);
         if ($retired !== null && $this->stampedBy($retired, $agentName)) {
             throw new ToolRefusalException("board_correct_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, and un-retiring one is not this tool's to do, so nothing was written. Unarchive it if the work is live again.");
         }
@@ -469,27 +481,6 @@ final class BoardCorrectCardTool implements Tool
     private function notYoursMessage(int $cardId, int $boardId): string
     {
         return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards YOU filed (the bridge's `created-by:` mint stamp) on your own board. Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
-    }
-
-    /**
-     * The one row that IS this card on this board, or null. The rows are what
-     * establish the scope — never the fact that the call was made with a scoped
-     * query (an unrecognised term degrades to free text and still answers 200).
-     *
-     * @param  list<array<string, mixed>>  $rows
-     * @return array<string, mixed>|null
-     */
-    private function matchingRow(array $rows, int $boardId, int $cardId): ?array
-    {
-        foreach ($rows as $row) {
-            $id = $row['id'] ?? null;
-            $board = $row['board_id'] ?? null;
-            if (is_numeric($id) && (int) $id === $cardId && is_numeric($board) && (int) $board === $boardId) {
-                return $row;
-            }
-        }
-
-        return null;
     }
 
     /**

@@ -11,6 +11,7 @@ use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\AgentApiTokenCheck;
 use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
+use App\Bridge\Check\Checks\AgentCoordinationIdentityCheck;
 use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
 use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
 use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
@@ -28,6 +29,7 @@ use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
+use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
 use App\Bridge\Check\Checks\InstallConfigDirCheck;
 use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
@@ -537,6 +539,24 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // card#9150: the only leg that asks GITHUB about a github subscription. Every other
+        // surface for one is bridge-side and stays green while the repo's webhook is gone,
+        // because `bridge:provision` cannot see github at all — so the declared config and
+        // the live remote state had no comparison anywhere in the product.
+        //
+        // ⛔ IT CAN FAIL THE RUN, which is new for this plane and was chosen with the
+        // consequence in view: a hook list READ TO THE END with no matching hook is a deaf
+        // agent. A read that could not happen is `unvalidated` and moves nothing — the check
+        // owns that split, and it is the half that keeps this from redding every install
+        // whose token may not enumerate hooks.
+        //
+        // NO DERIVATION HERE. Unlike the event-consumer plane above, nothing in this leg is
+        // read by a second renderer: the JSON document and the operator report both render
+        // its findings, and the NEXT STEPS block reads the scopes it publishes on the context.
+        if (! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))) {
+            $ok = false;
+        }
+
         // DL-217 (default-ON per v7): board-tools health, migrated to the registry in
         // DL-242 stage 7b. A default-on block that could not be satisfied
         // (suppressedReason) and a dead/ambiguous bearer FAIL (a broken enablement, not
@@ -874,6 +894,7 @@ class CheckCommand extends BridgeCommand
                 new AgentTreatAsSignalCheck,
                 new AgentDefaultAgentCheck,
                 new SharedIdentitiesCheck,
+                new AgentCoordinationIdentityCheck,
             )
             ->register(
                 CheckSlot::Writeback,
@@ -891,6 +912,7 @@ class CheckCommand extends BridgeCommand
                 new WritebackSourceCoverageCheck,
             )
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
+            ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
             ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
@@ -1104,7 +1126,18 @@ class CheckCommand extends BridgeCommand
         }
 
         $total = count($steps);
-        $out = ["NEXT STEPS — board tools (the two-way board window: read, file and correct your own cards from your agent session) are not wired end to end for {$total} of this install's agents. One line each, naming the ONE command to run next. This changes nothing about the run above: no exit code, no check, no verdict."];
+        // THE HEADING NAMES THE BLOCK'S SUBJECT AND NO LONGER NAMES ONE PLANE (card#9150).
+        // It said "board tools … for N of this install's agents", which was the whole block
+        // when DL-352 built it and became FALSE the moment a github-webhook entry could join:
+        // that entry is not board tools and its unit is an (agent, scope) pair, not an agent.
+        //
+        // ⛔ THE CLOSING CLAIM IS NARROWED IN THE SAME EDIT, AND HAD TO BE. It read "This
+        // changes nothing about the run above: no exit code, no check, no verdict" — true of
+        // the BLOCK, and read by an operator as *the run still passed*, which a webhook entry
+        // makes false: the leg it points at fails. The sentence now says which of the two it
+        // is claiming, because the weaker claim printed beside a red run is the shape that
+        // teaches a reader to distrust the line.
+        $out = ["NEXT STEPS — {$total} item(s) on this install are not wired end to end, across board tools (the two-way board window: read, file and correct your own cards from your agent session) and the github subscriptions this install declares. One line each, naming the ONE command to run next. THIS BLOCK adds no check and no verdict of its own and moves no exit code — every fault a line points at is already reported above, at its own severity, and some of those DO fail the run."];
 
         foreach ($steps as $i => $step) {
             $n = $i + 1;
@@ -1143,6 +1176,13 @@ class CheckCommand extends BridgeCommand
             // The bound is PRINTED, not merely known, because this is the one state whose
             // remedy an operator can get wrong in a way that looks like success.
             NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
+
+            // ⛔ THE ONLY ARM WHOSE FAULT IS A `fail` ABOVE IT, and the sentence says so
+            // rather than reading like the four advisories it sits with. It also says what
+            // this run DID — read the repo's hook list — because the whole cost of getting
+            // this state wrong is an operator re-creating a webhook that was already there,
+            // and the difference between that and this line is exactly which read happened.
+            NextStepState::GithubWebhookMissing => "the github subscription {$step->scope} is declared in {$step->agent}.yml, and this run READ that repo's whole webhook list: NOTHING on it delivers to this install's receiver, so nothing upstream wakes {$step->agent} for that scope — its events arrive late through a periodic sweep, or not at all. That is the FAIL line above, not an advisory. No command on this box can fix it: bridge:provision manages the kanban provider only, and a github webhook lives in the repo's own settings — so someone with `admin:repo_hook` on {$step->scope} adds it by hand (payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$step->scope}, content type application/json, secret = this install's per-scope HMAC secret file, named on the FAIL line above), and then you run `{$step->command}` to confirm it took. {$doc}",
         };
     }
 

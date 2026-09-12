@@ -1,0 +1,772 @@
+<?php
+
+namespace Tests\Feature\Provision;
+
+use App\Bridge\Provision\WritebackIdentityOffer;
+use App\Bridge\Support\TerminalProbe;
+use App\Bridge\Support\TokenPath;
+use Illuminate\Console\OutputStyle;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\ConsoleOutput;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Question\Question;
+use Tests\TestCase;
+use Throwable;
+
+/**
+ * `bridge:provision` OFFERS the writeback `identity_id` it can resolve from the token the
+ * operator has already placed (card#9141 / DL-369) — it never writes one unasked.
+ *
+ * ⛔ THE FAIL-SOFT MATRIX IS THE IMPORTANT HALF, and the rule is ONE TEST PER NAMED CAUSE —
+ * the `test_fail_soft_*` methods below are the population, and a new cause owes a new one.
+ * Each asserts the same three things through `assertFellBackTo()`: the cause is NAMED, the
+ * by-hand recipe is pointed at, and setup's own outcome is untouched. A single "it errors"
+ * assertion would pass on an implementation that reported the WRONG cause for all but one of
+ * them, and a wrong-but-specific cause sends an operator to the wrong repair (canon #10).
+ * There is deliberately no count here: a number in prose is a restatement of the method list
+ * and goes stale the first time an arm is added — which it already did once.
+ *
+ * ⛔ TWO PROPERTIES OF THIS FILE ARE RE-DERIVED BY MUTATION RATHER THAN BY READING IT, because
+ * both were violated by arms that looked right, and a reviewer re-reading 30-odd methods is
+ * how they stayed violated:
+ *  1. NO ARM MAY BE ABSENCE-ONLY. Mutate `ProvisionCommand::handle()` to `return self::SUCCESS;`
+ *     and run this file: every test that still PASSES while exercising the command is an arm
+ *     that certifies a no-op. Three were, and each now carries the webhook POST (or its own
+ *     cause line) as the presence witness. The unit arms that never call the command are not
+ *     members — they have their own witness.
+ *  2. NO CAUSE ASSERTION MAY MATCH MORE THAN ONE CAUSE. Replace one resolver cause string with
+ *     another's and re-run: an arm that stays green is not testing the cause it is named for.
+ *     `'display name'`, `'401'` and `'403'` were such arms; each now asserts words unique to
+ *     its own cause. `'docs/writeback.md'` is deliberately NOT unique — it asserts the recipe
+ *     is pointed at, which every fallback owes.
+ */
+class WritebackIdentityOfferTest extends TestCase
+{
+    private string $dir;
+
+    /**
+     * Every question the command actually asked. An offer that is not made must ask
+     * NOTHING, and asserting on output alone cannot tell "not asked" from "asked and
+     * answered silently" — which is one of the two defects this round exists to fix.
+     *
+     * @var \ArrayObject<int, string>
+     */
+    private \ArrayObject $prompts;
+
+    private const WRITEBACK_TOKEN = 'wb-token-value-9141';     // gitleaks:allow — fixture
+
+    private const BOARD_TOKEN = 'board-token-value-9141';      // gitleaks:allow — fixture
+
+    private const EMAIL = 'writeback-service@example.com';
+
+    private const NAME = 'Kanban Bridge Writeback';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->prompts = new \ArrayObject;
+        $this->dir = sys_get_temp_dir().'/wb-identity-'.uniqid();
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        $this->writeSecret(TokenPath::for($this->dir, 'kanban'), self::BOARD_TOKEN);
+        $this->writeSecret(TokenPath::forWriteback($this->dir, 'kanban'), self::WRITEBACK_TOKEN);
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        config([
+            'bridge.config_dir' => $this->dir,
+            'bridge.secret_dir' => $this->dir,
+            'bridge.receiver_base_url' => 'https://bridge.example.com/webhooks',
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+        ]);
+        // ⛔ PINNED IN BOTH DIRECTIONS, NEVER INHERITED FROM THE RUNNER. Whether phpunit's
+        // own stdin and stdout are terminals differs between a developer's shell and CI, so a
+        // test that read the real predicate would take one branch here and the other there.
+        $this->withTerminal();
+    }
+
+    /**
+     * Bind the host facts the confirmation gate reads. The two are driven SEPARATELY on
+     * purpose: each is one necessary condition, and an arm that moved both at once could not
+     * tell which term produced the answer — which is how a one-term gate passed for two rounds.
+     */
+    private function withTerminal(bool $keyboard = true, bool $screen = true): void
+    {
+        $this->app->instance(TerminalProbe::class, new class($keyboard, $screen) implements TerminalProbe
+        {
+            public function __construct(private readonly bool $keyboard, private readonly bool $screen) {}
+
+            public function hasKeyboard(): bool
+            {
+                return $this->keyboard;
+            }
+
+            public function hasScreen(): bool
+            {
+                return $this->screen;
+            }
+        });
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->dir);
+        parent::tearDown();
+    }
+
+    private function writeSecret(string $path, string $contents): void
+    {
+        File::put($path, $contents);
+        chmod($path, 0o600);   // DL-010: a group/world-readable token is refused on read
+    }
+
+    private function writebackJson(): string
+    {
+        return $this->dir.'/writeback.json';
+    }
+
+    /** writeback.json as the operator has it mid-setup: mappings written, identity_id not yet known. */
+    private function seedWritebackWithoutIdentity(): void
+    {
+        File::put($this->writebackJson(), json_encode([
+            'mappings' => ['your-org/your-repo' => ['board_id' => 8, 'stages' => ['opened' => 50]]],
+        ], JSON_PRETTY_PRINT));
+    }
+
+    /**
+     * Provisioning's own webhook calls answered as they always are, with
+     * `/users/current.json` handed to the caller's arm.
+     */
+    private function fakeApi(callable $currentUser): void
+    {
+        Http::fake(function (Request $request) use ($currentUser) {
+            if (str_contains($request->url(), '/users/current.json')) {
+                return $currentUser($request);
+            }
+
+            return $request->method() === 'GET'
+                ? Http::response(['data' => []])
+                : Http::response(['data' => ['id' => 7]]);
+        });
+    }
+
+    /** A resolvable writeback user, whose body carries the sensitive fields the real one does. */
+    private function fakeResolvedUser(int $id = 6): void
+    {
+        $this->fakeApi(fn () => Http::response(['data' => [
+            'id' => $id,
+            'name' => self::NAME,
+            'email' => self::EMAIL,
+            'initials' => 'KBW',
+        ], 'token' => ['abilities_label' => 'read-write']]));
+    }
+
+    /**
+     * Run the command with a CONTROLLED CONSOLE: the real `OutputStyle` (so the whole
+     * buffered output is assertable) with only `askQuestion()` overridden, so the answer
+     * comes from the test and never from the runner's stdin.
+     *
+     * ⛔ WHY NOT `$this->artisan()`. Two reasons, both load-bearing here. (a) `PendingCommand`
+     * mocks the console, so output can only be reached through `expectsOutputToContain`,
+     * which registers one Mockery expectation per substring and gives a call to the FIRST
+     * match — two substrings on one line fail a message that IS present. (b) Nothing in this
+     * class may depend on whether the runner's stdin is a terminal: that differs between a
+     * developer's shell and CI, and it is the exact confound the gate under test is about.
+     *
+     * $answer is what the confirmation returns; null means the test expects to be asked
+     * NOTHING, and `$this->prompts` is the witness either way.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function runConsole(?bool $answer = null, array $params = []): string
+    {
+        $prompts = $this->prompts;
+
+        $this->app->bind(OutputStyle::class, fn ($app, $p) => new class($p['input'], $p['output'], $answer, $prompts) extends OutputStyle
+        {
+            /** @param  \ArrayObject<int, string>  $prompts */
+            public function __construct(InputInterface $input, OutputInterface $output, private readonly ?bool $answer, private readonly \ArrayObject $prompts)
+            {
+                parent::__construct($input, $output);
+            }
+
+            public function askQuestion(Question $question): mixed
+            {
+                $this->prompts[] = $question->getQuestion();
+
+                // A DECLINE when the test expected no question at all — `confirm(): bool`
+                // rejects null, and an erroring test is one whose real assertion never runs.
+                // `$this->prompts` is the witness that the question happened.
+                return $this->answer ?? false;
+            }
+        });
+
+        Artisan::call('bridge:provision', $params);
+
+        return Artisan::output();
+    }
+
+    /** The command as a SCRIPT runs it — the flag an operator reaches for to mean "do not interact with me". */
+    private function runScripted(array $params = []): string
+    {
+        return $this->runConsole(null, $params + ['--no-interaction' => true]);
+    }
+
+    private function identityInFile(): mixed
+    {
+        $raw = json_decode((string) File::get($this->writebackJson()), true);
+
+        return is_array($raw) ? ($raw['identity_id'] ?? null) : null;
+    }
+
+    // ---------------------------------------------------------------- the offer
+
+    public function test_it_shows_the_resolved_id_and_display_name_and_writes_nothing_unconfirmed(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        // The COMPOSED line, not a bare '6': that digit occurs in a URL, a stage id and a
+        // path in this very output, so it is nearly unfalsifiable on its own.
+        $this->assertStringContainsString('resolves to kanban user 6 ("'.self::NAME.'")', $output);
+        $this->assertNull($this->identityInFile(), 'nothing may be written without an affirmative answer');
+    }
+
+    public function test_confirming_writes_identity_id_and_leaves_the_rest_of_the_file_intact(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $this->runConsole(true);
+
+        $this->assertSame(['Write identity_id 6 into writeback.json?'], $this->prompts->getArrayCopy());
+        $this->assertSame(6, $this->identityInFile());
+        $raw = json_decode((string) File::get($this->writebackJson()), true);
+        $this->assertIsArray($raw);
+        $this->assertSame(8, $raw['mappings']['your-org/your-repo']['board_id'] ?? null);
+    }
+
+    /**
+     * ⚑ The write is the one failure whose CAUSE is both useful and safe to print — it is
+     * composed here from the path and the OS error, with no upstream body in it — so a
+     * read-only `writeback.json` must be reported as such rather than as a bare exception
+     * class, and setup must still exit 0.
+     *
+     * ⛔ EXIT CODE + "NOTHING WRITTEN" DO NOT DISCRIMINATE, and an earlier revision of this
+     * test asserted only those: all three passed against the single collapsed `catch` that
+     * printed `$e::class`, i.e. green against the very defect the split exists to fix. The
+     * COMPOSED MESSAGE is the discriminator, so it is asserted — and the paired mutation
+     * (re-collapsing the catch) is recorded as this test's control.
+     *
+     * ⚑ The absence assertion is back. It could not be written through `PendingCommand`'s
+     * matchers — an `expectsOutputToContain` and a `doesntExpectOutputToContain` both hang
+     * expectations on `doWrite` and Mockery gives the call to the first match, so the second
+     * goes vacuous. Over the real buffered output there is no matcher in the way.
+     */
+    public function test_a_refused_write_names_its_cause_and_does_not_abort_setup(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+        chmod($this->writebackJson(), 0o400);
+
+        $output = $this->runConsole(true);
+
+        chmod($this->writebackJson(), 0o600);
+        $this->assertStringContainsString('was NOT written — bridge: failed to write '.$this->writebackJson(), $output);
+        $this->assertStringNotContainsString('RuntimeException', $output);
+        $this->assertNull($this->identityInFile());
+    }
+
+    /**
+     * The other half of the pin, asserted at the source where no console matcher stands
+     * between the assertion and the string: the refusal names the FILE, and it is composed
+     * here rather than relayed from anywhere that could carry a response body.
+     *
+     * ⚠ IT DOES NOT ASSERT THE ERRNO, AND THAT IS A MEASUREMENT, NOT A WEAKER TEST. This was
+     * written asserting `Permission denied` and came back red: `App\Bridge\Support\BridgePaths::writeFile()`
+     * reads `error_get_last()`, which under `@` with a framework error handler installed gave
+     * nothing here, so the message carried its own fallback list — *"disk full / read-only fs
+     * / permissions?"*. The claim in this PR was corrected to match rather than the assertion
+     * loosened to hide it; the primitive's fallback is pre-existing and out of this scope.
+     */
+    public function test_the_write_failure_message_names_the_file_it_could_not_write(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        chmod($this->writebackJson(), 0o400);
+
+        try {
+            (new WritebackIdentityOffer)->commit($this->dir, 6);
+            $this->fail('a read-only writeback.json was written to');
+        } catch (Throwable $e) {
+            $this->assertStringContainsString('failed to write '.$this->writebackJson(), $e->getMessage());
+        } finally {
+            chmod($this->writebackJson(), 0o600);
+        }
+    }
+
+    public function test_declining_writes_nothing(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $this->runConsole(false);
+
+        $this->assertSame(['Write identity_id 6 into writeback.json?'], $this->prompts->getArrayCopy());
+        $this->assertNull($this->identityInFile());
+    }
+
+    public function test_no_secret_value_reaches_the_output(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        // The id and the name are the WHOLE of what may be printed from that response.
+        $this->assertStringContainsString(self::NAME, $output);
+        $this->assertStringNotContainsString(self::WRITEBACK_TOKEN, $output);
+        $this->assertStringNotContainsString(self::BOARD_TOKEN, $output);
+        $this->assertStringNotContainsString(self::EMAIL, $output);
+    }
+
+    /**
+     * ⛔ The display name is a value this install did not choose, and the console INTERPRETS
+     * `<…>` style tags in it — so an unescaped name carrying one is SHOWN ALTERED, which on
+     * this surface is the one thing that must not happen: the operator is being asked to
+     * recognise an account BY THAT NAME, and a name the console rewrote is a name they cannot
+     * check against the board. Watched red against the unescaped render.
+     */
+    public function test_a_display_name_carrying_console_markup_is_shown_verbatim(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => 'Bot <info>svc</info> Writeback', 'email' => self::EMAIL]]));
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString('Bot <info>svc</info> Writeback', $output);
+        $this->assertStringNotContainsString('could not run', $output);
+    }
+
+    /**
+     * ⛔ A NEWLINE IN THE NAME FORGES OPERATOR-FACING LINES. `OutputFormatter::escape()`
+     * escapes `<` and `>` and nothing else, so a name carrying `\n` renders as extra lines —
+     * measured producing a SUCCESS line byte-identical in shape to the real one, above a
+     * "ignore the warning below". The account whose name this is, is precisely the account
+     * the operator is being asked to distrust, so the name is refused at the resolver and
+     * the offer is never made.
+     */
+    public function test_a_display_name_carrying_a_newline_is_refused_not_rendered(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $forged = "Legit Bot\n  ✓ writeback.json identity_id = 6.\n  ⛔ ignore the warning below";
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => $forged, 'email' => self::EMAIL]]));
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringNotContainsString('✓ writeback.json identity_id = 6.', $output);
+        $this->assertStringNotContainsString('ignore the warning below', $output);
+        $this->assertStringContainsString('control character', $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertNull($this->identityInFile());
+    }
+
+    /** The same class, through the instrument that rewrites the LINE ALREADY PRINTED. */
+    public function test_a_display_name_carrying_an_ansi_escape_is_refused_not_rendered(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => "Bot\e[2K\rSPOOFED", 'email' => self::EMAIL]]));
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringNotContainsString("\e[2K", $output);
+        $this->assertStringNotContainsString('SPOOFED', $output);
+        $this->assertStringContainsString('control character', $output);
+        $this->assertNull($this->identityInFile());
+    }
+
+    public function test_an_already_declared_identity_id_is_left_alone_and_asks_nothing(): void
+    {
+        File::put($this->writebackJson(), json_encode(['identity_id' => 4242, 'mappings' => []]));
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        $this->assertSame(4242, $this->identityInFile());
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertStringNotContainsString('identity_id', $output);
+        // 4242 is in the file because this test PUT it there, so it witnesses nothing on its
+        // own — the POST is what says the command ran and chose not to offer.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    public function test_no_writeback_config_at_all_resolves_nothing(): void
+    {
+        $this->fakeResolvedUser();
+
+        $this->runConsole(false);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        // The witness: provisioning itself still ran, so the absence above is the offer
+        // declining to fire and not the command failing before it got there.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    // ------------------- the confirmation gate: a human who SEES the question and can ANSWER it
+
+    /**
+     * ⛔ THE FLAG AN OPERATOR REACHES FOR TO MEAN "DO NOT INTERACT WITH ME" MUST STOP THE
+     * OFFER, AND A TERMINAL FAKE CANNOT SEE THIS. The probe answers *is this a terminal*;
+     * under `--no-interaction` at a real terminal it answers YES and is RIGHT to — so a gate
+     * that consults only the probe prepares the offer, makes bearer-authenticated requests,
+     * and then has `confirm()` silently take the NO default. Measured at a real pty before
+     * the fix: two `users/current.json` requests and no prompt. The terminal here is
+     * deliberately bound FULLY PRESENT, so the only thing that can produce the right answer is
+     * the gate's interactivity term — this is a test of the composition, not of the fake.
+     */
+    public function test_the_no_interaction_flag_stops_the_offer_even_with_a_keyboard_present(): void
+    {
+        $this->withTerminal(keyboard: true, screen: true);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runScripted();
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertSame([], $this->prompts->getArrayCopy(), 'nothing may be asked under --no-interaction');
+        $this->assertNull($this->identityInFile());
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * The same term, through the OTHER flag that clears it. ⛔ THE CONSOLE IS SILENT HERE, SO
+     * EVERY ASSERTION IS AN ABSENCE — and an all-absence test certifies whatever replaces the
+     * behaviour: mutating `handle()` to a whole-command no-op under `-q` left this test GREEN.
+     * The webhook POST is therefore asserted as the PRESENCE witness that the command ran at
+     * all, exactly as the `--no-interaction` sibling above does, so the absences mean
+     * "the offer declined to fire" rather than "nothing happened".
+     */
+    public function test_quiet_stops_the_offer_even_with_a_keyboard_present(): void
+    {
+        $this->withTerminal(keyboard: true, screen: true);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $this->runConsole(true, ['--quiet' => true]);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertSame([], $this->prompts->getArrayCopy());
+        $this->assertNull($this->identityInFile());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ THE CONFIRMATION IS THE GATE, SO THE GATE MUST BE A HUMAN. Interactivity being enabled
+     * is not a human: under a pipe it stays enabled and `QuestionHelper` READS STDIN —
+     * `printf 'yes\n' |` answers for nobody, and a pipe that never writes blocks the command.
+     * Both measured. With no keyboard the offer is not made at all — no question, no request,
+     * the by-hand recipe instead.
+     */
+    public function test_with_no_keyboard_it_asks_nothing_calls_nothing_and_prints_the_recipe(): void
+    {
+        $this->withTerminal(keyboard: false, screen: true);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertStringContainsString('cannot ask for confirmation', $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertStringContainsString('users/current.json', $output);
+        $this->assertNull($this->identityInFile());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ A GATE THAT ONLY ESTABLISHES THE ANSWER CAN COME BACK IS NOT A GATE. The question
+     * `Command::confirm()` renders goes to STDOUT — `Illuminate\Console\OutputStyle` is not a
+     * `ConsoleOutputInterface`, so `QuestionHelper::ask`'s stderr diversion never fires (pinned
+     * by the test below). So `php artisan bridge:provision | tee setup.log` at a terminal used
+     * to pass the gate, make a bearer-authenticated request, write the question into the LOG
+     * FILE, and then block on the tty with nothing on the operator's screen — a hang, from the
+     * operator's side. The keyboard is bound PRESENT and interaction is left enabled, so the
+     * only term that can produce the right answer here is the screen.
+     */
+    public function test_a_redirected_stdout_stops_the_offer_even_with_a_keyboard_present(): void
+    {
+        $this->withTerminal(keyboard: true, screen: false);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertSame([], $this->prompts->getArrayCopy(), 'a question nobody can see must not be asked');
+        $this->assertStringContainsString('cannot ask for confirmation', $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertNull($this->identityInFile());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ THE GATE READS STDOUT BECAUSE THAT IS WHERE THE QUESTION GOES, AND THAT IS A VENDOR
+     * FACT THIS REPO DOES NOT CONTROL. `QuestionHelper::ask` diverts a question to stderr only
+     * when the output it is handed IS a `ConsoleOutputInterface`; the object
+     * `Illuminate\Console\Command::run()` builds and `confirm()` calls is an
+     * `Illuminate\Console\OutputStyle`, which is not one. Measured end to end with the streams
+     * redirected to separate files: the prompt landed on stdout with stderr empty, while a raw
+     * `ConsoleOutput` through the same helper — the positive control — landed on stderr.
+     *
+     * If a future Laravel or Symfony moves that, the screen term above is reading the wrong
+     * stream and silently gates on something the operator can still see. This reds there.
+     */
+    public function test_the_confirmation_is_rendered_to_stdout_which_is_the_stream_the_gate_reads(): void
+    {
+        $style = new OutputStyle(new ArrayInput([]), new ConsoleOutput);
+
+        $this->assertNotInstanceOf(ConsoleOutputInterface::class, $style, 'OutputStyle became a ConsoleOutputInterface: QuestionHelper now diverts the prompt to STDERR, so TerminalProbe::hasScreen() is testing the wrong stream');
+        // The control: the assertion above discriminates only if something in this pair IS one.
+        $this->assertInstanceOf(ConsoleOutputInterface::class, new ConsoleOutput);
+    }
+
+    public function test_dry_run_names_the_gap_without_calling_the_api(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false, ['--dry-run' => true]);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertStringContainsString('a run without --dry-run offers the value', $output);
+        $this->assertSame([], $this->prompts->getArrayCopy());
+        $this->assertNull($this->identityInFile());
+    }
+
+    /**
+     * ⚠ That notice is a CLAIM ABOUT WHAT A RERUN WOULD DO, so it must not be printed to a
+     * run that could not be asked in the first place — there, the honest cause is the one
+     * that says so. Neither path makes a request.
+     */
+    public function test_a_dry_run_that_could_not_be_asked_reports_that_and_not_the_notice(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runScripted(['--dry-run' => true]);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertStringNotContainsString('a run without --dry-run offers the value', $output);
+        $this->assertStringContainsString('cannot ask for confirmation', $output);
+        $this->assertNull($this->identityInFile());
+    }
+
+    // ------------------------------------------------------- the base-URL doubling trap
+
+    public function test_the_request_url_appends_to_the_configured_base_without_doubling_the_api_prefix(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        Http::assertSent(fn (Request $r) => $r->url() === 'https://kanban.example.com/api/v3/users/current.json');
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/api/v3/api/v3'));
+        $this->assertStringNotContainsString('/api/v3/api/v3', $output);
+    }
+
+    public function test_a_base_url_with_a_trailing_slash_does_not_double_the_separator(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3/']);
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $this->runConsole(false);
+
+        Http::assertSent(fn (Request $r) => $r->url() === 'https://kanban.example.com/api/v3/users/current.json');
+    }
+
+    // ------------------------------------------------------------ the fail-soft matrix
+
+    /**
+     * Every arm asserts the same three things — the cause is NAMED, the by-hand recipe is
+     * pointed at, and setup itself still succeeded — so a fallback that swallows the
+     * diagnosis or aborts the command fails here.
+     */
+    private function assertFellBackTo(string $namedCause): void
+    {
+        // Interactive, at a full terminal: every arm below must be reached through its OWN
+        // cause. Run where the command may not ask, these all report the can't-ask cause
+        // instead, which is correct behaviour and a useless test.
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString($namedCause, $output);
+        $this->assertSame([], $this->prompts->getArrayCopy(), 'a fallback must ask nothing');
+        $this->assertStringContainsString('docs/writeback.md', $output);
+        $this->assertStringContainsString('users/current.json', $output);
+        $this->assertNull($this->identityInFile(), 'a fallback must not write a value it never resolved');
+        // Setup ran to completion: the subscription this install declares was still created.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/boards/5/webhooks.json'));
+    }
+
+    /**
+     * ⛔ The request presents the writeback BEARER TOKEN, so the cleartext-http floor
+     * `bridge:provision`'s own loop applies has to hold here too — and it cannot be inherited
+     * from that loop, which runs its check per kanban SUBSCRIPTION and does not run at all on
+     * an install that declares none. The refusal is a fallback, not a throw.
+     */
+    public function test_fail_soft_refuses_to_present_the_token_over_cleartext_http(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'http://kanban.example.com/api/v3']);
+        $this->seedWritebackWithoutIdentity();
+        File::put($this->dir.'/prod-agent.yml', "subscriptions: []\n");   // no kanban scope: the loop validates nothing
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString('must use https', $output);
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/users/current.json'));
+        $this->assertNull($this->identityInFile());
+    }
+
+    public function test_fail_soft_no_writeback_token_yet(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        File::delete(TokenPath::forWriteback($this->dir, 'kanban'));
+        $this->fakeResolvedUser();
+
+        $this->assertFellBackTo('there is no writeback token at');
+    }
+
+    public function test_fail_soft_unreachable_api(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => throw new ConnectionException('cURL error 6: Could not resolve host: kanban.example.com'));
+
+        $this->assertFellBackTo('the API did not answer');
+    }
+
+    public function test_fail_soft_401(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['message' => 'Unauthenticated.'], 401));
+
+        $this->assertFellBackTo('the API rejected that token (401)');
+    }
+
+    public function test_fail_soft_403(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['message' => 'Forbidden.'], 403));
+
+        $this->assertFellBackTo('the API refused that token (403)');
+    }
+
+    public function test_fail_soft_body_is_not_json(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response('<html>a proxy sign-in page</html>'));
+
+        $this->assertFellBackTo('not JSON');
+    }
+
+    public function test_fail_soft_json_without_an_id(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['name' => self::NAME, 'email' => self::EMAIL]]));
+
+        $this->assertFellBackTo('carried no numeric `.data.id`');
+    }
+
+    /**
+     * ⛔ The id lives at `.data.id`. A body whose id sits at the TOP level is not this
+     * endpoint's shape, and reading `.id` off it is the mis-implementation card#9141's own
+     * description had to be corrected for — so the bare spelling must resolve NOTHING
+     * rather than quietly offer a number from the wrong place.
+     */
+    public function test_fail_soft_id_at_the_top_level_is_not_the_id(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['id' => 99, 'name' => self::NAME]));
+
+        $this->assertFellBackTo('carried no numeric `.data.id`');
+    }
+
+    public function test_fail_soft_no_display_name(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'email' => self::EMAIL]]));
+
+        $this->assertFellBackTo('carried no display name at `.data.name`');
+    }
+
+    public function test_a_fail_soft_arm_prints_no_part_of_the_response_body(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['name' => self::NAME, 'email' => self::EMAIL]]));
+
+        $output = $this->runConsole(false);
+
+        // The witness FIRST: an empty output contains no secret either, so without this the
+        // two absences below pass against a command that never printed anything at all.
+        $this->assertStringContainsString('carried no numeric `.data.id`', $output);
+        $this->assertStringNotContainsString(self::EMAIL, $output);
+        $this->assertStringNotContainsString(self::WRITEBACK_TOKEN, $output);
+    }
+
+    // -------------------------------------------------- the second-token collision warning
+
+    /**
+     * Answers `/users/current.json` per PRESENTED TOKEN, which is the only thing that
+     * distinguishes the two accounts.
+     */
+    private function fakePerToken(int $writebackId, int $boardId): void
+    {
+        $this->fakeApi(fn (Request $r) => $r->hasHeader('Authorization', 'Bearer '.self::BOARD_TOKEN)
+            ? Http::response(['data' => ['id' => $boardId, 'name' => 'Board CLI', 'email' => 'cli@example.com']])
+            : Http::response(['data' => ['id' => $writebackId, 'name' => self::NAME, 'email' => self::EMAIL]]));
+    }
+
+    public function test_it_warns_when_another_kanban_token_this_install_holds_is_the_same_user(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakePerToken(writebackId: 6, boardId: 6);
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString('SAME kanban user', $output);
+        $this->assertStringContainsString(TokenPath::for($this->dir, 'kanban'), $output);
+        $this->assertStringContainsString('docs/writeback.md', $output);
+    }
+
+    /** The control: distinct users must NOT warn, or the warning says nothing about anything. */
+    public function test_it_does_not_warn_when_the_other_token_is_a_different_user(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakePerToken(writebackId: 6, boardId: 3);
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString(self::NAME, $output);
+        $this->assertStringNotContainsString('SAME kanban user', $output);
+    }
+
+    public function test_an_unresolvable_second_token_is_reported_unchecked_not_cleared(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn (Request $r) => $r->hasHeader('Authorization', 'Bearer '.self::BOARD_TOKEN)
+            ? Http::response(['message' => 'Forbidden.'], 403)
+            : Http::response(['data' => ['id' => 6, 'name' => self::NAME, 'email' => self::EMAIL]]));
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString('UNCHECKED', $output);
+        $this->assertStringContainsString(TokenPath::for($this->dir, 'kanban'), $output);
+    }
+}

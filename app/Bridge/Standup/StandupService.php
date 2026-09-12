@@ -72,14 +72,14 @@ final class StandupService
             payload: $digest->toArray(),
         );
 
-        $handler = $this->handlers->resolve('channel_push');
+        $handler = $this->handlers->resolve(HandlerRegistry::CHANNEL_PUSH);
         if ($handler === null) {
             throw new HandlerException('standup: the channel_push handler is not registered');
         }
 
         $handler->handle(
             ReactionTarget::make(
-                handler: 'channel_push',
+                handler: HandlerRegistry::CHANNEL_PUSH,
                 targetId: $intent->subjectId,
                 debounceSeconds: 0,
                 payload: $intent->toArray(),

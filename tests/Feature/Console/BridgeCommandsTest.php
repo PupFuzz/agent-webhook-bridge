@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotProbe;
@@ -2406,6 +2407,54 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:inspect', ['id' => 99999])->assertExitCode(1);
     }
 
+    public function test_inspect_says_what_a_delivered_row_does_and_does_not_evidence(): void
+    {
+        // card#9172. `bridge:inspect` renders the STORED outcome verbatim, and `delivered`
+        // there reads as "the seat got it" while the bridge only ever held "every handler
+        // returned". A `channel_push` leg is unconfirmed — but the ledger records no handler
+        // identity, so this table CANNOT relabel per row without inventing which legs ran.
+        // It states what the word covers instead, and says the row cannot answer per leg.
+        //
+        // ⛔ THE POINTER IS PINNED, NOT JUST THE HEDGE. The legend's job is to send an
+        // operator somewhere that CAN answer, and its first cut sent them to the aggregate
+        // `bridge dispatch:` line and to a `bridge channel_push:` line that is not written
+        // when the push raised early. `kanban_move_card: moved` is asserted below because
+        // it is the line that actually evidences a confirmed leg.
+        //
+        // ⛔ NOT PRINTED OVER A TABLE WITH NO DELIVERED ROW, which is what makes the legend
+        // a reading of the rows rather than a banner: the dropped-only arm below is the
+        // discriminator, and a legend hard-coded into every run reds there.
+        $this->writeAgent();
+        $event = $this->event();
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+        ]);
+
+        $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $event->id]));
+        $out = Artisan::output();
+        $this->assertStringContainsString('delivered', $out);                     // the stored value still prints
+        $this->assertStringContainsString('`channel_push` leg is UNCONFIRMED', $out);
+        $this->assertStringContainsString('not a read receipt', $out);
+        $this->assertStringContainsString('records no handler identity', $out);
+        // the line an operator is sent to must be one that can answer
+        $this->assertStringContainsString('kanban_move_card: moved', $out);
+
+        $dropped = WebhookEvent::create([
+            'delivery_id' => 'evt-dropped', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.created', 'actor_id' => '999', 'payload' => ['subject_id' => 43],
+        ]);
+        AgentDispatch::create([
+            'webhook_event_id' => $dropped->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo',
+        ]);
+
+        $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $dropped->id]));
+        $droppedOut = Artisan::output();
+        $this->assertStringContainsString('dropped', $droppedOut);
+        $this->assertStringNotContainsString('`channel_push` leg is UNCONFIRMED', $droppedOut);
+    }
+
     public function test_replay_reprocesses_an_errored_dispatch(): void
     {
         $this->writeAgent();
@@ -2815,6 +2864,26 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('shared by multiple agents', $out);
     }
 
+    public function test_check_surfaces_a_coordination_agent_claiming_a_github_account_on_the_console(): void
+    {
+        // card#9152 / DL-373. The composition, not the check: the leg reads
+        // `CheckContext::$configs` and `CheckContext::$registry`, both of which the command
+        // publishes AFTER its per-agent loop — a leg registered one slot earlier would see
+        // an empty roster and report a clean install forever. Warn-level, so the exit code
+        // does not move.
+        File::put($this->dir.'/me.yml',
+            "identity:\n  github_user_id: 12000042\n"
+            ."subscriptions:\n  - provider: github\n    scopes: ['org/coord']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n");
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('agent me: identity.github_user_id = 12000042', $out);
+        $this->assertStringContainsString('THIS SEAT IS DEAF', $out);
+    }
+
     public function test_check_warns_when_channel_socket_parent_dir_is_missing(): void
     {
         // DL-039: a channel.socket whose parent dir doesn't exist makes live-wake
@@ -3103,8 +3172,22 @@ class BridgeCommandsTest extends TestCase
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
-        $this->assertStringContainsString('41 registered', $out);
-        $this->assertStringContainsString('All 41 are accounted for', $out);
+        // ⛔⚑ THE PROPERTY, NOT THE FIGURE — card#9150 and card#9152 made this same removal
+        // independently on their own branches, and this is the composition of both rather than
+        // either one taken whole. The assertion carried the literal `41`: a THIRD copy of the
+        // registered total, beside the id list in `Tests\Unit\Console\CheckCommandRegistrationTest`
+        // and the deliberate second statement in `Tests\Feature\Console\Check\CheckGoldenTest`.
+        // A third copy states nothing those two do not, and unlike them it was incidental to
+        // what this test is ABOUT — that the inventory line prints at all, and that its head and
+        // its tail name the same number — so it bought a red here every time a leg was
+        // registered. That property is what is asserted now, off ONE match, and a check added
+        // or removed no longer reds this test for a reason it was never asserting.
+        $this->assertSame(
+            1,
+            preg_match('/^checks: (\d+) registered · .*\. All (\d+) are accounted for/m', $out, $inv),
+            'the run printed no inventory line — every run must state what it covered',
+        );
+        $this->assertSame($inv[1], $inv[2], 'the inventory line\'s trailing total disagrees with its own registered count');
     }
 
     public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void

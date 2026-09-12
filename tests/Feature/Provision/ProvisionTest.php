@@ -270,4 +270,43 @@ class ProvisionTest extends TestCase
         // The secret written before the create must be removed so a re-run starts clean.
         $this->assertFileDoesNotExist(SecretPath::for($this->dir, 'kanban', '5'));
     }
+
+    /**
+     * ⛔ THE GUARD ON THE HALF card#9150 r1 WAS TOLD NOT TO TOUCH.
+     *
+     * That round made `bridge:check`'s github leg encoding-INSENSITIVE, because its negative
+     * arm is a `fail` that moves an exit code and a live consumer install registers
+     * `?b=PupFuzz%2Fmezzanine` — so byte equality reported a healthy hook as missing. The
+     * operator ruled that the normalisation lives in the CHECK ONLY: what `bridge:provision`
+     * treats as an ALREADY-EXISTING subscription decides whether it CREATES one, which is a
+     * change to what the system accepts and was explicitly refused.
+     *
+     * ⭐ SO THIS ASSERTS THE NON-CHANGE, WHICH NOTHING ELSE IN THIS SUITE DOES. Every other
+     * existing-subscription test here feeds the byte-identical URL and would stay green if
+     * the predicate were widened to `ReceiverUrl::deliversTo()`; this one reds. The scope
+     * carries a `/` because that is the only shape percent-encoding can differ on — kanban's
+     * own scopes are board ids, so the divergence is unreachable through this command's
+     * ordinary config and has to be driven at the provisioner.
+     *
+     * ⚠ IT ASSERTS THE ACTION (a create was POSTed), not a return value: adopting is
+     * observable only as the absence of a write, and "the upstream gained a subscription" is
+     * the consequence an operator would actually see.
+     */
+    public function test_provision_does_not_adopt_a_percent_encoded_subscription_url(): void
+    {
+        $receiverUrl = 'https://bridge.example.com/webhooks/github?b=owner/repo';
+        Http::fake(fn (Request $r) => $r->method() === 'GET'
+            // The ONLY live subscription is the equivalent-but-not-identical spelling. Under
+            // `matchesExactly` this is a stranger and provision creates; under the check's
+            // `deliversTo` it would be adopted and nothing would be POSTed.
+            ? Http::response(['data' => [['id' => 3, 'url' => 'https://bridge.example.com/webhooks/github?b=owner%2Frepo', 'active' => true]]])
+            : Http::response(['data' => ['id' => 9]]));
+
+        (new WebhookProvisioner($this->dir))->ensure(
+            new KanbanProvisionClient('https://kanban.example.com/api/v3', 'token'),
+            'github', 'owner/repo', $receiverUrl, null, false,
+        );
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && $r['url'] === $receiverUrl);
+    }
 }

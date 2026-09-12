@@ -9,10 +9,13 @@ use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Push the intent to a local channel endpoint so an active Claude Code session
@@ -54,6 +57,21 @@ final class ChannelPushHandler implements Handler
      * @var list<string>
      */
     private const ALLOWED_METHODS = ['POST', 'PUT', 'PATCH'];
+
+    /**
+     * The header a channel endpoint DECLARES its delivery-receipt status on (card#9172).
+     * The shipped reference server answers `none` on its 202: it resolves the push once
+     * the notification is written to the stdio transport, and the MCP notification
+     * contract gives it nothing back about what the session did with it.
+     *
+     * READ, NEVER ASSUMED. The bridge could hard-code "channel pushes are unconfirmed"
+     * and be right about the server it ships — but the endpoint is operator-configurable,
+     * and a belief restated on this side of a seam is a copy that drifts when the far end
+     * moves (canon #7 DECLARE/CHECK, canon #16). An endpoint that sends no such header
+     * has told the bridge nothing, and {@see reportAcceptance} says exactly that rather
+     * than picking an answer for it.
+     */
+    private const RECEIPT_HEADER = 'X-Channel-Delivery-Receipt';
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
@@ -127,14 +145,74 @@ final class ChannelPushHandler implements Handler
                 $this->assertClassifierSocketAllowed($socket);
             }
             $this->validateSocketPath($socket, $usedAgentChannel);
-            ChannelPushTransport::send($socket, null, $method, $headers, $body, $timeout);
+            $this->reportAcceptance(
+                ChannelPushTransport::send($socket, null, $method, $headers, $body, $timeout),
+                $target,
+                $agent,
+            );
 
             return;
         }
 
         /** @var string $url */
         $this->validateLocalhostUrl($url);
-        ChannelPushTransport::send(null, $url, $method, $headers, $body, $timeout);
+        $this->reportAcceptance(
+            ChannelPushTransport::send(null, $url, $method, $headers, $body, $timeout),
+            $target,
+            $agent,
+        );
+    }
+
+    /**
+     * What the push actually established, and what the far end said it could establish
+     * (card#9172).
+     *
+     * The transport `->throw()`s on any non-2xx, so reaching here means the endpoint
+     * accepted the write and NOTHING MORE: the bridge holds no receipt that the seat
+     * received the intent. ⚠ It equally holds no evidence that the seat did NOT — whether
+     * an unseen notification is dropped or deferred to the session's next turn boundary
+     * is not established here, and this line claims neither. The whole point is that the
+     * question has no answer on this path, which is why it is stated rather than left for
+     * an operator to read out of a bare success.
+     *
+     * ⛔ THE MESSAGE IS FIXED; ONLY `endpoint_declares` VARIES. It reads
+     * `accepted by transport (unconfirmed)` whatever the far end declared, INCLUDING an
+     * endpoint that declares it holds a receipt — because the claim is about what THIS
+     * BRIDGE holds, and this bridge holds a 2xx and nothing else either way. An endpoint's
+     * declaration is reported, never adopted: adopting one would put the bridge back to
+     * asserting a delivery it did not observe, sourced from the party with the least
+     * interest in contradicting itself. If a receipt is ever to be BELIEVED here it needs
+     * a protocol that says what it ranges over, which is not this header.
+     */
+    private function reportAcceptance(Response $response, ReactionTarget $target, AgentConfig $agent): void
+    {
+        // ⛔ SCRUBBED AND BOUNDED BEFORE IT IS LOGGED. The header value is composed by the
+        // ENDPOINT, not by the bridge, which is exactly what {@see SecretScrubber}'s own
+        // docblock says must pass through it before reaching an operator-facing stream —
+        // and this line runs once per push, the busiest such stream the bridge has, so an
+        // unbounded value lets the far end choose how long every one of them is.
+        //
+        // The bound is taken over the COMPOSED value, not over the header value alone, so
+        // what is capped is the thing an operator actually reads. The header NAME leads,
+        // so it survives the truncation and the line still says which declaration it is
+        // reporting. The declared-nothing arm below is text the BRIDGE composed and is
+        // deliberately not truncated.
+        // ⚠ `Response::header()` RENDERS THREE STATES AS TWO, and the arms below are
+        // worded to that: an ABSENT header and a PRESENT-BUT-EMPTY one are both '', so the
+        // else-arm says the response carries no non-empty declaration rather than claiming
+        // the endpoint sent no header; repeats of one name arrive joined with ', ', which
+        // the scrub-and-bound pass below treats as the single value it looks like.
+        $declared = $response->header(self::RECEIPT_HEADER);
+
+        Log::info('bridge channel_push: accepted by transport (unconfirmed)', [
+            'agent' => $agent->agentName,
+            'target_id' => $target->targetId,
+            'status' => $response->status(),
+            'endpoint_declares' => $declared !== ''
+                ? mb_strimwidth(self::RECEIPT_HEADER.': '.SecretScrubber::text($declared), 0, 200, '…')
+                : 'declared nothing — this response carries no non-empty '.self::RECEIPT_HEADER
+                    .' header, so whether this endpoint can confirm a seat received a push is unknown to the bridge',
+        ]);
     }
 
     private function resolveTimeout(mixed $value): float
