@@ -35,9 +35,11 @@ use Illuminate\Http\Client\ConnectionException;
  * accepted and is indistinguishable from the real one on this surface. The guard is about
  * whether the name renders AS ITSELF, never about whether it is the name you expected;
  * that judgement is the operator's, which is why the offer is a confirmation and not a check.
- * Bidi-override and zero-width characters (`\p{Cf}`) are NOT refused — they are a real
- * reordering vector and deliberately out of scope here, because they were not measured and
- * a guard written from a guess is one nobody can size.
+ * Bidi-override and zero-width characters (`\p{Cf}`) are NOT refused, and that is an operator
+ * decision rather than an omission: refusing them would stop a legitimate RTL name or emoji
+ * ZWJ sequence resolving. They are a real reordering vector, so the NAME THIS RETURNS IS RAW —
+ * {@see WritebackIdentityOffer} renders it through `UntrustedText::forOperator()`, which shows
+ * each one escaped, and any other consumer that prints it owes the same.
  *
  * ⚠ The body is decoded HERE rather than through the client's `json()` helper: that helper
  * reads a process-global decoding-flags setting, so a JSON_THROW_ON_ERROR set anywhere else
@@ -96,16 +98,20 @@ final class KanbanIdentityResolver
             );
         }
 
-        // ⛔ AN UNRENDERABLE NAME IS REFUSED HERE, NOT ESCAPED AT THE RENDER, because the
-        // render's escape is `OutputFormatter::escape()` — which escapes `<` and `>` and
-        // NOTHING ELSE. A name carrying a newline draws EXTRA OPERATOR-FACING LINES (measured:
-        // a forged success line, byte-identical in shape to the real one, above an
-        // "ignore the warning below"); a name carrying ESC rewrites the line already printed.
+        // ⛔ AN UNRENDERABLE NAME IS REFUSED HERE. The console's own escape,
+        // `OutputFormatter::escape()`, escapes `<` and `>` and NOTHING ELSE. A name carrying a
+        // newline draws EXTRA OPERATOR-FACING LINES (measured: a forged success line,
+        // byte-identical in shape to the real one, above an "ignore the warning below"); a
+        // name carrying ESC rewrites the line already printed.
         // This is the one surface whose whole purpose is verbatim human recognition, and the
         // account it names is precisely the account the operator is being asked to distrust —
         // so a name that cannot be shown as itself resolves to NO OFFER, which this method
         // already has a home for. Refusing at the resolver rather than at one call site means
         // every future consumer of a {@see KanbanIdentity} inherits the guard (canon #5).
+        // ⚠ The offer ALSO escapes the name at its interpolation (that is what covers `\p{Cf}`,
+        // which this does not refuse), so this refusal is no longer the only thing between a
+        // control byte and the terminal. It stays because WHICH names resolve is a product
+        // decision, not a rendering detail — changing it is gated either way.
         // `!== 0` rather than `=== 1` because `preg_match` also returns FALSE (on malformed
         // UTF-8), and refusing is the right answer either way. ⚠ That branch is UNREACHABLE
         // FROM HERE and the message deliberately does not claim it as a cause: `$name` comes
