@@ -94,10 +94,15 @@ class JobsCommand extends BridgeCommand
      *
      * ⚑ IT REFUSES RATHER THAN GUESSES, in four places: as root (the line belongs in the
      * seat-owner account's own crontab, never root's — the notice has said so since DL-361);
-     * with no TTY and no `--yes` (the confirmation IS the gate, so a non-interactive run must
-     * not silently mutate a crontab); when the base path cannot be rendered into a line that
-     * runs; and when a `bridge:tick` line is already present, because a second line loses the
+     * with interaction switched off and no `--yes` (the confirmation IS the gate); when the
+     * base path cannot be rendered into a line that runs; and when a `bridge:tick` line is already present, because a second line loses the
      * shared pass lock and skips.
+     *
+     * ⚠ THE CONFIRMATION GUARD TESTS `isInteractive()`, NOT A TERMINAL, whatever its refusal
+     * message says about a TTY: a PIPED answer confirms and writes the line with no human
+     * present, and a held-open silent stdin blocks at the prompt. Both are ACCEPTED by operator
+     * decision (card#9255, 2026-09-13 — automating the crontab install is acceptable), which is
+     * why this guard is not on `BridgeCommand::canPromptToConfirm()`.
      */
     private function installTick(): int
     {

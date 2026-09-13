@@ -28,10 +28,11 @@ namespace App\Bridge\Support;
  * SUCH CALLER EXISTS — `Artisan::call`, `Schedule::command` and `$this->call(` of the
  * offering command are absent from `app/ routes/ bootstrap/ bin/`, and defending against a
  * state nothing can reach is its own defect (canon #6), so nothing here guards it.
- * ⭐ IT BECOMES REACHABLE THE MOMENT A PROGRAMMATIC CALLER APPEARS — card#9255's migration of
- * `bridge:jobs install-tick` onto the shared predicate is the specific one on the table. That
- * is when to source the screen half from `$this->output->getOutput()` instead of the `STDOUT`
- * constant; `App\Console\Commands\Bridge\JobsCommand::stderr()` already does exactly that,
+ * ⭐ IT BECOMES REACHABLE THE MOMENT A PROGRAMMATIC CALLER APPEARS. The one that was on the
+ * table — migrating `bridge:jobs install-tick` onto the shared predicate — was DECLINED by
+ * the operator (card#9255, 2026-09-13), so none is pending; the rule stands for whichever
+ * caller comes first. That is when to source the screen half from
+ * `$this->output->getOutput()` instead of the `STDOUT` constant; `App\Console\Commands\Bridge\JobsCommand::stderr()` already does exactly that,
  * for exactly this reason, and its docblock names `Artisan::call()` as the live case.
  */
 final class SystemTerminalProbe implements TerminalProbe
