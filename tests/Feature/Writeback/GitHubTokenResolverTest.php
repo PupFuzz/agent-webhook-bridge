@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Writeback;
 
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -18,6 +19,12 @@ class GitHubTokenResolverTest extends TestCase
     private string $dir;
 
     private string|false $origGhToken;
+
+    /**
+     * A credential-shaped value in the helper's stderr. `gh` + a 20-character body is the
+     * unambiguous vendor prefix `SecretScrubber` redacts wherever it appears.
+     */
+    private const LEAKED = 'ghp_0123456789abcdefghij';   // gitleaks:allow — a synthetic fixture value, not a credential
 
     protected function setUp(): void
     {
@@ -215,6 +222,45 @@ class GitHubTokenResolverTest extends TestCase
 
         yield 'non-zero exit' => ['non-zero exit', "#!/bin/sh\n{$payload}\nexit 3\n"];
         yield 'exit 0 with stderr (unreadable *_file)' => ['exit 0 with stderr', "#!/bin/sh\n{$payload}\nexit 0\n"];
+    }
+
+    /**
+     * ⛔⭐ "SAFE TO PRINT" HAS TWO DECLARED MEANINGS IN THIS REPO, AND THIS FIELD OWES BOTH
+     * (card#9200, DL-366). `UntrustedText` makes a span safe for a TERMINAL; `SecretScrubber`
+     * (card#8433) makes it safe to DISCLOSE. A credential helper's stderr is the one foreign
+     * span where the second matters most — the subprocess's whole subject is credentials, the
+     * helper is operator-swappable via `bridge.providers.github.credential_helper`, and the
+     * sibling relays of remote text in this app (`KanbanIdentityResolver`, `RefusalContext`)
+     * all scrub. So the producer applies BOTH, in that order, and the field's claim is true of
+     * this repo's own code rather than resting on a guarantee in a program this repo neither
+     * ships nor can check (canon #7).
+     *
+     * ⚑ THE CONTROL IS THE LAST ASSERTION, and without it this test proves nothing about the
+     * scrub: the TERMINAL escape alone carries the credential through byte for byte, which is
+     * exactly why the unqualified claim was wider than what held.
+     */
+    public function test_a_credential_in_the_subprocess_stderr_is_redacted_into_the_problem(): void
+    {
+        putenv('GH_TOKEN=ghp_env');
+        // The helper's own diagnosis, echoing back the request it could not satisfy — the
+        // ordinary shape of a credential-helper error, and it carries the credential.
+        $this->useStub("#!/bin/sh\nprintf 'store slot unreadable: Authorization: Bearer %s\\n' '".self::LEAKED."' >&2\nexit 4\n");
+
+        $r = $this->resolver()->resolveFor('owner/repo');
+        $problem = (string) $r->problem;
+
+        $this->assertFalse($r->ok(), 'the arm must fail loud, or it never reaches the field');
+        // The credential is gone …
+        $this->assertStringNotContainsString(self::LEAKED, $problem);
+        // … and its absence is a REDACTION, not a drop: the diagnosis an operator needs is
+        // still there, and the redaction marker says something was removed.
+        $this->assertStringContainsString('store slot unreadable', $problem);
+        $this->assertStringContainsString('[REDACTED]', $problem);
+        $this->assertStringContainsString('owner/repo', $problem);
+        // ⚑ THE CONTROL. The terminal escape on its own is not a redaction — the credential
+        // survives it byte for byte. That is the gap this arm closes, measured rather than
+        // asserted.
+        $this->assertStringContainsString(self::LEAKED, UntrustedText::forOperator('Bearer '.self::LEAKED));
     }
 
     public function test_store_unreadable_keyfile_fails_loud_not_fallthrough(): void

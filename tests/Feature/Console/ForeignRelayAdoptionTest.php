@@ -106,7 +106,7 @@ class ForeignRelayAdoptionTest extends TestCase
             'ruling' => '✔ NOT FOREIGN ×1 — a `JobSpecException` over options the operator typed.',
         ],
         'Bridge/ProvisionCommand.php' => [
-            'relays' => 4, 'escaped' => 1,
+            'relays' => 4, 'escaped' => 3,
             'ruling' => '⛔ FOREIGN ×1 — the `API error` arm, relaying the kanban response body summary from '
                 .'`WebhookProvisioner::ensure()`\'s live calls. ✔ NOT FOREIGN ×3 — local secret-file permission '
                 .'and read faults on paths this install configured, and the identity_id WRITE arm (DL-369), whose '
@@ -116,7 +116,14 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'by reading the arm, not by moving the number: `KanbanIdentityResolver` reads the identity itself '
                 .'WITHOUT `->throw()`, takes only `$response->status()` on a non-2xx, scrubs its one '
                 .'`ConnectionException` relay, and REFUSES an unrenderable display name at the resolver rather '
-                .'than escaping it at a render — so nothing it hands back carries remote bytes either.',
+                .'than escaping it at a render — so nothing it hands back carries remote bytes either. '
+                .'⚑ THE OTHER TWO ESCAPES ARE NOT RELAYS and carry no `×` token: `--list` prints a RAW '
+                .'kanban subscription row, and its `id` and `url` are chosen by whoever registered the '
+                .'subscription on that board. No exception is involved, it is the SUCCESS path of a read, '
+                .'and neither census in card#9200 could see it — Decision 11\'s counts `getMessage()`, '
+                .'Decision 12\'s was over `bridge:check` findings and there is no `Finding` and no '
+                .'renderer in this path. Witnessed end to end in `ProvisionTest`, with an ordinary-row '
+                .'control pinning the listing byte for byte.',
         ],
         'Bridge/ProvisionToolsCommand.php' => [
             'relays' => 1, 'escaped' => 0,

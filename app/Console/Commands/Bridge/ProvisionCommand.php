@@ -309,8 +309,23 @@ class ProvisionCommand extends BridgeCommand
             return;
         }
         foreach ($subs as $sub) {
+            // ⛔ A SUBSCRIPTION ROW IS FOREIGN TEXT (card#9200, DL-366 Decision 12's shape).
+            // These are RAW kanban API rows, and a row's `url` is chosen by whoever registered
+            // the subscription on that board — not by this install. A `url` carrying
+            // `\x1B[2K\r` plus a plausible row overwrites the line this loop just printed, on
+            // the run an operator reads to decide whether to `--reconcile`.
+            // ⚠ NEITHER CENSUS IN card#9200 COULD SEE THIS ARM: Decision 11's counts
+            // `getMessage()` and this is the SUCCESS path of a read; Decision 12's was over
+            // `bridge:check`'s findings and there is no `Finding` and no renderer here.
+            // `$active` is NOT escaped — it is one of two words this file chose.
+            // ⚠ THE DISPLAY BOUND APPLIES TO THE WHOLE VALUE HERE, and that is stated rather
+            // than discovered: these are values, not spans inside bridge prose, so a row whose
+            // `url` runs past `UntrustedText::MAX_CHARS` is shown truncated — with the marker
+            // naming the source length, never silently.
             $active = ($sub['active'] ?? false) ? 'active' : 'INACTIVE';
-            $this->line("{$label} id={$sub['id']} {$active} → ".($sub['url'] ?? '?'));
+            $id = UntrustedText::forOperator((string) $sub['id']);
+            $url = UntrustedText::forOperator((string) ($sub['url'] ?? '?'));
+            $this->line("{$label} id={$id} {$active} → {$url}");
         }
     }
 }

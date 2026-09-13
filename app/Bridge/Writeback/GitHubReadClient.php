@@ -198,6 +198,9 @@ final class GitHubReadClient
      * or, worse here, decline one the event path made. GitHub retains `head.ref` on the PR
      * record after the branch is DELETED (which is the normal post-merge state of every PR
      * this leg reads), so it is available on the whole population; `head.repo` is the field
+     * that goes null on a deleted fork, and nothing here reads it. An absent ref reads as
+     * `''`, which names no card: the safe direction, and the same one the title takes.
+     *
      * ⛔ `title` AND `head_ref` ARE THE TWO FIELDS ON THIS PROJECTION A STRANGER CHOOSES,
      * so they leave here as {@see ForeignText} and not as `string` (card#9200, DL-366). Both
      * are authored by whoever opened the PR — on a public repo, anyone with a fork — and
@@ -210,9 +213,6 @@ final class GitHubReadClient
      * `merged` and `merge_commit_sha` are generated, `html_url` is composed by GitHub from
      * the repo and number, and `base_ref` names a branch that must already exist in the BASE
      * repo — a fork's opener cannot create one there.
-     *
-     * that goes null on a deleted fork, and nothing here reads it. An absent ref reads as
-     * `''`, which names no card: the safe direction, and the same one the title takes.
      *
      * ⭐ `merged` IS NULLABLE, and the null is the whole point (card#8787). It was a plain
      * `bool` collapsed from `($pr['merged'] ?? false) === true`, so a 200 whose body carried

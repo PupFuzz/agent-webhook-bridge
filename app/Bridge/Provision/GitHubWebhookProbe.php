@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -74,7 +75,24 @@ final class GitHubWebhookProbe
 
             return GitHubWebhookProbeResult::http($status, self::hintFor($status), $source);
         } catch (Throwable $e) {   // timeout / connection — the read never happened
-            return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.$e->getMessage().')', $source);
+            // ⛔ ESCAPED HERE, AT THE PRODUCER (card#9200, DL-366), so
+            // `GitHubWebhookProbeResult::$reason` is a `string` that is safe for an operator's
+            // TERMINAL — for the consumer that puts it there and for any second one. ⚠ THAT IS
+            // the narrower of the two claims this repo spells "safe to print", and it is the
+            // one this value needs: these are cURL/Guzzle bytes about a connection that never
+            // held a credential, so unlike `TokenResolution::$problem` this span is not also
+            // put through `SecretScrubber`.
+            // ⚠ THE RULING IS THE TWIN'S, DELIBERATELY — {@see GitHubRepoProbe::probe()} has
+            // the byte-identical arm and escapes it for a reason that transfers without
+            // restatement: the arm above takes `$e->response->status()` (an `int`) plus bridge
+            // prose, so a Laravel `RequestException` — the shape that DOES embed a
+            // response-body summary — never lands here, and what does is cURL/Guzzle prose.
+            // Ruling that a non-member would take enumerating every `Throwable` Guzzle can
+            // raise, which was NOT done. One escape of a value nobody prints raw costs
+            // nothing; a wrong non-membership ruling costs a live defect. ⚑ IT WAS THE TWIN
+            // THAT WAS RULED AND THIS ONE THAT WAS NOT — the asymmetry, not the arm, was the
+            // defect (card#9200 review round).
+            return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.UntrustedText::forOperator($e->getMessage()).')', $source);
         }
 
         return match ($found) {

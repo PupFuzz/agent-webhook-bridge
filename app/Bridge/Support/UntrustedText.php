@@ -115,9 +115,16 @@ final class UntrustedText
      *     naming the SPAN's OWN character count, so a truncated line says it was truncated
      *     and how big the thing actually was rather than how wide this rendering of it got.
      *
-     * ⛔ ESCAPED, NOT STRIPPED. `\x1B` deleted leaves `[31m` on the operator's line, which
-     * reads as content the connector wrote; `\x1B` shown as `\x1B` says what was actually
-     * in the file, which is the diagnostic an operator looking at a planted marker needs.
+     * ⛔ ESCAPED, NOT STRIPPED — FOR THE CLASS STEP 3 REACHES. `\x1B` deleted leaves `[31m`
+     * on the operator's line, which reads as content the connector wrote; `\x1B` shown as
+     * `\x1B` says what was actually in the file, which is the diagnostic an operator looking
+     * at a planted marker needs.
+     * ⚠ IT IS NOT A CLAIM ABOUT WHITESPACE, and reading it as one would read step 2 out of
+     * the list above: every whitespace run — `\r`, `\n`, `\t`, a run of spaces — is
+     * COLLAPSED to a single space before step 3 sees it, so those bytes leave no trace of
+     * which they were or how many. That is deliberate (a payload must not be able to forge a
+     * second finding-shaped line, and the cap must count content), and it is the reason this
+     * rendering is a SAFE line rather than a faithful transcript of the file.
      *
      * ⛔ THE MARKER CARRIES NO `…` AND NO `...`: `laravel/pao` binds its own `OutputStyle`
      * when it detects an AI agent running the command, and its `OutputCleaner` deletes a

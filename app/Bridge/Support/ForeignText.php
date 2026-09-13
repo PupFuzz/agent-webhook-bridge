@@ -26,9 +26,9 @@ namespace App\Bridge\Support;
  *
  * ⚠ {@see self::rawForMatching()} IS AN EXIT AND IS NAMED LIKE ONE. It is interpolatable, so
  * it is not a boundary the language enforces — what it is instead is GREPPABLE and DELIBERATE:
- * a reviewer can enumerate every site that asks for raw bytes, and `ForeignTextRawUseTest`
- * pins that enumeration so a NEW one reds rather than being noticed or not. Its legitimate
- * uses take raw text to a MATCHER; none of them takes it to an output stream.
+ * a reviewer can enumerate every site that asks for raw bytes, and `ForeignTextTest`'s
+ * `RAW_USES` table pins that enumeration so a NEW one reds rather than being noticed or not.
+ * Its legitimate uses take raw text to a MATCHER; none of them takes it to an output stream.
  */
 final class ForeignText
 {
@@ -52,7 +52,7 @@ final class ForeignText
 
     /**
      * ⚠ THE RAW BYTES, FOR A MATCHER AND NEVER FOR A SINK. Every caller is pinned by
-     * `ForeignTextRawUseTest`; adding one means adding it there with its reason.
+     * `ForeignTextTest`'s `RAW_USES` table; adding one means adding it there with its reason.
      */
     public function rawForMatching(): string
     {
