@@ -187,7 +187,8 @@ final class ReceiverUrl
             // EVERY way this app can decline the URL is one answer — it does not deliver here.
             // `match()` throws for no route and for a route registered under another verb, and
             // `Request::create()` still throws on a URI the framework will not build at all
-            // (a CR/LF/TAB or a backslash in the value, say). Distinguishing them would be
+            // (measured after the substitution: a CR/LF or TAB anywhere in the value).
+            // Distinguishing them would be
             // inventing a vocabulary no caller can act on differently: the remedy for all of
             // them is the same env var. ⛔ A REFUSED **HOST** IS NO LONGER A MEMBER — that one
             // WAS actionably different, because the path and query could route perfectly, and
