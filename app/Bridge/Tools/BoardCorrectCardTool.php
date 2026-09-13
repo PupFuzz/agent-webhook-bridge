@@ -116,8 +116,9 @@ use Illuminate\Support\Facades\Log;
  *
  * ⚠ `kbcard` records the sharp edge of a read-merge-write on this field — an unreadable
  * tag list treated as "no tags" destroys every tag. On the MINTED arm an ABSENT list is
- * unreachable (the row's tags had to contain `created-by:<agent>`), though an unreadable entry
- * beside the stamp is not, and is refused by the same guard. ⛔ The
+ * unreachable (the row's tags had to contain `created-by:<agent>`), though a list that is not a
+ * plain list, or holds a non-string entry beside the stamp, is not, and is refused by the same
+ * guard. ⛔ The
  * ASSIGNED arm authorizes without reading the tags, so there it is GUARDED
  * ({@see requireReadableTagList}): a `tags` correction on a row whose `tags` key is absent, is
  * not a list, or holds any entry that is not a string refuses, while present-null — kanban stores `tags` as a nullable json column, so
@@ -642,8 +643,8 @@ final class BoardCorrectCardTool implements Tool
      * only for present-null (a real, empty answer) or a list whose entries are ALL strings.
      *
      * ⚠ Mostly reached through the ASSIGNED arm, whose authorization never reads the tags; a
-     * MINTED row's list at least holds the stamp that authorized it, but can still carry an
-     * unreadable entry beside it, and it is refused the same way. It is refused by its own name
+     * MINTED row's list at least holds the stamp that authorized it, but can still be a keyed
+     * object or carry an unreadable entry beside it, and it is refused the same way. It is refused by its own name
      * because the call is already authorized: the card is the caller's, so naming the cause
      * discloses nothing.
      *

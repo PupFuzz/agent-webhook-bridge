@@ -498,7 +498,9 @@ says nothing about who the card is assigned to.
   stamp).
 - **If your agent's YAML declares no `identity.kanban_user_id`, the assignee relation is simply
   off** — no card can be assigned to a user you do not have — and the tool behaves as it did
-  before DL-376: cards you minted are corrected, everything else gets *"not one of yours"*.
+  before DL-376 **except** that the *"not one of yours"* wording now names both relations and
+  the tag-list rule below applies: cards you minted are corrected, everything else gets
+  *"not one of yours"*.
 - ⛔ **If the bridge cannot establish WHICH kanban user you are** — another agent declares the
   same `identity.kanban_user_id`, or the roster cannot be read — every correction that is not
   authorized by your mint stamp is refused with that **install fault**, including a call naming
@@ -570,8 +572,9 @@ different (and fine) answer: it declares no hold tags, and `no-automove` still h
 the key absent, not a list, or a list holding any entry that is not a string. The preserved half
 of the write is built from the string entries only, so a wholesale replace would delete every
 entry the bridge could not read, holds and other agents' stamps included. A card assigned to you
-is authorized without reading its tags, which is where this matters most, but a minted card with
-an unreadable entry beside your stamp is refused the same way. `tags: null` (an untagged card)
+is authorized without reading its tags, which is where this matters most, but a minted card whose tag list
+is not a plain list, or holds any non-string entry, is refused the same way — including a keyed
+object of strings, which was not destructive but is not the shape the preserve logic reads. `tags: null` (an untagged card)
 is a real, empty list and is written normally; a `name`/`description` correction on the refused
 card still lands.
 

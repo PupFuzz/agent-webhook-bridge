@@ -3428,10 +3428,12 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * ⚠ THE ONE SHAPE THE TAG-LIST GUARD NEWLY REFUSES ON THE MINTED ARM. A minted row's list
-     * holds the stamp, so it is never absent — but an unreadable entry BESIDE the stamp was
-     * silently dropped from the wholesale replace before DL-376, deleting it. It is refused the
-     * same way now; the control is that the same row still takes a `name` correction.
+     * ⚠ WHAT THE TAG-LIST GUARD NEWLY REFUSES ON THE MINTED ARM: a tag list that is not a plain
+     * list, or holds any non-string entry. A minted row's list holds the stamp, so it is never
+     * absent — but an unreadable entry BESIDE the stamp was silently dropped from the wholesale
+     * replace before DL-376, deleting it. It is refused now; the control is that the same row
+     * still takes a `name` correction. (The keyed-object half, which was NOT destructive before,
+     * is pinned by the test below.)
      */
     public function test_a_tags_correction_on_a_minted_row_with_an_unreadable_entry_beside_the_stamp_is_refused(): void
     {
@@ -3445,6 +3447,43 @@ class AgentToolsCallTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
 
         $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
+    }
+
+    /**
+     * ⚠ THE OTHER HALF OF WHAT THE GUARD NEWLY REFUSES ON THE MINTED ARM, AND THIS ONE WAS NOT
+     * DESTRUCTIVE BEFORE. kanban validates `tags` as `nullable|array`, so a KEYED object of
+     * all-string entries is a shape it can hold; the guard requires a plain list, so a `tags`
+     * correction on such a minted row refuses where it was previously written. Kept deliberately
+     * (a keyed list is not the shape the preserve logic was written against) and disclosed in
+     * DL-376 Decision 7.
+     *
+     * @return array<string, array{array<array-key, string>}>
+     */
+    public static function mintedKeyedTagObjects(): array
+    {
+        return [
+            'sparse integer keys' => [[0 => 'created-by:me', 5 => 'priority:high']],
+            'string keys' => [['a' => 'created-by:me', 'b' => 'no-automove']],
+        ];
+    }
+
+    /** @param array<array-key, string> $tags */
+    #[DataProvider('mintedKeyedTagObjects')]
+    public function test_a_tags_correction_on_a_minted_row_whose_tags_are_a_keyed_object_of_strings_is_refused(array $tags): void
+    {
+        $live = [$this->ownCardRow(['tags' => $tags])];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        // `description`, not `name`: the string-keyed case carries `no-automove`, which pins `name`.
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => 'x']])
             ->assertStatus(200)
             ->assertJsonPath('result.authorized_by', 'minted');
     }
