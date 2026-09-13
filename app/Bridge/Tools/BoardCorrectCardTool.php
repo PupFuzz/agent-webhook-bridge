@@ -13,8 +13,8 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
 /**
- * board_correct_card (DL-326, card#8378) — CORRECT a card the calling agent
- * ITSELF filed. The CORRECTION verb on the board-tools door — {@see BoardToolsRegistry} is
+ * board_correct_card (DL-326, card#8378; widened by DL-376, card#9201 / card#9202) — CORRECT a
+ * card the calling agent MINTED or is ASSIGNED. The CORRECTION verb on the board-tools door — {@see BoardToolsRegistry} is
  * the shipped set, and is deliberately not restated as an ordinal here — and the one that
  * stops duplicate-minting
  * from being a seat's only available response to its own wrong card: before this,
@@ -22,18 +22,43 @@ use Illuminate\Support\Facades\Log;
  * wrong title could only be answered with a SECOND card — which then defeats every
  * downstream instrument that keys on one card per subject.
  *
- * ⭐ WHOSE CARD — the scoping question that decides this tool. A seat may correct
- * ONLY what it minted, and the discriminator is the tag {@see BoardCreateCardTool}
- * already stamps: `created-by:<agent>`, bridge-written and caller-unforgeable (the
- * `created-by:` prefix is reserved on create and the guard casefolds, so no caller
- * can plant any case variant of another agent's stamp). Provenance therefore
- * already existed — nothing had to be minted for it.
+ * ⭐ WHOSE CARD — the scoping question that decides this tool. Since DL-376 it has TWO
+ * sufficient answers, each caller-unforgeable, and neither needed a new relation minted:
+ *  1. MINTED — the card carries `created-by:<agent>`, the tag {@see BoardCreateCardTool}
+ *     stamps at birth: bridge-written and caller-unforgeable (the `created-by:` prefix is
+ *     reserved on create and the guard casefolds, so no caller can plant any case variant of
+ *     another agent's stamp).
+ *  2. ASSIGNED — the card's own `assigned_user_id` is, compared as a strict integer, the
+ *     kanban user {@see SeatKanbanUser::forCallingSeat} resolves for the seat the DOOR sealed
+ *     ({@see CallingSeat}). The resolver takes no name and this tool accepts no user-naming
+ *     argument, so nothing a caller sends can choose which user is compared — the same
+ *     construction `board_take_card` writes that field through.
+ * Provenance answers who FILED a card and assignment answers who OWNS it now; the fleet hands
+ * out work by the second, so a seat that could correct only what it minted was refused its own
+ * work (card#9202) and could correct nothing that did not come through `board_create_card`
+ * (card#9201).
+ *
+ * ⭐ THE RELATION THAT AUTHORIZED A WRITE IS RECORDED — `authorized_by` in the result and in the
+ * success log — because an audit that flattened the two could not tell a former minter's edit
+ * from the current owner's. ⚠ MINTED WINS WHEN BOTH HOLD, AND THE ASSIGNEE ARM IS NEVER EVALUATED
+ * ON A MINTED CARD: evaluating it would put the roster read in front of every correction that
+ * was authorized before DL-376, and a seat whose YAML declares no `identity.kanban_user_id`
+ * would start being refused corrections it has always been allowed. So `minted` says the stamp
+ * held; it says nothing about the assignee.
+ *
+ * ⛔ A ROW WITH NO READABLE `assigned_user_id` NEVER AUTHORIZES BY ASSIGNMENT. Present-null is
+ * UNASSIGNED; an absent key or a non-integer value is a DEGRADED READ (the rule
+ * {@see BoardTakeCardTool} states for the same field). Both fall through to the not-yours
+ * refusal rather than to a message of their own, because a message only an EXISTING row can
+ * produce would tell the caller the card exists.
  *
  * ⛔ NOT `actor_type`, and NOT `actor_id`. `actor_type: service` covers the bridge
  * AND every CLI writer, so it discriminates nothing; and `actor_id` identifies the
  * kanban USER, which every agent shares (they all write through the one writeback
  * user). Neither can answer "which SEAT filed this", which is the question. The
- * tag is the only per-seat provenance a card carries.
+ * tag is the only per-seat provenance a card carries. (`assigned_user_id` is a different
+ * kind of user id: the seat's OWN `identity.kanban_user_id`, which the resolver refuses to
+ * answer with when two agents declare it.)
  *
  * ⛔ The stamp compare is CASE-SENSITIVE, deliberately the narrow direction. Agent
  * names are filesystem-cased config names, so `me` and `ME` can be two seats and a
@@ -50,13 +75,13 @@ use Illuminate\Support\Facades\Log;
  * verdict is read off the ROWS, never off the call: the endpoint drops a term it
  * does not recognise and still answers 200, so a row establishes the card only if
  * its own `id` names it and its own `board_id` is this agent's configured board.
- * Board scope and the mint stamp are two INDEPENDENT narrowings and both are
- * required.
+ * Board scope and the relation (minted or assigned) are two INDEPENDENT narrowings and both
+ * are required.
  *
  * The LANE is deliberately not part of the authorization. A human may re-lane a
- * card legitimately, and the mint stamp is what says the card is the seat's; a lane
- * test would make a re-laned card permanently uncorrectable by the seat that filed
- * it. The response therefore reports no lane — it reports only what was checked.
+ * card legitimately, and the relation is what says the card is the seat's; a lane
+ * test would make a re-laned card permanently uncorrectable by the seat that filed or
+ * holds it. The response therefore reports no lane — it reports only what was checked.
  *
  * WHAT IS CORRECTABLE: `name`, `description`, `tags` — the caller-owned content,
  * and nothing else. ⚠ THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST:
@@ -89,10 +114,12 @@ use Illuminate\Support\Facades\Log;
  * destroy the other.
  *
  * ⚠ `kbcard` records the sharp edge of a read-merge-write on this field — an unreadable
- * tag list treated as "no tags" destroys every tag — and it is UNREACHABLE here rather
- * than guarded: the preserved set is built from the same row whose tags had to contain
- * `created-by:<agent>` for the call to be authorized at all, so a row with no readable
- * tag list is refused before any write is composed. The OPERATOR-declared half of the
+ * tag list treated as "no tags" destroys every tag. On the MINTED arm it is unreachable: the
+ * row's tags had to contain `created-by:<agent>` for the call to be authorized at all. ⛔ The
+ * ASSIGNED arm authorizes without reading the tags, so there it is GUARDED
+ * ({@see requireReadableTagList}): a `tags` correction on a row whose `tags` key is absent or
+ * not a list refuses, while present-null — kanban stores `tags` as a nullable json column, so
+ * an untagged card can carry it — is an empty list and deletes nothing. The OPERATOR-declared half of the
  * set is a different matter, because it comes from `writeback.json` rather than from
  * the row: a config the bridge cannot parse means the hold vocabulary is UNKNOWN, and a
  * wholesale replace under an unknown hold vocabulary is exactly the deletion this
@@ -127,6 +154,12 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardCorrectCardTool implements Tool
 {
+    /** `authorized_by`: the row carries the calling agent's own `created-by:` mint stamp. */
+    private const AUTHORIZED_BY_MINT = 'minted';
+
+    /** `authorized_by`: the row's `assigned_user_id` is the calling seat's own kanban user. */
+    private const AUTHORIZED_BY_ASSIGNMENT = 'assigned';
+
     /**
      * ⚠ ONE CONSTANT BECAUSE THE TWO THROW SITES MUST STAY BYTE-IDENTICAL — see
      * {@see BoardCreateCardTool}'s `TITLE_REFUSAL` for the reasoning; `name` is the same
@@ -208,8 +241,11 @@ final class BoardCorrectCardTool implements Tool
         // vocabulary reads nothing and writes nothing — and so a config fault is
         // reported as itself rather than as a tag correction that half-applied.
         $holdTags = $callerTags === null ? [] : $this->installHoldTags($boardId);
-        $row = $this->ownedRow($client, $boardId, $cardId, $agentName);
+        [$row, $authorizedBy] = $this->ownedRow($client, $boardId, $cardId, $agentName);
 
+        if ($callerTags !== null) {
+            $this->requireReadableTagList($row, $cardId, $boardId, $agentName);
+        }
         $tagsWritten = $callerTags === null ? null : $this->tagsToWrite($row, $callerTags, $holdTags);
         if ($tagsWritten !== null) {
             $fields['tags'] = $tagsWritten;
@@ -232,6 +268,7 @@ final class BoardCorrectCardTool implements Tool
         $corrected = array_keys($fields);
         Log::info('board_correct_card: corrected', [
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'fields' => $corrected,
+            'authorized_by' => $authorizedBy,
         ]);
 
         $result = [
@@ -245,6 +282,8 @@ final class BoardCorrectCardTool implements Tool
             // board it did not read.
             'board_id' => $boardId,
             'fields' => $corrected,
+            // WHICH relation made this card the caller's (DL-376): `minted` or `assigned`.
+            'authorized_by' => $authorizedBy,
         ];
         if ($tagsWritten !== null) {
             $result['tags_written'] = $tagsWritten;
@@ -401,19 +440,27 @@ final class BoardCorrectCardTool implements Tool
     }
 
     /**
-     * The card's row, established on THIS agent's board AND carrying THIS agent's
-     * mint stamp — or a refusal. Both narrowings are required and neither is
-     * sufficient (see the class docblock).
+     * The card's row, established on THIS agent's board AND related to the calling seat
+     * (minted by it, or assigned to it) — with the relation that authorized it — or a
+     * refusal. Both narrowings are required and neither is sufficient (see the class
+     * docblock).
      *
      * ⚠ A not-yours refusal and a no-such-card refusal are DELIBERATELY one
      * message: the seat is not told whether a card it does not own exists, which is
      * the same non-disclosure posture the door already takes on an unknown bearer.
      * The one exception is the card the seat DOES own on the archived side — naming
-     * the retire there is not a disclosure (the stamp proves the card is the
+     * the retire there is not a disclosure (the relation proves the card is the
      * caller's), and the alternative is telling a seat that a card it demonstrably
-     * filed is "not one of yours", which is a false statement made by a guard.
+     * filed or holds is "not one of yours", which is a false statement made by a guard.
      *
-     * @return array<string, mixed>
+     * ⛔ THE CALLER'S KANBAN USER IS RESOLVED ON EVERY PATH THAT ENDS IN "NOT YOURS", and the
+     * no-such-card path is the one that would otherwise skip it. The resolver refuses with an
+     * INSTALL-FAULT message when this seat's identity cannot be established; if only an
+     * existing, unminted row reached it, that message would be a tell that the card exists.
+     * Resolved everywhere, it is a statement about the install and nothing else. A MINTED row
+     * never reaches it (class docblock), live or archived.
+     *
+     * @return array{0: array<string, mixed>, 1: string} the row, and the relation that authorized it
      */
     private function ownedRow(KanbanClient $client, int $boardId, int $cardId, string $agentName): array
     {
@@ -425,15 +472,16 @@ final class BoardCorrectCardTool implements Tool
 
         $row = BoardScopedRow::forCard($live, $boardId, $cardId);
         if ($row !== null) {
-            if (! $this->stampedBy($row, $agentName)) {
-                Log::warning('board_correct_card: refused — the card is on the agent\'s board but does not carry its mint stamp', [
+            $authorizedBy = $this->authorizingRelation($row, $cardId, $boardId, $agentName);
+            if ($authorizedBy === null) {
+                Log::warning('board_correct_card: refused — the card is on the agent\'s board but carries neither its mint stamp nor its kanban user as the assignee', [
                     'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
                 ]);
 
                 throw new ToolRefusalException($this->notYoursMessage($cardId, $boardId));
             }
 
-            return $row;
+            return [$row, $authorizedBy];
         }
 
         if ($live !== []) {
@@ -457,8 +505,13 @@ final class BoardCorrectCardTool implements Tool
         }
 
         $retired = BoardScopedRow::forCard($archived, $boardId, $cardId);
-        if ($retired !== null && $this->stampedBy($retired, $agentName)) {
+        if ($retired !== null && $this->authorizingRelation($retired, $cardId, $boardId, $agentName) !== null) {
             throw new ToolRefusalException("board_correct_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, and un-retiring one is not this tool's to do, so nothing was written. Unarchive it if the work is live again.");
+        }
+        if ($retired === null) {
+            // No row on either side, so no relation was evaluated — resolve the caller anyway,
+            // so an unresolvable identity refuses here exactly as it does for an existing card.
+            $this->callerKanbanUserId();
         }
 
         Log::warning('board_correct_card: refused — no card with this id is on the agent\'s board', [
@@ -466,6 +519,67 @@ final class BoardCorrectCardTool implements Tool
         ]);
 
         throw new ToolRefusalException($this->notYoursMessage($cardId, $boardId));
+    }
+
+    /**
+     * WHICH RELATION makes this row the calling seat's — {@see AUTHORIZED_BY_MINT},
+     * {@see AUTHORIZED_BY_ASSIGNMENT}, or null for neither. The mint stamp is checked FIRST
+     * and, when it holds, the assignee arm is not evaluated at all (class docblock: every
+     * correction authorized before DL-376 stays independent of the roster read).
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function authorizingRelation(array $row, int $cardId, int $boardId, string $agentName): ?string
+    {
+        if ($this->stampedBy($row, $agentName)) {
+            return self::AUTHORIZED_BY_MINT;
+        }
+
+        return $this->assignedToCaller($row, $cardId, $boardId, $agentName) ? self::AUTHORIZED_BY_ASSIGNMENT : null;
+    }
+
+    /**
+     * Whether the row's own `assigned_user_id` is the calling seat's kanban user.
+     *
+     * ⛔ STRICT, AND FAIL-CLOSED ON A DEGRADED READ. Only an `int` on the row can match, and it
+     * must be IDENTICAL to the resolved id — no `==`, no numeric-string coercion — so `null`,
+     * `""`, `"0"` or a decorated string never equal anybody. Present-null is the ordinary
+     * UNASSIGNED answer and is quiet; an ABSENT key or any other non-integer is a read that
+     * cannot say whose card this is, so it is logged and does not authorize.
+     *
+     * The caller is resolved BEFORE the row is read, so an install whose identity cannot be
+     * established refuses identically whatever shape the row's assignee has.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function assignedToCaller(array $row, int $cardId, int $boardId, string $agentName): bool
+    {
+        $callerUserId = $this->callerKanbanUserId();
+
+        $holder = $row['assigned_user_id'] ?? null;
+        if (is_int($holder)) {
+            return $holder === $callerUserId;
+        }
+
+        if (! array_key_exists('assigned_user_id', $row) || $holder !== null) {
+            Log::warning('board_correct_card: the row carries no readable assigned_user_id, so the assignee arm cannot authorize this correction', [
+                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'reason' => 'assigned_user_id_unreadable',
+            ]);
+        }
+
+        return false;
+    }
+
+    /**
+     * The calling seat's own kanban user, through the resolver `board_take_card` writes the
+     * same field with — this is its ONLY call site in this tool. It takes no name: the seat is
+     * the one the front door sealed, so no argument this tool receives can reach the value
+     * compared. An install that cannot establish it refuses with the resolver's named INSTALL
+     * fault.
+     */
+    private function callerKanbanUserId(): int
+    {
+        return SeatKanbanUser::forCallingSeat($this->name());
     }
 
     /**
@@ -480,7 +594,7 @@ final class BoardCorrectCardTool implements Tool
      */
     private function notYoursMessage(int $cardId, int $boardId): string
     {
-        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards YOU filed (the bridge's `created-by:` mint stamp) on your own board. Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
+        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards on your own board that YOU filed (the bridge's `created-by:` mint stamp) or that are ASSIGNED to you (the card's `assigned_user_id` is the kanban user your bridge identity resolves to). Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card or hold it, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
     }
 
     /**
@@ -509,6 +623,31 @@ final class BoardCorrectCardTool implements Tool
         }
 
         return $tags;
+    }
+
+    /**
+     * Refuse a `tags` correction on a row whose tag list cannot be read. kanban replaces
+     * `tags` wholesale, so the preserved half ({@see tagsToWrite}) is only as complete as the
+     * row's list: composed from an unreadable one it would send the caller's tags alone and
+     * DELETE every tag the card carries. Present-null is a real, empty answer and passes.
+     *
+     * ⚠ Reachable only through the ASSIGNED arm — a MINTED row's tags contain the stamp that
+     * authorized it — and it is refused by its own name because the call is already
+     * authorized: the card is the caller's, so naming the cause discloses nothing.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function requireReadableTagList(array $row, int $cardId, int $boardId, string $agentName): void
+    {
+        if (array_key_exists('tags', $row) && ($row['tags'] === null || is_array($row['tags']))) {
+            return;
+        }
+
+        Log::warning('board_correct_card: refused a tag correction — the row carries no readable tag list, so a wholesale replace could delete tags this call cannot see', [
+            'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+        ]);
+
+        throw new ToolRefusalException("board_correct_card: the board's row for card {$cardId} carries no readable tag list, and correcting `tags` REPLACES the card's whole list — so this call cannot tell which tags that would delete, and it refuses rather than delete them. Nothing was written. Correcting `name`/`description` alone is unaffected. This is an INSTALL fault (the board is answering a shape the bridge does not recognise); report it to your operator.");
     }
 
     /**

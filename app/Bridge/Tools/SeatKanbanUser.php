@@ -10,7 +10,9 @@ use Illuminate\Support\Facades\Log;
 /**
  * A ROSTER LOOKUP: agent name → that agent's `identity.kanban_user_id` (card#9170) — the
  * server-side resolution that lets {@see BoardTakeCardTool} write an assignee without ever
- * taking a user id from the payload.
+ * taking a user id from the payload, and that {@see BoardCorrectCardTool} COMPARES with a
+ * card's assignee to decide whether a correction is authorized by assignment (DL-376). Both
+ * consumers ask about the calling seat and nobody else, which is the only question this answers.
  *
  * ⛔⭐ READ THIS BEFORE YOU CALL IT — WHAT IS AND IS NOT GUARANTEED. There is NO agent-name
  * parameter: {@see forCallingSeat} reads {@see CallingSeat}, the write-once seat the front

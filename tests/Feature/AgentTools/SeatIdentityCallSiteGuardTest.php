@@ -184,6 +184,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * @var array<string, string>
      */
     private const DISPOSITIONED = [
+        'app/Bridge/Tools/BoardCorrectCardTool.php::callerKanbanUserId#1' => 'THE SECOND CONSUMER (card#9202, DL-376), and it READS rather than writes: the id is COMPARED with the row\'s own `assigned_user_id` to decide whether the assignee arm authorizes a correction. It passes only the tool name, the tool accepts no user-naming argument, and it is the one site in that tool — every assignee check and the no-such-card non-disclosure resolve go through it.',
         'app/Bridge/Tools/BoardTakeCardTool.php::call#1' => 'THE call site the feature rests on. It passes only the TOOL NAME (for the refusal message); the identity comes from `CallingSeat` inside the resolver. The id it returns is the ONLY value the tool writes to `assigned_user_id`.',
     ];
 
@@ -200,7 +201,8 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * @var array<string, string>
      */
     private const NAMING_FILES = [
-        'app/Bridge/Tools/BoardTakeCardTool.php' => 'THE one caller — its single call site is dispositioned above.',
+        'app/Bridge/Tools/BoardCorrectCardTool.php' => 'the assignee arm\'s one caller — its single call site is dispositioned above.',
+        'app/Bridge/Tools/BoardTakeCardTool.php' => 'the take tool, which WRITES the resolved id — its single call site is dispositioned above.',
         'app/Bridge/Tools/SeatKanbanUser.php' => 'the class\'s own declaration.',
     ];
 
