@@ -13,6 +13,7 @@ use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Support\UrlValidator;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Throwable;
@@ -129,7 +130,12 @@ class ProvisionCommand extends BridgeCommand
                         $rc = self::FAILURE;   // operator must act (re-run with --reconcile, or fix the secret)
                     }
                 } catch (Throwable $e) {
-                    $this->error("{$label} API error: {$e->getMessage()}");
+                    // ⛔ FOREIGN BYTES ON AN OPERATOR'S TERMINAL, escaped at the write for
+                    // the reason `ReconcileCommand`'s read arm spells out: this arm relays a
+                    // `RequestException` carrying the kanban RESPONSE BODY, there is no
+                    // `Finding` and no renderer in the path, and Guzzle's body-summary gate
+                    // passes `\r` (card#9121, DL-366).
+                    $this->error("{$label} API error: ".UntrustedText::forOperator($e->getMessage()));
                     $rc = self::FAILURE;
                 }
             }
@@ -303,8 +309,23 @@ class ProvisionCommand extends BridgeCommand
             return;
         }
         foreach ($subs as $sub) {
+            // ⛔ A SUBSCRIPTION ROW IS FOREIGN TEXT (card#9200, DL-366 Decision 12's shape).
+            // These are RAW kanban API rows, and a row's `url` is chosen by whoever registered
+            // the subscription on that board — not by this install. A `url` carrying
+            // `\x1B[2K\r` plus a plausible row overwrites the line this loop just printed, on
+            // the run an operator reads to decide whether to `--reconcile`.
+            // ⚠ NEITHER CENSUS IN card#9200 COULD SEE THIS ARM: Decision 11's counts
+            // `getMessage()` and this is the SUCCESS path of a read; Decision 12's was over
+            // `bridge:check`'s findings and there is no `Finding` and no renderer here.
+            // `$active` is NOT escaped — it is one of two words this file chose.
+            // ⚠ THE DISPLAY BOUND APPLIES TO THE WHOLE VALUE HERE, and that is stated rather
+            // than discovered: these are values, not spans inside bridge prose, so a row whose
+            // `url` runs past `UntrustedText::MAX_CHARS` is shown truncated — with the marker
+            // naming the source length, never silently.
             $active = ($sub['active'] ?? false) ? 'active' : 'INACTIVE';
-            $this->line("{$label} id={$sub['id']} {$active} → ".($sub['url'] ?? '?'));
+            $id = UntrustedText::forOperator((string) $sub['id']);
+            $url = UntrustedText::forOperator((string) ($sub['url'] ?? '?'));
+            $this->line("{$label} id={$id} {$active} → {$url}");
         }
     }
 }

@@ -9,11 +9,14 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\TestCase;
 use Throwable;
 
 class ProvisionTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
+
     private string $dir;
 
     protected function setUp(): void
@@ -39,6 +42,13 @@ class ProvisionTest extends TestCase
     }
 
     private string $receiverUrl = 'https://bridge.example.com/webhooks/kanban?b=5';
+
+    /**
+     * The forgery a hostile subscription row would carry: erase the line already printed,
+     * return the cursor to column 0, then a plausible healthy row. U+202E reorders the rest
+     * of the line on a bidi-aware terminal without emitting a control byte at all.
+     */
+    private const HOSTILE_ROW = "\x1B[2K\r[prod-agent] kanban:5 id=1 active \u{202E}\u{200B}";
 
     public function test_creates_a_missing_subscription_and_writes_the_secret(): void
     {
@@ -269,6 +279,62 @@ class ProvisionTest extends TestCase
 
         // The secret written before the create must be removed so a re-run starts clean.
         $this->assertFileDoesNotExist(SecretPath::for($this->dir, 'kanban', '5'));
+    }
+
+    /**
+     * ⛔⭐ `--list` PRINTS RAW KANBAN API ROWS, and a row's `url` is chosen by whoever
+     * registered the subscription on that board (card#9200, DL-366 Decision 12's shape).
+     *
+     * ⭐ WHY BOTH CENSUSES IN THIS CHANGE MISSED IT BY CONSTRUCTION. Decision 11's sweep
+     * counts `getMessage()` — this is the SUCCESS path of a kanban read and relays no
+     * exception. Decision 12's sweep was over `bridge:check`'s findings — this is a command
+     * write with no `Finding` and no renderer anywhere in the path. Neither could see it.
+     *
+     * ⚑ THE PAYLOAD FORGES THE COMMAND'S OWN NEXT LINE: an erase-line and a carriage return
+     * followed by a healthy-looking subscription row, so an operator running `--list` to
+     * decide whether to `--reconcile` reads a row the board never held.
+     */
+    public function test_a_hostile_subscription_row_reaches_the_operator_escaped(): void
+    {
+        Http::fake(['*' => Http::response(['data' => [
+            ['id' => '3'.self::HOSTILE_ROW, 'url' => 'https://evil.example/'.self::HOSTILE_ROW, 'active' => true],
+        ]])]);
+
+        Artisan::call('bridge:provision', ['--list' => true]);
+        $rendered = Artisan::output();
+
+        // The fixture actually reached the listing arm, and the command's own prose is intact.
+        $this->assertStringContainsString('[prod-agent] kanban:5 id=', $rendered);
+        $this->assertStringContainsString('active', $rendered);
+        // Two-legged, once per interpolation: no live member of the escaped class survives,
+        // and BOTH foreign values are on the line in escaped form (a command that dropped one
+        // would satisfy an absence-only census).
+        $this->assertForeignValueEscapedInto($rendered, '3'.self::HOSTILE_ROW, 'the row id');
+        $this->assertForeignValueEscapedInto($rendered, 'https://evil.example/'.self::HOSTILE_ROW, 'the row url');
+        // ⚑ NON-VACUITY: the payload really does carry the bytes.
+        $this->assertStringContainsString("\x1B[2K\r", self::HOSTILE_ROW);
+    }
+
+    /**
+     * ⚑ THE CONTROL FOR THE ESCAPE. An ordinary row must render EXACTLY as it did before —
+     * an escape that moved the bytes of a healthy board's listing would be a regression
+     * dressed as a fix, and the census above is equally satisfied by a command that mangles
+     * every line it prints.
+     */
+    public function test_an_ordinary_subscription_row_lists_unchanged(): void
+    {
+        Http::fake(['*' => Http::response(['data' => [
+            ['id' => 3, 'url' => $this->receiverUrl, 'active' => true],
+            ['id' => 4, 'url' => 'https://other.example/webhooks/kanban?b=5', 'active' => false],
+        ]])]);
+
+        Artisan::call('bridge:provision', ['--list' => true]);
+
+        $this->assertSame(
+            "[prod-agent] kanban:5 id=3 active → {$this->receiverUrl}\n"
+                ."[prod-agent] kanban:5 id=4 INACTIVE → https://other.example/webhooks/kanban?b=5\n",
+            Artisan::output(),
+        );
     }
 
     /**

@@ -89,7 +89,18 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # it delegated its read to the guarded reader. What it now reaches is not restated here:
 # `_PROBE_COLLABORATORS` below owns the reach, and that list is DERIVED and asserted rather
 # than written down, so it cannot say something different from the code.
-_ALLOWED_PROBE_STATICS = {"self::", "Finding::", "PathVisibility::", "ChannelSnapshotManifest::"}
+# `UntrustedText::` (card#9200) is the escape the probe applies to the two foreign values it
+# echoes — the resolved path and the deployed manifest's `version`. It is a same-namespace
+# pure-text function: one `mb_scrub`, two `preg_replace` passes and an `mb_substr`, reading
+# nothing and executing nothing. It is scanned as a collaborator below, which is where that
+# claim is enforced rather than asserted here.
+_ALLOWED_PROBE_STATICS = {
+    "self::",
+    "Finding::",
+    "PathVisibility::",
+    "ChannelSnapshotManifest::",
+    "UntrustedText::",
+}
 
 # Every class REACHABLE from the probe, scanned for exec primitives on the same terms as
 # the probe itself. Wider than the set above by design: `Severity` is never named in the
@@ -129,6 +140,10 @@ _PROBE_COLLABORATORS = (
     "app/Bridge/Support/UntrustedPathContents.php",
     "app/Bridge/Exceptions/UnreadableFileException.php",
     "app/Bridge/Exceptions/PathResolvesToNoFileException.php",
+    # card#9200: the probe escapes each foreign value it echoes at the interpolation, so it
+    # reaches this text primitive directly. Listed because a hop the scan does not follow is a
+    # hop nothing guards, not because it is suspected.
+    "app/Bridge/Support/UntrustedText.php",
 )
 
 # Classes the closure reaches that this repo does NOT declare, so no `app/` file can be

@@ -11,6 +11,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenInstall;
 use Tests\TestCase;
@@ -38,6 +39,7 @@ use Tests\TestCase;
  */
 class GitHubWebhookSubscriptionCheckTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use BootsGoldenInstall;
     use RefreshDatabase;
 
@@ -64,6 +66,15 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
      * it never escaped.
      */
     private const FOREIGN_RECEIVER = 'https://someone-elses-bridge.example.net/webhooks/github?b=owner/repo';
+
+    /**
+     * A hook-list failure whose message forges THIS leg's own `ok` sentence.
+     *
+     * `\x1B[2K\r` erases the line already printed and returns the cursor to column 0;
+     * U+202E then reorders whatever follows on a bidi-aware terminal without emitting a
+     * control byte at all.
+     */
+    private const HOSTILE_FAILURE = "cURL error 6: Could not resolve host \x1B[2K\rgithub webhook: owner/repo \u{202E}— a live repo webhook delivers to this install's receiver";
 
     protected function tearDown(): void
     {
@@ -400,6 +411,45 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('unvalidated', $finding['severity']);
         $this->assertStringContainsString('the request to GitHub did not complete', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+    }
+
+    /**
+     * ⛔⭐ THE CATCH-ALL `Throwable` ARM'S MESSAGE IS FOREIGN TEXT AND IS ESCAPED AT THE
+     * PRODUCER (card#9200, DL-366) — the twin of the arm `GitHubRepoProbe::probe()` escapes,
+     * byte for byte, and the site the two censuses in this change missed. Its product reaches
+     * root's terminal through the `Unreadable` arm of this leg's `match`.
+     *
+     * ⭐ WHY THE ARM CANNOT BE RULED A NON-MEMBER. The arm above it takes
+     * `$e->response->status()` — an `int` — so a Laravel `RequestException` never lands here;
+     * what does is cURL/Guzzle prose. Ruling that prose incapable of carrying a remote byte
+     * would take enumerating every `Throwable` Guzzle can raise, which was not done. Escaping
+     * a value nobody prints raw costs nothing; a wrong non-membership ruling costs a defect.
+     *
+     * ⚑ THE PAYLOAD IS THE FORGERY THIS LEG IS WORTH FORGING: an erase-line and a carriage
+     * return followed by this very check's own `ok` sentence, so an operator reading a run
+     * that measured NOTHING sees a line claiming the hook is live.
+     */
+    public function test_a_hostile_hook_list_failure_reaches_the_operator_escaped(): void
+    {
+        $this->bootGithubInstall(fn () => throw new ConnectionException(self::HOSTILE_FAILURE));
+
+        [$exit, $doc] = $this->runJson();
+
+        // The fixture actually reached the arm, and the exit code did not move.
+        $this->assertSame(0, $exit);
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('unvalidated', $finding['severity']);
+        $this->assertStringContainsString('the request to GitHub did not complete', $finding['message']);
+        // The two-legged assertion: no live member of the escaped class survives onto the
+        // line, AND the foreign value is there in full, escaped — a producer that DROPPED
+        // the diagnosis would satisfy an absence-only census.
+        $this->assertForeignValueEscapedInto($finding['message'], self::HOSTILE_FAILURE, 'hook-list Throwable arm');
+        // ⚑ NON-VACUITY: the payload really does carry the bytes, so the census above is a
+        // measurement rather than a tautology over a benign fixture.
+        $this->assertStringContainsString("\x1B[2K\r", self::HOSTILE_FAILURE);
+        // The bridge's OWN prose around the span is untouched — this escapes the span, never
+        // the sentence.
+        $this->assertStringContainsString('that is NOT evidence it is gone', $finding['message']);
     }
 
     public function test_a_200_that_is_not_a_hook_list_is_unvalidated_and_never_read_as_an_absence(): void

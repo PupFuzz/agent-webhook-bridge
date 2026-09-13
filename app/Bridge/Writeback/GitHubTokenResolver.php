@@ -4,7 +4,9 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Support\PathHelper;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Support\Facades\Process;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
@@ -115,7 +117,31 @@ final class GitHubTokenResolver
         }
 
         if (! $result->successful()) {
-            $err = trim($result->errorOutput());
+            // ⛔ REDUCED HERE, AT THE PRODUCER, so `TokenResolution::$problem` carries no
+            // live control codepoint and no credential-shaped value (card#9200, DL-366).
+            // These are a SUBPROCESS's stderr bytes: `git-credential-coord` is a separate
+            // program — operator-swappable via `bridge.providers.github.credential_helper` —
+            // and what it writes there can include an error relayed from a store file or a
+            // remote.
+            // ⭐ BOTH REDUCTIONS, AND THE ORDER IS LOAD-BEARING. "Safe to print" has TWO
+            // declared meanings in this app and this span owes both: {@see UntrustedText}
+            // makes bytes safe for a TERMINAL, {@see SecretScrubber} (card#8433) makes them
+            // safe to DISCLOSE — and a credential helper's stderr is the one foreign span
+            // whose whole subject is credentials. The scrub runs FIRST because it is a
+            // LEXICAL, positional rule over the real bytes: it must see the source text
+            // before the escape doubles backslashes, collapses whitespace runs and applies
+            // its 200-character display cap, or a redactor's run can be cut short and leave
+            // the tail it was about to redact standing.
+            // ⚠ IT IS NOT AN UNQUALIFIED GUARANTEE, and an earlier revision of this comment
+            // made one — it claimed no consumer "can now get it wrong, including one added
+            // tomorrow" while the only reduction applied was the terminal escape, which
+            // carries a credential through byte for byte. What holds is exactly the two
+            // rules' own bounds: this repo's code, checked in `GitHubTokenResolverTest`, with
+            // {@see SecretScrubber}'s declared limits (a secret in a URL PATH is not
+            // redacted) and {@see UntrustedText}'s (`\p{Mn}`/`\p{Me}`/`\p{Co}` pass) applying
+            // unchanged. `$problem` is composed prose, so both go round the foreign SPAN and
+            // not round the sentence — the bridge's own words must not consume the cap.
+            $err = UntrustedText::forOperator(SecretScrubber::text(trim($result->errorOutput())));
 
             return TokenResolution::problem("git-credential-coord get failed for {$repo} (exit {$result->exitCode()})".($err !== '' ? ": {$err}" : ''));
         }
@@ -132,7 +158,9 @@ final class GitHubTokenResolver
         // No password line. Non-empty stderr ⇒ a helper-side error (an unreadable
         // `*_file`) that must FAIL LOUD per the framework fail-loud-on-`*_file`
         // contract; empty stderr ⇒ genuinely unmapped → fall through to GH_TOKEN.
-        $err = trim($result->errorOutput());
+        // Same two reductions, same order, as the non-zero-exit arm above — one arm reduced
+        // and the other not is the omission shape the move to the producer exists to end.
+        $err = UntrustedText::forOperator(SecretScrubber::text(trim($result->errorOutput())));
         if ($err !== '') {
             return TokenResolution::problem("git-credential-coord could not resolve {$repo}: {$err}");
         }

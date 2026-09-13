@@ -5,13 +5,16 @@ namespace Tests\Unit\Support;
 use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\SkipsAsRoot;
 
 class ChannelSnapshotProbeTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use SkipsAsRoot;
 
     private string $tmp;
@@ -292,6 +295,201 @@ class ChannelSnapshotProbeTest extends TestCase
      * A reference directory shaped like `examples/channel-servers`: a manifest, the
      * entry, a sibling module the entry imports, a dotfile and a nested test.
      */
+    /**
+     * ⛔ EVERY FINDING THAT ECHOES THE DEPLOYED MANIFEST'S `version` DECLARES IT
+     * (card#9121, DL-366), and the assertion is written as a CENSUS OVER THE RUN rather than
+     * against one arm on purpose: three arms of the version leg interpolate that value, the
+     * two recorded reviews of this file disagreed about which lines they were, and a test
+     * pinned to one arm certifies nothing about the other two. Any finding carrying the
+     * payload verbatim must also declare it; a fourth arm added later joins this denominator
+     * by existing.
+     *
+     * The value is FOREIGN: it is whatever the `version` key of a `package.json` under
+     * another OS user's home decodes to, cast to string, with no shape validation anywhere
+     * and only the reader's byte cap bounding it.
+     */
+    public function test_every_finding_echoing_the_deployed_version_declares_it_as_untrusted(): void
+    {
+        // The reviewer's own reproduction: an ANSI erase-display, a forged second finding
+        // line, and an unterminated RTL override — none of which a version string has any
+        // business containing, and all of which reached the terminal verbatim.
+        $payload = "0.0\x1b[2J\nagent prod-agent: channel socket live\u{202E}";
+
+        $findings = ChannelSnapshotProbe::probe($this->deployment($payload), $this->reference('9.9.9'));
+
+        // ⚑ FILTERED ON THE ESCAPED FORM, because that is what the message now carries: the
+        // producer escapes at the interpolation, so a filter on the RAW payload would match
+        // nothing and the loop below would assert over an empty set at exit 0.
+        $echoing = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, UntrustedText::forOperator($payload)),
+        ));
+        $this->assertNotEmpty($echoing, 'the fixture must actually reach an arm that echoes the version');
+        foreach ($echoing as $finding) {
+            // PRESENCE WITNESS, not an absence: an absence-only assertion is satisfied by a
+            // producer that dropped the detail entirely, which would certify a regression
+            // that withholds the one part of the line naming the real fault.
+            $this->assertForeignValueEscapedInto($finding->message, $payload);
+            $rendered = $finding->message;
+            $this->assertStringContainsString('\x1B[2J', $rendered);
+            $this->assertStringContainsString('\x{202E}', $rendered);
+            $this->assertStringContainsString('agent prod-agent: channel socket live', $rendered);
+            $this->assertStringNotContainsString("\x1b", $rendered);
+            $this->assertStringNotContainsString("\u{202E}", $rendered);
+            // The forged line cannot stand alone any more: the newline is gone.
+            $this->assertStringNotContainsString("\n", $rendered);
+        }
+    }
+
+    /**
+     * The SECOND foreign value in this file, and the one both recorded censuses missed on
+     * most of its sites: the RESOLVED deployment path. The inspected account chooses the
+     * directory names and the symlink target, and a path COMPONENT may hold any byte except
+     * NUL and `/` — so the presence, staleness and launch-disclosure lines were echoing
+     * account-chosen bytes exactly as the version arms were.
+     */
+    public function test_every_finding_echoing_the_resolved_path_declares_it_as_untrusted(): void
+    {
+        $this->skipAsRoot();
+        $evil = "dep\x1b[2Jloy\u{202E}ed";
+        $deployed = $this->deployment('1.2.3', name: $evil);
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+        $echoing = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, UntrustedText::forOperator($deployed)),
+        ));
+        $this->assertNotEmpty($echoing, 'the fixture must reach the legs that name the deployment path');
+        foreach ($echoing as $finding) {
+            $this->assertForeignValueEscapedInto($finding->message, $deployed);
+            $rendered = $finding->message;
+            $this->assertStringContainsString('dep\x1B[2Jloy\x{202E}ed', $rendered);
+            $this->assertStringNotContainsString("\x1b", $rendered);
+        }
+    }
+
+    /**
+     * ⛔ THE GUARD BUILDS THE FINDING, SO THIS FILE MUST HAND IT A SAFE DISPLAY (card#9121,
+     * DL-366, card#9200). `PathVisibility::unverifiedUnlessVisible()` interpolates the display
+     * this file hands it and returns a `?Finding` — so a `Finding::` grep over THIS file cannot
+     * see it, which is exactly how the first sweep escaped `$resolved` two branches below and
+     * left these two sites echoing the same value raw. ⚑ The guard's `$display` parameter is a
+     * plain `string` again: the caller escapes before handing it over, so the guard has nothing
+     * to rule on and needed no sum type to force a ruling it can no longer make wrongly.
+     *
+     * ⚑ THE SHAPE IS THE ONE `PathVisibility`'s OWN DOCBLOCK CALLS ROUTINE — an ancestor
+     * denying traversal, the bridge running as a different OS user than the agent — not a
+     * contrivance built to reach an arm.
+     */
+    public function test_the_not_visible_guard_declares_the_resolved_symlink_target(): void
+    {
+        $this->skipAsRoot();
+        // The account being inspected chose BOTH: the link target, and the directory name
+        // in it. `readlink()` hands back those bytes verbatim.
+        mkdir($this->tmp.'/locked', 0700, true);
+        mkdir($this->tmp."/locked/ch\x1bx\u{202E}");
+        symlink($this->tmp."/locked/ch\x1bx\u{202E}", $this->tmp.'/link');
+        chmod($this->tmp.'/locked', 0000);
+
+        try {
+            $findings = ChannelSnapshotProbe::probe($this->tmp.'/link', $this->reference('1.2.3'));
+
+            $this->assertCount(1, $findings);
+            $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+            $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+            // ⚑ NON-VACUITY WITNESS ON THE FIXTURE. The escape now happens before the value
+            // reaches the guard, so the finding's message can never carry the raw ESC —
+            // asserting its presence THERE would be asserting the defect.
+            $this->assertStringContainsString("\x1b", (string) readlink($this->tmp.'/link'), 'the link target must actually carry the bytes');
+
+            $rendered = $findings[0]->message;
+            $this->assertStringContainsString('ch\x1Bx\x{202E}', $rendered);
+            $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+        } finally {
+            chmod($this->tmp.'/locked', 0700);
+        }
+    }
+
+    /**
+     * The SECOND guard call site — the one gating both legs on traversal INTO the deployed
+     * directory. It names `$deployedDir` rather than `$resolved`, so it is a separate
+     * declaration and a separate arm, and a fix that reached only the first would pass the
+     * test above and fail this one.
+     */
+    public function test_the_not_visible_guard_declares_the_deployment_path(): void
+    {
+        $this->skipAsRoot();
+        $evil = "dep\x1bloy\u{202E}";
+        $deployed = $this->deployment('1.2.3', name: $evil);
+        chmod($deployed, 0000);
+
+        try {
+            $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+            $this->assertCount(1, $findings);
+            $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+            $rendered = $findings[0]->message;
+            $this->assertStringContainsString('dep\x1Bloy\x{202E}', $rendered);
+            $this->assertSame(0, substr_count($rendered, "\x1b"), "a live ESC survived: {$rendered}");
+        } finally {
+            chmod($deployed, 0755);
+        }
+    }
+
+    /**
+     * ⛔ THE OVERLAP CASE, DRIVEN THROUGH THE REAL LEG. `versionLeg()` is where two foreign
+     * values chosen by the SAME principal land on one finding, and where a version that quotes
+     * the deployment path makes one a substring of the other — the shape a per-span
+     * replacement loop silently half-applies. The two probe tests above this one each make
+     * ONE value hostile and the other benign, which is exactly why neither caught it.
+     * ⚑ KEPT AFTER THE OVERLAP BECAME UNREACHABLE (card#9200): with each value escaped at its
+     * own interpolation there is no replacement pass for one to be a substring inside, so this
+     * asserts a structural property rather than hunting a live defect. It was arrived at by
+     * measurement and it stays.
+     */
+    public function test_a_version_that_quotes_the_deployment_path_is_still_fully_escaped(): void
+    {
+        $this->skipAsRoot();
+        $evil = "dep\x1bloy";
+        $version = "0.0 installed at {$this->tmp}/{$evil} \x1b[2K\x1b[1;31m";
+        $deployed = $this->deployment($version, name: $evil);
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('9.9.9'));
+
+        // Anchored on the ERASE-LINE, which lives only in the VERSION: the deployment
+        // directory's own name also carries an ESC, so every leg naming the path matches a
+        // bare ESC filter and the two-value arm would not be isolated. ⚑ Anchored on its
+        // ESCAPED form, because that is what the message now carries — a filter on the raw
+        // bytes would match nothing and the loop below would assert over an empty set at rc 0.
+        $versionLeg = array_values(array_filter(
+            $findings,
+            static fn (Finding $f): bool => str_contains($f->message, UntrustedText::forOperator("\x1b[2K")),
+        ));
+        $this->assertNotEmpty($versionLeg, 'the fixture must reach the arm that echoes both foreign values');
+        foreach ($versionLeg as $finding) {
+            // ⛔ ASSERTED AS THE PROPERTY, NOT AS AN OCCURRENCE COUNT, and the count is what
+            // this leg tried first (card#9200). The path lands in THREE places on this line —
+            // as the subject, inside the re-sync command, and inside the VERSION, which quotes
+            // it — so any pinned figure is really a restatement of how many times the fixture's
+            // own version string happens to name the directory, and it moves when the fixture
+            // does. What must hold is that NO occurrence survives raw, whichever of them a
+            // future producer adds or drops: the raw path carries an ESC, so the live-control
+            // census below is what discriminates a half-escaped line, and it does it without a
+            // number.
+            $this->assertSame(0, substr_count($finding->message, $deployed), 'a raw path occurrence survived');
+            $this->assertForeignValueEscapedInto($finding->message, $deployed);
+            $this->assertForeignValueEscapedInto($finding->message, $version);
+            $this->assertStringContainsString('\x1B[2K\x1B[1;31m', $finding->message);
+        }
+
+        // EVERY finding of the run, not just that arm: nothing on the operator's report may
+        // carry a live control byte once each producer has escaped its own foreign values.
+        foreach ($findings as $finding) {
+            $this->assertNoLiveControlByte($finding->message);
+        }
+    }
+
     private function reference(string $version): string
     {
         return $this->tree('reference', [
