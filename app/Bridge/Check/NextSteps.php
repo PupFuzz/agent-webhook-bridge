@@ -27,9 +27,10 @@ use App\Bridge\Support\Severity;
  * `ask`/`confirm`/`choice` call anywhere in `app/`"* — a derivable census, and false: it
  * was falsified by `bridge:jobs install-tick` (card#9058) and again by `bridge:provision`'s
  * confirmed `identity_id` offer (card#9141). Both are MUTATING commands an operator runs by
- * hand, and both refuse rather than block where they cannot ask
+ * hand. `bridge:provision` refuses rather than blocks where it cannot ask
  * (`App\Console\Commands\Bridge\BridgeCommand::canPromptToConfirm()` owns what that
- * means — install-tick's own copy of that predicate is card#9255). The census is not re-synced here: a claim about
+ * means); `install-tick` keeps its own narrower `isInteractive()` guard by operator decision
+ * (card#9255), so a piped answer confirms it and a held-open stdin blocks it. The census is not re-synced here: a claim about
  * the whole of `app/` has no business in the docblock of one renderer, and what is
  * load-bearing for this block is the sentence above it.
  *
