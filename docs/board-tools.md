@@ -1056,9 +1056,12 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     seat AHEAD is not a fault: that is a rollout in progress, and the warn's remedy would be
     a downgrade.
   - **not reported** ⇒ `ok`, and the line says so — a client older than the first reporting
-    snapshot, or a caller that is not a channel server at all (`--probe-tools`,
-    `--self-cert`, a hand-run `bridge:tools-call`), sends no version. ⛔ **An absent report
-    is NOT a stale seat** and is never warned as one.
+    snapshot (**`0.9.15` is the first reporting snapshot**: the first `examples/channel-servers/`
+    release that sends the field at all, frozen as `App\Bridge\Tools\ClientVersion`'s
+    `FIRST_REPORTING_SNAPSHOT` and held in lockstep with this sentence by
+    `tests/Unit/Docs/ClientVersionFloorLockstepTest.php`), or a caller that is not a channel
+    server at all (`--probe-tools`, `--self-cert`, a hand-run `bridge:tools-call`), sends no
+    version. ⛔ **An absent report is NOT a stale seat** and is never warned as one.
   - ⚠ **The exit code does not move on any of these** (DL-037 #2 / DL-039: only `fail`
     flips it), and **nothing about this field can refuse a call** — a call carrying no
     version, or a value the bridge will not take, is accepted exactly as it was before the
@@ -1067,6 +1070,16 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     last call that is being described. `--self-cert` and a hand-run `bridge:tools-call` are
     the routine way that happens; the line then reads *not reported* until the seat calls
     again.
+  - ⛔ **A FLEET RECONCILED TO A TAG BELOW THAT FLOOR LANDS EVERY SEAT ON THE *not reported* ARM** —
+    `ok`, *not reported*, nothing compared — which is the one way to run
+    [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *Multi-agent channel-server
+    distribution* correctly, to completion, on every seat and measure nothing. That section owns
+    the reconcile and states the floor at the point the tag is chosen. ⚠ **The floor is crossed
+    ONCE per seat, by hand:** the surface that reports staleness is distributed BY the artifact
+    whose staleness was the problem, so the range it can never speak about is exactly the range
+    that predates it — a seat below the floor cannot be told by this leg that it is below the
+    floor. Re-deploy that seat once at or above the floor and restart its session; re-running the
+    reconcile at the same tag re-reads the same `ok`.
 
 ### Which spelling the probe read — and when the version-skew fallback can go
 
