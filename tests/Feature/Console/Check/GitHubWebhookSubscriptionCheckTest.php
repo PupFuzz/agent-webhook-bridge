@@ -307,11 +307,42 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringNotContainsString('a live repo webhook delivers to this install', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
 
-        // ⚠ THE EXIT CODE DOES NOT MOVE. This leg measured nothing about the repo — it asked
-        // GitHub nothing at all, which is limb (a) (a probe that was SKIPPED) and not limb (c),
-        // which this said until r7 — and the route table is not the whole delivery path, since
-        // a proxy that rewrites it is unmeasurable from here. So `unvalidated`, not `fail`.
-        $this->assertSame(0, $exit);
+        // ⚠ THIS LEG DOES NOT MOVE THE EXIT CODE, AND THE ASSERTION NOW SAYS THAT INSTEAD OF
+        // MEASURING IT THROUGH THE RUN'S EXIT (card#9280). This leg measured nothing about the
+        // repo — it asked GitHub nothing at all, which is limb (a) (a probe that was SKIPPED)
+        // and not limb (c), which this said until r7 — and the route table is not the whole
+        // delivery path, since a proxy that rewrites it is unmeasurable from here. So
+        // `unvalidated`, not `fail`, which the severity assertion above already pins.
+        //
+        // ⛔ IT USED TO ASSERT `$exit === 0`, AND THAT WAS THE WRONG INSTRUMENT FOR ITS OWN
+        // STATED PROPERTY — a proxy that held only while no OTHER leg failed on this install
+        // shape. Since card#9280 / DL-374 one does: `install.endpoint_urls` judges the config
+        // value against this app's route table and FAILS, so the run exits non-zero on exactly
+        // the install this fixture builds.
+        //
+        // ⚠ TWO ASSERTIONS REPLACE THE ONE, WITH TWO DIFFERENT SUBJECTS, AND NEITHER IS THE
+        // OTHER'S RESTATEMENT. The OWNERSHIP assertion is this leg's property, expressed
+        // without the exit code at all: the set of legs owning a `fail` must be exactly the
+        // endpoint-URLs leg, so it reds if the github leg ever starts failing here (what the
+        // original line guarded) AND if the endpoint-URLs leg ever stops. The EXIT assertion
+        // is card#9280's own subject — that the run moves — and is NOT a re-spelling of the
+        // first: `assertSame(1, $exit)` alone would pass with the github leg failing too,
+        // which is exactly why flipping the old line to `1` and stopping there would have
+        // thrown away what it was for.
+        $failOwners = [];
+        foreach ($doc['checks'] as $check) {
+            foreach ($check['findings'] as $f) {
+                if ($f['severity'] === 'fail') {
+                    $failOwners[$check['id']] = true;
+                }
+            }
+        }
+        $this->assertSame(
+            ['install.endpoint_urls'],
+            array_keys($failOwners),
+            'the red on a receiver base that reaches no route belongs to install.endpoint_urls and to no other leg',
+        );
+        $this->assertSame(1, $exit, 'the config fault is a fail, so the run must exit non-zero — that is card#9280');
 
         // And an unmeasured read publishes no NEXT STEPS webhook entry, for the same reason the
         // 403 arm does not: the remedy it would print is "go add a webhook", which is wrong.

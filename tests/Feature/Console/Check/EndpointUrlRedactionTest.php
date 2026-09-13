@@ -46,6 +46,19 @@ class EndpointUrlRedactionTest extends TestCase
                 'ftp://svc:'.self::CANARY.'@bridge.example.com/webhooks',
                 'ftp://***@bridge.example.com/webhooks',
             ],
+            // ⭐ THE ROUTE LEG'S OWN RENDERING (card#9280), which is NOT covered by the row
+            // above and could not be: that value fails the SCHEME floor, so the route leg is
+            // gated off and `UrlValidator` composes the only line printed. This one is a
+            // well-formed https URL — every syntax floor passes it — that reaches no route
+            // here, so the message is the one `InstallEndpointUrlsCheck` composes ITSELF
+            // rather than one it renders from the validator. A new interpolation of this
+            // config value is a new place the userinfo can reach the operator's terminal,
+            // and the scrubber is not inherited by being in the same class (canon #20).
+            'receiver_base_url, credential in the userinfo on a base that reaches no route' => [
+                'bridge.receiver_base_url',
+                'https://svc:'.self::CANARY.'@bridge.example.com',
+                'https://***@bridge.example.com',
+            ],
             // ⭐ THE TWO SHAPES THAT ESCAPED THE FIRST CUT OF THE RULE, on the operator
             // surface they escaped it on. A userinfo bounded by `[^/?#]*` cannot reach the
             // `@` behind a `/`, `?` or `#`, and all three occur in generated passwords (`/`

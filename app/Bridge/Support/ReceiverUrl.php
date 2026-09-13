@@ -46,6 +46,11 @@ use Throwable;
  * both reach nothing. It is `bridge:check`'s alone; provision has no use for it, because a
  * subscription it registers is validated by the upstream that receives it.
  *
+ * ⛔ AND THAT THIRD PREDICATE JUDGES THE PATH AND QUERY ONLY, BY SUBSTITUTING THE AUTHORITY
+ * RATHER THAN BY PROMISING NOT TO LOOK AT IT (card#9280 r2). {@see self::CANONICAL_AUTHORITY}
+ * says why; the short version is that `Request::create()` REFUSES some hosts outright, and a
+ * refusal is not a routing verdict.
+ *
  * ⛔ THE DIVERGENCE IS THE POINT AND IS STATED ON BOTH SIDES, because two copies of one rule
  * that quietly differ is the drift defect this fleet keeps filing. Neither predicate may be
  * "simplified" into the other: they answer different questions — *is this the subscription I
@@ -66,6 +71,49 @@ final class ReceiverUrl
     {
         return rtrim($receiverBaseUrl, '/')."/{$provider}?b={$scopeId}";
     }
+
+    /**
+     * The authority EVERY reachability probe is asked about, in place of the configured one.
+     *
+     * ⛔ THE AUTHORITY IS SUBSTITUTED, NOT VALIDATED, AND THAT IS THE WHOLE POINT (card#9280
+     * r2). `Request::create()` REFUSES a URI whose host Symfony will not build: measured on
+     * this app against `symfony/http-foundation` (the installed version is in `composer.lock`,
+     * not restated here), `https://brücke.example.com/webhooks/github?b=owner/repo` throws
+     * `BadRequestException: Invalid URI: Host is malformed.`, and so do a `~`, a `+`, a `%20`
+     * and a literal space in the host. Before the substitution that throw landed in the catch
+     * below and was answered `false` — so an install whose PATH and QUERY route PERFECTLY was
+     * reported as reaching no route, purely because of a character in its hostname. That is
+     * not a defect of the catch: it is a URI the framework declines to build, and declining to
+     * build a URI is not a verdict about routing.
+     *
+     * ⭐ WHY IT HAD TO BE FIXED HERE AND NOT AT EITHER CALLER.
+     * `App\Bridge\Check\Checks\InstallEndpointUrlsCheck` renders `false` as a **`fail` that
+     * moves `bridge:check`'s exit code**, so that shape exited 1 on an install that receives
+     * deliveries correctly — the host rides in a header this router never consults, and an
+     * IDNA-encoded delivery to it arrives fine. `App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck`
+     * renders the SAME `false` as `unvalidated` and prints a disclosure saying the leg
+     * establishes nothing about the host — on the one install where the host was the ENTIRE
+     * cause of the verdict. Distinguishing *URI unbuildable* from *no route* at one caller
+     * would have left the other still printing that false disclosure; substituting here
+     * deletes the class and makes the disclosure true by construction.
+     *
+     * ⭐ IT CHANGES NO OTHER ANSWER, AND THAT IS STRUCTURAL RATHER THAN OBSERVED.
+     * `routes/webhooks.php` registers no host constraint, so `Illuminate\Routing\Matching\HostValidator`
+     * returns on a null host regex and the authority cannot participate in WHICH route matches.
+     * `InstallEndpointUrlsCheckTest::test_the_route_verdict_does_not_move_with_the_authority_or_the_scheme`
+     * asserts that over the axis instead of trusting this paragraph.
+     *
+     * ⚠ THE SCHEME IS DELIBERATELY **NOT** SUBSTITUTED. `Illuminate\Routing\Matching\SchemeValidator`
+     * becomes a real term of `match()` the moment a route declares `->secure()`, and folding
+     * the scheme away would answer for a scheme the operator did not configure — the SILENT
+     * direction, a green verdict on a value that delivers nothing. No receiver route
+     * constrains one today, so the verdict does not move with it either; that is a measurement
+     * of this route table (asserted in the same test), never a property of this method.
+     *
+     * `.invalid` is reserved by RFC 2606, so a URL built here can never be mistaken for a real
+     * install's, in a log or in a traceback.
+     */
+    private const CANONICAL_AUTHORITY = 'receiver.invalid';
 
     /**
      * Would the URL {@see self::for()} COMPOSES actually be RECEIVED BY THIS APP — the
@@ -114,23 +162,65 @@ final class ReceiverUrl
      * check asks GitHub nothing at all, so no comparison ever runs) and never `fail`. ⚠ THIS
      * CITED LIMB (c) UNTIL r7 AND THAT WAS THE WRONG LIMB: the comparand here resolves to
      * exactly one perfectly comparable URL: what is missing is the MEASUREMENT, not the value.
+     *
+     * ⛔ THERE ARE NOW TWO CALLERS AND THEY RENDER `false` AT DIFFERENT SEVERITIES ON PURPOSE
+     * (card#9280 / DL-374). `App\Bridge\Check\Checks\InstallEndpointUrlsCheck` renders it
+     * **`fail`**, and moves `bridge:check`'s exit code with it. Read the paragraph above as
+     * scoped to what it actually says — a caller must not render `false` as a fault of THE
+     * WEBHOOK — rather than as a rule that no caller may fail: the two are asking about
+     * different subjects. That check is judging `BRIDGE_RECEIVER_BASE_URL` against this app's
+     * own route table, which is the whole of what it claims, and it needs no premise about any
+     * repo's hook list to say the value is wrong; the github leg would be convicting a repo's
+     * webhook on a comparison it declined to make. ⚠ The path-rewriting-proxy residual named
+     * above is REAL for the new caller too and is not closed by it — it is disclosed in that
+     * leg's own shipped verdict text, so the one install shape this can be wrong about is told
+     * what it is looking at. A change here that widens or narrows what `false` means moves an
+     * exit code; `InstallEndpointUrlsCheckTest` and the `receiver-url-unreachable` golden
+     * fixture both red on it.
      */
     public static function reachesThisInstall(string $receiverUrl, string $provider, string $scopeId, RouteCollectionInterface $routes): bool
     {
         try {
-            $request = Request::create($receiverUrl, 'POST', [], [], [], [], '{}');
+            $request = Request::create(self::withCanonicalAuthority($receiverUrl), 'POST', [], [], [], [], '{}');
             $route = $routes->match($request);
         } catch (Throwable) {
             // EVERY way this app can decline the URL is one answer — it does not deliver here.
             // `match()` throws for no route and for a route registered under another verb, and
-            // `Request::create()` itself throws on a URI the framework will not build at all.
-            // Distinguishing them would be inventing a vocabulary no caller can act on
-            // differently: the remedy for all of them is the same env var.
+            // `Request::create()` still throws on a URI the framework will not build at all
+            // (measured after the substitution: a CR/LF or TAB anywhere in the value).
+            // Distinguishing them would be
+            // inventing a vocabulary no caller can act on differently: the remedy for all of
+            // them is the same env var. ⛔ A REFUSED **HOST** IS NO LONGER A MEMBER — that one
+            // WAS actionably different, because the path and query could route perfectly, and
+            // it is closed at {@see self::CANONICAL_AUTHORITY} rather than sorted out here.
             return false;
         }
 
         return $route->parameter('provider') === $provider
             && $request->query('b') === $scopeId;
+    }
+
+    /**
+     * `$url` with {@see self::CANONICAL_AUTHORITY} in place of its userinfo, host and port.
+     *
+     * The authority ends at the first `/`, `?` or `#` (RFC 3986 §3.2), and everything from
+     * there on — the PATH and QUERY this predicate actually judges, INCLUDING a base that
+     * carries its own query — is kept byte-exact.
+     *
+     * ⛔ A VALUE WITH NO `scheme://` PREFIX IS RETURNED UNTOUCHED. It has no authority to
+     * substitute: `Request::create()` reads it as a path, which is what it would have read
+     * anyway, and inventing an authority for it would make a value naming no host route as
+     * though it named this one — the silent direction again.
+     */
+    private static function withCanonicalAuthority(string $url): string
+    {
+        if (preg_match('#\A[a-zA-Z][a-zA-Z0-9+.\-]*://#', $url, $scheme) !== 1) {
+            return $url;
+        }
+
+        $afterScheme = substr($url, strlen($scheme[0]));
+
+        return $scheme[0].self::CANONICAL_AUTHORITY.substr($afterScheme, strcspn($afterScheme, '/?#'));
     }
 
     /**

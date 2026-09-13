@@ -110,6 +110,21 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'receiver-url-unreachable':
+                // ⭐ THE PAIR WITH `bad-receiver-url` ABOVE, AND THE PAIRING IS THE POINT
+                // (card#9280). That value fails the SYNTAX floor; this one passes every syntax
+                // floor there is — a well-formed https URL with a host — and still composes a
+                // receiver URL that reaches no route in this app, which is the fault that had
+                // no home on any surface that moves an exit code. A fixture capturing the
+                // syntax refusal is no evidence for this arm: they are different legs, and the
+                // second one is the one an operator's install actually lands on.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                // The BARE HOST — `BRIDGE_RECEIVER_BASE_URL` already ends in the receiver
+                // path, so leaving it off is the documented mis-set shape.
+                config(['bridge.receiver_base_url' => 'https://bridge.example.com']);
+
+                return $default;
+
             case 'default-agent-has-no-config':
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 config(['bridge.default_agent' => 'ghost-agent']);
@@ -706,6 +721,7 @@ class CheckGoldenTest extends TestCase
             'secret-dir-unset',
             'provider-without-adapter',
             'bad-receiver-url',
+            'receiver-url-unreachable',
             'default-agent-has-no-config',
             'retention-disabled',
             'retention-misconfigured',
@@ -792,6 +808,14 @@ class CheckGoldenTest extends TestCase
             'secret-dir-unset' => ['bridge.secret_dir (BRIDGE_SECRET_DIR) is not set or not absolute'],
             'provider-without-adapter' => ['bridge.providers.gitlab is configured but has no adapter'],
             'bad-receiver-url' => ["bridge.receiver_base_url 'not-a-url' must use http or https"],
+            // ⛔ THE EXIT CODE IS A SUBJECT HERE, not just the sentence: this arm MOVES it,
+            // and a capture that pinned the prose alone would stay green if the severity were
+            // softened to a warn. Both halves, in the one fixture.
+            // ⛔ THE PROVIDER SET IS NOT A SUBJECT HERE — it is derived from
+            // `WebhookAdapterFactory::SUPPORTED` and pinned against that constant in
+            // `InstallEndpointUrlsCheckTest`; naming it here would be the second literal copy
+            // that goes on passing after the derived one moves (card#9280 r2).
+            'receiver-url-unreachable' => ['exit: 1', "bridge.receiver_base_url 'https://bridge.example.com' composes a receiver URL that reaches NO route in THIS application"],
             'default-agent-has-no-config' => ["BRIDGE_DEFAULT_AGENT 'ghost-agent' has no matching config"],
 
             // ---- retention postures (count deliberately unstated — see buildFixture()) ----
