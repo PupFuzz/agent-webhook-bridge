@@ -15,12 +15,21 @@
   <!-- "yes" if operators must run something beyond the standard update
        (`git pull → composer install → php artisan migrate → php artisan bridge:check`).
        Spell out what. -->
-- **Built:** `dispatched (coder ×N / mechanic ×N)` | `inline (trivial-tier: <reason>)` | `inline (dispatch-prohibited: <directive>)` | `in-session (docs/coordination)`
-  <!-- REQUIRED on every PR body — keep exactly ONE value, delete the others. The value set,
-       and when each value is legitimate, is owned by the coord plugin's `coord-thread` skill
-       § "The `Built:` line"; read it there. Deliberately not restated here — a second copy
-       drifts. -->
-- **Coordinated in:** <!-- card#NNNN — the card this work is coordinated on -->
+
+**Built:** dispatched (coder ×N / mechanic ×M) | inline (trivial-tier: <one-line reason>) | inline (dispatch-prohibited: <one-line reason>) | in-session (docs/coordination)
+<!-- REQUIRED on every PR body — keep exactly ONE value, delete the others, and leave the line
+     UNBULLETED at column 0 with the value UNQUOTED: the plane-1 audit is line-anchored and
+     matches the value against the canonical set, so a leading `- ` reads as ABSENT and a
+     wrapping backtick reads as out-of-set. The value set, and when each value is legitimate,
+     is owned by the coord plugin's `docs/built-line.md` § "The `Built:` line"; read it there —
+     deliberately not restated here, because a second copy drifts. The values above are the four
+     a seat declares for its own work; the fifth, `unattestable — <reason>`, is restricted to two
+     conditions that doc owns and is not offered here. -->
+
+<!-- The card this work is coordinated on. Same line-anchored, unquoted, unbulleted shape as
+     `Built:` above; the value is `card#NNNN`. Left EMPTY on purpose — a placeholder after the
+     colon would be read as the answer and PASS an unfilled row. -->
+**Coordinated in:**
 
 ## Test plan
 
