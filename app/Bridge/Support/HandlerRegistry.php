@@ -36,6 +36,20 @@ use App\Bridge\Handlers\SpawnDetachedHandler;
 final class HandlerRegistry
 {
     /**
+     * The registry key for the live-wake push handler, owned HERE because this table is
+     * what {@see resolve} matches a ReactionTarget against — the name is a property of
+     * the mapping, not of any one class an operator may replace under it.
+     *
+     * Named because the key was spelled as a bare literal at every site that EMITS,
+     * RESOLVES or GUARDS this handler, with no site holding it (card#9172). Divergence
+     * between any two of them is silent — a target nothing resolves, or a guard that
+     * quietly stops covering the handler it was written for. Which sites those are is a
+     * grep, not a list to maintain here:
+     * `command grep -rn "CHANNEL_PUSH|'channel_push'" app/`.
+     */
+    public const CHANNEL_PUSH = 'channel_push';
+
+    /**
      * @var array<string, Handler>
      */
     private array $handlers;
@@ -45,7 +59,7 @@ final class HandlerRegistry
         $this->handlers = [
             'log_intent' => new LogIntentHandler,
             'registry_append' => new RegistryAppendHandler,
-            'channel_push' => new ChannelPushHandler,
+            self::CHANNEL_PUSH => new ChannelPushHandler,
             'kanban_move_card' => new KanbanMoveCardHandler,
             'kanban_promote_released' => new KanbanPromoteReleasedHandler,
             'kanban_dependabot_card' => new KanbanDependabotCardHandler,

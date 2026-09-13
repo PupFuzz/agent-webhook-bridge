@@ -501,4 +501,25 @@ final class CheckContext
      * @var list<string>
      */
     public array $boardToolsLost = [];
+
+    /**
+     * The github scopes this run READ THE REPO'S HOOK LIST FOR and found no webhook
+     * delivering to this install's receiver, each with the agents that subscribe it, in the
+     * order the leg reported them (card#9150).
+     *
+     * THE THIRD FIELD HERE THAT IS A FACT ABOUT WHAT ANOTHER CHECK REPORTED rather than about
+     * the install ({@see self::$sshSetupIncomplete} and {@see self::$boardToolsLost} are the
+     * others), and it is a context field for the same reason the second one is: the scope and
+     * the agents live in the finding's PROSE and nowhere in its structure, and
+     * `NextSteps::severitiesById()` skips every result whose `agent` is null — which a
+     * run-once {@see Check}'s always is. This field is how the names reach the consumer.
+     *
+     * ⛔ IT CARRIES ONLY THE MEASURED-ABSENT POPULATION, never the could-not-look one, and
+     * that bound is the whole card: an entry here becomes a NEXT STEPS instruction to go add
+     * a webhook, and issuing that against a repo whose hooks this run never enumerated would
+     * send an operator to re-create a hook that is already there.
+     *
+     * @var list<array{scope: string, agents: list<string>}>
+     */
+    public array $githubWebhooksMissing = [];
 }

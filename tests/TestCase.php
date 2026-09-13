@@ -8,6 +8,7 @@ use Illuminate\Http\Client\StrayRequestException;
 use Illuminate\Support\Facades\Http;
 use PDO;
 use Psr\Http\Message\RequestInterface;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\SkipsAsRoot;
 
 abstract class TestCase extends BaseTestCase
@@ -77,6 +78,14 @@ abstract class TestCase extends BaseTestCase
 
         $this->preventStrayHttpRequests();
         $this->pointConfigDirAwayFromTheRealInstall();
+
+        // Every test starts as a freshly-started serving process would: with NO seat
+        // established. The board-tools seat seal is write-once PER PROCESS (card#9170), and
+        // one phpunit process is hundreds of "processes" as far as the two doors are
+        // concerned — so the reset is a fact about the harness, not an exemption from the
+        // property. `Tests\Support\CallingSeatSeal` owns why it is reflection from `tests/`
+        // and not a `reset()` in `app/`.
+        CallingSeatSeal::forANewServingProcess();
 
         // Hermetic intent-staging baseline. A real per-agent bridge deployment
         // exports BRIDGE_INBOX_LAYOUT=per-agent (and may export BRIDGE_STATE_DIR);

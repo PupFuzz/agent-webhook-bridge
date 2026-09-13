@@ -4,23 +4,31 @@
 > Measured against `app/Console/Commands/Bridge/CheckCommand.php` over the
 > 49 branch predicates in `handle()`, in 50 minutes. Decision record: **DL-242**.
 
-> ⚠ **STALE — the counts below are NOT this branch's.** FOUR predicates have been added to
+> ⚠ **STALE — the counts below are NOT this branch's.** Predicates have been added to
 > `handle()` since the run above: the `CheckSlot::Jobs` emit for the periodic-job registry's
 > posture leg (card#8425 / DL-325), the `CheckSlot::Standup` emit for the standup digest's
 > (card#8683 / DL-345), the `foreach` that renders the NEXT STEPS block (card#8959 /
-> DL-352), and the `CheckSlot::BoardToolsLost` emit for the LOST-block leg (card#8973 /
-> DL-360), so the live enumeration finds **53** where the header states 49. Re-derive that
-> number with `php bin/check-golden-predicates.php --json` rather than reading it here — it
-> is the DENOMINATOR the currency guard compares, and it moves with the source. The
-> measurement was NOT re-run: it is a ~50-minute mutation pass that must execute on a COPY of
-> the repo, and none of the four touches a predicate the tables below name.
+> DL-352), the `CheckSlot::BoardToolsLost` emit for the LOST-block leg (card#8973 /
+> DL-360), and the `CheckSlot::GithubWebhook` emit for the github webhook-subscription leg
+> (card#9150 / DL-368). ⛔ **Re-derive the live count with
+> `php bin/check-golden-predicates.php --json | jq length` rather than reading one here** —
+> it is the DENOMINATOR the currency guard compares, it moves with the source, and a figure
+> written into this banner is a second copy of it that goes stale on the next predicate
+> added (this banner has already carried a stale one). The header's **49** is the only number
+> that is not a restatement: it is what the mutation run actually measured. The measurement
+> was NOT re-run — it is a ~50-minute mutation pass that must execute on a COPY of the repo,
+> and none of the additions touches a predicate the tables below name.
 
-> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The four
+> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The
 > predicates present but never measured are
 > `if ! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))` (card#8425 / DL-325),
 > `if ! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))` (card#8683 / DL-345),
-> `foreach $this->nextStepsOutput($nextSteps)` (card#8959 / DL-352) and
-> `if ! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))` (card#8973 / DL-360).
+> `foreach $this->nextStepsOutput($nextSteps)` (card#8959 / DL-352),
+> `if ! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))` (card#8973 / DL-360)
+> and `if ! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))` (card#9150 /
+> DL-368). ⛔ **This list is a set of NAMES, deliberately carrying no count**: the last
+> revision opened by saying how many there were, and the figure was falsified by the very next
+> predicate added. `php bin/check-golden-predicates.php --json` is what enumerates them.
 > Their verdicts are therefore UNKNOWN here, in either direction — they are
 > not in the disclosed-gap table because they were not measured, which is a different thing
 > from being protected. ⚑ The last one is measured ELSEWHERE and that is not the same claim:
@@ -30,7 +38,11 @@
 > covered the same way and carries the same caveat:** `tests/Feature/Console/BridgeCommandsTest.php`
 > drives BOTH of its branches end to end — an install whose recorded block is gone exits 1,
 > the same install with the block present exits 0 — so it is covered, by a named suite, and
-> still not by THIS artifact's measurement. Re-running the ~50-minute mutation pass for one
+> still not by THIS artifact's measurement. ⚑ **The DL-368 predicate likewise:**
+> `tests/Feature/Console/Check/GitHubWebhookSubscriptionCheckTest.php` drives both of its
+> branches end to end — a confirmed-missing hook exits 1, every could-not-look state exits 0 —
+> and the `github-webhook-missing` golden capture pins the same pair; covered by named suites,
+> and still not by THIS artifact's measurement. Re-running the ~50-minute mutation pass for an
 > added predicate was not warranted. Re-run
 > `php bin/check-golden-mutate.php` to retire both banners.
 

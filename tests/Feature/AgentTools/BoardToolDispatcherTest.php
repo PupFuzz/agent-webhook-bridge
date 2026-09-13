@@ -5,12 +5,14 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
+use App\Bridge\Tools\CallingSeat;
 use App\Bridge\Tools\CallProvenance;
 use App\Models\BoardToolsClientCall;
 use App\Models\BoardToolsConfigSeen;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use LogicException;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
 
@@ -62,6 +64,53 @@ class BoardToolDispatcherTest extends TestCase
             enabled: true, tokenPath: null, boardId: 10, swimlaneId: 4, createStageId: 55,
             sharedSwimlaneId: null, coordBoardId: null, addressTags: [], transport: 'ssh',
         );
+    }
+
+    /**
+     * ⭐ THE ORDERING ARM OF card#9170's SEAT SEAL, AND IT IS THE ONE THAT DECIDES THE DESIGN.
+     *
+     * A rogue `CallingSeat::establish` arriving SECOND obviously loses — it throws. The
+     * question that matters is what happens when it arrives FIRST, because that is the
+     * ordering in which a forger would try to win: if the door then quietly accepted the seat
+     * already sitting there, every board-tools call in that process would resolve the rogue's
+     * kanban user id. It does not. The DOOR's own establish throws, the dispatch dies at its
+     * first statement, and nothing is read, written or logged.
+     *
+     * ⛔ A `LogicException` out of here is a 500 on the HTTP door, deliberately — this is not a
+     * caller-fixable 422 and it is not the retryable 502. Nothing a seat can put in a request
+     * reaches this state; a process in it is broken, and the loud direction is the safe one.
+     */
+    public function test_a_seat_established_before_the_door_makes_the_door_throw_and_writes_nothing(): void
+    {
+        Http::fake();
+        CallingSeat::establish('rogue');
+
+        try {
+            $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+            $this->fail('the dispatcher accepted a process whose seat somebody else had already established.');
+        } catch (LogicException $e) {
+            $this->assertMatchesRegularExpression('/already established for this process \(as `rogue`\)/', $e->getMessage());
+        }
+
+        Http::assertNothingSent();
+        $this->assertSame(0, BoardToolsConfigSeen::count(), 'the dispatch got past its first statement.');
+    }
+
+    /**
+     * The other half of the same fact: on the ordinary path the door IS what establishes the
+     * seat, so a tool that asks `CallingSeat` gets the name the door derived — without any
+     * parameter carrying it there.
+     */
+    public function test_the_door_establishes_the_seat_it_authenticated(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null);
+
+        $this->assertSame('prod-agent', CallingSeat::name());
     }
 
     public function test_ok_outcome_is_200_exit_0_with_parity_body(): void

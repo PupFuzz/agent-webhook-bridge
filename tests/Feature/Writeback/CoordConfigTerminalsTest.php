@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Writeback;
 
+use App\Bridge\Support\UntrustedPathContents;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use Tests\TestCase;
 
@@ -207,6 +208,58 @@ class CoordConfigTerminalsTest extends TestCase
             $this->assertSame(['Done'], CoordConfigTerminals::terminalNamesForBoardId($cfg, 2));
         } finally {
             @unlink($p);
+        }
+    }
+
+    /**
+     * ⭐ THE PATH IS NOT THIS PROCESS'S TO TRUST (card#9121). `$COORD_CONFIG` names a file in
+     * the coordination project's tree, and `bridge:check` reads it as the operator —
+     * routinely root. Before the guarded reader this was `is_file()` + `is_readable()` + an
+     * unbounded `@file_get_contents()`, and `is_file()` follows the link and answers about
+     * the TARGET: a symlink at that path named any regular file on the box, at any size, and
+     * whatever it decoded to became the OTHER mover's terminal columns in the cross-config
+     * compare.
+     *
+     * The contract is unchanged in the direction callers depend on — this returns null and
+     * never throws, so the checks report CANNOT-VERIFY rather than AGREE.
+     */
+    public function test_load_returns_null_for_a_symlinked_config(): void
+    {
+        $dir = sys_get_temp_dir().'/coordcfg-'.uniqid();
+        mkdir($dir, 0o700, true);
+        $elsewhere = $dir.'/elsewhere.json';
+        file_put_contents($elsewhere, (string) json_encode($this->vectorConfig()));
+        symlink($elsewhere, $dir.'/coordination.config.json');
+        try {
+            $this->assertNull(CoordConfigTerminals::load($dir.'/coordination.config.json'));
+        } finally {
+            @unlink($dir.'/coordination.config.json');
+            @unlink($elsewhere);
+            @rmdir($dir);
+        }
+    }
+
+    /** Bounded by the opened file's own `fstat`, so an enormous file is not read at all. */
+    public function test_load_returns_null_for_a_config_past_the_readers_bound(): void
+    {
+        $p = sys_get_temp_dir().'/coordcfg-'.uniqid().'.json';
+        file_put_contents($p, '{"pad":"'.str_repeat('p', UntrustedPathContents::MAX_BYTES).'"}');
+        try {
+            $this->assertNull(CoordConfigTerminals::load($p));
+        } finally {
+            @unlink($p);
+        }
+    }
+
+    /** A directory at the path is a refusal too, and it lands where an absence lands. */
+    public function test_load_returns_null_for_a_directory_at_the_path(): void
+    {
+        $dir = sys_get_temp_dir().'/coordcfg-'.uniqid().'.json';
+        mkdir($dir, 0o700, true);
+        try {
+            $this->assertNull(CoordConfigTerminals::load($dir));
+        } finally {
+            @rmdir($dir);
         }
     }
 }

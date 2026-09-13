@@ -83,6 +83,17 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardCreateCardTool implements Tool
 {
+    /**
+     * ⚠ ONE CONSTANT BECAUSE THE TWO THROW SITES MUST STAY BYTE-IDENTICAL, and nothing
+     * about two adjacent string literals says so. `title` is refused both for not being a
+     * string (which is what a blank value has already become at the HTTP door, where
+     * `ConvertEmptyStringsToNull` ran) and for being empty once trimmed (which is what the
+     * same value still looks like at the ssh door). Those are ONE refusal reached by two
+     * routes, and the cross-door test compares the two doors' envelopes byte for byte — so
+     * a reworded copy would red there, several files away from the edit that caused it.
+     */
+    private const TITLE_REFUSAL = 'board_create_card: `title` is required and must be a non-empty string';
+
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $title = $this->requireTitle($args);
@@ -319,15 +330,28 @@ final class BoardCreateCardTool implements Tool
     private function requireTitle(array $args): string
     {
         $title = $args['title'] ?? null;
-        if (! is_string($title) || trim($title) === '') {
-            throw new ToolRefusalException('board_create_card: `title` is required and must be a non-empty string');
+        if (! is_string($title)) {
+            throw new ToolRefusalException(self::TITLE_REFUSAL);
         }
+        // EMPTY is the middleware's definition, not PHP's ({@see BoardToolArgs}), and it
+        // is answered BEFORE the cap so that a blank-and-over-long title refuses with the
+        // same sentence on both doors.
+        $trimmed = BoardToolArgs::trimmed($title);
+        if ($trimmed === '') {
+            throw new ToolRefusalException(self::TITLE_REFUSAL);
+        }
+        // ⚠ THE CAP IS TAKEN ON THE VALUE AS SENT, and the TRIMMED value is what is
+        // written. That is conservative rather than sloppy — raw within the cap implies
+        // the trimmed value is — and refusing a title the HTTP door's middleware would
+        // have shortened is this door's PRE-EXISTING strictness, not something this change
+        // introduced. Moving the cap onto the trimmed value would make this door accept
+        // input it refuses today, which is its own operator gate.
         $tooLong = BoardCallRefusal::overLongName($this->name(), 'title', $title, 'No card was created');
         if ($tooLong !== null) {
             throw $tooLong;
         }
 
-        return $title;
+        return $trimmed;
     }
 
     /**
@@ -415,8 +439,13 @@ final class BoardCreateCardTool implements Tool
         if (! is_string($description)) {
             throw new ToolRefusalException('board_create_card: `description` must be a string when provided');
         }
+        // A description that is blank once the middleware's trim has run is the same
+        // thing as an ABSENT one — which is exactly what the HTTP door hands over,
+        // because `ConvertEmptyStringsToNull` nulls it there. A card being born has
+        // nothing to clear, so there is no third meaning to preserve.
+        $description = BoardToolArgs::trimmed($description);
 
-        return $description;
+        return $description === '' ? null : $description;
     }
 
     /**

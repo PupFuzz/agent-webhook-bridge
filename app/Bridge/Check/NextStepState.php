@@ -3,7 +3,15 @@
 namespace App\Bridge\Check;
 
 /**
- * WHERE an agent's board-tools enablement stopped (card#8959, DL-352).
+ * WHERE THE WIRING OF THIS INSTALL STOPPED, per agent (card#8959, DL-352; widened past board
+ * tools by card#9150).
+ *
+ * ⛑ THE FIRST FOUR STATES ARE ABOUT BOARD-TOOLS ENABLEMENT AND THE FIFTH IS NOT, which is a
+ * fact about the BLOCK and not a seam in this enum. What the NEXT STEPS block is for is
+ * *this install is not wired end to end, here is the ONE command to run next* — DL-352 built
+ * it with one subject because there was one, and the github-webhook leg is the second thing
+ * that answers to that same sentence. A second block titled NEXT STEPS would be the surface
+ * competing with itself; a state whose subject differs is not.
  *
  * ⭐ THIS DOCBLOCK IS THE ONE OWNER OF WHAT EACH STATE MEANS. `docs/check-json-contract.md`
  * § 7a carries the same definitions for the machine consumer, and every other surface —
@@ -119,4 +127,27 @@ enum NextStepState: string
      * clear it honestly: that probe stamps the same ledger row from the bridge box.
      */
     case SeatSideUnreported = 'seat_side_unreported';
+
+    /**
+     * A github subscription this agent DECLARES has no webhook on the repo delivering to this
+     * install's receiver — and this run established that by READING the repo's whole hook
+     * list (card#9150). The one state whose subject is not board tools, and the one keyed to a
+     * SCOPE rather than to the agent alone ({@see NextStep::$scope} carries it; it is null on
+     * every other state). Command: `bridge:check`, once the hook has been added by hand.
+     *
+     * ⛔ IT IS A MEASURED ABSENCE AND NEVER A BLIND READ, and the distinction matters more
+     * here than anywhere else in this enum: a run that could not enumerate the repo's hooks —
+     * no token, a 403, a token without `admin:repo_hook`, a network failure — reports
+     * `unvalidated` in `checks[]` and gets NO ENTRY HERE. Issuing this instruction off an
+     * unmeasured read would send an operator to re-create a webhook that is already there,
+     * which is {@see self::BridgeSideUnverified}'s cost in a different plane.
+     *
+     * ⛔ THE COMMAND IS NOT `bridge:provision-tools`, AND IT IS NOT `bridge:provision`
+     * EITHER. `bridge:provision` skips every non-kanban provider by design (no repo-admin
+     * token), so there is no command on this box that creates the thing. The remedy is
+     * repo-settings work by a person with `admin:repo_hook`; the command named is the one a
+     * BRIDGE reader can run to re-ask the question once they have done it — the same shape
+     * {@see self::SeatSideUnreported} takes for the same reason.
+     */
+    case GithubWebhookMissing = 'github_webhook_missing';
 }

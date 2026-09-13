@@ -7,7 +7,6 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 
 /**
  * board_my_cards (DL-217) — a READ-PROXY returning the calling agent's own cards
@@ -33,13 +32,18 @@ use Illuminate\Support\Str;
  *
  * `include_description` (DL-245) is OPT-IN, because a card body is ~2 KB and — until
  * card#8985 below — the projection had no bound on how many cards a lane holds. It is
- * no longer the tool's only argument. Absent ⇒ the projected CARD is byte-identical to
- * the DL-217 shape (the two description keys are ABSENT, not null-valued). ⚠ THE
- * ENCLOSING RESPONSE IS NOT: it grew the DL-302 board keys and then card#8985's window
- * blocks, so the byte-identity claim is about the CARD and has never been about the
- * envelope. The field costs no extra API call —
+ * no longer the tool's only argument. Absent ⇒ the two description keys are ABSENT from
+ * the projected card, not null-valued. The field costs no extra API call —
  * `KanbanClient::swimlaneCards()` already fetches `description` and the
  * projection discarded it.
+ *
+ * ⛔ THE CARD IS NO LONGER BYTE-IDENTICAL TO THE DL-217 SHAPE, and this paragraph used to
+ * say it was (of the default, description-less call). card#9170 added `assigned_user_id`
+ * to EVERY projected card, unconditionally — see {@see projectCard} for why it carries no
+ * opt-in and no name — so the claim is retired rather than re-scoped: the ENVELOPE had
+ * already grown the DL-302 board keys and card#8985's window blocks, and now the CARD has
+ * grown a key too. What holds is the weaker, true statement: every key this tool has ever
+ * emitted is still emitted, with the same meaning.
  *
  * ⛔ THE DEFAULT RESPONSE IS CAPPED BY CARD COUNT (card#8985, DL-365). The
  * DL-245 warning above bounds ONE description; nothing bounded the number of
@@ -239,8 +243,12 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * The per-card description byte cap for THIS call, or null when the caller did
-     * not opt in. Null is what keeps the default response byte-identical: it makes
-     * the projection omit both description keys rather than emit them null-valued.
+     * not opt in. Null is what makes the projection OMIT both description keys rather than
+     * emit them null-valued — which is the whole of what the default buys. ⛔ It is not
+     * *"what keeps the default response byte-identical"*, as this sentence said until
+     * card#9170: `assigned_user_id` now rides every projected card unconditionally, so that
+     * claim is retired here as it is on the class docblock rather than left standing in the
+     * one copy nobody re-read.
      * A non-bool is REFUSED rather than coerced — a truthy string would silently
      * turn on the expensive projection the opt-in exists to gate.
      *
@@ -309,12 +317,13 @@ final class BoardMyCardsTool implements Tool
      * caller asked for — while the other refused the identical input. Only an ABSENT key
      * means "no filter", and that is the same on both doors.
      *
-     * ⚠ The trim is `Str::trim`, the framework's own, NOT PHP's ASCII `trim()`. That is
-     * the same lockstep in the other direction: `TrimStrings` strips a non-breaking space
-     * (it is in `Str::INVISIBLE_CHARACTERS`) and `trim()` does not, so a name carrying one
-     * resolved at the HTTP door and was refused at the ssh door. Reusing the primitive the
-     * middleware uses is what makes the two doors agree, rather than a hand-rolled
-     * character class that would drift from it.
+     * ⚠ The trim is {@see BoardToolArgs::trimmed}, which delegates to the framework's own
+     * `Str::trim` — NOT PHP's ASCII `trim()`. That is the same lockstep in the other
+     * direction: `TrimStrings` strips a non-breaking space (it is in
+     * `Str::INVISIBLE_CHARACTERS`) and `trim()` does not, so a name carrying one resolved
+     * at the HTTP door and was refused at the ssh door. This tool was the FIRST site to
+     * converge (DL-365 Decision 10) and card#9155 hoisted the rule into a primitive every
+     * board tool now shares, which is what keeps the next tool from hand-rolling it again.
      *
      * ⚠ An id is checked against the board's stages ONLY when the stage read
      * produced any. `boardStageNames()` answers an empty map when the preload read
@@ -353,13 +362,13 @@ final class BoardMyCardsTool implements Tool
             throw new ToolRefusalException("board_my_cards: `stage` was given as a NAME, but this bridge read no stages for board {$boardId}, so there is nothing to resolve it against. Pass the numeric stage id, and tell your operator the board structure read came back empty.");
         }
 
-        $wanted = mb_strtolower(Str::trim($stage));
+        $wanted = mb_strtolower(BoardToolArgs::trimmed($stage));
         if ($wanted === '') {
             throw new ToolRefusalException("board_my_cards: `stage` was sent EMPTY (it contains nothing but invisible characters). Omit the argument entirely to read every column of board {$boardId}; an empty value is not a filter and is refused rather than silently ignored, which would hand you more cards than you asked for.");
         }
         $matches = [];
         foreach ($stageNames as $id => $name) {
-            if (mb_strtolower(Str::trim($name)) === $wanted) {
+            if (mb_strtolower(BoardToolArgs::trimmed($name)) === $wanted) {
                 $matches[$id] = $name;
             }
         }
@@ -756,9 +765,22 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * Project a raw kanban card row to the tool's card shape (DL-217): id, name,
-     * stage, tags, dl_number, pr_number, updated_at — plus, ONLY when the caller
-     * opted in (DL-245), description + description_truncated. Nothing else leaves
-     * the bridge.
+     * stage, tags, assigned_user_id, dl_number, pr_number, updated_at — plus, ONLY when
+     * the caller opted in (DL-245), description + description_truncated. Nothing else
+     * leaves the bridge.
+     *
+     * ⭐ `assigned_user_id` IS THE RAW BOARD FIELD AND CARRIES NO NAME (card#9170). It is
+     * what makes a claimed-but-unmoved card legible: a card whose column never moved is
+     * otherwise indistinguishable from an unclaimed one, so two seats pull the same work.
+     * ⛔ THE BRIDGE DOES NOT RESOLVE THE ID TO A SEAT, deliberately and permanently —
+     * doing so would need a fleet-wide seat→kanban-user map, which is the cross-repo table
+     * canon #7 warns about and which {@see SeatKanbanUser} exists to make unnecessary. The
+     * raw id is REPORTED and never a failure; a consumer that knows a name for it renders
+     * one (`kbcard` does, from its own board env), and one that does not shows the id.
+     * `null` is a real value meaning UNASSIGNED; a row answering nothing about its
+     * assignment also reads null here, because on a READ projection the two are the same
+     * to a caller — {@see BoardTakeCardTool} is where that distinction is load-bearing,
+     * and it refuses rather than guessing.
      *
      * @param  array<string, mixed>  $row
      * @param  array<int, string>  $stageNames
@@ -781,6 +803,7 @@ final class BoardMyCardsTool implements Tool
             'name' => is_scalar($row['name'] ?? null) ? (string) $row['name'] : null,
             'stage' => $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : null,
             'tags' => $tags,
+            'assigned_user_id' => is_numeric($row['assigned_user_id'] ?? null) ? (int) $row['assigned_user_id'] : null,
             'dl_number' => is_scalar($payload['dl_number'] ?? null) ? $payload['dl_number'] : null,
             'pr_number' => is_scalar($payload['pr_number'] ?? null) ? $payload['pr_number'] : null,
             'updated_at' => is_scalar($row['updated_at'] ?? null) ? (string) $row['updated_at'] : null,

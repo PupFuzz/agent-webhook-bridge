@@ -277,13 +277,14 @@ Direct tunnel test (bypasses the bridge):
 ```bash
 # From host A. The bearer rides curl's stdin config, NOT its argv: an argument
 # is visible in /proc/<pid>/cmdline to every local account while curl runs.
+# -i prints the response HEAD; a bare curl shows only the body.
 printf 'header = "Authorization: Bearer %s"\n' "$BRIDGE_CHANNEL_TOKEN" |
-curl -X POST -H "Content-Type: application/json" \
+curl -i -X POST -H "Content-Type: application/json" \
   -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
   --config - http://127.0.0.1:8788/
 ```
 
-Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
+Expected (the `-i` is what prints the first two): HTTP **202**, an `X-Channel-Delivery-Receipt: none` header and a body reading `forwarded — accepted by transport (unconfirmed): …` — the write reached the stdio transport on host B, which returns no receipt that the session received it. The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
 
 ## Operator action by failure mode
 
@@ -300,7 +301,7 @@ Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<c
 The channel-push wake path drawn above is A→B (the bridge pushes; the channel
 server surfaces). The two-way board tools (DL-217) reverse the direction for the
 call itself: an agent invokes one of the board tools (`board_my_cards` /
-`board_create_card` / `board_correct_card`), the channel
+`board_create_card` / `board_correct_card` / `board_take_card`), the channel
 server on B forwards `{tool, args, client_version}` to the bridge on A over HTTP,
 and the bridge replies. That B→A call does **not** ride the existing `-R` reverse tunnel (which
 only carries A→B pushes) — it needs its OWN **forward** (`-L`) tunnel that

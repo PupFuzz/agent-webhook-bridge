@@ -100,7 +100,7 @@ final class CallerTagPolicy
      */
     public static function isPreserved(string $tag, array $installHoldTags): bool
     {
-        $folded = strtolower(trim($tag));
+        $folded = strtolower(BoardToolArgs::trimmed($tag));
         foreach (self::RESERVED_PREFIXES as $prefix) {
             if (str_starts_with($folded, $prefix)) {
                 return true;
@@ -110,7 +110,7 @@ final class CallerTagPolicy
             return true;
         }
         foreach ($installHoldTags as $hold) {
-            if ($folded === strtolower(trim($hold))) {
+            if ($folded === strtolower(BoardToolArgs::trimmed($hold))) {
                 return true;
             }
         }
@@ -145,7 +145,7 @@ final class CallerTagPolicy
         }
         $tags = [];
         foreach ($raw as $tag) {
-            if (! is_string($tag) || $tag === '') {
+            if (! is_string($tag) || BoardToolArgs::emptyAfterTrim($tag)) {
                 throw new ToolRefusalException("{$tool}: `tags` entries must be non-empty strings");
             }
             // Charset constraint (mirrors the idem-key posture): a tag outside
@@ -167,11 +167,21 @@ final class CallerTagPolicy
             if (mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
                 throw new ToolRefusalException("{$tool}: the tag `{$tag}` is ".mb_strlen($tag).' characters — kanban accepts at most '.KanbanFieldLimits::TAG_MAX.' per tag (`tags.* => string|max:64`), so the board would reject the write. Shorten it.');
             }
+            // ⚠ THE TWO GUARDS ABOVE RUN ON THE VALUE AS SENT, AND THE TRIM IS TAKEN
+            // ONLY AFTER THEM — deliberately, and not the trim-then-validate order the
+            // text fields use. Both are CONSERVATIVE on the raw value (raw within the cap
+            // implies the trimmed value is, and raw printable-ASCII implies the trimmed
+            // value is, so the ASCII-fold invariant below still holds), and moving them
+            // after the trim would make this door ACCEPT a padded tag it refuses today —
+            // a permissive change, which is its own operator gate. What the trim does buy
+            // is that the tag STORED is the tag the HTTP door stores, where the middleware
+            // trimmed it before any of this ran.
+            $tag = BoardToolArgs::trimmed($tag);
             // Casefold the reserved match: whether the backing tag search folds
             // case is a per-driver collation fact (see the class docblock), so
             // refuse every case variant (IDEM:… reaches the lowercase idem probe
             // on a folding backend). Safe now the charset is ASCII-constrained.
-            $folded = strtolower(trim($tag));
+            $folded = strtolower($tag);
             foreach (self::RESERVED_PREFIXES as $prefix) {
                 if (str_starts_with($folded, $prefix)) {
                     throw new ToolRefusalException("{$tool}: the tag `{$tag}` uses the reserved prefix `{$prefix}` and cannot be caller-supplied (provenance/correlation/adoption tags are bridge-stamped)");

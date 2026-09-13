@@ -3,7 +3,9 @@
 namespace Tests\Feature\AgentTools;
 
 use App\Bridge\Tools\BoardCallRefusal;
+use App\Bridge\Tools\BoardCorrectCardTool;
 use App\Bridge\Tools\BoardMyCardsTool;
+use App\Bridge\Tools\BoardTakeCardTool;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -13,6 +15,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
@@ -82,6 +85,11 @@ class AgentToolsCallTest extends TestCase
      */
     private function callTool(array $body, ?string $bearer = null, array $server = [])
     {
+        // Each call models its own FPM request, i.e. its own process, which is what the
+        // write-once seat seal is scoped to (card#9170). Seven tests in this class drive the
+        // door twice on purpose; in production those are two processes.
+        CallingSeatSeal::forANewServingProcess();
+
         $bearer ??= $this->token;
         $server = array_merge(['REMOTE_ADDR' => '127.0.0.1'], $server);
         if ($bearer !== '') {
@@ -1452,8 +1460,14 @@ class AgentToolsCallTest extends TestCase
 
     public function test_my_cards_omits_the_description_keys_by_default(): void
     {
-        // The byte-identical guarantee: without the argument the card shape is the
-        // DL-217 one — the keys are ABSENT, not present-and-null.
+        // Without the argument the two description keys are ABSENT, not present-and-null.
+        // ⛔ THE OLD COMMENT HERE CLAIMED A BYTE-IDENTICAL DL-217 CARD SHAPE AND THAT CLAIM
+        // IS RETIRED (card#9170 / DL-372), not re-scoped: `assigned_user_id` joined EVERY
+        // projected card unconditionally, so the card is no longer the DL-217 one. What
+        // this pin asserts now is the true, weaker statement — every key the tool has ever
+        // emitted is still emitted, in order, and the description pair is still the only
+        // conditional part of the shape. The full ordered list stays because that is what
+        // makes an accidental addition red rather than pass.
         $this->fakeOneCardWithDescription('the scope nobody asked for');
 
         $card = $this->callTool(['tool' => 'board_my_cards'])
@@ -1462,7 +1476,7 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertArrayNotHasKey('description', $card);
         $this->assertArrayNotHasKey('description_truncated', $card);
-        $this->assertSame(['id', 'name', 'stage', 'tags', 'dl_number', 'pr_number', 'updated_at'], array_keys($card));
+        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'updated_at'], array_keys($card));
     }
 
     public function test_my_cards_include_description_false_is_the_default_shape(): void
@@ -2374,20 +2388,41 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * @return list<array{string, mixed}>
+     * ⛔ THE KEYS ARE DERIVED FROM `BoardCorrectCardTool::FIELD_OWNERS`, NOT MIRRORED — and the
+     * mirror had already failed silently: card#9170 added `assignee` to the constant and not
+     * to this list, so the refusal it shipped was UNTESTED while a green provider read as
+     * coverage of the whole set. A restated set does not red when the set moves; a derived one
+     * cannot miss a member.
+     *
+     * ⚠ THE VALUES ARE NOT DERIVABLE and stay hand-written, which is fine BECAUSE THEY ARE NOT
+     * THE POPULATION: the refusal is by KEY and fires before any value is read, so a key with
+     * no entry here is exercised with the default rather than skipped. Realistic types are
+     * kept for the keys that have one so the case reads like a call a seat would actually make.
+     *
+     * @return array<string, array{string, mixed}>
      */
     public static function bridgeOwnedFieldCases(): array
     {
-        return [
-            ['workflow_stage_id', 51], ['column', 'shipped'], ['stage', 'in_review'], ['move', 'done'],
-            ['swimlane_id', 9], ['board_id', 999], ['payload', ['origin' => 'x']],
-            ['dl_number', 'DL-1'], ['pr_number', 12], ['pr_url', 'https://example.test/1'],
-            ['issue_number', 3], ['issue_url', 'https://example.test/i/3'], ['version', 'v1.0.0'],
-            ['origin', 'consumer-driven'], ['external_id', '12345'], ['external_link', 'https://example.test'],
-            ['type', 'feature'], ['card_type_id', 3], ['triaged', true], ['block_reason', 'blocked'],
-            ['archived', true], ['archived_at', '2026-09-01'], ['_action', 'archive'],
-            ['priority', 5], ['due_date', '2026-09-30'], ['assigned_user_id', 3],
+        /** @var array<string, string> $owners */
+        $owners = (new \ReflectionClassConstant(BoardCorrectCardTool::class, 'FIELD_OWNERS'))->getValue();
+
+        $values = [
+            'workflow_stage_id' => 51, 'column' => 'shipped', 'stage' => 'in_review', 'move' => 'done',
+            'swimlane_id' => 9, 'board_id' => 999, 'payload' => ['origin' => 'x'],
+            'dl_number' => 'DL-1', 'pr_number' => 12, 'pr_url' => 'https://example.test/1',
+            'issue_number' => 3, 'issue_url' => 'https://example.test/i/3', 'version' => 'v1.0.0',
+            'origin' => 'consumer-driven', 'external_id' => '12345', 'external_link' => 'https://example.test',
+            'type' => 'feature', 'card_type_id' => 3, 'triaged' => true, 'block_reason' => 'blocked',
+            'archived' => true, 'archived_at' => '2026-09-01', '_action' => 'archive',
+            'priority' => 5, 'due_date' => '2026-09-30', 'assigned_user_id' => 3, 'assignee' => 3,
         ];
+
+        $cases = [];
+        foreach (array_keys($owners) as $field) {
+            $cases[$field] = [$field, $values[$field] ?? 'a value this tool does not own'];
+        }
+
+        return $cases;
     }
 
     #[DataProvider('bridgeOwnedFieldCases')]
@@ -3296,6 +3331,556 @@ class AgentToolsCallTest extends TestCase
         // blanket. ⚠ No second `Http::fake()` — a second registration STACKS behind the first.
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 255)]])
             ->assertStatus(200);
+    }
+
+    // ─── board_take_card: the seat claims a card for ITSELF, and for nobody else (card#9170) ─
+
+    /**
+     * The whole wire surface of a `board_take_card` call: the board-scoped lookup (live and
+     * archived are the two sides of kanban's archive SWITCH — DL-296) and the PATCH.
+     *
+     * @param  list<array<string, mixed>>  $live
+     * @param  list<array<string, mixed>>  $archived
+     */
+    private function takeFake(array $live, array $archived = [], int $patchStatus = 200, ?int $lookupStatus = null): \Closure
+    {
+        return function ($request) use ($live, $archived, $patchStatus, $lookupStatus) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                if ($lookupStatus !== null) {
+                    return Http::response('nope', $lookupStatus);
+                }
+
+                return Http::response(['data' => str_contains($url, 'archived=1') ? $archived : $live]);
+            }
+
+            if ($patchStatus !== 200) {
+                return Http::response('nope', $patchStatus);
+            }
+
+            return Http::response(['data' => ['id' => 42]]);
+        };
+    }
+
+    /**
+     * A takeable row: card 42, this agent's board, this agent's own lane, UNASSIGNED.
+     *
+     * ⭐ It carries NO `created-by:` stamp, and that is deliberate rather than incidental —
+     * a take is authorized by lane and board, never by the mint stamp, because the case the
+     * feature exists for is a seat pulling work somebody ELSE queued for it.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function takeableCardRow(array $overrides = []): array
+    {
+        return array_merge([
+            'id' => 42, 'board_id' => 10, 'swimlane_id' => 4, 'name' => 'queued for me',
+            'tags' => ['type:feature'], 'assigned_user_id' => null,
+        ], $overrides);
+    }
+
+    /** This test agent's own registry id — the ONLY value a take may ever write. */
+    private function myKanbanUserId(): int
+    {
+        return crc32('me');
+    }
+
+    public function test_take_assigns_the_card_to_the_callers_own_registry_id(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.taken', true)
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.swimlane_id', 4)
+            ->assertJsonPath('result.assigned_user_id', $this->myKanbanUserId())
+            ->assertJsonPath('result.already_held', false);
+        // The STORED value is the caller's own registry id — the presence witness for the
+        // constraint the whole feature rests on. Asserted as the WHOLE body: a take writes
+        // that one field and nothing else, so an extra key here would be a write nobody
+        // asked for.
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+        // The lookup is BOARD-SCOPED and rides inside `q=` (DL-323): the id is
+        // caller-supplied against a GLOBAL id space.
+        Http::assertSent(function ($r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json')
+                && ($query['q'] ?? null) === 'board_id=10 id=42';
+        });
+        // The unscoped `GET /tasks/{id}.json` is exactly what DL-323 records as the defect.
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && ! str_contains($r->url(), 'search.json'));
+    }
+
+    /**
+     * ⛔ DERIVED FROM THE CONSTANT, NEVER MIRRORED. A hand-written list covered 5 of the 9
+     * spellings `BoardTakeCardTool::USER_NAMING_ARGS` refuses (`assign`, `user`, `agent_name`
+     * and `seat` had no arm), so the refusal a reviewer read as measured over the whole set
+     * was measured over half of it — and the next key added to the constant would have
+     * arrived untested in exactly the same silence. Reflection reads a private constant, so
+     * the visibility that keeps the set out of the tool's contract does not cost the guard.
+     *
+     * The casefolded arm is the one case NOT in the constant and is stated as an extra: the
+     * tool lowercases the key before the lookup, which is a property of the REFUSAL rather
+     * than of the set.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function userNamingArguments(): array
+    {
+        /** @var list<string> $keys */
+        $keys = (new \ReflectionClassConstant(BoardTakeCardTool::class, 'USER_NAMING_ARGS'))->getValue();
+
+        $cases = [];
+        foreach ($keys as $key) {
+            $cases[$key] = [$key];
+        }
+        $cases['ASSIGNED_USER_ID (casefolded)'] = ['ASSIGNED_USER_ID'];
+
+        return $cases;
+    }
+
+    /**
+     * ⛔ THE TEST THE OPERATOR APPROVAL RESTS ON. A payload carrying SOMEBODY ELSE'S user id
+     * must not result in that user being assigned — and the assertion is not merely that the
+     * call 422s. Three things are pinned together, because any one alone is passable by a
+     * wrong implementation:
+     *   1. the call is REFUSED and names the argument (a silent ignore would leave the seat
+     *      believing it assigned somebody);
+     *   2. NO write is sent at all;
+     *   3. the foreign id appears in NO request this call made — so an implementation that
+     *      refused the argument and then leaked it into the lookup would red too.
+     */
+    #[DataProvider('userNamingArguments')]
+    public function test_a_payload_supplied_user_id_never_assigns_that_user(string $argument): void
+    {
+        $foreignUserId = 999777;
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => [
+            'card_id' => 42, $argument => $foreignUserId,
+        ]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($argument, $error, 'the refusal must name the argument it refused');
+        $this->assertStringContainsString('bridge identity', $error, 'the refusal must say WHERE the assignee comes from instead');
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+        Http::assertNotSent(fn ($r) => str_contains((string) $r->body(), (string) $foreignUserId)
+            || str_contains(urldecode($r->url()), (string) $foreignUserId));
+    }
+
+    /**
+     * The same constraint from the other side: the tool refuses BEFORE it reads anything, so
+     * a caller cannot even use a user-naming argument to probe the board.
+     */
+    public function test_a_payload_supplied_user_id_is_refused_before_any_request_is_made(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42, 'assigned_user_id' => 999777]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('`assigned_user_id` is not an argument here', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_take_refuses_a_card_already_held_by_a_different_user_and_names_the_holder(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['assigned_user_id' => 4242])]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('4242', $error, 'the holder is NAMED — that refusal IS the collision detector');
+        $this->assertStringContainsString('ALREADY HELD', $error);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⭐ RE-TAKING IS NOT AN ERROR AND WRITES NOTHING. The board already says what the call is
+     * asking it to say, so refusing would make a retry-safe operation fail on its own success.
+     * `already_held: true` is what distinguishes it from a fresh take.
+     */
+    public function test_retaking_a_card_this_seat_already_holds_succeeds_and_writes_nothing(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['assigned_user_id' => crc32('me')])]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.taken', true)
+            ->assertJsonPath('result.already_held', true)
+            ->assertJsonPath('result.assigned_user_id', $this->myKanbanUserId());
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_take_refuses_a_card_in_a_lane_this_seat_does_not_work(): void
+    {
+        // Same board, same id — only the LANE differs, which is the whole discriminator.
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['swimlane_id' => 99])]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not one you can take', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_take_refuses_a_card_whose_lane_cannot_be_read(): void
+    {
+        // Fail-closed: a card that cannot be SHOWN to be in the seat's lane is not in it.
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['swimlane_id' => null])]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not one you can take', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_take_claims_a_card_in_the_configured_shared_lane(): void
+    {
+        // The shared lane is where the collision this feature exists for actually happens —
+        // several seats read it, so a claim there is the one worth seeing.
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  shared_swimlane_id: 9\n");
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['swimlane_id' => 9])]));
+
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])
+            ->assertStatus(200)
+            ->assertJsonPath('result.swimlane_id', 9);
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+    }
+
+    public function test_take_refuses_a_row_that_is_not_this_card_on_this_board(): void
+    {
+        // The rows establish the scope, never the fact that a scoped query was sent: an
+        // unrecognised search term degrades to free text and still answers 200 (DL-323).
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['board_id' => 11])]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('BROKEN READ', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⛔ THE DEGRADED-READ ARM. Present-null means UNASSIGNED and is the ordinary case; a row
+     * that answers NOTHING about its assignment cannot tell an unclaimed card from one
+     * another seat is working, so it refuses rather than risk overwriting a claim.
+     */
+    public function test_take_refuses_when_the_row_says_nothing_about_who_holds_the_card(): void
+    {
+        $row = $this->takeableCardRow();
+        unset($row['assigned_user_id']);
+        Http::fake($this->takeFake(live: [$row]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('says NOTHING about who holds it', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_take_refuses_an_archived_card_of_this_seats_own_lane_and_names_the_retire(): void
+    {
+        Http::fake($this->takeFake(live: [], archived: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('ARCHIVED', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⚠ THE BOUND THIS CARD WAS APPROVED UNDER: a writeback user whose board role cannot
+     * `task.update` gets this on EVERY take, forever. It is reported as an INSTALL FAULT by
+     * name — the consuming framework relays this sentence verbatim — never as a bare 403 the
+     * seat would retry.
+     */
+    public function test_a_403_on_the_assignment_write_is_named_as_an_install_fault(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: 403));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('INSTALL fault', $error);
+        $this->assertStringContainsString('task.update', $error);
+        // The retryable 502 is what this arm exists to NOT be.
+        $this->assertStringNotContainsString('upstream board error', $error);
+    }
+
+    public function test_a_401_on_the_scope_lookup_is_a_named_refusal_and_nothing_is_written(): void
+    {
+        Http::fake($this->takeFake(live: [], lookupStatus: 401));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⭐ THE IDENTITY IS RESOLVED FROM THE ROSTER, SO A ROSTER THAT DECLARES NO
+     * `identity.kanban_user_id` HAS NO ID FOR THIS SEAT — and that is an INSTALL fault named
+     * as one, reported BEFORE any board request, not a 500 and not a write of null.
+     */
+    public function test_take_refuses_when_this_agent_declares_no_kanban_user_id(): void
+    {
+        $tokenFile = $this->dir.'/me-tools-token';
+        File::put($this->dir.'/me.yml', "identity: {}\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('identity.kanban_user_id', $error);
+        $this->assertStringContainsString('INSTALL fault', $error);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⛔ THE SAME FAULT FROM THE DOOR: a `kanban_user_id` two agents declare is refused BEFORE
+     * any board request. `assigned_user_id` names a kanban USER, not a seat — so under a
+     * shared id this seat would be told it holds a card the OTHER seat is working
+     * (`already_held: true`, 200, nothing written), which is the collision the tool exists to
+     * surface being reported as its own success.
+     */
+    public function test_take_refuses_when_two_agents_declare_this_seat_s_kanban_user_id(): void
+    {
+        File::put($this->dir.'/twin.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('MORE THAN ONE agent', $error);
+        $this->assertStringContainsString('me, twin', $error, 'the colliding agents are NAMED — an operator cannot fix a collision it has to go and find');
+        $this->assertStringContainsString('INSTALL fault', $error);
+        Http::assertNothingSent();
+    }
+
+    public function test_take_refuses_a_non_integer_card_id_rather_than_coercing_it(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => '42']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('`card_id` is required and must be a positive integer', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_take_refuses_the_steal_override_and_says_where_it_lives(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow(['assigned_user_id' => 4242])]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42, 'steal' => true]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no override', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_take_refuses_an_unknown_argument(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42, 'card_di' => 1]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('unknown argument `card_di`', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⭐ A PINNED CARD STILL TAKES A CLAIM, and that is a RULING (card#9170), not a gap.
+     * `PinGuard::PINNED_FIELDS` IS the field rule and names `name` alone: the hold exists so
+     * a card stops changing UNDER the operator through automation with no human in the loop,
+     * and a take is a deliberate claim by the caller. This is the paired control for the
+     * `PinnedFieldWriteCoverageTest` witness on this producer.
+     */
+    public function test_a_take_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim(): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow([
+            'block_reason' => 'frozen by the operator', 'tags' => ['no-automove'],
+        ])]));
+
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])
+            ->assertStatus(200)
+            ->assertJsonPath('result.already_held', false);
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+    }
+
+    /**
+     * ⛔ A 5xx IS NOT A REFUSAL, AND THE LOG MUST NOT SAY IT IS. `writeRefusal` classifies
+     * permanence first and logs only when the board actually refused — the same order
+     * `lookupRefusal` has always had. The first cut of this tool logged BEFORE classifying,
+     * so a 500 / 429 / 400 emitted `board_take_card: the board refused the assignment write`
+     * and was then re-thrown as the retryable 502, putting 5xx noise into the one line an
+     * operator greps for refusals.
+     *
+     * @param  int  $status  a board status that is NOT in the permanent set
+     */
+    #[DataProvider('nonPermanentWriteStatuses')]
+    public function test_a_transient_board_status_on_the_write_is_retryable_and_is_not_logged_as_a_refusal(int $status): void
+    {
+        Log::spy();
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: $status));
+
+        // The dispatcher's retryable 502 — NOT a 422 refusal.
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])
+            ->assertStatus(502);
+
+        Log::shouldNotHaveReceived('warning', [
+            'board_take_card: the board refused the assignment write',
+            \Mockery::any(),
+        ]);
+    }
+
+    /** @return array<string, array{int}> */
+    public static function nonPermanentWriteStatuses(): array
+    {
+        return ['500' => [500], '429' => [429], '400' => [400]];
+    }
+
+    /**
+     * The control for the arm above, and the reason it is not vacuous: on a status the board
+     * DID refuse permanently, the same line IS emitted. Without this a `Log::warning` deleted
+     * outright would satisfy the assertion above.
+     */
+    public function test_a_permanent_board_status_on_the_write_is_logged_as_a_refusal(): void
+    {
+        Log::spy();
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: 403));
+
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])->assertStatus(422);
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $message, array $context = []) => $message === 'board_take_card: the board refused the assignment write'
+                && ($context['status'] ?? null) === 403)
+            ->once();
+    }
+
+    /**
+     * The three write-path arms the first cut left untested — every one deterministic, so
+     * every one a NAMED refusal rather than the retryable 502, and every one saying what did
+     * not happen.
+     *
+     * @param  array{0: int, 1: string}  $expected  the board status and a phrase its refusal owes
+     */
+    #[DataProvider('permanentWriteStatuses')]
+    public function test_each_permanent_board_status_on_the_write_is_a_named_refusal(int $status, string $phrase): void
+    {
+        Http::fake($this->takeFake(live: [$this->takeableCardRow()], patchStatus: $status));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($phrase, $error);
+        // The board's own body is never echoed, and the retryable 502's text never appears.
+        $this->assertStringNotContainsString('upstream board error', $error);
+        $this->assertStringNotContainsString('nope', $error);
+    }
+
+    /** @return array<string, array{int, string}> */
+    public static function permanentWriteStatuses(): array
+    {
+        return [
+            '404 — the card went between the check and the write' => [404, 'no longer exists'],
+            '401 — the token is not accepted at all' => [401, 'did not accept the bridge\'s writeback token'],
+            '422 — kanban\'s own validator refused the value' => [422, 'identity.kanban_user_id'],
+        ];
+    }
+
+    /**
+     * ⚠ THE COORD-CARD CLAUSE. `board_my_cards` returns coordination cards in the same
+     * response as the seat's own, and every card now carries `assigned_user_id` — so the
+     * obvious next move is to try to take one. Coordination cards are out of scope BY NAME
+     * (DL-372 Decision 3), and the refusal must not send the operator to audit the product
+     * board's membership, which is definitely not the cause. `BoardCallRefusal::readCause`'s
+     * own docblock calls naming a wrong cause *worse than saying nothing*.
+     */
+    public function test_a_seat_with_a_coord_leg_is_told_why_a_coord_card_is_not_takeable(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        // A card on the COORD board is simply absent from the product-board-scoped search —
+        // zero rows, exactly like a card that does not exist.
+        Http::fake($this->takeFake(live: []));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('coordination cards', $error);
+        $this->assertStringContainsString('board 12', $error, 'the coord board is named, so the seat can tell the two id spaces apart');
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * The control: an install with NO coord leg must not carry the clause. Without this arm
+     * the clause could be unconditional prose and the arm above would still pass — telling
+     * every seat about a board its config does not have.
+     */
+    public function test_a_seat_with_no_coord_leg_is_not_told_about_coordination_cards(): void
+    {
+        Http::fake($this->takeFake(live: []));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringNotContainsString('coordination cards', (string) $res->json('error'));
+    }
+
+    // ─── board_my_cards renders the assignee (card#9170) ──────────────────────
+
+    /**
+     * The envelope addition. The RAW id is rendered and no name is resolved — resolving one
+     * would need a fleet-wide seat→kanban-user map, which is the cross-repo table this whole
+     * design exists to avoid.
+     */
+    public function test_my_cards_renders_the_assignee_id_on_every_card(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'taken', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10,
+                    'assigned_user_id' => 4242],
+                ['id' => 2, 'name' => 'free', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10,
+                    'assigned_user_id' => null],
+            ]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.cards_by_stage.Backlog.0.assigned_user_id', 4242)
+            // The unassigned card is the control: without it a projection that emitted the
+            // key only when set would pass, and "no assignee" would be indistinguishable
+            // from "this bridge does not report assignees".
+            ->assertJsonPath('result.cards_by_stage.Backlog.1.assigned_user_id', null);
+        $this->assertArrayHasKey('assigned_user_id', $res->json('result.cards_by_stage.Backlog.1'));
     }
 
     // ─── tool + body validation ──────────────────────────────────────────────

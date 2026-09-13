@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\HandlerRegistry;
 
 /**
  * Canonical default classifier: surfaces kanban activity to the agent inbox
@@ -156,7 +157,7 @@ class InboxOnlyClassifier implements Classifier
         }
 
         return [ReactionTarget::make(
-            handler: 'channel_push',
+            handler: HandlerRegistry::CHANNEL_PUSH,
             targetId: $intent->subjectId,
             debounceSeconds: 0,
             payload: $intent->toArray(),

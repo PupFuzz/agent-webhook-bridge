@@ -2,6 +2,9 @@
 
 namespace App\Bridge\Support;
 
+use App\Bridge\Exceptions\PathResolvesToNoFileException;
+use App\Bridge\Exceptions\UnreadableFileException;
+
 /**
  * The channel-server snapshot MANIFEST: read a `package.json`'s version, and order two of
  * those versions the way the declared authority does (card#8974 r3).
@@ -22,9 +25,15 @@ namespace App\Bridge\Support;
  * it — a tracked file belonging to the bridge — so routing that read through the probe was
  * wrong on its own terms, before any guard fired.
  *
- * ⚑ NO IMPORTS, NO `new`, NO EXEC PRIMITIVE, and that is enforced rather than intended:
- * this class is on the probe's `_PROBE_COLLABORATORS` list, so the same no-exec scan the
- * probe gets is run over this file too. Keep it that way — it is reachable from the probe.
+ * ⚑ NO `new`, NO EXEC PRIMITIVE — and that half IS enforced rather than intended: this
+ * class is on the probe's `_PROBE_COLLABORATORS` list, so the same no-exec scan the probe
+ * gets is run over this file too. Keep it that way — it is reachable from the probe.
+ * ⚠ It said NO IMPORTS as well until card#9121, and that clause was never the enforced one
+ * (the no-`use` assertion is taken on `ChannelSnapshotProbe.php` alone, which is where the
+ * pinned public surface lives). It now imports the two refusal TYPES {@see self::readManifest()}
+ * catches; the reader it calls is same-namespace, and all three files were added to
+ * `_PROBE_COLLABORATORS` in the same change, so the scan follows the hop rather than
+ * stopping at a boundary that had moved.
  *
  * ⚠ THE COMPARATOR IS A CONFORMANCE CONTRACT WITH `bin/provision-board-tools.py`, not a
  * free choice of semantics; {@see self::compareVersions()} carries the rule, the vector
@@ -102,16 +111,38 @@ final class ChannelSnapshotManifest
      * destructive re-copy. `version` is `''` when the file parses but declares none
      * (what the python authority's `_package_version` returns).
      *
+     * ⭐ THE READER IS {@see UntrustedPathContents} (card#9121, adopting card#9037's
+     * primitive). The DEPLOYED manifest this leg's first caller passes lives under another
+     * OS user's home — the account being inspected chooses what this process opens — and
+     * the shape this replaces was `is_file()` plus an unbounded `@file_get_contents()`,
+     * where `is_file()` follows the link and answers about the TARGET. The BUNDLED manifest
+     * the other two callers pass is this checkout's own tracked file and is not an untrusted
+     * path at all; it goes through the same reader because ONE function reads both and a
+     * second, laxer reader for the trusted operand is a fork of one behaviour (canon #5).
+     * The only cost on that operand is that a SYMLINKED bundled `package.json` would now be
+     * refused rather than followed — this repo tracks a regular file there.
+     *
      * @return array{status: 'ok'|'absent'|'unreadable'|'malformed', version: string}
      */
     public static function readManifest(string $path): array
     {
-        if (! is_file($path)) {
+        try {
+            $raw = UntrustedPathContents::read($path, 'package.json');
+        } catch (PathResolvesToNoFileException) {
+            // ESTABLISHING: a reader following this path gets no bytes, ever — and every
+            // shape that reaches this arm was `is_file()`-false before the migration, so
+            // it lands where it always landed. It IS the `absent` operator situation: the
+            // deployment has no manifest, and the re-copy is the answer.
             return ['status' => 'absent', 'version' => ''];
-        }
-        $raw = @file_get_contents($path);
-        if ($raw === false) {
+        } catch (UnreadableFileException) {
+            // WITHHOLDING: something is at the path (a refusal is only raised after an
+            // `lstat` found it) and this process did not read it. Which is what `unreadable`
+            // has always meant here — see {@see self::manifestReason()} for the wording that
+            // had to stop naming permissions as the sole cause.
             return ['status' => 'unreadable', 'version' => ''];
+        }
+        if ($raw === null) {
+            return ['status' => 'absent', 'version' => ''];
         }
         $decoded = json_decode($raw, true);
         if (! is_array($decoded)) {
@@ -133,7 +164,13 @@ final class ChannelSnapshotManifest
     {
         return match ($status) {
             'absent' => 'is not present',
-            'unreadable' => 'exists but is not readable by this user',
+            // ⚠ NOT "is not readable by this user" any more (card#9121). Since the read went
+            // through the guarded reader, a permission denial is one of several causes that
+            // reach this status — a path whose bytes cannot be attributed to the deployment
+            // is another — and naming the one an operator can act on as if it were the only
+            // one is a wrong-but-specific cause. What every cause shares, and all this
+            // status establishes, is that something is at the path and this run did not read it.
+            'unreadable' => 'exists but was NOT read by this process',
             default => 'does not parse as a JSON object',
         };
     }

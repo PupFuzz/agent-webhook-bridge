@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.50.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.52.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **⚠ Only two sections of this file reach a session automatically: `## Who you are` and
@@ -133,8 +133,8 @@ item regardless of which repo it lives in. Work it. Then move to the next.
    trivial / mechanical work needs no formal loop; a feature gets one fresh-adversarial pass
    on your plan; security-significant / cross-cutting / irreversible work runs the full N-pass
    loop — see `design-review-loop.md`). Reference findings + resolutions on the tracking issue
-   or card for the item — not in the PR body (see **PR bodies — write them like a senior dev**,
-   below).
+   or card for the item — not in the PR body (see **PR bodies — write them for the software
+   installer**, below).
 4. **Doc-sync every code PR** (per `doc-sync.md`). Every PR that changes code audits and
    updates affected docs in the same PR — doc drift is not a follow-up. For an
    architecture-state change, first ask whether the change **mints** an obligation no doc has
@@ -172,20 +172,19 @@ never reverted by your PR. A tip-to-tip (`A..B`) diff that appears to delete it 
 these two tips differ", not "what will this merge do" — rebasing quiets that noise; it is not
 undoing a reversion.
 
-**PR bodies — write them like a senior dev (roundtable #255).** *"A human coder would submit a
-merge with a comprehensive list of what the merge includes, and any upgrade warnings / gotchas to
-be aware of (if applicable). A human coder would not write an essay or make comments about what
-isn't included or what still needs to be done."* Body = scope line + highlights + applicable
-gotchas + the machine-read lines; self-review narration, the doc-sync audit trail, and to-dos go
-on the item's tracking issue or card (your install has no coordination thread — that issue/card is
-its stand-in). Full IN/OUT tables: **`coord:release-pr` skill § PR body — write it like a senior
-dev**. Nothing is dropped; only the home moves.
+**PR bodies — write them for the software installer (roundtable #255; operator 2026-09-09).** The
+audience is the person who deploys or upgrades to what the PR ships — not you, and on a solo
+install nobody else will re-aim it for you — so every line answers what is in it in THEIR terms,
+what they must DO, and what changes for them under the config they already have. The standard
+itself — the IN/OUT tables, the home named for everything it keeps out, and how a solo install
+reads a home that says "the review-request round": **`coord:release-pr` skill § PR body — write it
+for the software installer**. Nothing is dropped; only the home moves.
 
 **Declare how you built it — the `Built:` line (card#4870).** Every PR body you open carries a
 REQUIRED one-line `Built:` field declaring how the work was produced — one of the legitimate values
 defined in `built-line.md`, which is **canonical for
 the value set and for the conditions on the restricted value**; read them there rather than
-restating them. It is one of the machine-read, process-native lines the senior-dev standard above
+restating them. It is one of the machine-read, process-native lines the PR-body standard above
 explicitly preserves, so trimming a body never removes it. You are your own reviewer here, which is
 exactly why the field has to be right without one: nobody else will catch a wrong count.
 
@@ -506,14 +505,15 @@ genuine question / gate → banner. The banner spends your human's attention —
   cutting a release PR on any owned repo.
 
 **Sprint burn-down (if this install declares a `sprint` block).** Your sprint plan is
-generated, not authored: lanes are declared once in the config, membership is a board query (a tag,
-a gate card's blockers, a swimlane, a filter), and one board read produces both the HTML page you
-read and the `lanes.definitions` the lane census reads — so they cannot drift. The default shape is
-one lane, `current`, holding every open card tagged `sprint:current`. A card leaves the plan by
-MOVING on the board, never by editing the page; re-render with `sprint-burndown.py --html <path>
---write-config` instead. The SessionStart check reds when the committed page no longer matches the
+generated, not authored: lanes are declared once in the config and membership is a board query (a
+tag, a gate card's blockers, a swimlane, a filter). The default shape is one lane, `current`,
+holding every open card tagged `sprint:current`. A card leaves the plan by MOVING on the board,
+never by editing the page; re-render with `sprint-burndown.py --html <path> --write-config`
+instead. The SessionStart check reds when the committed page no longer matches the
 board, and its UNMEASURED verdict means a read did not happen, not that the sprint is finished.
-Vocabulary, worked configs, and the exit codes: **`docs/SPRINT.md`**.
+Vocabulary, worked configs, why the page and the `lanes.definitions` the census reads cannot drift
+apart, and the exit codes: **`docs/SPRINT.md`** — which owns those claims; do not restate them
+here.
 
 The **manual board-state check** is the documented fallback when the SessionStart hook is
 unavailable (new machine, hook misconfigured): query each board via the board API —

@@ -5,6 +5,7 @@ namespace Tests\Unit\Tools;
 use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Tools\ClientVersion;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\BundledChannelServer;
 use Tests\TestCase;
 
 /**
@@ -143,11 +144,11 @@ class ClientVersionTest extends TestCase
      */
     public function test_the_pinned_snapshot_is_one_that_actually_sends_the_field(): void
     {
-        $entry = (string) file_get_contents(base_path('examples/channel-servers/agent-webhook-bridge-channel.mjs'));
+        // Non-vacuous by construction: {@see BundledChannelServer::source} establishes that
+        // the file read AND is the channel server, so the absence below is an absence IN it
+        // rather than in an empty string.
+        $entry = BundledChannelServer::source();
 
-        // Non-vacuous: the file read and is the entry point, so the absence below would be
-        // an absence IN it rather than an empty string.
-        $this->assertStringContainsString('CallToolRequestSchema', $entry, 'the bundled entry point did not read as the channel server, so this test measured nothing');
         $this->assertStringContainsString(
             'client_version: CLIENT_VERSION',
             $entry,

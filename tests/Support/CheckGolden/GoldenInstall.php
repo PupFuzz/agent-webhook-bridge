@@ -42,7 +42,13 @@ final class GoldenInstall
             'bridge.config_dir' => $this->root,
             'bridge.secret_dir' => $this->root,
             'bridge.install_suffix' => '',
-            'bridge.receiver_base_url' => 'https://bridge.example.com',
+            // ⛔ THE `/webhooks` SEGMENT IS PART OF THE VALUE, not part of the route: this key
+            // is the receiver's PUBLIC BASE and `ReceiverUrl::for()` appends `/<provider>` to
+            // it. Declared as the bare host (as it was until card#9150 r6) this pinned install
+            // composes a receiver URL that reaches NO route in the app under test, so the
+            // github-webhook leg reports *could not look* instead of the arm a fixture is
+            // capturing — a baseline that is not a WORKING install cannot pin one.
+            'bridge.receiver_base_url' => 'https://bridge.example.com/webhooks',
             'bridge.providers' => [
                 'kanban' => ['api_base_url' => 'https://kanban.example.com/api/v3'],
                 'github' => [

@@ -356,6 +356,8 @@ The agents themselves still exist as their own `<agent>.yml` files; this file on
 
 > The file is OPTIONAL — omit it entirely when no account is shared. Declaring the shared account is the explicit form of what the registry would otherwise infer from an *accidental* duplicate id across two agents' `identity` blocks (which it bypasses + warns about, pointing you here). Prefer the explicit `shared-identities.json` declaration — one source of truth, no N-place denormalization.
 
+> ⛔ **Do not also write the shared id into an agent's own `identity.github_user_id`, and this is the failure mode if you do.** The registry maps a github `sender.id` to an agent name through exactly that key, so claiming a shared account inline makes **every** participant's post resolve to that one agent. The pre-classify echo gate then drops each of them as `echo: own write` — including everybody else's — and the recovery layer below never runs, because it short-circuits the moment the registry has named an actor. The seat receives **nothing**, while the webhook still verifies, the socket is still live, `bridge:check` still exits 0, and "my own post did not wake me" still holds. Measured on a live install (card#9152). `bridge:check`'s `agent.coordination_identity` leg reports the combination; [Verifying a shared-account seat](#verifying-a-shared-account-seat) below is what to check and why the obvious test does not catch it.
+
 ### Path C — Custom-classifier sub-resolution
 
 When you have a recovery signal (`scope_id` in repo-distinct topologies, a `FROM:` line in the event body, or any operator-controlled disambiguator), implement resolution in a custom classifier:
@@ -415,3 +417,27 @@ The pre-classify echo gate can only match a shared account by raw id (`treat_as_
 You report *who acted*; the dispatcher decides *is that me?* per agent — so the one classifier, running for all four agents, yields per-agent self-echo from a single shared account. Reporting the actor is enough; you do not filter inside `classify` (see [`customization.md`](customization.md) § Per-agent echo for a shared upstream identity).
 
 **Report the ACTOR, not a name that merely relates to the event (DL-253).** The dispatcher DROPS on this value, so a name asserts *this agent performed this event*. A repo→agent map earns that on any action; a thread's opener does not — it is frozen at open, so on a later `reopened`/`closed` it names someone who may not have acted. Substituting it suppresses **other agents'** events as your own. If nothing evidences the actor, return `null`.
+
+#### Verifying a shared-account seat
+
+A seat joining a shared-account coordination channel is usually accepted on three legs: **(1)** my post reaches the channel, **(2)** my own post must not wake me, and **(3)** a counterparty's reply wakes me.
+
+⛔ **Leg 2 alone certifies nothing, and leg 2 plus leg 1 certifies nothing either.** The two suppression paths produce the *same observable* — no wake — and one of them is a broken install:
+
+| Drop reason on the dispatch row | Which path suppressed it | What it means |
+|---|---|---|
+| `echo: own write (reattributed author)` | **post-classify**, on the `FROM:` line the classifier recovered | The mechanism worked. Only your own writes are suppressed; a counterparty's still reaches you. |
+| `echo: own write` | **pre-classify**, on the raw upstream account | The registry named the account's actor before the classifier ever saw the body. On a shared account that is the mis-attribution above, and **every** participant's post is being dropped the same way. |
+
+Those two strings are a deliberate tell and not two spellings of one thing — a change that collapses them removes the only local evidence of which mechanism fired. **So read the reason, not the silence:**
+
+```bash
+php artisan bridge:inspect          # the ledger: outcome + reason per dispatch
+php artisan bridge:check            # the agent.coordination_identity leg, at config time
+```
+
+Leg 2 passes **only** when your own post's row reads `echo: own write (reattributed author)`. A row reading `echo: own write` on a shared-account seat means leg 3 cannot pass, whatever leg 2 appeared to show — and the dispatcher also logs a `bridge dispatch:` **warning** naming the agent when that happens, so `grep` on the log finds it without reading the ledger.
+
+⚑ **Leg 3 is still the only end-to-end proof** — it needs a counterparty who is posting, so it is not always runnable at the moment a seat joins; the reason string is the part you can check alone, immediately, with one command. Run leg 3 as soon as a counterparty is available.
+
+⚑ **An agent with its OWN github account is a different topology and this section does not apply to it.** There the registry naming the actor is exactly right, `echo: own write` on your own post is correct suppression, and `bridge:check`'s leg says so in its own text — see [`consumer-guide.md` § Coordination intents: who acted vs. whose thread](consumer-guide.md#coordination-intents-who-acted-vs-whose-thread), path 1.

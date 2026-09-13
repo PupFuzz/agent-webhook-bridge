@@ -176,6 +176,19 @@ class PinnedFieldWriteCoverageTest extends TestCase
             AgentToolsCallTest::class.'::test_a_pinned_card_still_takes_a_description_correction',
             AgentToolsCallTest::class.'::test_a_correction_carrying_a_name_beside_a_description_writes_neither',
         ],
+        // UNGOVERNED — the DL-372 card CLAIM, and an explicit ruling rather than an
+        // oversight (see that entry's Decision 6): PINNED_FIELDS names `name` alone, the
+        // hold exists so a card stops changing UNDER the operator through automation with
+        // no human in the loop, and a take is a deliberate act by the caller. Widening the
+        // const would change what every producer that shares it refuses. The witnesses are
+        // the pair this class asks for over a producer: the claim LANDS on a pinned card,
+        // and the pin is still seen to refuse a `name` correction on the same row — so a
+        // future widening of the pin cannot make this entry quietly false in either
+        // direction.
+        'Bridge/Tools/BoardTakeCardTool.php::call#1' => [
+            AgentToolsCallTest::class.'::test_a_take_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim',
+            AgentToolsCallTest::class.'::test_a_name_correction_on_a_pinned_card_is_refused_by_name',
+        ],
         // UNGOVERNED BY THE FIELD RULE, and refused anyway — by the STAGE rule, at this
         // primitive's CALL SITES rather than here (`PinGuard`'s docblock owns that census).
         // The witness pins both facts in one delivery: no stage PATCH, and the payload PATCH
