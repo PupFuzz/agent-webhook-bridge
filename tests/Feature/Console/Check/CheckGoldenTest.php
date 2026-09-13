@@ -110,14 +110,14 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
-                // ⭐ THE PAIR WITH THE ROW ABOVE, AND THE PAIRING IS THE POINT (card#9280).
-                // `not-a-url` fails the SYNTAX floor; this value passes every syntax floor
-                // there is — it is a well-formed https URL with a host — and still composes a
+            case 'receiver-url-unreachable':
+                // ⭐ THE PAIR WITH `bad-receiver-url` ABOVE, AND THE PAIRING IS THE POINT
+                // (card#9280). That value fails the SYNTAX floor; this one passes every syntax
+                // floor there is — a well-formed https URL with a host — and still composes a
                 // receiver URL that reaches no route in this app, which is the fault that had
                 // no home on any surface that moves an exit code. A fixture capturing the
-                // syntax refusal is no evidence for this arm: they are different legs, and
-                // the second one is the one an operator's install actually lands on.
-            case 'receiver-url-unreachable':
+                // syntax refusal is no evidence for this arm: they are different legs, and the
+                // second one is the one an operator's install actually lands on.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 // The BARE HOST — `BRIDGE_RECEIVER_BASE_URL` already ends in the receiver
                 // path, so leaving it off is the documented mis-set shape.
@@ -811,7 +811,11 @@ class CheckGoldenTest extends TestCase
             // ⛔ THE EXIT CODE IS A SUBJECT HERE, not just the sentence: this arm MOVES it,
             // and a capture that pinned the prose alone would stay green if the severity were
             // softened to a warn. Both halves, in the one fixture.
-            'receiver-url-unreachable' => ['exit: 1', "bridge.receiver_base_url 'https://bridge.example.com' reaches NO route in THIS application"],
+            // ⛔ THE PROVIDER SET IS NOT A SUBJECT HERE — it is derived from
+            // `WebhookAdapterFactory::SUPPORTED` and pinned against that constant in
+            // `InstallEndpointUrlsCheckTest`; naming it here would be the second literal copy
+            // that goes on passing after the derived one moves (card#9280 r2).
+            'receiver-url-unreachable' => ['exit: 1', "bridge.receiver_base_url 'https://bridge.example.com' composes a receiver URL that reaches NO route in THIS application"],
             'default-agent-has-no-config' => ["BRIDGE_DEFAULT_AGENT 'ghost-agent' has no matching config"],
 
             // ---- retention postures (count deliberately unstated — see buildFixture()) ----

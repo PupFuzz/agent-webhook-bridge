@@ -318,12 +318,17 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // STATED PROPERTY — a proxy that held only while no OTHER leg failed on this install
         // shape. Since card#9280 / DL-374 one does: `install.endpoint_urls` judges the config
         // value against this app's route table and FAILS, so the run exits non-zero on exactly
-        // the install this fixture builds. Flipping the expected exit to 1 would have thrown
-        // away what the line was for, because it would then pass with this leg failing too.
-        // What replaces it is STRICTLY STRONGER: the run's `fail` findings are enumerated and
-        // the set of legs owning them must be exactly the endpoint-URLs leg. This reds if the
-        // github leg ever starts failing here (the thing the original guarded), AND reds if the
-        // endpoint-URLs leg ever stops.
+        // the install this fixture builds.
+        //
+        // ⚠ TWO ASSERTIONS REPLACE THE ONE, WITH TWO DIFFERENT SUBJECTS, AND NEITHER IS THE
+        // OTHER'S RESTATEMENT. The OWNERSHIP assertion is this leg's property, expressed
+        // without the exit code at all: the set of legs owning a `fail` must be exactly the
+        // endpoint-URLs leg, so it reds if the github leg ever starts failing here (what the
+        // original line guarded) AND if the endpoint-URLs leg ever stops. The EXIT assertion
+        // is card#9280's own subject — that the run moves — and is NOT a re-spelling of the
+        // first: `assertSame(1, $exit)` alone would pass with the github leg failing too,
+        // which is exactly why flipping the old line to `1` and stopping there would have
+        // thrown away what it was for.
         $failOwners = [];
         foreach ($doc['checks'] as $check) {
             foreach ($check['findings'] as $f) {

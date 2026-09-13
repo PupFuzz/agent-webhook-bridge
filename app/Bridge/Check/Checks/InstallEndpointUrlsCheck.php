@@ -153,6 +153,19 @@ final class InstallEndpointUrlsCheck implements Check
      * says it is. It closes the ROUTE half of *is this install actually reachable* and
      * declares the rest unmeasured.
      *
+     * ⭐ AND THAT CLAUSE IS TRUE BY CONSTRUCTION FOR THREE OF THOSE FOUR AXES SINCE card#9280
+     * r2, WHICH IS WHAT ENTITLES THIS LEG TO PRINT IT. It was FALSE when it shipped:
+     * `Request::create()` refuses a host Symfony will not build, that refusal answered `false`,
+     * and this leg turned it into a `fail` — so on an IDN / `~` / `+` / `%20` host the HOST was
+     * the ENTIRE cause of a verdict whose own line told the operator it was not about the host,
+     * on an install whose path and query route perfectly and whose deliveries arrive.
+     * {@see ReceiverUrl::CANONICAL_AUTHORITY} substitutes the userinfo, host and port before
+     * the router is asked, so that axis is now unreachable rather than promised-unread. The
+     * SCHEME is deliberately not substituted, and its half of the clause is a MEASUREMENT of
+     * `routes/webhooks.php` rather than a construction —
+     * `InstallEndpointUrlsCheckTest::test_the_route_verdict_does_not_move_with_the_authority_or_the_scheme`
+     * asserts both halves instead of leaving them to a reading of this paragraph.
+     *
      * THE PROVIDERS ARE DERIVED FROM {@see WebhookAdapterFactory::SUPPORTED}, never written
      * out here: the receiver base serves every provider this receiver has an adapter for,
      * and `routes/webhooks.php` leaves the `{provider}` segment unconstrained TODAY — a
@@ -177,19 +190,28 @@ final class InstallEndpointUrlsCheck implements Check
             return;
         }
 
+        // ⛔ THE STATED SCOPE IS THE SET THIS LOOP ACTUALLY FOUND, NEVER A FLAT *no route*
+        // (card#9280 r2). The predicate that fires this arm is *at least ONE provider is
+        // unreachable*, so a headline reading `reaches NO route in THIS application` full stop
+        // was a claim about EVERY provider that the arm does not establish. `{provider}` is
+        // unconstrained in `routes/webhooks.php` TODAY, which makes the set all-or-nothing
+        // today — but that is a property of the route file, and the whole reason the provider
+        // population is DERIVED (DL-374 Decision 4) is that it can change under this leg.
+        $named = implode(', ', $unreachable);
+
         // ⛔ THE VALUE IS QUOTED THROUGH `SecretScrubber::url()`, exactly as every other
         // refusal this check renders does (card#8433) — a receiver base may legitimately
         // carry credentials in its userinfo, and this is a NEW operator-facing rendering of
         // that same config value. `EndpointUrlRedactionTest` plants a canary on this arm.
         yield Finding::fail(
-            "bridge.receiver_base_url '".SecretScrubber::url($receiverBaseUrl)."' reaches NO route in THIS application: "
-            .'the receiver URL this install composes from it — <BRIDGE_RECEIVER_BASE_URL>/<provider>?b=<scope> — matches no receiver route here for provider(s) '
-            .implode(', ', $unreachable)
-            .', so a delivery to it is refused before the receiver ever reads the scope and NO webhook composed from this value — which is how .env.example and docs/writeback.md tell you to compose one — can deliver here. '
+            "bridge.receiver_base_url '".SecretScrubber::url($receiverBaseUrl)."' composes a receiver URL that reaches NO route in THIS application for provider(s) {$named}: "
+            .'the receiver URL this install composes from it — <BRIDGE_RECEIVER_BASE_URL>/<provider>?b=<scope> — matches no receiver route here, '
+            .'so a delivery to it is refused before the receiver ever reads the scope, and NO webhook composed from this value for those provider(s) — which is how .env.example and docs/writeback.md tell you to compose one — can deliver here. '
             .'This key is the receiver\'s PUBLIC BASE and ALREADY ENDS IN the receiver path (see .env.example, and docs/writeback.md section The repo webhook) — '
             .'a bare host, or one with that path doubled, is what this looks like. Fix BRIDGE_RECEIVER_BASE_URL in this install\'s .env and re-run bridge:check. '
-            .'⚠ This leg matched PATH and QUERY through this app\'s own router: it establishes NOTHING about that value\'s scheme, host, port or userinfo, and nothing about '
-            .'whether any provider\'s network can reach this install — a base that passes it is not evidence that a delivery arrives. '
+            .'⚠ This leg asked this app\'s own router about the PATH and QUERY the value composes, with a canonical authority substituted for its userinfo, host and port, '
+            .'so that a host this app\'s URI parser refuses cannot by itself decide the verdict. It establishes NOTHING about that value\'s scheme, host, port or userinfo, '
+            .'and nothing about whether any provider\'s network can reach this install — a base that passes it is not evidence that a delivery arrives. '
             .'⚠ If this install is served behind something that REWRITES the request path, the delivery path is not this app\'s route table, this line is what a WORKING '
             .'install looks like from here, and that hop cannot be measured on this box.'
         );

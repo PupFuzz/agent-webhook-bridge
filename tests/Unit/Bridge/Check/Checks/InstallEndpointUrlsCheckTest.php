@@ -159,11 +159,33 @@ class InstallEndpointUrlsCheckTest extends TestCase
         // would leave every other assertion in this method passing.
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString("bridge.receiver_base_url '{$base}'", $findings[0]->message);
-        $this->assertStringContainsString('reaches NO route in THIS application', $findings[0]->message);
+        // ⛔ THE HEADLINE'S STATED SCOPE IS THE SET THE LEG FOUND, and the set is DERIVED here
+        // for the same reason the leg derives it (card#9280 r2, SF-1). The arm fires on *at
+        // least one* provider unreachable, so a flat `reaches NO route in THIS application`
+        // claimed something about every provider that the predicate does not establish. This
+        // assertion reds if the headline goes back to the absolute, and reds if the leg stops
+        // naming what it actually measured.
+        $this->assertStringContainsString(
+            'composes a receiver URL that reaches NO route in THIS application for provider(s) '
+                .implode(', ', WebhookAdapterFactory::SUPPORTED),
+            $findings[0]->message,
+        );
         // ⭐ THE DISCLOSURE HALF (canon #7). A router answers about path and query; this leg
         // must not leave an operator reading it as a verdict on whether deliveries arrive,
         // and must name the one install shape it can be WRONG about. Asserted, not trusted
         // to review: the ruling that allows a `fail` here at all rests on the line saying so.
+        //
+        // ⛔ THE MECHANISM CLAUSE IS ASSERTED BESIDE THE PROMISE, AND IT IS THE HALF THAT WAS
+        // MISSING (card#9280 r2). The `establishes NOTHING about … host` sentence shipped while
+        // the host could decide the verdict outright — `Request::create()` refuses an IDN /
+        // `~` / `+` / `%20` host, which answered *unreachable* — so this file was watching a
+        // FALSE sentence red. The substitution named here is what makes it true, and
+        // `test_the_route_verdict_does_not_move_with_the_authority_or_the_scheme` is what
+        // makes it true of the CODE rather than of the prose.
+        $this->assertStringContainsString(
+            'with a canonical authority substituted for its userinfo, host and port',
+            $findings[0]->message,
+        );
         $this->assertStringContainsString('establishes NOTHING about that value\'s scheme, host, port or userinfo', $findings[0]->message);
         $this->assertStringContainsString('REWRITES the request path', $findings[0]->message);
     }
@@ -231,12 +253,128 @@ class InstallEndpointUrlsCheckTest extends TestCase
 
         $routes = app(Router::class)->getRoutes();
 
-        foreach (['github', 'kanban'] as $provider) {
+        // ⛔ DERIVED, NOT RESTATED (card#9280 r2, SF-3). A second literal copy of the provider
+        // list here would keep passing over `['github', 'kanban']` after the leg's own derived
+        // population moved, which is the drift the constant exists to make unrepresentable.
+        $this->assertNotSame([], WebhookAdapterFactory::SUPPORTED, 'the derived provider population is empty, so the loops below assert nothing');
+        foreach (WebhookAdapterFactory::SUPPORTED as $provider) {
             foreach ([self::HEALTHY_RECEIVER => true, 'https://bridge.example.com' => false] as $base => $expected) {
                 $this->assertSame(
                     $expected,
                     ReceiverUrl::reachesThisInstall(ReceiverUrl::for((string) $base, $provider, $scope), $provider, $scope, $routes),
                     "the verdict on '{$base}' moved with the scope, so the leg's constant is an input and not a probe",
+                );
+            }
+        }
+    }
+
+    /**
+     * ⭐ THE CARD'S r2 SUBJECT: A HOST `Request::create()` REFUSES IS NOT A ROUTING VERDICT
+     * (card#9280 r2, MF-1). `https://brücke.example.com/webhooks` passes every syntax floor —
+     * `UrlValidator::httpUrl()` accepts it — and composes a receiver URL whose PATH and QUERY
+     * route here perfectly. Symfony still refuses to BUILD that URI (`BadRequestException:
+     * Invalid URI: Host is malformed.`), which the predicate used to answer `false` to, and
+     * this leg renders `false` as a **`fail` that moves `bridge:check`'s exit code**. So an
+     * install that receives its deliveries correctly — the host travels in a header this
+     * router never consults, and the delivery is IDNA-encoded on the wire — exited 1 on the
+     * spelling of its own hostname. THE OPERATOR AUTHORISED A `fail` ON *reaches no route*,
+     * never on *the URI parser did not like your host*.
+     *
+     * ⛔ THE SECOND ARM IS THE CONTROL AND THE TEST IS WORTHLESS WITHOUT IT. Substituting a
+     * canonical authority could have made EVERYTHING reachable; the same refused host with the
+     * receiver path left off must still FAIL, because that install really is deaf. One arm
+     * proves the class is closed, the other proves it was closed by a substitution and not by
+     * a blanket `true`.
+     */
+    public function test_a_host_the_uri_parser_refuses_is_judged_on_its_path_and_query_alone(): void
+    {
+        config([
+            'bridge.receiver_base_url' => 'https://brücke.example.com/webhooks',
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+        ]);
+
+        $this->assertSame(
+            [],
+            $this->findings(),
+            'a base whose PATH and QUERY route here reds the leg because of a character in its HOSTNAME — an exit-code move on an axis this leg does not judge',
+        );
+
+        config(['bridge.receiver_base_url' => 'https://brücke.example.com']);
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings, 'the same refused host with NO receiver path is genuinely unreachable and must still fail');
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('reaches NO route in THIS application', $findings[0]->message);
+    }
+
+    /**
+     * The authority spellings the verdict must be INVARIANT across.
+     *
+     * ⭐ THE LAST FOUR MEMBERS ARE THE ONES THAT DECIDE THIS TEST, and they are not exotica:
+     * `Request::create()` refuses each of them outright, so before card#9280 r2 every one of
+     * them answered *unreachable* on an install whose path and query route perfectly. The
+     * first five are ordinary authorities the substitution must not disturb.
+     *
+     * @return list<array{0: string}>
+     */
+    public static function authoritySpellings(): array
+    {
+        return [
+            'the canonical host' => ['bridge.example.com'],
+            'some entirely different host' => ['a.completely.different.host'],
+            'an explicit port' => ['bridge.example.com:8443'],
+            'credentials in the userinfo' => ['svc:pw@bridge.example.com'],
+            'an IPv6 literal with a port' => ['[2001:db8::1]:8443'],
+            'a UNICODE (IDN) host — refused by Request::create()' => ['brücke.example.com'],
+            'a tilde in the host — refused by Request::create()' => ['~bridge.example.com'],
+            'a percent-escape in the host — refused by Request::create()' => ['bridge%20one.example.com'],
+            'a plus in the host — refused by Request::create()' => ['bridge+1.example.com'],
+        ];
+    }
+
+    /**
+     * ⭐ THE GUARD BEHIND THE SHIPPED DISCLOSURE (canon #16 — the one restatement that cannot
+     * become a pointer, because an operator at a terminal cannot follow a `{@see}`). The
+     * `fail` line tells the operator this leg establishes NOTHING about the value's scheme,
+     * host, port or userinfo. That sentence is a CLAIM ABOUT THE CODE, and it shipped FALSE:
+     * a refused host decided the verdict by itself. It is true now for two DIFFERENT reasons,
+     * and this test asserts both because they can break independently:
+     *
+     *   - USERINFO, HOST and PORT are true BY CONSTRUCTION —
+     *     {@see ReceiverUrl::CANONICAL_AUTHORITY} replaces them before
+     *     the router is ever asked, so no spelling of them can reach the matcher;
+     *   - the SCHEME is true BY MEASUREMENT of `routes/webhooks.php`, which constrains none.
+     *     It is deliberately NOT substituted (a route declaring `->secure()` makes it a real
+     *     term, and folding it away would answer for a scheme nobody configured — the silent
+     *     direction), so if that file ever gains one, THIS assertion reds and the shipped
+     *     sentence has to move with it. The drift cannot happen quietly in either direction.
+     *
+     * ⛔ THE `assertFalse` ARM IS NOT SYMMETRY, IT IS THE DISCRIMINATOR. A substitution that
+     * made every authority route would satisfy the `assertTrue` arm over the whole provider
+     * table while destroying the leg; the bare-host arm is the same authority reaching nothing
+     * because its PATH reaches nothing, which is the fault this leg exists for.
+     */
+    #[DataProvider('authoritySpellings')]
+    public function test_the_route_verdict_does_not_move_with_the_authority_or_the_scheme(string $authority): void
+    {
+        $routes = app(Router::class)->getRoutes();
+        $scope = InstallEndpointUrlsCheck::PROBE_SCOPE;
+
+        $this->assertNotSame([], WebhookAdapterFactory::SUPPORTED, 'the derived provider population is empty, so the loops below assert nothing');
+
+        foreach (WebhookAdapterFactory::SUPPORTED as $provider) {
+            foreach (['https', 'http'] as $scheme) {
+                $base = "{$scheme}://{$authority}";
+
+                $this->assertTrue(
+                    ReceiverUrl::reachesThisInstall(ReceiverUrl::for($base.'/webhooks', $provider, $scope), $provider, $scope, $routes),
+                    "the verdict moved with the AUTHORITY or the SCHEME on '{$base}/webhooks' — the shipped fail line says it establishes nothing about either",
+                );
+
+                $this->assertFalse(
+                    ReceiverUrl::reachesThisInstall(ReceiverUrl::for($base, $provider, $scope), $provider, $scope, $routes),
+                    "'{$base}' reaches no receiver path and must still be unreachable — a substitution that makes every authority route deletes the leg",
                 );
             }
         }
