@@ -47,10 +47,10 @@ use Illuminate\Support\Facades\Log;
  * ⭐ WHY A SEPARATE TOOL AND NOT AN ARGUMENT ON `board_correct_card` — the fork this card
  * turned on, recorded so it can be attacked rather than inherited:
  *  - THE AUTHORIZATIONS ARE DIFFERENT, AND THIS ONE IS WIDER. A correction is scoped to
- *    cards the seat MINTED (`created-by:<agent>`, bridge-stamped and caller-unforgeable).
- *    A take must work on cards the seat did NOT mint — the pm mints work INTO a seat's
- *    lane for that seat to pull, which is the case the feature exists for — so the two
- *    cannot share a predicate. Folding a WIDER authority into that tool, keyed on which
+ *    cards that are ALREADY the seat's — MINTED by it (`created-by:<agent>`) or, since
+ *    DL-376, ASSIGNED to it. A take must work on cards that are neither yet — the pm mints
+ *    work INTO a seat's lane for that seat to pull, which is the case the feature exists
+ *    for — so the two cannot share a predicate. Folding a WIDER authority into that tool, keyed on which
  *    argument happened to be passed, is the laundering shape its own docblock refuses for
  *    the field set.
  *  - A CORRECTION WRITES WHAT THE CALLER SUPPLIED; A TAKE WRITES WHAT THE BRIDGE RESOLVED.
@@ -59,8 +59,8 @@ use Illuminate\Support\Facades\Log;
  *  - REFUSE-ON-CONFLICT HAS NO ANALOGUE IN A CORRECTION, which writes unconditionally once
  *    ownership is proven. A take's central behaviour is a REFUSAL that reads the card first.
  *
- * ⭐ THE AUTHORIZATION, STATED RATHER THAN INHERITED. `board_correct_card`'s mint-stamp
- * model is under an open question of its own (card#9201/#9202) and nothing here rests on
+ * ⭐ THE AUTHORIZATION, STATED RATHER THAN INHERITED. `board_correct_card`'s model was
+ * widened by DL-376 (card#9201/#9202) to minted-OR-assigned, and nothing here rests on
  * it. A take is authorized by TWO independent narrowings, both read off the ROW and neither
  * sufficient alone:
  *  1. THE CARD IS ON THIS AGENT'S CONFIGURED BOARD — established through

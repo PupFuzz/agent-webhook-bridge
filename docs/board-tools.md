@@ -13,7 +13,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | --- | --- | --- |
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
-| `board_correct_card` | write | **Correct a card YOU filed** — its `name`, `description` or `tags`. Scoped to cards carrying your own bridge-stamped `created-by:<you>`, on your own board; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
+| `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card already held by a **different** user is **refused by name** and nothing is written. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
@@ -434,7 +434,8 @@ correct exactly until you needed it. Consequences for a caller:
 
 ## `board_correct_card`
 
-**Correct a card YOU filed** (DL-326, card#8378). Before this the impl seat's whole
+**Correct a card that is YOURS — one you filed, or one assigned to you** (DL-326, card#8378;
+widened by DL-376, card#9201 / card#9202). Before this the impl seat's whole
 board surface was **create + read**, so the only available response to a wrong card
 was to mint a second one — and duplicates then defeat every downstream instrument
 that keys on one card per subject.
@@ -467,15 +468,50 @@ same as omitting `tags`), and `description: ""` clears the body.
 
 **⭐ Whose card — the scoping rule.**
 
-You may correct **only what you minted**, and the discriminator is the tag the
-bridge already stamps at create: **`created-by:<you>`**. It is caller-unforgeable
-(`created-by:` is a reserved prefix on create and the guard casefolds, so no caller
-can plant any case variant of another agent's stamp), and it is the **only per-seat
-provenance a card carries** — kanban's `actor_type: service` covers the bridge and
-every CLI writer, and `actor_id` names the shared writeback **user**, so neither can
-answer *which seat filed this*.
+A card is yours when **either** of two relations holds — and **both widen nothing a caller
+can forge** (DL-376, operator-approved 2026-09-13; before it, only the first existed):
 
-Two independent narrowings are checked and **both** are required:
+1. **You MINTED it** — it carries the tag the bridge stamps at create, **`created-by:<you>`**.
+   It is caller-unforgeable (`created-by:` is a reserved prefix on create and the guard
+   casefolds, so no caller can plant any case variant of another agent's stamp), and it is
+   the **only per-seat provenance a card carries** — kanban's `actor_type: service` covers
+   the bridge and every CLI writer, and `actor_id` names the shared writeback **user**, so
+   neither can answer *which seat filed this*.
+2. **It is ASSIGNED to you** — the card's own `assigned_user_id` is **identical, as an
+   integer**, to your own kanban user, which the bridge resolves from **your bridge
+   identity** (`identity.kanban_user_id` for the agent the door authenticated) exactly as
+   [`board_take_card`](#board_take_card) does. **No argument can influence which user is
+   compared** — this tool accepts no user id, and the resolver takes none.
+
+**Which relation authorized the write is recorded** — `authorized_by` in the response and in
+the bridge's `board_correct_card: corrected` log line — because *who filed a card* and *who
+holds it now* are different facts and an audit must be able to tell them apart. ⚠ **When
+both hold, it records `minted`**: the stamp is checked first, and the assignee is not
+consulted at all for a card you minted, so a correction you could make before DL-376 does
+not start depending on your `identity.kanban_user_id` being configured. `minted` therefore
+says nothing about who the card is assigned to.
+
+- ⛔ **A row that says nothing readable about its assignee is never yours by assignment.**
+  `assigned_user_id: null` means unassigned; an **absent** key, or a value that is not an
+  integer (a digit string, a float, `""`), is a degraded read — it does not authorize, and
+  the call gets the ordinary *"not one of yours"* refusal (it may still pass on the mint
+  stamp).
+- **If your agent's YAML declares no `identity.kanban_user_id`, the assignee relation is simply
+  off** — no card can be assigned to a user you do not have — and the tool behaves as it did
+  before DL-376 **except** that the *"not one of yours"* wording now names both relations and
+  the tag-list rule below applies: cards you minted are corrected, everything else gets
+  *"not one of yours"*.
+- ⛔ **If the bridge cannot establish WHICH kanban user you are** — another agent declares the
+  same `identity.kanban_user_id`, or the roster cannot be read — every correction that is not
+  authorized by your mint stamp is refused with that **install fault**, including a call naming
+  a card that does not exist, so the refusal says nothing about whether the card exists.
+  Corrections of cards you minted are unaffected.
+- ⚠ **A card you TAKE becomes a card you can correct.** [`board_take_card`](#board_take_card)
+  assigns you any unheld card in a lane you work, so the assignee relation reaches every such
+  card, not only work somebody else assigned you.
+
+On top of the relation, the card must be established **on your board**, and two independent
+narrowings are checked for that — **both** are required:
 
 1. **Board scope, server-side.** The card is resolved with a board-scoped
    `GET /tasks/search.json?q=board_id=<your board> id=<card>` — the card#8375 /
@@ -488,8 +524,8 @@ Two independent narrowings are checked and **both** are required:
    scope — the *rows* do.
 
 **The LANE is deliberately not checked.** A human may re-lane a card legitimately,
-and the mint stamp is what says the card is yours; a lane test would make a re-laned
-card permanently uncorrectable by the seat that filed it. The response therefore
+and the relation above is what says the card is yours; a lane test would make a re-laned
+card permanently uncorrectable by the seat that filed or holds it. The response therefore
 reports no lane — it reports only what was checked.
 
 **⛔ A PINNED card refuses a `name` correction (DL-342, card#8557).** If the card carries
@@ -532,6 +568,16 @@ the silent deletion the preservation exists to stop. A `name`/`description` corr
 is unaffected — it writes no tag list. An install with **no** `writeback.json` is a
 different (and fine) answer: it declares no hold tags, and `no-automove` still holds.
 
+⛔ **A `tags` correction on a card whose tag list the bridge cannot read IN FULL is REFUSED** —
+the key absent, not a list, or a list holding any entry that is not a string. The preserved half
+of the write is built from the string entries only, so a wholesale replace would delete every
+entry the bridge could not read, holds and other agents' stamps included. A card assigned to you
+is authorized without reading its tags, which is where this matters most, but a minted card whose tag list
+is not a plain list, or holds any non-string entry, is refused the same way — including a keyed
+object of strings, which was not destructive but is not the shape the preserve logic reads. `tags: null` (an untagged card)
+is a real, empty list and is written normally; a `name`/`description` correction on the refused
+card still lands.
+
 `tags_written` in the response is what the PATCH **sent**, which is the only channel you
 have to what was preserved.
 
@@ -540,6 +586,7 @@ have to what was preserved.
 ```jsonc
 { "corrected": true, "card_id": 42, "board_id": 10,
   "fields": ["name", "tags"],
+  "authorized_by": "minted",        // or "assigned" — which relation made the card yours
   "tags_written": ["your-tag", "created-by:you", "triaged"] }
 ```
 
@@ -574,8 +621,10 @@ rejects outright.
 
 | State | Refusal |
 | --- | --- |
-| The card is not on your board, or carries someone else's stamp, or none | *"card N is not one of yours"* — **one message for all three**: you are never told whether a card you do not own exists. ⚠ It names a **fourth** cause too, because kanban's search FLOORS a caller to the boards its token is a member of and answers **200 with zero rows** for the rest: an unreadable board and an empty one are one answer here (DL-323's `mapped_board_unreadable_to_this_token`), so the message tells you to have the token's board membership checked if you believe you filed the card. |
-| The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
+| The card is not on your board, or is on it but neither carries your stamp nor is assigned to you (including an assignee the board did not return readably) | *"card N is not one of yours"* — **one message for every one of those**: you are never told whether a card you do not own exists. The message names both relations that would have made it yours. ⚠ It names a **further** cause too, because kanban's search FLOORS a caller to the boards its token is a member of and answers **200 with zero rows** for the rest: an unreadable board and an empty one are one answer here (DL-323's `mapped_board_unreadable_to_this_token`), so the message tells you to have the token's board membership checked if you believe you filed or hold the card. |
+| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (an `identity.kanban_user_id` shared with another agent, or an unreadable roster) — the same sentence whether or not the card exists, so it discloses nothing. An agent that declares **no** `identity.kanban_user_id` is not in this row: it gets the ordinary *"not one of yours"*. See the scoping rule above. |
+| The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp or the assignment proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed or hold is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
+| You are correcting `tags` and the board's tag list for the card cannot be read in full | *"no readable tag list"* — **install fault**; a wholesale replace would delete tags the bridge cannot read (above). `name`/`description` are unaffected. |
 | The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
 | `writeback.json` will not parse | The install's hold vocabulary is unknown, so a **`tags`** correction is refused (see above) — **install fault**. `name`/`description` are unaffected. |
 | The card is **PINNED** and the correction writes `name` | *"card N is PINNED"* — a human froze it with a `block_reason` or a `no-automove` tag, and a `name` write is one of the writes that hold covers (DL-342; the bridge's own restamps are refused the same write on the same card). **Nothing at all is written**, including any `description`/`tags` sent in the same call, because the correction is one `PATCH` with no half-applied form. Not an install fault: ask whoever pinned it, or correct the fields the hold does not cover. |
@@ -594,7 +643,9 @@ owns it, and the rows above are what it means for a *correction* specifically.
 
 **Cost:** two requests on a successful call (one board-scoped lookup, one PATCH) —
 no card read-back, because the row that authorized the write already carried what the
-response reports. A not-found refusal costs two reads and no write.
+response reports. A not-found refusal costs two reads and no write. A call that is not
+authorized by the mint stamp also reads this bridge's own agent roster (a local file read,
+not a board request) to resolve your kanban user.
 
 ## `board_take_card`
 
@@ -635,10 +686,10 @@ through the one privileged seat, which is the serial hub this door exists to rem
 
 **⭐ Which cards you can take — the scoping rule, and it is NOT the correction tool's.**
 
-`board_correct_card` scopes on the `created-by:<you>` mint stamp, because correcting a card
-is only ever about a card you filed. A take is the opposite case: **the work somebody else
-queued for you is exactly what you are claiming**, so the mint stamp is deliberately not
-consulted. Two independent narrowings are checked instead, and **both** are required:
+`board_correct_card` scopes on a card being ALREADY yours — minted by you (`created-by:<you>`)
+or, since DL-376, assigned to you. A take is the opposite case: **the work somebody else
+queued for you, and that nobody holds yet, is exactly what you are claiming**, so neither
+relation is consulted. Two independent narrowings are checked instead, and **both** are required:
 
 1. **The card is on your configured board.** Established through a **board-scoped** search
    (`q=board_id=<yours> id=<n>`), with the verdict read off the returned **rows** — never

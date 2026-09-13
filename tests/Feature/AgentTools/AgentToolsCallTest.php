@@ -3032,6 +3032,462 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('membership of board 10', $foreign);
     }
 
+    // ─── board_correct_card: minted OR assigned, and WHICH one authorized it (card#9201 / card#9202, DL-376) ─
+
+    /**
+     * A card on this agent's board that this agent did NOT mint, assigned to $assignee.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function assignedCardRow(mixed $assignee, array $overrides = []): array
+    {
+        return $this->ownCardRow(array_merge(['tags' => ['triaged', 'priority:high'], 'assigned_user_id' => $assignee], $overrides));
+    }
+
+    /**
+     * A one-fake harness for tests that drive the door more than once. `Http::fake()` STACKS
+     * and the first matching stub wins, so a second registration would answer every later call
+     * with the first fixture and a comparison between arms would pass against anything.
+     *
+     * @param  list<array<string, mixed>>  $live
+     * @param  list<array<string, mixed>>  $archived
+     */
+    private function switchableCorrectFake(array &$live, array &$archived): void
+    {
+        Http::fake(function ($request) use (&$live, &$archived) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                return Http::response(['data' => str_contains($url, 'archived=1') ? $archived : $live]);
+            }
+
+            return Http::response(['data' => ['id' => 42]]);
+        });
+    }
+
+    private function assertCorrectedLogRecords(string $relation): void
+    {
+        Log::shouldHaveReceived('info', [
+            'board_correct_card: corrected',
+            \Mockery::on(static fn (array $context): bool => ($context['authorized_by'] ?? null) === $relation),
+        ]);
+    }
+
+    /**
+     * ⭐ REGRESSION WITNESS FOR THE ARM THAT EXISTED: a card this seat minted is still
+     * corrected when it is assigned to NOBODY, and the record says the stamp authorized it.
+     */
+    public function test_correct_still_authorizes_a_card_this_agent_minted_and_records_minted(): void
+    {
+        Log::spy();
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['assigned_user_id' => null])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'corrected']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.corrected', true)
+            ->assertJsonPath('result.authorized_by', 'minted');
+        $this->assertSame(['name' => 'corrected'], $this->sentPatchBody());
+        $this->assertCorrectedLogRecords('minted');
+    }
+
+    /**
+     * ⭐ THE NEW CAPABILITY (card#9202): a card assigned to THIS seat's kanban user, carrying no
+     * `created-by:` stamp at all (card#9201's population), is corrected — and the record says
+     * the ASSIGNMENT authorized it, so the audit can tell the owner's edit from a minter's.
+     */
+    public function test_correct_authorizes_a_card_assigned_to_this_seat_that_it_did_not_mint_and_records_assigned(): void
+    {
+        Log::spy();
+        Http::fake($this->correctFake(live: [$this->assignedCardRow($this->myKanbanUserId())]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'corrected', 'description' => 'fixed']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.corrected', true)
+            ->assertJsonPath('result.authorized_by', 'assigned')
+            ->assertJsonPath('result.fields', ['name', 'description']);
+        $this->assertSame(['name' => 'corrected', 'description' => 'fixed'], $this->sentPatchBody());
+        $this->assertCorrectedLogRecords('assigned');
+    }
+
+    /**
+     * ⛔ NEITHER RELATION ⇒ REFUSED, and in the SAME BYTES as a card that does not exist, so
+     * the widened message is still no existence oracle (DL-323 / DL-326 Decision 9). The
+     * message names BOTH relations that would have authorized the write.
+     */
+    public function test_correct_refuses_a_card_neither_minted_by_nor_assigned_to_this_seat_in_the_not_found_bytes(): void
+    {
+        $live = [$this->assignedCardRow(null)];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $neither = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $neither->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        $live = [];
+        $absent = (string) $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])->json('error');
+
+        $error = (string) $neither->json('error');
+        $this->assertSame($absent, $error, 'the unrelated-card arm and the no-such-card arm must answer identically');
+        $this->assertStringContainsString('not one of yours', $error);
+        $this->assertStringContainsString('`created-by:`', $error);
+        $this->assertStringContainsString('ASSIGNED to you', $error);
+    }
+
+    public function test_correct_refuses_a_card_assigned_to_a_different_kanban_user(): void
+    {
+        $live = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $other = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'hijacked']]);
+        $other->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        $live = [];
+        $absent = (string) $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])->json('error');
+        $this->assertSame($absent, (string) $other->json('error'), 'a card held by somebody else is not disclosed as existing');
+    }
+
+    /**
+     * ⛔ FAIL CLOSED ON A DEGRADED READ. Every value here either says nothing about the assignee
+     * or says it in a shape that is not a kanban user id — and the ones that matter most are
+     * the caller's OWN id spelled as something other than an integer, which a loose compare
+     * (`==`, `(int)`, `is_numeric`) would authorize.
+     *
+     * @return array<string, array{mixed}>
+     */
+    public static function degradedAssigneeValues(): array
+    {
+        $me = crc32('me');
+
+        return [
+            'the key is absent' => [self::ABSENT],
+            'my id as a digit string' => [(string) $me],
+            'my id as a float' => [(float) $me],
+            'an empty string' => [''],
+            'a zero string' => ['0'],
+            'my id in a list' => [[$me]],
+        ];
+    }
+
+    private const ABSENT = "\0absent";
+
+    #[DataProvider('degradedAssigneeValues')]
+    public function test_correct_does_not_authorize_by_assignment_on_a_row_with_no_readable_assignee(mixed $assignee): void
+    {
+        $row = $this->assignedCardRow($assignee);
+        if ($assignee === self::ABSENT) {
+            unset($row['assigned_user_id']);
+        }
+        $this->assertSame($this->myKanbanUserId(), crc32('me'), 'the provider spells the caller\'s own id');
+        // Encoded by hand with JSON_PRESERVE_ZERO_FRACTION: without it a float id goes over the
+        // wire as an integer literal and the row the tool decodes is not the one this case names.
+        Http::fake(function ($request) use ($row) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                $rows = str_contains($url, 'archived=1') ? [] : [$row];
+
+                return Http::response((string) json_encode(['data' => $rows], JSON_PRESERVE_ZERO_FRACTION), 200, ['Content-Type' => 'application/json']);
+            }
+
+            return Http::response(['data' => ['id' => 42]]);
+        });
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not one of yours', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * The degraded read does NOT cost the MINTED arm anything: the stamp is sufficient on its
+     * own, so a row whose assignee cannot be read is still corrected by the seat that filed it.
+     */
+    public function test_a_minted_card_with_no_readable_assignee_is_still_corrected_by_its_minter(): void
+    {
+        $row = $this->ownCardRow();
+        unset($row['assigned_user_id']);
+        Http::fake($this->correctFake(live: [$row]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
+    }
+
+    /**
+     * ⛔ UNFORGEABLE: a caller NAMING a user id is refused by name before any board request —
+     * on a card that IS assigned to that user, so the refusal cannot be an accident of the
+     * fixture — and a user-naming spelling the owner table does not enumerate is refused just
+     * as hard by the accept set.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function correctUserNamingArguments(): array
+    {
+        return [
+            'assigned_user_id (named owner)' => ['assigned_user_id', '`board_take_card` claims a card for you'],
+            'assignee (named owner)' => ['assignee', '`board_take_card` claims a card for you'],
+            'user_id (accept set)' => ['user_id', 'unknown argument'],
+            'kanban_user_id (accept set)' => ['kanban_user_id', 'unknown argument'],
+        ];
+    }
+
+    #[DataProvider('correctUserNamingArguments')]
+    public function test_correct_refuses_an_argument_naming_a_user_and_reads_nothing(string $key, string $needle): void
+    {
+        Http::fake($this->correctFake(live: [$this->assignedCardRow($this->myKanbanUserId() + 1)]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'name' => 'x', $key => $this->myKanbanUserId() + 1,
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString($needle, (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⛔ AN UNDECLARED `identity.kanban_user_id` TURNS THE ASSIGNEE ARM OFF — it is not a fault.
+     * The key is optional, and no card can be assigned to an identity that does not exist, so
+     * every card this seat did not mint answers the ORDINARY not-yours refusal, byte for byte:
+     * a live unminted card, an archived unminted card and a card that does not exist are one
+     * response, and it is the same response a declared-id seat gets for somebody else's card.
+     * The minted arm is untouched.
+     */
+    public function test_an_undeclared_kanban_user_id_turns_the_assignee_arm_off_and_answers_the_ordinary_not_yours_bytes(): void
+    {
+        $live = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        // The reference bytes: a DECLARED-id seat, a card that is not its own.
+        $ordinary = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $ordinary->assertStatus(422);
+        $this->assertStringContainsString('not one of yours', (string) $ordinary->json('error'));
+
+        $tokenFile = $this->dir.'/me-tools-token';
+        File::put($this->dir.'/me.yml', "identity: {}\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+
+        $live = [$this->ownCardRow()];
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
+
+        $live = [$this->assignedCardRow(815)];
+        $liveUnminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $live = [];
+        $archived = [$this->assignedCardRow(815)];
+        $archivedUnminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $archived = [];
+        $absent = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        foreach (['live unminted' => $liveUnminted, 'archived unminted' => $archivedUnminted, 'absent' => $absent] as $arm => $res) {
+            $res->assertStatus(422);
+            $this->assertSame($ordinary->getContent(), $res->getContent(), "the {$arm} arm on an undeclared-id install must answer the ordinary not-yours bytes");
+        }
+
+        $patches = 0;
+        Http::recorded(function ($request) use (&$patches) {
+            $patches += $request->method() === 'PATCH' ? 1 : 0;
+
+            return false;
+        });
+        $this->assertSame(1, $patches, 'only the minted correction wrote');
+    }
+
+    /**
+     * ⛔ A `kanban_user_id` two agents declare does not identify the caller, so it authorizes
+     * NOTHING by assignment — otherwise the twin seat could correct every card assigned to the
+     * shared user. That IS an install fault and is named as one, but: (1) the minted arm never
+     * reaches the resolver, so a minted card is still corrected; and (2) the fault is raised on
+     * every not-yours path, so a live unminted card, an archived one and a missing one answer the
+     * same bytes — the install fault is no existence oracle.
+     */
+    public function test_a_shared_kanban_user_id_is_an_install_fault_that_neither_blocks_the_minted_arm_nor_discloses_a_card(): void
+    {
+        File::put($this->dir.'/twin.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        $live = [$this->ownCardRow()];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
+
+        $live = [$this->assignedCardRow($this->myKanbanUserId())];
+        $liveAssigned = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $liveAssigned->assertStatus(422);
+        $this->assertStringContainsString('MORE THAN ONE agent', (string) $liveAssigned->json('error'));
+
+        $live = [];
+        $archived = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
+        $archivedUnminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $archived = [];
+        $absent = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $this->assertSame($liveAssigned->getContent(), $archivedUnminted->getContent());
+        $this->assertSame($liveAssigned->getContent(), $absent->getContent());
+
+        $patches = 0;
+        Http::recorded(function ($request) use (&$patches) {
+            $patches += $request->method() === 'PATCH' ? 1 : 0;
+
+            return false;
+        });
+        $this->assertSame(1, $patches, 'only the minted correction wrote');
+    }
+
+    /**
+     * The archived-side exception follows the SAME predicate as the live side: a retired card
+     * the seat HOLDS is named as the retire (telling it "not one of yours" would be false), and
+     * a retired card somebody else holds is not disclosed.
+     */
+    public function test_an_archived_card_assigned_to_this_seat_is_named_as_the_retire_and_one_held_by_another_is_not(): void
+    {
+        $live = [];
+        $archived = [$this->assignedCardRow($this->myKanbanUserId())];
+        $this->switchableCorrectFake($live, $archived);
+
+        $mine = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $mine->assertStatus(422);
+        $this->assertStringContainsString('ARCHIVED', (string) $mine->json('error'));
+
+        $archived = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
+        $theirs = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $theirs->assertStatus(422);
+        $this->assertStringNotContainsString('ARCHIVED', (string) $theirs->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⛔ THE WHOLESALE-REPLACE HAZARD THE ASSIGNED ARM MAKES REACHABLE. A minted row's tags had
+     * to be readable for the stamp to match; an assigned row's need not be. A `tags` correction
+     * on a row whose tag list is ABSENT is refused (composing it would delete every tag the card
+     * carries), a `name` correction on the same row still lands, and present-null — kanban's
+     * nullable json column on an untagged card — replaces nothing and is written.
+     */
+    public function test_a_tags_correction_on_an_assigned_row_with_no_readable_tag_list_is_refused_and_null_tags_are_not(): void
+    {
+        $row = $this->assignedCardRow($this->myKanbanUserId());
+        unset($row['tags']);
+        $live = [$row];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $refused = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+        $refused->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $refused->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'assigned');
+
+        $live = [$this->assignedCardRow($this->myKanbanUserId(), ['tags' => null])];
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]])
+            ->assertStatus(200)
+            ->assertJsonPath('result.tags_written', ['mine']);
+    }
+
+    /**
+     * ⛔ A LIST IS NOT A READABLE LIST UNLESS EVERY ENTRY IS A TAG STRING. The preserved half of
+     * the write is built from the row's string entries, so an entry the bridge cannot read as a
+     * tag would be silently absent from the PATCH — and kanban replaces the list wholesale, so it
+     * would be DELETED, holds and other agents' stamps included. Every shape here refuses a
+     * `tags` correction and writes nothing.
+     *
+     * @return array<string, array{mixed}>
+     */
+    public static function unreadableTagLists(): array
+    {
+        return [
+            'object entries' => [[['name' => 'no-automove'], ['name' => 'created-by:pm'], ['name' => 'blocked-by-human']]],
+            'mixed entries' => [['created-by:pm', 7, ['x' => 'no-automove']]],
+            'a keyed object' => [['a' => 'no-automove', 'b' => 'created-by:pm']],
+            'a scalar string' => ['no-automove,created-by:pm'],
+        ];
+    }
+
+    #[DataProvider('unreadableTagLists')]
+    public function test_a_tags_correction_on_an_assigned_row_whose_tag_list_holds_an_unreadable_entry_is_refused(mixed $tags): void
+    {
+        Http::fake($this->correctFake(live: [$this->assignedCardRow($this->myKanbanUserId(), ['tags' => $tags])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⚠ WHAT THE TAG-LIST GUARD NEWLY REFUSES ON THE MINTED ARM: a tag list that is not a plain
+     * list, or holds any non-string entry. A minted row's list holds the stamp, so it is never
+     * absent — but an unreadable entry BESIDE the stamp was silently dropped from the wholesale
+     * replace before DL-376, deleting it. It is refused now; the control is that the same row
+     * still takes a `name` correction. (The keyed-object half, which was NOT destructive before,
+     * is pinned by the test below.)
+     */
+    public function test_a_tags_correction_on_a_minted_row_with_an_unreadable_entry_beside_the_stamp_is_refused(): void
+    {
+        $live = [$this->ownCardRow(['tags' => ['created-by:me', ['name' => 'no-automove']]])];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
+    }
+
+    /**
+     * ⚠ THE OTHER HALF OF WHAT THE GUARD NEWLY REFUSES ON THE MINTED ARM, AND THIS ONE WAS NOT
+     * DESTRUCTIVE BEFORE. kanban validates `tags` as `nullable|array`, so a KEYED object of
+     * all-string entries is a shape it can hold; the guard requires a plain list, so a `tags`
+     * correction on such a minted row refuses where it was previously written. Kept deliberately
+     * (a keyed list is not the shape the preserve logic was written against) and disclosed in
+     * DL-376 Decision 7.
+     *
+     * @return array<string, array{array<array-key, string>}>
+     */
+    public static function mintedKeyedTagObjects(): array
+    {
+        return [
+            'sparse integer keys' => [[0 => 'created-by:me', 5 => 'priority:high']],
+            'string keys' => [['a' => 'created-by:me', 'b' => 'no-automove']],
+        ];
+    }
+
+    /** @param array<array-key, string> $tags */
+    #[DataProvider('mintedKeyedTagObjects')]
+    public function test_a_tags_correction_on_a_minted_row_whose_tags_are_a_keyed_object_of_strings_is_refused(array $tags): void
+    {
+        $live = [$this->ownCardRow(['tags' => $tags])];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        // `description`, not `name`: the string-keyed case carries `no-automove`, which pins `name`.
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
+    }
+
     // ─── the board's own 4xx on the OTHER two tools (card#8486) ──────────────
 
     /**

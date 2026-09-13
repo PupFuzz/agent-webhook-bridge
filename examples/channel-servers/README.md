@@ -268,8 +268,9 @@ surfaces them as `notifications/claude/channel`, no reply. When board tools are
 advertised (tri-state — see `BRIDGE_CHANNEL_TOOLS` in the env table: `=1` force-on,
 or **unset with `BRIDGE_TOOLS_ENDPOINT` + a resolvable bearer**), the server ALSO
 advertises the bridge's request/response MCP tools — `board_my_cards`,
-`board_create_card`, `board_correct_card` (DL-326: correct a card YOU filed,
-instead of minting a second card to say the first one is wrong) and
+`board_create_card`, `board_correct_card` (DL-326, widened by DL-376: correct a card
+you filed or that is assigned to you, instead of minting a second card to say the first
+one is wrong) and
 `board_take_card` (DL-372: claim a card for YOURSELF — the assignee is resolved from
 your bridge identity, never from the payload, so there is no argument for a user id
 and a seat can claim only for itself) — and acts as a

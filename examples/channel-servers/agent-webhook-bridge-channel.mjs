@@ -331,10 +331,13 @@ const TOOL_DEFINITIONS = [
   {
     name: 'board_correct_card',
     description:
-      'Correct a card YOU filed — its name, description or tags — instead of ' +
-      'minting a second card to say the first one is wrong. Scoped to cards ' +
-      'carrying your own bridge-stamped created-by: tag on your own board; ' +
-      'anything else is REFUSED, never silently ignored. A PRESENT argument is a ' +
+      'Correct a card that is YOURS — its name, description or tags — instead of ' +
+      'minting a second card to say the first one is wrong. A card on your own ' +
+      'board is yours when it carries your own bridge-stamped created-by: tag OR ' +
+      'is assigned to your own kanban user (resolved from your bridge identity — ' +
+      'no argument names a user); the result says which one authorized the write ' +
+      '(authorized_by: minted | assigned). Anything else is REFUSED, never ' +
+      'silently ignored. A PRESENT argument is a ' +
       'correction and an ABSENT one leaves that field alone, so tags: [] means ' +
       '"drop my tags" and an empty description clears the body. Column moves, ' +
       'correlation refs (dl/pr/issue), external ids, card type and block_reason ' +
@@ -601,9 +604,10 @@ const INSTRUCTIONS = [
   ...(TOOLS_ENABLED
     ? [
         'This server ALSO exposes request/response board tools scoped to YOUR channel identity:',
-        'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane) and',
-        'board_correct_card (correct a card YOU filed — never mint a second card to say the first is wrong) —',
-        'call them to see, capture or fix board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
+        'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane),',
+        'board_correct_card (correct a card you filed or that is assigned to you — never mint a second card to say the first is wrong) and',
+        'board_take_card (claim a card for yourself) —',
+        'call them to see, capture or fix board work without a kanban token; every write is confined by the bridge to your own board — a create lands in your own swimlane, a take only in a lane you work, and a correction only on a card that is yours.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED
