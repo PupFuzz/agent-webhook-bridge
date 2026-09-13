@@ -14,8 +14,10 @@ use App\Bridge\Tools\ClientVersion;
  * `App\Bridge\Tools\ClientVersion` is correct in form and empty in content for exactly the reader
  * who needs it. Measured on a peer fleet 2026-09-13: three seats reconciled correctly and live,
  * `client_version` NULL on all three, one of them freshly re-pinned to a snapshot below the floor
- * — every `bridge:check` line `ok`, and nothing anywhere saying why. That is a reconcile run to
- * completion for nothing, and the fix is a number in the two docs the operator actually reads.
+ * — every `bridge:check` line `ok`. The leg's own text names the two causes it cannot tell apart
+ * and asks for a re-deploy, but it is read on the bridge, long after the tag was chosen, and
+ * nothing at the moment of that choice says a floor exists. That is a reconcile run to completion
+ * for nothing, and the fix is a number in the two docs the operator actually reads.
  *
  * ⛔ IT CANNOT BE DERIVED FROM THE BUNDLED SNAPSHOT, so a "compute it" alternative is not
  * available here. {@see ClientVersion::FIRST_REPORTING_SNAPSHOT} is a FROZEN PIN on a historical

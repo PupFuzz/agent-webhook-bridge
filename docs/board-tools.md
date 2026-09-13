@@ -1071,7 +1071,7 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     the routine way that happens; the line then reads *not reported* until the seat calls
     again.
   - ⛔ **A FLEET RECONCILED TO A TAG BELOW THAT FLOOR LANDS EVERY SEAT ON THE *not reported* ARM** —
-    `ok`, *not reported*, nothing compared — which is the one way to run
+    `ok`, *not reported*, nothing compared — which is how a fleet runs
     [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *Multi-agent channel-server
     distribution* correctly, to completion, on every seat and measure nothing. That section owns
     the reconcile and states the floor at the point the tag is chosen. ⚠ **The floor is crossed
