@@ -3251,35 +3251,46 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * ⛔ THE ASSIGNEE ARM NEEDS THE CALLER'S IDENTITY AND THE MINTED ARM DOES NOT. On a roster
-     * that declares no `identity.kanban_user_id` for this seat: (1) a card it MINTED is still
-     * corrected — every correction authorized before DL-376 still is; (2) a card it did not
-     * mint is refused with the resolver's INSTALL fault; and (3) a card that does not exist is
-     * refused in exactly the same bytes, so the install fault is no existence oracle either.
+     * ⛔ AN UNDECLARED `identity.kanban_user_id` TURNS THE ASSIGNEE ARM OFF — it is not a fault.
+     * The key is optional, and no card can be assigned to an identity that does not exist, so
+     * every card this seat did not mint answers the ORDINARY not-yours refusal, byte for byte:
+     * a live unminted card, an archived unminted card and a card that does not exist are one
+     * response, and it is the same response a declared-id seat gets for somebody else's card.
+     * The minted arm is untouched.
      */
-    public function test_an_unresolvable_caller_identity_keeps_the_minted_arm_and_refuses_the_rest_without_disclosure(): void
+    public function test_an_undeclared_kanban_user_id_turns_the_assignee_arm_off_and_answers_the_ordinary_not_yours_bytes(): void
     {
+        $live = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        // The reference bytes: a DECLARED-id seat, a card that is not its own.
+        $ordinary = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $ordinary->assertStatus(422);
+        $this->assertStringContainsString('not one of yours', (string) $ordinary->json('error'));
+
         $tokenFile = $this->dir.'/me-tools-token';
         File::put($this->dir.'/me.yml', "identity: {}\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
         $live = [$this->ownCardRow()];
-        $archived = [];
-        $this->switchableCorrectFake($live, $archived);
-
         $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
             ->assertStatus(200)
             ->assertJsonPath('result.authorized_by', 'minted');
 
         $live = [$this->assignedCardRow(815)];
-        $unminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
-        $unminted->assertStatus(422);
-        $error = (string) $unminted->json('error');
-        $this->assertStringContainsString('identity.kanban_user_id', $error);
-        $this->assertStringContainsString('INSTALL fault', $error);
+        $liveUnminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
 
         $live = [];
-        $absent = (string) $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])->json('error');
-        $this->assertSame($error, $absent, 'an identity fault raised only for an existing card would disclose that it exists');
+        $archived = [$this->assignedCardRow(815)];
+        $archivedUnminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $archived = [];
+        $absent = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        foreach (['live unminted' => $liveUnminted, 'archived unminted' => $archivedUnminted, 'absent' => $absent] as $arm => $res) {
+            $res->assertStatus(422);
+            $this->assertSame($ordinary->getContent(), $res->getContent(), "the {$arm} arm on an undeclared-id install must answer the ordinary not-yours bytes");
+        }
 
         $patches = 0;
         Http::recorded(function ($request) use (&$patches) {
@@ -3293,18 +3304,44 @@ class AgentToolsCallTest extends TestCase
     /**
      * ⛔ A `kanban_user_id` two agents declare does not identify the caller, so it authorizes
      * NOTHING by assignment — otherwise the twin seat could correct every card assigned to the
-     * shared user.
+     * shared user. That IS an install fault and is named as one, but: (1) the minted arm never
+     * reaches the resolver, so a minted card is still corrected; and (2) the fault is raised on
+     * every not-yours path, so a live unminted card, an archived one and a missing one answer the
+     * same bytes — the install fault is no existence oracle.
      */
-    public function test_correct_does_not_authorize_by_an_assignee_id_two_agents_share(): void
+    public function test_a_shared_kanban_user_id_is_an_install_fault_that_neither_blocks_the_minted_arm_nor_discloses_a_card(): void
     {
         File::put($this->dir.'/twin.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
-        Http::fake($this->correctFake(live: [$this->assignedCardRow($this->myKanbanUserId())]));
+        $live = [$this->ownCardRow()];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
 
-        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
 
-        $res->assertStatus(422);
-        $this->assertStringContainsString('MORE THAN ONE agent', (string) $res->json('error'));
-        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+        $live = [$this->assignedCardRow($this->myKanbanUserId())];
+        $liveAssigned = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+        $liveAssigned->assertStatus(422);
+        $this->assertStringContainsString('MORE THAN ONE agent', (string) $liveAssigned->json('error'));
+
+        $live = [];
+        $archived = [$this->assignedCardRow($this->myKanbanUserId() + 1)];
+        $archivedUnminted = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $archived = [];
+        $absent = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $this->assertSame($liveAssigned->getContent(), $archivedUnminted->getContent());
+        $this->assertSame($liveAssigned->getContent(), $absent->getContent());
+
+        $patches = 0;
+        Http::recorded(function ($request) use (&$patches) {
+            $patches += $request->method() === 'PATCH' ? 1 : 0;
+
+            return false;
+        });
+        $this->assertSame(1, $patches, 'only the minted correction wrote');
     }
 
     /**
@@ -3357,6 +3394,59 @@ class AgentToolsCallTest extends TestCase
         $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]])
             ->assertStatus(200)
             ->assertJsonPath('result.tags_written', ['mine']);
+    }
+
+    /**
+     * ⛔ A LIST IS NOT A READABLE LIST UNLESS EVERY ENTRY IS A TAG STRING. The preserved half of
+     * the write is built from the row's string entries, so an entry the bridge cannot read as a
+     * tag would be silently absent from the PATCH — and kanban replaces the list wholesale, so it
+     * would be DELETED, holds and other agents' stamps included. Every shape here refuses a
+     * `tags` correction and writes nothing.
+     *
+     * @return array<string, array{mixed}>
+     */
+    public static function unreadableTagLists(): array
+    {
+        return [
+            'object entries' => [[['name' => 'no-automove'], ['name' => 'created-by:pm'], ['name' => 'blocked-by-human']]],
+            'mixed entries' => [['created-by:pm', 7, ['x' => 'no-automove']]],
+            'a keyed object' => [['a' => 'no-automove', 'b' => 'created-by:pm']],
+            'a scalar string' => ['no-automove,created-by:pm'],
+        ];
+    }
+
+    #[DataProvider('unreadableTagLists')]
+    public function test_a_tags_correction_on_an_assigned_row_whose_tag_list_holds_an_unreadable_entry_is_refused(mixed $tags): void
+    {
+        Http::fake($this->correctFake(live: [$this->assignedCardRow($this->myKanbanUserId(), ['tags' => $tags])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⚠ THE ONE SHAPE THE TAG-LIST GUARD NEWLY REFUSES ON THE MINTED ARM. A minted row's list
+     * holds the stamp, so it is never absent — but an unreadable entry BESIDE the stamp was
+     * silently dropped from the wholesale replace before DL-376, deleting it. It is refused the
+     * same way now; the control is that the same row still takes a `name` correction.
+     */
+    public function test_a_tags_correction_on_a_minted_row_with_an_unreadable_entry_beside_the_stamp_is_refused(): void
+    {
+        $live = [$this->ownCardRow(['tags' => ['created-by:me', ['name' => 'no-automove']]])];
+        $archived = [];
+        $this->switchableCorrectFake($live, $archived);
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => ['mine']]]);
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no readable tag list', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(200)
+            ->assertJsonPath('result.authorized_by', 'minted');
     }
 
     // ─── the board's own 4xx on the OTHER two tools (card#8486) ──────────────

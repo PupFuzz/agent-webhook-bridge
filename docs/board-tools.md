@@ -496,11 +496,17 @@ says nothing about who the card is assigned to.
   integer (a digit string, a float, `""`), is a degraded read — it does not authorize, and
   the call gets the ordinary *"not one of yours"* refusal (it may still pass on the mint
   stamp).
-- ⛔ **If the bridge cannot establish WHICH kanban user you are** — your agent's YAML declares
-  no `identity.kanban_user_id`, another agent declares the same one, or the roster cannot be
-  read — every correction that is not authorized by your mint stamp is refused with that
-  **install fault**, including a call naming a card that does not exist, so the refusal says
-  nothing about whether the card exists. Corrections of cards you minted are unaffected.
+- **If your agent's YAML declares no `identity.kanban_user_id`, the assignee relation is simply
+  off** — no card can be assigned to a user you do not have — and the tool behaves as it did
+  before DL-376: cards you minted are corrected, everything else gets *"not one of yours"*.
+- ⛔ **If the bridge cannot establish WHICH kanban user you are** — another agent declares the
+  same `identity.kanban_user_id`, or the roster cannot be read — every correction that is not
+  authorized by your mint stamp is refused with that **install fault**, including a call naming
+  a card that does not exist, so the refusal says nothing about whether the card exists.
+  Corrections of cards you minted are unaffected.
+- ⚠ **A card you TAKE becomes a card you can correct.** [`board_take_card`](#board_take_card)
+  assigns you any unheld card in a lane you work, so the assignee relation reaches every such
+  card, not only work somebody else assigned you.
 
 On top of the relation, the card must be established **on your board**, and two independent
 narrowings are checked for that — **both** are required:
@@ -560,11 +566,14 @@ the silent deletion the preservation exists to stop. A `name`/`description` corr
 is unaffected — it writes no tag list. An install with **no** `writeback.json` is a
 different (and fine) answer: it declares no hold tags, and `no-automove` still holds.
 
-⛔ **A `tags` correction on a card whose tag list the board did not return is REFUSED.** On a
-card you minted that cannot happen (your stamp is in the list), but a card assigned to you is
-authorized without reading its tags — and a wholesale replace composed from a list the bridge
-cannot see would delete every tag on the card. `tags: null` (an untagged card) is a real, empty
-list and is written normally; a `name`/`description` correction on the refused card still lands.
+⛔ **A `tags` correction on a card whose tag list the bridge cannot read IN FULL is REFUSED** —
+the key absent, not a list, or a list holding any entry that is not a string. The preserved half
+of the write is built from the string entries only, so a wholesale replace would delete every
+entry the bridge could not read, holds and other agents' stamps included. A card assigned to you
+is authorized without reading its tags, which is where this matters most, but a minted card with
+an unreadable entry beside your stamp is refused the same way. `tags: null` (an untagged card)
+is a real, empty list and is written normally; a `name`/`description` correction on the refused
+card still lands.
 
 `tags_written` in the response is what the PATCH **sent**, which is the only channel you
 have to what was preserved.
@@ -610,9 +619,9 @@ rejects outright.
 | State | Refusal |
 | --- | --- |
 | The card is not on your board, or is on it but neither carries your stamp nor is assigned to you (including an assignee the board did not return readably) | *"card N is not one of yours"* — **one message for every one of those**: you are never told whether a card you do not own exists. The message names both relations that would have made it yours. ⚠ It names a **further** cause too, because kanban's search FLOORS a caller to the boards its token is a member of and answers **200 with zero rows** for the rest: an unreadable board and an empty one are one answer here (DL-323's `mapped_board_unreadable_to_this_token`), so the message tells you to have the token's board membership checked if you believe you filed or hold the card. |
-| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (no `identity.kanban_user_id` for your agent, one shared with another agent, or an unreadable roster) — the same sentence whether or not the card exists, so it discloses nothing. See the scoping rule above. |
+| Your own kanban user cannot be established, and the card is not one you minted | The resolver's **install fault** (an `identity.kanban_user_id` shared with another agent, or an unreadable roster) — the same sentence whether or not the card exists, so it discloses nothing. An agent that declares **no** `identity.kanban_user_id` is not in this row: it gets the ordinary *"not one of yours"*. See the scoping rule above. |
 | The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp or the assignment proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed or hold is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
-| The card is yours by assignment, you are correcting `tags`, and the board returned no readable tag list | *"no readable tag list"* — **install fault**; a wholesale replace would delete tags the bridge cannot see (above). `name`/`description` are unaffected. |
+| You are correcting `tags` and the board's tag list for the card cannot be read in full | *"no readable tag list"* — **install fault**; a wholesale replace would delete tags the bridge cannot read (above). `name`/`description` are unaffected. |
 | The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
 | `writeback.json` will not parse | The install's hold vocabulary is unknown, so a **`tags`** correction is refused (see above) — **install fault**. `name`/`description` are unaffected. |
 | The card is **PINNED** and the correction writes `name` | *"card N is PINNED"* — a human froze it with a `block_reason` or a `no-automove` tag, and a `name` write is one of the writes that hold covers (DL-342; the bridge's own restamps are refused the same write on the same card). **Nothing at all is written**, including any `description`/`tags` sent in the same call, because the correction is one `PATCH` with no half-applied form. Not an install fault: ask whoever pinned it, or correct the fields the hold does not cover. |

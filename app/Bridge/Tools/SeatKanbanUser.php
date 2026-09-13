@@ -131,6 +131,53 @@ final class SeatKanbanUser
      */
     public static function forCallingSeat(string $tool): int
     {
+        [$callingAgentName, $kanbanUserId] = self::lookup($tool);
+        if ($kanbanUserId === null) {
+            Log::warning('board tools: the calling agent declares no identity.kanban_user_id, so it has no id to assign itself', [
+                'agent' => $callingAgentName, 'tool' => $tool,
+            ]);
+
+            throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: add `identity.kanban_user_id` to that agent's YAML (it is the same numeric id the board shows for your account) and report it to your operator.");
+        }
+
+        return $kanbanUserId;
+    }
+
+    /**
+     * The kanban user id declared for the seat this process is serving, or NULL when that seat's
+     * YAML declares NONE — for a consumer that only COMPARES a card against the caller
+     * (`board_correct_card`'s assignee arm, DL-376) rather than writing the caller's id.
+     *
+     * ⭐ NULL IS A REAL ANSWER HERE, NOT A FAULT. `identity.kanban_user_id` is optional, and a seat
+     * that declares none is a seat no card can be assigned to, so "compare against nothing" is the
+     * true reading. That is the one difference from {@see forCallingSeat}, which must WRITE an id
+     * and therefore refuses there. ⛔ Every OTHER state is still a named INSTALL-fault refusal and
+     * NEVER null — an unreadable roster, a seat the roster no longer carries, and an id two agents
+     * declare all mean this run cannot say who the caller is, and a comparer treating that as
+     * "unassigned" would be answering a question it could not ask.
+     *
+     * @param  string  $tool  the tool name every refusal is prefixed with
+     *
+     * @throws ToolRefusalException
+     * @throws \LogicException if no front door established a seat for this process
+     */
+    public static function declaredForCallingSeat(string $tool): ?int
+    {
+        return self::lookup($tool)[1];
+    }
+
+    /**
+     * The ONE roster read both answers share, so the two cannot drift on what counts as a fault:
+     * the sealed seat's name and its declared id (null when undeclared), or a named refusal for
+     * every state in which the id would not identify the caller.
+     *
+     * @return array{0: string, 1: ?int}
+     *
+     * @throws ToolRefusalException
+     * @throws \LogicException if no front door established a seat for this process
+     */
+    private static function lookup(string $tool): array
+    {
         $callingAgentName = CallingSeat::name();
 
         try {
@@ -158,11 +205,7 @@ final class SeatKanbanUser
         if ($mine !== null) {
             $kanbanUserId = $mine->identity->kanbanUserId;
             if ($kanbanUserId === null) {
-                Log::warning('board tools: the calling agent declares no identity.kanban_user_id, so it has no id to assign itself', [
-                    'agent' => $callingAgentName, 'tool' => $tool,
-                ]);
-
-                throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: add `identity.kanban_user_id` to that agent's YAML (it is the same numeric id the board shows for your account) and report it to your operator.");
+                return [$callingAgentName, null];
             }
 
             $sharing = [];
@@ -181,7 +224,7 @@ final class SeatKanbanUser
                 throw new ToolRefusalException("{$tool}: this bridge's config declares `identity.kanban_user_id` {$kanbanUserId} for MORE THAN ONE agent (".implode(', ', $sharing).'), so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each agent a distinct `identity.kanban_user_id` (`bridge:check` already WARNS on this collision — it does not fail, so an install can run in this state for a long time) and report it to your operator.');
             }
 
-            return $kanbanUserId;
+            return [$callingAgentName, $kanbanUserId];
         }
 
         Log::warning('board tools: the agent this call authenticated as is no longer in the roster', [

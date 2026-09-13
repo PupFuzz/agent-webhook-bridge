@@ -607,7 +607,7 @@ const INSTRUCTIONS = [
         'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane),',
         'board_correct_card (correct a card you filed or that is assigned to you — never mint a second card to say the first is wrong) and',
         'board_take_card (claim a card for yourself) —',
-        'call them to see, capture or fix board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
+        'call them to see, capture or fix board work without a kanban token; every write is confined by the bridge to your own board — a create lands in your own swimlane, a take only in a lane you work, and a correction only on a card that is yours.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED

@@ -156,9 +156,9 @@ class SeatIdentityCallSiteGuardTest extends TestCase
             'method' => 'establish',
             'why' => 'THE SEAL, at the first statement of the one body BOTH front doors funnel into. `$agentName` here is the name the door derived — the bearer\'s on http, the pinned forced command\'s on ssh — and this is the last point at which it is still an argument.',
         ],
-        'app/Bridge/Tools/SeatKanbanUser.php::forCallingSeat#1' => [
+        'app/Bridge/Tools/SeatKanbanUser.php::lookup#1' => [
             'method' => 'name',
-            'why' => 'THE ONLY READER: the resolver asks which seat this process is serving instead of taking a name from its caller. That question has exactly one answer per process and no parameter.',
+            'why' => 'THE ONLY READER: the resolver\'s one shared roster lookup (behind both `forCallingSeat` and `declaredForCallingSeat`, DL-376) asks which seat this process is serving instead of taking a name from its caller. That question has exactly one answer per process and no parameter.',
         ],
     ];
 
@@ -184,7 +184,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
      * @var array<string, string>
      */
     private const DISPOSITIONED = [
-        'app/Bridge/Tools/BoardCorrectCardTool.php::callerKanbanUserId#1' => 'THE SECOND CONSUMER (card#9202, DL-376), and it READS rather than writes: the id is COMPARED with the row\'s own `assigned_user_id` to decide whether the assignee arm authorizes a correction. It passes only the tool name, the tool accepts no user-naming argument, and it is the one site in that tool — every assignee check and the no-such-card non-disclosure resolve go through it.',
+        'app/Bridge/Tools/BoardCorrectCardTool.php::callerKanbanUserId#1' => 'THE SECOND CONSUMER (card#9202, DL-376), and it READS rather than writes: the id — `declaredForCallingSeat`, null when the seat declares none — is COMPARED with the row\'s own `assigned_user_id` to decide whether the assignee arm authorizes a correction. It passes only the tool name, the tool accepts no user-naming argument, and it is the one site in that tool — every assignee check and the no-such-card non-disclosure resolve go through it.',
         'app/Bridge/Tools/BoardTakeCardTool.php::call#1' => 'THE call site the feature rests on. It passes only the TOOL NAME (for the refusal message); the identity comes from `CallingSeat` inside the resolver. The id it returns is the ONLY value the tool writes to `assigned_user_id`.',
     ];
 
