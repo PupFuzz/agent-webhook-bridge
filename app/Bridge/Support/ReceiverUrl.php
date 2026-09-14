@@ -43,8 +43,9 @@ use Throwable;
  * neither takes the app as an argument. Its absence was a SILENT false-`ok`: on a mis-set
  * `BRIDGE_RECEIVER_BASE_URL` the hook an operator creates from the documented payload URL is
  * byte-equal to what this install composes, so `deliversTo()` answers YES about two URLs that
- * both reach nothing. It is `bridge:check`'s alone; provision has no use for it, because a
- * subscription it registers is validated by the upstream that receives it.
+ * both reach nothing. `bridge:check` reports on it, and `bridge:provision` refuses to register
+ * a URL it answers `false` for (DL-377): an upstream accepting a subscription says nothing about
+ * whether this app routes the URL it was given.
  *
  * ⛔ AND THAT THIRD PREDICATE JUDGES THE PATH AND QUERY ONLY, BY SUBSTITUTING THE AUTHORITY
  * RATHER THAN BY PROMISING NOT TO LOOK AT IT (card#9280 r2). {@see self::CANONICAL_AUTHORITY}
@@ -163,20 +164,23 @@ final class ReceiverUrl
      * CITED LIMB (c) UNTIL r7 AND THAT WAS THE WRONG LIMB: the comparand here resolves to
      * exactly one perfectly comparable URL: what is missing is the MEASUREMENT, not the value.
      *
-     * ⛔ THERE ARE NOW TWO CALLERS AND THEY RENDER `false` AT DIFFERENT SEVERITIES ON PURPOSE
-     * (card#9280 / DL-374). `App\Bridge\Check\Checks\InstallEndpointUrlsCheck` renders it
-     * **`fail`**, and moves `bridge:check`'s exit code with it. Read the paragraph above as
+     * ⛔ ITS CALLERS RENDER `false` DIFFERENTLY ON PURPOSE (card#9280 / DL-374, DL-377).
+     * `App\Bridge\Check\Checks\InstallEndpointUrlsCheck` renders it **`fail`**, and moves
+     * `bridge:check`'s exit code with it. Read the paragraph above as
      * scoped to what it actually says — a caller must not render `false` as a fault of THE
      * WEBHOOK — rather than as a rule that no caller may fail: the two are asking about
      * different subjects. That check is judging `BRIDGE_RECEIVER_BASE_URL` against this app's
      * own route table, which is the whole of what it claims, and it needs no premise about any
      * repo's hook list to say the value is wrong; the github leg would be convicting a repo's
      * webhook on a comparison it declined to make. ⚠ The path-rewriting-proxy residual named
-     * above is REAL for the new caller too and is not closed by it — it is disclosed in that
+     * above is REAL for `InstallEndpointUrlsCheck` too and is not closed by it — it is disclosed in that
      * leg's own shipped verdict text, so the one install shape this can be wrong about is told
-     * what it is looking at. A change here that widens or narrows what `false` means moves an
-     * exit code; `InstallEndpointUrlsCheckTest` and the `receiver-url-unreachable` golden
-     * fixture both red on it.
+     * what it is looking at. `App\Console\Commands\Bridge\ProvisionCommand` REFUSES to provision
+     * on `false`, and that residual is why it alone carries an override flag: there the verdict
+     * blocks a WRITE the operator may deliberately want, rather than reporting on one. A change
+     * here that widens or narrows what `false` means moves an exit code and what provision
+     * registers; `InstallEndpointUrlsCheckTest`, the `receiver-url-unreachable` golden fixture
+     * and `ProvisionTest` all red on it.
      */
     public static function reachesThisInstall(string $receiverUrl, string $provider, string $scopeId, RouteCollectionInterface $routes): bool
     {
