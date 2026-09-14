@@ -121,8 +121,9 @@ class ProvisionCommand extends BridgeCommand
                 UrlValidator::secureHttpUrl($apiBaseUrl, "bridge.providers.{$sub->provider}.api_base_url");
                 $client = new KanbanProvisionClient($apiBaseUrl, $token);
                 $receiverUrl = ReceiverUrl::for($receiverBaseUrl, $sub->provider, $sub->scopeId);
+                $shown = $this->shownReceiverUrl($receiverUrl, $sub->provider, $sub->scopeId);
 
-                if (! $this->option('list') && ! $this->mayRegister($label, $receiverBaseUrl, $sub->provider, $sub->scopeId, $receiverUrl)) {
+                if (! $this->option('list') && ! $this->mayRegister($label, $sub->provider, $sub->scopeId, $receiverUrl, $shown)) {
                     $rc = self::FAILURE;
 
                     continue;
@@ -130,7 +131,7 @@ class ProvisionCommand extends BridgeCommand
 
                 try {
                     if ($this->option('list')) {
-                        $this->listScope($client, $label, $sub->scopeId);
+                        $this->listScope($client, $label, $sub->provider, $sub->scopeId);
 
                         continue;
                     }
@@ -139,7 +140,7 @@ class ProvisionCommand extends BridgeCommand
                         $client, $sub->provider, $sub->scopeId, $receiverUrl,
                         $sub->eventFilter ?: null, (bool) $this->option('dry-run'), (bool) $this->option('reconcile'),
                     );
-                    $this->reportResult($label, $result, $receiverUrl);
+                    $this->reportResult($label, $result, $shown);
                     if (in_array($result->status, ['drift', 'cannot_reconcile'], true)) {
                         $rc = self::FAILURE;   // operator must act (re-run with --reconcile, or fix the secret)
                     }
@@ -175,16 +176,14 @@ class ProvisionCommand extends BridgeCommand
      * delivers, and nothing on this box can measure that hop — which is what the override
      * exists for, and why the refusal names it.
      *
-     * The base is shown through {@see SecretScrubber::url()}, as `bridge:check` renders the
-     * same value, because a receiver base may carry credentials in its userinfo or query.
+     * `$shown` is `$receiverUrl` as {@see self::shownReceiverUrl()} renders it.
      */
-    private function mayRegister(string $label, string $receiverBaseUrl, string $provider, string $scopeId, string $receiverUrl): bool
+    private function mayRegister(string $label, string $provider, string $scopeId, string $receiverUrl, string $shown): bool
     {
         if (ReceiverUrl::reachesThisInstall($receiverUrl, $provider, $scopeId, app(Router::class)->getRoutes())) {
             return true;
         }
 
-        $shown = ReceiverUrl::for(SecretScrubber::url($receiverBaseUrl), $provider, $scopeId);
         $flag = '--'.self::ALLOW_UNREACHABLE_RECEIVER;
 
         if ($this->option(self::ALLOW_UNREACHABLE_RECEIVER)) {
@@ -197,7 +196,7 @@ class ProvisionCommand extends BridgeCommand
 
         $this->error(OutputFormatter::escape(
             "{$label} REFUSED — the receiver URL {$shown} reaches no receiver route in this app, so a delivery to it would be refused here; nothing was sent upstream or written. "
-            .'Likely cause: BRIDGE_RECEIVER_BASE_URL, which must already end in the receiver path (see .env.example) — a bare host, or that path doubled, looks like this. '
+            .'Likely cause: BRIDGE_RECEIVER_BASE_URL, which must already end in the receiver path (see .env.example) — a bare host, that path doubled, or a base carrying its own query (which swallows the ?b= appended after it) looks like this. '
             .'Fix it in this install\'s .env and re-run (bridge:check fails on the same value). '
             ."Only the path and query were checked, against this app's own router: if this install is served behind something that REWRITES the request path, re-run with {$flag} to provision it anyway."
         ));
@@ -346,6 +345,28 @@ class ProvisionCommand extends BridgeCommand
         return SecretFile::read($agent->tokenPath($secretDir, $provider));
     }
 
+    /**
+     * A receiver URL as this command prints it: the part in front of the composed
+     * `/<provider>?b=<scope>` suffix through {@see SecretScrubber::url()} — the same redactor
+     * `bridge:check` quotes the base through — and the suffix kept as composed.
+     *
+     * ⛔ EVERY LINE THAT PRINTS A RECEIVER URL GOES THROUGH HERE, because a receiver base may
+     * carry credentials in its userinfo or query and each line is a separate chance to print
+     * them. The suffix is split off first because scrubbing the whole URL would redact the
+     * `?b=<scope>` the operator reads the line for, and it carries nothing of the base: this
+     * app composes it ({@see ReceiverUrl::for()}). A URL that does not end in this
+     * subscription's suffix — a live row someone else registered — is scrubbed whole.
+     */
+    private function shownReceiverUrl(string $url, string $provider, string $scopeId): string
+    {
+        $suffix = ReceiverUrl::for('', $provider, $scopeId);
+        if (! str_ends_with($url, $suffix)) {
+            return SecretScrubber::url($url);
+        }
+
+        return SecretScrubber::url(substr($url, 0, -strlen($suffix))).$suffix;
+    }
+
     private function reportResult(string $label, ProvisionResult $result, string $url): void
     {
         match ($result->status) {
@@ -359,7 +380,7 @@ class ProvisionCommand extends BridgeCommand
         };
     }
 
-    private function listScope(KanbanProvisionClient $client, string $label, string $scopeId): void
+    private function listScope(KanbanProvisionClient $client, string $label, string $provider, string $scopeId): void
     {
         $subs = $client->listWebhooks($scopeId);
         if ($subs === []) {
@@ -381,9 +402,13 @@ class ProvisionCommand extends BridgeCommand
             // than discovered: these are values, not spans inside bridge prose, so a row whose
             // `url` runs past `UntrustedText::MAX_CHARS` is shown truncated — with the marker
             // naming the source length, never silently.
+            // ⛔ SCRUBBED BEFORE IT IS BOUNDED, and scrubbed at all because a row this install
+            // registered carries the receiver base it was composed from, credentials included.
+            // The order matters: a truncation ahead of the redactor can cut off the `@` that
+            // ends a userinfo, and the redactor then finds no userinfo to remove.
             $active = ($sub['active'] ?? false) ? 'active' : 'INACTIVE';
             $id = UntrustedText::forOperator((string) $sub['id']);
-            $url = UntrustedText::forOperator((string) ($sub['url'] ?? '?'));
+            $url = UntrustedText::forOperator(isset($sub['url']) ? $this->shownReceiverUrl((string) $sub['url'], $provider, $scopeId) : '?');
             $this->line("{$label} id={$id} {$active} → {$url}");
         }
     }
