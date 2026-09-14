@@ -71,7 +71,7 @@ Don't use the bridge when:
 8. **Wire your agent hooks** (Claude Code example): see `examples/claude-code/settings.json.example`.
 9. **Configure AND verify the live-event path** — GitHub answering `200` is not evidence that any agent will be woken, and neither is a green `bridge:check`. The install is done when an event has been seen arriving in a session: [`CLAUDE_DEPLOYMENT.md`](CLAUDE_DEPLOYMENT.md) § *Live-event path — configure it, then SEE a wake*.
 
-After step 8, kanban activity reaches your agent's session-start and mid-session surfaces within seconds of the webhook arriving. Edit a card via the kanban UI, start a new Claude session, see the event in your context.
+After step 9, kanban activity reaches your agent's session-start surface, and — once step 9's verify step has passed for that seat — its mid-session surface within seconds of the webhook arriving. Edit a card via the kanban UI, start a new Claude session, see the event in your context.
 
 ## Multi-agent support
 
