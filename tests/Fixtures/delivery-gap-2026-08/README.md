@@ -28,9 +28,14 @@ and nothing was filled in: a day neither seat published a count for is ABSENT, n
   those two statements. The control's other zeros (2026-08-15, 2026-09-11) fall outside the published run and are
   not here.
 - **`inbox_intents` counts STAGED INTENTS, not deliveries.** A delivery that stages nothing for the seat is not
-  counted, so those series are sparser than the delivery record they stand in for. They are kept because the
-  `webhook_events` slice published for the roundtable scope begins the day before its gap, so it cannot show what
-  the derivation does with a record long enough to derive from.
+  counted, so those series are sparser than the delivery record they stand in for. They are kept because they
+  begin days before the gap, where the `webhook_events` slice published for the roundtable scope begins the day
+  before it: `kanban-solo-roundtable`'s longer record holds the single-delivery quiet day the test must reach, and
+  a record spanning the outage once the scope resumes, which the resume test reads.
+- **No named window is judged by a DERIVED threshold.** No series' record spans the two weekly cycles a derivation
+  needs when its window opens, so inside every named window the replay reaches only `underived_past_floor`, never
+  `past_threshold`. The derived term is covered by the unit cases in `ScopeDeliveryHistoryTest` and by the resume
+  test; checking the derived path against incident data waits on aimla-pm's full capture.
 - **Day buckets on a corrected-timestamp instance** (comment 5650050366 § 3(b)): the aimla-pm buckets were taken after
   migration `2026_09_05_000001_correct_php_written_timestamps_to_utc`, so a ±1-day boundary effect on the first or
   last day of a run cannot be excluded. The test keys on each run as the fixture records it, not on calendar dates.
