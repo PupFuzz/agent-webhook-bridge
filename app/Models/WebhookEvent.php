@@ -50,8 +50,8 @@ class WebhookEvent extends Model
      * 10.6 types an unbound `?` as `binary` when it resolves the COLLATE clause; 10.11 and 11.8 accept it. Measured on
      * each. `CAST(scope_id AS BINARY) = ?` applies no operator to the marker, so there is nothing to type at prepare,
      * and it names no charset: a named `utf8mb4_bin` is refused outright on a latin1 or utf8mb3 connection, on 10.6
-     * and 11.8 alike, while the cast matched exactly on those connections and on utf8mb4. The plain `where('scope_id', …)` stays first so
-     * the `(provider, scope_id)` index still narrows the read.
+     * and 11.8 alike, while the cast matched exactly on those connections and on utf8mb4. The plain
+     * `where('scope_id', …)` stays first so the `(provider, scope_id)` index still narrows the read.
      *
      * ⚠ ONLY A MARIADB RUN CAN DISCRIMINATE A REGRESSION HERE. SQLite's `=` is already byte-exact, so a test asserting
      * a case-variant scope is not credited passes on SQLite whether or not the predicate below is even applied — it is
