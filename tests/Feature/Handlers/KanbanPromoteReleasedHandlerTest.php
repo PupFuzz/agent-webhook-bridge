@@ -257,18 +257,18 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_truncated_board_read_is_loud_but_still_promotes_the_visible_cards(): void
     {
+        $row = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]];
         // A non-null links.next on every page drives readBoard past MAX_PAGES → truncated=true.
         // The scan must proceed on the partial view AND warn (no reconcile backstop for this leg).
         Log::spy();
         Http::fake([
             '*/tasks/search.json*' => Http::response([
-                'data' => [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'data' => [$row],
                 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
             ]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub([5 => $row]))->stub());
 
         $this->handle();
 
@@ -292,16 +292,16 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_permanent_getpull_4xx_skips_the_card(): void
     {
+        $rows = [
+            5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 100]],
+            6 => ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],
+        ];
         Http::fake([
-            '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 100]],
-                ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],
-            ], 'links' => ['next' => null]]),
+            '*/tasks/search.json*' => Http::response(['data' => array_values($rows), 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'Not Found'], 404),
             'https://api.github.com/repos/owner/repo/pulls/101' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA6', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA6...main' => Http::response(['status' => 'identical']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub($rows))->stub());
 
         $this->handle();   // 404 on card 5 must not abort; card 6 still promotes
 
@@ -416,17 +416,17 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_truncated_board_read_alerts(): void
     {
+        $row = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]];
         $this->writeWritebackWithAlert(['promote_on_release' => true]);
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response([
-                'data' => [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'data' => [$row],
                 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
             ]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub([5 => $row]))->stub());
 
         $this->handle();
 
