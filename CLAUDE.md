@@ -34,7 +34,9 @@ php artisan bridge:provision             # idempotent webhook subscription setup
                                          # and this line deliberately does not re-spell (DL-369) — docs/writeback.md § 2.
                                          # REFUSES a subscription whose composed receiver URL reaches no receiver route in
                                          # this app, before anything is sent or written; --allow-unreachable-receiver
-                                         # provisions it anyway and says so (DL-377)
+                                         # provisions it anyway and says so (DL-377). A base bridge:check rejects as a URL
+                                         # (e.g. ftp://…) is refused for the whole run in every mode but --list, with no
+                                         # override (card#9510)
 php artisan bridge:provision-tools       # mint per-agent board-tools bearers (DL-217; idempotent, collision-checked). The
                                          # command bridge:check's NEXT STEPS block names for an agent that is not wired
                                          # end to end (DL-352) — docs/board-tools.md. For an SSH-transport agent it mints

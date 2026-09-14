@@ -94,6 +94,9 @@ php artisan bridge:provision                      # register kanban webhook subs
                                                   # route in this app — a mis-set BRIDGE_RECEIVER_BASE_URL (DL-377).
                                                   # --allow-unreachable-receiver provisions it anyway, e.g. behind a
                                                   # proxy that rewrites the request path, and prints that it did.
+                                                  # A BRIDGE_RECEIVER_BASE_URL bridge:check rejects as a URL (e.g.
+                                                  # ftp://…) is REFUSED for the whole run in every mode except
+                                                  # --list, and the override does not apply (card#9510).
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its
                                                   # session? YES -> run this; it prints a paste-ready board_tools:
@@ -456,7 +459,8 @@ php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile] [--al
                                                                             # ensure kanban subscriptions (--reconcile fixes drift);
                                                                             #   offers a missing writeback identity_id (DL-369);
                                                                             #   refuses a receiver URL this app would not route unless
-                                                                            #   --allow-unreachable-receiver (DL-377)
+                                                                            #   --allow-unreachable-receiver (DL-377); refuses outright a
+                                                                            #   base bridge:check rejects as a URL (card#9510)
 php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
                                                       # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
                                                       # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
