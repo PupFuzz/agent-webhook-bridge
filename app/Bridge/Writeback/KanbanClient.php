@@ -184,7 +184,8 @@ final class KanbanClient
 
     /**
      * Post a comment on a card — the card-VISIBLE record channel (kanban
-     * `POST /tasks/{id}/comments.json`, strict-keyed on `content`, max 65535 chars).
+     * `POST /tasks/{id}/comments.json`, strict-keyed on `content`, capped at
+     * {@see KanbanFieldLimits::COMMENT_MAX}).
      * The one write verb here that adds a ROW instead of setting a field: it records
      * something about a card without touching a value any correlation reader keys on,
      * which is what makes it usable to report a write the writeback deliberately did

@@ -7,7 +7,7 @@ token and no toolkit** can see and capture its own board work directly.
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
-(two since DL-217; the correction tool since DL-326; the take tool since DL-372):
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
@@ -15,6 +15,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card already held by a **different** user is **refused by name** and nothing is written. |
+| `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -59,8 +60,9 @@ The tools that ship today — the table is held against the bridge's own registr
 ## Discovering them
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
-`board_create_card`, `board_correct_card` and `board_take_card`, and the server's own
-`instructions` string names them. ⚠ **A tool your seat's copy of the channel server
+`board_create_card`, `board_correct_card`, `board_take_card` and `board_comment_card`, and the
+server's own `instructions` string names them (it derives the names from the same tool list it
+advertises). ⚠ **A tool your seat's copy of the channel server
 predates is invisible to you and reports as missing** — the tool set is restated in that
 server's inline MCP schema (there is no pointer a model can follow), so a seat on an older
 snapshot lists fewer tools than the bridge serves. `bridge:check` compares the version your
@@ -773,6 +775,93 @@ gates, never as a bare 403 you would retry.
 
 **Cost:** two requests on a successful take (one board-scoped lookup, one PATCH); **one**
 request when you already hold the card; two reads and no write on a not-found refusal.
+
+## `board_comment_card`
+
+**Append a comment to a card on your own board** (DL-381, card#9459). The one way to add a
+note to a card without touching what is already on it. `board_correct_card`'s `description`
+**replaces** the whole body, so appending with it means reading the card's current text first,
+and `board_my_cards` windows that read: for a card outside the window, the only write available
+used to delete the card's contents (rt#485). A comment is a new row under the card. It needs no
+read of the body and cannot overwrite anything.
+
+**Arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `card_id` | yes | A positive **integer**: the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. |
+| `content` | yes | The comment text (kanban renders it as markdown). **Stored trimmed**; a value that is blank once trimmed, including one made only of invisible characters, is **refused**. Bounded at kanban's own `content => max:65535` **characters**, measured over the whole body the bridge sends, **attribution line included**, so the room left for your text is 65535 minus the length of `FROM: <your seat>` and the blank line after it. An over-long value is **refused** (422) before any request, and the refusal says how much room you have. ⚠ The bound reads the value **as sent**, padding included (see the normalisation rule at the top). |
+
+That is the whole accepted set. Any other key is **refused** (422) before any request: see
+§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
+Two kinds of key get a reason of their own. A key that tries to name the author (`from`,
+`author`, `seat`, …) is told the attribution comes from your bridge identity. A key that assumes
+a comment can be changed (`comment_id`, `edit`, `delete`, …) is told this tool only appends.
+
+**⭐ Which cards you can comment on: any LIVE card on your own board.**
+
+The card is established on your configured board through the same **board-scoped** search the
+correction and take tools use (`q=board_id=<yours> id=<n>`, the verdict read off the returned
+rows). **Nothing else is required.** You do not need to have filed the card, hold it, or work its
+lane. A comment changes nothing on the card and is attributed, so the relations those tools rest
+on have nothing to protect here. Refused, with nothing written:
+
+- **a card on any other board**, the coordination board included (`coord_cards` ids are a
+  different board, and this door has never written there);
+- **an ARCHIVED card** on your board, named as a retire. ⚠ kanban itself would accept that
+  comment; the bridge refuses it, as `board_correct_card` and `board_take_card` refuse archived
+  cards;
+- **an id that is not on your board**, including a card in kanban's trash, which the search does
+  not return. ⚠ A board the bridge's writeback token is not a **member** of answers the same way
+  (zero rows, not an error), and the refusal says so.
+
+**⛔ Attribution is the bridge's.** Every seat writes through the one writeback user, so the
+comment's kanban author does not say which seat wrote it. The bridge therefore writes the body as:
+
+```text
+FROM: <your seat>
+
+<your content, trimmed>
+```
+
+`<your seat>` is the agent name your call authenticated as: the bearer's agent over HTTP, the
+pinned forced command's `--agent` over ssh. It is the same name `board_create_card` stamps as
+`created-by:`. No argument can set it. If your own text starts with a `FROM:` line, that line
+lands **after** the bridge's and does not replace it.
+
+**⛔ Append-only.** Nothing on this door edits or deletes a comment.
+
+**⚠ Not idempotent.** A retryable `502` does not tell you whether the POST landed, and
+re-sending can post the comment twice. The bridge's HTTP client does not retry on its own.
+
+**⚠ A PINNED card still takes a comment.** The DL-178 hold governs a card's stage, its lifecycle
+and the fields `PinGuard::PINNED_FIELDS` names. A comment writes no field.
+
+**⚠ A comment EMITS a kanban webhook.** kanban records `comment.created` for it, as it does for
+the writeback's card notes. The actor is the writeback user, so on an install that declares
+`writeback.json`'s `identity_id` the global echo set suppresses it for every agent
+([`writeback.md`](writeback.md) owns that rule). **Do not rely on a comment to wake another
+seat.** Use the coordination surface for anything that needs an answer.
+
+**Returns:**
+
+```jsonc
+{
+  "commented": true,
+  "card_id": 42,
+  "board_id": 10,            // observed: the row was accepted only because it carried this
+  "attributed_to": "me"      // the name the bridge wrote on the FROM: line
+}
+```
+
+**⚠ It needs `comment.create` on your board.** kanban authorizes a comment through
+`CommentPolicy::createFor`: the board's write gate, then the `comment.create` permission. Member
+and admin roles carry it, and a custom role inherits it; a viewer does not. A 403 is reported as
+an **INSTALL FAULT by name** that lists every gate to audit. See
+[`writeback.md` § A least-privilege writeback token](writeback.md#1-a-least-privilege-writeback-token).
+
+**Cost:** two requests on a successful comment (one board-scoped lookup, one POST); two reads and
+no write on a not-on-board refusal.
 
 ## Errors
 

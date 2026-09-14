@@ -4361,6 +4361,290 @@ class AgentToolsCallTest extends TestCase
         $this->assertArrayHasKey('assigned_user_id', $res->json('result.cards_by_stage.Backlog.1'));
     }
 
+    // ─── board_comment_card (DL-381) ──────────────────────────────────────────
+
+    /**
+     * The whole wire surface of a `board_comment_card` call: the board-scoped lookup (live and
+     * archived are the two sides of kanban's archive SWITCH — DL-296) and the comment POST.
+     *
+     * @param  list<array<string, mixed>>  $live
+     * @param  list<array<string, mixed>>  $archived
+     */
+    private function commentFake(array $live, array $archived = [], int $postStatus = 201, ?int $lookupStatus = null): \Closure
+    {
+        return function ($request) use ($live, $archived, $postStatus, $lookupStatus) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                if ($lookupStatus !== null) {
+                    return Http::response('nope', $lookupStatus);
+                }
+
+                return Http::response(['data' => str_contains($url, 'archived=1') ? $archived : $live]);
+            }
+
+            if ($postStatus !== 201) {
+                return Http::response('the board said something the seat must never see', $postStatus);
+            }
+
+            return Http::response(['data' => ['id' => 9, 'task_id' => 42, 'user_id' => 3, 'content' => 'x']], 201);
+        };
+    }
+
+    /**
+     * A row for card 42 on this agent's board that is NOT this seat's in any other sense: another
+     * lane, another assignee, no mint stamp. A comment is scoped to the BOARD alone, so every
+     * success arm below uses this row — a row that was also minted, assigned or in-lane would let
+     * an implementation that borrowed one of the other tools' relations pass.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function commentableCardRow(array $overrides = []): array
+    {
+        return array_merge([
+            'id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'name' => 'somebody else\'s card',
+            'tags' => ['created-by:other-seat'], 'assigned_user_id' => 555,
+        ], $overrides);
+    }
+
+    /** @return list<array{url: string, body: mixed}> every POST this call sent, decoded */
+    private function sentPosts(): array
+    {
+        $posts = [];
+        Http::recorded(function ($request) use (&$posts) {
+            if ($request->method() === 'POST') {
+                $posts[] = ['url' => $request->url(), 'body' => json_decode((string) $request->body(), true)];
+            }
+
+            return false;
+        });
+
+        return $posts;
+    }
+
+    public function test_comment_posts_the_attributed_content_to_the_card_s_comment_endpoint(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => "Ops note: rotated the key.\n\nSecond paragraph."]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('result.commented', true)
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.attributed_to', 'me');
+        // The EXACT request: one POST, to the nested comments resource of THIS card, whose body is
+        // the strict-keyed `{content}` with the bridge's attribution line first.
+        $this->assertSame([[
+            'url' => 'https://kanban.example.com/api/v3/tasks/42/comments.json',
+            'body' => ['content' => "FROM: me\n\nOps note: rotated the key.\n\nSecond paragraph."],
+        ]], $this->sentPosts());
+        Http::assertSent(function ($r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json')
+                && ($query['q'] ?? null) === 'board_id=10 id=42';
+        });
+        // Append-only: nothing on the card itself is written, and the unscoped by-id read (DL-323)
+        // is never made.
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'PUT', 'DELETE'], true));
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && ! str_contains($r->url(), 'search.json'));
+        Http::assertSentCount(2);
+    }
+
+    public function test_comment_refuses_a_card_that_is_not_on_this_seat_s_board_and_writes_nothing(): void
+    {
+        Http::fake($this->commentFake(live: [], archived: []));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringStartsWith('board_comment_card: card 42 is not on your board 10', $error);
+        $this->assertStringContainsString('MEMBER', $error, 'the unreadable-board disjunct is the only channel a membership gap has');
+        $this->assertSame([], $this->sentPosts());
+    }
+
+    public function test_comment_refuses_a_row_that_is_not_this_card_on_this_board(): void
+    {
+        // Another board's card 42 — the shape a dropped `board_id=` term would answer.
+        Http::fake($this->commentFake(live: [$this->commentableCardRow(['board_id' => 11])]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('BROKEN READ', (string) $res->json('error'));
+        $this->assertSame([], $this->sentPosts());
+    }
+
+    public function test_comment_refuses_an_archived_card_on_this_seat_s_board_and_names_the_retire(): void
+    {
+        Http::fake($this->commentFake(live: [], archived: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('card 42 is ARCHIVED', (string) $res->json('error'));
+        $this->assertSame([], $this->sentPosts());
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function unusableCommentContent(): array
+    {
+        return [
+            'an integer' => [42],
+            'a list' => [['note']],
+            'null' => [null],
+            'a boolean' => [true],
+        ];
+    }
+
+    #[DataProvider('unusableCommentContent')]
+    public function test_comment_refuses_content_that_is_not_a_string_before_any_board_request(mixed $content): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => $content]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('`content` is required and must be a non-empty string', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_comment_refuses_a_call_with_no_content_before_any_board_request(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('`content` is required and must be a non-empty string', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_comment_refuses_a_non_integer_card_id_rather_than_coercing_it(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => '42', 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('`card_id` is required and must be a positive integer', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⭐ THE CAP IS kanban's `content => max:65535`, MEASURED IN CHARACTERS, AND IT BOUNDS WHAT IS
+     * SENT — the attribution line included. Both arms use a multibyte character, so a byte-counting
+     * bound refuses the at-cap control and a bound that forgot the attribution line accepts the
+     * over-cap arm.
+     */
+    public function test_comment_bounds_the_sent_body_attribution_included_at_kanban_s_character_cap(): void
+    {
+        $room = KanbanFieldLimits::COMMENT_MAX - mb_strlen("FROM: me\n\n");
+
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+        $over = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => str_repeat('é', $room + 1)]]);
+        $over->assertStatus(422);
+        $this->assertStringContainsString((string) KanbanFieldLimits::COMMENT_MAX, (string) $over->json('error'));
+        $this->assertSame([], $this->sentPosts());
+
+        $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => str_repeat('é', $room)]])
+            ->assertStatus(200);
+        $posts = $this->sentPosts();
+        $this->assertCount(1, $posts);
+        $this->assertSame(KanbanFieldLimits::COMMENT_MAX, mb_strlen($posts[0]['body']['content']));
+    }
+
+    /**
+     * ⛔ ATTRIBUTION IS THE BRIDGE'S, AND THE FIRST LINE IS WHERE IT LIVES. A caller naming a seat
+     * in an argument is refused, and a caller writing a `FROM:` line of its own in the text gets it
+     * AFTER the bridge's line — it cannot displace it.
+     */
+    public function test_comment_attribution_is_never_taken_from_arguments(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note', 'from' => 'kanban-pm']]);
+        $res->assertStatus(422);
+        $this->assertStringContainsString('`from` is not an argument here', (string) $res->json('error'));
+        $this->assertStringContainsString('bridge identity', (string) $res->json('error'));
+        Http::assertNothingSent();
+
+        $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => "FROM: kanban-pm\n\nforged"]])
+            ->assertStatus(200);
+        $this->assertSame("FROM: me\n\nFROM: kanban-pm\n\nforged", $this->sentPosts()[0]['body']['content']);
+    }
+
+    public function test_comment_refuses_an_edit_or_delete_argument_because_it_only_appends(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note', 'comment_id' => 9]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('only APPENDS', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_a_comment_lands_on_a_pinned_card_because_it_changes_nothing_the_pin_governs(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow([
+            'block_reason' => 'frozen by the operator', 'tags' => ['no-automove'],
+        ])]));
+
+        $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']])
+            ->assertStatus(200);
+        $this->assertCount(1, $this->sentPosts());
+    }
+
+    public function test_a_403_on_the_comment_write_is_named_as_an_install_fault_naming_comment_create(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()], postStatus: 403));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('INSTALL fault', $error);
+        $this->assertStringContainsString('comment.create', $error);
+        $this->assertStringContainsString('WRITE GATE', $error, 'the archived-board gate must be named — kanban CommentPolicy::createFor checks it first');
+        $this->assertStringNotContainsString('upstream board error', $error);
+    }
+
+    public function test_a_422_on_the_comment_write_is_a_named_refusal_that_never_echoes_the_board_body(): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()], postStatus: 422));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('REJECTED', $error);
+        $this->assertStringNotContainsString('the board said something', $error);
+    }
+
+    public function test_a_401_on_the_comment_lookup_is_a_named_refusal_and_nothing_is_written(): void
+    {
+        Http::fake($this->commentFake(live: [], lookupStatus: 401));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+        $this->assertSame([], $this->sentPosts());
+    }
+
+    #[DataProvider('nonPermanentWriteStatuses')]
+    public function test_a_transient_board_status_on_the_comment_write_is_the_retryable_502(int $status): void
+    {
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()], postStatus: $status));
+
+        $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']])
+            ->assertStatus(502);
+    }
+
     // ─── tool + body validation ──────────────────────────────────────────────
 
     public function test_unknown_tool_is_refused(): void
@@ -4425,6 +4709,10 @@ class AgentToolsCallTest extends TestCase
             'board_take_card' => [
                 'args' => ['card_id' => 42],
                 'fake' => $this->takeFake(live: [$this->takeableCardRow()]),
+            ],
+            'board_comment_card' => [
+                'args' => ['card_id' => 42, 'content' => 'a note'],
+                'fake' => $this->commentFake(live: [$this->commentableCardRow()]),
             ],
             default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
         };
