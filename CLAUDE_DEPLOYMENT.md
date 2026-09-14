@@ -103,7 +103,91 @@ php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUES
                                                   # Roles/handoff (ssh door): docs/board-tools-enablement.md
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 sudo systemctl reload apache2 php8.5-fpm
+# NOT DONE YET: configure AND verify the live-event path — § "Live-event path" right below.
+# GitHub answering 200 is not evidence that any agent will ever be woken.
 ```
+
+## Live-event path — configure it, then SEE a wake
+
+⛔ **An install is done when an event has been SEEN arriving in an agent session — not when GitHub gets a `200`.** Every cheaper signal is true of its own stage and blind to the stages after it, so each one can read healthy over a dead wake path. Measured on a peer install (roundtable #449): every recent hook delivery answered `200`, `bridge:stats` showed nothing errored, `bridge:check` reported the channel socket live, the merge push read `delivered` in the ledger — and no event reached either agent session. The same signals were reproduced for this section on a local install whose channel endpoint was a listener answering `202` with no session behind it — over the HTTP transport, so `bridge:check` said `channel HTTP endpoint live` where the peer install's socket line said live. This section owns the configure step, the verify step and how to read a drop; what each `classifier.config` key does stays in [`docs/config-schema.md`](docs/config-schema.md) § *`classifier.config:` keys*.
+
+### 1. Configure — what GitHub sends is not what wakes
+
+**What reaches the bridge** is chosen in GitHub, on the repo webhook's event list — [`docs/writeback.md`](docs/writeback.md) § *4. The repo webhook* owns creating that hook. ⚠ A github entry's `subscriptions[].event_filter` does **not** narrow it: dispatch matches a subscription on provider and scope only (`App\Bridge\Support\SubscriptionRegistry::subscribedTo()`), and `event_filter` is read only when `bridge:provision` registers **kanban** subscriptions.
+
+**What wakes a seat** is chosen by its classifier's families. The merge-wake case on an impl repo:
+
+```yaml
+# $BRIDGE_DIR/<agent>.yml — only the parts this path needs
+subscriptions:
+  - provider: github
+    scopes: ["your-org/your-repo"]
+classifier:
+  class: App\Bridge\Classifiers\CoordinationClassifier
+  config:
+    families: [coord-message, impl-ci-wake]  # a non-empty list REPLACES the default [coord-message]: keep it listed if this seat also takes coordination messages
+    release_branch: main                     # the push that wakes is a push to THIS branch
+    impl_non_wake_disposition: inbox_stage   # while establishing the path — see below
+channel:
+  socket: ${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-<channel-name>.sock   # or `url:` — docs/config-schema.md § channel
+```
+
+On the repo webhook, subscribe the **`push`** and **`workflow_run`** events (*Pushes* and *Workflow runs* in GitHub's individual-event picker). Under `impl-ci-wake` (`App\Bridge\Classifiers\CoordinationClassifier::implCiWakeFamily()`) these wake:
+
+- a `push` to `release_branch` that is not a branch delete — intent kind `impl_release_landed`;
+- a completed `workflow_run` whose conclusion is not in `benign_conclusions` — `impl_ci_failed`, narrowable with `ci_failure_workflow_patterns` — or a successful one whose name matches `provenance_patterns` — `impl_provenance_ok`.
+
+Everything else that family receives is a **non-wake**, and follows `impl_non_wake_disposition`.
+
+⛔ **`pull_request.closed` is NOT a wake — merged or not.** `impl-ci-wake` consumes only `push` and `workflow_run` (`App\Bridge\Classifiers\CoordinationClassifier::IMPL_CI_WAKE_EVENT_TYPES`) however it is configured, and `coord-message` surfaces a pull request only as a coordination message addressed to a seat — `closed` is not among its default actions (`coord_extra_actions` is how an install would add one), and a release PR on an impl repo carries no addressing. **A merge wakes a seat through the push to the release branch it produces.** Subscribing the hook to *Pull requests* changes none of this.
+
+**Why `inbox_stage` while establishing the path.** Under the default `drop`, a push to any other branch reads `dropped` · `classifier emitted no reactions` — the same row as a family that is not enabled or a repo `impl_repos` excludes, so the ledger cannot tell you the family is live. Under `inbox_stage` that push is staged instead: a `delivered` row with no `channel_push`, and an `impl_push` intent in `inbox.jsonl` — evidence that GitHub, the receiver and this family work for this repo, without waiting for a release. **It is not a wake and does not satisfy § 2.** ⚠ It is a quiet digest only on a `route_intents: false` channel; the `impl_non_wake_disposition` row in `docs/config-schema.md` owns what it does under `route_intents: true`. Set it back to `drop` once § 2 has passed if you do not want that inbox history.
+
+Apply the YAML edit per § *The #1 Laravel trap* below, then `php artisan bridge:check`.
+
+### 2. Verify — a wake SEEN in the session, and nothing less
+
+1. **Start the seat's session and leave it idle at a prompt.** The reference channel server is a child of that session (§ *Update an existing install* owns what that means for restarting it). Whether a notification that reaches a session mid-turn is surfaced then, later, or not at all is not established — § *Per-agent dispatch: done vs errored*.
+2. **Cause a real event, delivered by GitHub, that an enabled family wakes on.** For the merge-wake case, a push to `release_branch` — a real merge is fine, provided the account that pushes it is not one this seat declares as its own (§ 3's `echo: own write` row). For `coord-message`, a message addressed to the seat per `wake_membership` (`docs/config-schema.md`).
+3. **Look in the SESSION** for a `<channel source="…">` block whose JSON body carries an `intent.kind` naming what you caused (`impl_release_landed`) and an `intent.subject_id` that matches it (for a release landing, the landed commit SHA). **That block is the only evidence that passes this step.**
+4. **No block ⇒ the step FAILED**, whatever else is green. Go to § 3 below and read the ledger row before naming a stage.
+
+**None of these passes it.** Each was true in the local reproduction while no session received anything (the socket line is the peer install's; the reproduction ran the HTTP transport):
+
+| Signal | What it establishes — and no more |
+|---|---|
+| GitHub shows `200` for the delivery | the receiver accepted it. A gate-dropped event is answered `200` too. |
+| `bridge:check` exits `0`, including `channel HTTP endpoint live` / `channel socket live` | something accepted a connection at the endpoint. A listener is not a session — the socket line's *"a session is listening"* is worded past what its probe (a connect-and-close) measures. |
+| `bridge:stats` shows `errored (replayable)` = `0` | no classifier threw. `bridge:stats` has no delivered-vs-dropped split: a dropped event and a pushed one both count as `processed`. |
+| `delivered` in `bridge:inspect` | every handler for that dispatch returned — the legend printed under that table says what it is not. |
+| `bridge dispatch: channel_push unconfirmed` beside `bridge channel_push: accepted by transport (unconfirmed)` with `"status":202` | the endpoint wrote the notification to its own transport. |
+| an intent line in `inbox.jsonl` | staged, not woken. |
+
+⛔ **Do not verify with a re-send.** Delivery dedup keys on a hash of the signed body (`App\Bridge\Adapters\GitHubAdapter`), so a body byte-identical to one this install already processed is answered `200` and does nothing — no new event row, no log line, no push (measured). A signed synthetic delivery (§ *Smoke-test the receiver with a signed delivery*) exercises the receiver, not GitHub's hook, and does not close this step either.
+
+### 3. No wake? Read the ledger row FIRST
+
+Do not name a stage from the symptom. The install in roundtable #449 was first told *"the classifier dropped it"* from the symptom alone, and its row read `delivered`. The ledger row is written whatever the log level; the log lines are not. `bridge dispatch: dropped at gate`, `bridge dispatch: delivered` and `bridge dispatch: channel_push unconfirmed` (`App\Bridge\Dispatch\DispatchService::markDropped()` / `markDelivered()`) and `bridge channel_push: accepted by transport (unconfirmed)` (`App\Bridge\Handlers\ChannelPushHandler::reportAcceptance()`) are logged at `info`, so an install whose `LOG_LEVEL` is above `info` writes none of those. `bridge dispatch: classifier failed` (`DispatchService::recordError()`) and the DL-373 line (`DispatchService::warnAccountEchoUnderReattribution()`) are logged at `warning`.
+
+1. **Find the event id** — the `event` key on that dispatch's `bridge dispatch:` line in `storage/logs/laravel.log`, or the query below. `bridge dispatch: classifier failed` carries no `event` key, so an errored dispatch's event id comes from the query, not from its log line:
+   ```sql
+   SELECT id, event_type, received_at FROM webhook_events ORDER BY id DESC LIMIT 5;
+   ```
+2. **`php artisan bridge:inspect <id>`** (`--agent=<name>` shows one seat's row). Read `outcome` and `reason / error`, then find the row:
+
+| `bridge:inspect` shows | Log line | What it means | Look next at |
+|---|---|---|---|
+| no event row for the delivery | — | this install never recorded it: GitHub got an error, the hook points somewhere else, or the body was identical to one already processed (the ⛔ above) | the hook's recent deliveries in GitHub; `bridge:check`'s `github webhook:` line |
+| the event, and **no dispatch row** for your agent | — | this agent's YAML does not subscribe this provider + scope (other agents can still have rows for the same event) | that agent's `subscriptions:` |
+| `errored` | `bridge dispatch: classifier failed` | the classifier threw | § *Diagnose* |
+| `dropped` · `classifier emitted no reactions` | `bridge dispatch: dropped at gate` | it reached the classifier and no enabled family acted on it. Examples, not a complete list: an event type no enabled family consumes (`pull_request.closed` under `impl-ci-wake`), a family missing from `families`, a repo outside `impl_repos`, a coordination message not addressed to this seat (default `coord_non_addressed_disposition: drop`, `App\Bridge\Classifiers\CoordinationClassifier::coordMessageFamily()`), a non-release push or a benign completed `workflow_run` under `impl_non_wake_disposition: drop` (under `inbox_stage` both are staged and the row reads `delivered`), an unfinished `workflow_run` | `classifier.config`; `bridge:check`'s `event-consumer:` line names received event types that no enabled classifier consumes |
+| `dropped` · `echo: own write` | `bridge dispatch: dropped at gate` | ⛔ **the echo gate — the event is this agent's OWN write.** Its actor (`sender.id`) resolved to this agent, whose `identity` ids are auto-seeded into echo suppression, or matched `treat_as_echo` / `treat_as_echo_ids`. On this path the common way to reach it is a merge pushed by the account the seat declares as `identity.github_user_id`: the seat's own release landing is dropped before anything could wake it. When the match was this agent's own github id under `CoordinationClassifier` (or a subclass), a `warning` beginning `bridge dispatch: the account-keyed echo gate named the serving agent` is logged beside it, with a remedy (DL-373). | the `identity:` and `echo_suppression:` rows in `docs/config-schema.md`; the impl-seat invariant on `App\Bridge\Classifiers\CoordinationClassifier::makeImplIntent()` |
+| `dropped` · `echo: own write (reattributed author)` | `bridge dispatch: dropped at gate` | the classifier recovered the author from the event's content, and it is this agent | the event's `FROM:` line; `scope_author_map` for that repo (`docs/config-schema.md`) |
+| `dropped` · `actor is not a signal` | `bridge dispatch: dropped at gate` | `treat_as_signal` is set and the actor is not on it | `echo_suppression.treat_as_signal` |
+| `delivered` · `echo: agent surface suppressed` | `bridge dispatch: delivered`, with `reason` | a gate hit on a writeback classifier: the agent-facing surface was stripped and only machine writeback ran — no wake, by design | § *Per-agent dispatch: done vs errored* |
+| `delivered`, blank | `bridge dispatch: delivered` | handlers ran and **no `channel_push` was attempted** — e.g. an `inbox_stage` non-wake event on a `route_intents: false` channel: staged, not woken | `inbox.jsonl`; whether the event was wake-worthy (§ 1) |
+| `delivered`, with an error naming the push failure (e.g. a connection exception) | `bridge dispatch: channel_push unconfirmed` with `handler_note`, and **no** `bridge channel_push:` line | the push failed at or before the endpoint — nothing listening is the normal state of an idle seat; the intent is in `inbox.jsonl` | the seat's session; `bridge:check`'s channel lines |
+| `delivered`, blank | `bridge dispatch: channel_push unconfirmed` **and** `bridge channel_push: accepted by transport (unconfirmed)` with `"status":202` | ⛔ **the bridge's half is complete — and this is the row a dead wake path leaves.** The endpoint wrote the notification to its transport, and nothing the bridge records sees past that. No block in the session ⇒ the fault is past the bridge: at the endpoint, or in the session that should be behind it. | restart the session that owns the channel server (§ *Update an existing install* owns how, and what not to do instead); the deployed channel-server version (§ *Multi-agent channel-server distribution*); `bin/check-channel-snapshot.py` |
 
 ## Update an existing install
 
@@ -233,6 +317,8 @@ curl -X POST \
   "$BRIDGE_RECEIVER_BASE_URL/github?b=${SCOPE}"     # BRIDGE_RECEIVER_BASE_URL ends in /webhooks → POST /webhooks/github
 # then: php artisan bridge:stats   (expect errored=0) ; php artisan bridge:inspect <N>
 ```
+
+⚠ **This proves the receiver, not a wake** — `errored=0` and a `delivered` row are both true over a dead wake path. § *Live-event path — configure it, then SEE a wake* owns that verification.
 
 A `401 scope_mismatch` almost always means the body omitted (or mismatched) `repository.full_name` vs `?b=` — not an HMAC problem (G-018). A `401 unknown_scope` from **`bridge:sign` itself** (it names the path it looked at) means this install has no secret for that scope — the receiver would answer the same way, so fix it before reading anything into the `curl`.
 
@@ -471,6 +557,7 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
 
 ## Diagnose
 
+- **GitHub gets `200`, every diagnostic is green, and no agent wakes.** Read the ledger row before naming a stage — § *Live-event path — configure it, then SEE a wake* § 3.
 - **`bridge:stats` shows errored dispatches, `NOT replayable`.** Those events are past `retention.null_payloads_older_than` (default 7d) and their payloads are gone; `bridge:replay` refuses them and no command can recover them. Fix the classifier so the class stops recurring, and widen the window (then `php artisan config:cache`) if your detection latency needs it.
 - **`bridge:stats` shows errored dispatches.** A classifier threw. `bridge:inspect <id>` (or `storage/logs/laravel.log`) for detail → fix → `optimize:clear && reload php8.5-fpm` → `bridge:replay <id>`.
 - **Idle agent — channel pushes "failing".** Connection-refused with no Claude Code session up is NORMAL: row is **done with a note**, intent is in `inbox.jsonl` for the next `bridge:inbox`. Not an incident; `--force` re-attempts the push.

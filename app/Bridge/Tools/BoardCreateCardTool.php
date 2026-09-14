@@ -202,6 +202,16 @@ final class BoardCreateCardTool implements Tool
         return 'board_create_card';
     }
 
+    public function acceptedArguments(): array
+    {
+        return ['title', 'description', 'tags', 'idempotency_key'];
+    }
+
+    public function refusedArgumentReason(string $key): ?string
+    {
+        return null;
+    }
+
     /**
      * WHERE THE CARD ACTUALLY IS — the placement half of this tool's answer, read
      * back from the card itself (card#7225, DL-299). Both arms used to restate
