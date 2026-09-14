@@ -36,18 +36,21 @@ not survive. A copy-shape run removes everything in `channel-setup/` except `nod
 before writing, so a file the reference stops shipping does not survive either, while a
 deployment running straight out of the staged directory keeps its installed dependencies.
 
-NOTHING IS WRITTEN THROUGH A SYMLINK. A `seat-tools/` or `channel-setup/` that is a symlink,
-or a symlink on the path of a file the pack writes, is refused. Any other symlink the
-`channel-setup/` prune meets is unlinked, never followed.
+NOTHING IS WRITTEN THROUGH A SYMLINK AT OR BELOW --out's `seat-tools/` OR `channel-setup/`.
+Either directory being a symlink is refused, and so is a symlink on the path of a file the
+pack writes under `channel-setup/`. A symlink inside `seat-tools/` goes with the directory it
+is in; any other symlink the `channel-setup/` prune meets is unlinked, never followed. --out
+itself may be a symlink: it names where the pack goes.
 
-EVERY INPUT IS READ, AND EVERY DESTINATION CHECKED, BEFORE THE FIRST WRITE, so a refusal
-leaves --out as it found it.
+EVERY INPUT IS READ, AND EVERY DESTINATION CHECKED, BEFORE THE FIRST WRITE, so a REFUSAL
+leaves --out as it found it. An error after the first write is not a refusal: it is reported
+as FAILED while writing, and --out may then be partially updated until a re-run succeeds.
 
 DETERMINISTIC: no timestamps, sorted entries, fixed modes. Two runs over one tree write
 byte-identical output, so "is the staged pack current?" is "regenerate to a temp dir and
 `diff -r -x node_modules`".
 
-EXIT: 0 written · 1 refused, the reason on stderr · 2 usage.
+EXIT: 0 written · 1 refused before writing, or failed while writing; the reason on stderr · 2 usage.
 """
 
 import argparse
@@ -95,6 +98,8 @@ def declared_tools() -> list:
             entries = json.load(fh)["tools"]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise Refused(f"{MANIFEST} is unreadable or has no `tools` list: {exc}")
+    if not isinstance(entries, list) or not entries:
+        raise Refused(f"{MANIFEST} declares no tools; staging it would empty seat-tools/")
 
     tools = []
     for entry in entries:
@@ -180,21 +185,35 @@ def replace_dir(built: str, destination: str) -> None:
     os.rename(built, destination)
 
 
-def stage(out: str, shape: str) -> str:
-    tools = declared_tools()
-    seat_tools_dest = os.path.join(out, "seat-tools")
-    channel_dest = os.path.join(out, "channel-setup")
-    refuse_unless_directory_or_absent(seat_tools_dest)
+def prepare(out: str, shape: str) -> dict:
+    """Every read and every refusal. Nothing under --out is written here."""
+    plan = {"tools": declared_tools()}
+    refuse_unless_directory_or_absent(os.path.join(out, "seat-tools"))
 
     if shape == "copy":
         channel = channel_files()
+        channel_dest = os.path.join(out, "channel-setup")
         refuse_unless_directory_or_absent(channel_dest)
         refuse_symlinks_on_the_way_to(channel_dest, [staged for _, staged, _ in channel])
-        tool_bytes = {tool: read_bytes(tool) for tool in tools}
         version = read_bytes("VERSION")
-        describe = git("describe", "--tags", "--always", "--dirty").strip()
-        channel_bytes = [(staged, read_bytes(path), mode) for path, staged, mode in channel]
+        try:
+            version_text = version.decode("utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise Refused(f"VERSION is not UTF-8: {exc}")
+        plan.update(
+            tool_bytes={tool: read_bytes(tool) for tool in plan["tools"]},
+            version=version,
+            version_text=version_text,
+            describe=git("describe", "--tags", "--always", "--dirty").strip(),
+            channel_bytes=[(staged, read_bytes(path), mode) for path, staged, mode in channel],
+        )
+    return plan
 
+
+def write(out: str, shape: str, plan: dict) -> str:
+    tools = plan["tools"]
+    seat_tools_dest = os.path.join(out, "seat-tools")
+    channel_dest = os.path.join(out, "channel-setup")
     os.makedirs(out, exist_ok=True)
     build = tempfile.mkdtemp(prefix=".seat-pack-", dir=out)
     try:
@@ -207,15 +226,16 @@ def stage(out: str, shape: str) -> str:
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.symlink(os.path.join(REPO, tool), target)
             else:
-                write_file(target, tool_bytes[tool], 0o755)
-                records.append({"name": name, "sha256": hashlib.sha256(tool_bytes[tool]).hexdigest()})
+                data = plan["tool_bytes"][tool]
+                write_file(target, data, 0o755)
+                records.append({"name": name, "sha256": hashlib.sha256(data).hexdigest()})
 
         if shape == "copy":
-            write_file(os.path.join(seat_tools, "VERSION"), version, 0o644)
+            write_file(os.path.join(seat_tools, "VERSION"), plan["version"], 0o644)
             meta = {
                 "schema": SCHEMA,
-                "bridge_version": version.decode("utf-8").strip(),
-                "bridge_describe": describe,
+                "bridge_version": plan["version_text"],
+                "bridge_describe": plan["describe"],
                 "tools": records,
             }
             write_file(
@@ -225,9 +245,9 @@ def stage(out: str, shape: str) -> str:
             )
 
             prune_except_node_modules(channel_dest)
-            for staged, data, mode in channel_bytes:
+            for staged, data, mode in plan["channel_bytes"]:
                 write_file(os.path.join(channel_dest, staged), data, mode)
-            summary = f"seat-tools/ ({len(tools)} tool(s)) and channel-setup/ ({len(channel_bytes)} file(s))"
+            summary = f"seat-tools/ ({len(tools)} tool(s)) and channel-setup/ ({len(plan['channel_bytes'])} file(s))"
         else:
             summary = f"seat-tools/bin/ ({len(tools)} link(s) into {REPO})"
 
@@ -254,9 +274,14 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     out = os.path.abspath(args.out)
     try:
-        summary = stage(out, args.shape)
+        plan = prepare(out, args.shape)
     except (Refused, OSError) as exc:
         print(f"seat-pack.py: refused: {exc}", file=sys.stderr)
+        return 1
+    try:
+        summary = write(out, args.shape, plan)
+    except OSError as exc:
+        print(f"seat-pack.py: FAILED while writing (--out may be partially updated; re-run): {exc}", file=sys.stderr)
         return 1
     print(f"seat-pack.py: {args.shape} shape staged at {out}: {summary}")
     return 0

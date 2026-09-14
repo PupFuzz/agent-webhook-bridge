@@ -13,7 +13,8 @@
     tree are byte-identical; the link shape writes links and no metadata.
 (r) A RE-STAGE IS SAFE TO RUN OVER WHAT IS ALREADY THERE: nothing is written through a
     symlink, at either end; `channel-setup/` is regenerated, keeping only `node_modules/`;
-    and a refusal of any kind is a named `refused:` line, never a traceback.
+    a refusal of any kind is a named `refused:` line that wrote nothing, never a traceback;
+    and an error after writing has begun says `FAILED while writing`, never `refused:`.
 
 The remedy half, (c), is PHP: `Tests\\Support\\AssertsSeatToolRemedy`.
 
@@ -377,6 +378,48 @@ class RestageIsSafeOverWhatIsThere(_Scratch):
         self.assertRefused(proc, "VERSION")
         self.assertFalse(os.path.lexists(os.path.join(out, "seat-tools")), "a refusal wrote seat-tools/")
         self.assertFalse(os.path.lexists(os.path.join(out, "channel-setup")), "a refusal wrote channel-setup/")
+
+    def test_an_empty_tool_list_is_refused_before_anything_is_written(self):
+        repo, seat_pack = self.fixture_repo()
+        out = os.path.join(self.tmp, "out")
+        self.assertEqual(0, _pack(out, seat_pack=seat_pack).returncode)
+        before = _tree(out)
+        with open(os.path.join(repo, "seat-tools.json"), "w") as fh:
+            json.dump({"schema": 1, "tools": []}, fh)
+
+        for shape in ("link", "copy"):
+            with self.subTest(shape=shape):
+                proc = _pack(out, "--shape", shape, seat_pack=seat_pack)
+
+                self.assertEqual(before, _tree(out), "an empty declaration changed --out")
+                self.assertRefused(proc, "seat-tools.json", "no tools")
+
+    def test_a_failure_after_the_first_write_says_so_and_is_not_called_a_refusal(self):
+        repo, seat_pack = self.fixture_repo()
+        out = os.path.join(self.tmp, "out")
+        self.assertEqual(0, _pack(out, seat_pack=seat_pack).returncode)
+        channel = os.path.join(out, "channel-setup")
+        # The prune walks names in sorted order: `a-stale.mjs` goes, then `locked/` cannot.
+        stale = os.path.join(channel, "a-stale.mjs")
+        with open(stale, "w") as fh:
+            fh.write("stale\n")
+        locked = os.path.join(channel, "locked")
+        os.makedirs(locked)
+        with open(os.path.join(locked, "extra"), "w") as fh:
+            fh.write("extra\n")
+        os.chmod(locked, 0o555)
+        self.addCleanup(os.chmod, locked, 0o755)
+        if os.access(locked, os.W_OK):
+            self.skipTest("running as a user a 0555 directory does not stop (root)")
+
+        proc = _pack(out, seat_pack=seat_pack)
+
+        self.assertFalse(os.path.lexists(stale), "the fixture did not reach a write before failing")
+        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertNotIn("refused:", proc.stderr, "a failure after writing began was reported as a refusal")
+        self.assertIn("seat-pack.py: FAILED while writing (--out may be partially updated; re-run): ", proc.stderr)
+        self.assertIn("Permission denied", proc.stderr)
 
     def test_a_copy_restage_prunes_channel_setup_except_node_modules(self):
         out = os.path.join(self.tmp, "out")
