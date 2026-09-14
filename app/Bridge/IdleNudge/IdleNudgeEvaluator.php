@@ -61,6 +61,9 @@ final class IdleNudgeEvaluator
      * @param  array<string, bool>  $agents  declared agent name => its `channel.route_intents`
      * @param  array<string, int>  $nudged  agent => the `idle_since` (epoch ms) it was last nudged for
      * @param  callable(string): list<array<mixed>>  $unseenLines  throws {@see InboxUnreadable}
+     * @param  callable(string, list<string>): array<string, float|null>  $pushTimes  agent + line ids => each
+     *                                                                                line's last push time (epoch s, DB clock); null
+     *                                                                                or absent = unreadable; throws {@see PushTimeUnreadable}
      */
     public function evaluate(
         FleetSnapshot $snapshot,
@@ -68,6 +71,7 @@ final class IdleNudgeEvaluator
         array $agents,
         array $nudged,
         callable $unseenLines,
+        callable $pushTimes,
         float $dbNowS,
         int $defaultAfterS,
     ): Evaluation {
@@ -110,7 +114,7 @@ final class IdleNudgeEvaluator
         sort($names);
         foreach ($names as $agent) {
             $verdicts[] = $this->agent(
-                $agent, $agents[$agent], $declarers[$agent] ?? [], $snapshot, $install, $nudged, $unseenLines, $dbNowS, $defaultAfterS,
+                $agent, $agents[$agent], $declarers[$agent] ?? [], $snapshot, $install, $nudged, $unseenLines, $pushTimes, $dbNowS, $defaultAfterS,
             );
         }
 
@@ -121,6 +125,7 @@ final class IdleNudgeEvaluator
      * @param  list<array<mixed>>  $declared
      * @param  array<string, int>  $nudged
      * @param  callable(string): list<array<mixed>>  $unseenLines
+     * @param  callable(string, list<string>): array<string, float|null>  $pushTimes
      */
     private function agent(
         string $agent,
@@ -130,6 +135,7 @@ final class IdleNudgeEvaluator
         string $install,
         array $nudged,
         callable $unseenLines,
+        callable $pushTimes,
         float $dbNowS,
         int $defaultAfterS,
     ): AgentVerdict {
@@ -209,7 +215,13 @@ final class IdleNudgeEvaluator
         }
 
         $foldLagS = $foldLagMs / 1000;
-        $pending = [];
+        // (b) old enough that a wake it caused would be visible. Every overstatement of an age
+        // here runs the unsafe way (it would call a fresh push old), so the transit and the ts
+        // quantum are subtracted, and the seat's own fold lag is added: a wake cannot show
+        // before Mezzanine has folded the events that carry it.
+        $oldEnough = fn (float $ageS): bool => $ageS - $snapshot->transitS - self::TS_QUANTUM_S >= self::WAKE_GRACE_S + $foldLagS;
+
+        $candidates = [];
         foreach ($lines as $line) {
             $ts = $line['ts'] ?? null;
             if (! is_int($ts) && ! is_float($ts)) {
@@ -217,21 +229,42 @@ final class IdleNudgeEvaluator
             }
             $intentAgeS = $dbNowS - (float) $ts;
 
-            // (a) staged after the idle edge. Budget: `dbNow` is read after the response, so
-            // intentAge is overstated by up to the transit plus the DB read, and a SQLite `ts`
-            // truncated to the second overstates it by up to a second more. Both push an intent
-            // staged just after the edge to "before" — a missed nudge. A clock STEP on either
-            // host between the readings can go either way; the (agent, idle_since) dedupe
+            // (a) staged after the idle edge, judged on `ts`. Budget: `dbNow` is read after the
+            // response, so intentAge is overstated by up to the transit plus the DB read, and a
+            // SQLite `ts` truncated to the second overstates it by up to a second more. Both push
+            // an intent staged just after the edge to "before" — a missed nudge. A clock STEP on
+            // either host between the readings can go either way; the (agent, idle_since) dedupe
             // bounds that to one wrong nudge or one miss per idle period.
-            if (! ($intentAgeS < $idleAgeS)) {
+            if (! ($intentAgeS < $idleAgeS) || ! $oldEnough($intentAgeS)) {
                 continue;
             }
+            $candidates[] = $line;
+        }
 
-            // (b) old enough that a wake it caused would be visible. The same overstatement
-            // runs the unsafe way here (it would call a fresh push old), so it is subtracted,
-            // and the seat's own fold lag is added: a wake cannot show before Mezzanine has
-            // folded the events that carry it.
-            if ($intentAgeS - $snapshot->transitS - self::TS_QUANTUM_S < self::WAKE_GRACE_S + $foldLagS) {
+        if ($candidates === []) {
+            return $verdict('nothing_pending');
+        }
+
+        // ⛔ `ts` IS WHEN THE EVENT WAS FIRST RECEIVED, NOT WHEN THE LINE WAS LAST PUSHED. A
+        // redelivery or `bridge:replay` re-stages the line with the original `ts` and pushes it
+        // again NOW, so (b) is re-judged from the later of `ts` and the dispatch's DB-stamped
+        // push time. A line whose push time cannot be read makes the whole agent unmeasured:
+        // treating it as old would nudge inside a fresh wake, and dropping it would hide work.
+        try {
+            $pushedAt = $pushTimes($agent, array_map(fn (array $line): string => (string) ($line['id'] ?? ''), $candidates));
+        } catch (PushTimeUnreadable) {
+            return $verdict('push_time_unreadable');
+        }
+
+        $pending = [];
+        foreach ($candidates as $line) {
+            $id = (string) ($line['id'] ?? '');
+            $ts = (float) $line['ts'];
+            $pushed = $pushedAt[$id] ?? null;
+            if ($pushed === null) {
+                return $verdict('push_time_unreadable');
+            }
+            if (! $oldEnough($dbNowS - max($ts, $pushed))) {
                 continue;
             }
 
@@ -240,7 +273,7 @@ final class IdleNudgeEvaluator
                 'kind' => $line['kind'] ?? null,
                 'subject_id' => $line['subject_id'] ?? null,
                 'summary' => is_string($line['summary'] ?? null) ? mb_strimwidth($line['summary'], 0, 200, '…') : null,
-                'ts' => (float) $ts,
+                'ts' => $ts,
             ];
         }
 

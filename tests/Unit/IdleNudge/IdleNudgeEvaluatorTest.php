@@ -7,6 +7,7 @@ use App\Bridge\IdleNudge\Evaluation;
 use App\Bridge\IdleNudge\FleetSnapshot;
 use App\Bridge\IdleNudge\IdleNudgeEvaluator;
 use App\Bridge\IdleNudge\InboxUnreadable;
+use App\Bridge\IdleNudge\PushTimeUnreadable;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -71,9 +72,14 @@ class IdleNudgeEvaluatorTest extends TestCase
      * @param  array<string, int>  $nudged
      * @param  list<array<string, mixed>>|null  $lines  null = the inbox cannot be read
      */
-    private function evaluate(array $seats, array $agents = ['pm' => true], array $nudged = [], ?array $lines = null, float $transitS = 0.05): Evaluation
+    private function evaluate(array $seats, array $agents = ['pm' => true], array $nudged = [], ?array $lines = null, float $transitS = 0.05, ?callable $pushTimes = null): Evaluation
     {
         $lines ??= [$this->line('d1:pm:0', 600)];
+        // Default: each line was last pushed when it was staged, so its push time IS its ts.
+        $pushTimes ??= fn (string $agent, array $ids): array => array_combine(
+            $ids,
+            array_map(fn (string $id): ?float => $this->tsOf($lines, $id), $ids),
+        );
 
         return (new IdleNudgeEvaluator)->evaluate(
             new FleetSnapshot($this->serverMs(), $seats, $transitS),
@@ -81,9 +87,22 @@ class IdleNudgeEvaluatorTest extends TestCase
             $agents,
             $nudged,
             fn (string $agent): array => $lines,
+            $pushTimes,
             $this->dbNowS(),
             1800,
         );
+    }
+
+    /** @param  list<array<string, mixed>>  $lines */
+    private function tsOf(array $lines, string $id): ?float
+    {
+        foreach ($lines as $line) {
+            if ($line['id'] === $id) {
+                return (float) $line['ts'];
+            }
+        }
+
+        return null;
     }
 
     private function only(Evaluation $e): AgentVerdict
@@ -261,6 +280,7 @@ class IdleNudgeEvaluatorTest extends TestCase
             ['pm' => true],
             [],
             fn (string $agent): array => throw new InboxUnreadable('no'),
+            fn (string $agent, array $ids): array => [],
             $this->dbNowS(),
             1800,
         );
@@ -297,6 +317,43 @@ class IdleNudgeEvaluatorTest extends TestCase
 
         $this->assertSame('nudge', $this->only($this->evaluate([$this->seat()], lines: $line, transitS: 0.5))->code);
         $this->assertSame('nothing_pending', $this->only($this->evaluate([$this->seat()], lines: $line, transitS: 20.0))->code);
+    }
+
+    public function test_a_line_pushed_again_recently_is_judged_from_its_push_not_its_receipt(): void
+    {
+        // Received 600 s ago (it passes (a) and (b) on ts), but redelivered and pushed 30 s ago.
+        $recent = $this->dbNowS() - 30;
+        $v = $this->only($this->evaluate([$this->seat()], pushTimes: fn (string $a, array $ids): array => array_fill_keys($ids, $recent)));
+
+        $this->assertSame('nothing_pending', $v->code);
+    }
+
+    public function test_a_push_time_older_than_ts_never_makes_a_line_older(): void
+    {
+        // max(ts, pushed): a stale stamp cannot age a line past its own receipt.
+        $lines = [$this->line('fresh', 60)];
+        $v = $this->only($this->evaluate([$this->seat()], lines: $lines, pushTimes: fn (string $a, array $ids): array => array_fill_keys($ids, $this->dbNowS() - 900)));
+
+        $this->assertSame('nothing_pending', $v->code);
+    }
+
+    public function test_an_unreadable_push_time_makes_the_agent_unmeasured(): void
+    {
+        $this->assertSame('push_time_unreadable', $this->only($this->evaluate([$this->seat()], pushTimes: fn (string $a, array $ids): array => array_fill_keys($ids, null)))->code);
+        $this->assertSame('push_time_unreadable', $this->only($this->evaluate([$this->seat()], pushTimes: fn (string $a, array $ids): array => []))->code);
+        $this->assertSame('push_time_unreadable', $this->only($this->evaluate([$this->seat()], pushTimes: fn (string $a, array $ids): array => throw new PushTimeUnreadable('down')))->code);
+    }
+
+    public function test_the_push_time_is_asked_only_for_lines_that_already_qualify_on_ts(): void
+    {
+        $asked = null;
+        $this->evaluate([$this->seat()], lines: [$this->line('before-edge', 3700), $this->line('fresh', 30), $this->line('due', 600)], pushTimes: function (string $a, array $ids) use (&$asked): array {
+            $asked = $ids;
+
+            return array_fill_keys($ids, $this->dbNowS() - 600);
+        });
+
+        $this->assertSame(['due'], $asked);
     }
 
     public function test_pending_is_capped_oldest_first_with_the_true_total(): void

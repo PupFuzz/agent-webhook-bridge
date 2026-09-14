@@ -76,11 +76,6 @@ final class IdleNudgeConfig
         );
     }
 
-    public function isUsable(): bool
-    {
-        return $this->enabled && $this->problem === null;
-    }
-
     private static function nonEmptyString(mixed $value): ?string
     {
         return is_string($value) && trim($value) !== '' ? trim($value) : null;

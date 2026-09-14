@@ -14,9 +14,12 @@ use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Support\DbClock;
+use App\Models\AgentDispatch;
 use App\Models\ScheduledJob;
+use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
@@ -119,11 +122,23 @@ class IdleNudgeJobTest extends TestCase
         ], $over);
     }
 
-    /** Stage a line the way IntentLog does, aged on the DB's clock. */
+    /**
+     * Stage a line the way IntentLog does, aged on the DB's clock, with the ledger rows the
+     * dispatcher would have written: the event, and a dispatch whose push time is the staging
+     * time. (`IdleNudgeReplayTest` drives the real dispatcher for the redelivery cases.)
+     */
     private function stage(string $agent, string $id, float $ageS): void
     {
         $ts = (float) DbClock::now()->format('U.u') - $ageS;
         File::append($this->dir.'/state/inbox.jsonl', json_encode(['id' => $id, 'ts' => $ts, 'agent' => $agent, 'kind' => 'card_moved', 'subject_id' => '42', 'summary' => 'card 42 moved', 'payload' => []])."\n");
+
+        $delivery = explode(':', $id)[0];
+        $event = WebhookEvent::query()->firstOrCreate(
+            ['delivery_id' => $delivery],
+            ['provider' => 'kanban', 'scope_id' => '5', 'event_type' => 'task.moved', 'payload' => []],
+        );
+        $dispatch = AgentDispatch::query()->create(['webhook_event_id' => $event->id, 'agent_name' => $agent, 'outcome' => AgentDispatch::OUTCOME_DELIVERED]);
+        AgentDispatch::query()->whereKey($dispatch->id)->update(['push_attempted_at' => Carbon::now()->subSeconds((int) $ageS)]);
     }
 
     private function pass(): void

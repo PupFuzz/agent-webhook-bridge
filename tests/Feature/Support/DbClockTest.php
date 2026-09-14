@@ -4,7 +4,9 @@ namespace Tests\Feature\Support;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\DbClock;
+use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -48,6 +50,24 @@ class DbClockTest extends TestCase
         $driver = DB::connection()->getDriverName();
         $this->assertContains($driver, ['sqlite', 'mysql', 'mariadb']);
         $this->assertNotNull(DbClock::now());
+    }
+
+    public function test_the_write_expression_stamps_the_same_clock_the_read_returns(): void
+    {
+        // The idle nudge compares a DB-stamped push time with DbClock::now(); both must come
+        // off the database, on whichever driver the suite runs.
+        $event = WebhookEvent::create([
+            'delivery_id' => 'dbclock-2', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.moved', 'payload' => ['a' => 1],
+        ]);
+        $dispatch = AgentDispatch::query()->create(['webhook_event_id' => $event->id, 'agent_name' => 'pm']);
+
+        AgentDispatch::query()->whereKey($dispatch->id)->toBase()->update(['push_attempted_at' => DbClock::expression()]);
+
+        $raw = AgentDispatch::query()->whereKey($dispatch->id)->toBase()->value('push_attempted_at');
+        $this->assertIsString($raw);
+        $stamped = (float) CarbonImmutable::parse($raw, 'UTC')->format('U.u');
+        $this->assertEqualsWithDelta((float) DbClock::now()->format('U.u'), $stamped, 5.0);
     }
 
     public function test_an_unknown_driver_is_refused_rather_than_guessed(): void

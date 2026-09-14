@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Exceptions\ConfigException;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -37,17 +38,36 @@ final class DbClock
         $conn = DB::connection($connection);
         $driver = $conn->getDriverName();
 
-        $sql = match ($driver) {
-            'sqlite' => "select strftime('%Y-%m-%d %H:%M:%f', 'now') as now",
-            'mysql', 'mariadb' => 'select CURRENT_TIMESTAMP(3) as now',
-            default => throw new ConfigException("DbClock: no clock query for database driver '{$driver}'"),
-        };
-
-        $raw = $conn->selectOne($sql)->now ?? null;
+        $raw = $conn->selectOne('select '.self::sql($driver).' as now')->now ?? null;
         if (! is_string($raw) || $raw === '') {
             throw new ConfigException("DbClock: the {$driver} clock query returned no timestamp");
         }
 
         return CarbonImmutable::parse($raw, 'UTC');
+    }
+
+    /**
+     * The same clock as a value to WRITE, evaluated by the database at the write — so a column
+     * stamped with it and a later {@see now()} read are on one clock, which a PHP `now()` bound
+     * into the query would not be.
+     */
+    public static function expression(?string $connection = null): Expression
+    {
+        return DB::raw(self::sql(DB::connection($connection)->getDriverName()));
+    }
+
+    /**
+     * A literal per driver and never built from input — which is what makes it safe to hand to
+     * `DB::raw()`.
+     *
+     * @return literal-string
+     */
+    private static function sql(string $driver): string
+    {
+        return match ($driver) {
+            'sqlite' => "strftime('%Y-%m-%d %H:%M:%f', 'now')",
+            'mysql', 'mariadb' => 'CURRENT_TIMESTAMP(3)',
+            default => throw new ConfigException("DbClock: no clock query for database driver '{$driver}'"),
+        };
     }
 }

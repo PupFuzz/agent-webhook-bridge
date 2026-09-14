@@ -15,6 +15,7 @@ use App\Bridge\IdleNudge\IdleNudgeState;
 use App\Bridge\IdleNudge\IdleNudgeUnmeasured;
 use App\Bridge\IdleNudge\InboxUnreadable;
 use App\Bridge\IdleNudge\NudgePlan;
+use App\Bridge\IdleNudge\PushTimeUnreadable;
 use App\Bridge\Scheduling\JobCapability;
 use App\Bridge\Scheduling\JobContext;
 use App\Bridge\Scheduling\JobHandler;
@@ -24,6 +25,8 @@ use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\DbClock;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -125,6 +128,7 @@ final class IdleNudgeJob implements JobHandler
             $agents,
             $state->nudged(),
             $this->unseenLines(...),
+            $this->pushTimes(...),
             $dbNowS,
             $cfg->defaultAfterS,
         );
@@ -179,6 +183,55 @@ final class IdleNudgeJob implements JobHandler
         } catch (UnreadableFileException $e) {
             throw new InboxUnreadable($e->getMessage(), previous: $e);
         }
+    }
+
+    /**
+     * Each line's last push time, epoch seconds on the DB clock: `agent_dispatches.push_attempted_at`
+     * of the dispatch that staged it, joined through the delivery id the line id embeds
+     * (`IntentLog`: `<delivery_id>:<agent>:<index>`). A line whose id does not parse, whose
+     * dispatch row is gone, or whose stamp is NULL (written before DL-380's migration) maps to
+     * null — unreadable, never old.
+     *
+     * @param  list<string>  $lineIds
+     * @return array<string, float|null>
+     *
+     * @throws PushTimeUnreadable
+     */
+    private function pushTimes(string $agent, array $lineIds): array
+    {
+        $deliveryOf = [];
+        foreach ($lineIds as $id) {
+            $parts = explode(':', $id);
+            $index = array_pop($parts);
+            $owner = array_pop($parts);
+            $delivery = implode(':', $parts);
+            $deliveryOf[$id] = ($owner === $agent && $delivery !== '' && ctype_digit((string) $index)) ? $delivery : null;
+        }
+
+        $stamps = [];
+        try {
+            foreach (array_chunk(array_values(array_unique(array_filter($deliveryOf))), 500) as $chunk) {
+                $rows = DB::table('agent_dispatches')
+                    ->join('webhook_events', 'webhook_events.id', '=', 'agent_dispatches.webhook_event_id')
+                    ->where('agent_dispatches.agent_name', $agent)
+                    ->whereIn('webhook_events.delivery_id', $chunk)
+                    ->get(['webhook_events.delivery_id', 'agent_dispatches.push_attempted_at']);
+                foreach ($rows as $row) {
+                    $stamps[(string) $row->delivery_id] = is_string($row->push_attempted_at) && $row->push_attempted_at !== ''
+                        ? (float) CarbonImmutable::parse($row->push_attempted_at, 'UTC')->format('U.u')
+                        : null;
+                }
+            }
+        } catch (Throwable $e) {
+            throw new PushTimeUnreadable('the dispatch ledger could not be read', previous: $e);
+        }
+
+        $out = [];
+        foreach ($deliveryOf as $id => $delivery) {
+            $out[$id] = $delivery === null ? null : ($stamps[$delivery] ?? null);
+        }
+
+        return $out;
     }
 
     private function intent(NudgePlan $plan): Intent

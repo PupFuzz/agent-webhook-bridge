@@ -23,6 +23,7 @@ final class AgentVerdict
         'no_idle_since',
         'malformed_horizon',
         'inbox_unreadable',
+        'push_time_unreadable',
     ];
 
     public function __construct(

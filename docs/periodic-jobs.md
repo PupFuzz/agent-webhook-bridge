@@ -366,11 +366,14 @@ the only one that holds.
 that is the operator's declared intent that the agent be woken for its intents, and a nudge is a
 second attempt at a wake already asked for. On any other agent most intents were deliberately
 inbox-only, and nudging on them would turn that choice into a delayed wake. Pending work is an
-unseen inbox line staged after the seat's current `idle_since` and older than the wake grace plus
-the seat's own fold lag. The nudge is `channel_push` only (kind `seat_idle_nudge`,
-[`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*) and is sent at most once per
-`(agent, idle_since)`. DL-380 lists what that definition of pending work misses — among them a
-per-agent → shared inbox layout flip and a replayed intent, whose `ts` is the original event's.
+unseen inbox line staged after the seat's current `idle_since` and last PUSHED longer ago than the
+wake grace plus the seat's own fold lag. The push time is `agent_dispatches.push_attempted_at`,
+stamped by the receiver on the database's clock, because a redelivered or replayed line keeps its
+original `ts` while being pushed again now. ⚠ **This needs `php artisan migrate`**; a line with no
+readable push time makes that agent unmeasured. The nudge is `channel_push` only (kind
+`seat_idle_nudge`, [`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*) and is sent
+at most once per `(agent, idle_since)`. DL-380 lists what that definition of pending work misses —
+among them a per-agent → shared inbox layout flip, and an old event replayed at an already-idle seat.
 
 **Where the rules live, deliberately not restated here:** the verdict set and the join in
 `App\Bridge\IdleNudge\IdleNudgeEvaluator` and `AgentVerdict`; every unmeasured pass reason in
