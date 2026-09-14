@@ -642,7 +642,8 @@ rejects outright.
 
 ⚠ **Those board-caused 4xx (401/403/404/422) are reported as 422 refusals, not as the
 retryable 502**, because they fail identically however many times you send them; a 5xx
-or a timeout still answers **502**, which is the one you may retry. Since card#8486 that
+still answers **502**, which is the one you may retry (a timeout is not a 502 — see the owner
+section's *no answer* row). Since card#8486 that
 is the rule for **every** tool on this door, not this one's alone —
 [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339)
 owns it, and the rows above are what it means for a *correction* specifically.
@@ -831,8 +832,11 @@ lands **after** the bridge's and does not replace it.
 
 **⛔ Append-only.** Nothing on this door edits or deletes a comment.
 
-**⚠ Not idempotent.** A retryable `502` does not tell you whether the POST landed, and
-re-sending can post the comment twice. The bridge's HTTP client does not retry on its own.
+**⚠ Not idempotent.** Only a refusal (`422`) tells you nothing was written. Any other answer —
+a `502`, a `500`, a non-JSON answer, a failed ssh leg, or a timeout — may follow a POST that
+landed, so re-sending can post the comment twice. A timeout between the bridge and kanban is not
+a `502` at all today ([§ A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339),
+the *no answer* row). The bridge's HTTP client does not retry on its own.
 
 **⚠ A PINNED card still takes a comment.** The DL-178 hold governs a card's stage, its lifecycle
 and the fields `PinGuard::PINNED_FIELDS` names. A comment writes no field.
@@ -909,7 +913,7 @@ a question you did not ask.
 **This section OWNS the rule; the tool sections above point at it.** When kanban itself
 refuses a request the bridge made on your behalf, the answer you get depends on whether the
 cause can CLEAR — not on which tool you called. **A 4xx outside the set below is not
-permanent as far as this door is concerned and keeps the retryable 502** (last row). And for
+permanent as far as this door is concerned and keeps the retryable 502** (the *any other 4xx* row). And for
 a 403 or a 404 the CAUSE depends on which kanban route the bridge was reading, because the
 two route classes are authorized differently:
 
@@ -918,13 +922,14 @@ two route classes are authorized differently:
 | **401** on any call | **422 refusal**, "revoked, rotated or replaced" | kanban's v3 API is `auth:sanctum`: a token it no longer knows is refused at the door on every subsequent call. **Install fault** — retrying is the one thing that cannot help. |
 | **403** on a card **SEARCH** | **422 refusal**, naming the token's **abilities** | kanban gates the API per token and a GET needs `read`. ⛔ Deliberately **not** board membership *on this route*: `tasks/search.json` floors the query to the caller's own boards and answers **200 with zero rows** for the rest. |
 | **403** on a **board-scoped** read (`boards/{id}/preload.json`) | **422 refusal**, naming the abilities **and** board **membership** | this route authorizes the BOARD itself, so a writeback user that is not a member of it is refused here — the one cause the search row above rules out. `board_my_cards` is the only tool that reads this route (its stage names, on your board and on the coord board). |
-| **403** on a WRITE | **422 refusal**, naming **every gate that can answer it** | the token's abilities, the writeback user's board role (`task.create` for a create, `task.update` for a correction **or a take**), **and kanban's board write gate** — an archived or trashed board refuses every write whatever the token and role allow. `BoardCallRefusal::writeGatesClause()` is the ONE place they are enumerated (count them there, not here); a 403 cannot say which refused. |
+| **403** on a WRITE | **422 refusal**, naming **every gate that can answer it** | the token's abilities, the writeback user's board role (`task.create` for a create, `task.update` for a correction **or a take**, `comment.create` for a comment), **and kanban's board write gate** — an archived or trashed board refuses every write whatever the token and role allow. `BoardCallRefusal::writeGatesClause()` is the ONE place they are enumerated (count them there, not here); a 403 cannot say which refused. |
 | **404** on a card **SEARCH** | **422 refusal**, "API-surface fault" | the ROUTE answered 404, which is a statement about the API surface rather than about a card (a card that is simply not yours is a different refusal, with its own message). |
 | **404** on a **board-scoped** read | **422 refusal**, "the BOARD itself" | the configured board id does not resolve on that route: no board carries it, or it is in the trash (that route does not resolve trashed boards). A missing API surface is the other, less likely candidate. |
 | **422** on a WRITE | **422 refusal**, bridge-authored | kanban's own validator rejected a VALUE you sent. Deterministic — and this is what keeps the mirrored length caps safe to go stale. ⛔ The board's response **body is never echoed**; the message is the bridge's own. |
 | **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. |
 | **any other 4xx** — **400**, 408, 429 … | **502** (retryable) | outside the permanent sets on purpose: the bridge has no diagnosis to offer for them, and a rate limit really does clear. |
-| **5xx**, a timeout, a rate limit | **502** (retryable) | it may clear. This is the one you may retry. |
+| **5xx** | **502** (retryable) | it may clear. This is the one you may retry — ⚠ **except `board_comment_card`'s POST**, which has no idempotency key: a 502 there may follow a comment that landed, so a retry can post a duplicate. |
+| **no answer** — the connection failed or timed out | ⚠ **not a 502, today.** Over HTTP a **500** error page, which the channel server reports as *non-JSON response from the bridge*. Over ssh `bridge:tools-call` exits **1** with the exception printed where the JSON envelope belongs, reported as *the ssh … leg FAILED* with that text as partial output. | the dispatcher maps a request kanban ANSWERED; one that got no answer is not caught. The board may or may not have acted — for a write, assume it may have landed. |
 
 ⚠ **Every 422 above writes and creates NOTHING** — the refusal is the whole outcome.
 
@@ -937,7 +942,8 @@ something your arguments can fix. The mapping is `App\Bridge\Tools\BoardCallRefu
 classifier for the whole door (DL-326 built it inside `board_correct_card`; DL-339 hoisted it
 and migrated `board_my_cards` and `board_create_card`).
 
-⛔ **One deliberate exception, on `board_create_card` only.** The post-create re-read
+⛔ **One deliberate exception to this mapping, on `board_create_card` only** (`board_comment_card`
+follows the mapping, but a retry of it is not safe — see the `5xx` row). The post-create re-read
 (DL-198 leg 2, the duplicate collapse) runs only when you passed an `idempotency_key` — i.e.
 exactly when a retry is idempotent by construction — and the card has **already been
 created** by then, so "permanent, do not retry" would be the wrong instruction. That leg
@@ -956,6 +962,11 @@ produced the same string, and for the dead-door case that string was empty):
 | `the ssh <target> leg FAILED: ssh exited <N>: <stderr>` (plus ` \| partial output: …` if the far end wrote any) | **The transport failed.** The stderr is the diagnosis — `Permission denied (publickey)` (the key or the `authorized_keys` line is gone), `Connection refused` (sshd down or the wrong port), `Host key verification failed` (the host was rebuilt). Credential-scrubbed and length-bounded, so it can be pasted. |
 | `non-JSON response from the bridge (<label>): <snippet>` | **The transport worked and the bridge answered with something that is not JSON** — typically a PHP warning or an error page prepended to the body. The snippet is the answer; the transport is not the suspect. |
 | `could not spawn ssh to <target>: …` / `ssh to <target> exceeded the <N>ms deadline` | No child, or a leg that connected and then hung. |
+
+⚠ **The first row is also what a seat sees when the ssh leg WORKED and the bridge's own call to
+kanban got no answer** (the *no answer* row above): `bridge:tools-call` exits 1, and the partial
+output is the uncaught exception (`ConnectionException`, `cURL error …`) rather than an ssh
+diagnosis. Read the partial output before suspecting the key or sshd.
 
 A seat on a snapshot older than 0.9.8 gets the second message for **both** of the first two
 rows — see § Staying in sync in [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)

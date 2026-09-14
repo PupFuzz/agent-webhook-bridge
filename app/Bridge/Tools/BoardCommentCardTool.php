@@ -22,9 +22,9 @@ use Illuminate\Support\Facades\Log;
  * under the card: it needs no read of the body and cannot overwrite anything.
  *
  * ⭐ THE SCOPE IS THE BOARD, AND ONLY THE BOARD. The card must be on this agent's configured
- * board — established through {@see KanbanClient::cardRowsOnBoard} and read off the rows by
- * {@see BoardScopedRow}, never through the unscoped `getCard()` (DL-323: the id is
- * caller-supplied against an id space that is global across the instance). There is no minted,
+ * board — established through {@see BoardScopedRow::lookUp}, never through the unscoped
+ * `getCard()` (DL-323: the id is caller-supplied against an id space that is global across the
+ * instance). There is no minted,
  * assigned or lane requirement: a comment changes nothing on the card and is attributed, so the
  * relations the correction and take tools rest on have nothing to protect here. ⛔ OUT of scope,
  * each refused: a card on any other board (the coord board included — this door has never written
@@ -44,19 +44,21 @@ use Illuminate\Support\Facades\Log;
  * the message).
  *
  * CONTENT follows the door's string posture ({@see BoardToolArgs}): blank once trimmed is refused,
- * the trimmed value is what is stored, and the length bound reads the value AS SENT — conservative,
- * so this door never accepts over ssh a padded value it would refuse. The bound is
- * {@see KanbanFieldLimits::COMMENT_MAX} over the whole body sent, attribution line included,
- * because that body is what kanban's validator measures. Kanban renders comment markdown; the
+ * the trimmed value is what is stored, and the length bound reads the raw value, before
+ * trimming — conservative, so this door never accepts over ssh a padded value it would refuse.
+ * The bound is {@see KanbanFieldLimits::COMMENT_MAX} over the attribution line plus that raw
+ * value, never less than the body kanban's validator measures. Kanban renders comment markdown; the
  * bridge passes the text through as it does a card description.
  *
  * ⚠ THE PIN DOES NOT GOVERN THIS WRITE. {@see PinGuard::PINNED_FIELDS} is a FIELD rule and a
  * comment writes no field; a human who froze a card is not harmed by a note appearing under it.
  *
  * ⚠ NO IDEMPOTENCY — THE SAME CHOICE AS `board_correct_card`, AND ITS COST IS DIFFERENT HERE. A
- * correction re-sent writes the same value twice; a comment re-sent after a retryable 502 whose
- * POST had in fact landed posts it TWICE. The window is a board fault on the one POST, and a
- * duplicate note is visible and harmless to the card's state. Stated rather than hidden.
+ * correction re-sent writes the same value twice; a comment re-sent after a POST that had in fact
+ * landed posts it TWICE. Only a named refusal says nothing was written: any other answer — a 502,
+ * or a transport failure or timeout, which {@see BoardToolDispatcher} does not catch and so is no
+ * 502 at all — may follow a POST that landed. A duplicate note is visible and harmless to the
+ * card's state. Stated rather than hidden.
  *
  * REFUSALS ARE DETERMINISTIC: a permanent board 4xx on the lookup or the write is a named
  * refusal ({@see BoardCallRefusal}), never the dispatcher's retryable 502.
@@ -176,31 +178,16 @@ final class BoardCommentCardTool implements Tool
     private function requireCardOnBoard(KanbanClient $client, int $boardId, int $cardId, string $agentName): void
     {
         try {
-            $live = $client->cardRowsOnBoard($boardId, $cardId);
+            $found = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName);
         } catch (RequestException $e) {
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        if (BoardScopedRow::forCard($live, $boardId, $cardId) !== null) {
+        if ($found->live !== null) {
             return;
         }
 
-        if ($live !== []) {
-            Log::warning('board_comment_card: the board-scoped lookup answered a row that is not this card on this board — refusing without a scope verdict', [
-                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'rows' => count($live),
-            ]);
-
-            throw new ToolRefusalException("board_comment_card: the board lookup for card {$cardId} answered a row that is not that card on your board — that is a BROKEN READ, not a verdict about the card, so nothing was written. Report it to your operator.");
-        }
-
-        // Only on a live MISS — the other side of kanban's archive SWITCH (DL-296).
-        try {
-            $archived = $client->cardRowsOnBoard($boardId, $cardId, archivedOnly: true);
-        } catch (RequestException $e) {
-            throw $this->lookupRefusal($e, $cardId, $agentName);
-        }
-
-        if (BoardScopedRow::forCard($archived, $boardId, $cardId) !== null) {
+        if ($found->archived !== null) {
             throw new ToolRefusalException("board_comment_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, and this tool comments only on live cards, so nothing was written. Unarchive it if the work is live again.");
         }
 

@@ -448,8 +448,9 @@ const TOOL_DEFINITIONS = [
       'your call authenticated as — no argument names the author, and every seat shares one ' +
       'kanban user, so that line is the attribution. ' +
       'APPEND-ONLY: there is no edit or delete. It takes card_id and content and nothing else. ' +
-      'NOT idempotent: a retryable 502 does not tell you whether the comment landed, and ' +
-      're-sending can post it twice. ' +
+      'NOT idempotent: only a refusal (422) tells you nothing was written. Any other failure ' +
+      '— a 502, a 500, a non-JSON answer, a failed ssh leg or a timeout — may have landed ' +
+      'the comment, so re-sending it can post a duplicate. ' +
       'A board fault that cannot clear (the bridge token revoked/rotated, or the writeback ' +
       'role unable to create comments) is REFUSED (422) naming the INSTALL fault — do not ' +
       'retry it; tell your operator, quoting the message as-is.',
@@ -647,7 +648,7 @@ const INSTRUCTIONS = [
         `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${TOOL_DEFINITIONS.map((tool) => tool.name).join(', ')} —`,
         'call them to see, capture, fix or annotate board work without a kanban token (each tool\'s own description says what it does);',
         'never mint a second card to say the first is wrong — correct it, or comment on it;',
-        'every write is confined by the bridge to your own board — a create lands in your own swimlane, a take only in a lane you work, a correction only on a card that is yours, and a comment only on a live card on your board.',
+        'every write is confined by the bridge to your own board, and each tool\'s description states its scope.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED

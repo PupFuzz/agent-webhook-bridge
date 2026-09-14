@@ -281,13 +281,13 @@ final class BoardTakeCardTool implements Tool
     private function takeableRow(KanbanClient $client, BoardToolsConfig $cfg, int $boardId, int $cardId, string $agentName): array
     {
         try {
-            $live = $client->cardRowsOnBoard($boardId, $cardId);
+            $found = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName);
         } catch (RequestException $e) {
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $row = BoardScopedRow::forCard($live, $boardId, $cardId);
-        if ($row !== null) {
+        if ($found->live !== null) {
+            $row = $found->live;
             $lane = $this->workableLane($row, $cfg);
             if ($lane === null) {
                 Log::warning('board_take_card: refused — the card is on the agent\'s board but not in a lane it works', [
@@ -301,25 +301,7 @@ final class BoardTakeCardTool implements Tool
             return [$row, $lane];
         }
 
-        if ($live !== []) {
-            // The lookup answered SOMEBODY ELSE'S row: a broken read, never a verdict about
-            // this card (DL-323 Decision 2's `board_scope_lookup_unfiltered`).
-            Log::warning('board_take_card: the board-scoped lookup answered a row that is not this card on this board — refusing without a scope verdict', [
-                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'rows' => count($live),
-            ]);
-
-            throw new ToolRefusalException("board_take_card: the board lookup for card {$cardId} answered a row that is not that card on your board — that is a BROKEN READ, not a verdict about the card, so nothing was written. Report it to your operator.");
-        }
-
-        // Only on a live MISS, so it costs nothing on any successful call — the other side
-        // of kanban's archive SWITCH (DL-296: no both-sides mode).
-        try {
-            $archived = $client->cardRowsOnBoard($boardId, $cardId, archivedOnly: true);
-        } catch (RequestException $e) {
-            throw $this->lookupRefusal($e, $cardId, $agentName);
-        }
-
-        $retired = BoardScopedRow::forCard($archived, $boardId, $cardId);
+        $retired = $found->archived;
         if ($retired !== null && $this->workableLane($retired, $cfg) !== null) {
             throw new ToolRefusalException("board_take_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, so there is no work on it to claim and nothing was written. Unarchive it if the work is live again.");
         }

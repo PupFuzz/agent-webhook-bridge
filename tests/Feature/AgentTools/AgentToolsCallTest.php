@@ -4625,6 +4625,34 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringNotContainsString('the board said something', $error);
     }
 
+    public function test_a_404_on_the_comment_write_names_the_card_as_gone_and_nothing_written(): void
+    {
+        // The card passed the board check, then stopped existing before the POST.
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()], postStatus: 404));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringStartsWith('board_comment_card: card 42 no longer exists', $error);
+        $this->assertStringContainsString('NOTHING was written', $error);
+        $this->assertStringNotContainsString('the board said something', $error);
+    }
+
+    public function test_a_401_on_the_comment_write_names_the_rejected_token_as_an_install_fault(): void
+    {
+        // The lookup was accepted and the POST was not — the token changed between the two.
+        Http::fake($this->commentFake(live: [$this->commentableCardRow()], postStatus: 401));
+
+        $res = $this->callTool(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringStartsWith("board_comment_card: the board did not accept the bridge's writeback token at all on the comment to card 42 (401)", $error);
+        $this->assertStringContainsString('INSTALL fault', $error);
+        $this->assertStringNotContainsString('the board said something', $error);
+    }
+
     public function test_a_401_on_the_comment_lookup_is_a_named_refusal_and_nothing_is_written(): void
     {
         Http::fake($this->commentFake(live: [], lookupStatus: 401));

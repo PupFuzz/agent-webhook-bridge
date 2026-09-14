@@ -114,9 +114,9 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        // No DL-026 line here, deliberately: an unreadable body yields no rows, and BOTH callers
-        // (MappedBoardGuard's board-scope resolution, BoardCorrectCardTool's ownership lookup)
-        // already refuse LOUDLY on a result that does not name this card — the same fact,
+        // No DL-026 line here, deliberately: an unreadable body yields no rows, and every caller
+        // (MappedBoardGuard's board-scope resolution, and BoardScopedRow::lookUp for the tools door)
+        // already refuses LOUDLY on a result that does not name this card — the same fact,
         // reported where the operator can act on it.
         return self::rowList($data) ?? [];
     }
@@ -944,7 +944,7 @@ final class KanbanClient
      * `readBoard` stays deliberately pure (its own docblock owns why), so the signal is the
      * caller's — {@see correlationCards} carries it on the correlation path (DL-028), and the
      * public twin {@see readBoardCards} passes the read out unlogged for its callers to
-     * report; and both of `cardRowsOnBoard`'s callers refuse loudly on a result that does not
+     * report; and every caller of `cardRowsOnBoard` refuses loudly on a result that does not
      * name the card.
      *
      * @return list<array<string, mixed>>|null
