@@ -290,9 +290,10 @@ class WritebackTenantScopeTest extends TestCase
             ->map(fn (Request $r) => str_contains($r->url(), '/search.json') ? 'scope' : 'card')
             ->values()->all();
 
-        $this->assertSame(['scope', 'card'], $reads,
+        $this->assertSame(['scope', 'card', 'card'], $reads,
             'the board-scoped check must run BEFORE the unscoped card read, exactly once — the whole point is that '
-            .'an id outside the mapping is never resolved at all');
+            .'an id outside the mapping is never resolved at all. The second `card` read is the owner-tag clear, '
+            .'made only AFTER the move has landed on the id this check established (DL-386)');
     }
 
     /**

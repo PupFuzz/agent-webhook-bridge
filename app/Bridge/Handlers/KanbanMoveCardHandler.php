@@ -426,14 +426,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
         }
 
-        // The PR outcomes' order was read by the no-regression guard above; `started` never
-        // reads it, and an empty order answers from the merged / merged_to_main stages alone.
-        $ownerClearedTags = $mapping->isTerminalStage($stageId, $this->stageOrderMemo[$mapping->boardId] ?? [])
-            ? OwnerTag::tagsForTerminalMove($this->alerts, $card, 'kanban_move_card', $cardId, $repo, $outcome)
-            : null;
-
         try {
-            $client->moveCard($cardId, $stageId, $ownerClearedTags);
+            $client->moveCard($cardId, $stageId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 // A 4xx is a PERMANENT refusal (authz, a stage not on the board, a
@@ -452,6 +446,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 return;
             }
             throw $e;   // transient → 5xx → retry
+        }
+        // The PR outcomes' order was read by the no-regression guard above; `started` never
+        // reads it, and an empty order answers from the merged / merged_to_main stages alone.
+        if ($mapping->isTerminalStage($stageId, $this->stageOrderMemo[$mapping->boardId] ?? [])) {
+            OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome);
         }
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a

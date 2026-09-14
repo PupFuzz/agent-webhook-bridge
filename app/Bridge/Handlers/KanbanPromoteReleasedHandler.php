@@ -20,6 +20,7 @@ use App\Bridge\Writeback\TrackedRefKind;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -212,7 +213,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // record from a divergence detector into the positive evidence card#7212 is about:
             // a success line that names a board at all is what makes "did a cross-board write
             // ever land?" answerable, and an absence of record is not a record of absence.
-            $candidates[$cardId] = ['pr' => $prNumber, 'board' => MappedBoardGuard::boardContext($card, $mapping), 'card' => $card];   // keyed by card id (dedup; N:1 can't collide here)
+            $candidates[$cardId] = ['pr' => $prNumber, 'board' => MappedBoardGuard::boardContext($card, $mapping)];   // keyed by card id (dedup; N:1 can't collide here)
         }
 
         if (count($candidates) > self::MAX_CANDIDATES) {
@@ -226,7 +227,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
         $promoted = 0;
         foreach ($candidates as $cardId => $candidate) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $candidate['card'])) {
+            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $mapping)) {
                 $promoted++;
             }
         }
@@ -260,9 +261,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * (card#7212).
      *
      * @param  array{card_board: mixed, mapped_board: int}  $boardContext
-     * @param  array<string, mixed>  $card  the scanned row — the released stage is terminal, so the move clears its owner: tag
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, array $card): bool
+    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, WritebackMapping $mapping): bool
     {
         try {
             $pr = $github->getPull($repo, $prNumber);
@@ -329,9 +329,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             return false;   // genuinely not on main yet — QUIET, the dominant normal negative
         }
 
-        $ownerClearedTags = OwnerTag::tagsForTerminalMove($this->alerts, $card, 'kanban_promote_released', $cardId, $repo, 'promote_on_release');
         try {
-            $kanban->moveCard($cardId, $released, $ownerClearedTags);
+            $kanban->moveCard($cardId, $released);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 // The ONLY arm of this class ever observed firing in production (a 422 on
@@ -347,6 +346,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+        OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release');
         Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;

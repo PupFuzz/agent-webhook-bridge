@@ -148,21 +148,10 @@ final class KanbanClient
         $this->http()->patch("/tasks/{$cardId}.json", $fields)->throw();
     }
 
-    /**
-     * Move the card to a workflow stage. Column-only unless the caller passes `$tags`, which
-     * then REPLACES the card's whole tag list in the same PATCH ({@see patchCard}) — the caller
-     * owns building it from a list read in full ({@see OwnerTag::tagsForTerminalMove}).
-     *
-     * @param  list<string>|null  $tags
-     */
-    public function moveCard(int $cardId, int $stageId, ?array $tags = null): void
+    /** Move the card to a workflow stage (column-only; never touches payload/other fields). */
+    public function moveCard(int $cardId, int $stageId): void
     {
-        if ($tags === null) {
-            $this->patchCard($cardId, ['workflow_stage_id' => $stageId]);
-
-            return;
-        }
-        $this->patchCard($cardId, ['workflow_stage_id' => $stageId, 'tags' => $tags]);
+        $this->patchCard($cardId, ['workflow_stage_id' => $stageId]);
     }
 
     /**

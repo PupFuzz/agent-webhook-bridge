@@ -277,7 +277,8 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             )) {
                 return;
             }
-            $client->moveCard($id, (int) $mapping->coordCardTerminalStageId, OwnerTag::tagsForTerminalMove($this->alerts, $card, 'kanban_coord_card_move', $id, $repo, self::ALERT_OUTCOME, $issueNumber));
+            $client->moveCard($id, (int) $mapping->coordCardTerminalStageId);
+            OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_coord_card_move', $id, $repo, self::ALERT_OUTCOME, $issueNumber);
             Log::info('kanban_coord_card_move: moved to terminal', ['card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
 
             return;

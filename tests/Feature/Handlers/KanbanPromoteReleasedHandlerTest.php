@@ -11,6 +11,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -114,8 +115,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             'https://api.github.com/repos/owner/repo/pulls/102' => Http::response(['merged' => false, 'merge_commit_sha' => 'TESTMERGE', 'state' => 'open', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
             'https://api.github.com/repos/owner/repo/compare/SHA6...main' => Http::response(['status' => 'diverged']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),   // PATCH move (last: least specific)
-        ]);
+        ] + (new KanbanCardStub(array_column(array_filter($cards, static fn (array $c): bool => is_int($c['id'] ?? null)), null, 'id')))->stub());   // the move + the owner-clear read (last: least specific)
     }
 
     private function handle(string $repo = 'owner/repo'): void
@@ -684,8 +684,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             'https://api.github.com/repos/owner/repo/pulls/104' => Http::response(['merged' => true, 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/pulls/105' => Http::response(['merged' => true, 'state' => 'closed', 'merge_commit_sha' => 'SHA105', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA105...main' => Http::response(['status' => 'identical']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub([10 => $this->shippedRow(10, 105)]))->stub());
         Log::spy();
 
         $this->handle();
@@ -720,17 +719,34 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && in_array($r['card_id'], [6, 8, 10], true));
     }
 
-    public function test_the_promote_to_released_clears_the_owner_tag_in_the_same_patch(): void
+    public function test_the_promote_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
     {
-        $this->fakeBoard([
-            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100]],
+        // The Shipped scan is read before the GitHub loop; a tag added after it must survive.
+        $scanned = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100]];
+        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
+        $this->fakeBoard([$scanned], $cards->stub());
+
+        $this->handle();
+
+        $this->assertSame([['workflow_stage_id' => 53], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
+    }
+
+    public function test_a_refused_owner_tag_write_leaves_the_promote_standing_and_alerts(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
+        $cards = new KanbanCardStub([5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['owner:kanban/kanban'], 'payload' => ['pr_number' => 100]]]);
+        $this->fakeBoard([$cards->cards[5]], [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data())
+                ? Http::response(['message' => 'The tags.0 field must not be greater than 64 characters.'], 422)
+                : $cards->stub()['*/tasks/*.json']($r),
         ]);
 
         $this->handle();
 
-        $patches = Http::recorded()
-            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
-            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
-        $this->assertSame([['workflow_stage_id' => 53, 'tags' => ['triaged']]], $patches);
+        $this->assertSame(53, $cards->cards[5]['workflow_stage_id']);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m) => $m === 'kanban_promote_released: promoted Shipped→Released')->once();
+        $this->assertPromoteAlert('owner_tag_not_cleared_write_4xx', 5);
     }
 }

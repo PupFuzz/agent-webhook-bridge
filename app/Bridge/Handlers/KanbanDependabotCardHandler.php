@@ -204,12 +204,12 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                     if ($this->refusedAsPinned($survivor, (int) $survivor['id'], $repo, $prNumber, $mapping, 'move')) {
                         return;
                     }
+                    $client->moveCard((int) $survivor['id'], $stageId);
                     // No stage-order read on this path, so terminality answers from the merged /
                     // merged_to_main stages alone.
-                    $ownerClearedTags = $mapping->isTerminalStage($stageId, [])
-                        ? OwnerTag::tagsForTerminalMove($this->alerts, $survivor, 'kanban_dependabot_card', (int) $survivor['id'], $repo, self::ALERT_OUTCOME, $prNumber)
-                        : null;
-                    $client->moveCard((int) $survivor['id'], $stageId, $ownerClearedTags);
+                    if ($mapping->isTerminalStage($stageId, [])) {
+                        OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_dependabot_card', (int) $survivor['id'], $repo, self::ALERT_OUTCOME, $prNumber);
+                    }
                     // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
                     // resolved by search, not by a token, so its own board is recorded here.
                     Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));

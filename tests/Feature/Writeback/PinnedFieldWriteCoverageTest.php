@@ -196,16 +196,18 @@ class PinnedFieldWriteCoverageTest extends TestCase
         'Bridge/Writeback/KanbanClient.php::moveCard#1' => [
             KanbanMoveCardHandlerTest::class.'::test_pinned_merge_still_stamps_the_correlation_refs_it_refuses_to_move_on',
         ],
-        // The same stage move carrying the terminal owner: clear — `tags` is not a pinned field,
-        // and the stage rule at the call site refuses the whole PATCH on a pinned card.
-        'Bridge/Writeback/KanbanClient.php::moveCard#2' => [
-            KanbanMoveCardHandlerTest::class.'::test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared',
-        ],
         // UNGOVERNED — the correlation stamp, and the reason a blanket freeze was rejected:
         // dropping it would strand a held card OUTSIDE `bridge:reconcile`'s population, so
         // the backstop could never complete the move once the pin was lifted.
         'Bridge/Writeback/KanbanClient.php::stampCorrelationRefs#1' => [
             KanbanMoveCardHandlerTest::class.'::test_pinned_merge_still_stamps_the_correlation_refs_it_refuses_to_move_on',
+        ],
+        // UNGOVERNED — the DL-386 owner-tag clear writes `tags` alone, after a landed terminal move.
+        // A card pinned BEFORE the move is never moved, so never cleared; one pinned between the
+        // move and the clear still takes the clear, and keeps its hold marker.
+        'Bridge/Writeback/OwnerTag.php::clearAfterTerminalMove#1' => [
+            KanbanMoveCardHandlerTest::class.'::test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared',
+            KanbanMoveCardHandlerTest::class.'::test_a_card_pinned_between_the_move_and_the_clear_still_loses_its_owner_tag_and_keeps_the_pin',
         ],
         // UNGOVERNED — the DL-193 draft overlay, and an explicit card#8557 ruling rather than
         // an oversight: its add-if-missing guard reads `block_reason` only, so a TAG-only pin

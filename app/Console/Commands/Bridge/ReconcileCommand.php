@@ -466,10 +466,10 @@ class ReconcileCommand extends BridgeCommand
             return;
         }
 
-        // The row is carried to the write only for a terminal target, where the move owes the
-        // owner: clear and needs the tag list this read returned.
+        // The mapping travels to the write only for a terminal target, where the applied move
+        // owes the owner: clear.
         $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward')
-            + ['repo' => (string) $repo, 'terminal_card' => $mapping->isTerminalStage($expected, $order) ? $card : null];
+            + ['repo' => (string) $repo, 'terminal_mapping' => $mapping->isTerminalStage($expected, $order) ? $mapping : null];
     }
 
     /**
@@ -692,11 +692,8 @@ class ReconcileCommand extends BridgeCommand
                 return self::FAILURE;
             }
             foreach ($this->planned as $p) {
-                $ownerClearedTags = $p['terminal_card'] !== null
-                    ? OwnerTag::tagsForTerminalMove($this->alerts, $p['terminal_card'], 'bridge_reconcile', $p['card_id'], $p['repo'], self::ALERT_OUTCOME)
-                    : null;
                 try {
-                    $kanban->moveCard($p['card_id'], $p['expected'], $ownerClearedTags);
+                    $kanban->moveCard($p['card_id'], $p['expected']);
                     // The DURABLE half of the record, beside the console line (card#7212). This
                     // leg's refusal is a `Log::warning` through the alert primitive, so a
                     // console-only success would leave the same asymmetry that made "did a
@@ -707,6 +704,9 @@ class ReconcileCommand extends BridgeCommand
                     Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['record']);
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
+                    if ($p['terminal_mapping'] !== null) {
+                        OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $p['terminal_mapping'], 'bridge_reconcile', $p['card_id'], $p['repo'], self::ALERT_OUTCOME);
+                    }
                 } catch (Throwable $e) {
                     $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], UntrustedText::forOperator($e->getMessage())));
                     $this->hadError = true;

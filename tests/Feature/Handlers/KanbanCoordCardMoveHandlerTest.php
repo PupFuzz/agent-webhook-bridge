@@ -15,6 +15,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -1273,15 +1274,13 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_close_clears_the_owner_tag_in_the_same_patch_as_the_terminal_move(): void
+    public function test_close_moves_stage_only_then_clears_the_owner_tag_in_a_separate_write(): void
     {
-        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['id:QUERY-4', 'owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['id:QUERY-4', 'owner:kanban/kanban']]]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]])] + $cards->stub());
 
         $this->handle(['disposition' => 'terminal']);
 
-        $patches = Http::recorded()
-            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
-            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
-        $this->assertSame([['workflow_stage_id' => 99, 'tags' => ['id:QUERY-4']]], $patches);
+        $this->assertSame([['workflow_stage_id' => 99], ['tags' => ['id:QUERY-4']]], $cards->patchesTo(7));
     }
 }

@@ -10,6 +10,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -1172,18 +1173,13 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
-    public function test_a_merged_move_clears_the_owner_tag_in_the_same_patch(): void
+    public function test_a_merged_move_is_stage_only_then_clears_the_owner_tag_in_a_separate_write(): void
     {
-        Http::fake([
-            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
-        ]);
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]])] + $cards->stub());
 
         $this->handle('merged');
 
-        $patches = Http::recorded()
-            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
-            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
-        $this->assertSame([['workflow_stage_id' => 52, 'tags' => ['dependencies']]], $patches);
+        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['dependencies']]], $cards->patchesTo(7));
     }
 }
