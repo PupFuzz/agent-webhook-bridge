@@ -119,7 +119,7 @@ final class GitHubWebhookSubscriptionCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
-        $scopes = $this->subscribedScopes($ctx);
+        $scopes = $ctx->githubSubscriptionsByScope();
         if ($scopes === []) {
             yield Silence::because('no agent this run could read declares a github subscription, so there is no repo webhook to look for');
 
@@ -213,50 +213,6 @@ final class GitHubWebhookSubscriptionCheck implements Check
         // having said nothing only when it said nothing about nothing. If a future edit adds a
         // `continue` that lands in neither list, the run reports an UNDECLARED silence rather
         // than passing — which is the mechanism working, not a gap.
-    }
-
-    /**
-     * The github scopes this run can see, in first-seen order, each with the agents that
-     * subscribe it.
-     *
-     * ⚠ ITS POPULATION IS THE AGENTS WHOSE YAML PARSED AND WHOSE CLASSIFIER RESOLVED
-     * ({@see CheckContext::$configs}) — narrower than the agents on disk. An agent that did
-     * not get that far has its own `fail` line and is recorded in
-     * {@see CheckContext::$agentScopeCoverage}; what this leg must not do is read its absence
-     * as "nobody subscribes that repo".
-     *
-     * THE SCOPE IS THE RAW SPELLING, never a canonicalized one: the receiver URL is composed
-     * from it byte for byte, and the whole point of this leg is to compare the string the
-     * install would register against the string GitHub holds. Two agents spelling one repo
-     * differently therefore ask two questions, which is correct — they registered two URLs,
-     * and GitHub would hold two hooks.
-     *
-     * ⚠ WHAT THAT DOES *NOT* BUY, stated because the obvious assumption is wrong: nothing
-     * here reports the SPLIT ITSELF. `WritebackMappingConfigCheck` carries the card#7124
-     * `SPELLING SPLIT` leg, and its comparand is a `writeback.json` MAPPING KEY — so on an
-     * install with no writeback config (a pure coordination agent is the ordinary case) two
-     * agents spelling one repo differently produce two independent verdicts here and no line
-     * anywhere saying they are one repo.
-     *
-     * @return array<string, list<string>>
-     */
-    private function subscribedScopes(CheckContext $ctx): array
-    {
-        $scopes = [];
-        foreach ($ctx->configs as $cfg) {
-            foreach ($cfg->subscriptions as $sub) {
-                if ($sub->provider !== 'github') {
-                    continue;
-                }
-                $existing = $scopes[$sub->scopeId] ?? [];
-                if (! in_array($cfg->agentName, $existing, true)) {
-                    $existing[] = $cfg->agentName;
-                }
-                $scopes[$sub->scopeId] = $existing;
-            }
-        }
-
-        return $scopes;
     }
 
     /**

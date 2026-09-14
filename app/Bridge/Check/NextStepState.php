@@ -6,7 +6,7 @@ namespace App\Bridge\Check;
  * WHERE THE WIRING OF THIS INSTALL STOPPED, per agent (card#8959, DL-352; widened past board
  * tools by card#9150).
  *
- * ⛑ THE FIRST FOUR STATES ARE ABOUT BOARD-TOOLS ENABLEMENT AND THE FIFTH IS NOT, which is a
+ * ⛑ THE BOARD-TOOLS STATES AND THE GITHUB-SUBSCRIPTION STATES SHARE ONE ENUM, which is a
  * fact about the BLOCK and not a seam in this enum. What the NEXT STEPS block is for is
  * *this install is not wired end to end, here is the ONE command to run next* — DL-352 built
  * it with one subject because there was one, and the github-webhook leg is the second thing
@@ -19,7 +19,7 @@ namespace App\Bridge\Check;
  * them: the first cut restated the definition in five places and two had already diverged
  * before it merged.
  *
- * FOUR STATES, cut along TWO axes, and both cuts are the whole design:
+ * THE BOARD-TOOLS STATES ARE CUT along TWO axes, and both cuts are the whole design:
  *   - by WHOSE NEXT ACTION IT IS, not by which check reported it. `bridge:check` already
  *     prints each fault at its own severity with its own cure; what the NEXT STEPS block
  *     adds is the one command to run next, so two faults taking the same command are one
@@ -93,7 +93,7 @@ enum NextStepState: string
      * NEVER-LOOKED-UP-ACCOUNT ARM IS NOT ROOT-GATED AT ALL and `sudo` is no remedy for it
      * either — the missing extension IS the whole cause, and a privileged re-run installs
      * nothing. The state itself is still right on those arms — nothing was measured, and re-provisioning is
-     * still the wrong move — so this is a BOUND on the command, not a fifth state:
+     * still the wrong move — so this is a BOUND on the command, not a state of its own:
      * `command` must name ONE command, no command supplies a missing PHP extension, and a
      * state whose `command` had to be fabricated would put a FALSE instruction in the
      * machine contract in place of a merely unhelpful one. The finding above names what
@@ -150,4 +150,24 @@ enum NextStepState: string
      * {@see self::SeatSideUnreported} takes for the same reason.
      */
     case GithubWebhookMissing = 'github_webhook_missing';
+
+    /**
+     * A github subscription this agent DECLARES has gone quiet by its OWN DELIVERY RECORD — the receiver has recorded
+     * no delivery for that scope at all, or none within the silence threshold derived from the scope's own gaps
+     * between deliveries (DL-382). Keyed to a SCOPE like {@see self::GithubWebhookMissing}, and
+     * {@see NextStep::$scope} carries it. Command: `bridge:check`, once someone who can see the repo's webhook
+     * settings has looked.
+     *
+     * ⛔ IT IS AN INFERENCE FROM SILENCE, NOT A MEASURED FAULT, and the difference from {@see self::GithubWebhookMissing}
+     * is the whole state: that one READ the repo's hook list and points at a `fail`; this one reads only what arrived,
+     * points at a `warn`, and a genuinely quiet repo produces it too. It needs no token and no repo admin, which is
+     * why it exists — it is the only github state a seat that does not administer the repo can reach.
+     *
+     * ⛔ IT WITNESSES THE DELIVERY SIDE ONLY: deliveries that arrive and are dropped before any agent wakes read as
+     * healthy to the leg behind it, so the ABSENCE of this entry is not evidence an agent is being woken.
+     *
+     * ⚑ NEVER BESIDE {@see self::GithubWebhookMissing} FOR THE SAME SCOPE. Where this run read the hook list and found
+     * the hook gone, that is the cause and already carries the remedy, so the silent record adds no entry of its own.
+     */
+    case GithubDeliverySilent = 'github_delivery_silent';
 }

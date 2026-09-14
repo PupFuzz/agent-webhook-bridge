@@ -343,6 +343,13 @@ class UnvalidatedCallSiteTest extends TestCase
         // moving the exit code. If a future edit ever moves that arm into this list, the leg
         // has stopped answering the question it exists to answer.
         'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 5,
+        // DL-382 — TWO legs, and neither is a silence this leg measured as abnormal: (1) the
+        // delivery record could not be READ, so the scopes after the throw were never judged
+        // (limb (a)); and (2) the record was read and is too short to DERIVE a silence threshold
+        // from, while the silence is still inside the floor — the comparison's comparand does not
+        // resolve (limb (c)). ⛔ THE SAME SHORT RECORD PAST THE FLOOR IS A `warn`, NOT A THIRD SITE
+        // HERE: the floor alone establishes that silence, and a derived threshold is never lower.
+        'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 2,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

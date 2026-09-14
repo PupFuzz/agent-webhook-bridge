@@ -82,8 +82,7 @@ final class EventConsumerReconciler
         $observedActions = [];
 
         $rows = WebhookEvent::query()
-            ->where('provider', 'github')
-            ->where('scope_id', $scope)
+            ->forExactScope('github', $scope)
             ->groupBy('event_type')
             ->selectRaw('event_type, COUNT(*) as occurrences, MAX(received_at) as last_seen')
             ->toBase()
