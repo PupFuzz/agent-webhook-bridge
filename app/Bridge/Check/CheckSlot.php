@@ -73,6 +73,16 @@ enum CheckSlot: string
     case Standup = 'standup';
 
     /**
+     * The idle-with-pending-work nudge's posture (card#9422 / DL-380), immediately after the
+     * standup digest: the fourth periodic subsystem, read in the same block as the other three.
+     * Its own slot rather than a second subject inside `Jobs` or `Standup`, whose docblocks
+     * would stop being true.
+     *
+     * ⚑ SILENT ON AN INSTALL THAT LEFT THE NUDGE OFF, which is the default.
+     */
+    case IdleNudge = 'idle-nudge';
+
+    /**
      * The per-install PROVIDER plane, after the retention leg and before the per-agent
      * config iteration: the endpoint URLs this install was configured with, and whether
      * every configured provider has an adapter to receive for it.
