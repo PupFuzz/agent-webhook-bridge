@@ -83,6 +83,16 @@ final class HandlerRegistry
     }
 
     /**
+     * The live-wake push handler, non-null by construction: the constructor always registers
+     * one and {@see register()} can only replace it, never remove it. A caller that needs
+     * THIS handler therefore owes no "not registered" branch — it would be dead code.
+     */
+    public function channelPush(): Handler
+    {
+        return $this->handlers[self::CHANNEL_PUSH];
+    }
+
+    /**
      * @return list<string>
      */
     public function known(): array
