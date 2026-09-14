@@ -7,6 +7,7 @@ use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretPath;
 use Illuminate\Http\Client\Request;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -53,6 +54,12 @@ class ProvisionTest extends TestCase
     private const HOSTILE_ROW = "\x1B[2K\r[prod-agent] kanban:5 id=1 active \u{202E}\u{200B}";
 
     private const ALL_INACTIVE = ['5' => false, '6' => false, '7' => false];
+
+    private const CREATE_ECHOES_URL = 'create-echoes-url';
+
+    private const CREATE_ECHOES_URL_ACROSS_TRUNCATION = 'create-echoes-url-across-truncation';
+
+    private const CREATE_ECHOES_REQUEST = 'create-echoes-request';
 
     public function test_creates_a_missing_subscription_and_writes_the_secret(): void
     {
@@ -550,12 +557,23 @@ class ProvisionTest extends TestCase
      * them. The routed base reaches the result lines without the override; a base carrying
      * a query never routes, so it reaches them only with it.
      *
-     * @return array<string, array{string, array<string, bool>}>
+     * The legs with a create refusal answer kanban's webhook create with an error whose body
+     * echoes the URL that was submitted, credentials included, which the `API error` line
+     * relays. One places the password across the point where Laravel truncates a
+     * `RequestException` message, so a redaction applied to the truncated message would see
+     * a userinfo with no `@` after it. The `ftp://` leg is a scheme `SecretScrubber::text()`
+     * does not treat as a URL; provision does not refuse that scheme when its path routes.
+     * The last leg's body echoes the whole submitted request, so the webhook secret this run
+     * generated reaches the relay too; the secret comes first in that body so it falls inside
+     * `UntrustedText::MAX_CHARS` rather than being cut off by the bound.
+     *
+     * @return array<string, array{0: string, 1: array<string, bool>, 2?: string}>
      */
     public static function credentialedBaseRuns(): array
     {
         $routed = 'https://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
         $withQuery = 'https://svc:canary-pw-9278@bridge.example.com?k=canary-q-9278'; // gitleaks:allow — test fixture
+        $nonHttpScheme = 'ftp://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
 
         return [
             'default' => [$routed, []],
@@ -568,21 +586,29 @@ class ProvisionTest extends TestCase
             'override dry-run' => [$withQuery, ['--allow-unreachable-receiver' => true, '--dry-run' => true]],
             'override reconcile' => [$withQuery, ['--allow-unreachable-receiver' => true, '--reconcile' => true]],
             'list, base carrying a query' => [$withQuery, ['--list' => true]],
+            'create refused, body echoing the url' => [$routed, [], self::CREATE_ECHOES_URL],
+            'create refused, echoed password across the truncation point' => [$routed, [], self::CREATE_ECHOES_URL_ACROSS_TRUNCATION],
+            'override, create refused, body echoing the url' => [$withQuery, ['--allow-unreachable-receiver' => true], self::CREATE_ECHOES_URL],
+            'non-http scheme, create refused, body echoing the url' => [$nonHttpScheme, [], self::CREATE_ECHOES_URL],
+            'create refused, body echoing the whole request' => [$routed, [], self::CREATE_ECHOES_REQUEST],
         ];
     }
 
     /**
      * ⛔ Asserted on the WHOLE output, not on one line: each line that prints a receiver URL
      * is a separate chance to print the base's credentials, and a redaction on one of them
-     * says nothing about the next. The pattern assertion is the presence witness — a URL-bearing line rendered, with its
-     * userinfo redacted — so an output that printed no URL at all cannot pass.
+     * says nothing about the next. The pattern assertion is the presence witness — a
+     * URL-bearing line rendered, with its userinfo redacted — so an output that printed no URL
+     * at all cannot pass; a create-refusal leg also asserts its `API error` line was printed.
+     * The canaries are asserted by their stems, so a fragment of one left by a truncation
+     * fails too.
      *
      * @param  array<string, bool>  $options
      */
     #[DataProvider('credentialedBaseRuns')]
-    public function test_no_line_prints_the_credentials_a_receiver_base_carries(string $base, array $options): void
+    public function test_no_line_prints_the_credentials_a_receiver_base_carries(string $base, array $options, ?string $createRefusal = null): void
     {
-        $labels = $this->multiAgentFixture($base, ['5' => null, '6' => true, '7' => false]);
+        $labels = $this->multiAgentFixture($base, ['5' => null, '6' => true, '7' => false], $createRefusal);
 
         Artisan::call('bridge:provision', $options);
         $out = Artisan::output();
@@ -590,9 +616,17 @@ class ProvisionTest extends TestCase
         foreach ($labels as $label) {
             $this->assertStringContainsString("{$label} ", $out);
         }
-        $this->assertMatchesRegularExpression('#https://\*\*\*@bridge\.example\.com[/?]#', $out);
-        $this->assertStringNotContainsString('canary-pw-9278', $out);
-        $this->assertStringNotContainsString('canary-q-9278', $out);
+        $this->assertMatchesRegularExpression('#(?:https|ftp)://\*\*\*@bridge\.example\.com[/?]#', $out);
+        if ($createRefusal !== null) {
+            $this->assertStringContainsString("{$labels['5']} API error: HTTP request returned status code 422", $out);
+            $creates = Http::recorded(fn (Request $r) => $r->method() === 'POST');
+            $this->assertNotEmpty($creates);
+            foreach ($creates as [$create]) {
+                $this->assertStringNotContainsString($create['secret'], $out);
+            }
+        }
+        $this->assertStringNotContainsString('canary-pw', $out);
+        $this->assertStringNotContainsString('canary-q', $out);
     }
 
     public function test_a_base_with_no_credentials_prints_its_receiver_urls_unchanged(): void
@@ -619,10 +653,16 @@ class ProvisionTest extends TestCase
      * `WebhookProvisioner::ensure()`'s first request, the list GET — so for them the fixture
      * only supplies subscriptions to refuse. The states matter to the runs that pass the gate.
      *
+     * `$createRefusal`, when set, makes every webhook create answer 422 with a body echoing
+     * the submitted URL: {@see self::CREATE_ECHOES_URL};
+     * {@see self::CREATE_ECHOES_URL_ACROSS_TRUNCATION}, whose message is padded so the URL's
+     * password starts just before `RequestException::$truncateAt`; or
+     * {@see self::CREATE_ECHOES_REQUEST}, whose body echoes the submitted secret as well.
+     *
      * @param  array<string, ?bool>  $hookActive  scope => live hook state, for every scope the fixture declares
      * @return array<string, string> scope => label
      */
-    private function multiAgentFixture(string $base, array $hookActive): array
+    private function multiAgentFixture(string $base, array $hookActive, ?string $createRefusal = null): array
     {
         config(['bridge.receiver_base_url' => $base]);
         File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5, 6]\n");
@@ -633,7 +673,19 @@ class ProvisionTest extends TestCase
             chmod(SecretPath::for($this->dir, 'kanban', (string) $scope), 0o600);
         }
 
-        Http::fake(function (Request $r) use ($base, $hookActive) {
+        Http::fake(function (Request $r) use ($base, $hookActive, $createRefusal) {
+            if ($r->method() === 'POST' && $createRefusal !== null) {
+                $echo = fn (string $message): array => $createRefusal === self::CREATE_ECHOES_REQUEST
+                    ? ['message' => $message, 'input' => ['secret' => $r['secret'], 'url' => $r['url']]]
+                    : ['message' => $message, 'errors' => ['url' => [$r['url']]]];
+                $message = 'The url field is invalid.';
+                if ($createRefusal === self::CREATE_ECHOES_URL_ACROSS_TRUNCATION) {
+                    $passwordAt = (int) strpos((string) json_encode($echo('')), 'canary-pw');
+                    $message = str_pad($message, RequestException::$truncateAt - strlen('canary-pw-9') - $passwordAt);
+                }
+
+                return Http::response($echo($message), 422);
+            }
             if ($r->method() !== 'GET') {
                 return Http::response(['data' => ['id' => 9]]);
             }

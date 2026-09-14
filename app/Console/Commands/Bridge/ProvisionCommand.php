@@ -16,6 +16,7 @@ use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Support\UrlValidator;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Routing\Router;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Throwable;
@@ -150,7 +151,7 @@ class ProvisionCommand extends BridgeCommand
                     // `RequestException` carrying the kanban RESPONSE BODY, there is no
                     // `Finding` and no renderer in the path, and Guzzle's body-summary gate
                     // passes `\r` (card#9121, DL-366).
-                    $this->error("{$label} API error: ".UntrustedText::forOperator($e->getMessage()));
+                    $this->error("{$label} API error: ".UntrustedText::forOperator($this->apiErrorText($e, $receiverUrl, $shown)));
                     $rc = self::FAILURE;
                 }
             }
@@ -365,6 +366,35 @@ class ProvisionCommand extends BridgeCommand
         }
 
         return SecretScrubber::url(substr($url, 0, -strlen($suffix))).$suffix;
+    }
+
+    /**
+     * An exception from a provisioning call, as the `API error` line relays it, with the
+     * receiver URL's credentials removed. The URL was sent to kanban, so a refusal body can
+     * echo it back.
+     *
+     * ⛔ A `RequestException` IS REBUILT FROM ITS FULL RESPONSE BODY, NOT READ FROM
+     * `getMessage()`. That message is already cut at `RequestException::$truncateAt`, and a
+     * cut inside an echoed URL's userinfo leaves a password with no `@` after it, which no
+     * redactor can recognise as a userinfo. Redacting the full body and leaving the bound to
+     * `UntrustedText::forOperator()` puts redaction ahead of that bound.
+     *
+     * Each echo of `$receiverUrl`, raw or with JSON-escaped slashes, becomes `$shown` first.
+     * That match is by value, so it holds for a scheme {@see SecretScrubber::text()} does not
+     * read as a URL (it reads only http and https). `text()` then covers every other
+     * credential-shaped span in the body, and it also removes the query of an echoed http(s)
+     * URL, so `?b=<scope>` shows as `?[REDACTED]` on this line.
+     */
+    private function apiErrorText(Throwable $e, string $receiverUrl, string $shown): string
+    {
+        $text = $e instanceof RequestException
+            ? "HTTP request returned status code {$e->response->status()}: {$e->response->body()}"
+            : $e->getMessage();
+
+        $jsonSlashes = static fn (string $url): string => str_replace('/', '\\/', $url);
+        $text = str_replace([$receiverUrl, $jsonSlashes($receiverUrl)], [$shown, $jsonSlashes($shown)], $text);
+
+        return SecretScrubber::text($text);
     }
 
     private function reportResult(string $label, ProvisionResult $result, string $url): void
