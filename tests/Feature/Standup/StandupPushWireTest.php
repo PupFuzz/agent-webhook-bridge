@@ -29,7 +29,7 @@ class StandupPushWireTest extends TestCase
         parent::setUp();
         $this->dir = sys_get_temp_dir().'/standup-wire-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/state');
-        File::put($this->dir.'/pm-token', 'tok-standup-wire-0123456789');
+        File::put($this->dir.'/pm-token', 'tok-standup-wire-0123456789');   // gitleaks:allow — test fixture
         chmod($this->dir.'/pm-token', 0o600);
         File::put($this->dir.'/pm.yml', "identity:\n  kanban_user_id: 5\nsubscriptions: []\nchannel:\n  url: http://127.0.0.1:8788/\n  auth:\n    token_path: {$this->dir}/pm-token\n");
         config([
@@ -58,7 +58,7 @@ class StandupPushWireTest extends TestCase
         Http::assertSent(function (Request $request): bool {
             $this->assertSame('http://127.0.0.1:8788/', $request->url());
             $this->assertSame('POST', $request->method());
-            $this->assertSame(['Bearer tok-standup-wire-0123456789'], $request->header('Authorization'));
+            $this->assertSame(['Bearer tok-standup-wire-0123456789'], $request->header('Authorization'));   // gitleaks:allow — test fixture
             $this->assertSame([
                 'intent' => [
                     'kind' => 'pm_standup',

@@ -22,7 +22,7 @@ use Tests\TestCase;
  */
 class FleetSnapshotReaderTest extends TestCase
 {
-    public const CANARY = 'mzr_canary.a~b/c-9';
+    public const CANARY = 'mzr_canary.a~b/c-9';   // gitleaks:allow — test fixture
 
     private string $dir;
 

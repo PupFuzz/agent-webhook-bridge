@@ -77,7 +77,7 @@ class SecretScrubberTest extends TestCase
     {
         // The alphabet is not pinned, so the canary carries characters a [A-Za-z0-9] class
         // would stop at — a partial redaction would leave the tail readable.
-        $scrubbed = SecretScrubber::text('refused: mzr_a.b~c/d-e_9 was revoked');
+        $scrubbed = SecretScrubber::text('refused: mzr_a.b~c/d-e_9 was revoked');   // gitleaks:allow — test fixture
 
         $this->assertStringNotContainsString('a.b~c', $scrubbed);
         $this->assertStringNotContainsString('d-e_9', $scrubbed);

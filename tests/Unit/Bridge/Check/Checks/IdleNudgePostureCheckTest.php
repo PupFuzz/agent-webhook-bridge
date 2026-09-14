@@ -32,7 +32,7 @@ class IdleNudgePostureCheckTest extends TestCase
         parent::setUp();
         $this->dir = sys_get_temp_dir().'/idle-nudge-check-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/state');
-        File::put($this->dir.'/fleet-token', 'mzr_canary.a~b/c-9');
+        File::put($this->dir.'/fleet-token', 'mzr_canary.a~b/c-9');   // gitleaks:allow — test fixture
         chmod($this->dir.'/fleet-token', 0o600);
         config([
             'bridge.config_dir' => $this->dir,
