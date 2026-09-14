@@ -56,8 +56,8 @@ abstract class BridgeCommand extends Command
      * surface states the PROPERTY and points HERE — this run may ask only where a human is at
      * a terminal on both ends and has not said otherwise.
      *
-     * ⚠ `bridge:jobs install-tick` HAS a second copy — same class, and its message says
-     * "no TTY" over an `isInteractive()` test (measured live: a piped `yes` installs a
+     * ⚠ `bridge:jobs install-tick` HAS a second copy — same class, guarded by an
+     * `isInteractive()` test alone (measured live: a piped `yes` installs a
      * crontab line with no human present; a held pipe blocks). It is deliberately NOT on
      * this predicate, and that is a DECISION, not pending work: moving it would change what
      * an already-shipped command refuses, the operator was asked, and the operator DECLINED
