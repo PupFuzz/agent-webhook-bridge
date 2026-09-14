@@ -9,8 +9,8 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
 /**
- * The `owner:<project>/<seat>` claim a seat stamps on a card it starts, and the bridge's half of
- * releasing it: once a bridge move INTO a terminal stage has LANDED, a separate `{tags}` write
+ * The bridge's half of releasing the seat owner tag (toolkit README § "The seat owner tag",
+ * card#9436): once a bridge move INTO a terminal stage has LANDED, a separate `{tags}` write
  * removes every `owner:*` tag, so a finished card stops holding a seat (DL-386).
  *
  * ⭐ A SEPARATE WRITE, NEVER A FIELD ON THE MOVE. kanban authorizes a PATCH whose sole key is
