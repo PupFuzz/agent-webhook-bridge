@@ -140,6 +140,18 @@ final class IdleNudgePostureCheck implements Check
 
             return;
         }
+        // ⚑ A DISTINCT CAUSE, NAMED. Every agent unreadable on push time is not "Mezzanine has
+        // not shipped yet": the receiver writes the stamp and the tick reads it, in separate
+        // processes, so either the column is missing or the receiver does not see the nudge as
+        // enabled (a stale cached config, or an env var only the tick's environment carries).
+        if (array_filter($routed, fn (mixed $code): bool => $code !== 'push_time_unreadable') === []) {
+            yield Finding::warn('idle_nudge: every push-routed agent read push_time_unreadable on the last pass ('.$tally
+                .'), so no pending work could be aged. Two causes: (a) `php artisan migrate` was not run, so `agent_dispatches.push_attempted_at` does not exist; '
+                .'(b) the webhook receiver\'s resolved config does not have the nudge enabled, so it writes no push time — rebuild the config cache (`php artisan config:cache`) and reload PHP-FPM. '
+                .'Deliveries made before either is fixed stay unreadable until the seat\'s idle period ends.');
+
+            return;
+        }
         if ($measured === []) {
             yield Finding::warn('idle_nudge: every push-routed agent was UNMEASURED on the last pass ('.$tally
                 .'). `no_declaring_seat` on every agent is the expected reading until Mezzanine seats publish `protocol_agent_name`.');

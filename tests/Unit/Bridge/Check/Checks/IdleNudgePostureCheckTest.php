@@ -177,6 +177,28 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->assertOne(Severity::Warn, 'every push-routed agent was UNMEASURED on the last pass (no_declaring_seat 2, not_push_routed 1)');
     }
 
+    public function test_every_agent_unreadable_on_push_time_names_the_migration_and_the_receiver_config(): void
+    {
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'agents' => ['impl' => 'push_time_unreadable', 'pm' => 'push_time_unreadable', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, 'every push-routed agent read push_time_unreadable on the last pass (not_push_routed 1, push_time_unreadable 2)');
+        $message = $this->findings()[0]->message;
+        $this->assertStringContainsString('(a) `php artisan migrate` was not run', $message);
+        $this->assertStringContainsString("(b) the webhook receiver's resolved config does not have the nudge enabled", $message);
+        $this->assertStringContainsString('reload PHP-FPM', $message);
+        $this->assertStringNotContainsString('no_declaring_seat', $message);
+    }
+
+    public function test_a_mix_of_unmeasured_reasons_keeps_the_generic_warning(): void
+    {
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'agents' => ['impl' => 'push_time_unreadable', 'pm' => 'no_declaring_seat'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, 'every push-routed agent was UNMEASURED on the last pass');
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f) => str_contains($f->message, 'reload PHP-FPM')));
+    }
+
     public function test_no_push_routed_agent_at_all_warns(): void
     {
         $this->nudgeInstance(lastRunAt: Carbon::now());
