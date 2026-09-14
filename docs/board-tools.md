@@ -98,6 +98,8 @@ never silently no-ops.
 | `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **An EMPTY value is refused, not ignored** — `""`, whitespace, an invisible character, or an explicit `null`. Omit the argument entirely to read every column; a silently-dropped filter would hand you *more* cards than you asked for, and the two doors disagreed about it. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
 | `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
 
+Any other key — `status` for `stage`, say — is **refused** (422) before any board read, naming the key and the accepted set: see § [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
+
 **Returns:**
 
 ```jsonc
@@ -333,6 +335,8 @@ well-formed empty collection, which the bridge cannot tell from a genuinely empt
 | `description` | no | String, **trimmed**. A description that is blank once trimmed is treated as **absent**: no `description` is written at all (a card being born has nothing to clear). |
 | `tags` | no | List of strings, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). An entry that is blank once trimmed is **refused**. Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. (A non-reserved colon such as `priority:high` is fine.) |
 | `idempotency_key` | no (recommended) | `[A-Za-z0-9.-]{1,64}`. Other characters are refused (they are kanban tag-search metacharacters that could correlate the wrong card). The key is **lowercased** before use, so it correlates case-insensitively (`Report` and `report` are the same key). |
+
+Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before any request, and **no card is created**: see § [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
 
 **Behaviour:**
 
@@ -608,7 +612,7 @@ a board it did not read. `tags_written` is present only when the call corrected 
 | `archived` / `archived_at` / `_action` | a retire is a lifecycle act, not a field write |
 | `priority` / `due_date` | not part of this tool's contract |
 | `assigned_user_id` / `assignee` | **`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument** (DL-372). Named rather than left to the catch-all row below: a seat reaching for this key is reaching for the one value the take door will never accept from a payload, and *"unknown argument"* would read as a spelling mistake. |
-| anything else | `unknown argument …` — **nothing is silently ignored** |
+| anything else | `unknown argument …`, naming the accepted set — **nothing is silently ignored** (§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379) owns the rule; the rows above only choose the sentence) |
 
 ⛔ **The offered set is deliberately NARROWER than `kbcard patch`'s corrective
 setters** (`--type`, `--external-id`, `--origin` are refused here): **this tool never
@@ -677,9 +681,10 @@ through the one privileged seat, which is the serial hub this door exists to rem
 > assigned somebody. The user-naming spellings the tool enumerates (`assigned_user_id`,
 > `assignee`, `user_id`, `kanban_user_id`, `agent`, and the rest of `USER_NAMING_ARGS`) are
 > refused in a sentence that **names the key** and says why it will never exist; anything else
-> — `owner`, `assigned_to`, a padded or casefolded spelling — gets the generic unknown-argument
-> refusal, which also says the assignee comes from your bridge identity and never from your
-> arguments. The list changes the message, not the outcome.
+> — `owner`, `assigned_to`, a padded spelling — is refused as an unknown argument, with the
+> reminder that the assignee is resolved from your bridge identity, never from your arguments,
+> and `card_id` named as the whole accepted set. The list changes the message, not the
+> outcome (§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379)).
 >
 > **Assigning work to a DIFFERENT seat is not something any board tool can do.** That is
 > your operator's, with `kbcard patch --assign <seat>` on a box that holds the seat map.
@@ -775,9 +780,40 @@ request when you already hold the card; two reads and no write on a not-found re
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
+| 422 | A caller-fixable bad request (an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
+
+### An argument the tool does not declare is refused, on every tool (DL-379)
+
+**This section OWNS the rule; the tool sections above point at it.** Each tool declares the
+whole set of top-level argument keys it accepts (`Tool::acceptedArguments()`), and the
+dispatcher both front doors share refuses a call carrying **any other key** — 422, before the
+tool runs and before any board request, so a refused call reads nothing and writes nothing.
+An ignored key is the failure this exists to stop: `board_my_cards {status: "Blocked"}` used
+to answer `ok: true` with the unfiltered window, which looks exactly like a correct answer to
+a question you did not ask.
+
+- **The message names every undeclared key in the call and the accepted set**, in one refusal:
+
+  ```text
+  board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`. Nothing was sent to the board — no card was read or written.
+  ```
+
+- **A tool may give a key a reason** (`Tool::refusedArgumentReason()`), which replaces only the
+  generic *unknown argument* clause for that key: `board_correct_card` names the authority that
+  owns a field it will not write, and `board_take_card` gives every key a reason — why a
+  user-naming key will never exist, and for any other key that the assignee comes from your
+  bridge identity. The outcome is the same refusal either way.
+- **Keys match exactly.** `Stage` is not `stage`.
+- **Enforced in the bridge, not the channel server.** The ssh door never passes through a
+  channel server, so a schema-side check would leave it open. The reference channel server's
+  `inputSchema` for each tool advertises exactly the declared set with
+  `additionalProperties: false`, and `ChannelServerToolSurfaceRestatementTest` fails when the
+  two differ.
+- ⚠ **A call to an install with no writeback token still answers 503**, even when its keys
+  are also wrong: the install fault is reported first, as it was before this refusal moved into
+  the dispatcher.
 
 ### A PERMANENT board 4xx is a refusal, on every tool (DL-339)
 

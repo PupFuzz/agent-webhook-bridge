@@ -87,11 +87,12 @@ use Illuminate\Support\Facades\Log;
  *
  * WHAT IS CORRECTABLE: `name`, `description`, `tags` — the caller-owned content,
  * and nothing else. ⚠ THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST:
- * `card_id` plus those three keys is the whole of it, and every other key throws
- * before any write. What {@see FIELD_OWNERS} changes is the MESSAGE, never the
- * outcome — the keys it enumerates are refused in a sentence naming the owning
- * tool, and every other unnamed key is refused just as hard by the generic
- * `unknown argument` arm ({@see refuseForeignArguments}). Never silently ignored
+ * `card_id` plus those three keys is the whole of it ({@see acceptedArguments}), and
+ * {@see BoardToolDispatcher} refuses every other key before this tool runs. What
+ * {@see FIELD_OWNERS} changes is the MESSAGE, never the outcome — the keys it
+ * enumerates are refused in a sentence naming the owning authority
+ * ({@see refusedArgumentReason}), and every other key is refused just as hard by the
+ * dispatcher's generic `unknown argument` wording. Never silently ignored
  * either way: a silently dropped argument leaves the seat believing it corrected
  * something it did not, which is the "refuse loudly, never silently no-op" this
  * card was filed on. ⛔ The
@@ -173,18 +174,10 @@ final class BoardCorrectCardTool implements Tool
     private const NAME_REFUSAL = 'board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)';
 
     /**
-     * The arguments this tool accepts. Anything else is refused — see
-     * {@see FIELD_OWNERS} for the ones refused with a named owner.
-     *
-     * @var list<string>
-     */
-    private const CORRECTABLE = ['name', 'description', 'tags'];
-
-    /**
      * Fields a caller may plausibly try to correct that are NOT this tool's to
      * write, each with the authority that owns it. Keyed LOWERCASE; the arg name is
      * casefolded before the lookup so a `Column` gets the named reason rather than
-     * the generic unknown-argument one.
+     * the dispatcher's generic unknown-argument one.
      *
      * @var array<string, string>
      */
@@ -228,11 +221,22 @@ final class BoardCorrectCardTool implements Tool
         return 'board_correct_card';
     }
 
+    public function acceptedArguments(): array
+    {
+        return ['card_id', 'name', 'description', 'tags'];
+    }
+
+    public function refusedArgumentReason(string $key): ?string
+    {
+        $owner = self::FIELD_OWNERS[strtolower($key)] ?? null;
+
+        return $owner === null ? null : "`{$key}` is not correctable here — {$owner}.";
+    }
+
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         // EVERY argument is validated before any request is made, so a refused
         // call reads nothing and writes nothing.
-        $this->refuseForeignArguments($args);
         $cardId = $this->requireCardId($args);
         $fields = $this->textCorrections($args);
         $callerTags = $this->callerTags($args);
@@ -294,31 +298,6 @@ final class BoardCorrectCardTool implements Tool
         }
 
         return $result;
-    }
-
-    /**
-     * Refuse any argument this tool does not own — with the OWNER named when the
-     * field has one. `board_create_card` can ignore an out-of-scope argument
-     * because its answer ("your card was created") stays true; a correction that
-     * ignored one would answer 200 for a change it never made.
-     *
-     * @param  array<string, mixed>  $args
-     */
-    private function refuseForeignArguments(array $args): void
-    {
-        $accepted = array_merge(['card_id'], self::CORRECTABLE);
-        foreach (array_keys($args) as $key) {
-            $key = (string) $key;
-            if (in_array($key, $accepted, true)) {
-                continue;
-            }
-            $owner = self::FIELD_OWNERS[strtolower($key)] ?? null;
-            if ($owner !== null) {
-                throw new ToolRefusalException("board_correct_card: `{$key}` is not correctable here — {$owner}. Nothing was written.");
-            }
-
-            throw new ToolRefusalException("board_correct_card: unknown argument `{$key}` — this tool accepts `card_id` plus ".implode(', ', array_map(static fn (string $f): string => "`{$f}`", self::CORRECTABLE)).'. Nothing was written.');
-        }
     }
 
     /**

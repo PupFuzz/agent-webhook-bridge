@@ -8,6 +8,7 @@ use App\Models\ScheduledJob;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\PendingCommand;
 use Symfony\Component\Console\Output\BufferedOutput;
@@ -197,6 +198,55 @@ class JobsCommandTest extends TestCase
         $this->assertSame(1, $code, 'a declared-but-never-observed tick must fail the assertion');
         $this->assertIsArray(json_decode($console->captured, true), 'stdout must still be exactly one JSON document');
         $this->assertStringContainsString('NEVER OBSERVED', $stderr->fetch(), 'and the reason must be on stderr, not lost');
+    }
+
+    /**
+     * The refusal is reached with a `crontab` shim first on PATH, so the host account's real
+     * table is neither read nor written; the shim's call log is asserted, which is what proves
+     * that rather than assumes it.
+     */
+    public function test_install_tick_refuses_a_run_with_interaction_switched_off_and_names_that_rather_than_a_tty(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('install-tick refuses root before it reaches the confirmation guard');
+        }
+
+        $shim = sys_get_temp_dir().'/jobs-crontab-shim-'.uniqid();
+        File::ensureDirectoryExists($shim);
+        File::put($shim.'/crontab', "#!/bin/sh\n"
+            .'echo "$*" >> '.escapeshellarg($shim.'/calls')."\n"
+            ."[ \"\$1\" = -l ] && { echo 'no crontab for suite' >&2; exit 1; }\n"
+            ."exit 1\n");
+        chmod($shim.'/crontab', 0755);
+
+        $path = (string) getenv('PATH');
+        putenv('PATH='.$shim.':'.$path);
+
+        $stderr = new BufferedOutput;
+        $console = new class extends ConsoleOutput
+        {
+            protected function doWrite(string $message, bool $newline): void {}
+        };
+        $console->setErrorOutput($stderr);
+
+        try {
+            $code = $this->app->make(Kernel::class)
+                ->call('bridge:jobs', ['action' => 'install-tick', '--no-interaction' => true], $console);
+            $calls = is_file($shim.'/calls') ? (string) file_get_contents($shim.'/calls') : '';
+        } finally {
+            putenv('PATH='.$path);
+            File::deleteDirectory($shim);
+        }
+
+        $this->assertSame("-l\n", $calls, 'the shim, not the host crontab, must be what was read — and nothing may be written');
+        $this->assertSame(1, $code, 'the refusal must still fail the run');
+
+        $message = $stderr->fetch();
+        $this->assertStringContainsString('REFUSED', $message);
+        $this->assertStringContainsString('interaction is switched off for this run (`--no-interaction`/`-n`)', $message);
+        $this->assertStringContainsString('`--yes` was not passed', $message);
+        $this->assertStringContainsString('Re-run without `-n` to be asked, or pass `--yes`', $message);
+        $this->assertStringNotContainsString('TTY', $message, 'the guard tests interactivity, not a terminal');
     }
 
     /**
