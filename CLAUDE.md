@@ -31,7 +31,10 @@ php artisan bridge:provision             # idempotent webhook subscription setup
                                          # missing writeback identity_id, resolved from the writeback token and written
                                          # only on confirmation, and only where it MAY ask — a human who will SEE the
                                          # question and can ANSWER it, which BridgeCommand::canPromptToConfirm() owns
-                                         # and this line deliberately does not re-spell (DL-369) — docs/writeback.md § 2
+                                         # and this line deliberately does not re-spell (DL-369) — docs/writeback.md § 2.
+                                         # REFUSES a subscription whose composed receiver URL reaches no receiver route in
+                                         # this app, before anything is sent or written; --allow-unreachable-receiver
+                                         # provisions it anyway and says so (DL-377)
 php artisan bridge:provision-tools       # mint per-agent board-tools bearers (DL-217; idempotent, collision-checked). The
                                          # command bridge:check's NEXT STEPS block names for an agent that is not wired
                                          # end to end (DL-352) — docs/board-tools.md. For an SSH-transport agent it mints

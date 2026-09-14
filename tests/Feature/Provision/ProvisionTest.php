@@ -4,11 +4,14 @@ namespace Tests\Feature\Provision;
 
 use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\WebhookProvisioner;
+use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretPath;
 use Illuminate\Http\Client\Request;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\TestCase;
 use Throwable;
@@ -49,6 +52,14 @@ class ProvisionTest extends TestCase
      * of the line on a bidi-aware terminal without emitting a control byte at all.
      */
     private const HOSTILE_ROW = "\x1B[2K\r[prod-agent] kanban:5 id=1 active \u{202E}\u{200B}";
+
+    private const ALL_INACTIVE = ['5' => false, '6' => false, '7' => false];
+
+    private const CREATE_ECHOES_URL = 'create-echoes-url';
+
+    private const CREATE_ECHOES_URL_ACROSS_TRUNCATION = 'create-echoes-url-across-truncation';
+
+    private const CREATE_ECHOES_REQUEST = 'create-echoes-request';
 
     public function test_creates_a_missing_subscription_and_writes_the_secret(): void
     {
@@ -374,5 +385,316 @@ class ProvisionTest extends TestCase
         );
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && $r['url'] === $receiverUrl);
+    }
+
+    /**
+     * Bases that compose a receiver URL this app's router does not route, each with the
+     * URL the refusal shows for `prod-agent`'s `kanban:5` — the composed URL, with any query
+     * the base carries redacted.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function unroutedReceiverBases(): array
+    {
+        return [
+            'bare host' => ['https://bridge.example.com', 'https://bridge.example.com/kanban?b=5'],
+            'receiver path doubled' => ['https://bridge.example.com/webhooks/webhooks', 'https://bridge.example.com/webhooks/webhooks/kanban?b=5'],
+            'base carrying its own query' => ['https://bridge.example.com/webhooks?region=eu', 'https://bridge.example.com/webhooks?[REDACTED]/kanban?b=5'],
+        ];
+    }
+
+    /**
+     * ⛔ A mis-set base must not become a live subscription at kanban that 404s here.
+     * "Nothing was sent" is the outcome asserted rather than a mocked `ensure()`: the
+     * provisioner's first act is the GET that lists live hooks, so an empty request log
+     * means it was never entered — and no secret was written either.
+     * `test_creates_a_missing_subscription_and_writes_the_secret` is the presence witness:
+     * the same fixture with a routed base does reach the upstream.
+     */
+    #[DataProvider('unroutedReceiverBases')]
+    public function test_refuses_to_provision_a_receiver_url_that_reaches_no_route_here(string $base, string $composed): void
+    {
+        config(['bridge.receiver_base_url' => $base]);
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        $rc = Artisan::call('bridge:provision');
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString("[prod-agent] kanban:5 REFUSED — the receiver URL {$composed} reaches no receiver route", $out);
+        $this->assertStringContainsString('BRIDGE_RECEIVER_BASE_URL', $out);
+        $this->assertStringContainsString('--allow-unreachable-receiver', $out);
+        Http::assertNothingSent();
+        $this->assertFileDoesNotExist(SecretPath::for($this->dir, 'kanban', '5'));
+    }
+
+    /**
+     * Every mode that enters the provisioner, over every subscription of every agent —
+     * a gate on the first iteration only, or on the create path but not reconcile's
+     * delete + recreate, would send something here.
+     *
+     * @return array<string, array{array<string, bool>}>
+     */
+    public static function provisioningModes(): array
+    {
+        return [
+            'default' => [[]],
+            'dry-run' => [['--dry-run' => true]],
+            'reconcile' => [['--reconcile' => true]],
+            'reconcile dry-run' => [['--reconcile' => true, '--dry-run' => true]],
+        ];
+    }
+
+    /**
+     * @param  array<string, bool>  $options
+     */
+    #[DataProvider('provisioningModes')]
+    public function test_every_subscription_is_refused_in_every_provisioning_mode(array $options): void
+    {
+        $labels = $this->multiAgentFixture('https://bridge.example.com', self::ALL_INACTIVE);
+
+        $rc = Artisan::call('bridge:provision', $options);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        foreach ($labels as $label) {
+            $this->assertStringContainsString("{$label} REFUSED", $out);
+        }
+        $this->assertStringNotContainsString('DRY-RUN', $out);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * The presence witness for the test above: the identical fixture and modes with a
+     * routed base reach the upstream for every subscription, so the empty request log
+     * there is the gate and not a fixture that never provisions.
+     *
+     * @param  array<string, bool>  $options
+     */
+    #[DataProvider('provisioningModes')]
+    public function test_the_same_fixture_with_a_routed_base_reaches_the_upstream_in_every_mode(array $options): void
+    {
+        $labels = $this->multiAgentFixture('https://bridge.example.com/webhooks', self::ALL_INACTIVE);
+
+        Artisan::call('bridge:provision', $options);
+        $out = Artisan::output();
+
+        $this->assertStringNotContainsString('REFUSED', $out);
+        foreach (array_keys($labels) as $scope) {
+            Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), "/boards/{$scope}/webhooks.json"));
+        }
+    }
+
+    public function test_the_override_provisions_an_unrouted_receiver_url_and_says_so(): void
+    {
+        config(['bridge.receiver_base_url' => 'https://bridge.example.com']);
+        Http::fake(fn (Request $r) => $r->method() === 'GET'
+            ? Http::response(['data' => []])
+            : Http::response(['data' => ['id' => 7]]));
+
+        $rc = Artisan::call('bridge:provision', ['--allow-unreachable-receiver' => true]);
+        $out = Artisan::output();
+
+        $this->assertSame(0, $rc);
+        $this->assertStringContainsString('[prod-agent] kanban:5 OVERRIDE — https://bridge.example.com/kanban?b=5 reaches no receiver route in this app; provisioning it anyway because --allow-unreachable-receiver was given.', $out);
+        $this->assertStringNotContainsString('REFUSED', $out);
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && $r['url'] === 'https://bridge.example.com/kanban?b=5');
+        $this->assertFileExists(SecretPath::for($this->dir, 'kanban', '5'));
+    }
+
+    /**
+     * The override line is a statement that the gate was bypassed, so a run where nothing
+     * was bypassed must not print it.
+     */
+    public function test_the_override_on_a_routed_receiver_url_states_nothing(): void
+    {
+        Http::fake(fn (Request $r) => $r->method() === 'GET'
+            ? Http::response(['data' => []])
+            : Http::response(['data' => ['id' => 7]]));
+
+        $rc = Artisan::call('bridge:provision', ['--allow-unreachable-receiver' => true]);
+
+        $this->assertSame(0, $rc);
+        $this->assertStringNotContainsString('OVERRIDE', Artisan::output());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && $r['url'] === $this->receiverUrl);
+    }
+
+    public function test_list_only_reads_and_is_not_refused(): void
+    {
+        config(['bridge.receiver_base_url' => 'https://bridge.example.com']);
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        $rc = Artisan::call('bridge:provision', ['--list' => true]);
+
+        $this->assertSame(0, $rc);
+        $this->assertStringNotContainsString('REFUSED', Artisan::output());
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET');
+    }
+
+    /**
+     * The base is config an operator may have put credentials in; the refusal is a new
+     * rendering of it and redacts it the way `bridge:check` does, while still naming the
+     * host, path and composed suffix the operator has to recognise.
+     */
+    public function test_the_refusal_does_not_print_credentials_carried_by_the_base(): void
+    {
+        config(['bridge.receiver_base_url' => 'https://svc:canary-pw-9278@bridge.example.com/hooks?k=canary-q-9278']); // gitleaks:allow — test fixture
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        Artisan::call('bridge:provision');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString('REFUSED — the receiver URL https://', $out);
+        $this->assertStringContainsString('bridge.example.com/hooks?[REDACTED]/kanban?b=5', $out);
+        $this->assertStringNotContainsString('canary-pw-9278', $out);
+        $this->assertStringNotContainsString('canary-q-9278', $out);
+    }
+
+    /**
+     * A base carrying credentials in its userinfo and its query, rendered by every line this
+     * command prints a receiver URL on — the refusal and override lines, each result line,
+     * and `--list`'s rows, which are the URLs kanban stored when this install registered
+     * them. The routed base reaches the result lines without the override; a base carrying
+     * a query never routes, so it reaches them only with it.
+     *
+     * The legs with a create refusal answer kanban's webhook create with an error whose body
+     * echoes the URL that was submitted, credentials included, which the `API error` line
+     * relays. One places the password across the point where Laravel truncates a
+     * `RequestException` message, so a redaction applied to the truncated message would see
+     * a userinfo with no `@` after it. The `ftp://` leg is a scheme `SecretScrubber::text()`
+     * does not treat as a URL; provision does not refuse that scheme when its path routes.
+     * The last leg's body echoes the whole submitted request, so the webhook secret this run
+     * generated reaches the relay too; the secret comes first in that body so it falls inside
+     * `UntrustedText::MAX_CHARS` rather than being cut off by the bound.
+     *
+     * @return array<string, array{0: string, 1: array<string, bool>, 2?: string}>
+     */
+    public static function credentialedBaseRuns(): array
+    {
+        $routed = 'https://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
+        $withQuery = 'https://svc:canary-pw-9278@bridge.example.com?k=canary-q-9278'; // gitleaks:allow — test fixture
+        $nonHttpScheme = 'ftp://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
+
+        return [
+            'default' => [$routed, []],
+            'dry-run' => [$routed, ['--dry-run' => true]],
+            'reconcile' => [$routed, ['--reconcile' => true]],
+            'reconcile dry-run' => [$routed, ['--reconcile' => true, '--dry-run' => true]],
+            'list' => [$routed, ['--list' => true]],
+            'refused' => [$withQuery, []],
+            'override' => [$withQuery, ['--allow-unreachable-receiver' => true]],
+            'override dry-run' => [$withQuery, ['--allow-unreachable-receiver' => true, '--dry-run' => true]],
+            'override reconcile' => [$withQuery, ['--allow-unreachable-receiver' => true, '--reconcile' => true]],
+            'list, base carrying a query' => [$withQuery, ['--list' => true]],
+            'create refused, body echoing the url' => [$routed, [], self::CREATE_ECHOES_URL],
+            'create refused, echoed password across the truncation point' => [$routed, [], self::CREATE_ECHOES_URL_ACROSS_TRUNCATION],
+            'override, create refused, body echoing the url' => [$withQuery, ['--allow-unreachable-receiver' => true], self::CREATE_ECHOES_URL],
+            'non-http scheme, create refused, body echoing the url' => [$nonHttpScheme, [], self::CREATE_ECHOES_URL],
+            'create refused, body echoing the whole request' => [$routed, [], self::CREATE_ECHOES_REQUEST],
+        ];
+    }
+
+    /**
+     * ⛔ Asserted on the WHOLE output, not on one line: each line that prints a receiver URL
+     * is a separate chance to print the base's credentials, and a redaction on one of them
+     * says nothing about the next. The pattern assertion is the presence witness — a
+     * URL-bearing line rendered, with its userinfo redacted — so an output that printed no URL
+     * at all cannot pass; a create-refusal leg also asserts its `API error` line was printed.
+     * The canaries are asserted by their stems, so a fragment of one left by a truncation
+     * fails too.
+     *
+     * @param  array<string, bool>  $options
+     */
+    #[DataProvider('credentialedBaseRuns')]
+    public function test_no_line_prints_the_credentials_a_receiver_base_carries(string $base, array $options, ?string $createRefusal = null): void
+    {
+        $labels = $this->multiAgentFixture($base, ['5' => null, '6' => true, '7' => false], $createRefusal);
+
+        Artisan::call('bridge:provision', $options);
+        $out = Artisan::output();
+
+        foreach ($labels as $label) {
+            $this->assertStringContainsString("{$label} ", $out);
+        }
+        $this->assertMatchesRegularExpression('#(?:https|ftp)://\*\*\*@bridge\.example\.com[/?]#', $out);
+        if ($createRefusal !== null) {
+            $this->assertStringContainsString("{$labels['5']} API error: HTTP request returned status code 422", $out);
+            $creates = Http::recorded(fn (Request $r) => $r->method() === 'POST');
+            $this->assertNotEmpty($creates);
+            foreach ($creates as [$create]) {
+                $this->assertStringNotContainsString($create['secret'], $out);
+            }
+        }
+        $this->assertStringNotContainsString('canary-pw', $out);
+        $this->assertStringNotContainsString('canary-q', $out);
+    }
+
+    public function test_a_base_with_no_credentials_prints_its_receiver_urls_unchanged(): void
+    {
+        $labels = $this->multiAgentFixture('https://bridge.example.com/webhooks', ['5' => null, '6' => true, '7' => false]);
+
+        Artisan::call('bridge:provision', ['--reconcile' => true]);
+        $out = Artisan::output();
+
+        $this->assertStringContainsString("{$labels['5']} CREATED — webhook id=9 → https://bridge.example.com/webhooks/kanban?b=5", $out);
+        $this->assertStringContainsString("{$labels['6']} EXISTS — webhook id=3 → https://bridge.example.com/webhooks/kanban?b=6", $out);
+        $this->assertStringContainsString("{$labels['7']} RECONCILED (inactive) — webhook id=9 → https://bridge.example.com/webhooks/kanban?b=7", $out);
+
+        Artisan::call('bridge:provision', ['--list' => true]);
+        $this->assertStringContainsString("{$labels['6']} id=3 active → https://bridge.example.com/webhooks/kanban?b=6", Artisan::output());
+    }
+
+    /**
+     * Kanban subscriptions spread over more than one agent config, each scope's live hook
+     * state set by `$hookActive`: `null` for no live hook at its receiver URL, otherwise the
+     * hook's `active` flag.
+     *
+     * ⚠ The refusal tests reach none of these states — the gate sits before
+     * `WebhookProvisioner::ensure()`'s first request, the list GET — so for them the fixture
+     * only supplies subscriptions to refuse. The states matter to the runs that pass the gate.
+     *
+     * `$createRefusal`, when set, makes every webhook create answer 422 with a body echoing
+     * the submitted URL: {@see self::CREATE_ECHOES_URL};
+     * {@see self::CREATE_ECHOES_URL_ACROSS_TRUNCATION}, whose message is padded so the URL's
+     * password starts just before `RequestException::$truncateAt`; or
+     * {@see self::CREATE_ECHOES_REQUEST}, whose body echoes the submitted secret as well.
+     *
+     * @param  array<string, ?bool>  $hookActive  scope => live hook state, for every scope the fixture declares
+     * @return array<string, string> scope => label
+     */
+    private function multiAgentFixture(string $base, array $hookActive, ?string $createRefusal = null): array
+    {
+        config(['bridge.receiver_base_url' => $base]);
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5, 6]\n");
+        File::put($this->dir.'/dev-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [7]\n");
+        $labels = ['5' => '[prod-agent] kanban:5', '6' => '[prod-agent] kanban:6', '7' => '[dev-agent] kanban:7'];
+        foreach (array_keys($labels) as $scope) {
+            File::put(SecretPath::for($this->dir, 'kanban', (string) $scope), 'existing-secret-value'); // gitleaks:allow — test fixture
+            chmod(SecretPath::for($this->dir, 'kanban', (string) $scope), 0o600);
+        }
+
+        Http::fake(function (Request $r) use ($base, $hookActive, $createRefusal) {
+            if ($r->method() === 'POST' && $createRefusal !== null) {
+                $echo = fn (string $message): array => $createRefusal === self::CREATE_ECHOES_REQUEST
+                    ? ['message' => $message, 'input' => ['secret' => $r['secret'], 'url' => $r['url']]]
+                    : ['message' => $message, 'errors' => ['url' => [$r['url']]]];
+                $message = 'The url field is invalid.';
+                if ($createRefusal === self::CREATE_ECHOES_URL_ACROSS_TRUNCATION) {
+                    $passwordAt = (int) strpos((string) json_encode($echo('')), 'canary-pw');
+                    $message = str_pad($message, RequestException::$truncateAt - strlen('canary-pw-9') - $passwordAt);
+                }
+
+                return Http::response($echo($message), 422);
+            }
+            if ($r->method() !== 'GET') {
+                return Http::response(['data' => ['id' => 9]]);
+            }
+            preg_match('#/boards/(\d+)/webhooks\.json#', $r->url(), $m);
+            $active = $hookActive[$m[1]];
+
+            return Http::response(['data' => $active === null ? [] : [['id' => 3, 'url' => ReceiverUrl::for($base, 'kanban', $m[1]), 'active' => $active]]]);
+        });
+
+        return $labels;
     }
 }
