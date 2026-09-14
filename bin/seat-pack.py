@@ -15,7 +15,9 @@ channel-server files are every TRACKED file under `examples/channel-servers/` ou
 `node_modules/` — the shipped-file set `channel-server-supply-chain.yml`'s version-bump
 guard reads — so `channel-lib.mjs` travels with the entry and cannot be cherry-picked away.
 File CONTENT is read from the working tree, the same bytes a `cp -a` of the checkout copies;
-`bridge_describe` carries `--dirty` so a pack staged from an edited tree says so.
+`bridge_describe` carries `--dirty` so a pack staged from an edited tree says so. A
+channel-server file must be tracked as a regular file (100644 or 100755): a tracked symlink
+would stage its target's content under the link's name.
 
 COPY SHAPE writes, under --out:
   seat-tools/bin/<tool>      each declared tool, mode 0755
@@ -26,21 +28,26 @@ COPY SHAPE writes, under --out:
 LINK SHAPE writes ONLY seat-tools/bin/<tool>, each a symlink to this checkout's file. It
 writes no VERSION and no seat-pack.json: a link resolves into the checkout, so the checkout
 IS the version, and a metadata file beside it would be a second copy that `git pull` leaves
-stale.
+stale. It does not touch channel-setup/.
 
-WHAT A RE-RUN REPLACES. `seat-tools/` belongs to the pack and is replaced whole, so a tool
-dropped from the manifest, or metadata from an earlier copy-shape run, does not survive a
-re-stage. `channel-setup/` is written OVER, the way `cp -a examples/channel-servers/.` writes
-over a snapshot, and nothing in it is deleted: a deployment that runs straight out of the
-staged directory keeps its `node_modules/`, and the cost is that a file the reference stops
-shipping is not removed.
+WHAT A RE-RUN REPLACES. Both directories are generated output. `seat-tools/` is replaced
+whole, so a tool dropped from the manifest, or metadata from an earlier copy-shape run, does
+not survive. A copy-shape run removes everything in `channel-setup/` except `node_modules/`
+before writing, so a file the reference stops shipping does not survive either, while a
+deployment running straight out of the staged directory keeps its installed dependencies.
+
+NOTHING IS WRITTEN THROUGH A SYMLINK. A `seat-tools/` or `channel-setup/` that is a symlink,
+or a symlink on the path of a file the pack writes, is refused. Any other symlink the
+`channel-setup/` prune meets is unlinked, never followed.
+
+EVERY INPUT IS READ, AND EVERY DESTINATION CHECKED, BEFORE THE FIRST WRITE, so a refusal
+leaves --out as it found it.
 
 DETERMINISTIC: no timestamps, sorted entries, fixed modes. Two runs over one tree write
 byte-identical output, so "is the staged pack current?" is "regenerate to a temp dir and
-`diff -r`".
+`diff -r -x node_modules`".
 
-EXIT: 0 written · 1 refused (a manifest entry that is not a tracked 100755 `bin/` file, or a
-git failure), with the reason on stderr · 2 usage.
+EXIT: 0 written · 1 refused, the reason on stderr · 2 usage.
 """
 
 import argparse
@@ -48,6 +55,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -55,6 +63,8 @@ import tempfile
 SCHEMA = 1
 MANIFEST = "seat-tools.json"
 CHANNEL_DIR = "examples/channel-servers/"
+REGULAR_MODES = {"100644": 0o644, "100755": 0o755}
+KEPT_IN_CHANNEL_SETUP = "node_modules"
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
@@ -104,6 +114,54 @@ def declared_tools() -> list:
     return sorted(tools, key=os.path.basename)
 
 
+def channel_files() -> list:
+    """(tracked path, path under channel-setup/, staged mode) for each shipped channel-server file."""
+    shipped = []
+    for path, mode in sorted(index_modes(CHANNEL_DIR).items()):
+        if "/node_modules/" in path:
+            continue
+        if mode not in REGULAR_MODES:
+            raise Refused(
+                f"{path} is mode {mode} in the git index; a channel-server file must be tracked as a "
+                "regular file (100644 or 100755), or the pack would stage something other than it"
+            )
+        shipped.append((path, path[len(CHANNEL_DIR):], REGULAR_MODES[mode]))
+    return shipped
+
+
+def refuse_unless_directory_or_absent(path: str) -> None:
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise Refused(f"{path} is a symlink; the pack is never written through one")
+    if not stat.S_ISDIR(mode):
+        raise Refused(f"{path} exists and is not a directory")
+
+
+def refuse_symlinks_on_the_way_to(root: str, relatives: list) -> None:
+    for relative in relatives:
+        parts = relative.split("/")
+        for depth in range(1, len(parts) + 1):
+            candidate = os.path.join(root, *parts[:depth])
+            if os.path.islink(candidate):
+                raise Refused(f"{candidate} is a symlink; the pack is never written through one")
+
+
+def prune_except_node_modules(directory: str) -> None:
+    if not os.path.isdir(directory):
+        return
+    for name in sorted(os.listdir(directory)):
+        if name == KEPT_IN_CHANNEL_SETUP:
+            continue
+        path = os.path.join(directory, name)
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+
+
 def read_bytes(relative: str) -> bytes:
     with open(os.path.join(REPO, relative), "rb") as fh:
         return fh.read()
@@ -124,6 +182,19 @@ def replace_dir(built: str, destination: str) -> None:
 
 def stage(out: str, shape: str) -> str:
     tools = declared_tools()
+    seat_tools_dest = os.path.join(out, "seat-tools")
+    channel_dest = os.path.join(out, "channel-setup")
+    refuse_unless_directory_or_absent(seat_tools_dest)
+
+    if shape == "copy":
+        channel = channel_files()
+        refuse_unless_directory_or_absent(channel_dest)
+        refuse_symlinks_on_the_way_to(channel_dest, [staged for _, staged, _ in channel])
+        tool_bytes = {tool: read_bytes(tool) for tool in tools}
+        version = read_bytes("VERSION")
+        describe = git("describe", "--tags", "--always", "--dirty").strip()
+        channel_bytes = [(staged, read_bytes(path), mode) for path, staged, mode in channel]
+
     os.makedirs(out, exist_ok=True)
     build = tempfile.mkdtemp(prefix=".seat-pack-", dir=out)
     try:
@@ -136,17 +207,15 @@ def stage(out: str, shape: str) -> str:
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.symlink(os.path.join(REPO, tool), target)
             else:
-                data = read_bytes(tool)
-                write_file(target, data, 0o755)
-                records.append({"name": name, "sha256": hashlib.sha256(data).hexdigest()})
+                write_file(target, tool_bytes[tool], 0o755)
+                records.append({"name": name, "sha256": hashlib.sha256(tool_bytes[tool]).hexdigest()})
 
         if shape == "copy":
-            version = read_bytes("VERSION")
             write_file(os.path.join(seat_tools, "VERSION"), version, 0o644)
             meta = {
                 "schema": SCHEMA,
                 "bridge_version": version.decode("utf-8").strip(),
-                "bridge_describe": git("describe", "--tags", "--always", "--dirty").strip(),
+                "bridge_describe": describe,
                 "tools": records,
             }
             write_file(
@@ -155,19 +224,14 @@ def stage(out: str, shape: str) -> str:
                 0o644,
             )
 
-            channel = index_modes(CHANNEL_DIR)
-            shipped = sorted(p for p in channel if "/node_modules/" not in p)
-            for path in shipped:
-                write_file(
-                    os.path.join(out, "channel-setup", path[len(CHANNEL_DIR):]),
-                    read_bytes(path),
-                    0o755 if channel[path] == "100755" else 0o644,
-                )
-            summary = f"seat-tools/ ({len(tools)} tool(s)) and channel-setup/ ({len(shipped)} file(s))"
+            prune_except_node_modules(channel_dest)
+            for staged, data, mode in channel_bytes:
+                write_file(os.path.join(channel_dest, staged), data, mode)
+            summary = f"seat-tools/ ({len(tools)} tool(s)) and channel-setup/ ({len(channel_bytes)} file(s))"
         else:
             summary = f"seat-tools/bin/ ({len(tools)} link(s) into {REPO})"
 
-        replace_dir(seat_tools, os.path.join(out, "seat-tools"))
+        replace_dir(seat_tools, seat_tools_dest)
         return summary
     finally:
         shutil.rmtree(build, ignore_errors=True)
@@ -176,9 +240,8 @@ def stage(out: str, shape: str) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="seat-pack.py",
-        description="Stage the tools declared in seat-tools.json (and, in the copy shape, the "
-        "channel-server files) under --out. docs/seat-tools.md owns how a seat installs them.",
-        epilog="exit 0 = written; 1 = refused, reason on stderr; 2 = usage.",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--out", required=True, help="directory to stage into (created if absent)")
     parser.add_argument(
@@ -192,7 +255,7 @@ def main(argv=None) -> int:
     out = os.path.abspath(args.out)
     try:
         summary = stage(out, args.shape)
-    except Refused as exc:
+    except (Refused, OSError) as exc:
         print(f"seat-pack.py: refused: {exc}", file=sys.stderr)
         return 1
     print(f"seat-pack.py: {args.shape} shape staged at {out}: {summary}")

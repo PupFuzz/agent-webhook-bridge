@@ -11,6 +11,9 @@
     nothing else, at 0755, with `seat-pack.json` hashes matching the bytes; `channel-setup/`
     is the shipped channel-server file set, `channel-lib.mjs` included; two runs over one
     tree are byte-identical; the link shape writes links and no metadata.
+(r) A RE-STAGE IS SAFE TO RUN OVER WHAT IS ALREADY THERE: nothing is written through a
+    symlink, at either end; `channel-setup/` is regenerated, keeping only `node_modules/`;
+    and a refusal of any kind is a named `refused:` line, never a traceback.
 
 The remedy half, (c), is PHP: `Tests\\Support\\AssertsSeatToolRemedy`.
 
@@ -102,6 +105,36 @@ class _Scratch(unittest.TestCase):
         os.makedirs(path)
         return path
 
+    def fixture_repo(self, tool_mode="+x"):
+        """A throwaway repo carrying this seat-pack.py, so its inputs can be broken without
+        touching the real ones. Returns (repo, its seat-pack.py)."""
+        repo = self.scratch("repo")
+        os.makedirs(os.path.join(repo, "bin"))
+        os.makedirs(os.path.join(repo, _CHANNEL_DIR))
+        shutil.copy2(os.path.join(_HERE, "seat-pack.py"), os.path.join(repo, "bin", "seat-pack.py"))
+        manifest = json.dumps({"schema": 1, "tools": ["bin/tool.py"]})
+        for rel, text in (
+            ("VERSION", "1.0.0\n"),
+            ("seat-tools.json", manifest),
+            ("bin/tool.py", "#!/usr/bin/env python3\n"),
+            (_CHANNEL_DIR + "x.mjs", ""),
+        ):
+            with open(os.path.join(repo, rel), "w") as fh:
+                fh.write(text)
+        _git("init", "-q", cwd=repo)
+        _git("add", f"--chmod={tool_mode}", "bin/tool.py", cwd=repo)
+        _git("add", _CHANNEL_DIR + "x.mjs", "VERSION", "seat-tools.json", cwd=repo)
+        _git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "fixture", cwd=repo)
+        return repo, os.path.join(repo, "bin", "seat-pack.py")
+
+    def assertRefused(self, proc, *reason):
+        """A refusal is rc 1 and ONE named `refused:` line — a traceback is not a refusal."""
+        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("seat-pack.py: refused: ", proc.stderr)
+        for fragment in reason:
+            self.assertIn(fragment, proc.stderr)
+
 
 class DeclaredToolsRunAlone(_Scratch):
     """(a)"""
@@ -122,14 +155,17 @@ class DeclaredToolsRunAlone(_Scratch):
                 )
                 self.assertIn("usage:", proc.stdout.lower())
 
+    def assert_tracked_100755(self, tool, cwd=_REPO):
+        self.assertEqual(
+            "100755",
+            _index_mode(tool, cwd=cwd),
+            f"{tool} is not tracked at 100755; installed on PATH it exits 126",
+        )
+
     def test_each_declared_tool_is_100755_in_the_git_index(self):
         for tool in _declared():
             with self.subTest(tool=tool):
-                self.assertEqual(
-                    "100755",
-                    _index_mode(tool),
-                    f"{tool} is not tracked at 100755; installed on PATH it exits 126",
-                )
+                self.assert_tracked_100755(tool)
 
     def test_control_a_tool_reading_a_sibling_file_fails_the_isolation_run(self):
         # The defect shape (a) exists for: the tool works IN the tree and dies copied out of it.
@@ -153,12 +189,13 @@ class DeclaredToolsRunAlone(_Scratch):
         self.assertNotEqual(0, alone.returncode, "the isolation run did not catch a ../VERSION read")
         self.assertIn("VERSION", alone.stderr)
 
-    def test_control_a_100644_entry_fails_the_index_mode_read(self):
+    def test_control_a_100644_entry_fails_the_index_mode_check(self):
         repo = self.scratch("repo")
         _git("init", "-q", cwd=repo)
         open(os.path.join(repo, "tool.py"), "w").close()
         _git("add", "--chmod=-x", "tool.py", cwd=repo)
-        self.assertEqual("100644", _index_mode("tool.py", cwd=repo))
+        with self.assertRaises(self.failureException):
+            self.assert_tracked_100755("tool.py", cwd=repo)
 
 
 class PackIsExactlyTheDeclaration(_Scratch):
@@ -244,32 +281,18 @@ class PackIsExactlyTheDeclaration(_Scratch):
         self.assertTrue(os.path.exists(node_modules))
 
     def test_control_an_undeclared_or_non_executable_entry_is_refused(self):
-        # Build a throwaway repo carrying this seat-pack.py, so the manifest can be broken
-        # without touching the real one.
-        repo = self.scratch("repo")
-        os.makedirs(os.path.join(repo, "bin"))
-        os.makedirs(os.path.join(repo, _CHANNEL_DIR))
-        shutil.copy2(os.path.join(_HERE, "seat-pack.py"), os.path.join(repo, "bin", "seat-pack.py"))
-        for rel, text in (("VERSION", "1.0.0\n"), ("bin/tool.py", "#!/usr/bin/env python3\n"), (_CHANNEL_DIR + "x.mjs", "")):
-            with open(os.path.join(repo, rel), "w") as fh:
-                fh.write(text)
-        _git("init", "-q", cwd=repo)
-        _git("add", "--chmod=-x", "bin/tool.py", _CHANNEL_DIR + "x.mjs", "VERSION", cwd=repo)
-        seat_pack = os.path.join(repo, "bin", "seat-pack.py")
+        repo, seat_pack = self.fixture_repo(tool_mode="-x")
 
         def manifest(entries):
             with open(os.path.join(repo, "seat-tools.json"), "w") as fh:
                 json.dump({"schema": 1, "tools": entries}, fh)
 
-        manifest(["bin/tool.py"])
         proc = _pack(os.path.join(self.tmp, "o1"), seat_pack=seat_pack)
-        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("mode 100644", proc.stderr)
+        self.assertRefused(proc, "mode 100644")
 
         manifest(["bin/untracked.py"])
         proc = _pack(os.path.join(self.tmp, "o2"), seat_pack=seat_pack)
-        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
-        self.assertIn("not tracked", proc.stderr)
+        self.assertRefused(proc, "not tracked")
 
         _git("add", "--chmod=+x", "bin/tool.py", cwd=repo)
         _git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "fixture", cwd=repo)
@@ -277,6 +300,117 @@ class PackIsExactlyTheDeclaration(_Scratch):
         proc = _pack(os.path.join(self.tmp, "o3"), seat_pack=seat_pack)
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
         self.assertEqual(["tool.py"], os.listdir(os.path.join(self.tmp, "o3", "seat-tools", "bin")))
+
+
+class RestageIsSafeOverWhatIsThere(_Scratch):
+    """(r)"""
+
+    def victim_file(self):
+        victim = os.path.join(self.scratch("outside"), "precious")
+        with open(victim, "w") as fh:
+            fh.write("precious\n")
+        os.chmod(victim, 0o600)
+        return victim
+
+    def test_a_tracked_symlink_under_channel_servers_is_refused_not_dereferenced(self):
+        repo, seat_pack = self.fixture_repo()
+        victim = self.victim_file()
+        os.symlink(victim, os.path.join(repo, _CHANNEL_DIR, "leak"))
+        _git("add", _CHANNEL_DIR + "leak", cwd=repo)
+        out = os.path.join(self.tmp, "out")
+
+        proc = _pack(out, seat_pack=seat_pack)
+
+        self.assertFalse(
+            os.path.lexists(os.path.join(out, "channel-setup", "leak")),
+            "a tracked symlink was staged (its target's content, copied in as a regular file)",
+        )
+        self.assertRefused(proc, _CHANNEL_DIR + "leak", "120000")
+        self.assertFalse(os.path.lexists(os.path.join(out, "channel-setup")), "a refusal wrote channel-setup/")
+
+    def test_a_symlinked_channel_setup_dir_is_refused_and_its_target_untouched(self):
+        out = self.scratch("out")
+        elsewhere = self.scratch("elsewhere")
+        os.symlink(elsewhere, os.path.join(out, "channel-setup"))
+
+        proc = _pack(out)
+
+        self.assertEqual([], os.listdir(elsewhere), "files were written through the channel-setup symlink")
+        self.assertRefused(proc, "channel-setup", "symlink")
+        self.assertFalse(os.path.lexists(os.path.join(out, "seat-tools")), "a refusal wrote seat-tools/")
+
+    def test_a_symlinked_destination_file_is_refused_and_its_target_untouched(self):
+        out = self.scratch("out")
+        os.makedirs(os.path.join(out, "channel-setup"))
+        victim = self.victim_file()
+        os.symlink(victim, os.path.join(out, "channel-setup", "README.md"))
+
+        proc = _pack(out)
+
+        with open(victim) as fh:
+            self.assertEqual("precious\n", fh.read(), "the symlink's target was overwritten")
+        self.assertEqual(0o600, stat.S_IMODE(os.stat(victim).st_mode), "the symlink's target was chmodded")
+        self.assertRefused(proc, "README.md", "symlink")
+
+    def test_a_symlinked_seat_tools_dir_is_refused_and_its_target_untouched(self):
+        for shape in ("copy", "link"):
+            with self.subTest(shape=shape):
+                out = self.scratch("out-" + shape)
+                elsewhere = self.scratch("elsewhere-" + shape)
+                with open(os.path.join(elsewhere, "keep"), "w") as fh:
+                    fh.write("keep\n")
+                os.symlink(elsewhere, os.path.join(out, "seat-tools"))
+
+                proc = _pack(out, "--shape", shape)
+
+                self.assertEqual(["keep"], os.listdir(elsewhere), "the seat-tools symlink's target was changed")
+                self.assertFalse(os.path.lexists(os.path.join(out, "channel-setup")), "a refusal wrote channel-setup/")
+                self.assertRefused(proc, "seat-tools", "symlink")
+
+    def test_an_unreadable_input_is_a_named_refusal_not_a_traceback(self):
+        repo, seat_pack = self.fixture_repo()
+        os.unlink(os.path.join(repo, "VERSION"))
+        out = os.path.join(self.tmp, "out")
+
+        proc = _pack(out, seat_pack=seat_pack)
+
+        self.assertRefused(proc, "VERSION")
+        self.assertFalse(os.path.lexists(os.path.join(out, "seat-tools")), "a refusal wrote seat-tools/")
+        self.assertFalse(os.path.lexists(os.path.join(out, "channel-setup")), "a refusal wrote channel-setup/")
+
+    def test_a_copy_restage_prunes_channel_setup_except_node_modules(self):
+        out = os.path.join(self.tmp, "out")
+        self.assertEqual(0, _pack(out).returncode)
+        channel = os.path.join(out, "channel-setup")
+        stale = os.path.join(channel, "no-longer-shipped.mjs")
+        stale_nested = os.path.join(channel, "tests", "no-longer-shipped.test.mjs")
+        for path in (stale, stale_nested):
+            with open(path, "w") as fh:
+                fh.write("stale\n")
+        kept = os.path.join(channel, "node_modules", "dep", "index.js")
+        os.makedirs(os.path.dirname(kept))
+        with open(kept, "w") as fh:
+            fh.write("dep\n")
+        # A symlink the prune meets must be unlinked, never recursed through.
+        elsewhere = self.scratch("elsewhere")
+        with open(os.path.join(elsewhere, "keep"), "w") as fh:
+            fh.write("keep\n")
+        stray_link = os.path.join(channel, "stray-link")
+        os.symlink(elsewhere, stray_link)
+
+        proc = _pack(out)
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertFalse(os.path.lexists(stale), "a file the reference no longer ships survived a re-stage")
+        self.assertFalse(os.path.lexists(stale_nested), "a nested stale file survived a re-stage")
+        self.assertTrue(os.path.isfile(os.path.join(elsewhere, "keep")), "the prune followed a symlink")
+        self.assertFalse(os.path.lexists(stray_link))
+        self.assertTrue(os.path.isfile(kept), "the re-stage removed node_modules/")
+
+        fresh = os.path.join(self.tmp, "fresh")
+        self.assertEqual(0, _pack(fresh).returncode)
+        diff = subprocess.run(["diff", "-r", "-x", "node_modules", out, fresh], capture_output=True, text=True)
+        self.assertEqual((0, ""), (diff.returncode, diff.stdout), "the documented currency check is not clean after a re-stage")
 
 
 if __name__ == "__main__":
