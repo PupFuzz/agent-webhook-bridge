@@ -29,6 +29,7 @@ use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
+use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
@@ -557,6 +558,12 @@ class CheckCommand extends BridgeCommand
         // NO DERIVATION HERE. Unlike the event-consumer plane above, nothing in this leg is
         // read by a second renderer: the JSON document and the operator report both render
         // its findings, and the NEXT STEPS block reads the scopes it publishes on the context.
+        //
+        // DL-382: THE SAME SLOT CARRIES THE PASSIVE HALF — each declared scope judged against its
+        // own delivery record. It needs no token and no network, which is the point: the hook-list
+        // read above is `COULD NOT LOOK` on every repo this install does not administer. It never
+        // fails the run (a silent record is an inference from absence), so this slot's exit-code
+        // behaviour is still the hook-list leg's alone.
         if (! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))) {
             $ok = false;
         }
@@ -917,7 +924,7 @@ class CheckCommand extends BridgeCommand
                 new WritebackSourceCoverageCheck,
             )
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
-            ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck)
+            ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck, new GitHubDeliveryHistoryCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
             ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
@@ -1144,13 +1151,14 @@ class CheckCommand extends BridgeCommand
 
     /**
      * The one sentence for one step — an exhaustive `match` over {@see NextStepState}, so a
-     * fifth state is a phpstan error here rather than an agent silently getting a command
+     * new state is a phpstan error here rather than an agent silently getting a command
      * with no explanation. What each state MEANS is the enum's docblock to say, not this
      * method's: the sentences render the definitions, they do not own them.
      */
     private function nextStepSentence(NextStep $step): string
     {
         $doc = "See {$step->doc}.";
+        $escapedScope = UntrustedText::forOperator((string) $step->scope);
 
         return match ($step->state) {
             // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
@@ -1173,11 +1181,18 @@ class CheckCommand extends BridgeCommand
             NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
 
             // ⛔ THE ONLY ARM WHOSE FAULT IS A `fail` ABOVE IT, and the sentence says so
-            // rather than reading like the four advisories it sits with. It also says what
+            // rather than reading like the board-tools advisories it sits with. It also says what
             // this run DID — read the repo's hook list — because the whole cost of getting
             // this state wrong is an operator re-creating a webhook that was already there,
             // and the difference between that and this line is exactly which read happened.
             NextStepState::GithubWebhookMissing => "the github subscription {$step->scope} is declared in {$step->agent}.yml, and this run READ that repo's whole webhook list: NOTHING on it delivers to this install's receiver, so nothing upstream wakes {$step->agent} for that scope — its events arrive late through a periodic sweep, or not at all. That is the FAIL line above, not an advisory. No command on this box can fix it: bridge:provision manages the kanban provider only, and a github webhook lives in the repo's own settings — so someone with `admin:repo_hook` on {$step->scope} adds it by hand (payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$step->scope}, content type application/json, secret = this install's per-scope HMAC secret file, named on the FAIL line above), and then you run `{$step->command}` to confirm it took. {$doc}",
+
+            // ⛔ THE ONE ARM WHOSE FAULT IS AN INFERENCE, and it says so twice over: a quiet repo
+            // produces it too, and a hook whose deliveries arrive and are dropped before any agent
+            // wakes never produces it — so neither this line nor its absence is a verdict on
+            // whether the agent is being woken. The scope is escaped at this interpolation, as the
+            // leg that published it escapes its own (`$escapedScope`, above the match).
+            NextStepState::GithubDeliverySilent => "the github subscription {$escapedScope} is declared in {$step->agent}.yml and this install has RECORDED NO RECENT DELIVERY for it — none at all, or none within the silence threshold derived from that scope's own gaps between deliveries; the WARN line above says which, and shows the derivation. That is an inference from SILENCE, not a measured fault: a genuinely quiet repo reads the same. And the leg witnesses the DELIVERY side only, so a hook whose deliveries arrive and are then dropped before any agent wakes reads healthy to it and gets no line here. Someone with `admin:repo_hook` on {$escapedScope} opens the repo's Settings then Webhooks, confirms a hook delivers to <BRIDGE_RECEIVER_BASE_URL>/github?b={$escapedScope}, and reads its Recent Deliveries; then run `{$step->command}`. {$doc}",
         };
     }
 

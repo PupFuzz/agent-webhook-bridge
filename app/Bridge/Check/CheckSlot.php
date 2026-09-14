@@ -189,8 +189,16 @@ enum CheckSlot: string
      * explain. Folding them would put a network read inside a plane whose whole character is
      * that it needs none.
      *
+     * ⭐ IT HOLDS BOTH HALVES OF THAT QUESTION (DL-382): the hook-list read above, and the PASSIVE
+     * leg that judges each declared scope against its own delivery record. The passive leg reads
+     * this bridge's own store like {@see self::EventConsumer} does, and still belongs HERE rather
+     * than there, because its subject is this plane's — whether a subscription delivers at all —
+     * and because the two halves of one answer should print together. It needs no network, so
+     * the boundary drawn above is not crossed in the other direction either.
+     *
      * ⚑ IT MUST RUN BEFORE `NextSteps::derive()`: the block reads
-     * {@see CheckContext::$githubWebhooksMissing} to name the scope and the remedy.
+     * {@see CheckContext::$githubWebhooksMissing} and {@see CheckContext::$githubDeliverySilent} to
+     * name the scope and the remedy.
      */
     case GithubWebhook = 'github-webhook';
 

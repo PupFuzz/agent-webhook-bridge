@@ -91,6 +91,15 @@ final class NextSteps
     public const WEBHOOK_DOC = 'docs/writeback.md § The repo webhook (one-time, in GitHub)';
 
     /**
+     * The section that owns what to do about a declared github scope whose delivery record has gone quiet (DL-382).
+     *
+     * ITS OWN SECTION RATHER THAN {@see self::WEBHOOK_DOC}, because the reader arrives with a different question: not
+     * *how do I add the hook* but *is the hook there, and is this repo just quiet* — and that section is where the
+     * leg's delivery-side-only bound is stated for a reader who never sees the terminal.
+     */
+    public const DELIVERY_DOC = 'docs/writeback.md § A declared github scope that has gone quiet';
+
+    /**
      * The command that acts on every bridge-side state — it is transport-aware, so one
      * spelling serves both doors: for an http agent it mints or names the bearer fault, for
      * an ssh agent it prints the per-agent setup packet (card#8971 / DL-357 — the whole
@@ -175,7 +184,7 @@ final class NextSteps
      * rather than one per half (card#9150). Two matches would each be exhaustive over the
      * cases their own half can produce and would each need a dead arm for the other half's —
      * a state's command decided in a branch nothing reaches, which is where a wrong command
-     * hides. Here every arm is live, so a sixth state is a phpstan error at exactly one site
+     * hides. Here every arm is live, so a new state is a phpstan error at exactly one site
      * and has to be assigned deliberately.
      */
     private static function commandFor(NextStepState $state, string $agent): string
@@ -191,14 +200,17 @@ final class NextSteps
             // box can perform (`bridge:provision` skips every non-kanban provider by design),
             // so what is named is the re-ask.
             NextStepState::GithubWebhookMissing => 'php artisan bridge:check',
+            // Same again: what answers a silent record is someone LOOKING at the repo's webhook settings, which no
+            // command on this box can do.
+            NextStepState::GithubDeliverySilent => 'php artisan bridge:check',
         };
     }
 
     /**
      * One entry per (agent, scope) whose github webhook this run READ THE REPO'S HOOK LIST FOR
-     * and did not find (card#9150).
+     * and did not find (card#9150), then one per (agent, scope) whose delivery record went quiet (DL-382).
      *
-     * ⛔ ITS INPUT IS THE MEASURED-ABSENT SET AND NOTHING ELSE. {@see CheckContext::$githubWebhooksMissing}
+     * ⛔ ITS HOOK INPUT IS THE MEASURED-ABSENT SET AND NOTHING ELSE. {@see CheckContext::$githubWebhooksMissing}
      * is written only by the leg's `fail` arm, so an unmeasured scope cannot reach this block
      * — the same discipline the board-tools half draws between a MEASURED fault and a bridge
      * half this run could not read, applied to the one plane where the wrong call sends an
@@ -210,9 +222,10 @@ final class NextSteps
      * is the one line about the repo; these are the one line per seat it silenced.
      *
      * THEY COME LAST, after every board-tools entry, because the block is read top-down and
-     * the board-tools half is the one an install works through in order. Within this half the
-     * order is the leg's own reporting order (config order, then subscription order), which is
-     * the order the findings above printed in.
+     * the board-tools half is the one an install works through in order. Within this half every
+     * measured-absent hook precedes every silent record — the measured fault first — and within
+     * each state the order is the leg's own reporting order (config order, then subscription
+     * order), which is the order the findings above printed in.
      *
      * @return list<NextStep>
      */
@@ -227,6 +240,25 @@ final class NextSteps
                     command: self::commandFor(NextStepState::GithubWebhookMissing, $agent),
                     doc: self::WEBHOOK_DOC,
                     scope: $missing['scope'],
+                );
+            }
+        }
+
+        // DL-382: a scope whose delivery record went quiet, AFTER every measured-absent hook — and never for a scope
+        // this run already read the hook list of and found the hook gone, since that is the cause and its entry
+        // already names the remedy.
+        $missingScopes = array_column($ctx->githubWebhooksMissing, 'scope');
+        foreach ($ctx->githubDeliverySilent as $silent) {
+            if (in_array($silent['scope'], $missingScopes, true)) {
+                continue;
+            }
+            foreach ($silent['agents'] as $agent) {
+                $steps[] = new NextStep(
+                    agent: $agent,
+                    state: NextStepState::GithubDeliverySilent,
+                    command: self::commandFor(NextStepState::GithubDeliverySilent, $agent),
+                    doc: self::DELIVERY_DOC,
+                    scope: $silent['scope'],
                 );
             }
         }

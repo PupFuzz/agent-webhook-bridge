@@ -1242,7 +1242,8 @@ Audit trail: one structured log line per call (agent, tool, outcome). A queryabl
 >
 > ⚠ **The block is no longer board-tools-only, and it no longer implies the run passed.** Since
 > DL-368 it also carries a `github_webhook_missing` entry, whose fault IS a `fail` — so an
-> install printing that entry exits non-zero. The block itself still yields no finding and
+> install printing that entry exits non-zero — and since DL-382 a `github_delivery_silent`
+> entry, whose fault is a `warn` and moves nothing. The block itself still yields no finding and
 > moves no exit code of its own; what changed is that a fault it points at can. An install with
 > nothing outstanding prints no block at all. **That block is this section's entry point**, so
 > the normal way in is to run `php artisan bridge:check` and follow the line for your agent

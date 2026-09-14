@@ -666,8 +666,12 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         // owes a board-tools entry, so an `assertSame([], …)` here would be asserting
         // something false — and a test written that way would have been "fixed" by loosening
         // it, which is how the claim gets lost. What must be absent is the webhook state.
+        // ⭐ DL-382's `github_delivery_silent` IS PRESENT, AND THAT IS THE POINT OF IT: this is
+        // the install whose token cannot read the hook list, the fixture records no delivery for
+        // the scope, and the passive leg's instruction rests on a read that DID happen — this
+        // install's own delivery record — not on the hook list this run could not see.
         $this->assertSame(
-            ['no_block'],
+            ['no_block', 'github_delivery_silent'],
             array_column($doc['next_steps'], 'state'),
         );
         $this->assertTrue($doc['ok']);

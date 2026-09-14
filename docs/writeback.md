@@ -226,6 +226,8 @@ The bridge does **not** provision GitHub webhooks — `bridge:provision` manages
 > ⚠ **What counts as a match is `App\Bridge\Support\ReceiverUrl::deliversTo()`'s docblock to state, and is deliberately NOT restated here.** The match is on what this **receiver would route**, never on the bytes; that docblock lists each rule with the measurement behind it, and the **`fail` line `bridge:check` prints carries the operator-facing summary at the terminal** — the one copy that cannot become a pointer, and the one that is guarded clause-by-clause against the predicate it describes. ⛔ **This line used to restate PART of the rule, and that is why it is gone rather than extended:** every clause it listed was true and the SET was not — it omitted the percent-**decoded** path and the fragment rule, so a reader enumerating from it concluded `/webhooks/git%68ub` was absent while the predicate answers present. A sixth hand-synced copy would drift again; `docs/config-schema.md` had already made the same cut. ⚠ `bridge:provision` deliberately keeps a stricter byte-equal match on its own (kanban) subscriptions; that difference is intentional and recorded in **DL-368**.
 >
 > ⛔ **It never reports what else is on the repo's hook list.** That list carries every other install's receiver endpoint; the leg answers only whether **this** install's is on it.
+>
+> ⭐ **A token that cannot enumerate this repo's hooks still gets a detector (DL-382).** The same run judges every declared github scope against the deliveries this install has RECORDED for it, which needs no token at all — see [§ A declared github scope that has gone quiet](#a-declared-github-scope-that-has-gone-quiet).
 
 ### 5. Verify
 ```bash
@@ -239,6 +241,34 @@ php artisan bridge:check        # validates writeback.json + the writeback token
 Open/merge a PR whose title or branch carries `DL-NNN` matching a card's `payload.dl_number` (the card's `dl_number` custom field, populated by your board automation when the card is created); the card moves. `php artisan bridge:inspect <event_id>` shows the dispatch + any logged refusal/no-op.
 
 > **Reading a refusal.** When kanban refuses a writeback call with a `4xx`, the handler logs a `warning` carrying **`status`** and **`body`** — kanban's response body, scrubbed and then truncated to ~500 chars (DL-344; `App\Bridge\Support\SecretScrubber`, and that ORDER is the contract — scrubbing after the cut would leave a credential's head on the safe side of it). It is otherwise the server's own words, but it is **not verbatim**: any credential-shaped value goes, and so do the **userinfo, query and fragment of every URL the body carries** — whatever they hold, since those positions are credential-bearing whatever they are named — along with any non-whitespace text that follows one on the same run. The body is the authority for *why* it refused (a `403` authz refusal, a `422` unregistered custom field / bad stage, a `404` deleted card, …); the log message states only what was observed and defers the cause to the `body`, so trust the server's words over any guess.
+
+## A declared github scope that has gone quiet
+
+`bridge:check`'s `github.delivery_history` leg (DL-382) judges every declared github subscription against **that scope's own delivery record** — the rows this install's receiver recorded in `webhook_events` for the scope, spelled exactly as the agent YAML declares it. It needs no token, no `admin:repo_hook` and no network, and that is why it exists beside the hook-list leg in § 4: that leg reads the repo's webhook list, which a token without `admin:repo_hook` on the repo cannot do, so on every repo this install does not administer it can only report that it could not look. A deleted hook on a peer's repo is exactly the outage it cannot see, and this leg can.
+
+| What the scope's record shows | `bridge:check` reports | NEXT STEPS entry |
+| --- | --- | --- |
+| No delivery at all in the retained record | **`warn`** | `github_delivery_silent` |
+| A silence past the threshold derived from the scope's own gaps between deliveries | **`warn`**, printing the derivation | `github_delivery_silent` |
+| Too short a record to derive a threshold from, and a silence already past the floor | **`warn`**, naming that only the floor was applied | `github_delivery_silent` |
+| Too short a record to derive a threshold from, and a silence inside the floor | **`unvalidated`** — explicitly **not** a healthy verdict | none |
+| A silence inside the derived threshold | **`ok`**, printing the derivation | none |
+| The record could not be read | **`unvalidated`**, naming every scope it did not judge | none |
+
+**None of these moves the exit code.** A silent record is an inference from absence, and a genuinely quiet repo produces the same observable as a deaf subscription, so this leg cannot establish a broken install. A scope whose hook the § 4 leg READ the list for and found gone gets that leg's `github_webhook_missing` entry instead of this one: the measured cause carries the remedy.
+
+**The threshold is derived per scope, never picked.** `App\Bridge\Check\DeliveryHistory\ScopeDeliveryHistory`'s docblock owns the derivation, its constants and the reason for each part, and every line the leg prints states the inputs it used, so the arithmetic can be checked from the terminal. It is deliberately not restated here. `tests/Fixtures/delivery-gap-2026-08/` is the incident it was tested against, and that fixture's README says what the fixture is and is not.
+
+> ⛔ **It witnesses the DELIVERY side only, and every verdict it prints says so.** It reads what the receiver RECORDED. A delivery that is recorded and then dropped before any agent wakes counts here as a perfectly good delivery — the measured case is an inline shared-account `identity.github_user_id`, which resolves every poster to the local agent and drops each delivery at the pre-classify echo gate (`agent.coordination_identity` reports that combination, DL-373). **So neither an `ok` from this leg nor the absence of a NEXT STEPS entry is evidence the agent is being woken.**
+>
+> ⚠ **What the record cannot hold.** Retention prunes it (`bridge.retention.older_than`), so a silence longer than that window reads as no delivery at all. A GitHub **ping** is never recorded, so a hook added since the last real event reads the same as no hook. A delivery the receiver **refused** — a signature mismatch, a scope mismatch — is never recorded either, so it reads as silence here while GitHub shows it failing.
+
+**What to do with a `github_delivery_silent` entry:**
+
+1. **Ask whether the repo is actually active.** If nothing has happened on it, the line is right about the silence and wrong about the cause, and there is nothing to fix.
+2. **Look at the webhook.** Someone with `admin:repo_hook` on the repo opens its **Settings → Webhooks** and checks for a hook delivering to `<BRIDGE_RECEIVER_BASE_URL>/github?b=<scope>`. None there: add it, per § 4.
+3. **Read that hook's Recent Deliveries.** A non-2xx response there is a delivery the receiver refused and never recorded; the response body names the refusal.
+4. **Re-run `php artisan bridge:check`.**
 
 ## Optional: dependabot cards (DL-024)
 

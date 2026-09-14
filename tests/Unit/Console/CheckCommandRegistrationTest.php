@@ -90,6 +90,10 @@ class CheckCommandRegistrationTest extends TestCase
         // between the event-consumer plane (which reads this bridge's own inbound history and
         // needs no network) and the board-tools one, because that is where its output lands.
         'github.webhook_subscription',
+        // DL-382 — the PASSIVE half of the same question, in the same slot: each declared scope
+        // judged against its own delivery record. Registered after the hook-list leg so that a
+        // scope whose hook that leg found gone reads its cause before its silence.
+        'github.delivery_history',
         // board-tools plane (stage 7b)
         'board_tools.suppressed',
         // card#8973 / DL-360 — registered beside the suppression scan and OUTSIDE the

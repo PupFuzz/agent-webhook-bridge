@@ -24,12 +24,12 @@ final class NextStep
         public readonly string $doc,
         /**
          * The subscription SCOPE this step is about — non-null on
-         * {@see NextStepState::GithubWebhookMissing} and null on every other state
-         * (card#9150).
+         * {@see NextStepState::GithubWebhookMissing} and {@see NextStepState::GithubDeliverySilent},
+         * and null on every other state (card#9150, DL-382).
          *
-         * ⚑ NULLABLE BECAUSE THE POPULATION IS, not because it is optional information. Four
-         * of the five states are properties of an AGENT and have no scope to name; the fifth
-         * is a property of an (agent, scope) pair, and a step that could not name the repo
+         * ⚑ NULLABLE BECAUSE THE POPULATION IS, not because it is optional information. The
+         * board-tools states are properties of an AGENT and have no scope to name; the github
+         * states are properties of an (agent, scope) pair, and a step that could not name the repo
          * would leave its own remedy unusable — *add a webhook* is not an instruction until
          * you know to which repo. The alternative, an empty string, would make "no scope" and
          * "a scope spelled as nothing" one value on the machine surface.

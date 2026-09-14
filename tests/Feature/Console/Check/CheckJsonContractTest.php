@@ -79,7 +79,7 @@ class CheckJsonContractTest extends TestCase
 
         $this->assertCount(1, $doc['next_steps']);
         // `scope` joined in card#9150 on §2's ADDED-KEY row; it is null on every board-tools
-        // state and non-null only on `github_webhook_missing`, and it is ALWAYS PRESENT — a
+        // state and non-null only on the github states, and it is ALWAYS PRESENT — a
         // consumer telling an absent key from a null would handle two shapes for one field.
         $this->assertSame(['agent', 'scope', 'state', 'command', 'doc'], array_keys($doc['next_steps'][0]));
         $this->assertNull($doc['next_steps'][0]['scope']);

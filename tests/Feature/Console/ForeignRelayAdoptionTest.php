@@ -94,12 +94,15 @@ class ForeignRelayAdoptionTest extends TestCase
             'ruling' => '✔ NOT FOREIGN ×2 — a PDO/driver error from THIS install\'s own database.',
         ],
         'Bridge/CheckCommand.php' => [
-            'relays' => 4, 'escaped' => 1,
+            'relays' => 4, 'escaped' => 2,
             'ruling' => '⛔ FOREIGN ×1 — the writeback board-visibility fail-soft envelope, relaying the kanban '
                 .'response body, escaped AT THE INTERPOLATION like every other arm in this table (card#9200: this '
                 .'entry read `escaped => 0` while the escape was deferred to the terminal renderer). '
                 .'✔ NOT FOREIGN ×3 — an agent YAML parse fault, a `writeback.json` parse fault, and the writeback '
-                .'client factory\'s own token-file diagnosis.',
+                .'client factory\'s own token-file diagnosis. '
+                .'⚑ THE OTHER ESCAPE IS NOT A RELAY and carries no `×` token: the NEXT STEPS sentence for a '
+                .'silent github delivery record interpolates the subscription SCOPE, escaped as the leg that '
+                .'published it escapes its own (DL-382). No exception is involved.',
         ],
         'Bridge/JobsCommand.php' => [
             'relays' => 1, 'escaped' => 0,

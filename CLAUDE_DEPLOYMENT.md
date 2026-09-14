@@ -438,6 +438,10 @@ php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB,
                                                       # § 7a). ⚠ Since DL-368 it also covers github subscriptions whose repo webhook is
                                                       # gone, and THAT fault is a `fail` — so an install printing that entry exits
                                                       # non-zero. The block still emits no finding of its own; the leg above it does.
+                                                      # Since DL-382 it also names a github subscription whose OWN delivery record
+                                                      # has gone quiet — a `warn`, needing no token, and blind to deliveries that
+                                                      # arrive and are then dropped (docs/writeback.md § A declared github scope that
+                                                      # has gone quiet).
                                                       # ⛔ --probe-tools does NOT verify a seat's half: it stamps the same ledger row from
                                                       # this box (docs/board-tools.md step 6), so it clears the line without the seat calling.
 php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences + per-divergence history
@@ -561,6 +565,7 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
 - **Idle agent — channel pushes "failing".** Connection-refused with no Claude Code session up is NORMAL: row is **done with a note**, intent is in `inbox.jsonl` for the next `bridge:inbox`. Not an incident; `--force` re-attempts the push.
 - **A config edit "didn't take".** The optimize trap above — `optimize:clear && optimize && reload php8.5-fpm`.
 - **kanban-board webhook auto-deactivated.** A short reinstall won't trip it (transient 5xx are mid-curve, not fully-failed). `curl …/api/v3/webhooks | jq '.data[] | select(.board_id==5) | .active'`; if `false`, re-run `bridge:provision`.
+- **A github-subscribed agent gets no wakes.** Run `bridge:check` and read its `github delivery history` line for that scope first: it says whether this install has RECORDED deliveries for the scope and whether the silence is past what the scope's own record calls routine. A silent record points at the repo's webhook ([`docs/writeback.md` § A declared github scope that has gone quiet](docs/writeback.md#a-declared-github-scope-that-has-gone-quiet)). ⛔ **A healthy record does NOT clear the agent** — that leg witnesses the delivery side only, so deliveries recorded and then dropped before any wake (the echo gate, DL-373) read as healthy there; look at `agent.coordination_identity` and `bridge:inspect <id>` for a recorded event's dispatch outcome.
 - **`413` on legitimate payloads.** Raise `BRIDGE_MAX_BODY_BYTES` and the FPM pool's `post_max_size` together.
 
 ## Rollback
