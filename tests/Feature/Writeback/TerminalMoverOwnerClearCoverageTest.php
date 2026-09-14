@@ -19,8 +19,10 @@ use Tests\TestCase;
  * ⚠ WHAT IS VERIFIED AND WHAT IS NOT. For a {@see CLEARS} ruling the scanner requires a call to the
  * primitive AFTER the move, in the same function body; for a never-terminal ruling it requires
  * there be none. It does NOT verify that a conditional call's condition is the right terminality
- * rule, nor that a never-terminal reason is true — the handler tests own the first, and a
- * reviewer reads the second.
+ * rule, nor that a never-terminal reason is true; a reviewer reads the second. For the first, a
+ * site whose call is conditional on terminality needs a non-terminal, owner-tagged test in its own
+ * class that fails when the condition is forced true. This scanner does not check that such a test
+ * exists, and such a test does not check the condition against every board order.
  */
 class TerminalMoverOwnerClearCoverageTest extends TestCase
 {

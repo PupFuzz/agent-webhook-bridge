@@ -1096,6 +1096,26 @@ class ReconcileCommandTest extends TestCase
         $this->assertSame([['workflow_stage_id' => 52]], $cards->patchesTo(5));
     }
 
+    /**
+     * The terminal check's other side: a forward drift into `opened` is not terminal, so the
+     * applied move carries no clear. The PATCH is the presence witness that `--fix` applied the
+     * move; nothing may follow it, because the clear's first step is a read.
+     */
+    public function test_fix_into_a_non_terminal_stage_moves_an_owner_tagged_card_stage_only_with_no_fresh_read_or_tag_write(): void
+    {
+        $this->writeWriteback();
+        $scanned = $this->card(5, 46, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $movedAt = array_key_last(array_filter($cards->log, static fn (array $e): bool => $e['method'] === 'PATCH'));
+        $this->assertSame([], array_slice($cards->log, $movedAt + 1));
+        $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+    }
+
     public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void
     {
         $this->writeWriteback();
