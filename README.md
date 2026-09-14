@@ -89,7 +89,7 @@ Adding a new provider means one new `WebhookAdapter` implementation and registra
 
 ```bash
 php artisan bridge:check        # validate install: dirs, DB, agent YAMLs
-php artisan bridge:provision    # idempotent webhook subscription setup (--reconcile fixes drift)
+php artisan bridge:provision    # idempotent webhook subscription setup (--reconcile fixes drift; refuses a receiver URL this app would not route, --allow-unreachable-receiver overrides)
 php artisan bridge:provision-tools  # per-agent board-tools enablement (skeleton / bearer / ssh legs) — docs/board-tools.md
 php artisan bridge:inbox        # surface staged intents (Claude Code hook-aware)
 php artisan bridge:replay       # re-dispatch a stored event (recovery for errored/missed dispatches)

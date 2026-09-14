@@ -11,10 +11,12 @@ use App\Bridge\Provision\WritebackIdentityOffer;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Support\UrlValidator;
+use Illuminate\Routing\Router;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Throwable;
 
@@ -29,10 +31,16 @@ use Throwable;
  * (delete + recreate reusing the secret); without it, drift is reported with a
  * non-zero exit. URL-drift orphan cleanup is manual (no local registry — the
  * live API is the source of truth).
+ *
+ * A subscription whose composed receiver URL reaches no receiver route in this app is
+ * REFUSED before anything is sent upstream or written locally, unless
+ * `--allow-unreachable-receiver` is given — see {@see self::mayRegister()}.
  */
 class ProvisionCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:provision {--agent= : limit to one agent} {--dry-run : preview, change nothing} {--list : show live subscriptions and exit} {--reconcile : fix inactive/filter-drifted subscriptions (delete + recreate, reusing the secret)}';
+    private const ALLOW_UNREACHABLE_RECEIVER = 'allow-unreachable-receiver';
+
+    protected $signature = 'bridge:provision {--agent= : limit to one agent} {--dry-run : preview, change nothing} {--list : show live subscriptions and exit} {--reconcile : fix inactive/filter-drifted subscriptions (delete + recreate, reusing the secret)} {--'.self::ALLOW_UNREACHABLE_RECEIVER.' : register a receiver URL even though it reaches no receiver route in this app (e.g. an install behind a proxy that rewrites the request path)}';
 
     protected $description = 'Register webhook subscriptions on kanban-board for each agent config';
 
@@ -114,6 +122,12 @@ class ProvisionCommand extends BridgeCommand
                 $client = new KanbanProvisionClient($apiBaseUrl, $token);
                 $receiverUrl = ReceiverUrl::for($receiverBaseUrl, $sub->provider, $sub->scopeId);
 
+                if (! $this->option('list') && ! $this->mayRegister($label, $receiverBaseUrl, $sub->provider, $sub->scopeId, $receiverUrl)) {
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
+
                 try {
                     if ($this->option('list')) {
                         $this->listScope($client, $label, $sub->scopeId);
@@ -144,6 +158,51 @@ class ProvisionCommand extends BridgeCommand
         $this->offerWritebackIdentity($configDir, $secretDir, $allAgents);
 
         return $rc;
+    }
+
+    /**
+     * May this run hand `$receiverUrl` to the provisioner — which creates, deletes and
+     * recreates the upstream subscription and writes the per-scope secret?
+     *
+     * ⛔ THE PREDICATE IS {@see ReceiverUrl::reachesThisInstall()}, the one
+     * `install.endpoint_urls` fails `bridge:check` on — never a second rule about receiver
+     * paths. It is asked of the URL this subscription would actually register, so the gate
+     * runs per subscription and a dry run previews the refusal a real run would print.
+     * `--list` is exempt: it only reads.
+     *
+     * ⚠ `false` from that predicate is a verdict on PATH and QUERY against this app's router
+     * only. An install behind a proxy that rewrites the request path answers `false` and
+     * delivers, and nothing on this box can measure that hop — which is what the override
+     * exists for, and why the refusal names it.
+     *
+     * The base is shown through {@see SecretScrubber::url()}, as `bridge:check` renders the
+     * same value, because a receiver base may carry credentials in its userinfo or query.
+     */
+    private function mayRegister(string $label, string $receiverBaseUrl, string $provider, string $scopeId, string $receiverUrl): bool
+    {
+        if (ReceiverUrl::reachesThisInstall($receiverUrl, $provider, $scopeId, app(Router::class)->getRoutes())) {
+            return true;
+        }
+
+        $shown = ReceiverUrl::for(SecretScrubber::url($receiverBaseUrl), $provider, $scopeId);
+        $flag = '--'.self::ALLOW_UNREACHABLE_RECEIVER;
+
+        if ($this->option(self::ALLOW_UNREACHABLE_RECEIVER)) {
+            $this->warn(OutputFormatter::escape(
+                "{$label} OVERRIDE — {$shown} reaches no receiver route in this app; provisioning it anyway because {$flag} was given."
+            ));
+
+            return true;
+        }
+
+        $this->error(OutputFormatter::escape(
+            "{$label} REFUSED — the receiver URL {$shown} reaches no receiver route in this app, so a delivery to it would be refused here; nothing was sent upstream or written. "
+            .'Likely cause: BRIDGE_RECEIVER_BASE_URL, which must already end in the receiver path (see .env.example) — a bare host, or that path doubled, looks like this. '
+            .'Fix it in this install\'s .env and re-run (bridge:check fails on the same value). '
+            ."Only the path and query were checked, against this app's own router: if this install is served behind something that REWRITES the request path, re-run with {$flag} to provision it anyway."
+        ));
+
+        return false;
     }
 
     /**
