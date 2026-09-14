@@ -9,8 +9,9 @@
 > posture leg (card#8425 / DL-325), the `CheckSlot::Standup` emit for the standup digest's
 > (card#8683 / DL-345), the `foreach` that renders the NEXT STEPS block (card#8959 /
 > DL-352), the `CheckSlot::BoardToolsLost` emit for the LOST-block leg (card#8973 /
-> DL-360), and the `CheckSlot::GithubWebhook` emit for the github webhook-subscription leg
-> (card#9150 / DL-368). ⛔ **Re-derive the live count with
+> DL-360), the `CheckSlot::GithubWebhook` emit for the github webhook-subscription leg
+> (card#9150 / DL-368), and the `CheckSlot::IdleNudge` emit for the idle nudge's posture leg
+> (card#9422 / DL-380). ⛔ **Re-derive the live count with
 > `php bin/check-golden-predicates.php --json | jq length` rather than reading one here** —
 > it is the DENOMINATOR the currency guard compares, it moves with the source, and a figure
 > written into this banner is a second copy of it that goes stale on the next predicate
@@ -25,8 +26,9 @@
 > `if ! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))` (card#8683 / DL-345),
 > `foreach $this->nextStepsOutput($nextSteps)` (card#8959 / DL-352),
 > `if ! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))` (card#8973 / DL-360)
-> and `if ! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))` (card#9150 /
-> DL-368). ⛔ **This list is a set of NAMES, deliberately carrying no count**: the last
+> `if ! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))` (card#9150 /
+> DL-368) and `if ! $this->emitReport($runner->run(CheckSlot::IdleNudge, $ctx))` (card#9422 /
+> DL-380). ⛔ **This list is a set of NAMES, deliberately carrying no count**: the last
 > revision opened by saying how many there were, and the figure was falsified by the very next
 > predicate added. `php bin/check-golden-predicates.php --json` is what enumerates them.
 > Their verdicts are therefore UNKNOWN here, in either direction — they are

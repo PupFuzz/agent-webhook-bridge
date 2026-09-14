@@ -8,9 +8,11 @@ use App\Bridge\Contracts\Classifier;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\IdleNudge\IdleNudgeConfig;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ClassifierResolver;
+use App\Bridge\Support\DbClock;
 use App\Bridge\Support\EchoSuppression;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\InstallGuard;
@@ -328,6 +330,10 @@ final class DispatchService
                 }
             }
 
+            if ($bestEffort !== [] && IdleNudgeConfig::enabled()) {
+                $this->stampPushAttempt($dispatch);
+            }
+
             // A classifier that emitted no intents AND no targets (e.g. a recipient
             // filter dropped this agent) did no work — record a gate-drop, not a
             // delivery, so the ledger / inspect / replay can tell them apart (DL-036).
@@ -465,6 +471,41 @@ final class DispatchService
                 'event' => $event->id,
                 'classifier' => $classifier::class,
                 'target_id' => $t->targetId,
+            ]);
+        }
+    }
+
+    /**
+     * Stamp when this dispatch's best-effort handlers — every live `channel_push` among them —
+     * last FINISHED, on the DATABASE's clock (card#9422 / DL-380).
+     *
+     * ⭐ WHY AFTER THE LOOP AND NOT BEFORE IT. The idle nudge ages a staged intent from this
+     * stamp, and a stamp EARLIER than the push would make a fresh push read as older than it is
+     * — the false-nudge direction. After the loop it is no earlier than every push this
+     * delivery made. `webhook_events.received_at` cannot serve: a redelivery or `bridge:replay`
+     * re-uses that row and pushes again now.
+     *
+     * ⛔ IT NEVER FAILS THE DELIVERY. The stamp is metadata for a read-and-alert job, and the
+     * receiver's status contract (DL-001) must not grow a new 5xx for it — an install that
+     * deployed without `php artisan migrate` would otherwise refuse every webhook. A stamp that
+     * could not be written leaves the column as it was: NULL on a first delivery, which the
+     * nudge reads as unmeasured; an EARLIER stamp on a redelivery, which re-opens the false-nudge
+     * window for that one delivery (DL-380 names it).
+     *
+     * ⚑ WRITTEN ONLY WHILE THE IDLE NUDGE IS ENABLED. The column's one reader is the nudge, so an
+     * install that never asked for it pays no extra UPDATE per delivery and logs no warning when
+     * it has not migrated. Deliveries made while it was off read as unmeasured once it is turned
+     * on, until their idle period ends.
+     */
+    private function stampPushAttempt(AgentDispatch $dispatch): void
+    {
+        try {
+            AgentDispatch::query()->whereKey($dispatch->getKey())->toBase()
+                ->update(['push_attempted_at' => DbClock::expression()]);
+        } catch (Throwable $e) {
+            Log::warning('bridge dispatch: the push-attempt time could not be recorded, so the idle nudge ages these intents from an earlier stamp or reads them as unmeasured', [
+                'agent' => $dispatch->agent_name,
+                'exception' => $e::class,
             ]);
         }
     }

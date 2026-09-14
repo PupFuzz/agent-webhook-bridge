@@ -72,6 +72,7 @@ class BridgeServiceProvider extends ServiceProvider
         $this->app->singleton(JobHandlerRegistry::class, fn (): JobHandlerRegistry => new JobHandlerRegistry(
             JobHandlerRegistry::armedFromConfig(),
             $this->app->make(StandupGate::class),
+            $this->app->make(HandlerRegistry::class),
         ));
 
         $this->app->singleton(JobScheduler::class, fn (): JobScheduler => new JobScheduler($this->app->make(JobHandlerRegistry::class)));

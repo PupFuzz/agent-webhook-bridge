@@ -344,6 +344,48 @@ backstop, not permission.
 | handler | capability | what it does |
 |---|---|---|
 | `standup_digest` | `read_and_alert` | Asks `App\Bridge\Standup\StandupGate::runPass()` — the PM digest (DL-306), on a wall clock instead of a delivery cadence. Both ingresses share the digest's own interval marker, so the digest is still pushed at most once per `BRIDGE_STANDUP_INTERVAL` however many things asked. The instance's `interval_s` is how often the scheduler **asks**; `BRIDGE_STANDUP_INTERVAL` is how often it **pushes**. |
+| `idle_nudge` | `read_and_alert` | Reads Mezzanine's fleet snapshot and pushes ONE nudge at a seat that has sat idle past its horizon while intents pushed at it since it went idle remain unseen (DL-380). **Off and inert until configured** — see [*The idle nudge*](#the-idle-nudge-idle_nudge) below. |
+
+### The idle nudge (`idle_nudge`)
+
+The watchdog DL-325 Decision 9 recorded as a binding contract and could not build for want of a
+seat-state record — § *Staleness of things that are NOT the tick* below, applied to Mezzanine's
+per-seat state (card#9422 / DL-380). **Why it is a job:** an idle seat makes no webhook traffic,
+and the record lives in a system that sends this bridge none, so step 4 of the decision order is
+the only one that holds.
+
+**Adopting it** — all three, or it does nothing:
+
+1. Set the `BRIDGE_IDLE_NUDGE_*` keys ([`config-schema.md`](config-schema.md) § 1 owns them). The
+   install id is required: the fleet token reads every install.
+2. Place the `fleet_read` token in a `0600` file and point `BRIDGE_IDLE_NUDGE_TOKEN_PATH` at it —
+   [`config-schema.md`](config-schema.md) § *Handling a secret VALUE* owns how.
+3. Insert ONE instance (`bridge:jobs add … --handler=idle_nudge`); `bridge:check` fails on two.
+
+**What it acts on.** Only an agent whose YAML sets `channel.route_intents: true` is measurable:
+that is the operator's declared intent that the agent be woken for its intents, and a nudge is a
+second attempt at a wake already asked for. On any other agent most intents were deliberately
+inbox-only, and nudging on them would turn that choice into a delayed wake. Pending work is an
+unseen inbox line staged after the seat's current `idle_since` and last PUSHED longer ago than the
+wake grace plus the seat's own fold lag. The push time is `agent_dispatches.push_attempted_at`,
+stamped by the receiver on the database's clock, because a redelivered or replayed line keeps its
+original `ts` while being pushed again now; a line whose dispatch never completed was never pushed and
+keeps its `ts`. ⚠ **This needs `php artisan migrate`**, and the stamp is written only while the nudge is
+enabled: a completed delivery with no stamp (from before either) makes that agent unmeasured until
+the seat's idle period ends. The nudge is `channel_push` only (kind
+`seat_idle_nudge`, [`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*) and is sent
+at most once per `(agent, idle_since)`. DL-380 lists what that definition of pending work misses —
+among them a per-agent → shared inbox layout flip, and an old event replayed at an already-idle seat.
+
+**Where the rules live, deliberately not restated here:** the verdict set and the join in
+`App\Bridge\IdleNudge\IdleNudgeEvaluator` and `AgentVerdict`; every unmeasured pass reason in
+`FleetSnapshotReader`; the dedupe record in `IdleNudgeState`. `bridge:check`'s `idle_nudge.posture`
+leg reads the last pass's structured record and says why no nudge fired.
+
+⚠ **The live output is `unmeasured` until Mezzanine ships `protocol_agent_name` (card#9375) and
+`idle_since` / `idle_nudge_after_s` (card#9418)** — every agent reads `no_declaring_seat`, by design.
+⚠ **One bridge per (install, agent name).** Two bridges declaring the same agent names against one
+install each nudge; nothing here can see the other.
 
 ## Staleness of things that are NOT the tick
 
@@ -371,6 +413,12 @@ handler added here:
 The tick's own freshness (above) is that rule applied to the one record this card ships: the
 horizon is the operator's declaration, absence is `unmeasured`, and an undeclared install
 gets an age and no verdict.
+
+**Implemented for a seat's state by `idle_nudge` (DL-380).** The horizon is the seat record's own
+`idle_nudge_after_s`; an ABSENT one takes the install default and the weaker `suspect` verdict,
+and a present-but-malformed one is `unmeasured`, never `suspect`; an absent record, name or
+`idle_since` is `unmeasured`; the only action is a nudge; and age is `server_time − idle_since`,
+both on the record writer's clock.
 
 ## Config
 

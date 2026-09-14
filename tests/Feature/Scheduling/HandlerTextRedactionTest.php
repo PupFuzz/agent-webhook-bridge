@@ -9,6 +9,7 @@ use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\FaultMarker;
+use App\Bridge\Support\HandlerRegistry;
 use App\Models\ScheduledJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -60,7 +61,7 @@ class HandlerTextRedactionTest extends TestCase
         ]);
 
         $this->handler = new RecordingJobHandler('boundary_job');
-        $this->handlers = new JobHandlerRegistry([], $this->app->make(StandupGate::class));
+        $this->handlers = new JobHandlerRegistry([], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         $this->handlers->register($this->handler);
     }
 

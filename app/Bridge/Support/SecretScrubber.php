@@ -151,9 +151,11 @@ final class SecretScrubber
         // Defense-in-depth: unambiguous secret PREFIXES redacted wherever they appear,
         // even un-keyed / in an unexpected body shape — these tokens never occur in
         // prose. Covers GitHub PATs/OAuth/app tokens (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`)
-        // and fine-grained PATs (`github_pat_`).
+        // and fine-grained PATs (`github_pat_`), and Mezzanine fleet tokens (`mzr_`), whose
+        // alphabet is not pinned here — so that one runs to the next delimiter rather than
+        // stopping at the first character outside a guessed charset.
         return (string) preg_replace(
-            '/\b(?:gh[opusr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/',
+            '/\b(?:gh[opusr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|mzr_[^\s"\'<>]+)/',
             self::REDACTED,
             $text,
         );
