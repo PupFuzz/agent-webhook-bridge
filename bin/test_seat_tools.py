@@ -394,6 +394,23 @@ class RestageIsSafeOverWhatIsThere(_Scratch):
                 self.assertEqual(before, _tree(out), "an empty declaration changed --out")
                 self.assertRefused(proc, "seat-tools.json", "no tools")
 
+    def test_a_non_list_tools_is_refused_before_anything_is_written(self):
+        repo, seat_pack = self.fixture_repo()
+        out = os.path.join(self.tmp, "out")
+        self.assertEqual(0, _pack(out, seat_pack=seat_pack).returncode)
+        before = _tree(out)
+
+        for tools in ("bin/tool.py", {}):
+            with self.subTest(tools=tools):
+                with open(os.path.join(repo, "seat-tools.json"), "w") as fh:
+                    json.dump({"schema": 1, "tools": tools}, fh)
+
+                proc = _pack(out, seat_pack=seat_pack)
+
+                self.assertEqual(before, _tree(out), "a non-list declaration changed --out")
+                self.assertRefused(proc, "seat-tools.json", "`tools` is not a list")
+                self.assertNotIn("no tools", proc.stderr, "a non-list `tools` was reported as an empty list")
+
     def test_a_failure_after_the_first_write_says_so_and_is_not_called_a_refusal(self):
         repo, seat_pack = self.fixture_repo()
         out = os.path.join(self.tmp, "out")

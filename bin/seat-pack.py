@@ -98,7 +98,9 @@ def declared_tools() -> list:
             entries = json.load(fh)["tools"]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise Refused(f"{MANIFEST} is unreadable or has no `tools` list: {exc}")
-    if not isinstance(entries, list) or not entries:
+    if not isinstance(entries, list):
+        raise Refused(f"{MANIFEST}: `tools` is not a list")
+    if not entries:
         raise Refused(f"{MANIFEST} declares no tools; staging it would empty seat-tools/")
 
     tools = []
