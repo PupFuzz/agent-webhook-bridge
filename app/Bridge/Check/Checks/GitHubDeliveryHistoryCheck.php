@@ -153,7 +153,11 @@ final class GitHubDeliveryHistoryCheck implements Check
     }
 
     /**
-     * Every delivery instant recorded for exactly this spelling, oldest first, streamed.
+     * Every delivery instant recorded for exactly this spelling, oldest first.
+     *
+     * ⛔ NOT ACTUALLY STREAMED: `->cursor()` hands back a PHP generator, but pdo_mysql buffers the full result set
+     * on the client before this leg sees a single row — the generator paces CONSTRUCTING objects from an
+     * already-arrived buffer, not the network read. It is used for the constant memory that buys, not for early bytes.
      *
      * ⚑ A `received_at` THAT IS NOT A STRING THROWS rather than being skipped: the column is NOT NULL and DB-defaulted,
      * so a non-string is a driver this leg does not understand, and skipping it would shorten the record silently.
@@ -161,19 +165,15 @@ final class GitHubDeliveryHistoryCheck implements Check
     private function historyOf(string $scope): ScopeDeliveryHistory
     {
         $rows = WebhookEvent::query()
-            ->toBase()
-            ->select(['scope_id', 'received_at'])
-            ->where('provider', 'github')
-            ->where('scope_id', $scope)
+            ->forExactScope('github', $scope)
+            ->select(['received_at'])
             ->orderBy('received_at')
+            ->toBase()
             ->cursor();
 
-        $instants = (static function () use ($rows, $scope): Generator {
+        $instants = (static function () use ($rows): Generator {
             $utc = new DateTimeZone('UTC');
             foreach ($rows as $row) {
-                if (($row->scope_id ?? null) !== $scope) {
-                    continue;
-                }
                 $receivedAt = $row->received_at ?? null;
                 if (! is_string($receivedAt)) {
                     throw new UnexpectedValueException('webhook_events.received_at came back as '.get_debug_type($receivedAt).', not a timestamp string');
@@ -193,7 +193,7 @@ final class GitHubDeliveryHistoryCheck implements Check
 
     private function underivableReason(ScopeDeliveryHistory $history): string
     {
-        return "the record holds {$history->deliveries} recorded delivery(ies) spanning ".HumanAge::floored($history->span()).', and a threshold needs at least '.ScopeDeliveryHistory::MIN_GAPS.' gaps between deliveries across a record spanning at least '.self::exact(ScopeDeliveryHistory::MIN_SPAN_SECONDS).' — one weekly cycle, so the scope\'s ordinary quiet has had the chance to appear in it';
+        return "the record holds {$history->deliveries} recorded delivery(ies) spanning ".HumanAge::floored($history->span()).', and a threshold needs at least '.ScopeDeliveryHistory::MIN_GAPS.' gaps between deliveries across a record spanning at least '.self::exact(ScopeDeliveryHistory::MIN_SPAN_SECONDS).' — two weekly cycles, so the scope\'s routine gap can appear twice: once to be excluded as the longest, once still standing to derive from';
     }
 
     /**

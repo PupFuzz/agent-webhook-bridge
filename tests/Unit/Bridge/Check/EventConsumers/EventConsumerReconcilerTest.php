@@ -181,6 +181,20 @@ class EventConsumerReconcilerTest extends TestCase
         $this->assertNull((new EventConsumerReconciler)->reconcile([])->error);
     }
 
+    public function test_a_case_variant_scope_spelling_is_not_credited_to_the_declared_scope(): void
+    {
+        // DL-382 R1 finding 2 — the sibling of Decision 4's defect: this method's own `where('scope_id', $scope)`
+        // had no defense against MariaDB's case-insensitive default collation crediting `Owner/Repo` deliveries to
+        // `owner/repo`. Now routed through `WebhookEvent::forExactScope()`. SQLite's `=` is already byte-exact, so
+        // this passes here whether or not the COLLATE predicate is even applied — only the CI MariaDB job can
+        // discriminate a regression.
+        $this->arrived('push', 'Owner/Repo');
+
+        $result = $this->reconcile([$this->consumer('wb', consumed: ['push'])]);
+
+        $this->assertSame([], $result->scopes[0]->observed);
+    }
+
     /**
      * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
      */

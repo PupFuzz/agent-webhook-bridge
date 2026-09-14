@@ -96,7 +96,7 @@ class GitHubDeliveryHistoryCheckTest extends TestCase
     public function test_a_scope_heard_from_recently_is_ok_and_shows_its_derivation(): void
     {
         $this->bootInstall();
-        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 10 * self::DAY, endingAgo: self::HOUR));
+        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 15 * self::DAY, endingAgo: self::HOUR));
 
         [$exit, $doc] = $this->runJson();
 
@@ -112,7 +112,7 @@ class GitHubDeliveryHistoryCheckTest extends TestCase
     public function test_a_scope_past_its_derived_threshold_is_loud_with_the_derivation_shown(): void
     {
         $this->bootInstall();
-        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 10 * self::DAY, endingAgo: 5 * self::DAY));
+        $this->recordDeliveries(self::SCOPE, $this->every(6 * self::HOUR, 15 * self::DAY, endingAgo: 5 * self::DAY));
 
         [$exit, $doc] = $this->runJson();
 

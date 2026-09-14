@@ -5,10 +5,10 @@ namespace App\Bridge\Check\DeliveryHistory;
 /**
  * Where a declared github scope's own delivery record puts it, at one instant (DL-382).
  *
- * ⭐ FIVE STATES, CUT ON TWO AXES, and the second axis is what the leg is for: *is the silence past the threshold*,
- * and *could a threshold be derived at all*. A record too short to derive from is its own state on BOTH sides of the
- * floor, never folded into a healthy one — a check that could not say what routine silence looks like for a scope has
- * not established that the scope is fine.
+ * ⭐ CUT ON TWO AXES, and the second axis is what the leg is for: *is the silence past the threshold*, and *could a
+ * threshold be derived at all*. A record too short to derive from is its own state on BOTH sides of the floor, never
+ * folded into a healthy one — a check that could not say what routine silence looks like for a scope has not
+ * established that the scope is fine.
  */
 enum DeliveryHistoryState: string
 {

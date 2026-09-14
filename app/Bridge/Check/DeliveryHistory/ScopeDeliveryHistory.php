@@ -26,9 +26,13 @@ use InvalidArgumentException;
  *  - **`FLOOR_SECONDS`** — no threshold is ever shorter than it, because the ordinary cadence of a repo is human and
  *    weekly: a Friday-evening-to-Monday-morning silence is routine for ANY repo whatever its record says, and the
  *    floor is a weekend plus a day, the day for the day-bucket boundary effects the incident fixture carries.
- *  - **`MIN_SPAN_SECONDS` and `MIN_GAPS`** decide whether a threshold can be derived at all: a record must span one
- *    weekly cycle, so the scope's ordinary quiet has had the chance to appear in it, and must hold a second-longest
- *    gap to take. Short of either, the record states a named "cannot derive" state rather than a threshold.
+ *  - **`MIN_SPAN_SECONDS` and `MIN_GAPS`** decide whether a threshold can be derived at all: a record must span TWO
+ *    weekly cycles, not one, and must hold a second-longest gap to take. One cycle is not enough — a scope whose
+ *    ordinary silence IS its weekly cycle then holds exactly one such gap, which is excluded as the longest, leaving
+ *    nothing but its BURSTS to derive from (R1 finding 1: 30 deliveries 2 minutes apart, once a week, read a routine
+ *    ~7-day silence as `past_threshold` after 3 days under the one-cycle floor). A second cycle lets the routine gap
+ *    appear twice, so one copy can be excluded as the longest and the other still taken as the second-longest. Short
+ *    of either bound, the record states a named "cannot derive" state rather than a threshold.
  *
  * ⚠ IT SEES WHAT THE RECORD SEES. The record is whatever the caller hands it — for `bridge:check` the retained
  * `webhook_events` rows for one scope spelling — so retention bounds how far back a gap can be, and a silence older
@@ -40,7 +44,7 @@ final class ScopeDeliveryHistory
 
     public const GAP_FACTOR = 2;
 
-    public const MIN_SPAN_SECONDS = 7 * 86400;
+    public const MIN_SPAN_SECONDS = 2 * 7 * 86400;
 
     public const MIN_GAPS = 2;
 

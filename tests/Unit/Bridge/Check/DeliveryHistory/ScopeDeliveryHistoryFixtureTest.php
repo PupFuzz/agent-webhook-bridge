@@ -40,7 +40,10 @@ class ScopeDeliveryHistoryFixtureTest extends TestCase
         'aimla-pm-roundtable|webhook_events' => ['2026-08-24', '2026-09-08', DeliveryHistoryState::UnderivedPastFloor],
         'aimla-pm-control|webhook_events' => null,
         'aimla-pm-roundtable|inbox_intents' => ['2026-08-23', '2026-09-08', DeliveryHistoryState::UnderivedPastFloor],
-        'kanban-solo-roundtable|inbox_intents' => ['2026-08-23', '2026-09-08', DeliveryHistoryState::PastThreshold],
+        // R1 finding 1: MIN_SPAN_SECONDS doubled to two weekly cycles. This series' pre-window record spans only
+        // 2026-08-10 → 2026-08-22 (12 days), under the new floor, so the cut can no longer derive a threshold — it
+        // reads UnderivedPastFloor instead of a (wrongly) derived PastThreshold.
+        'kanban-solo-roundtable|inbox_intents' => ['2026-08-23', '2026-09-08', DeliveryHistoryState::UnderivedPastFloor],
     ];
 
     /**
