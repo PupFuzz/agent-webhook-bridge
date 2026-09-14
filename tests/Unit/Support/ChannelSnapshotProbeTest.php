@@ -10,11 +10,13 @@ use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Tests\Support\AssertsNoLiveControlByte;
+use Tests\Support\AssertsSeatToolRemedy;
 use Tests\Support\SkipsAsRoot;
 
 class ChannelSnapshotProbeTest extends TestCase
 {
     use AssertsNoLiveControlByte;
+    use AssertsSeatToolRemedy;
     use SkipsAsRoot;
 
     private string $tmp;
@@ -130,12 +132,28 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'));
         // It names the check, where it is run, and AS WHOM — the last of those is the
         // whole reason this is not a bridge:check leg.
-        $this->assertStringContainsString('bin/check-channel-snapshot.py', $notMeasured->message);
+        $this->assertRemedyIsADeclaredSeatTool($notMeasured->message);
+        $this->assertStringContainsString('docs/seat-tools.md', $notMeasured->message);
         $this->assertStringContainsString('ON THAT SEAT', $notMeasured->message);
         $this->assertStringContainsString('the OS user whose session launches the channel server', $notMeasured->message);
         // And it must never flip the exit: the deployment may be perfect, and every
         // co-located install now emits one (DL-236 (c)).
         $this->assertSame([], $this->severities($findings, Severity::Fail));
+    }
+
+    public function test_the_remedy_check_refuses_a_checkout_relative_path(): void
+    {
+        // The control for the assertion above: the message this probe shipped before DL-385
+        // names the tool by its path in a bridge checkout, which a seat does not have.
+        $before = 'was NOT launch-tested — … Run bin/check-channel-snapshot.py /srv/deployed ON THAT SEAT, as the OS user whose session launches the channel server';
+
+        $problems = self::seatToolRemedyProblems($before);
+
+        $this->assertCount(2, $problems, implode("\n", $problems));
+        $this->assertStringContainsString('contains `/`', $problems[0]);
+        $this->assertStringContainsString('not the install name', $problems[1]);
+        $this->assertNotSame([], self::seatToolRemedyProblems('no remedy at all'));
+        $this->assertSame([], self::seatToolRemedyProblems('Run check-channel-snapshot.py /srv/deployed ON THAT SEAT'));
     }
 
     public function test_the_repo_direct_branch_discloses_it_too(): void
