@@ -12,6 +12,7 @@ use App\Bridge\Retention\RetentionConfig;
 use App\Bridge\Support\DbClock;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\HumanAge;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
 use App\Models\WebhookEvent;
 use DateTimeImmutable;
@@ -103,7 +104,7 @@ final class GitHubDeliveryHistoryCheck implements Check
         } catch (Throwable $e) {
             $names = implode(', ', array_map(UntrustedText::forOperator(...), $unread));
 
-            yield Finding::unvalidated('github delivery history: COULD NOT READ this install\'s delivery record ('.UntrustedText::forOperator($e->getMessage()).'), so the delivery history of '.count($unread)." declared github scope(s) was NOT checked ({$names}). This run says nothing about whether they are delivering.");
+            yield Finding::unvalidated('github delivery history: COULD NOT READ this install\'s delivery record ('.UntrustedText::forOperator(RedactedErrorText::of($e)).'), so the delivery history of '.count($unread)." declared github scope(s) was NOT checked ({$names}). This run says nothing about whether they are delivering.");
         }
     }
 

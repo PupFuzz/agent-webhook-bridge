@@ -67,6 +67,7 @@ use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolAgentResolver;
@@ -487,7 +488,7 @@ class CheckCommand extends BridgeCommand
                         // read kanban through `->throw()` — so this arm can relay a
                         // `RequestException` carrying a response-body summary. An envelope
                         // that cannot name its cause cannot rule that cause out either.
-                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.UntrustedText::forOperator($e->getMessage())));
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.UntrustedText::forOperator(RedactedErrorText::of($e))));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');

@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
 use Illuminate\Http\Client\RequestException;
 use Throwable;
@@ -69,7 +70,7 @@ final class GitHubRepoProbe
             // cURL/Guzzle prose. Ruling it a non-member would require enumerating every
             // `Throwable` Guzzle can raise, which was NOT done. One escape of a value nobody
             // prints raw costs nothing; a wrong non-membership ruling costs a live defect.
-            return GitHubRepoProbeResult::network(UntrustedText::forOperator($e->getMessage()), $source);
+            return GitHubRepoProbeResult::network(UntrustedText::forOperator(RedactedErrorText::of($e)), $source);
         }
     }
 

@@ -22,7 +22,9 @@ use Tests\TestCase;
  *
  * ⛔ WHAT IT COUNTS IS WHAT ITS SCOPE CLAIM MUST SAY, and an earlier revision of this
  * docblock overclaimed exactly the way the census above did. It counts the LITERAL
- * `getMessage()` and the LITERAL `UntrustedText::forOperator(` per file under
+ * `getMessage()` plus the LITERAL `RedactedErrorText::of(` — the one route a caught
+ * exception's text takes to a redactor since card#9486, so a relay moved onto it stays in
+ * this population — and the LITERAL `UntrustedText::forOperator(` per file under
  * `app/Console/Commands/`, over comment-stripped source, against the ruling table below.
  * ⚠ **That is a population of RELAYED EXCEPTION TEXT, not of "direct console writes" and
  * not of "foreign bytes reaching an operator terminal".** The sentence it replaces claimed
@@ -241,6 +243,10 @@ class ForeignRelayAdoptionTest extends TestCase
         PHP;
 
         $this->assertSame(['relays' => 2, 'escaped' => 1], $this->countIn($source));
+        $this->assertSame(
+            ['relays' => 1, 'escaped' => 1],
+            $this->countIn('<?php class Fake { public function h(Throwable $e): void { $this->warn(UntrustedText::forOperator(RedactedErrorText::of($e))); } }'),
+        );
         $this->assertSame(['relays' => 0, 'escaped' => 0], $this->countIn("<?php\nclass Fake {}\n"));
     }
 
@@ -281,7 +287,7 @@ class ForeignRelayAdoptionTest extends TestCase
         }
 
         return [
-            'relays' => substr_count($code, 'getMessage()'),
+            'relays' => substr_count($code, 'getMessage()') + substr_count($code, 'RedactedErrorText::of('),
             'escaped' => substr_count($code, 'UntrustedText::forOperator('),
         ];
     }

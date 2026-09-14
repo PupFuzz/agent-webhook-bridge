@@ -11,6 +11,7 @@ use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Provision\WritebackIdentityOffer;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ReceiverUrl;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -354,7 +355,7 @@ class ProvisionCommand extends BridgeCommand
             $this->warn(sprintf(
                 'writeback: identity_id %d was NOT written — %s. Nothing else changed; put the number in by hand (docs/writeback.md § 2).',
                 $identity->id,
-                OutputFormatter::escape($e->getMessage()),
+                OutputFormatter::escape(RedactedErrorText::of($e)),
             ));
         }
     }
@@ -410,11 +411,9 @@ class ProvisionCommand extends BridgeCommand
      * receiver URL's credentials removed. The URL was sent to kanban, so a refusal body can
      * echo it back.
      *
-     * ⛔ A `RequestException` IS REBUILT FROM ITS FULL RESPONSE BODY, NOT READ FROM
-     * `getMessage()`. That message is already cut at `RequestException::$truncateAt`, and a
-     * cut inside an echoed URL's userinfo leaves a password with no `@` after it, which no
-     * redactor can recognise as a userinfo. Redacting the full body and leaving the bound to
-     * `UntrustedText::forOperator()` puts redaction ahead of that bound.
+     * ⛔ THE TEXT IS {@see RedactedErrorText::of()}'s, which rebuilds a `RequestException` from
+     * its FULL response body and redacts before it bounds (card#9486). The substitution below
+     * is handed to it as the caller-held redaction, so it too runs on the unbounded body.
      *
      * Each echo of `$receiverUrl`, raw or with JSON-escaped slashes, becomes `$shown` first.
      * That match is by value, so it holds where {@see SecretScrubber::text()}'s own URL match
@@ -425,14 +424,12 @@ class ProvisionCommand extends BridgeCommand
      */
     private function apiErrorText(Throwable $e, string $receiverUrl, string $shown): string
     {
-        $text = $e instanceof RequestException
-            ? "HTTP request returned status code {$e->response->status()}: {$e->response->body()}"
-            : $e->getMessage();
-
         $jsonSlashes = static fn (string $url): string => str_replace('/', '\\/', $url);
-        $text = str_replace([$receiverUrl, $jsonSlashes($receiverUrl)], [$shown, $jsonSlashes($shown)], $text);
 
-        return SecretScrubber::text($text);
+        return RedactedErrorText::of(
+            $e,
+            static fn (string $text): string => str_replace([$receiverUrl, $jsonSlashes($receiverUrl)], [$shown, $jsonSlashes($shown)], $text),
+        );
     }
 
     private function reportResult(string $label, ProvisionResult $result, string $url): void

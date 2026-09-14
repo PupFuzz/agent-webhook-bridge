@@ -3,7 +3,7 @@
 namespace App\Bridge\Provision;
 
 use App\Bridge\Support\KanbanHttpClient;
-use App\Bridge\Support\SecretScrubber;
+use App\Bridge\Support\RedactedErrorText;
 use Illuminate\Http\Client\ConnectionException;
 
 /**
@@ -62,7 +62,7 @@ final class KanbanIdentityResolver
             $response = KanbanHttpClient::configured($baseUrl, $token)->get(self::endpoint($baseUrl));
         } catch (ConnectionException $e) {
             return KanbanIdentityResolution::failed(
-                'the API did not answer ('.SecretScrubber::text($e->getMessage()).')'
+                'the API did not answer ('.RedactedErrorText::of($e).')'
             );
         }
 

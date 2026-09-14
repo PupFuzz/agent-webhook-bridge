@@ -545,11 +545,12 @@ what turns that from an intention into a measurement.
 
 Several tests here are not behavioural — they are **census instruments** over the source tree. They
 answer "is every X in this repo accounted for?", where a MISS is silent: the suite goes green over
-the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
+the site nobody listed. Among them — and a named list here is a lead, not the membership (`command grep -rl 'SourceScan::' tests/` is) —
+`GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
 `WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
 handlers, and every read of a card's `board_id` in `app/`), `PinnedFieldWriteCoverageTest` (every
 `->patchCard(` in `app/`, against the DL-342 pinned-field rule) and `WritebackSuccessBoardRecordTest`
-(a kanban write made under the DL-009 mapped-board regime) are the ones that derive their
+(a kanban write made under the DL-009 mapped-board regime) derive their
 population THROUGH the shared primitive. ⛔
 **They are not the whole census population of this repo** — see *The un-migrated remainder* below
 before you conclude that a class you are reading is out of scope for the rule.
