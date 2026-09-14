@@ -44,9 +44,18 @@ class WebhookEvent extends Model
      * re-derived it a third way. Both now read this, and the PHP post-filter is gone: the SQL predicate makes it
      * redundant.
      *
-     * ⚠ ONLY THE CI MARIADB JOB CAN DISCRIMINATE A REGRESSION HERE. SQLite's `=` is already byte-exact, so a test
-     * asserting a case-variant scope is not credited passes on SQLite whether or not the COLLATE predicate below is
-     * even applied — it is exercised for real only where the collation is case-insensitive.
+     * ⭐ THE BYTE COMPARISON CASTS THE COLUMN, NEVER THE PARAMETER, AND NAMES NO CHARSET. `scope_id = ? COLLATE
+     * utf8mb4_bin` (R1) was refused at PREPARE time by MariaDB 10.6 — error 1253, *COLLATION 'utf8mb4_bin' is not valid
+     * for CHARACTER SET 'binary'* — because Laravel prepares server-side (`PDO::ATTR_EMULATE_PREPARES` is false) and
+     * 10.6 types an unbound `?` as `binary` when it resolves the COLLATE clause; 10.11 and 11.8 accept it. Measured on
+     * each. `CAST(scope_id AS BINARY) = ?` applies no operator to the marker, so there is nothing to type at prepare,
+     * and it names no charset: a named `utf8mb4_bin` is refused outright on a latin1 or utf8mb3 connection, on 10.6
+     * and 11.8 alike, while the cast matched exactly on those connections and on utf8mb4. The plain `where('scope_id', …)` stays first so
+     * the `(provider, scope_id)` index still narrows the read.
+     *
+     * ⚠ ONLY A MARIADB RUN CAN DISCRIMINATE A REGRESSION HERE. SQLite's `=` is already byte-exact, so a test asserting
+     * a case-variant scope is not credited passes on SQLite whether or not the predicate below is even applied — it is
+     * exercised for real only where the collation is case-insensitive, which is the CI MariaDB matrix.
      *
      * @param  Builder<WebhookEvent>  $query
      * @return Builder<WebhookEvent>
@@ -56,7 +65,7 @@ class WebhookEvent extends Model
         $query->where('provider', $provider)->where('scope_id', $scope);
 
         if (in_array($query->getConnection()->getDriverName(), ['mysql', 'mariadb'], true)) {
-            $query->whereRaw('scope_id = ? COLLATE utf8mb4_bin', [$scope]);
+            $query->whereRaw('CAST(scope_id AS BINARY) = ?', [$scope]);
         }
 
         return $query;

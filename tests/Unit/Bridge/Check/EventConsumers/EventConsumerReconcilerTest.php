@@ -186,7 +186,7 @@ class EventConsumerReconcilerTest extends TestCase
         // DL-382 R1 finding 2 — the sibling of Decision 4's defect: this method's own `where('scope_id', $scope)`
         // had no defense against MariaDB's case-insensitive default collation crediting `Owner/Repo` deliveries to
         // `owner/repo`. Now routed through `WebhookEvent::forExactScope()`. SQLite's `=` is already byte-exact, so
-        // this passes here whether or not the COLLATE predicate is even applied — only the CI MariaDB job can
+        // this passes there whether or not the exact-spelling predicate is even applied — only a MariaDB run can
         // discriminate a regression.
         $this->arrived('push', 'Owner/Repo');
 

@@ -52,9 +52,9 @@ use UnexpectedValueException;
  * ⚠ THE RECORD IS `webhook_events` FOR THE SCOPE SPELLED EXACTLY AS DECLARED, and three things follow that the lines
  * state rather than leave to be discovered: retention prunes it (so a silence longer than the retention window reads as
  * no delivery at all); a GitHub ping is never recorded; and a delivery the receiver REFUSED — a bad signature, a scope
- * mismatch — is never recorded either, so it reads as silence here. The comparison is byte-exact in PHP rather than left
- * to the column's collation, because the dispatcher matches a subscription's spelling exactly and a case-insensitive
- * MariaDB collation would otherwise count a row that wakes nothing.
+ * mismatch — is never recorded either, so it reads as silence here. The comparison is byte-exact rather than left to
+ * the column's collation, because the dispatcher matches a subscription's spelling exactly and a case-insensitive
+ * MariaDB collation would otherwise count a row that wakes nothing; {@see WebhookEvent::scopeForExactScope()} owns it.
  */
 final class GitHubDeliveryHistoryCheck implements Check
 {

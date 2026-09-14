@@ -15,8 +15,8 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Schema;
 use ReflectionMethod;
+use RuntimeException;
 use Tests\Support\AssertsDocPointers;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
@@ -185,8 +185,16 @@ class GitHubDeliveryHistoryCheckTest extends TestCase
 
     public function test_a_delivery_record_that_cannot_be_read_is_unvalidated(): void
     {
+        // NOT `Schema::drop('webhook_events')`: on MariaDB that FK-errors (`agent_dispatches` references it), and DDL
+        // commits the RefreshDatabase transaction there, so a drop that did succeed would leave later tests without
+        // the table. Refusing every read of the table at the connection fails the leg's query the same way on both
+        // drivers and changes no schema.
         $this->bootInstall();
-        Schema::drop('webhook_events');
+        DB::connection()->beforeExecuting(function (string $query): void {
+            if (str_contains($query, 'webhook_events')) {
+                throw new RuntimeException('webhook_events is unreadable (test fault)');
+            }
+        });
 
         [, $doc] = $this->runJson();
 
