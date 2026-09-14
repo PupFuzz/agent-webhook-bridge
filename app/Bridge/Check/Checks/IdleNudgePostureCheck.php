@@ -11,6 +11,7 @@ use App\Bridge\IdleNudge\IdleNudgePassRecord;
 use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
 use App\Bridge\Scheduling\TickPosture;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Models\ScheduledJob;
 use Illuminate\Support\Carbon;
@@ -66,7 +67,7 @@ final class IdleNudgePostureCheck implements Check
         try {
             $instances = ScheduledJob::query()->where('handler', IdleNudgeJob::NAME)->where('enabled', true)->get();
         } catch (Throwable $e) {
-            yield Finding::unvalidated('idle_nudge: could not read the periodic-job registry ('.$e->getMessage().') — whether anything runs the nudge is unknown.');
+            yield Finding::unvalidated('idle_nudge: could not read the periodic-job registry ('.RedactedErrorText::of($e).') — whether anything runs the nudge is unknown.');
 
             return;
         }
@@ -106,7 +107,7 @@ final class IdleNudgePostureCheck implements Check
         try {
             $record = IdleNudgePassRecord::read();
         } catch (Throwable $e) {
-            yield Finding::unvalidated('idle_nudge: the last-pass record could not be read ('.$e->getMessage().').');
+            yield Finding::unvalidated('idle_nudge: the last-pass record could not be read ('.RedactedErrorText::of($e).').');
 
             return;
         }

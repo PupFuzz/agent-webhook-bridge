@@ -9,6 +9,7 @@ use App\Bridge\Check\NextSteps;
 use App\Bridge\Check\NextStepState;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientHalfRecord;
 use App\Bridge\Tools\ConfigSeenLedger;
@@ -131,7 +132,7 @@ final class BoardToolsLostCheck implements Check
             // also where the retirement leg's tombstone lives, so a `retired:` key in config
             // goes unanswered on this path too and the operator must not read the silence as
             // "no retirement to report".
-            yield Finding::unvalidated("board_tools: could NOT read the config-seen ledger ({$e->getMessage()}) — a LOST block cannot be detected on this run, and a retired: key in config cannot be confirmed against its tombstone. If this install has not run `php artisan migrate` since the upgrade that added board_tools_config_seen, run it and re-run bridge:check.");
+            yield Finding::unvalidated('board_tools: could NOT read the config-seen ledger ('.RedactedErrorText::of($e).') — a LOST block cannot be detected on this run, and a retired: key in config cannot be confirmed against its tombstone. If this install has not run `php artisan migrate` since the upgrade that added board_tools_config_seen, run it and re-run bridge:check.');
 
             return;
         }
@@ -182,7 +183,7 @@ final class BoardToolsLostCheck implements Check
             try {
                 $calls = ClientHalfLedger::lastSuccesses();
             } catch (Throwable $e) {
-                $callsUnreadable = $e->getMessage();
+                $callsUnreadable = RedactedErrorText::of($e);
             }
 
             foreach ($recorded as $name) {

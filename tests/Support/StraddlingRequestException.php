@@ -29,16 +29,21 @@ final class StraddlingRequestException
      */
     public const STEM = 'canary';
 
-    public static function make(): RequestException
+    /** The response body alone, for a test that fakes the HTTP call rather than the exception. */
+    public static function body(): string
     {
         $body = static fn (string $message): string => (string) json_encode([
             'message' => $message,
             'errors' => ['url' => ['https://svc:'.self::PASSWORD.'@bridge.example.com/webhooks/kanban?b=5']],
         ]);
         $passwordAt = (int) strpos($body(''), self::PASSWORD);
-        $message = str_pad('The url field is invalid.', RequestException::$truncateAt - strlen(self::STEM) - $passwordAt);
 
-        $e = new RequestException(new Response(new GuzzleResponse(422, ['Content-Type' => 'application/json'], $body($message))));
+        return $body(str_pad('The url field is invalid.', RequestException::$truncateAt - strlen(self::STEM) - $passwordAt));
+    }
+
+    public static function make(): RequestException
+    {
+        $e = new RequestException(new Response(new GuzzleResponse(422, ['Content-Type' => 'application/json'], self::body())));
 
         Assert::assertStringContainsString(
             'svc:'.self::STEM.' ',

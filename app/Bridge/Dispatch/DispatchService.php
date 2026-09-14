@@ -16,6 +16,7 @@ use App\Bridge\Support\DbClock;
 use App\Bridge\Support\EchoSuppression;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\InstallGuard;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Models\AgentDispatch;
@@ -325,8 +326,7 @@ final class DispatchService
                     $note = self::exceptionNote($e);
                     Log::warning('bridge dispatch: handler failed', [
                         'agent' => $agent->agentName, 'handler' => $target->handler,
-                        'error' => $note, 'exception' => $e,
-                    ]);
+                    ] + self::exceptionLogContext($e, $note));
                 }
             }
 
@@ -584,8 +584,8 @@ final class DispatchService
         // row stays replayable.
         $dispatch->update(['error_message' => $message, 'outcome' => AgentDispatch::OUTCOME_ERRORED, 'reason' => null]);
         Log::warning('bridge dispatch: classifier failed', [
-            'agent' => $dispatch->agent_name, 'error' => $message, 'exception' => $e,
-        ]);
+            'agent' => $dispatch->agent_name,
+        ] + self::exceptionLogContext($e, $message));
     }
 
     /**
@@ -595,7 +595,25 @@ final class DispatchService
      */
     private static function exceptionNote(Throwable $e): string
     {
-        return $e::class.': '.$e->getMessage();
+        return $e::class.': '.RedactedErrorText::of($e);
+    }
+
+    /**
+     * The log context for a failed dispatch. ⛔ NOT `'exception' => $e`: the log formatter
+     * renders the object with its raw message — for a `RequestException`, a body summary
+     * already cut at `RequestException::$truncateAt`, which no redactor can repair (card#9486).
+     * The class, the throw site and the trace are kept; the message is the redacted one.
+     *
+     * @return array{error: string, exception: class-string, at: string, trace: string}
+     */
+    private static function exceptionLogContext(Throwable $e, string $note): array
+    {
+        return [
+            'error' => $note,
+            'exception' => $e::class,
+            'at' => $e->getFile().':'.$e->getLine(),
+            'trace' => $e->getTraceAsString(),
+        ];
     }
 
     /**

@@ -849,7 +849,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
-                'board' => $mapping->boardId, 'error' => $e->getMessage(),
+                'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),
             ]);
 
             return false;   // fail-open: a diagnostic guard must not break the writeback

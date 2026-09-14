@@ -3,6 +3,7 @@
 namespace App\Bridge\Writeback;
 
 use App\Bridge\Support\PathHelper;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\TokenPath;
@@ -65,7 +66,7 @@ final class GitHubTokenResolver
         try {
             $fileToken = SecretFile::read($path);   // throws on insecure perms; null when absent
         } catch (Throwable $e) {
-            return TokenResolution::problem("github token file {$path}: {$e->getMessage()}");
+            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e));
         }
         if ($fileToken !== null && $fileToken !== '') {
             return TokenResolution::resolved($fileToken, $override ? "token_path override ({$path})" : "token file ({$path})");
@@ -113,7 +114,7 @@ final class GitHubTokenResolver
         try {
             $result = Process::input($request)->run([$bin, 'get']);
         } catch (Throwable $e) {
-            return TokenResolution::problem("git-credential-coord could not be run for {$repo}: {$e->getMessage()}");
+            return TokenResolution::problem("git-credential-coord could not be run for {$repo}: ".RedactedErrorText::of($e));
         }
 
         if (! $result->successful()) {

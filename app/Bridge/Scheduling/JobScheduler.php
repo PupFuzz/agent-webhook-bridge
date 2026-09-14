@@ -151,7 +151,7 @@ final class JobScheduler
             // defect.
             $this->gate->recordFault($e, ['source' => $source->value]);
 
-            return JobPassResult::failed($source, 'the pass itself failed: '.$e->getMessage());
+            return JobPassResult::failed($source, 'the pass itself failed: '.RedactedErrorText::of($e));
         }
     }
 

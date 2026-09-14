@@ -143,7 +143,7 @@ class ReconcileCommand extends BridgeCommand
         try {
             $kanban = WritebackClientFactory::make();
         } catch (Throwable $e) {
-            $this->error('kanban writeback client: '.$e->getMessage());
+            $this->error('kanban writeback client: '.RedactedErrorText::of($e));
 
             return self::FAILURE;
         }

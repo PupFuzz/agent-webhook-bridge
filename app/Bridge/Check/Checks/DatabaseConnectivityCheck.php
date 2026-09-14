@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -50,7 +51,7 @@ final class DatabaseConnectivityCheck implements Check
         try {
             DB::connection()->getPdo();
         } catch (Throwable $e) {
-            yield Finding::fail('database: '.$e->getMessage());
+            yield Finding::fail('database: '.RedactedErrorText::of($e));
 
             return;
         }

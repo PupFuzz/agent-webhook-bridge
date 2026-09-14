@@ -117,7 +117,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
                 continue;
             } catch (Throwable $e) {
-                yield Finding::fail("board_tools probe: agent {$name}: bearer not readable — {$e->getMessage()} (chmod 600); cannot certify this agent.");
+                yield Finding::fail("board_tools probe: agent {$name}: bearer not readable — ".RedactedErrorText::of($e).' (chmod 600); cannot certify this agent.');
 
                 continue;
             }

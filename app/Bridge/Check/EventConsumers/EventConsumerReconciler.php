@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Check\EventConsumers;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Models\WebhookEvent;
 use Throwable;
 
@@ -60,7 +61,7 @@ final class EventConsumerReconciler
                 );
             }
         } catch (Throwable $e) {
-            return new EventConsumerReconciliation($scopes, $e->getMessage());
+            return new EventConsumerReconciliation($scopes, RedactedErrorText::of($e));
         }
 
         return new EventConsumerReconciliation($scopes);

@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\HumanAge;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
@@ -171,7 +172,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
             // failure rather than the seat's silence. An unmigrated install is the live
             // cause — `bridge:check` must not ABORT on it (CheckRunner deliberately does
             // not catch), and must not report a green or a red it did not measure.
-            yield Finding::unvalidated("board_tools: agent {$name}: could NOT read the client-half record — {$e->getMessage()}. This run says nothing about the seat's board-tools client half in either direction. If this install has not run `php artisan migrate` since the upgrade that added board_tools_client_calls, run it and re-run bridge:check.");
+            yield Finding::unvalidated("board_tools: agent {$name}: could NOT read the client-half record — ".RedactedErrorText::of($e).". This run says nothing about the seat's board-tools client half in either direction. If this install has not run `php artisan migrate` since the upgrade that added board_tools_client_calls, run it and re-run bridge:check.");
 
             return;
         }

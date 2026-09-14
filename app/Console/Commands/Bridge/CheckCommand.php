@@ -227,7 +227,7 @@ class CheckCommand extends BridgeCommand
                 try {
                     $cfg = AgentConfig::load($name, $configDir);
                 } catch (Throwable $e) {
-                    $this->emitUnattributed(Finding::fail("agent config {$name}: ".$e->getMessage()));
+                    $this->emitUnattributed(Finding::fail("agent config {$name}: ".RedactedErrorText::of($e)));
                     $ok = false;
                     // NULL, NOT AN EMPTY LIST (card#5698): the load is what would have told
                     // us which scopes this agent subscribes to, so nothing about its
@@ -513,7 +513,7 @@ class CheckCommand extends BridgeCommand
                 $runner
                     ->noteNotRun(CheckSlot::Writeback, $wbAborted)
                     ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
-                $this->emitUnattributed(Finding::fail('writeback.json: '.$e->getMessage()));
+                $this->emitUnattributed(Finding::fail('writeback.json: '.RedactedErrorText::of($e)));
                 $ok = false;
             }
         } else {
@@ -640,7 +640,7 @@ class CheckCommand extends BridgeCommand
                 $ctx->boardToolsClient = WritebackClientFactory::make();
             } catch (Throwable $e) {
                 $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
-                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
+                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.RedactedErrorText::of($e).') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
             }
 
             if ($ctx->boardToolsClient !== null) {

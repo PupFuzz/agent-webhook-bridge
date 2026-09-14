@@ -27,11 +27,13 @@ use Throwable;
  *    {@see UntrustedText::forOperator()}; logs and durable records are different sinks.
  *  - It cannot recover a message that ALREADY EMBEDS a truncated one — an exception thrown as
  *    `new X('…'.$requestException->getMessage())` carries the cut in its own text, and this
- *    class sees only that text. Such a wrapper is where the fix belongs.
+ *    class sees only that text. Such a wrapper is where the fix belongs, and the census below
+ *    counts it as a read.
  *  - Its redaction is {@see SecretScrubber::text()}'s, with every bound that class states.
  *
- * `Tests\Feature\Support\ExceptionMessageRedactionCensusTest` reds on a `getMessage()` handed
- * straight to a redactor or an escape anywhere in `app/`.
+ * `Tests\Feature\Support\ExceptionMessageRedactionCensusTest` (DL-389) reds on any new read of an
+ * exception's text in `app/` — redacted or not — that neither comes through here nor sits in a
+ * `catch` that cannot hold a `RequestException`.
  */
 final class RedactedErrorText
 {
