@@ -21,16 +21,12 @@ python3 bin/seat-pack.py --out <dir>                 # copy shape — what a PM 
 python3 bin/seat-pack.py --out <dir> --shape link    # link shape — for a seat that has this checkout
 ```
 
-| Shape | Writes under `<dir>` |
-| --- | --- |
-| `copy` (default) | `seat-tools/bin/<tool>` (mode `0755`), `seat-tools/VERSION`, `seat-tools/seat-pack.json` (`schema`, `bridge_version`, `bridge_describe`, and each tool's `name` and `sha256`), and `channel-setup/` — every tracked file under `examples/channel-servers/` outside `node_modules/`, so `channel-lib.mjs` travels with the entry |
-| `link` | `seat-tools/bin/<tool>` only, each a symlink into this checkout. **No metadata**: the checkout is the version, and `git pull` would leave a metadata file beside it stale |
+What each shape writes, what a re-run replaces, what it refuses to write through, and its exit codes are the program's to state: `python3 bin/seat-pack.py --help` prints them. What that means for whoever stages:
 
-- **The output is deterministic.** It has no timestamps, so two runs over one tree are byte-identical. To answer "is the staged pack current?", regenerate it into a temp dir and `diff -r` the two.
-- **A re-run replaces `seat-tools/` whole.** A tool dropped from the declaration does not survive, and neither does metadata left by an earlier copy-shape run.
-- **`channel-setup/` is written OVER, the way `cp -a examples/channel-servers/.` writes over a snapshot.** Nothing in it is deleted, so a deployment running straight out of the staged directory keeps its `node_modules/`. The cost is that a file the reference stops shipping stays behind. The seat still runs `npm ci` there, as before.
+- **Both staged directories are generated output — keep no hand edits in them.** A copy-shape re-run replaces `seat-tools/` whole and removes everything in `channel-setup/` except `node_modules/`, so a deployment running straight out of the staged directory keeps its installed dependencies. The seat still runs `npm ci` there, as before.
+- **Currency check:** the output is deterministic, so regenerate into a temp dir and run `diff -r -x node_modules <staged>/<d> <tmp>/<d>` for each of `seat-tools` and `channel-setup`. `node_modules/` is the one thing a seat adds that the pack never writes; empty output is a current pack.
 - `bridge_describe` is `git describe --tags --always --dirty` of the staging checkout. A pack staged from an untagged commit or an edited tree says so.
-- Exit `0` means written. Exit `1` means refused, and the reason is on stderr: an entry is not a tracked `100755` file directly under `bin/`, two entries share an install name, or git failed. Exit `2` is a usage error.
+- Exit `1` means refused; the reason is on stderr.
 
 ⚠ **Commit a staged pack with its exec bits.** Git records the mode, and a seat links to the file git checks out: a tool committed at `100644` resolves on `PATH` and exits `126`. Stage with `git add --chmod=+x <dir>/seat-tools/bin/*` and verify before pushing:
 
@@ -49,6 +45,8 @@ Install with the coord plugin's `hooks/bin/install-linked-bin.sh` **in its defau
 
 Verify by **running** the tool, not by finding it: `check-channel-snapshot.py --help` must exit 0. `command -v` also succeeds on a link that resolves to a file that cannot execute.
 
+The remedy `bridge:check` prints names the tool by its BASENAME, so this install is correct only while the installer links each file under its own basename with no rename (its link arm names each link `$(basename -- "$f")` in the target). That condition is the installer's to keep. On this side, `Tests\Support\AssertsSeatToolRemedy` holds the remedy to a declared tool's basename, and the `--help` run above is what checks the link on the seat.
+
 **Unsupported, named so nobody reaches for them:**
 - **`--shape=copy` into a shared target such as `~/.local/bin`.** The installer keys its copy manifest by the TARGET directory alone, so a second source copied into a target the toolkit was already copied into overwrites the record of the first. That stays unsupported until the framework keys its manifests by target and source.
 - **A seat whose target directory probes `NOT_CAPABLE`**, i.e. it cannot hold a symlink. There is no supported PATH install for it today. It can still run the staged file by its full path (`python3 <coordination-clone>/OUTBOUND/<agent>/seat-tools/bin/check-channel-snapshot.py <deployed dir>`).
@@ -57,8 +55,8 @@ Verify by **running** the tool, not by finding it: `check-channel-snapshot.py --
 
 ## Upgrades, and what each end can see
 
-- **The PM stages and re-stages.** After each bridge upgrade, it regenerates the copy shape into every `OUTBOUND/<agent>/` and commits the pack with its exec bits. `seat-tools/seat-pack.json` makes the staged version readable against the PM's own bridge: compare `bridge_version` with the checkout's `VERSION`, or regenerate to a temp dir and `diff -r`. `CLAUDE_DEPLOYMENT.md` § Reconcile out-of-repo copies carries this as an update step.
-- **An impl seat picks upgrades up with `git pull`** of the coordination clone. Its `PATH` entry is a link into the staged file, so no re-install is needed unless a tool is added. Whether its installed tools match what is staged can be checked on the impl seat itself: resolve the link, hash the file, and compare with `seat-pack.json`.
+- **The PM stages and re-stages.** After each bridge upgrade, it regenerates the copy shape into every `OUTBOUND/<agent>/` and commits the pack with its exec bits. `seat-tools/seat-pack.json` makes the staged version readable against the PM's own bridge: compare `bridge_version` with the checkout's `VERSION`, or run the currency check above. `CLAUDE_DEPLOYMENT.md` § Reconcile out-of-repo copies carries this as an update step.
+- **An impl seat picks upgrades up with `git pull`** of the coordination clone. Its `PATH` entry is a link into the staged file, so a CHANGED tool needs no re-install. The declaration changing is different, on every seat: a tool it GAINS is linked only when `install-linked-bin.sh` is re-run (on a checkout seat, after re-running the link-shape stage), and a tool it DROPS leaves a dangling link on `PATH` that the install does not remove, so remove it by hand. Whether its installed tools match what is staged can be checked on the impl seat itself: resolve the link, hash the file, and compare with `seat-pack.json`.
 - ⛔ **The PM cannot see what an impl seat actually installed, and nothing here gives it that view.** Nothing the PM runs reads the impl seat's home, and no call reports it. Building that view would extend what the board-tools door accepts, and nothing reported today needs it (DL-385).
 
 ## Bridge releases older than the floor
