@@ -73,6 +73,17 @@ class SecretScrubberTest extends TestCase
         $this->assertStringContainsString('[REDACTED]', $scrubbed);
     }
 
+    public function test_text_redacts_a_mezzanine_token_whatever_its_characters(): void
+    {
+        // The alphabet is not pinned, so the canary carries characters a [A-Za-z0-9] class
+        // would stop at — a partial redaction would leave the tail readable.
+        $scrubbed = SecretScrubber::text('refused: mzr_a.b~c/d-e_9 was revoked');
+
+        $this->assertStringNotContainsString('a.b~c', $scrubbed);
+        $this->assertStringNotContainsString('d-e_9', $scrubbed);
+        $this->assertSame('refused: [REDACTED] was revoked', $scrubbed);
+    }
+
     public function test_text_preserves_prose_after_the_word_token(): void
     {
         // The `token` scheme's length floor keeps ordinary error prose readable.
