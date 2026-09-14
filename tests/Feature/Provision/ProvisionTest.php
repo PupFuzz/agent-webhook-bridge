@@ -637,8 +637,8 @@ class ProvisionTest extends TestCase
      * must not register one. The `ftp://` base is the case the route gate cannot see: its
      * path routes here, so before this refusal it was provisioned while `bridge:check`
      * failed the same value. The expected text is the primitive's own message for the base,
-     * so a second, divergent rule in the command cannot pass; the `ftp://` leg also pins the
-     * words an operator reads.
+     * so a second, divergent rule in the command cannot pass. The words an operator reads are
+     * pinned separately, by `test_the_syntax_refusal_names_the_rule_bridge_check_applies`.
      *
      * @return array<string, array{string}>
      */
