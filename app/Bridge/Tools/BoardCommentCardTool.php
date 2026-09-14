@@ -219,8 +219,10 @@ final class BoardCommentCardTool implements Tool
     }
 
     /**
-     * A 4xx the BOARD answered on the comment POST. Classify first, log second — a transient
-     * status is re-thrown for the retryable 502 and is not a refusal.
+     * A 4xx the BOARD answered on the comment POST, mapped to a named refusal. Classify first,
+     * log second: a status the board did not refuse permanently is not logged as a refusal.
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
      *
      * ⛔ The 403 names `comment.create`, not `task.update`: kanban's `CommentPolicy::createFor` asks
      * the board write gate and then that one permission, and a Member role carries it.

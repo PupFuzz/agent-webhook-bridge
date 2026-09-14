@@ -420,9 +420,10 @@ final class BoardTakeCardTool implements Tool
     }
 
     /**
-     * A 4xx the BOARD answered on the scope lookup. Anything else (5xx, a timeout) is
-     * re-thrown for the dispatcher's retryable 502 — the correct answer for a fault that
-     * MAY clear. The route is named explicitly: this lookup is a card SEARCH, which kanban
+     * A 4xx the BOARD answered on the scope lookup, mapped to a named refusal.
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
+     * The route is named explicitly: this lookup is a card SEARCH, which kanban
      * floors to the caller's own boards, so a membership gap arrives as a not-found refusal
      * (carried by {@see outOfScopeMessage}) and never as a 403.
      */

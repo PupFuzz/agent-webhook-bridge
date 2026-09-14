@@ -691,9 +691,8 @@ final class BoardCorrectCardTool implements Tool
 
     /**
      * A 4xx the BOARD answered on the ownership lookup, mapped to a named refusal.
-     * Any other answered status (a 5xx, a non-permanent 4xx) is re-thrown for the dispatcher's 502, which is
-     * the correct answer for a fault that MAY clear. A transport failure or timeout is not a
-     * `RequestException` and never reaches here.
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
      *
      * ⭐ WHICH STATUSES THOSE ARE, AND WHY EACH IS AN INSTALL FAULT, IS NOT THIS TOOL'S
      * TO DECIDE ANY MORE — {@see BoardCallRefusal} owns both for the whole door
