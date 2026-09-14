@@ -124,6 +124,16 @@ final class BoardMyCardsTool implements Tool
         return 'board_my_cards';
     }
 
+    public function acceptedArguments(): array
+    {
+        return ['include_description', 'stage', 'limit'];
+    }
+
+    public function refusedArgumentReason(string $key): ?string
+    {
+        return null;
+    }
+
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $descriptionCap = $this->descriptionCap($args, $cfg);

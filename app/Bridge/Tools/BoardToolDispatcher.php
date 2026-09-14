@@ -112,6 +112,13 @@ final class BoardToolDispatcher
             return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (writeback token)');
         }
 
+        $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs);
+        if ($refusal !== null) {
+            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
+
+            return DispatchOutcome::failure(422, $refusal);
+        }
+
         try {
             $result = $tool->call($rawArgs, $cfg, $client, $agentName);
         } catch (ToolRefusalException $e) {
@@ -135,5 +142,52 @@ final class BoardToolDispatcher
         ClientHalfLedger::record($agentName, $transport, $provenance, $clientVersion);
 
         return DispatchOutcome::success($toolName, $result);
+    }
+
+    /**
+     * The one refusal for argument keys the resolved tool does not declare, or null when every
+     * key is declared. Every offending key is named in one message — a caller fixing them one
+     * round-trip at a time learns nothing from the second refusal it could not have been told
+     * in the first — and the accepted set is named alongside, so the fix is readable off the
+     * refusal itself.
+     *
+     * ⚠ It sits AFTER the writeback client is built, not beside the `args` shape check above,
+     * so a call that is both mis-keyed and made to an install with no writeback token answers
+     * the 503 install fault first. Building the client sends no request, so the refusal still
+     * precedes every board read and write.
+     *
+     * @param  array<array-key, mixed>  $args
+     */
+    private function undeclaredArgumentsRefusal(Tool $tool, array $args): ?string
+    {
+        $accepted = $tool->acceptedArguments();
+        $reasons = [];
+        $unknown = [];
+        foreach (array_keys($args) as $key) {
+            $key = (string) $key;
+            if (in_array($key, $accepted, true)) {
+                continue;
+            }
+            $reason = $tool->refusedArgumentReason($key);
+            if ($reason === null) {
+                $unknown[] = "`{$key}`";
+            } else {
+                $reasons[] = $reason;
+            }
+        }
+
+        if ($reasons === [] && $unknown === []) {
+            return null;
+        }
+
+        if ($unknown !== []) {
+            $reasons[] = (count($unknown) === 1 ? 'unknown argument ' : 'unknown arguments ').implode(', ', $unknown).'.';
+        }
+        // Each clause is its own sentence, so only the one straight after `<tool>: ` keeps a
+        // lower-case opening.
+        $reasons = array_map(static fn (string $r, int $i): string => $i === 0 ? $r : ucfirst($r), $reasons, array_keys($reasons));
+        $acceptedList = $accepted === [] ? 'no arguments' : implode(', ', array_map(static fn (string $k): string => "`{$k}`", $accepted));
+
+        return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written.";
     }
 }

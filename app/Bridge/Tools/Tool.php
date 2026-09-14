@@ -17,13 +17,35 @@ use App\Bridge\Writeback\KanbanClient;
  * The write scope is NOT the caller's to choose — it is the resolved agent's
  * {@see BoardToolsConfig} (swimlane_id / board_id / create_stage_id), so a tool
  * only ever reads/writes the lane the operator minted the token for. Args carry
- * only the caller-supplied content (a title, a description); anything that names
- * scope is ignored or refused.
+ * only the caller-supplied content (a title, a description); a key a tool does not
+ * declare in {@see acceptedArguments} is refused before the tool runs.
  */
 interface Tool
 {
     /** The MCP tool name (also the `tool` key POST /agent-tools/call dispatches on). */
     public function name(): string;
+
+    /**
+     * The top-level argument keys this tool accepts — the WHOLE set. {@see BoardToolDispatcher}
+     * refuses a call carrying any other key before `call()` runs and before any board request,
+     * naming every offending key and this set, so no tool can silently ignore an argument: an
+     * ignored key answers `ok` for a question the caller did not ask. The reference channel
+     * server's `inputSchema.properties` for this tool is held equal to this set by
+     * `ChannelServerToolSurfaceRestatementTest`.
+     *
+     * @return list<string>
+     */
+    public function acceptedArguments(): array;
+
+    /**
+     * Why `$key` — already known to be outside {@see acceptedArguments} — is refused, when the
+     * tool has something more useful to tell the caller than that the key is unknown; null for
+     * the dispatcher's generic wording. It changes the MESSAGE, never the outcome: the key is
+     * refused either way. The dispatcher supplies the tool name, the accepted set and the
+     * nothing-was-sent clause, so a reason states only the why; it may open in lower case, and
+     * the dispatcher capitalises it wherever it does not directly follow the tool name.
+     */
+    public function refusedArgumentReason(string $key): ?string;
 
     /**
      * Run the tool. `$args` is the caller-supplied argument object (already
