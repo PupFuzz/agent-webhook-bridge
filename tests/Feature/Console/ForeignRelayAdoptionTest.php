@@ -110,8 +110,9 @@ class ForeignRelayAdoptionTest extends TestCase
         ],
         'Bridge/ProvisionCommand.php' => [
             'relays' => 4, 'escaped' => 3,
-            'ruling' => '⛔ FOREIGN ×1 — the `API error` arm, relaying the kanban response body summary from '
-                .'`WebhookProvisioner::ensure()`\'s live calls. ✔ NOT FOREIGN ×3 — local secret-file permission '
+            'ruling' => '⛔ FOREIGN ×1 — the `API error` arm, relaying the kanban response body from '
+                .'`WebhookProvisioner::ensure()`\'s live calls, credential-redacted in full before it is bounded '
+                .'(`ProvisionCommand::apiErrorText()`, DL-377). ✔ NOT FOREIGN ×3 — local secret-file permission '
                 .'and read faults on paths this install configured, and the identity_id WRITE arm (DL-369), whose '
                 .'own comment rules it: `WritebackIdentityOffer::commit()` throws only a `ConfigException` or a '
                 .'file-write fault, so no upstream response body can reach it. ⚑ THE FOURTH RELAY ARRIVED FROM '
