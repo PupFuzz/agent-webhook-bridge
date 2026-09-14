@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Provision\KanbanProvisionClient;
@@ -33,8 +34,10 @@ use Throwable;
  * non-zero exit. URL-drift orphan cleanup is manual (no local registry — the
  * live API is the source of truth).
  *
+ * A receiver base `bridge:check` rejects as a URL is REFUSED for the whole run, in every mode,
+ * before anything is sent upstream or written locally — see {@see self::receiverBaseRefusal()}.
  * A subscription whose composed receiver URL reaches no receiver route in this app is
- * REFUSED before anything is sent upstream or written locally, unless
+ * REFUSED on its own, before anything is sent upstream or written for it, unless
  * `--allow-unreachable-receiver` is given — see {@see self::mayRegister()}.
  */
 class ProvisionCommand extends BridgeCommand
@@ -58,6 +61,12 @@ class ProvisionCommand extends BridgeCommand
         $receiverBaseUrl = (string) config('bridge.receiver_base_url');
         if ($receiverBaseUrl === '') {
             $this->error('bridge.receiver_base_url (BRIDGE_RECEIVER_BASE_URL) must be configured');
+
+            return self::FAILURE;
+        }
+        $refusal = $this->receiverBaseRefusal($receiverBaseUrl);
+        if ($refusal !== null) {
+            $this->error(OutputFormatter::escape($refusal));
 
             return self::FAILURE;
         }
@@ -160,6 +169,33 @@ class ProvisionCommand extends BridgeCommand
         $this->offerWritebackIdentity($configDir, $secretDir, $allAgents);
 
         return $rc;
+    }
+
+    /**
+     * Why this run may not use `$receiverBaseUrl` at all, or null when it may.
+     *
+     * ⛔ THE RULE IS {@see UrlValidator::httpUrl()}, the one `install.endpoint_urls` fails
+     * `bridge:check` on for this field — never a scheme check of this command's own. Not
+     * `secureHttpUrl()`: that is the floor for the endpoints that carry a secret, and
+     * `bridge:check` does not hold the receiver base to it.
+     *
+     * It gates `--list` too, as the unset base above does: a value that is not a URL composes
+     * no receiver URL to compare a live subscription against. `--allow-unreachable-receiver`
+     * does not bypass it — that flag answers for a proxy that rewrites the PATH, and no proxy
+     * makes a base that is not an http(s) URL deliverable. The message is the validator's,
+     * which quotes the value through `SecretScrubber::url()`.
+     */
+    private function receiverBaseRefusal(string $receiverBaseUrl): ?string
+    {
+        try {
+            UrlValidator::httpUrl($receiverBaseUrl, 'bridge.receiver_base_url');
+
+            return null;
+        } catch (ConfigException $e) {
+            return 'REFUSED — '.$e->getMessage().'; nothing was sent upstream or written. '
+                ."Fix BRIDGE_RECEIVER_BASE_URL in this install's .env and re-run (bridge:check fails on the same value). "
+                .'--'.self::ALLOW_UNREACHABLE_RECEIVER.' does not apply: it overrides only the receiver-route check.';
+        }
     }
 
     /**
