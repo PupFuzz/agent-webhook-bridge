@@ -89,6 +89,11 @@ php artisan bridge:provision                      # register kanban webhook subs
                                                   # pipe, a redirect, cron, a script, or a run told to skip prompts) it
                                                   # makes NO call at all and prints the by-hand recipe instead.
                                                   # docs/writeback.md § 2
+                                                  # It REFUSES (non-zero; nothing sent upstream, no secret written)
+                                                  # every subscription whose composed receiver URL reaches no receiver
+                                                  # route in this app — a mis-set BRIDGE_RECEIVER_BASE_URL (DL-377).
+                                                  # --allow-unreachable-receiver provisions it anyway, e.g. behind a
+                                                  # proxy that rewrites the request path, and prints that it did.
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its
                                                   # session? YES -> run this; it prints a paste-ready board_tools:
@@ -444,8 +449,11 @@ php artisan bridge:stats                              # event/dispatch counts; e
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
-php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift);
-                                                                            #   offers a missing writeback identity_id (DL-369)
+php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile] [--allow-unreachable-receiver]
+                                                                            # ensure kanban subscriptions (--reconcile fixes drift);
+                                                                            #   offers a missing writeback identity_id (DL-369);
+                                                                            #   refuses a receiver URL this app would not route unless
+                                                                            #   --allow-unreachable-receiver (DL-377)
 php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
                                                       # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
                                                       # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
