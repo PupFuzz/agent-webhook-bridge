@@ -34,8 +34,9 @@ use Throwable;
  * non-zero exit. URL-drift orphan cleanup is manual (no local registry — the
  * live API is the source of truth).
  *
- * A receiver base `bridge:check` rejects as a URL is REFUSED for the whole run, in every mode,
- * before anything is sent upstream or written locally — see {@see self::receiverBaseRefusal()}.
+ * A receiver base `bridge:check` rejects as a URL is REFUSED for the whole run, in every mode
+ * but `--list`, before anything is sent upstream or written locally — see
+ * {@see self::receiverBaseRefusal()}.
  * A subscription whose composed receiver URL reaches no receiver route in this app is
  * REFUSED on its own, before anything is sent upstream or written for it, unless
  * `--allow-unreachable-receiver` is given — see {@see self::mayRegister()}.
@@ -64,7 +65,7 @@ class ProvisionCommand extends BridgeCommand
 
             return self::FAILURE;
         }
-        $refusal = $this->receiverBaseRefusal($receiverBaseUrl);
+        $refusal = $this->option('list') ? null : $this->receiverBaseRefusal($receiverBaseUrl);
         if ($refusal !== null) {
             $this->error(OutputFormatter::escape($refusal));
 
@@ -179,9 +180,9 @@ class ProvisionCommand extends BridgeCommand
      * `secureHttpUrl()`: that is the floor for the endpoints that carry a secret, and
      * `bridge:check` does not hold the receiver base to it.
      *
-     * It gates `--list` too, as the unset base above does: a value that is not a URL composes
-     * no receiver URL to compare a live subscription against. `--allow-unreachable-receiver`
-     * does not bypass it — that flag answers for a proxy that rewrites the PATH, and no proxy
+     * `--list` is exempt (operator ruling, 2026-09-14): its listing never reads the base, and
+     * it shows every webhook on the scope, so a row registered at an earlier malformed base
+     * stays visible for cleanup. `--allow-unreachable-receiver` does not bypass it — that flag answers for a proxy that rewrites the PATH, and no proxy
      * makes a base that is not an http(s) URL deliverable. The message is the validator's,
      * which quotes the value through `SecretScrubber::url()`.
      */
@@ -416,10 +417,11 @@ class ProvisionCommand extends BridgeCommand
      * `UntrustedText::forOperator()` puts redaction ahead of that bound.
      *
      * Each echo of `$receiverUrl`, raw or with JSON-escaped slashes, becomes `$shown` first.
-     * That match is by value, so it holds for a scheme {@see SecretScrubber::text()} does not
-     * read as a URL (it reads only http and https). `text()` then covers every other
-     * credential-shaped span in the body, and it also removes the query of an echoed http(s)
-     * URL, so `?b=<scope>` shows as `?[REDACTED]` on this line.
+     * That match is by value, so it holds where {@see SecretScrubber::text()}'s own URL match
+     * stops short of the `@`: `UrlValidator::httpUrl()` accepts userinfo containing a character
+     * that ends that match, such as `'`, and `text()` then finds no userinfo to remove.
+     * `text()` covers every other credential-shaped span in the body, and it also removes the
+     * query of an echoed http(s) URL, so `?b=<scope>` shows as `?[REDACTED]` on this line.
      */
     private function apiErrorText(Throwable $e, string $receiverUrl, string $shown): string
     {

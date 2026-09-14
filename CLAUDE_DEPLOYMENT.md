@@ -95,7 +95,7 @@ php artisan bridge:provision                      # register kanban webhook subs
                                                   # --allow-unreachable-receiver provisions it anyway, e.g. behind a
                                                   # proxy that rewrites the request path, and prints that it did.
                                                   # A BRIDGE_RECEIVER_BASE_URL bridge:check rejects as a URL (e.g.
-                                                  # ftp://…) is REFUSED for the whole run, in every mode including
+                                                  # ftp://…) is REFUSED for the whole run in every mode except
                                                   # --list, and the override does not apply (card#9510).
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its

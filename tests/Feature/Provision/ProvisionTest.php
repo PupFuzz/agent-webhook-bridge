@@ -576,6 +576,7 @@ class ProvisionTest extends TestCase
     {
         $routed = 'https://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
         $withQuery = 'https://svc:canary-pw-9278@bridge.example.com?k=canary-q-9278'; // gitleaks:allow — test fixture
+        $apostropheInPassword = "https://svc:canary-pw-9278'tail@bridge.example.com/webhooks"; // gitleaks:allow — test fixture
 
         return [
             'default' => [$routed, []],
@@ -589,6 +590,7 @@ class ProvisionTest extends TestCase
             'override reconcile' => [$withQuery, ['--allow-unreachable-receiver' => true, '--reconcile' => true]],
             'list, base carrying a query' => [$withQuery, ['--list' => true]],
             'create refused, body echoing the url' => [$routed, [], self::CREATE_ECHOES_URL],
+            'apostrophe in password, create refused' => [$apostropheInPassword, [], self::CREATE_ECHOES_URL],
             'create refused, echoed password across the truncation point' => [$routed, [], self::CREATE_ECHOES_URL_ACROSS_TRUNCATION],
             'override, create refused, body echoing the url' => [$withQuery, ['--allow-unreachable-receiver' => true], self::CREATE_ECHOES_URL],
             'create refused, body echoing the whole request' => [$routed, [], self::CREATE_ECHOES_REQUEST],
@@ -644,7 +646,8 @@ class ProvisionTest extends TestCase
     {
         return [
             'non-http scheme whose path routes' => ['ftp://bridge.example.com/webhooks'],
-            'no host' => ['https:///webhooks'],
+            'not a valid URL' => ['https:///webhooks'],
+            'no host' => ['https:webhooks'],
             'whitespace' => ['https://bridge.example.com/webhooks /'],
         ];
     }
@@ -677,17 +680,16 @@ class ProvisionTest extends TestCase
     }
 
     /**
-     * Every mode, over every subscription of every agent. `--list` is refused too, as an
-     * unset base already is: the value is not a URL, so there is nothing to compare a live
-     * subscription's URL against. The override does not bypass it — it answers for a proxy
-     * rewriting the PATH, and no proxy makes a non-http(s) base deliverable.
+     * Every mode that registers or reconciles, over every subscription of every agent. The
+     * override does not bypass the refusal — it answers for a proxy rewriting the PATH, and no
+     * proxy makes a non-http(s) base deliverable. `--list` is not one of these modes; see
+     * {@see self::test_list_is_not_refused_on_a_base_bridge_check_rejects()}.
      *
      * @return array<string, array{array<string, bool>}>
      */
-    public static function everyMode(): array
+    public static function registeringModes(): array
     {
         return self::provisioningModes() + [
-            'list' => [['--list' => true]],
             'override' => [['--allow-unreachable-receiver' => true]],
             'override reconcile' => [['--allow-unreachable-receiver' => true, '--reconcile' => true]],
         ];
@@ -696,8 +698,8 @@ class ProvisionTest extends TestCase
     /**
      * @param  array<string, bool>  $options
      */
-    #[DataProvider('everyMode')]
-    public function test_a_base_bridge_check_rejects_is_refused_in_every_mode(array $options): void
+    #[DataProvider('registeringModes')]
+    public function test_a_base_bridge_check_rejects_is_refused_in_every_registering_mode(array $options): void
     {
         $labels = $this->multiAgentFixture('ftp://bridge.example.com/webhooks', self::ALL_INACTIVE);
 
@@ -711,6 +713,30 @@ class ProvisionTest extends TestCase
         }
         $this->assertStringNotContainsString('OVERRIDE', $out);
         Http::assertNothingSent();
+    }
+
+    /**
+     * `--list` is exempt from the receiver-base refusal (operator ruling, 2026-09-14): it never
+     * reads the base, and it lists every webhook on the scope, so a row registered at an
+     * earlier malformed base stays visible for cleanup. The absence of `REFUSED` alone would
+     * be satisfied by a run that printed nothing, so the rows and the reads are asserted too.
+     */
+    public function test_list_is_not_refused_on_a_base_bridge_check_rejects(): void
+    {
+        $labels = $this->multiAgentFixture('ftp://bridge.example.com/webhooks', ['5' => null, '6' => true, '7' => false]);
+
+        $rc = Artisan::call('bridge:provision', ['--list' => true]);
+        $out = Artisan::output();
+
+        $this->assertSame(0, $rc);
+        $this->assertStringNotContainsString('REFUSED', $out);
+        $this->assertStringContainsString("{$labels['5']} (no subscriptions)", $out);
+        $this->assertStringContainsString("{$labels['6']} id=3 active → ftp://bridge.example.com/webhooks/kanban?b=6", $out);
+        $this->assertStringContainsString("{$labels['7']} id=3 INACTIVE → ftp://bridge.example.com/webhooks/kanban?b=7", $out);
+        foreach (['5', '6', '7'] as $scope) {
+            Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), "/boards/{$scope}/webhooks.json"));
+        }
+        Http::assertSentCount(3);
     }
 
     /**
