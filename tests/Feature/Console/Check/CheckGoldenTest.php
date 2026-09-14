@@ -1208,11 +1208,9 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins the registered TOTAL, DERIVED from `CheckCommandRegistrationTest`'s own
-        // pinned id list rather than restated as a literal here (DL-382 R1 finding 4). Two
-        // independent statements of the same fact on purpose: the id list catches a check
-        // being swapped, this catches the operator-facing line disagreeing with it — but they
-        // agree BY CONSTRUCTION now, which a literal cannot. ⚑ A LITERAL HAD ALREADY DRIFTED
+        // It also pins the registered TOTAL, DERIVED from the command's live registry, which
+        // `CheckCommandRegistrationTest` pins by id, rather than restated as a literal here
+        // (DL-382 R1 finding 4). ⚑ A LITERAL HAD ALREADY DRIFTED
         // FROM THE REGISTERED SET ONCE — 39 until card#8683 / DL-345 registered
         // `standup.posture`, 41 until card#9150 / DL-368 registered `github.webhook_subscription`
         // and card#9152 / DL-373 registered `agent.coordination_identity`. ⛔ THOSE TWO LANDED
