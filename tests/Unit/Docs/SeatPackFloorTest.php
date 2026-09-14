@@ -2,36 +2,52 @@
 
 namespace Tests\Unit\Docs;
 
-use PHPUnit\Framework\TestCase;
-
 /**
- * The first bridge release carrying `bin/seat-pack.py`, as `docs/seat-tools.md` states it, held
- * against the release history that decides it.
+ * The first bridge release carrying `bin/seat-pack.py`, wherever this tree STATES it for an
+ * operator, held against the release history that decides it.
  *
  * The floor is written as a figure because the reader who needs it is choosing a tag, and
  * a pointer would send them to the history to work it out. The figure is written before
  * the release exists, so it is a prediction until the fold. The fold is what can make it
- * false, by giving the release a different number. So the figure is checked against the
- * one fact that settles it: the oldest `## [x.y.z]` section of `docs/CHANGELOG.md` that
- * mentions `seat-pack.py`. Before any section does, the only release that can carry it is
- * the next minor after `VERSION` (VERSIONING.md § Bump sizing: a new user-visible tool is
- * a minor).
+ * false, by giving the release a different number.
+ *
+ * ⭐ THE "CONSTANT" IS DERIVED, not a pin: {@see expectedFloor()} is the oldest `## [x.y.z]`
+ * section of `docs/CHANGELOG.md` that mentions `seat-pack.py`. Before any section does, the only
+ * release that can carry it is the next minor after `VERSION` (VERSIONING.md § Bump sizing: a
+ * new user-visible tool is a minor).
+ *
+ * ⭐ THE MECHANISM IS {@see DocFigureLockstepTestCase}'s — the tracked-file population re-derived
+ * on every run, the HISTORY and excluded-prefix bounds, and the presence witness. Its docblock
+ * owns that reasoning; only the subject-specific parts are here.
  */
-class SeatPackFloorTest extends TestCase
+class SeatPackFloorTest extends DocFigureLockstepTestCase
 {
-    private const MARKER = '/`v([0-9]+\.[0-9]+\.[0-9]+)` is the first release carrying `bin\/seat-pack\.py`/';
-
-    private static function root(): string
+    protected function marker(): string
     {
-        return dirname(__DIR__, 3);
+        return '/`v([0-9]+\.[0-9]+\.[0-9]+)` is the first release carrying `bin\/seat-pack\.py`/';
     }
 
-    /** @return list<string> */
-    public static function floorsIn(string $text): array
+    protected function houseSpelling(): string
     {
-        preg_match_all(self::MARKER, $text, $m);
+        return '"`v<version>` is the first release carrying `bin/seat-pack.py`"';
+    }
 
-        return $m[1];
+    protected function constantName(): string
+    {
+        return 'the oldest docs/CHANGELOG.md release section mentioning seat-pack.py (the next minor after VERSION while none does)';
+    }
+
+    protected function constantValue(): string
+    {
+        return self::expectedFloor(
+            (string) file_get_contents(base_path('docs/CHANGELOG.md')),
+            (string) file_get_contents(base_path('VERSION')),
+        );
+    }
+
+    protected function subject(): string
+    {
+        return 'the first release carrying bin/seat-pack.py';
     }
 
     /** The oldest released section mentioning seat-pack.py, or null while none does. */
@@ -59,16 +75,13 @@ class SeatPackFloorTest extends TestCase
         return $major.'.'.($minor + 1).'.0';
     }
 
-    public function test_the_stated_floor_is_the_release_that_carries_seat_pack(): void
+    public function test_the_predicate_discriminates(): void
     {
-        $floors = self::floorsIn((string) file_get_contents(self::root().'/docs/seat-tools.md'));
-        $this->assertCount(1, $floors, 'docs/seat-tools.md must state the floor exactly once');
-
-        $expected = self::expectedFloor(
-            (string) file_get_contents(self::root().'/docs/CHANGELOG.md'),
-            (string) file_get_contents(self::root().'/VERSION'),
-        );
-        $this->assertSame($expected, $floors[0], 'docs/seat-tools.md names the wrong first release carrying bin/seat-pack.py');
+        $this->assertSame(['0.86.0'], $this->figuresIn('`v0.86.0` is the first release carrying `bin/seat-pack.py`.'));
+        // The sentence naming the threshold with no figure is invisible to the census (bound (a)).
+        $this->assertSame([], $this->figuresIn('the first release carrying `bin/seat-pack.py`'));
+        // An unbackticked version is not the house spelling.
+        $this->assertSame([], $this->figuresIn('v0.86.0 is the first release carrying bin/seat-pack.py'));
     }
 
     public function test_the_derivation_discriminates(): void
@@ -84,8 +97,5 @@ class SeatPackFloorTest extends TestCase
         // A later section mentioning it again does not move the floor.
         $later = "## [0.87.0] - x\n\n- seat-pack.py fix\n\n## [0.86.0] - y\n\n- adds seat-pack.py\n\n## [0.85.0] - z\n";
         $this->assertSame('0.86.0', self::firstReleaseCarrying($later));
-
-        $this->assertSame(['0.86.0'], self::floorsIn('`v0.86.0` is the first release carrying `bin/seat-pack.py`.'));
-        $this->assertSame([], self::floorsIn('the first release carrying `bin/seat-pack.py`'));
     }
 }
