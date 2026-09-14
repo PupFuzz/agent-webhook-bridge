@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -160,6 +161,59 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
                 "name: '{$tool}',",
                 $definitions,
                 "the bridge registers `{$tool}` and the reference channel server does not advertise it — a tool absent from TOOL_DEFINITIONS is UNREACHABLE from every seat that deploys this directory, and the seat will report it missing as though the bridge lacked it"
+            );
+        }
+    }
+
+    /**
+     * The ADVERTISED argument set of each tool, held equal to the set the bridge ENFORCES. The
+     * schema's `additionalProperties: false` tells a client that no other key exists, and
+     * {@see BoardToolDispatcher} is what makes that true — but only for the
+     * keys each tool declares. A property the server advertises and the tool does not declare
+     * turns a model's schema-valid call into a refusal; a key the tool declares and the server
+     * omits is an argument no model can discover. Set EQUALITY for that reason, and the
+     * population is the registry, so a new tool cannot be exempted by omission.
+     *
+     * ⚠ THE EXTRACTION IS TEXTUAL, like every other check in this class, and asserts its own
+     * anchors: an entry is cut from its `name:` line to the next entry (or the array's close),
+     * its `properties` block from `inputSchema`'s `properties: {` to the line closing it at six
+     * spaces, and a property is a key at eight spaces inside that block. A reshaped file reds
+     * as an anchor failure rather than as a false clean.
+     */
+    public function test_every_tool_advertises_exactly_the_argument_keys_the_bridge_accepts(): void
+    {
+        $src = BundledChannelServer::source();
+        $registry = new BoardToolsRegistry;
+
+        foreach ($registry->known() as $tool) {
+            $start = strpos($src, "\n    name: '{$tool}',\n");
+            $this->assertNotFalse($start, "the channel server no longer defines {$tool} at the entry indentation this test reads — re-anchor it");
+            $next = strpos($src, "\n  {\n    name: '", $start + 1);
+            $close = strpos($src, "\n];\n", $start);
+            $this->assertNotFalse($close, 'the TOOL_DEFINITIONS literal no longer closes where this test expects — re-anchor it');
+            $entry = substr($src, $start, ($next === false || $next > $close ? $close : $next) - $start);
+
+            $this->assertMatchesRegularExpression(
+                '/^ {6}additionalProperties: false,$/m',
+                $entry,
+                "the channel server's {$tool} schema does not declare `additionalProperties: false`, so a client is not told that the bridge refuses every key outside the declared set",
+            );
+
+            $propsStart = strpos($entry, "\n      properties: {\n");
+            $this->assertNotFalse($propsStart, "{$tool}'s schema no longer opens `properties` where this test expects — re-anchor it");
+            $propsEnd = strpos($entry, "\n      },\n", $propsStart);
+            $this->assertNotFalse($propsEnd, "{$tool}'s `properties` block no longer closes where this test expects — re-anchor it");
+            preg_match_all('/^ {8}([A-Za-z_][A-Za-z0-9_]*): /m', substr($entry, $propsStart, $propsEnd - $propsStart), $m);
+
+            $advertised = $m[1];
+            sort($advertised);
+            $accepted = $registry->resolve($tool)?->acceptedArguments() ?? [];
+            sort($accepted);
+
+            $this->assertSame(
+                $accepted,
+                $advertised,
+                "the channel server advertises {$tool}'s arguments as [".implode(', ', $advertised).'] but the bridge accepts ['.implode(', ', $accepted).'] — an advertised key the bridge does not accept is refused on a schema-valid call, and an accepted key the schema omits is undiscoverable',
             );
         }
     }

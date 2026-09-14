@@ -561,4 +561,27 @@ class ToolsCallCommandTest extends TestCase
             $this->assertSame(['description' => ''], $body, "a description of '{$sent}' must CLEAR the field on this door too");
         }
     }
+
+    /**
+     * The ssh door reaches the dispatcher without passing any channel server, so the
+     * advertised `additionalProperties: false` is enforced here or nowhere.
+     */
+    public function test_the_ssh_door_refuses_an_undeclared_argument_before_any_board_request(): void
+    {
+        $this->writeSshAgent();
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards', 'args' => ['status' => 'all']]));
+
+        Http::assertNothingSent();
+        $this->assertSame(1, $r['exit']);
+        $decoded = json_decode($r['stdout'], true);
+        $this->assertIsArray($decoded);
+        $this->assertFalse($decoded['ok']);
+        $this->assertStringContainsString('unknown argument `status`', $decoded['error']);
+        $this->assertStringContainsString('`stage`', $decoded['error']);
+    }
 }
