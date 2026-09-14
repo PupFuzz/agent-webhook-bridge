@@ -23,12 +23,14 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
+use Tests\Support\AssertsSeatToolRemedy;
 use Tests\Support\ConsoleTable;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
 {
+    use AssertsSeatToolRemedy;
     use RefreshDatabase;
 
     private string $dir;
@@ -3615,7 +3617,10 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringNotContainsString('is MISSING', $out);
         $this->assertStringContainsString('was NOT launch-tested', $out);
-        $this->assertStringContainsString('bin/check-channel-snapshot.py', $out);
+        $disclosure = collect(explode("\n", $out))->first(fn (string $line) => str_contains($line, 'was NOT launch-tested'));
+        $this->assertIsString($disclosure);
+        $this->assertRemedyIsADeclaredSeatTool($disclosure);
+        $this->assertStringContainsString('docs/seat-tools.md', $disclosure);
         $this->assertStringContainsString('ON THAT SEAT', $out);
         // EXACTLY one per agent, never one per leg — it is a statement about the run.
         $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));

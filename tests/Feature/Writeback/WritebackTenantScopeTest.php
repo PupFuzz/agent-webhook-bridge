@@ -257,7 +257,7 @@ class WritebackTenantScopeTest extends TestCase
                 'id' => self::FOREIGN_CARD, 'board_id' => self::BOARD, 'archived_at' => '2026-08-01T00:00:00+00:00',
             ]]]),
             '*/tasks/'.self::FOREIGN_CARD.'.json' => Http::response(['data' => [
-                'id' => self::FOREIGN_CARD, 'board_id' => self::BOARD, 'workflow_stage_id' => 41,
+                'id' => self::FOREIGN_CARD, 'board_id' => self::BOARD, 'workflow_stage_id' => 41, 'block_reason' => null, 'tags' => [],
             ]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]]),
         ]);
@@ -278,7 +278,7 @@ class WritebackTenantScopeTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 5, 'board_id' => self::BOARD]]]),
-            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => self::BOARD, 'workflow_stage_id' => 41]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => self::BOARD, 'workflow_stage_id' => 41, 'block_reason' => null, 'tags' => []]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]]),
         ]);
 
@@ -290,9 +290,10 @@ class WritebackTenantScopeTest extends TestCase
             ->map(fn (Request $r) => str_contains($r->url(), '/search.json') ? 'scope' : 'card')
             ->values()->all();
 
-        $this->assertSame(['scope', 'card'], $reads,
+        $this->assertSame(['scope', 'card', 'card'], $reads,
             'the board-scoped check must run BEFORE the unscoped card read, exactly once — the whole point is that '
-            .'an id outside the mapping is never resolved at all');
+            .'an id outside the mapping is never resolved at all. The second `card` read is the owner-tag clear, '
+            .'made only AFTER the move has landed on the id this check established (DL-386)');
     }
 
     /**

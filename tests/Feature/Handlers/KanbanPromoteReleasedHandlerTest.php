@@ -11,6 +11,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -114,8 +115,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             'https://api.github.com/repos/owner/repo/pulls/102' => Http::response(['merged' => false, 'merge_commit_sha' => 'TESTMERGE', 'state' => 'open', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
             'https://api.github.com/repos/owner/repo/compare/SHA6...main' => Http::response(['status' => 'diverged']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),   // PATCH move (last: least specific)
-        ]);
+        ] + (new KanbanCardStub(array_column(array_filter($cards, static fn (array $c): bool => is_int($c['id'] ?? null)), null, 'id')))->stub());   // the move + the owner-clear read (last: least specific)
     }
 
     private function handle(string $repo = 'owner/repo'): void
@@ -257,18 +257,18 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_truncated_board_read_is_loud_but_still_promotes_the_visible_cards(): void
     {
+        $row = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]];
         // A non-null links.next on every page drives readBoard past MAX_PAGES → truncated=true.
         // The scan must proceed on the partial view AND warn (no reconcile backstop for this leg).
         Log::spy();
         Http::fake([
             '*/tasks/search.json*' => Http::response([
-                'data' => [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'data' => [$row],
                 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
             ]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub([5 => $row]))->stub());
 
         $this->handle();
 
@@ -292,16 +292,16 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_permanent_getpull_4xx_skips_the_card(): void
     {
+        $rows = [
+            5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 100]],
+            6 => ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],
+        ];
         Http::fake([
-            '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 100]],
-                ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],
-            ], 'links' => ['next' => null]]),
+            '*/tasks/search.json*' => Http::response(['data' => array_values($rows), 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'Not Found'], 404),
             'https://api.github.com/repos/owner/repo/pulls/101' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA6', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA6...main' => Http::response(['status' => 'identical']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub($rows))->stub());
 
         $this->handle();   // 404 on card 5 must not abort; card 6 still promotes
 
@@ -416,17 +416,17 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_truncated_board_read_alerts(): void
     {
+        $row = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]];
         $this->writeWritebackWithAlert(['promote_on_release' => true]);
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response([
-                'data' => [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'data' => [$row],
                 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
             ]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub([5 => $row]))->stub());
 
         $this->handle();
 
@@ -684,8 +684,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             'https://api.github.com/repos/owner/repo/pulls/104' => Http::response(['merged' => true, 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/pulls/105' => Http::response(['merged' => true, 'state' => 'closed', 'merge_commit_sha' => 'SHA105', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA105...main' => Http::response(['status' => 'identical']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub([10 => $this->shippedRow(10, 105)]))->stub());
         Log::spy();
 
         $this->handle();
@@ -718,5 +717,36 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         //    "everything is loud", and no push named a card that had a real answer.
         Log::shouldHaveReceived('warning')->times(5);
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && in_array($r['card_id'], [6, 8, 10], true));
+    }
+
+    public function test_the_promote_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
+    {
+        // The Shipped scan is read before the GitHub loop; a tag added after it must survive.
+        $scanned = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100]];
+        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
+        $this->fakeBoard([$scanned], $cards->stub());
+
+        $this->handle();
+
+        $this->assertSame([['workflow_stage_id' => 53], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
+    }
+
+    public function test_a_refused_owner_tag_write_leaves_the_promote_standing_and_alerts(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
+        $cards = new KanbanCardStub([5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['owner:kanban/kanban'], 'payload' => ['pr_number' => 100]]]);
+        $this->fakeBoard([$cards->cards[5]], [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data())
+                ? Http::response(['message' => 'The tags.0 field must not be greater than 64 characters.'], 422)
+                : $cards->stub()['*/tasks/*.json']($r),
+        ]);
+
+        $this->handle();
+
+        $this->assertSame(53, $cards->cards[5]['workflow_stage_id']);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m) => $m === 'kanban_promote_released: promoted Shipped→Released')->once();
+        $this->assertPromoteAlert('owner_tag_not_cleared_write_4xx', 5);
     }
 }

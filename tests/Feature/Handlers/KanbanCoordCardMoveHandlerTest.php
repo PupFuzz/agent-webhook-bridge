@@ -15,6 +15,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -1271,5 +1272,15 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         $this->assertNoMove();
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_close_moves_stage_only_then_clears_the_owner_tag_in_a_separate_write(): void
+    {
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['id:QUERY-4', 'owner:kanban/kanban']]]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]])] + $cards->stub());
+
+        $this->handle(['disposition' => 'terminal']);
+
+        $this->assertSame([['workflow_stage_id' => 99], ['tags' => ['id:QUERY-4']]], $cards->patchesTo(7));
     }
 }

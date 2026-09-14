@@ -433,6 +433,48 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'board_comment_card',
+    description:
+      'APPEND a comment to a card on YOUR board — the safe way to add a note to a card. ' +
+      'It never reads or replaces the card: board_correct_card\'s description REPLACES the ' +
+      'whole body, so appending with it needs the card\'s current text first, and a card ' +
+      'outside your board_my_cards window has none to give you. A comment is a new row under ' +
+      'the card and cannot overwrite anything. ' +
+      'Any LIVE card on your own board may be commented on — you do not need to have filed it, ' +
+      'hold it, or work its lane. A card on another board (coord_cards included), an ARCHIVED ' +
+      'card, or an id that is not on your board is REFUSED and nothing is written. ' +
+      'The bridge writes "FROM: <your seat>" as the comment\'s FIRST line, from the identity ' +
+      'your call authenticated as — no argument names the author, and every seat shares one ' +
+      'kanban user, so that line is the attribution. ' +
+      'APPEND-ONLY: there is no edit or delete. It takes card_id and content and nothing else. ' +
+      'NOT idempotent: only a refusal (422) tells you nothing was written. Any other failure ' +
+      '— a 502, a 500, a non-JSON answer, a failed ssh leg or a timeout — may have landed ' +
+      'the comment, so re-sending it can post a duplicate. ' +
+      'A board fault that cannot clear (the bridge token revoked/rotated, or the writeback ' +
+      'role unable to create comments) is REFUSED (422) naming the INSTALL fault — do not ' +
+      'retry it; tell your operator, quoting the message as-is.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'integer',
+          description:
+            'The id of the card to comment on, as board_my_cards reports it. Must be an ' +
+            'integer — a decorated string is refused, never coerced.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'The comment text (markdown). Trimmed; blank is refused. At most 65535 characters ' +
+            'INCLUDING the bridge\'s "FROM: <your seat>" line and the blank line after it ' +
+            '(kanban\'s own limit).',
+        },
+      },
+      required: ['card_id', 'content'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // LOCAL-EXEC self-management tool (card 5089). NOT part of TOOL_DEFINITIONS — those are
@@ -603,11 +645,10 @@ const INSTRUCTIONS = [
   'kind identifies what happened upstream (e.g. card_updated, card_assigned); target_id names the resource; payload carries handler-specific data.',
   ...(TOOLS_ENABLED
     ? [
-        'This server ALSO exposes request/response board tools scoped to YOUR channel identity:',
-        'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane),',
-        'board_correct_card (correct a card you filed or that is assigned to you — never mint a second card to say the first is wrong) and',
-        'board_take_card (claim a card for yourself) —',
-        'call them to see, capture or fix board work without a kanban token; every write is confined by the bridge to your own board — a create lands in your own swimlane, a take only in a lane you work, and a correction only on a card that is yours.',
+        `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${TOOL_DEFINITIONS.map((tool) => tool.name).join(', ')} —`,
+        'call them to see, capture, fix or annotate board work without a kanban token (each tool\'s own description says what it does);',
+        'never mint a second card to say the first is wrong — correct it, or comment on it;',
+        'every write is confined by the bridge to your own board, and each tool\'s description states its scope.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED

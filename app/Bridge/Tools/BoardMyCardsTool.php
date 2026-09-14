@@ -215,10 +215,10 @@ final class BoardMyCardsTool implements Tool
     }
 
     /**
-     * A 4xx the BOARD answered on one of this tool's reads, mapped to a named refusal;
-     * anything else (5xx, a timeout) is re-thrown for the dispatcher's retryable 502
-     * (card#8486 — the mapping DL-326 built for `board_correct_card`, now
-     * {@see BoardCallRefusal}'s for the whole door).
+     * A 4xx the BOARD answered on one of this tool's reads, mapped to a named refusal
+     * (card#8486).
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
      *
      * ⭐ THIS TOOL IS THE ONE A ROTATED WRITEBACK TOKEN HITS FIRST, and it is the reason the
      * hoist matters: a seat's first act is usually to read its own cards, and until this a

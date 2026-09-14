@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Provision;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\ReceiverUrl;
 use App\Bridge\Support\SecretPath;
+use App\Bridge\Support\UrlValidator;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Artisan;
@@ -561,8 +563,9 @@ class ProvisionTest extends TestCase
      * echoes the URL that was submitted, credentials included, which the `API error` line
      * relays. One places the password across the point where Laravel truncates a
      * `RequestException` message, so a redaction applied to the truncated message would see
-     * a userinfo with no `@` after it. The `ftp://` leg is a scheme `SecretScrubber::text()`
-     * does not treat as a URL; provision does not refuse that scheme when its path routes.
+     * a userinfo with no `@` after it. A base with a scheme other than http(s) never reaches
+     * these lines: provision refuses it before any subscription is processed, which
+     * `test_the_syntax_refusal_does_not_print_credentials_carried_by_the_base` covers.
      * The last leg's body echoes the whole submitted request, so the webhook secret this run
      * generated reaches the relay too; the secret comes first in that body so it falls inside
      * `UntrustedText::MAX_CHARS` rather than being cut off by the bound.
@@ -573,7 +576,7 @@ class ProvisionTest extends TestCase
     {
         $routed = 'https://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
         $withQuery = 'https://svc:canary-pw-9278@bridge.example.com?k=canary-q-9278'; // gitleaks:allow — test fixture
-        $nonHttpScheme = 'ftp://svc:canary-pw-9278@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
+        $apostropheInPassword = "https://svc:canary-pw-9278'tail@bridge.example.com/webhooks"; // gitleaks:allow — test fixture
 
         return [
             'default' => [$routed, []],
@@ -587,9 +590,9 @@ class ProvisionTest extends TestCase
             'override reconcile' => [$withQuery, ['--allow-unreachable-receiver' => true, '--reconcile' => true]],
             'list, base carrying a query' => [$withQuery, ['--list' => true]],
             'create refused, body echoing the url' => [$routed, [], self::CREATE_ECHOES_URL],
+            'apostrophe in password, create refused' => [$apostropheInPassword, [], self::CREATE_ECHOES_URL],
             'create refused, echoed password across the truncation point' => [$routed, [], self::CREATE_ECHOES_URL_ACROSS_TRUNCATION],
             'override, create refused, body echoing the url' => [$withQuery, ['--allow-unreachable-receiver' => true], self::CREATE_ECHOES_URL],
-            'non-http scheme, create refused, body echoing the url' => [$nonHttpScheme, [], self::CREATE_ECHOES_URL],
             'create refused, body echoing the whole request' => [$routed, [], self::CREATE_ECHOES_REQUEST],
         ];
     }
@@ -616,7 +619,7 @@ class ProvisionTest extends TestCase
         foreach ($labels as $label) {
             $this->assertStringContainsString("{$label} ", $out);
         }
-        $this->assertMatchesRegularExpression('#(?:https|ftp)://\*\*\*@bridge\.example\.com[/?]#', $out);
+        $this->assertMatchesRegularExpression('#https://\*\*\*@bridge\.example\.com[/?]#', $out);
         if ($createRefusal !== null) {
             $this->assertStringContainsString("{$labels['5']} API error: HTTP request returned status code 422", $out);
             $creates = Http::recorded(fn (Request $r) => $r->method() === 'POST');
@@ -627,6 +630,159 @@ class ProvisionTest extends TestCase
         }
         $this->assertStringNotContainsString('canary-pw', $out);
         $this->assertStringNotContainsString('canary-q', $out);
+    }
+
+    /**
+     * ⛔ `bridge:check` fails a receiver base `UrlValidator::httpUrl()` rejects, so provision
+     * must not register one. The `ftp://` base is the case the route gate cannot see: its
+     * path routes here, so before this refusal it was provisioned while `bridge:check`
+     * failed the same value. The expected text is the primitive's own message for the base,
+     * so a second, divergent rule in the command cannot pass. The words an operator reads are
+     * pinned separately, by `test_the_syntax_refusal_names_the_rule_bridge_check_applies`.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function receiverBasesBridgeCheckRejects(): array
+    {
+        return [
+            'non-http scheme whose path routes' => ['ftp://bridge.example.com/webhooks'],
+            'not a valid URL' => ['https:///webhooks'],
+            'no host' => ['https:webhooks'],
+            'whitespace' => ['https://bridge.example.com/webhooks /'],
+        ];
+    }
+
+    #[DataProvider('receiverBasesBridgeCheckRejects')]
+    public function test_refuses_a_receiver_base_bridge_check_rejects_before_any_upstream_call(string $base): void
+    {
+        config(['bridge.receiver_base_url' => $base]);
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        $rc = Artisan::call('bridge:provision');
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString('REFUSED — '.$this->httpUrlRejection($base).'; nothing was sent upstream or written.', $out);
+        $this->assertStringContainsString('Fix BRIDGE_RECEIVER_BASE_URL', $out);
+        $this->assertStringNotContainsString('[prod-agent]', $out);
+        Http::assertNothingSent();
+        $this->assertFileDoesNotExist(SecretPath::for($this->dir, 'kanban', '5'));
+    }
+
+    public function test_the_syntax_refusal_names_the_rule_bridge_check_applies(): void
+    {
+        config(['bridge.receiver_base_url' => 'ftp://bridge.example.com/webhooks']);
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        Artisan::call('bridge:provision');
+
+        $this->assertStringContainsString("REFUSED — bridge.receiver_base_url 'ftp://bridge.example.com/webhooks' must use http or https; nothing was sent upstream or written.", Artisan::output());
+    }
+
+    /**
+     * Every mode that registers or reconciles, over every subscription of every agent. The
+     * override does not bypass the refusal — it answers for a proxy rewriting the PATH, and no
+     * proxy makes a non-http(s) base deliverable. `--list` is not one of these modes; see
+     * {@see self::test_list_is_not_refused_on_a_base_bridge_check_rejects()}.
+     *
+     * @return array<string, array{array<string, bool>}>
+     */
+    public static function registeringModes(): array
+    {
+        return self::provisioningModes() + [
+            'override' => [['--allow-unreachable-receiver' => true]],
+            'override reconcile' => [['--allow-unreachable-receiver' => true, '--reconcile' => true]],
+        ];
+    }
+
+    /**
+     * @param  array<string, bool>  $options
+     */
+    #[DataProvider('registeringModes')]
+    public function test_a_base_bridge_check_rejects_is_refused_in_every_registering_mode(array $options): void
+    {
+        $labels = $this->multiAgentFixture('ftp://bridge.example.com/webhooks', self::ALL_INACTIVE);
+
+        $rc = Artisan::call('bridge:provision', $options);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString('REFUSED — bridge.receiver_base_url ', $out);
+        foreach ($labels as $label) {
+            $this->assertStringNotContainsString($label, $out);
+        }
+        $this->assertStringNotContainsString('OVERRIDE', $out);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * `--list` is exempt from the receiver-base refusal (operator ruling, 2026-09-14): it never
+     * reads the base, and it lists every webhook on the scope, so a row registered at an
+     * earlier malformed base stays visible for cleanup. The absence of `REFUSED` alone would
+     * be satisfied by a run that printed nothing, so the rows and the reads are asserted too.
+     */
+    public function test_list_is_not_refused_on_a_base_bridge_check_rejects(): void
+    {
+        $labels = $this->multiAgentFixture('ftp://bridge.example.com/webhooks', ['5' => null, '6' => true, '7' => false]);
+
+        $rc = Artisan::call('bridge:provision', ['--list' => true]);
+        $out = Artisan::output();
+
+        $this->assertSame(0, $rc);
+        $this->assertStringNotContainsString('REFUSED', $out);
+        $this->assertStringContainsString("{$labels['5']} (no subscriptions)", $out);
+        $this->assertStringContainsString("{$labels['6']} id=3 active → ftp://bridge.example.com/webhooks/kanban?b=6", $out);
+        $this->assertStringContainsString("{$labels['7']} id=3 INACTIVE → ftp://bridge.example.com/webhooks/kanban?b=7", $out);
+        foreach (['5', '6', '7'] as $scope) {
+            Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), "/boards/{$scope}/webhooks.json"));
+        }
+        Http::assertSentCount(3);
+    }
+
+    /**
+     * The presence witness for the refusals above, on the one axis they could over-reach
+     * along: `bridge:check` holds the receiver base to `httpUrl()`, not the https floor of
+     * `secureHttpUrl()`, so a cleartext http base on a non-loopback host still provisions.
+     * `test_creates_a_missing_subscription_and_writes_the_secret` is the https witness.
+     */
+    public function test_an_http_base_bridge_check_accepts_still_provisions(): void
+    {
+        config(['bridge.receiver_base_url' => 'http://bridge.example.com/webhooks']);
+        Http::fake(fn (Request $r) => $r->method() === 'GET'
+            ? Http::response(['data' => []])
+            : Http::response(['data' => ['id' => 7]]));
+
+        $rc = Artisan::call('bridge:provision');
+
+        $this->assertSame(0, $rc);
+        $this->assertStringNotContainsString('REFUSED', Artisan::output());
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && $r['url'] === 'http://bridge.example.com/webhooks/kanban?b=5');
+        $this->assertFileExists(SecretPath::for($this->dir, 'kanban', '5'));
+    }
+
+    public function test_the_syntax_refusal_does_not_print_credentials_carried_by_the_base(): void
+    {
+        config(['bridge.receiver_base_url' => 'ftp://svc:canary-pw-9510@bridge.example.com/webhooks?k=canary-q-9510']); // gitleaks:allow — test fixture
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        Artisan::call('bridge:provision');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString("REFUSED — bridge.receiver_base_url 'ftp://***@bridge.example.com/webhooks", $out);
+        $this->assertStringNotContainsString('canary-pw', $out);
+        $this->assertStringNotContainsString('canary-q', $out);
+        Http::assertNothingSent();
+    }
+
+    private function httpUrlRejection(string $base): string
+    {
+        try {
+            UrlValidator::httpUrl($base, 'bridge.receiver_base_url');
+        } catch (ConfigException $e) {
+            return $e->getMessage();
+        }
+
+        $this->fail("UrlValidator::httpUrl() accepts '{$base}', so it is not a base bridge:check rejects");
     }
 
     public function test_a_base_with_no_credentials_prints_its_receiver_urls_unchanged(): void

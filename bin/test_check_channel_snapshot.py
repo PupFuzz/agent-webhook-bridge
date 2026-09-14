@@ -374,7 +374,7 @@ def _php_code_only(source: str) -> str:
 
     Both have to go for a token scan to mean anything here: every docblock in these
     files says `bridge:check` in backticks (and the backtick IS `shell_exec`), and the
-    message strings talk about running `bin/check-channel-snapshot.py`.
+    message strings name commands for the operator to run (`npm ci`, the launch-assert).
 
     HONEST BOUND — read this before trusting it. This is a hand-rolled scanner, not a
     PHP parser, and an earlier version of this docstring claimed it could only fail
