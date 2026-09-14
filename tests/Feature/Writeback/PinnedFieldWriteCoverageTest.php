@@ -202,6 +202,13 @@ class PinnedFieldWriteCoverageTest extends TestCase
         'Bridge/Writeback/KanbanClient.php::stampCorrelationRefs#1' => [
             KanbanMoveCardHandlerTest::class.'::test_pinned_merge_still_stamps_the_correlation_refs_it_refuses_to_move_on',
         ],
+        // UNGOVERNED — the DL-386 owner-tag clear writes `tags` alone, after a landed terminal move.
+        // A card pinned BEFORE the move is never moved, so never cleared; one pinned between the
+        // move and the clear still takes the clear, and keeps its hold marker.
+        'Bridge/Writeback/OwnerTag.php::clearAfterTerminalMove#1' => [
+            KanbanMoveCardHandlerTest::class.'::test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared',
+            KanbanMoveCardHandlerTest::class.'::test_a_card_pinned_between_the_move_and_the_clear_still_loses_its_owner_tag_and_keeps_the_pin',
+        ],
         // UNGOVERNED — the DL-193 draft overlay, and an explicit card#8557 ruling rather than
         // an oversight: its add-if-missing guard reads `block_reason` only, so a TAG-only pin
         // still takes the write. The witness carries the three reasons that is the designed

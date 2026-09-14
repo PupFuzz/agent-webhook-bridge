@@ -10,6 +10,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -1170,5 +1171,34 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_merged_move_is_stage_only_then_clears_the_owner_tag_in_a_separate_write(): void
+    {
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]])] + $cards->stub());
+
+        $this->handle('merged');
+
+        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['dependencies']]], $cards->patchesTo(7));
+    }
+
+    /**
+     * The terminal check's other side. A reopen moves the card out of `closed_unmerged` into
+     * `opened`, which is not terminal, so the owner tag is the seat's live claim and stays. The
+     * PATCH is the presence witness that the run reached the move; the log after it must be empty,
+     * because the clear's first step is a read.
+     */
+    public function test_a_non_terminal_move_of_an_owner_tagged_card_is_stage_only_with_no_fresh_read_or_tag_write(): void
+    {
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 42]]]])] + $cards->stub());
+
+        $this->handle('opened');
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(7));
+        $movedAt = array_key_last(array_filter($cards->log, static fn (array $e): bool => $e['method'] === 'PATCH'));
+        $this->assertSame([], array_slice($cards->log, $movedAt + 1));
+        $this->assertSame(['dependencies', 'owner:kanban/kanban'], $cards->cards[7]['tags']);
     }
 }

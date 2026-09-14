@@ -13,6 +13,7 @@ use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
@@ -446,6 +447,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → retry
         }
+        // The PR outcomes' order was read by the no-regression guard above; `started` never
+        // reads it, and an empty order answers from the merged / merged_to_main stages alone.
+        if ($mapping->isTerminalStage($stageId, $this->stageOrderMemo[$mapping->boardId] ?? [])) {
+            OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome);
+        }
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
         // human hold" signal — durable Log::warning first (the record; mirrors every
@@ -871,7 +877,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // card has reached a terminal (Shipped/Released) stage, so a stale close
             // can't resurrect a shipped/released card. No terminal stage configured
             // ⇒ no terminal concept on this board ⇒ allow the backward move.
-            $terminalFloor = $this->terminalFloor($mapping, $order);
+            $terminalFloor = $mapping->terminalFloor($order);
 
             return $terminalFloor !== null && $currentPos >= $terminalFloor;
         }
@@ -894,25 +900,5 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // Forward outcomes (opened / merged / merged_to_main): refuse any move to a
         // stage earlier than the card's current one.
         return $targetPos < $currentPos;
-    }
-
-    /**
-     * The earliest board position among the mapping's terminal ("done") targets —
-     * the `merged` (Shipped) and `merged_to_main` (Released) stages. Null when the
-     * mapping configures neither (no terminal concept on this board).
-     *
-     * @param  array<int, float>  $order
-     */
-    private function terminalFloor(WritebackMapping $mapping, array $order): ?float
-    {
-        $positions = [];
-        foreach (['merged', 'merged_to_main'] as $terminalOutcome) {
-            $stage = $mapping->stageFor($terminalOutcome);
-            if ($stage !== null && isset($order[$stage])) {
-                $positions[] = $order[$stage];
-            }
-        }
-
-        return $positions === [] ? null : min($positions);
     }
 }

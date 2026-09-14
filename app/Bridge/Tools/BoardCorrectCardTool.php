@@ -5,6 +5,7 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Writeback\CardTags;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Bridge\Writeback\PinGuard;
@@ -612,11 +613,7 @@ final class BoardCorrectCardTool implements Tool
      */
     private function requireReadableTagList(array $row, int $cardId, int $boardId, string $agentName): void
     {
-        $tags = array_key_exists('tags', $row) ? $row['tags'] : false;
-        if ($tags === null) {
-            return;
-        }
-        if (is_array($tags) && array_is_list($tags) && array_filter($tags, static fn (mixed $tag): bool => ! is_string($tag)) === []) {
+        if (CardTags::readable($row) !== null) {
             return;
         }
 

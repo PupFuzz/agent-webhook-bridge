@@ -12,6 +12,7 @@ use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -465,7 +466,10 @@ class ReconcileCommand extends BridgeCommand
             return;
         }
 
-        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward');
+        // The mapping travels to the write only for a terminal target, where the applied move
+        // owes the owner: clear.
+        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward')
+            + ['repo' => (string) $repo, 'terminal_mapping' => $mapping->isTerminalStage($expected, $order) ? $mapping : null];
     }
 
     /**
@@ -700,6 +704,9 @@ class ReconcileCommand extends BridgeCommand
                     Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['record']);
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
+                    if ($p['terminal_mapping'] !== null) {
+                        OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $p['terminal_mapping'], 'bridge_reconcile', $p['card_id'], $p['repo'], self::ALERT_OUTCOME);
+                    }
                 } catch (Throwable $e) {
                     $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], UntrustedText::forOperator($e->getMessage())));
                     $this->hadError = true;
