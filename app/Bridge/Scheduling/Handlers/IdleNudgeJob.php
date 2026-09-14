@@ -72,10 +72,27 @@ final class IdleNudgeJob implements JobHandler
 
         try {
             return $this->measuredPass($cfg);
-        } catch (IdleNudgeUnmeasured $e) {
-            IdleNudgePassRecord::unmeasured($e->reason);
+        } catch (Throwable $e) {
+            // Every throw, not only the named ones: a pass that died on anything else would
+            // otherwise leave the PREVIOUS pass's record standing, and `bridge:check` would
+            // report that verdict as this install's current state. Only the class is recorded
+            // for an unnamed throw — its message is not bridge vocabulary.
+            $this->recordUnmeasured($e instanceof IdleNudgeUnmeasured
+                ? $e->reason
+                : 'the pass threw '.$e::class.' before it finished — see the job row\'s last_error');
 
             throw $e;
+        }
+    }
+
+    private function recordUnmeasured(string $reason): void
+    {
+        try {
+            IdleNudgePassRecord::unmeasured($reason);
+        } catch (Throwable $recordFault) {
+            // The pass's own fault is what the row must carry; a record that could not be
+            // written must not replace it.
+            Log::warning('idle nudge: the last-pass record could not be written', ['exception' => $recordFault::class]);
         }
     }
 

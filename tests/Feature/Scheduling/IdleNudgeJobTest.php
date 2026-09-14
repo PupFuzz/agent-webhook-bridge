@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Scheduling;
 
+use App\Bridge\IdleNudge\AgentVerdict;
+use App\Bridge\IdleNudge\Evaluation;
 use App\Bridge\IdleNudge\IdleNudgePassRecord;
 use App\Bridge\IdleNudge\IdleNudgeState;
 use App\Bridge\IdleNudge\IdleNudgeUnmeasured;
@@ -287,6 +289,27 @@ class IdleNudgeJobTest extends TestCase
 
         $this->assertCount(1, $this->pushes());
         $this->assertSame([], IdleNudgePassRecord::read()['failed_agents']);
+    }
+
+    public function test_a_pass_that_dies_on_an_unnamed_fault_replaces_the_previous_verdict(): void
+    {
+        $this->stage('pm', 'd1:pm:0', 600);
+        IdleNudgePassRecord::measured(new Evaluation(['declarer' => 1], [new AgentVerdict('pm', 'not_idle')]), 0, []);
+        // A directory where the dedupe file goes: it reads as "no slots", and the write before
+        // the push then fails — a RuntimeException, not a named unmeasured reason.
+        File::ensureDirectoryExists(IdleNudgeState::path().'/occupied');
+
+        try {
+            $this->pass();
+            $this->fail('the failed slot write must throw');
+        } catch (\RuntimeException $e) {
+            $this->assertNotInstanceOf(IdleNudgeUnmeasured::class, $e);
+        }
+
+        $record = IdleNudgePassRecord::read();
+        $this->assertFalse($record['measured']);
+        $this->assertStringStartsWith('the pass threw RuntimeException', $record['reason']);
+        $this->assertSame([], $this->pushes());
     }
 
     public function test_slots_for_agents_no_longer_declared_are_dropped(): void

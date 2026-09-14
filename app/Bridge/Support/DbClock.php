@@ -19,8 +19,11 @@ use Illuminate\Support\Facades\DB;
  * ⚑ ONE QUERY PER DRIVER, AND AN UNKNOWN DRIVER THROWS. `CURRENT_TIMESTAMP(3)` is a syntax
  * error on SQLite, the default connection and the test suite's; SQLite's `strftime('%f')` is
  * unknown to MariaDB. A guessed fallback would hand back a value on a clock nobody named.
- * Both queries return UTC: SQLite's `'now'` is UTC by definition, and the MySQL-family
- * session zone is pinned to `+00:00` by `config/database.php` (DL-346).
+ * The value is parsed as UTC. SQLite's `'now'` IS UTC; the MySQL-family read is rendered in
+ * the connection's session zone, which `config/database.php` pins to `+00:00` by default
+ * (DL-346). Under a different `DB_TIMEZONE` it is off by that offset, and so is every
+ * `useCurrent()` column read back through the same connection, so an AGE against one still
+ * holds.
  *
  * ⚠ RESOLUTION IS NOT PRECISION. This read carries milliseconds on both drivers, but a
  * `useCurrent()` column on SQLite is filled at ONE-SECOND resolution, so an age against such a

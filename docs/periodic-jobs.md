@@ -369,7 +369,8 @@ inbox-only, and nudging on them would turn that choice into a delayed wake. Pend
 unseen inbox line staged after the seat's current `idle_since` and older than the wake grace plus
 the seat's own fold lag. The nudge is `channel_push` only (kind `seat_idle_nudge`,
 [`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*) and is sent at most once per
-`(agent, idle_since)`.
+`(agent, idle_since)`. DL-380 lists what that definition of pending work misses — among them a
+per-agent → shared inbox layout flip and a replayed intent, whose `ts` is the original event's.
 
 **Where the rules live, deliberately not restated here:** the verdict set and the join in
 `App\Bridge\IdleNudge\IdleNudgeEvaluator` and `AgentVerdict`; every unmeasured pass reason in
