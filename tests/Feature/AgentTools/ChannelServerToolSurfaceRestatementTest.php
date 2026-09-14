@@ -71,12 +71,21 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         'board_correct_card' => "required: ['card_id']",
     ];
 
+    /**
+     * Tools whose schema restates a cap but takes no tags, so they are outside {@see tagTools}.
+     *
+     * @var array<string, string> tool name => the `required:` line that closes its schema
+     */
+    private const CAPPED_UNTAGGED_TOOLS = [
+        'board_comment_card' => "required: ['card_id', 'content']",
+    ];
+
     private function toolDefinition(string $tool): string
     {
         $src = BundledChannelServer::source();
         $start = strpos($src, "name: '{$tool}',");
         $this->assertNotFalse($start, "the channel server no longer defines {$tool} — a tool absent from TOOL_DEFINITIONS is unreachable from a seat");
-        $end = strpos($src, self::TAG_TOOLS[$tool], $start);
+        $end = strpos($src, self::TAG_TOOLS[$tool] ?? self::CAPPED_UNTAGGED_TOOLS[$tool], $start);
         $this->assertNotFalse($end, "{$tool}'s definition no longer ends where this test expects — re-anchor the extraction");
 
         return substr($src, $start, $end - $start);
@@ -347,6 +356,20 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
             'board_correct_card' => ['board_correct_card', 'name'],
             'board_create_card' => ['board_create_card', 'title'],
         ];
+    }
+
+    /**
+     * `board_comment_card` refuses on {@see KanbanFieldLimits::COMMENT_MAX} over the body it sends,
+     * so its `content` property must state that cap — the same failure as a stale NAME_MAX: a seat
+     * sends a comment the bridge refuses and reads the 422 as a bridge bug.
+     */
+    public function test_the_channel_server_advertises_the_comment_cap_the_bridge_refuses_on(): void
+    {
+        $this->assertStringContainsString(
+            (string) KanbanFieldLimits::COMMENT_MAX,
+            $this->property('board_comment_card', 'content'),
+            "the channel server's board_comment_card `content` property does not state the ".KanbanFieldLimits::COMMENT_MAX.'-character cap the bridge refuses on'
+        );
     }
 
     #[DataProvider('nameCapProperties')]

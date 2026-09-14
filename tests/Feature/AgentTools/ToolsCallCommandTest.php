@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Tools\ToolsCallStdio;
@@ -583,5 +584,30 @@ class ToolsCallCommandTest extends TestCase
         $this->assertFalse($decoded['ok']);
         $this->assertStringContainsString('unknown argument `status`', $decoded['error']);
         $this->assertStringContainsString('`stage`', $decoded['error']);
+    }
+
+    /**
+     * The same refusal for EVERY registered tool on this door, derived from the registry so a
+     * tool added later is covered without anybody remembering this file. The refusal precedes
+     * every board request, so no per-tool board fixture is needed — `Http::fake()` with no stubs
+     * and the suite's stray-request guard are what make "nothing sent" a measurement.
+     */
+    public function test_the_ssh_door_refuses_an_undeclared_argument_on_every_registered_tool(): void
+    {
+        $this->writeSshAgent();
+        Http::fake();
+
+        $tools = (new BoardToolsRegistry)->known();
+        $this->assertNotEmpty($tools);
+        foreach ($tools as $tool) {
+            $r = $this->runCommand('me', (string) json_encode(['tool' => $tool, 'args' => ['zzz_undeclared' => 'x']]));
+
+            $this->assertSame(1, $r['exit'], "{$tool}: ".$r['stdout']);
+            $decoded = json_decode($r['stdout'], true);
+            $this->assertIsArray($decoded);
+            $this->assertStringStartsWith("{$tool}: ", $decoded['error']);
+            $this->assertStringContainsString('unknown argument `zzz_undeclared`', $decoded['error']);
+        }
+        Http::assertNothingSent();
     }
 }

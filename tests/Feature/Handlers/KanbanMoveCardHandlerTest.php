@@ -2407,6 +2407,28 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertStringContainsString('pr_number=263', $notes[0]);
     }
 
+    public function test_a_comment_quoting_the_marker_below_its_first_line_does_not_suppress_the_note(): void
+    {
+        // A note is identified by its FIRST line. Seats now comment through the same writeback
+        // user (`board_comment_card`), so a seat's comment can QUOTE a note's marker — and a
+        // quote must not read as the note being on the card, or the drop goes unrecorded.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52,
+                'payload' => ['pr_number' => 261],
+                'comments' => [['id' => 2, 'content' => "FROM: some-seat\n\nthe bridge will post `[bridge:correlation-note correlation-ref-not-stamped · card=5 · pr_number=262]` here"]],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262]));
+
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringStartsWith('[bridge:correlation-note correlation-ref-not-stamped · card=5 · pr_number=262]', $notes[0]);
+    }
+
     public function test_a_pr_url_that_prefixes_an_existing_notes_url_is_still_recorded(): void
     {
         // The marker is CLOSED with a `]` for this case: with an open-ended marker ending in

@@ -450,14 +450,13 @@ final class BoardCorrectCardTool implements Tool
     private function ownedRow(KanbanClient $client, int $boardId, int $cardId, string $agentName): array
     {
         try {
-            $live = $client->cardRowsOnBoard($boardId, $cardId);
+            $found = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName);
         } catch (RequestException $e) {
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $row = BoardScopedRow::forCard($live, $boardId, $cardId);
-        if ($row !== null) {
-            $authorizedBy = $this->authorizingRelation($row, $cardId, $boardId, $agentName);
+        if ($found->live !== null) {
+            $authorizedBy = $this->authorizingRelation($found->live, $cardId, $boardId, $agentName);
             if ($authorizedBy === null) {
                 Log::warning('board_correct_card: refused — the card is on the agent\'s board but carries neither its mint stamp nor its kanban user as the assignee', [
                     'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
@@ -466,30 +465,12 @@ final class BoardCorrectCardTool implements Tool
                 throw new ToolRefusalException($this->notYoursMessage($cardId, $boardId));
             }
 
-            return [$row, $authorizedBy];
+            return [$found->live, $authorizedBy];
         }
 
-        if ($live !== []) {
-            // The lookup answered SOMEBODY ELSE'S row: a broken read, never a
-            // verdict about this card (DL-323 Decision 2's `board_scope_lookup_unfiltered`).
-            Log::warning('board_correct_card: the board-scoped lookup answered a row that is not this card on this board — refusing without a tenant verdict', [
-                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'rows' => count($live),
-            ]);
-
-            throw new ToolRefusalException("board_correct_card: the board lookup for card {$cardId} answered a row that is not that card on your board — that is a BROKEN READ, not a verdict about the card, so nothing was written. Report it to your operator.");
-        }
-
-        // Only now — on a live MISS, so it costs nothing on any successful call —
-        // ask the other side of kanban's archive SWITCH (DL-296: no both-sides
-        // mode). Without it a retired card of the seat's own is refused as "not
-        // yours", which is untrue and unactionable.
-        try {
-            $archived = $client->cardRowsOnBoard($boardId, $cardId, archivedOnly: true);
-        } catch (RequestException $e) {
-            throw $this->lookupRefusal($e, $cardId, $agentName);
-        }
-
-        $retired = BoardScopedRow::forCard($archived, $boardId, $cardId);
+        // Without the archived side, a retired card of the seat's own is refused as "not yours",
+        // which is untrue and unactionable.
+        $retired = $found->archived;
         if ($retired !== null && $this->authorizingRelation($retired, $cardId, $boardId, $agentName) !== null) {
             throw new ToolRefusalException("board_correct_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, and un-retiring one is not this tool's to do, so nothing was written. Unarchive it if the work is live again.");
         }
@@ -707,8 +688,8 @@ final class BoardCorrectCardTool implements Tool
 
     /**
      * A 4xx the BOARD answered on the ownership lookup, mapped to a named refusal.
-     * Anything else (5xx, a timeout) is re-thrown for the dispatcher's 502, which is
-     * the correct answer for a fault that MAY clear.
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
      *
      * ⭐ WHICH STATUSES THOSE ARE, AND WHY EACH IS AN INSTALL FAULT, IS NOT THIS TOOL'S
      * TO DECIDE ANY MORE — {@see BoardCallRefusal} owns both for the whole door
