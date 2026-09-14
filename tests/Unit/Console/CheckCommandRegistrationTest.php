@@ -55,6 +55,7 @@ class CheckCommandRegistrationTest extends TestCase
         'retention.posture',
         'jobs.posture',
         'standup.posture',
+        'idle_nudge.posture',
         'install.endpoint_urls',
         'install.provider_adapters',
         // per-agent planes (stages 1, 5a, 5b)

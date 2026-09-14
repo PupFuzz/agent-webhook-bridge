@@ -68,6 +68,29 @@ The three states of `actor_attribution`:
 - **Paths 2–3 are not authentication.** `from:` labels and `FROM:` lines are writable by anyone who can post on the repo, and `scope_author_map` is an operator-declared premise — "one agent does everything on this repo" — that mis-names the actor of *every* event there the moment that stops holding. On these, `resolved` says "this event says who acted", never "this is provably who acted".
 - **Path 1 is the upstream sender identity**, not text anyone wrote: it is as good as the provider's own `sender` attribution plus this install's `identity` declarations. Stronger than the other two — and still a claim about an *account*, not proof of which human or process drove it.
 
+### Bridge-authored intents
+
+Some intents are composed by the bridge itself rather than by a classifier from a webhook. They
+reach the seat over `channel_push` **only** — there is no webhook event behind them, so they are
+never staged to the inbox — and carry `provider: "bridge"` and a null actor.
+
+**`seat_idle_nudge`** (DL-380) — this seat has sat idle past its horizon on Mezzanine's fleet
+record while intents pushed at it since it went idle are still unseen. It is sent at most once per
+idle period, and only for an agent with `channel.route_intents: true`. `subject_id` is
+`idle-nudge:<agent>:<idle_since>`. `payload`:
+
+| key | meaning |
+|---|---|
+| `agent`, `install_id`, `seat_id` | the local agent and the Mezzanine seat it joined to |
+| `verdict` | `idle_past_declared_horizon`, or `suspect` when the seat declared no horizon and the install default was used |
+| `idle_since`, `server_time` | Mezzanine instants (UTC, milliseconds) |
+| `idle_age_s`, `horizon_s`, `horizon_source` | the idle age on Mezzanine's clock, the horizon it was judged against, and `declared` / `default` |
+| `pending_total`, `pending_shown`, `pending` | how many unseen pushed intents qualified, how many are listed, and the list — oldest first, each `{id, kind, subject_id, summary, ts}` |
+
+⚠ **It is a prompt to reconcile, not a work list.** `pending` is capped (`pending_total` is the
+denominator), and it names only work that reached the bridge inbox. Re-derive open work from the
+source of truth, as the model above says.
+
 ## Consumption patterns
 
 > ### Recommended model for live agents (e.g. PM agents): **MCP channel + upstream reconcile**

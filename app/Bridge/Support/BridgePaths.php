@@ -501,6 +501,43 @@ final class BridgePaths
     }
 
     /**
+     * Replace a whole file so a reader sees the old bytes or the new ones, never a torn mix.
+     *
+     * {@see writeFile()} is a bare `file_put_contents`: a crash or a full disk mid-write
+     * leaves a truncated file, which a JSON state reader then refuses on every later run. This
+     * writes a temp file in the SAME directory (so the rename cannot cross a filesystem) and
+     * renames it over the target, checking both steps. The temp file is created `0600` by
+     * `tempnam()`, and the target takes that mode.
+     */
+    public static function writeFileAtomic(string $path, string $contents): void
+    {
+        $dir = dirname($path);
+        $tmp = @tempnam($dir, basename($path).'.tmp-');
+        if ($tmp === false || dirname($tmp) !== $dir) {
+            // tempnam() silently falls back to the system temp dir when $dir is unusable,
+            // and a rename from there would not be atomic.
+            if (is_string($tmp)) {
+                @unlink($tmp);
+            }
+
+            throw new \RuntimeException("bridge: failed to create a temp file beside {$path}");
+        }
+
+        try {
+            self::writeFile($tmp, $contents);
+            if (! @rename($tmp, $path)) {
+                $reason = error_get_last()['message'] ?? 'rename failed';
+
+                throw new \RuntimeException("bridge: failed to replace {$path} ({$reason})");
+            }
+        } catch (\Throwable $e) {
+            @unlink($tmp);
+
+            throw $e;
+        }
+    }
+
+    /**
      * @param  array<mixed>  $value
      * @return array<mixed>
      */

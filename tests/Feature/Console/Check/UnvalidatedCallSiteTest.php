@@ -215,6 +215,14 @@ class UnvalidatedCallSiteTest extends TestCase
         // defect one level up. The MISCONFIGURED and OK arms are postures this process reads
         // straight out of its own config, so neither is here.
         'app/Bridge/Check/Checks/StandupPostureCheck.php' => 1,
+        // card#9422 / DL-380 — THREE sites, all limb (a), a measurement that did not happen:
+        //   1. the `scheduled_jobs` table could not be READ, so whether anything runs the
+        //      nudge is unknown — the JobsPostureCheck shape.
+        //   2. the last-pass record exists and could not be READ.
+        //   3. there is no readable last-pass record at all. The leg's whole purpose is to
+        //      make an ABSENCE of nudges legible, and with no record the reason for that
+        //      absence was never measured; an `ok` there would be the silence it exists to end.
+        'app/Bridge/Check/Checks/IdleNudgePostureCheck.php' => 3,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
         // three incidental disclosures, so it is spelled out here where a maintainer will

@@ -30,6 +30,7 @@ use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
+use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
 use App\Bridge\Check\Checks\InstallConfigDirCheck;
 use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
@@ -178,6 +179,11 @@ class CheckCommand extends BridgeCommand
         // like the registry above it costs a line only where there is one to give — and it
         // is the only surface that reads the gate's fault marker (card#8683 / DL-345).
         if (! $this->emitReport($runner->run(CheckSlot::Standup, $ctx))) {
+            $ok = false;
+        }
+
+        // The idle nudge (DL-380). Silent unless this install turned the nudge on.
+        if (! $this->emitReport($runner->run(CheckSlot::IdleNudge, $ctx))) {
             $ok = false;
         }
 
@@ -875,6 +881,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)
             ->register(CheckSlot::Standup, new StandupPostureCheck)
+            ->register(CheckSlot::IdleNudge, new IdleNudgePostureCheck)
             ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
             ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
