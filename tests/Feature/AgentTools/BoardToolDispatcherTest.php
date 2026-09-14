@@ -326,7 +326,11 @@ class BoardToolDispatcherTest extends TestCase
 
             public function refusedArgumentReason(string $key): ?string
             {
-                return $key === 'explained' ? '`explained` has a reason.' : null;
+                return match ($key) {
+                    'explained' => '`explained` has a reason.',
+                    'lowered' => 'unknown argument `lowered` — a reason that opens in lower case.',
+                    default => null,
+                };
             }
 
             public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
@@ -340,13 +344,13 @@ class BoardToolDispatcherTest extends TestCase
         $registry->register($tool);
         $dispatcher = new BoardToolDispatcher($registry);
 
-        $refused = $dispatcher->dispatch('operator_tool', ['wanted' => 1, 'explained' => 2, 'other' => 3], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $refused = $dispatcher->dispatch('operator_tool', ['wanted' => 1, 'explained' => 2, 'lowered' => 4, 'other' => 3], $this->cfg(), 'me', CallProvenance::NotSshd, null);
 
         $this->assertSame(0, $tool->calls, 'the tool ran on a call carrying undeclared keys');
         $this->assertSame(422, $refused->status);
         $this->assertSame(1, $refused->exitCode());
         $this->assertSame(
-            ['ok' => false, 'error' => 'operator_tool: `explained` has a reason. Unknown argument `other`. This tool accepts: `wanted`. Nothing was sent to the board — no card was read or written.'],
+            ['ok' => false, 'error' => 'operator_tool: `explained` has a reason. Unknown argument `lowered` — a reason that opens in lower case. Unknown argument `other`. This tool accepts: `wanted`. Nothing was sent to the board — no card was read or written.'],
             $refused->body(),
         );
 

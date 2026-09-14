@@ -681,8 +681,9 @@ through the one privileged seat, which is the serial hub this door exists to rem
 > assigned somebody. The user-naming spellings the tool enumerates (`assigned_user_id`,
 > `assignee`, `user_id`, `kanban_user_id`, `agent`, and the rest of `USER_NAMING_ARGS`) are
 > refused in a sentence that **names the key** and says why it will never exist; anything else
-> — `owner`, `assigned_to`, a padded spelling — gets the generic unknown-argument refusal,
-> which names `card_id` as the whole accepted set. The list changes the message, not the
+> — `owner`, `assigned_to`, a padded spelling — is refused as an unknown argument, with the
+> reminder that the assignee is resolved from your bridge identity, never from your arguments,
+> and `card_id` named as the whole accepted set. The list changes the message, not the
 > outcome (§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379)).
 >
 > **Assigning work to a DIFFERENT seat is not something any board tool can do.** That is
@@ -801,8 +802,9 @@ a question you did not ask.
 
 - **A tool may give a key a reason** (`Tool::refusedArgumentReason()`), which replaces only the
   generic *unknown argument* clause for that key: `board_correct_card` names the authority that
-  owns a field it will not write, and `board_take_card` says why a user-naming key will never
-  exist. The outcome is the same refusal either way.
+  owns a field it will not write, and `board_take_card` gives every key a reason — why a
+  user-naming key will never exist, and for any other key that the assignee comes from your
+  bridge identity. The outcome is the same refusal either way.
 - **Keys match exactly.** `Stage` is not `stage`.
 - **Enforced in the bridge, not the channel server.** The ssh door never passes through a
   channel server, so a schema-side check would leave it open. The reference channel server's

@@ -4503,7 +4503,25 @@ class AgentToolsCallTest extends TestCase
         $error = (string) $res->json('error');
         $this->assertStringContainsString('`assignee` is not an argument here, and it never will be', $error);
         $this->assertStringContainsString('from the bridge identity your call authenticated as', $error);
-        $this->assertStringContainsString('Unknown argument `owner`.', $error);
+        $this->assertStringContainsString('Unknown argument `owner` — the assignee is resolved from your bridge identity, never from your arguments.', $error);
         $this->assertStringContainsString('This tool accepts: `card_id`.', $error);
+    }
+
+    /**
+     * A key the take tool does not enumerate is still told WHY it cannot name anybody:
+     * `owner` / `assigned_to` are the traffic the enumerated list leaves to this arm.
+     */
+    public function test_take_tells_an_unenumerated_key_that_the_assignee_comes_from_the_bridge_identity(): void
+    {
+        Http::fake($this->undeclaredKeyFixture('board_take_card')['fake']);
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42, 'assigned_to' => 7]]);
+
+        Http::assertNothingSent();
+        $res->assertStatus(422);
+        $this->assertSame(
+            'board_take_card: unknown argument `assigned_to` — the assignee is resolved from your bridge identity, never from your arguments. This tool accepts: `card_id`. Nothing was sent to the board — no card was read or written.',
+            $res->json('error'),
+        );
     }
 }

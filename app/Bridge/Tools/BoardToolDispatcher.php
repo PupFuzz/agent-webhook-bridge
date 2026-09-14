@@ -181,9 +181,11 @@ final class BoardToolDispatcher
         }
 
         if ($unknown !== []) {
-            $clause = (count($unknown) === 1 ? 'unknown argument ' : 'unknown arguments ').implode(', ', $unknown).'.';
-            $reasons[] = $reasons === [] ? $clause : ucfirst($clause);
+            $reasons[] = (count($unknown) === 1 ? 'unknown argument ' : 'unknown arguments ').implode(', ', $unknown).'.';
         }
+        // Each clause is its own sentence, so only the one straight after `<tool>: ` keeps a
+        // lower-case opening.
+        $reasons = array_map(static fn (string $r, int $i): string => $i === 0 ? $r : ucfirst($r), $reasons, array_keys($reasons));
         $acceptedList = $accepted === [] ? 'no arguments' : implode(', ', array_map(static fn (string $k): string => "`{$k}`", $accepted));
 
         return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written.";

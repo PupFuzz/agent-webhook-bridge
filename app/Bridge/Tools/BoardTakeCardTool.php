@@ -35,9 +35,9 @@ use Illuminate\Support\Facades\Log;
  * the whole of it, and EVERY other key throws before any board request. What
  * {@see USER_NAMING_ARGS} changes is the MESSAGE and never the outcome — the spellings it
  * enumerates are refused in a sentence that names the key and says why the tool will never
- * have it, and every other unknown key (`owner`, `assigned_to`, a casefolded or padded
- * spelling) is refused just as hard by the generic arm, which also says the assignee comes
- * from the bridge identity and never from the arguments. No caller is left believing it
+ * have it, and every other unknown key (`owner`, `assigned_to`, a padded spelling) is
+ * refused just as hard, with a reason that says the assignee comes from the bridge identity
+ * and never from the arguments. No caller is left believing it
  * assigned somebody either way.
  *
  * ⭐ AND IT LOOKS UP EXACTLY ONE SEAT: ITS OWN. The bridge therefore never needs, and must
@@ -143,14 +143,14 @@ final class BoardTakeCardTool implements Tool
 {
     /**
      * Arguments that NAME A USER, each refused by name. They are enumerated rather than
-     * left to the generic unknown-argument refusal because the generic one says "this
-     * tool accepts `card_id`", which reads as a spelling mistake — and the caller sending
+     * left to the unknown-argument reason every other key gets because that one opens
+     * "unknown argument", which reads as a spelling mistake — and the caller sending
      * one of these has a MODEL of the tool that is wrong in the one way that matters.
      *
      * ⛔ IT IS A MESSAGE-QUALITY LIST, NOT A BOUNDARY, and reading it as one inverts where
      * the guarantee lives. The boundary is {@see acceptedArguments} — the single exact key
      * `card_id` — which {@see BoardToolDispatcher} enforces, so a user-naming spelling absent
-     * from this list is refused too, generically, before any board request. Adding a spelling
+     * from this list is refused too, with that reason, before any board request. Adding a spelling
      * here buys a better sentence; it does not widen or narrow what this tool accepts.
      *
      * @var list<string>
@@ -172,14 +172,15 @@ final class BoardTakeCardTool implements Tool
 
     /**
      * `card_id` is the whole accepted set, and that is the tool's central property rather than
-     * a small contract — so the two classes of near-miss get their own reason.
+     * a small contract — so the two classes of near-miss get their own reason, and every other
+     * key is still told where the assignee comes from.
      */
     public function acceptedArguments(): array
     {
         return ['card_id'];
     }
 
-    public function refusedArgumentReason(string $key): ?string
+    public function refusedArgumentReason(string $key): string
     {
         $lower = strtolower($key);
         if (in_array($lower, self::USER_NAMING_ARGS, true)) {
@@ -190,7 +191,7 @@ final class BoardTakeCardTool implements Tool
             return "`{$key}` is not an argument here — this tool has no override. A card already held by another seat is refused and NOTHING is written; taking one off them, or releasing one, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
         }
 
-        return null;
+        return "unknown argument `{$key}` — the assignee is resolved from your bridge identity, never from your arguments.";
     }
 
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array

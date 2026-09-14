@@ -42,7 +42,8 @@ interface Tool
      * tool has something more useful to tell the caller than that the key is unknown; null for
      * the dispatcher's generic wording. It changes the MESSAGE, never the outcome: the key is
      * refused either way. The dispatcher supplies the tool name, the accepted set and the
-     * nothing-was-sent clause, so a reason states only the why.
+     * nothing-was-sent clause, so a reason states only the why; it may open in lower case, and
+     * the dispatcher capitalises it wherever it does not directly follow the tool name.
      */
     public function refusedArgumentReason(string $key): ?string;
 
