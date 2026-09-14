@@ -23,10 +23,10 @@ python3 bin/seat-pack.py --out <dir> --shape link    # link shape — for a seat
 
 What each shape writes, what a re-run replaces, what it refuses to write through, and its exit codes are the program's to state: `python3 bin/seat-pack.py --help` prints them. What that means for whoever stages:
 
-- **Both staged directories are generated output — keep no hand edits in them.** A copy-shape re-run replaces `seat-tools/` whole and removes everything in `channel-setup/` except `node_modules/`, so a deployment running straight out of the staged directory keeps its installed dependencies. The seat still runs `npm ci` there, as before.
+- **Both staged directories are generated output — keep no hand edits in them.** A re-run of either shape replaces `seat-tools/` whole. A copy-shape re-run also removes everything in `channel-setup/` except `node_modules/`, so a deployment running straight out of the staged directory keeps its installed dependencies. The seat still runs `npm ci` there, as before.
 - **Currency check:** the output is deterministic, so regenerate into a temp dir and run `diff -r -x node_modules <staged>/<d> <tmp>/<d>` for each of `seat-tools` and `channel-setup`. `node_modules/` is the one thing a seat adds that the pack never writes; empty output is a current pack.
 - `bridge_describe` is `git describe --tags --always --dirty` of the staging checkout. A pack staged from an untagged commit or an edited tree says so.
-- Exit `1` means refused; the reason is on stderr.
+- Exit `1` is either a refusal or a failure, and stderr says which. A `refused:` line comes before anything is written, so `--out` is as it was. A `FAILED while writing` line means writing had begun and `--out` may be partially updated: fix the named cause and re-run.
 
 ⚠ **Commit a staged pack with its exec bits.** Git records the mode, and a seat links to the file git checks out: a tool committed at `100644` resolves on `PATH` and exits `126`. Stage with `git add --chmod=+x <dir>/seat-tools/bin/*` and verify before pushing:
 
