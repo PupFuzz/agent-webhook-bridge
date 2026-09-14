@@ -719,4 +719,18 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Log::shouldHaveReceived('warning')->times(5);
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && in_array($r['card_id'], [6, 8, 10], true));
     }
+
+    public function test_the_promote_to_released_clears_the_owner_tag_in_the_same_patch(): void
+    {
+        $this->fakeBoard([
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100]],
+        ]);
+
+        $this->handle();
+
+        $patches = Http::recorded()
+            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
+            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
+        $this->assertSame([['workflow_stage_id' => 53, 'tags' => ['triaged']]], $patches);
+    }
 }

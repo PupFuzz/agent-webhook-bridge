@@ -1171,4 +1171,19 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
+
+    public function test_a_merged_move_clears_the_owner_tag_in_the_same_patch(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('merged');
+
+        $patches = Http::recorded()
+            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
+            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
+        $this->assertSame([['workflow_stage_id' => 52, 'tags' => ['dependencies']]], $patches);
+    }
 }

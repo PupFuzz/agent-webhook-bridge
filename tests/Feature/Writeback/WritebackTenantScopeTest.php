@@ -257,7 +257,7 @@ class WritebackTenantScopeTest extends TestCase
                 'id' => self::FOREIGN_CARD, 'board_id' => self::BOARD, 'archived_at' => '2026-08-01T00:00:00+00:00',
             ]]]),
             '*/tasks/'.self::FOREIGN_CARD.'.json' => Http::response(['data' => [
-                'id' => self::FOREIGN_CARD, 'board_id' => self::BOARD, 'workflow_stage_id' => 41,
+                'id' => self::FOREIGN_CARD, 'board_id' => self::BOARD, 'workflow_stage_id' => 41, 'block_reason' => null, 'tags' => [],
             ]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]]),
         ]);
@@ -278,7 +278,7 @@ class WritebackTenantScopeTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 5, 'board_id' => self::BOARD]]]),
-            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => self::BOARD, 'workflow_stage_id' => 41]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => self::BOARD, 'workflow_stage_id' => 41, 'block_reason' => null, 'tags' => []]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]]),
         ]);
 

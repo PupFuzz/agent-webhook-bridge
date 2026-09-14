@@ -1067,4 +1067,27 @@ class ReconcileCommandTest extends TestCase
             && str_contains($r->url(), '/tasks/5.json')
             && $r->data() === ['workflow_stage_id' => 52]);
     }
+
+    public function test_fix_into_a_terminal_stage_clears_the_owner_tag_in_the_same_patch(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban']])], [5 => $this->mergedToDevPr()]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $patches = Http::recorded()
+            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
+            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
+        $this->assertSame([['workflow_stage_id' => 52, 'tags' => ['triaged']]], $patches);
+    }
+
+    public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['owner:kanban/kanban']])], [5 => $this->mergedToDevPr()]);
+
+        $this->artisan('bridge:reconcile')->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
 }

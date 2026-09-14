@@ -2832,4 +2832,136 @@ pull request it already names', $notes[0]);
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_move_card: stamped correlation refs'
             && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
     }
+
+    // --- owner:<project>/<seat> — a terminal move releases the claim in the same PATCH ---
+
+    /**
+     * Every PATCH this delivery sent to card 5, in order — so a test asserts the WHOLE write
+     * set, which is what proves the owner clear rode the stage move and not a second request.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function patchesToCard5(): array
+    {
+        return Http::recorded()
+            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH' && str_contains($pair[0]->url(), '/tasks/5.json'))
+            ->map(fn (array $pair) => $pair[0]->data())
+            ->values()
+            ->all();
+    }
+
+    public function test_a_terminal_move_clears_the_owner_tag_in_the_same_patch_as_the_stage(): void
+    {
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(50, ['tags' => ['triaged', 'owner:kanban/kanban', 'foo']]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        $this->assertSame([['workflow_stage_id' => 52, 'tags' => ['triaged', 'foo']]], $this->patchesToCard5());
+    }
+
+    public function test_a_terminal_move_clears_every_owner_tag_the_card_carries(): void
+    {
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(50, ['tags' => ['owner:kanban/kanban', 'triaged', 'owner:bridge/impl']]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        $this->assertSame([['workflow_stage_id' => 52, 'tags' => ['triaged']]], $this->patchesToCard5());
+    }
+
+    public function test_a_terminal_move_on_a_card_with_no_owner_tag_sends_no_tags(): void
+    {
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(50, ['tags' => ['triaged', 'foo']]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        $this->assertSame([['workflow_stage_id' => 52]], $this->patchesToCard5());
+    }
+
+    public function test_a_non_terminal_move_keeps_the_owner_tag_and_sends_no_tags(): void
+    {
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(49, ['tags' => ['triaged', 'owner:kanban/kanban']]);
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        $this->assertSame([['workflow_stage_id' => 50]], $this->patchesToCard5());
+    }
+
+    public function test_closed_unmerged_into_a_far_right_wont_do_is_terminal_and_clears_the_owner(): void
+    {
+        // Won't-Do (77) is placed AFTER Shipped/Released, so it is terminal by the board's own
+        // order — the `closed_unmerged` stage is not terminal by name.
+        $this->writeReviveConfig();
+        $this->fakeReviveStageOrderAndCard(50, ['block_reason' => null, 'tags' => ['owner:kanban/kanban', 'triaged']]);
+
+        $this->handle($this->payload(['outcome' => 'closed_unmerged']));
+
+        $this->assertSame([['workflow_stage_id' => 77, 'tags' => ['triaged']]], $this->patchesToCard5());
+    }
+
+    public function test_closed_unmerged_into_in_progress_is_not_terminal_and_keeps_the_owner(): void
+    {
+        $this->writeAllOutcomes();   // closed_unmerged => 49 (In Progress, before Shipped)
+        $this->fakeStageOrderAndCard(50, ['tags' => ['owner:kanban/kanban', 'triaged']]);
+
+        $this->handle($this->payload(['outcome' => 'closed_unmerged']));
+
+        $this->assertSame([['workflow_stage_id' => 49]], $this->patchesToCard5());
+    }
+
+    /** @return array<string, array{0: array<string, mixed>}> */
+    public static function unreadableTagRows(): array
+    {
+        return [
+            'tags key absent' => [['block_reason' => null]],
+            'tags not a list' => [['block_reason' => null, 'tags' => ['a' => 'owner:kanban/kanban']]],
+            'a non-string entry' => [['block_reason' => null, 'tags' => ['owner:kanban/kanban', 7]]],
+        ];
+    }
+
+    /** @param array<string, mixed> $cardFields */
+    #[DataProvider('unreadableTagRows')]
+    public function test_unreadable_tags_still_move_send_no_tags_and_warn_the_owner_was_not_cleared(array $cardFields): void
+    {
+        $this->writeWritebackWithAlert(['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49]);
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 50] + $cardFields]),
+        ] + PreloadStub::stub(8, [49 => 3, 50 => 4, 52 => 5, 53 => 6]));
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        $this->assertSame([['workflow_stage_id' => 52]], $this->patchesToCard5());
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'owner: tag was NOT cleared'))->once();
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'owner_tag_not_cleared_tags_unreadable'
+            && $r['card_id'] === 5);
+    }
+
+    public function test_present_null_tags_are_a_readable_empty_list_and_send_no_tags_and_no_warning(): void
+    {
+        $this->writeAllOutcomes();
+        Log::spy();
+        $this->fakeStageOrderAndCard(50, ['tags' => null]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        $this->assertSame([['workflow_stage_id' => 52]], $this->patchesToCard5());
+        Log::shouldNotHaveReceived('warning', [\Mockery::on(fn ($msg) => str_contains((string) $msg, 'owner: tag')), \Mockery::any()]);
+    }
+
+    public function test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared(): void
+    {
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(50, ['tags' => ['no-automove', 'owner:kanban/kanban']]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        $this->assertSame([], $this->patchesToCard5());
+    }
 }

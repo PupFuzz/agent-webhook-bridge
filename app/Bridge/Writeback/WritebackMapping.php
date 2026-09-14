@@ -168,4 +168,43 @@ final class WritebackMapping
     {
         return $this->stages[$outcome] ?? null;
     }
+
+    /**
+     * The earliest board position among the `merged` (Shipped) and `merged_to_main` (Released)
+     * stages — where "done" begins on this board. Null when neither is mapped or placeable in
+     * $order (no terminal concept on this board).
+     *
+     * @param  array<int, float>  $order  stage id => board position
+     */
+    public function terminalFloor(array $order): ?float
+    {
+        $positions = [];
+        foreach (['merged', 'merged_to_main'] as $terminalOutcome) {
+            $stage = $this->stageFor($terminalOutcome);
+            if ($stage !== null && isset($order[$stage])) {
+                $positions[] = $order[$stage];
+            }
+        }
+
+        return $positions === [] ? null : min($positions);
+    }
+
+    /**
+     * Whether a stage is terminal on this board: the `merged` or `merged_to_main` stage itself,
+     * or any stage $order places at or past {@see terminalFloor} — which is how a far-right
+     * Won't Do mapped to `closed_unmerged` is terminal while the default In Progress mapping of
+     * the same outcome is not. A stage $order cannot place (including an empty $order) answers
+     * from the two named stages alone.
+     *
+     * @param  array<int, float>  $order  stage id => board position
+     */
+    public function isTerminalStage(int $stageId, array $order): bool
+    {
+        if ($stageId === $this->stageFor('merged') || $stageId === $this->stageFor('merged_to_main')) {
+            return true;
+        }
+        $floor = $this->terminalFloor($order);
+
+        return $floor !== null && isset($order[$stageId]) && $order[$stageId] >= $floor;
+    }
 }

@@ -12,6 +12,7 @@ use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -465,7 +466,10 @@ class ReconcileCommand extends BridgeCommand
             return;
         }
 
-        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward');
+        // The row is carried to the write only for a terminal target, where the move owes the
+        // owner: clear and needs the tag list this read returned.
+        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward')
+            + ['repo' => (string) $repo, 'terminal_card' => $mapping->isTerminalStage($expected, $order) ? $card : null];
     }
 
     /**
@@ -688,8 +692,11 @@ class ReconcileCommand extends BridgeCommand
                 return self::FAILURE;
             }
             foreach ($this->planned as $p) {
+                $ownerClearedTags = $p['terminal_card'] !== null
+                    ? OwnerTag::tagsForTerminalMove($this->alerts, $p['terminal_card'], 'bridge_reconcile', $p['card_id'], $p['repo'], self::ALERT_OUTCOME)
+                    : null;
                 try {
-                    $kanban->moveCard($p['card_id'], $p['expected']);
+                    $kanban->moveCard($p['card_id'], $p['expected'], $ownerClearedTags);
                     // The DURABLE half of the record, beside the console line (card#7212). This
                     // leg's refusal is a `Log::warning` through the alert primitive, so a
                     // console-only success would leave the same asymmetry that made "did a

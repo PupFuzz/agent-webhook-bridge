@@ -1272,4 +1272,16 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         $this->assertNoMove();
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
+
+    public function test_close_clears_the_owner_tag_in_the_same_patch_as_the_terminal_move(): void
+    {
+        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['id:QUERY-4', 'owner:kanban/kanban']]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        $patches = Http::recorded()
+            ->filter(fn (array $pair) => $pair[0]->method() === 'PATCH')
+            ->map(fn (array $pair) => $pair[0]->data())->values()->all();
+        $this->assertSame([['workflow_stage_id' => 99, 'tags' => ['id:QUERY-4']]], $patches);
+    }
 }

@@ -196,6 +196,11 @@ class PinnedFieldWriteCoverageTest extends TestCase
         'Bridge/Writeback/KanbanClient.php::moveCard#1' => [
             KanbanMoveCardHandlerTest::class.'::test_pinned_merge_still_stamps_the_correlation_refs_it_refuses_to_move_on',
         ],
+        // The same stage move carrying the terminal owner: clear — `tags` is not a pinned field,
+        // and the stage rule at the call site refuses the whole PATCH on a pinned card.
+        'Bridge/Writeback/KanbanClient.php::moveCard#2' => [
+            KanbanMoveCardHandlerTest::class.'::test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared',
+        ],
         // UNGOVERNED — the correlation stamp, and the reason a blanket freeze was rejected:
         // dropping it would strand a held card OUTSIDE `bridge:reconcile`'s population, so
         // the backstop could never complete the move once the pin was lifted.
