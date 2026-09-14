@@ -6,6 +6,7 @@ use App\Bridge\Tools\BoardCallRefusal;
 use App\Bridge\Tools\BoardCorrectCardTool;
 use App\Bridge\Tools\BoardMyCardsTool;
 use App\Bridge\Tools\BoardTakeCardTool;
+use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -415,7 +416,28 @@ class AgentToolsCallTest extends TestCase
 
     // ─── board_create_card: scope + sanitization ─────────────────────────────
 
-    public function test_create_forces_swimlane_from_config_ignoring_caller(): void
+    /**
+     * A caller that names a scope is REFUSED, not ignored: the key is outside the tool's
+     * declared set, so the call never reaches the board and never learns whether a lane it
+     * named exists.
+     */
+    public function test_create_refuses_a_caller_naming_its_own_scope(): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => [
+            'title' => 'capture me', 'swimlane_id' => 999, 'board_id' => 999,
+        ]]);
+
+        Http::assertNothingSent();
+        $res->assertStatus(422);
+        $this->assertStringContainsString('unknown arguments `swimlane_id`, `board_id`.', (string) $res->json('error'));
+    }
+
+    public function test_create_forces_swimlane_from_config(): void
     {
         Log::spy();
         Http::fake([
@@ -424,12 +446,12 @@ class AgentToolsCallTest extends TestCase
         ]);
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => [
-            'title' => 'capture me', 'description' => 'body', 'swimlane_id' => 999, 'board_id' => 999,
+            'title' => 'capture me', 'description' => 'body',
         ]]);
 
         $res->assertStatus(200)->assertJsonPath('result.card_id', 42);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['swimlane_id'] === 4          // FORCED from config, not 999
+            && $r['swimlane_id'] === 4          // FORCED from config
             && $r['board_id'] === 10
             && $r['workflow_stage_id'] === 55
             && $r['name'] === 'capture me'
@@ -4353,5 +4375,135 @@ class AgentToolsCallTest extends TestCase
         Http::fake();
         $this->callTool(['args' => []])->assertStatus(422);
         Http::assertNothingSent();
+    }
+
+    // ─── undeclared argument keys: one refusal, in the dispatcher ─────────────
+
+    /**
+     * Every registered tool, derived from the registry so a tool added later cannot be left
+     * out of the refusal coverage by forgetting a list: {@see undeclaredKeyFixture} fails
+     * loudly for a tool it has no fixture for.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function registeredTools(): array
+    {
+        $cases = [];
+        foreach ((new BoardToolsRegistry)->known() as $tool) {
+            $cases[$tool] = [$tool];
+        }
+
+        return $cases;
+    }
+
+    /**
+     * A call that SUCCEEDS on this tool using only declared keys, and the fake that lets it —
+     * so the planted-key arm below is refused against a board that would have answered, and a
+     * refusal cannot be an accident of the fixture.
+     *
+     * @return array{args: array<string, mixed>, fake: \Closure}
+     */
+    private function undeclaredKeyFixture(string $tool): array
+    {
+        return match ($tool) {
+            'board_my_cards' => [
+                'args' => ['include_description' => false, 'stage' => 50, 'limit' => 5],
+                'fake' => function ($request) {
+                    return str_contains($request->url(), '/preload.json')
+                        ? Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]])
+                        : Http::response(['data' => []]);
+                },
+            ],
+            'board_create_card' => [
+                'args' => ['title' => 'x', 'description' => 'd', 'tags' => ['priority:high'], 'idempotency_key' => 'k1'],
+                'fake' => $this->archiveAxisFake(live: [], archived: [], newId: 77),
+            ],
+            'board_correct_card' => [
+                'args' => ['card_id' => 42, 'name' => 'n', 'description' => 'd', 'tags' => ['priority:low']],
+                'fake' => $this->correctFake(live: [$this->ownCardRow()]),
+            ],
+            'board_take_card' => [
+                'args' => ['card_id' => 42],
+                'fake' => $this->takeFake(live: [$this->takeableCardRow()]),
+            ],
+            default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
+        };
+    }
+
+    #[DataProvider('registeredTools')]
+    public function test_a_call_carrying_only_declared_keys_is_not_refused(string $tool): void
+    {
+        $fixture = $this->undeclaredKeyFixture($tool);
+        Http::fake($fixture['fake']);
+
+        $this->callTool(['tool' => $tool, 'args' => $fixture['args']])->assertStatus(200);
+        $this->assertNotEmpty(Http::recorded(), 'the call succeeded without reaching the board, so it witnessed nothing');
+    }
+
+    #[DataProvider('registeredTools')]
+    public function test_an_undeclared_key_is_refused_before_any_board_request_naming_the_key_and_the_accepted_set(string $tool): void
+    {
+        $fixture = $this->undeclaredKeyFixture($tool);
+        Http::fake($fixture['fake']);
+
+        $res = $this->callTool(['tool' => $tool, 'args' => $fixture['args'] + ['zzz_undeclared' => 'x']]);
+
+        Http::assertNothingSent();
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringStartsWith("{$tool}: ", $error);
+        $this->assertStringContainsString('unknown argument `zzz_undeclared`', $error);
+        foreach ((new BoardToolsRegistry)->resolve($tool)?->acceptedArguments() ?? [] as $accepted) {
+            $this->assertStringContainsString("`{$accepted}`", $error, "the refusal must name the accepted argument `{$accepted}`");
+        }
+    }
+
+    /**
+     * The measured instance: `status` is not `board_my_cards`' filter key (`stage` is), and
+     * the call answered an unfiltered window with `ok: true`.
+     */
+    public function test_my_cards_refuses_a_mistyped_filter_key_instead_of_answering_an_unfiltered_window(): void
+    {
+        Http::fake($this->undeclaredKeyFixture('board_my_cards')['fake']);
+
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['status' => 'zzz-not-a-real-stage']]);
+
+        Http::assertNothingSent();
+        $res->assertStatus(422)->assertJsonPath('ok', false);
+        $this->assertSame(
+            'board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`. Nothing was sent to the board — no card was read or written.',
+            $res->json('error'),
+        );
+    }
+
+    public function test_every_undeclared_key_in_one_call_is_named(): void
+    {
+        Http::fake($this->undeclaredKeyFixture('board_create_card')['fake']);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x', 'swimlane_id' => 9, 'assignee' => 3]]);
+
+        Http::assertNothingSent();
+        $res->assertStatus(422);
+        $this->assertStringContainsString('unknown arguments `swimlane_id`, `assignee`.', (string) $res->json('error'));
+    }
+
+    /**
+     * A tool's own reason travels in the SAME refusal and changes only the message: the
+     * take tool still says WHY a user-naming key will never exist, and the refusal still
+     * names the accepted set and every other undeclared key.
+     */
+    public function test_take_keeps_its_user_naming_reason_beside_the_accepted_set_and_other_undeclared_keys(): void
+    {
+        Http::fake($this->undeclaredKeyFixture('board_take_card')['fake']);
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42, 'assignee' => 7, 'owner' => 7]]);
+
+        Http::assertNothingSent();
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('`assignee` is not an argument here, and it never will be', $error);
+        $this->assertStringContainsString('from the bridge identity your call authenticated as', $error);
+        $this->assertStringContainsString('Unknown argument `owner`.', $error);
+        $this->assertStringContainsString('This tool accepts: `card_id`.', $error);
     }
 }

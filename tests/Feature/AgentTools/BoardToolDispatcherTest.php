@@ -7,12 +7,15 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallingSeat;
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\Tool;
+use App\Bridge\Writeback\KanbanClient;
 use App\Models\BoardToolsClientCall;
 use App\Models\BoardToolsConfigSeen;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use LogicException;
+use Tests\Support\CallingSeatSeal;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
 
@@ -297,5 +300,61 @@ class BoardToolDispatcherTest extends TestCase
         $this->assertSame('ssh', $row->transport);
         $this->assertSame(10, $row->board_id);
         $this->assertSame(4, $row->swimlane_id);
+    }
+
+    /**
+     * The refusal belongs to the DISPATCHER, so it covers a tool that does nothing about its
+     * own arguments — including one an operator registers. The tool here would answer `ok`
+     * for anything; an undeclared key must never reach it.
+     */
+    public function test_an_undeclared_key_never_reaches_a_registered_tool_that_does_not_check_its_own_arguments(): void
+    {
+        Http::fake();
+        $tool = new class implements Tool
+        {
+            public int $calls = 0;
+
+            public function name(): string
+            {
+                return 'operator_tool';
+            }
+
+            public function acceptedArguments(): array
+            {
+                return ['wanted'];
+            }
+
+            public function refusedArgumentReason(string $key): ?string
+            {
+                return $key === 'explained' ? '`explained` has a reason.' : null;
+            }
+
+            public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
+            {
+                $this->calls++;
+
+                return ['args' => $args];
+            }
+        };
+        $registry = new BoardToolsRegistry;
+        $registry->register($tool);
+        $dispatcher = new BoardToolDispatcher($registry);
+
+        $refused = $dispatcher->dispatch('operator_tool', ['wanted' => 1, 'explained' => 2, 'other' => 3], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+
+        $this->assertSame(0, $tool->calls, 'the tool ran on a call carrying undeclared keys');
+        $this->assertSame(422, $refused->status);
+        $this->assertSame(1, $refused->exitCode());
+        $this->assertSame(
+            ['ok' => false, 'error' => 'operator_tool: `explained` has a reason. Unknown argument `other`. This tool accepts: `wanted`. Nothing was sent to the board — no card was read or written.'],
+            $refused->body(),
+        );
+
+        CallingSeatSeal::forANewServingProcess();
+        $accepted = $dispatcher->dispatch('operator_tool', ['wanted' => 1], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+
+        $this->assertSame(1, $tool->calls);
+        $this->assertSame(200, $accepted->status);
+        Http::assertNothingSent();
     }
 }

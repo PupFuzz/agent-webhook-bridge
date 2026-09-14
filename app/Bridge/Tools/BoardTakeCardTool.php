@@ -148,10 +148,10 @@ final class BoardTakeCardTool implements Tool
      * one of these has a MODEL of the tool that is wrong in the one way that matters.
      *
      * ⛔ IT IS A MESSAGE-QUALITY LIST, NOT A BOUNDARY, and reading it as one inverts where
-     * the guarantee lives. The boundary is {@see refuseForeignArguments}'s accept set — the
-     * single exact key `card_id` — so a user-naming spelling absent from this list is refused
-     * too, generically, before any board request. Adding a spelling here buys a better
-     * sentence; it does not widen or narrow what this tool accepts.
+     * the guarantee lives. The boundary is {@see acceptedArguments} — the single exact key
+     * `card_id` — which {@see BoardToolDispatcher} enforces, so a user-naming spelling absent
+     * from this list is refused too, generically, before any board request. Adding a spelling
+     * here buys a better sentence; it does not widen or narrow what this tool accepts.
      *
      * @var list<string>
      */
@@ -170,12 +170,34 @@ final class BoardTakeCardTool implements Tool
         return 'board_take_card';
     }
 
+    /**
+     * `card_id` is the whole accepted set, and that is the tool's central property rather than
+     * a small contract — so the two classes of near-miss get their own reason.
+     */
+    public function acceptedArguments(): array
+    {
+        return ['card_id'];
+    }
+
+    public function refusedArgumentReason(string $key): ?string
+    {
+        $lower = strtolower($key);
+        if (in_array($lower, self::USER_NAMING_ARGS, true)) {
+            return "`{$key}` is not an argument here, and it never will be — this tool assigns the card to YOU and to nobody else, and it works out who you are from the bridge identity your call authenticated as, NOT from anything you send. (If you are trying to assign work to a DIFFERENT seat, no board tool can do that: ask your operator.)";
+        }
+
+        if (in_array($lower, self::OVERRIDE_ARGS, true)) {
+            return "`{$key}` is not an argument here — this tool has no override. A card already held by another seat is refused and NOTHING is written; taking one off them, or releasing one, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
+        }
+
+        return null;
+    }
+
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         // Arguments first, then identity, then the board — so a refused call reads
         // nothing and writes nothing, and an install fault is reported as itself rather
         // than as a board lookup that went nowhere.
-        $this->refuseForeignArguments($args);
         $cardId = $this->requireCardId($args);
         $userId = SeatKanbanUser::forCallingSeat($this->name());
 
@@ -223,34 +245,6 @@ final class BoardTakeCardTool implements Tool
         ]);
 
         return $result;
-    }
-
-    /**
-     * Refuse any argument this tool does not own. `card_id` is the whole accepted set, and
-     * that is the tool's central property rather than a small contract — so the two classes
-     * of near-miss get their own message.
-     *
-     * @param  array<string, mixed>  $args
-     */
-    private function refuseForeignArguments(array $args): void
-    {
-        foreach (array_keys($args) as $key) {
-            $key = (string) $key;
-            if ($key === 'card_id') {
-                continue;
-            }
-
-            $lower = strtolower($key);
-            if (in_array($lower, self::USER_NAMING_ARGS, true)) {
-                throw new ToolRefusalException("board_take_card: `{$key}` is not an argument here, and it never will be — this tool assigns the card to YOU and to nobody else, and it works out who you are from the bridge identity your call authenticated as, NOT from anything you send. NOTHING WAS WRITTEN and the value you sent was ignored entirely. Call it with `card_id` alone. (If you are trying to assign work to a DIFFERENT seat, no board tool can do that: ask your operator.)");
-            }
-
-            if (in_array($lower, self::OVERRIDE_ARGS, true)) {
-                throw new ToolRefusalException("board_take_card: `{$key}` is not an argument here — this tool has no override. A card already held by another seat is refused and NOTHING is written; taking one off them, or releasing one, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`). Call it with `card_id` alone.");
-            }
-
-            throw new ToolRefusalException("board_take_card: unknown argument `{$key}` — this tool accepts `card_id` and nothing else (the assignee is resolved from your bridge identity, never from your arguments). Nothing was written.");
-        }
     }
 
     /**
