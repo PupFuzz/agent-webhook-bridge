@@ -337,6 +337,57 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertSame([], $this->writesIn($ssh['requests']));
     }
 
+    // ─── board_comment_card: `content` ───────────────────────────────────────
+
+    private function fakeCommentableBoard(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'tags' => [], 'assigned_user_id' => null,
+            ]]]),
+            '*/tasks/42/comments.json' => Http::response(['data' => ['id' => 9, 'task_id' => 42]], 201),
+        ]);
+    }
+
+    #[DataProvider('visuallyBlankValues')]
+    public function test_a_visually_blank_comment_is_refused_on_both_doors(string $blank): void
+    {
+        $this->fakeCommentableBoard();
+        $call = ['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => $blank]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertFalse($http['ok'], 'HTTP door: '.json_encode($http['body']));
+        $this->assertFalse($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
+        $this->assertSame($http['body'], $ssh['body'], 'the two doors must answer a blank comment identically');
+        $this->assertStringStartsWith('board_comment_card: `content` is required and must be a non-empty string', (string) $http['body']['error']);
+        $this->assertSame([], $http['requests'], 'HTTP door reached the board');
+        $this->assertSame([], $ssh['requests'], 'ssh door posted a comment of nothing but its attribution line');
+    }
+
+    #[DataProvider('legitimateValues')]
+    public function test_a_legitimate_comment_is_posted_trimmed_and_attributed_identically_on_both_doors(string $sent, string $stored): void
+    {
+        $this->fakeCommentableBoard();
+        $call = ['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => $sent]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertTrue($http['ok'], 'HTTP door: '.json_encode($http['body']));
+        $this->assertTrue($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
+        $this->assertSame($http['body'], $ssh['body']);
+
+        foreach (['HTTP' => $http, 'ssh' => $ssh] as $door => $leg) {
+            $this->assertSame([[
+                'method' => 'POST',
+                'path' => '/api/v3/tasks/42/comments.json',
+                'body' => ['content' => "FROM: me\n\n{$stored}"],
+            ]], $this->writesIn($leg['requests']), "{$door} door");
+        }
+    }
+
     /**
      * ⛔ THE DIVERGENCES THIS CHANGE DELIBERATELY DOES NOT CLOSE, PINNED SO THE DISCLOSURE
      * IS FALSIFIABLE RATHER THAN A SENTENCE IN A CHANGELOG (DL-367 § Bounds).

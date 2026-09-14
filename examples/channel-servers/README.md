@@ -37,7 +37,14 @@ The server is two files: the entry point `agent-webhook-bridge-channel.mjs` and 
 
 ### Staying in sync with the canonical reference
 
-If you **copied** this directory (rather than symlinked it), it's a snapshot that can drift when the bridge updates these files (e.g. a lockfile re-pin or an `npm ci`/Node-version change). The **`version` in `package.json` is the drift signal**: it's bumped on every change to the shipped channel-server files (a CI gate enforces it), so compare your copy's version against the bridge's `examples/channel-servers/package.json` at the release you're on. If the canonical is higher, re-sync (re-copy the directory and `npm ci`).
+If you **copied** this directory (rather than symlinked it), it's a snapshot that can drift when the bridge updates these files (e.g. a lockfile re-pin or an `npm ci`/Node-version change). The **`version` in `package.json` is the drift signal**: it's bumped on every change to the shipped channel-server files (a CI gate enforces it).
+
+⚠ **Comparing that version needs a bridge checkout**, and this README travels inside snapshots that often have none. If this host HAS a checkout of the bridge repository, compare your copy's version against that checkout's `examples/channel-servers/package.json` at the release you're on, and if the canonical is higher, re-sync (re-copy the directory from the checkout at that release and `npm ci`). **If this host has NO checkout, it cannot answer "am I stale?" locally**: your own `package.json` says what you run, and the value it should be lives in the tree you do not have. Two things still work from here:
+
+- **The bridge can answer it for you.** This server sends its own version on every board-tools call, and the bridge operator's `php artisan bridge:check` prints it beside the version the bridge bundles, warning when yours is behind (DL-364). Make one board-tools call, then ask the operator to read that line. ⚠ A snapshot too old to send a version reads *not reported*, which is the absence of a verdict, not a clean one.
+- **Re-syncing still needs the pinned tree**: a checkout on this host, or a copy of the directory from a host that has one at the release you're on.
+
+`bin/check-channel-snapshot.py` (below) answers a different question, *will it launch*, and says nothing about staleness.
 
 A **symlink** never drifts — but it still needs a **dangling** check. It *trades* the drift failure mode for the dangling one rather than removing a failure mode: under a copied snapshot, relocating or renaming the bridge checkout is harmless (the copy is self-contained); under a symlink it is **fatal and silent** — the link goes dangling, the MCP server fails to launch at the next session start, and nothing tells you until live-wake simply never comes back. A **relative** symlink (one whose target is expressed relative to the link) narrows the window — it survives moving the link and its target together — but does not close it: it still breaks when the target alone moves.
 
@@ -273,7 +280,9 @@ you filed or that is assigned to you, instead of minting a second card to say th
 one is wrong) and
 `board_take_card` (DL-372: claim a card for YOURSELF — the assignee is resolved from
 your bridge identity, never from the payload, so there is no argument for a user id
-and a seat can claim only for itself) — and acts as a
+and a seat can claim only for itself) and `board_comment_card` (DL-381: append a comment to
+a live card on your own board; the bridge writes the `FROM: <seat>` attribution line, and
+nothing is edited or deleted) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
 forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
 `Authorization: Bearer <token>` and returns the bridge's response verbatim.

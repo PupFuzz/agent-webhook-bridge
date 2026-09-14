@@ -366,8 +366,9 @@ final class BoardCreateCardTool implements Tool
 
     /**
      * A 4xx the BOARD answered on one of the two idempotency READS, mapped to a named
-     * refusal; anything else (5xx, a timeout) is re-thrown for the dispatcher's retryable
-     * 502 (card#8486, the mapping DL-326 built for `board_correct_card`).
+     * refusal (card#8486).
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
      *
      * ⭐ THE READS ARE WHERE A ROTATED TOKEN SURFACES ON THIS TOOL, and until this they
      * surfaced as a 502 the seat retried: kanban's v3 API is `auth:sanctum`, so a 401 is

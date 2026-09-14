@@ -30,7 +30,7 @@ final class BoardToolsRegistry
     public function __construct()
     {
         $this->tools = [];
-        foreach ([new BoardMyCardsTool, new BoardCreateCardTool, new BoardCorrectCardTool, new BoardTakeCardTool] as $tool) {
+        foreach ([new BoardMyCardsTool, new BoardCreateCardTool, new BoardCorrectCardTool, new BoardTakeCardTool, new BoardCommentCardTool] as $tool) {
             $this->tools[$tool->name()] = $tool;
         }
     }

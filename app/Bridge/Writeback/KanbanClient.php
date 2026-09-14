@@ -114,9 +114,9 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        // No DL-026 line here, deliberately: an unreadable body yields no rows, and BOTH callers
-        // (MappedBoardGuard's board-scope resolution, BoardCorrectCardTool's ownership lookup)
-        // already refuse LOUDLY on a result that does not name this card — the same fact,
+        // No DL-026 line here, deliberately: an unreadable body yields no rows, and every caller
+        // (MappedBoardGuard's board-scope resolution, and BoardScopedRow::lookUp for the tools door)
+        // already refuses LOUDLY on a result that does not name this card — the same fact,
         // reported where the operator can act on it.
         return self::rowList($data) ?? [];
     }
@@ -184,7 +184,8 @@ final class KanbanClient
 
     /**
      * Post a comment on a card — the card-VISIBLE record channel (kanban
-     * `POST /tasks/{id}/comments.json`, strict-keyed on `content`, max 65535 chars).
+     * `POST /tasks/{id}/comments.json`, strict-keyed on `content`, capped at
+     * {@see KanbanFieldLimits::COMMENT_MAX}).
      * The one write verb here that adds a ROW instead of setting a field: it records
      * something about a card without touching a value any correlation reader keys on,
      * which is what makes it usable to report a write the writeback deliberately did
@@ -943,7 +944,7 @@ final class KanbanClient
      * `readBoard` stays deliberately pure (its own docblock owns why), so the signal is the
      * caller's — {@see correlationCards} carries it on the correlation path (DL-028), and the
      * public twin {@see readBoardCards} passes the read out unlogged for its callers to
-     * report; and both of `cardRowsOnBoard`'s callers refuse loudly on a result that does not
+     * report; and every caller of `cardRowsOnBoard` refuses loudly on a result that does not
      * name the card.
      *
      * @return list<array<string, mixed>>|null
