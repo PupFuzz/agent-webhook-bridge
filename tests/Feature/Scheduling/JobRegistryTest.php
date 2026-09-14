@@ -8,6 +8,7 @@ use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Scheduling\JobSpecException;
 use App\Bridge\Standup\StandupGate;
+use App\Bridge\Support\HandlerRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Fixtures\RecordingJobHandler;
 use Tests\TestCase;
@@ -26,7 +27,7 @@ class JobRegistryTest extends TestCase
 
     private function registry(array $armed = []): JobRegistry
     {
-        $handlers = new JobHandlerRegistry($armed, $this->app->make(StandupGate::class));
+        $handlers = new JobHandlerRegistry($armed, $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         $handlers->register(new RecordingJobHandler);
         $handlers->register(new RecordingJobHandler('mutating_job', JobCapability::MutatesState));
 
