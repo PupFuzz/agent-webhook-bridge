@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "doc": "docs/seat-tools.md",
+  "tools": [
+    "bin/check-channel-snapshot.py"
+  ]
+}
