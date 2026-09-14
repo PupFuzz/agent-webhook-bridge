@@ -57,11 +57,13 @@ php artisan bridge:sign --scope=<scope>  # sign a raw body (on stdin) with this 
                                          # never becomes an argv token (DL-322); used by the deployment smoke test
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
-python3 bin/check-channel-snapshot.py <deployed channel-server dir>
+check-channel-snapshot.py <deployed channel-server dir>
                                          # will it LAUNCH at the next session start? (DL-237)
                                          # 0 = launch OK · 1 = launch FAILED (node's stderr is the
-                                         # diagnosis) · 2 = could not check. stdlib-only + reference-free,
-                                         # so copy the one file to a seat with no bridge checkout.
+                                         # diagnosis) · 2 = could not check. A declared SEAT TOOL: it runs
+                                         # with no bridge checkout, and reaches the seat's PATH through
+                                         # bin/seat-pack.py + docs/seat-tools.md (DL-385). From a checkout,
+                                         # `python3 bin/check-channel-snapshot.py` is the same program.
                                          # `bridge:check` deliberately never executes node: it runs as a
                                          # different OS user, so a launch from there answers for the wrong one.
 ```
@@ -95,6 +97,7 @@ python3 bin/check-channel-snapshot.py <deployed channel-server dir>
 | [`docs/multi-agent.md`](docs/multi-agent.md) | Running parallel agents on the bridge | Onboarding a second agent |
 | [`docs/periodic-jobs.md`](docs/periodic-jobs.md) | **The periodic-job registry (DL-325): why a periodic job is the LAST resort here and what to try first, the two ingresses (after-response event gate + the opt-in ONE-line `bridge:tick`), the handler contract and its capability gate, the runtime insert/remove API, the per-instance justification (a required documentation slot, NOT a gate), and the tick's death-is-the-alarm freshness states — including the warn for a declared horizon nothing ever asserts** | Before adding ANY periodic work to the bridge, or when adopting/auditing the tick |
 | [`docs/multi-host.md`](docs/multi-host.md) | Running agents across multiple hosts | Scaling beyond one box |
+| [`docs/seat-tools.md`](docs/seat-tools.md) | Bridge programs that run on an agent's seat with no checkout (DL-385): the `seat-tools.json` declaration, staging with `bin/seat-pack.py` (copy vs link shape), the link-only PATH install and what it does not support, the trust boundary, what the PM and the impl seat can each see, and the release floor | Before telling a seat to run a bridge program, adding a seat tool, or staging a PM's `OUTBOUND/<agent>/` pack |
 | [`docs/consumer-guide.md`](docs/consumer-guide.md) | Agent-author's guide to consuming staged intents (inbox shape, hook wiring) | Building the agent that reads the bridge |
 | [`docs/writeback.md`](docs/writeback.md) | The GitHub-PR → card-move writeback (the only writeback): `writeback.json`, the least-privilege token, the correlation classifier, the repo-webhook setup | Setting up / operating the card-move writeback (FR #2016) |
 | [`docs/board-tools.md`](docs/board-tools.md) | The two-way board tools (DL-217, DL-326, DL-339, DL-372): `board_my_cards` / `board_create_card` / `board_correct_card` / `board_take_card` (the seat's own CLAIM — assignee resolved from the agent registry, never from the payload), what each answers when the BOARD refuses, the loopback-gated `POST /agent-tools/call`, per-agent `board_tools` config + bearer, the Node tools proxy | Enabling / operating the agent-initiated board window |

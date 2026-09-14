@@ -12,7 +12,7 @@ namespace App\Bridge\Support;
  *
  * WHAT IT DOES NOT DO: it never executes node, so it never answers "will this
  * LAUNCH?" — only "is this deployment there, and is it behind the checkout?".
- * Loadability is measured by `bin/check-channel-snapshot.py`, run ON THE SEAT as the
+ * Loadability is measured by the seat tool `check-channel-snapshot.py`, run ON THE SEAT as the
  * OS user whose session launches the server (DL-237). That is a boundary, not a gap
  * in coverage: the bridge commonly runs as a different OS user than the agent, so a
  * launch from HERE would certify the entry loads for the BRIDGE's user — a different
@@ -78,8 +78,13 @@ final class ChannelSnapshotProbe
      * (DL-237). Named in the one disclosure {@see self::probe()} emits per PROBE CALL that
      * reached the legs — on every branch, not just where the retired completeness leg used
      * to answer it.
+     *
+     * Its name ON A SEAT'S PATH, never a checkout-relative path: the seat this line sends
+     * the operator to commonly has no bridge checkout, so `bin/…` resolves to nothing there
+     * (DL-385). It is a declared seat tool in `seat-tools.json`, and the probe deliberately
+     * does not read that file — it stays inert. The join is a test's, not this class's.
      */
-    private const LAUNCH_ASSERT = 'bin/check-channel-snapshot.py';
+    private const LAUNCH_ASSERT = 'check-channel-snapshot.py';
 
     /**
      * @param  ?string  $serverPath  the agent's resolved `channel.server_path` (already
@@ -217,7 +222,7 @@ final class ChannelSnapshotProbe
     {
         $echo = UntrustedText::forOperator($deployedDir);
 
-        return Finding::unvalidated("channel server snapshot at {$echo} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$echo} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node");
+        return Finding::unvalidated("channel server snapshot at {$echo} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$echo} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node. Not on that seat's PATH? It is a bridge seat tool: stage it from a bridge checkout with bin/seat-pack.py and install it as docs/seat-tools.md describes");
     }
 
     /**
