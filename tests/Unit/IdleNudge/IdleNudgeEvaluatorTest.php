@@ -344,6 +344,13 @@ class IdleNudgeEvaluatorTest extends TestCase
         $this->assertSame('push_time_unreadable', $this->only($this->evaluate([$this->seat()], pushTimes: fn (string $a, array $ids): array => throw new PushTimeUnreadable('down')))->code);
     }
 
+    public function test_a_line_that_was_never_pushed_is_aged_from_ts(): void
+    {
+        // `false`: the dispatch never completed, so no push reached the line (Decision 1).
+        $this->assertSame('nudge', $this->only($this->evaluate([$this->seat()], pushTimes: fn (string $a, array $ids): array => array_fill_keys($ids, false)))->code);
+        $this->assertSame('nothing_pending', $this->only($this->evaluate([$this->seat()], lines: [$this->line('fresh', 60)], pushTimes: fn (string $a, array $ids): array => array_fill_keys($ids, false)))->code);
+    }
+
     public function test_the_push_time_is_asked_only_for_lines_that_already_qualify_on_ts(): void
     {
         $asked = null;

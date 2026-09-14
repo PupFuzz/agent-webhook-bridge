@@ -61,9 +61,10 @@ final class IdleNudgeEvaluator
      * @param  array<string, bool>  $agents  declared agent name => its `channel.route_intents`
      * @param  array<string, int>  $nudged  agent => the `idle_since` (epoch ms) it was last nudged for
      * @param  callable(string): list<array<mixed>>  $unseenLines  throws {@see InboxUnreadable}
-     * @param  callable(string, list<string>): array<string, float|null>  $pushTimes  agent + line ids => each
-     *                                                                                line's last push time (epoch s, DB clock); null
-     *                                                                                or absent = unreadable; throws {@see PushTimeUnreadable}
+     * @param  callable(string, list<string>): array<string, float|false|null>  $pushTimes  agent + line ids => each
+     *                                                                                      line's last push time (epoch s, DB clock); false =
+     *                                                                                      never pushed (age from ts); null or absent =
+     *                                                                                      unreadable; throws {@see PushTimeUnreadable}
      */
     public function evaluate(
         FleetSnapshot $snapshot,
@@ -125,7 +126,7 @@ final class IdleNudgeEvaluator
      * @param  list<array<mixed>>  $declared
      * @param  array<string, int>  $nudged
      * @param  callable(string): list<array<mixed>>  $unseenLines
-     * @param  callable(string, list<string>): array<string, float|null>  $pushTimes
+     * @param  callable(string, list<string>): array<string, float|false|null>  $pushTimes
      */
     private function agent(
         string $agent,
@@ -248,8 +249,9 @@ final class IdleNudgeEvaluator
         // ⛔ `ts` IS WHEN THE EVENT WAS FIRST RECEIVED, NOT WHEN THE LINE WAS LAST PUSHED. A
         // redelivery or `bridge:replay` re-stages the line with the original `ts` and pushes it
         // again NOW, so (b) is re-judged from the later of `ts` and the dispatch's DB-stamped
-        // push time. A line whose push time cannot be read makes the whole agent unmeasured:
-        // treating it as old would nudge inside a fresh wake, and dropping it would hide work.
+        // push time. A line whose dispatch never COMPLETED was never pushed and keeps `ts`. A line
+        // whose push time cannot be read makes the whole agent unmeasured: treating it as old
+        // would nudge inside a fresh wake, and dropping it would hide work.
         try {
             $pushedAt = $pushTimes($agent, array_map(fn (array $line): string => (string) ($line['id'] ?? ''), $candidates));
         } catch (PushTimeUnreadable) {
@@ -264,7 +266,9 @@ final class IdleNudgeEvaluator
             if ($pushed === null) {
                 return $verdict('push_time_unreadable');
             }
-            if (! $oldEnough($dbNowS - max($ts, $pushed))) {
+            // `false`: the dispatch never completed, so no push reached this line. Decision 1
+            // nudges on it, aged from its receipt.
+            if (! $oldEnough($dbNowS - ($pushed === false ? $ts : max($ts, $pushed)))) {
                 continue;
             }
 

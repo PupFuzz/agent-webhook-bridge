@@ -369,8 +369,10 @@ inbox-only, and nudging on them would turn that choice into a delayed wake. Pend
 unseen inbox line staged after the seat's current `idle_since` and last PUSHED longer ago than the
 wake grace plus the seat's own fold lag. The push time is `agent_dispatches.push_attempted_at`,
 stamped by the receiver on the database's clock, because a redelivered or replayed line keeps its
-original `ts` while being pushed again now. ⚠ **This needs `php artisan migrate`**; a line with no
-readable push time makes that agent unmeasured. The nudge is `channel_push` only (kind
+original `ts` while being pushed again now; a line whose dispatch never completed was never pushed and
+keeps its `ts`. ⚠ **This needs `php artisan migrate`**, and the stamp is written only while the nudge is
+enabled: a completed delivery with no stamp (from before either) makes that agent unmeasured until
+the seat's idle period ends. The nudge is `channel_push` only (kind
 `seat_idle_nudge`, [`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*) and is sent
 at most once per `(agent, idle_since)`. DL-380 lists what that definition of pending work misses —
 among them a per-agent → shared inbox layout flip, and an old event replayed at an already-idle seat.

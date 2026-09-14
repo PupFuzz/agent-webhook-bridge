@@ -8,6 +8,7 @@ use App\Bridge\Contracts\Classifier;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\IdleNudge\IdleNudgeConfig;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ClassifierResolver;
@@ -329,7 +330,7 @@ final class DispatchService
                 }
             }
 
-            if ($bestEffort !== []) {
+            if ($bestEffort !== [] && IdleNudgeConfig::enabled()) {
                 $this->stampPushAttempt($dispatch);
             }
 
@@ -490,6 +491,11 @@ final class DispatchService
      * could not be written leaves the column as it was: NULL on a first delivery, which the
      * nudge reads as unmeasured; an EARLIER stamp on a redelivery, which re-opens the false-nudge
      * window for that one delivery (DL-380 names it).
+     *
+     * ⚑ WRITTEN ONLY WHILE THE IDLE NUDGE IS ENABLED. The column's one reader is the nudge, so an
+     * install that never asked for it pays no extra UPDATE per delivery and logs no warning when
+     * it has not migrated. Deliveries made while it was off read as unmeasured once it is turned
+     * on, until their idle period ends.
      */
     private function stampPushAttempt(AgentDispatch $dispatch): void
     {

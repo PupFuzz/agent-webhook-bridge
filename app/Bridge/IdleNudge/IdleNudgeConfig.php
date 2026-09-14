@@ -38,9 +38,18 @@ final class IdleNudgeConfig
         public readonly ?string $problem,
     ) {}
 
+    /**
+     * The ONE enabled predicate, shared by the job and by the receiver's push-time stamp — so the
+     * receiver pays for the stamp exactly on installs that asked for the nudge.
+     */
+    public static function enabled(): bool
+    {
+        return (bool) config('bridge.idle_nudge.enabled');
+    }
+
     public static function fromConfig(): self
     {
-        $enabled = (bool) config('bridge.idle_nudge.enabled');
+        $enabled = self::enabled();
         $install = self::nonEmptyString(config('bridge.idle_nudge.install'));
         $rawToken = self::nonEmptyString(config('bridge.idle_nudge.token_path'));
         $timeout = self::positiveInt(config('bridge.idle_nudge.timeout'));

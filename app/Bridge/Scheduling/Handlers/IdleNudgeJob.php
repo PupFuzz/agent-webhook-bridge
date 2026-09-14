@@ -186,14 +186,18 @@ final class IdleNudgeJob implements JobHandler
     }
 
     /**
-     * Each line's last push time, epoch seconds on the DB clock: `agent_dispatches.push_attempted_at`
-     * of the dispatch that staged it, joined through the delivery id the line id embeds
-     * (`IntentLog`: `<delivery_id>:<agent>:<index>`). A line whose id does not parse, whose
-     * dispatch row is gone, or whose stamp is NULL (written before DL-380's migration) maps to
-     * null — unreadable, never old.
+     * Each line's last push time, from the dispatch that staged it, joined through the delivery id
+     * the line id embeds (`IntentLog`: `<delivery_id>:<agent>:<index>`). Three answers:
+     *  - a float — `agent_dispatches.push_attempted_at`, epoch seconds on the DB clock;
+     *  - `false` — no stamp AND `processed_at` is NULL: the dispatch never completed (a durable
+     *    handler threw after staging, or staging failed partway), so no push reached the line and
+     *    it is aged from its own `ts`;
+     *  - `null` — unreadable: the id does not parse, the dispatch row is gone, or the dispatch
+     *    COMPLETED with no stamp (a row from before DL-380's migration, a stamp write that failed,
+     *    or a delivery while the nudge was disabled).
      *
      * @param  list<string>  $lineIds
-     * @return array<string, float|null>
+     * @return array<string, float|false|null>
      *
      * @throws PushTimeUnreadable
      */
@@ -215,11 +219,13 @@ final class IdleNudgeJob implements JobHandler
                     ->join('webhook_events', 'webhook_events.id', '=', 'agent_dispatches.webhook_event_id')
                     ->where('agent_dispatches.agent_name', $agent)
                     ->whereIn('webhook_events.delivery_id', $chunk)
-                    ->get(['webhook_events.delivery_id', 'agent_dispatches.push_attempted_at']);
+                    ->get(['webhook_events.delivery_id', 'agent_dispatches.push_attempted_at', 'agent_dispatches.processed_at']);
                 foreach ($rows as $row) {
-                    $stamps[(string) $row->delivery_id] = is_string($row->push_attempted_at) && $row->push_attempted_at !== ''
-                        ? (float) CarbonImmutable::parse($row->push_attempted_at, 'UTC')->format('U.u')
-                        : null;
+                    $stamps[(string) $row->delivery_id] = match (true) {
+                        is_string($row->push_attempted_at) && $row->push_attempted_at !== '' => (float) CarbonImmutable::parse($row->push_attempted_at, 'UTC')->format('U.u'),
+                        $row->processed_at === null => false,
+                        default => null,
+                    };
                 }
             }
         } catch (Throwable $e) {
@@ -228,7 +234,7 @@ final class IdleNudgeJob implements JobHandler
 
         $out = [];
         foreach ($deliveryOf as $id => $delivery) {
-            $out[$id] = $delivery === null ? null : ($stamps[$delivery] ?? null);
+            $out[$id] = $delivery === null || ! array_key_exists($delivery, $stamps) ? null : $stamps[$delivery];
         }
 
         return $out;
