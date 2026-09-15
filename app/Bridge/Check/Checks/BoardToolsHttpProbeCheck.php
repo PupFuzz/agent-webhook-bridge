@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\OptInCheck;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolsScopeHeader;
@@ -116,7 +117,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
                 continue;
             } catch (Throwable $e) {
-                yield Finding::fail("board_tools probe: agent {$name}: bearer not readable — {$e->getMessage()} (chmod 600); cannot certify this agent.");
+                yield Finding::fail("board_tools probe: agent {$name}: bearer not readable — ".RedactedErrorText::of($e).' (chmod 600); cannot certify this agent.');
 
                 continue;
             }
@@ -148,7 +149,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 // failure against it puts in the string is NOT established locally. The two
                 // bearer-read arms above are the contrast and stay UNESCAPED — their
                 // subject is this operator's own token file, which this install vouches for.
-                yield Finding::fail("board_tools probe: agent {$name}: could NOT connect to {$endpoint} (".UntrustedText::forOperator($e->getMessage()).") — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
+                yield Finding::fail("board_tools probe: agent {$name}: could NOT connect to {$endpoint} (".UntrustedText::forOperator(RedactedErrorText::of($e)).") — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
 
                 continue;
             }

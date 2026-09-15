@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -105,7 +106,7 @@ final class ClientHalfLedger
         } catch (Throwable $e) {
             Log::warning(
                 'agent-tools: the successful call could not be recorded — bridge:check will report this seat\'s client half as UNREPORTED until a later call lands',
-                ['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'client_version' => $clientVersion, 'error' => $e->getMessage()],
+                ['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'client_version' => $clientVersion, 'error' => RedactedErrorText::of($e)],
             );
         }
     }

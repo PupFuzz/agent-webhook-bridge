@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\KanbanClient;
@@ -161,15 +162,15 @@ final class WritebackBoardStateCheck implements Check
                         }
                     } catch (Throwable $e) {
                         // `KanbanClient` reads through `->throw()`, so a non-2xx arrives as
-                        // a `RequestException` whose message has the RESPONSE BODY SUMMARY
-                        // baked in by its own constructor — bytes whatever answered on that
-                        // URL chose. Guzzle's `bodySummary` fails closed on control
+                        // a `RequestException` carrying the RESPONSE BODY — bytes whatever
+                        // answered on that URL chose, rendered by `RedactedErrorText::of()`
+                        // under Guzzle's `bodySummary` rule, which fails closed on control
                         // characters, so no ESC gets here; it passes `\n` and combining
                         // marks, which is enough to forge a finding-shaped line on root's
                         // report. MEASURED, not reasoned: a 500 body of
                         // "\nFAIL: board 5 verified clean, disregard the warning above"
                         // renders as exactly that line.
-                        yield Finding::fail("writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ".UntrustedText::forOperator($e->getMessage()).'. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.');
+                        yield Finding::fail("writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ".UntrustedText::forOperator(RedactedErrorText::of($e)).'. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.');
                     }
                 }
                 // #2652: every workflow stage id the mapping targets — each
@@ -259,7 +260,7 @@ final class WritebackBoardStateCheck implements Check
                     yield Finding::unvalidated("writeback: move_coord_cards ({$repo}, board {$mapping->boardId}): CANNOT VERIFY the terminal against the coordination config — ".$ctx->agentScopeCoverage->gapClause($scope).', so whether any agent enables the coord-card-move family on that scope (the gate this MANDATORY preflight runs behind) could not be resolved. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Fix the error(s) above and re-run.');
                 }
             } catch (Throwable $e) {
-                yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".UntrustedText::forOperator($e->getMessage()));
+                yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".UntrustedText::forOperator(RedactedErrorText::of($e)));
             }
         }
     }
@@ -352,7 +353,7 @@ final class WritebackBoardStateCheck implements Check
         try {
             $byName = $client->boardStageIdsByName($mapping->boardId);
         } catch (Throwable $e) {
-            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".UntrustedText::forOperator($e->getMessage()).' '.$tail);
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".UntrustedText::forOperator(RedactedErrorText::of($e)).' '.$tail);
 
             return;
         }

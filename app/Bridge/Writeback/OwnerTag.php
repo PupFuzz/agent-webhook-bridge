@@ -2,8 +2,8 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
-use App\Bridge\Support\SecretScrubber;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
@@ -126,7 +126,7 @@ final class OwnerTag
             $detail = RefusalContext::from($e);
         } else {
             $reason = self::REASON_TRANSIENT;
-            $detail = $e instanceof RequestException ? RefusalContext::from($e) : ['error' => SecretScrubber::text($e->getMessage())];
+            $detail = $e instanceof RequestException ? RefusalContext::from($e) : ['error' => RedactedErrorText::of($e)];
         }
 
         $alerts->warnAndNotify(

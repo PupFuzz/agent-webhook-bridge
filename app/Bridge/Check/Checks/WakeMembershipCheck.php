@@ -7,6 +7,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Throwable;
 
 /**
@@ -64,7 +65,7 @@ final class WakeMembershipCheck implements PerAgentCheck
                 yield Finding::warn("agent {$name}: classifier.config.wake_membership = [".implode(', ', $membership)."] is set explicitly and omits comment_to — a counterparty's comment addressed TO you on a thread you neither opened nor were labelled on will NOT live-wake you (the common post-a-reply-and-wait flow). comment_to is now in the fleet default; add it to your explicit list to catch directed replies, or leave it off to keep them dark deliberately.");
             }
         } catch (Throwable $e) {
-            yield Finding::fail("agent {$name}: classifier.config.wake_membership — ".$e->getMessage());
+            yield Finding::fail("agent {$name}: classifier.config.wake_membership — ".RedactedErrorText::of($e));
         }
 
         yield Silence::because('this agent narrowed wake_membership by hand and its list still carries comment_to, so no directed reply goes dark');

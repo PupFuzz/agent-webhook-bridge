@@ -16,6 +16,7 @@ use App\Bridge\Support\DbClock;
 use App\Bridge\Support\EchoSuppression;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\InstallGuard;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Models\AgentDispatch;
@@ -322,11 +323,10 @@ final class DispatchService
                     }
                     $handler->handle($target, $agent);
                 } catch (Throwable $e) {
-                    $note = self::exceptionNote($e);
+                    $note = RedactedErrorText::note($e);
                     Log::warning('bridge dispatch: handler failed', [
                         'agent' => $agent->agentName, 'handler' => $target->handler,
-                        'error' => $note, 'exception' => $e,
-                    ]);
+                    ] + RedactedErrorText::logContext($e));
                 }
             }
 
@@ -578,24 +578,14 @@ final class DispatchService
 
     private function recordError(AgentDispatch $dispatch, Throwable $e): void
     {
-        $message = self::exceptionNote($e);
+        $message = RedactedErrorText::note($e);
         // reason => null clears a prior pass's drop reason on a --force replay
         // transition; processed_at is deliberately left untouched (null) so the
         // row stays replayable.
         $dispatch->update(['error_message' => $message, 'outcome' => AgentDispatch::OUTCOME_ERRORED, 'reason' => null]);
         Log::warning('bridge dispatch: classifier failed', [
-            'agent' => $dispatch->agent_name, 'error' => $message, 'exception' => $e,
-        ]);
-    }
-
-    /**
-     * Format an exception for the stored, operator-readable `error_message`:
-     * class + message ONLY, never `(string) $e` (the full trace + absolute server
-     * paths — that stays in the log, not the DB field).
-     */
-    private static function exceptionNote(Throwable $e): string
-    {
-        return $e::class.': '.$e->getMessage();
+            'agent' => $dispatch->agent_name,
+        ] + RedactedErrorText::logContext($e));
     }
 
     /**

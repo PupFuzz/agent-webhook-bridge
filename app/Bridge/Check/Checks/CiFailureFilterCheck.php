@@ -7,6 +7,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Throwable;
 
 /**
@@ -54,7 +55,7 @@ final class CiFailureFilterCheck implements PerAgentCheck
                 yield Finding::warn("agent {$name}: classifier.config.ci_failure_workflow_patterns = [".implode(', ', $failureFilter).'] — the impl-ci-wake CI-FAILURE wake fires ONLY for workflow_run names containing one of these (case-insensitive substring); a failure of any OTHER workflow on a subscribed scope will NOT wake. Verify these match your intended workflow names — a typo or a renamed workflow silences every failure wake.');
             }
         } catch (Throwable $e) {
-            yield Finding::fail("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".$e->getMessage());
+            yield Finding::fail("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".RedactedErrorText::of($e));
         }
 
         yield Silence::because('this agent sets no ci_failure_workflow_patterns, or does not run impl-ci-wake at all — there is no filter narrowing its CI-failure wakes, so nothing to put in front of the operator');

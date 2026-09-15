@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 use Tests\Fixtures\RecordingJobHandler;
+use Tests\Support\StraddlingRequestException;
 use Tests\TestCase;
 
 /**
@@ -177,5 +178,37 @@ class HandlerTextRedactionTest extends TestCase
         $this->assertStringNotContainsString(self::CANARY, $output);
         $this->assertStringContainsString('LAST SCHEDULER PASS FAILED', $output);
         $this->assertStringContainsString('board.example/api/v3', $output);
+    }
+
+    /**
+     * ⛔ A `RequestException`'s message is ALREADY CUT at `RequestException::$truncateAt` when a
+     * handler throws it (card#9486). A cut inside an echoed userinfo leaves a password with no
+     * `@` behind it, which no reader of the finished string can recognise, so the stored text is
+     * rebuilt from the FULL response body, redacted, and only then bounded.
+     */
+    public function test_a_thrown_request_exception_is_redacted_before_it_is_bounded(): void
+    {
+        $this->handler->throw = StraddlingRequestException::make();
+        $this->insert();
+
+        (new JobScheduler($this->handlers))->pass(JobPassSource::Manual);
+
+        $stored = (string) ScheduledJob::query()->where('name', 'boundary')->value('last_error');
+
+        $this->assertStringNotContainsString(StraddlingRequestException::STEM, $stored);
+        $this->assertStringContainsString('HTTP request returned status code 422', $stored);
+        $this->assertStringContainsString('***@bridge.example.com', $stored);
+    }
+
+    public function test_a_request_exception_fault_marker_is_redacted_before_it_is_bounded(): void
+    {
+        FaultMarker::record(JobScheduler::ERROR_KEY, StraddlingRequestException::make(), 60, 'scheduled job pass failed');
+
+        Artisan::call('bridge:check');
+        $output = Artisan::output();
+
+        $this->assertStringNotContainsString(StraddlingRequestException::STEM, $output);
+        $this->assertStringContainsString('LAST SCHEDULER PASS FAILED', $output);
+        $this->assertStringContainsString('***@bridge.example.com', $output);
     }
 }

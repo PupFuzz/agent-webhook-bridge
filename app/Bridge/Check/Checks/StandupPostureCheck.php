@@ -9,6 +9,7 @@ use App\Bridge\Standup\StandupConfig;
 use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\FaultMarker;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Throwable;
 
 /**
@@ -95,7 +96,7 @@ final class StandupPostureCheck implements Check
                     .$lastError.'). The push is retried at most once per standup.interval, so a seat whose channel server stays down just stops receiving digests. Check that seat is up; `php artisan bridge:standup --dry-run` builds the digest and pushes nothing. The marker clears itself on the next clean pass.');
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated('standup: could not read the last-failure marker ('.$e->getMessage()
+            yield Finding::unvalidated('standup: could not read the last-failure marker ('.RedactedErrorText::of($e)
                 .') — the cache backend the standup gate depends on may be unreachable, so this run says nothing about whether the last pass succeeded.');
         }
     }

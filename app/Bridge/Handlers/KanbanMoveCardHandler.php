@@ -7,8 +7,8 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
-use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
@@ -768,7 +768,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         } catch (Throwable $e) {
             $this->alerts->warnAndNotify(
                 'kanban_move_card: the card note could not be sent to kanban — the dropped correlation leg stays in this log but is NOT visible on the card',
-                ['card_id' => $cardId, 'marker' => $note->marker, 'error' => SecretScrubber::text($e->getMessage())],
+                ['card_id' => $cardId, 'marker' => $note->marker, 'error' => RedactedErrorText::of($e)],
                 $repo, $outcome, $cardId, 'cardnote_send_failed',
             );
         }
@@ -849,7 +849,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
-                'board' => $mapping->boardId, 'error' => $e->getMessage(),
+                'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),
             ]);
 
             return false;   // fail-open: a diagnostic guard must not break the writeback

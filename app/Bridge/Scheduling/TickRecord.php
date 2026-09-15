@@ -3,6 +3,7 @@
 namespace App\Bridge\Scheduling;
 
 use App\Bridge\Support\FaultMarker;
+use App\Bridge\Support\RedactedErrorText;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
@@ -61,7 +62,7 @@ final class TickRecord
         } catch (Throwable $e) {
             FaultMarker::log('the tick stamp could not be written; this tick will read as unmeasured', [
                 'exception' => $e::class,
-                'error' => $e->getMessage(),
+                'error' => RedactedErrorText::of($e),
             ]);
         }
     }

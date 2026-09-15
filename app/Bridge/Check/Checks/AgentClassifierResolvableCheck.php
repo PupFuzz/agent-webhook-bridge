@@ -7,6 +7,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Throwable;
 
 /**
@@ -66,7 +67,7 @@ final class AgentClassifierResolvableCheck implements PerAgentCheck
             // The narrow form the plan allows to migrate: one resolving call, no
             // derivation. `CheckRunner` deliberately does not catch, so without this
             // the arm would abort `bridge:check` rather than report the agent it names.
-            yield Finding::fail("agent {$name}: ".$e->getMessage());
+            yield Finding::fail("agent {$name}: ".RedactedErrorText::of($e));
 
             return;
         }

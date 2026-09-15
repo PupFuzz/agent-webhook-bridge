@@ -4,6 +4,7 @@ namespace App\Bridge\Scheduling;
 
 use App\Bridge\Support\AfterResponseGate;
 use App\Bridge\Support\GateSkip;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretScrubber;
 use App\Models\ScheduledJob;
 use Illuminate\Support\Facades\Log;
@@ -150,7 +151,7 @@ final class JobScheduler
             // defect.
             $this->gate->recordFault($e, ['source' => $source->value]);
 
-            return JobPassResult::failed($source, 'the pass itself failed: '.$e->getMessage());
+            return JobPassResult::failed($source, 'the pass itself failed: '.RedactedErrorText::of($e));
         }
     }
 
@@ -295,7 +296,7 @@ final class JobScheduler
                 'summary' => $summary,
             ]);
         } catch (Throwable $e) {
-            $error = SecretScrubber::text($e->getMessage());
+            $error = RedactedErrorText::of($e);
             $job->last_status = ScheduledJob::STATUS_FAILED;
             $job->last_summary = mb_substr($e::class, 0, 255);
             $job->last_error = $error;

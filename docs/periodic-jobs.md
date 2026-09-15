@@ -328,6 +328,13 @@ are credential-bearing by position whatever they are named. Scheme, host, port a
 survive, so `push to https://ops.example/hook?k=…` reads back as
 `push to https://ops.example/hook?[REDACTED]`.
 
+If your handler lets a Laravel HTTP client `RequestException` escape (a `->throw()` on a
+non-2xx), what is stored is **not** its message: it is `HTTP request returned status code
+<N>: <body>`, rebuilt from the FULL response body, redacted, and then cut to 500 characters
+(card#9486). Laravel's own message is already cut at `RequestException::$truncateAt`, and a
+credential split by that cut is a fragment no redactor can recognise. A body with control
+characters is omitted and only the status is kept, as Laravel's message did.
+
 ⚠ **Two ways it removes MORE than you might expect, so your message stays diagnostic.** An
 at-sign anywhere in a URL is read as the end of a userinfo, so `https://ops.example/@you/x`
 reads back as `https://***@you/x` — the host and path go with it. And a redaction runs to the

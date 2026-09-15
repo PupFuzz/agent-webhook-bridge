@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SignalAllowlist;
 use Throwable;
 
@@ -65,7 +66,7 @@ final class AgentTreatAsSignalCheck implements Check
             try {
                 SignalAllowlist::default($config->echoSuppression->treatAsSignal, $ctx->registry);
             } catch (Throwable $e) {
-                yield Finding::fail("agent {$config->agentName}: ".$e->getMessage());
+                yield Finding::fail("agent {$config->agentName}: ".RedactedErrorText::of($e));
             }
         }
 

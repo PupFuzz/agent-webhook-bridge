@@ -10,6 +10,7 @@ use App\Bridge\Retention\RetentionService;
 use App\Bridge\Support\AuthoredIntentPush;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -165,7 +166,7 @@ final class StandupService
             // board says WHY it has no number instead of the digest silently shipping
             // without a boards section.
             return array_map(
-                fn (int $boardId): BoardSnapshot => BoardSnapshot::unavailable($boardId, 'no usable kanban writeback client: '.$e->getMessage()),
+                fn (int $boardId): BoardSnapshot => BoardSnapshot::unavailable($boardId, 'no usable kanban writeback client: '.RedactedErrorText::of($e)),
                 array_keys($nowStages),
             );
         }
@@ -199,7 +200,7 @@ final class StandupService
         try {
             $read = $client->readBoardCards($boardId);
         } catch (Throwable $e) {
-            return BoardSnapshot::unavailable($boardId, 'board read failed: '.$e->getMessage());
+            return BoardSnapshot::unavailable($boardId, 'board read failed: '.RedactedErrorText::of($e));
         }
 
         if ($read['truncated']) {

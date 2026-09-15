@@ -7,6 +7,7 @@ use App\Bridge\Scheduling\JobContext;
 use App\Bridge\Scheduling\JobHandler;
 use App\Bridge\Scheduling\JobOutcome;
 use RuntimeException;
+use Throwable;
 
 /**
  * A periodic-job handler the suite can watch, drive and break (card#8425 / DL-325).
@@ -27,6 +28,8 @@ final class RecordingJobHandler implements JobHandler
         public ?string $throwMessage = null,
         /** When set, the OK summary this handler reports instead of the recorded default. */
         public ?string $okSummary = null,
+        /** When set, the handler throws THIS instead — for a failure whose exception type matters. */
+        public ?Throwable $throw = null,
     ) {}
 
     public function name(): string
@@ -43,6 +46,9 @@ final class RecordingJobHandler implements JobHandler
     {
         $this->calls[] = $ctx;
 
+        if ($this->throw !== null) {
+            throw $this->throw;
+        }
         if ($this->throwMessage !== null) {
             throw new RuntimeException($this->throwMessage);
         }
