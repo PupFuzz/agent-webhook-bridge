@@ -4895,6 +4895,34 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
+     * What a clean run of each scenario must answer, and the requests that prove it walked the
+     * branch it is named for. The census below counts whatever a clean run sends, so a fixture
+     * that drifts off its branch would take that branch's requests out of the population and
+     * still pass; this pins the branch instead. Each entry matches `METHOD url` of one request.
+     *
+     * @return array{status: int, sends: list<string>}
+     */
+    private function unansweredCallBranch(string $scenario): array
+    {
+        $search = '\\S+/tasks/search\\.json\\?';
+
+        return match ($scenario) {
+            'board_my_cards' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}.*swimlane_id=4#"]],
+            'board_my_cards with a shared lane and a coord block' => ['status' => 200, 'sends' => ["#^GET {$search}.*swimlane_id=9#", '#^GET \\S+/boards/12/preload\\.json#']],
+            'board_create_card' => ['status' => 200, 'sends' => ["#^GET {$search}.*archived=1#", '#^POST \\S+/tasks\\.json$#', '#^GET \\S+/tasks/77\\.json$#']],
+            'board_create_card idempotency hit' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/7\\.json$#']],
+            'board_create_card raced duplicate collapsed' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks\\.json$#', '#^PATCH \\S+/tasks/9\\.json$#']],
+            'board_correct_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
+            'board_take_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
+            'board_comment_card' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks/42/comments\\.json$#']],
+            'board_correct_card lookup misses into the archive side',
+            'board_take_card lookup misses into the archive side',
+            'board_comment_card lookup misses into the archive side' => ['status' => 422, 'sends' => ["#^GET {$search}.*archived=1#"]],
+            default => $this->fail("no clean-run branch for the scenario `{$scenario}` — name its status and the requests that prove its branch"),
+        };
+    }
+
+    /**
      * ⭐ EVERY UPSTREAM CALL, DERIVED RATHER THAN LISTED. A clean run of the scenario counts the
      * board requests it sends; run N then fails the Nth with a connection failure and answers the
      * rest from the scenario's fixture. A request added to a tool's path later joins the population
@@ -4911,7 +4939,9 @@ class AgentToolsCallTest extends TestCase
         $failAt = 0;
         $sent = 0;
         $failed = null;
-        Http::fake(function ($request) use (&$fake, &$failAt, &$sent, &$failed) {
+        $log = [];
+        Http::fake(function ($request) use (&$fake, &$failAt, &$sent, &$failed, &$log) {
+            $log[] = $request->method().' '.urldecode($request->url());
             if (++$sent === $failAt) {
                 $failed = $request->method().' '.urldecode($request->url());
 
@@ -4921,16 +4951,21 @@ class AgentToolsCallTest extends TestCase
             return $fake($request);
         });
         $tool = $this->unansweredCallScenario($scenario)['tool'];
-        $run = function (int $at) use ($scenario, &$fake, &$failAt, &$sent, &$failed) {
+        $run = function (int $at) use ($scenario, &$fake, &$failAt, &$sent, &$failed, &$log) {
             $s = $this->unansweredCallScenario($scenario);
-            [$fake, $failAt, $sent, $failed] = [$s['fake'], $at, 0, null];
+            [$fake, $failAt, $sent, $failed, $log] = [$s['fake'], $at, 0, null, []];
 
             return $this->callTool(['tool' => $s['tool'], 'args' => $s['args']]);
         };
 
         $answered = $run(0);
         $requests = $sent;
-        $this->assertGreaterThan(0, $requests, "{$scenario} sent no board request, so no call of it can go unanswered");
+        $branch = $this->unansweredCallBranch($scenario);
+        $population = "{$scenario}: the clean run answered {$answered->status()} after sending ".count($log)." request(s):\n  ".implode("\n  ", $log);
+        $this->assertSame($branch['status'], $answered->status(), $population);
+        foreach ($branch['sends'] as $signature) {
+            $this->assertNotEmpty(preg_grep($signature, $log), "{$population}\nnone of which matches {$signature}, so the fixture no longer walks the branch this scenario is named for");
+        }
 
         for ($at = 1; $at <= $requests; $at++) {
             $res = $run($at);

@@ -24,9 +24,10 @@ use Illuminate\Support\Facades\Log;
  *  - {@see ToolRefusalException} → 422 (caller-fixable, deterministic).
  *  - {@see RequestException} (an upstream kanban 4xx/5xx) → 502; the upstream body is not leaked.
  *  - {@see ConnectionException} (the board never answered: a timeout or a failed connection,
- *    on ANY request a tool makes) → the SAME 502 body (DL-387). Laravel's client turns every
- *    transport failure of a synchronous request into this one class, and no tool catches it
- *    except `board_create_card`'s placement read-back, which reports no placement instead
+ *    on ANY request a tool makes) → the SAME 502 body (DL-387). Laravel's client raises this
+ *    class for a transfer failure that carries no response (one carrying a 4xx/5xx response is
+ *    the {@see RequestException} above), and no tool catches it except `board_create_card`'s
+ *    placement read-back, which reports no placement instead
  *    (DL-299). The body names no transport detail — the door's caller is a seat, and the
  *    message carries the board's URL — while the log line carries it redacted.
  *  - {@see ConfigException} from {@see WritebackClientFactory::make} → 503 (install/provisioning fault).
