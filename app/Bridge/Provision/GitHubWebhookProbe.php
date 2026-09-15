@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubRepoProbe;
@@ -92,7 +93,7 @@ final class GitHubWebhookProbe
             // nothing; a wrong non-membership ruling costs a live defect. ⚑ IT WAS THE TWIN
             // THAT WAS RULED AND THIS ONE THAT WAS NOT — the asymmetry, not the arm, was the
             // defect (card#9200 review round).
-            return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.UntrustedText::forOperator($e->getMessage()).')', $source);
+            return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')', $source);
         }
 
         return match ($found) {

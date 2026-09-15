@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Throwable;
 
 /**
@@ -58,7 +59,7 @@ final class InboxSurfacingConfigCheck implements Check
             BridgePaths::validateInboxConfig();
             $message = 'inbox surfacing config: ok (layout='.BridgePaths::inboxLayout().')';
         } catch (Throwable $e) {
-            yield Finding::fail('inbox surfacing config: '.$e->getMessage());
+            yield Finding::fail('inbox surfacing config: '.RedactedErrorText::of($e));
 
             return;
         }

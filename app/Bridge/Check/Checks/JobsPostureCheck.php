@@ -13,6 +13,7 @@ use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Scheduling\TickState;
 use App\Bridge\Support\FaultMarker;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Models\ScheduledJob;
 use Illuminate\Database\Eloquent\Collection;
 use Throwable;
@@ -89,7 +90,7 @@ final class JobsPostureCheck implements Check
         try {
             $jobs = ScheduledJob::query()->orderBy('name')->get();
         } catch (Throwable $e) {
-            yield Finding::unvalidated('jobs: could not read the periodic-job registry ('.$e->getMessage()
+            yield Finding::unvalidated('jobs: could not read the periodic-job registry ('.RedactedErrorText::of($e)
                 .') — an install that has not run `php artisan migrate` since upgrading is the usual cause. Nothing here is evidence either way.');
 
             return;
@@ -272,7 +273,7 @@ final class JobsPostureCheck implements Check
                     .$lastError.'). The marker clears itself on the next clean pass.');
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated('jobs: could not read the last-pass-failure marker ('.$e->getMessage()
+            yield Finding::unvalidated('jobs: could not read the last-pass-failure marker ('.RedactedErrorText::of($e)
                 .') — the cache backend the scheduler depends on may be unreachable.');
         }
     }

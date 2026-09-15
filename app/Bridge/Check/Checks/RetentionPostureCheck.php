@@ -10,6 +10,7 @@ use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\FaultMarker;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 
@@ -121,7 +122,7 @@ final class RetentionPostureCheck implements Check
                     .$lastError.'). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).');
             }
         } catch (Throwable $e) {
-            yield Finding::unvalidated('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');
+            yield Finding::unvalidated('retention: could not read the last-failure marker ('.RedactedErrorText::of($e).') — the cache backend the retention gate depends on may be unreachable.');
         }
     }
 
@@ -143,7 +144,7 @@ final class RetentionPostureCheck implements Check
         try {
             $store = $this->store->measure();
         } catch (Throwable $e) {
-            yield Finding::unvalidated('retention: could NOT measure what the store is holding ('.$e->getMessage().') — so this run says nothing about how much retention is holding back, and the posture line above is evidence about the CONFIG only.');
+            yield Finding::unvalidated('retention: could NOT measure what the store is holding ('.RedactedErrorText::of($e).') — so this run says nothing about how much retention is holding back, and the posture line above is evidence about the CONFIG only.');
 
             return;
         }

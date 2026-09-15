@@ -10,6 +10,7 @@ use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\ReceiverUrl;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\UrlValidator;
 use Illuminate\Routing\Router;
@@ -99,7 +100,7 @@ final class InstallEndpointUrlsCheck implements Check
                     $receiverIsWellFormed = true;
                 }
             } catch (Throwable $e) {
-                yield Finding::fail($e->getMessage());
+                yield Finding::fail(RedactedErrorText::of($e));
             }
         }
 

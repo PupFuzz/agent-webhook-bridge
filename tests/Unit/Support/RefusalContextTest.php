@@ -38,14 +38,17 @@ class RefusalContextTest extends TestCase
      */
     public function test_credential_split_across_the_truncation_boundary_is_still_redacted(): void
     {
-        // The token's closing quote sits PAST the 500-char cutoff. Scrubbing must run
-        // on the full body BEFORE truncation, or the token's head leaks through.
-        $filler = str_repeat('a', 490);
-        $body = '{"note":"'.$filler.'","token":"ghp_LEAKEDTOKEN'.str_repeat('z', 200).'"}';
+        // The token's closing quote sits PAST the 500-char cutoff and its head before it.
+        // Scrubbing must run on the full body BEFORE truncation, or the head leaks through.
+        // ⚠ card#9486: this used a `ghp_` value opening past the cutoff, which left no head to
+        // leak, and the prefix rule redacts a fragment anyway — so bounding first passed too.
+        $filler = str_repeat('a', 470);
+        $body = '{"note":"'.$filler.'","token":"LEAKED9486'.str_repeat('z', 200).'"}';
 
         $ctx = RefusalContext::from($this->exception($body));
 
-        $this->assertStringNotContainsString('ghp_LEAKEDTOKEN', $ctx['body']);
+        $this->assertStringNotContainsString('LEAKED', $ctx['body']);
+        $this->assertStringContainsString('"note":"aaaa', $ctx['body']);
     }
 
     /**

@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\WritebackConfig;
 use Throwable;
@@ -99,9 +100,9 @@ final class WritebackSourceCoverageCheck implements Check
             try {
                 $read = $client->readBoardCards($boardId);
             } catch (Throwable $e) {
-                // The kanban RESPONSE BODY summary rides in on `RequestException`'s
-                // message — see `WritebackBoardStateCheck`.
-                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".UntrustedText::forOperator($e->getMessage()));
+                // The kanban RESPONSE BODY rides in on a `RequestException` — see
+                // `WritebackBoardStateCheck`.
+                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".UntrustedText::forOperator(RedactedErrorText::of($e)));
 
                 continue;
             }

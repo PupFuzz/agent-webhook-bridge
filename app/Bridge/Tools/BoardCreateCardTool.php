@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -287,7 +288,7 @@ final class BoardCreateCardTool implements Tool
             $card = $client->getCard($cardId);
         } catch (\Throwable $e) {
             Log::warning('board_create_card: the card could not be read back, so the response reports NO placement rather than the configured board/lane', [
-                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => $e->getMessage(),
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
             ]);
 
             return $unobserved;
