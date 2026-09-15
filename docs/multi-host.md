@@ -280,7 +280,7 @@ Direct tunnel test (bypasses the bridge):
 # -i prints the response HEAD; a bare curl shows only the body.
 printf 'header = "Authorization: Bearer %s"\n' "$BRIDGE_CHANNEL_TOKEN" |
 curl -i -X POST -H "Content-Type: application/json" \
-  -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
+  -d '{"intent": {"kind": "smoke_test", "subject_id": "manual_curl"}}' \
   --config - http://127.0.0.1:8788/
 ```
 
