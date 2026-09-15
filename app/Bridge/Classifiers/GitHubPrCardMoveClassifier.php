@@ -103,8 +103,9 @@ use Illuminate\Support\Facades\Log;
  * of those outcomes carries {@see PrCorrelationComment::evidence()} for the handler's refusals,
  * and the no-op arms that ARE correlation failures — a DL no card carries with no card token
  * to fall back to, and a token present but unreadable — emit a `github_pr_correlation_comment`
- * target of their own. A PR carrying no token at all, and a merge withheld for want of closure
- * evidence, are not correlation failures and emit none.
+ * target of their own — on a merge, only when the PR carries the closure evidence that token would
+ * have needed had it resolved ({@see claimsClosure()}). A PR carrying no token at all, and a merge
+ * that claims to finish nothing, are not correlation failures and emit none.
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
  * with no parseable card reference, or a repo with no `writeback.json` mapping →
@@ -316,7 +317,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // no card-first token in the PR → move no-op (overlay may also be empty); an UNREADABLE
             // one on a merge or close is a correlation failure and says so on the PR (DL-390)
             return new ClassifyResult(targets: array_merge(
-                $nearMiss ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::TOKEN_UNREADABLE) : [],
+                $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome)
+                    ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::TOKEN_UNREADABLE)
+                    : [],
                 $overlayTargets,
             ));
         }
@@ -390,7 +393,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$this->titleAndHead($payload));
 
                     return new ClassifyResult(targets: array_merge(
-                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->correlationEvidence($payload, $moveOutcome)),
+                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null)
+                            ? $this->correlationEvidence($payload, $moveOutcome)
+                            : []),
                         $overlayTargets,
                     ));
                 }
@@ -465,7 +470,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
                 return new ClassifyResult(targets: array_merge(
-                    $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::DL_UNRESOLVED),
+                    $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null)
+                        ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::DL_UNRESOLVED)
+                        : [],
                     $overlayTargets,
                 ));
             } else {
@@ -757,18 +764,50 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      */
     private function closureFilter(string $title, string $headRef, string $outcome, array $cardIds, ?string $dl): array
     {
-        if (! PrOutcome::requiresClosure($outcome)) {
-            return $cardIds;
-        }
-        if ($dl !== null && ClosureGrammar::closesDl($title, $dl)) {
-            return $cardIds;
-        }
-
         return array_values(array_filter(
             $cardIds,
-            fn (int $id) => ClosureGrammar::closesCard($title, $id)
-                || PrOutcome::mergeClosesCard($outcome, $headRef, $id, $title),
+            fn (int $id) => $this->claimsClosure($title, $headRef, $outcome, $dl, $id),
         ));
+    }
+
+    /**
+     * Does this event carry the closure evidence the gate needs to move what `$dl` resolved to, or
+     * `$cardId`? {@see closureFilter()} asks it per card. The DL-390 report asks it with NO card, for
+     * a DL that resolved to nothing (where no card token parses, so only `Closes DL-NNN` can answer
+     * yes) and for the near-miss refusal's DL, so a merge that claims to finish nothing is never
+     * reported as a correlation failure by a second copy of this gate.
+     */
+    private function claimsClosure(string $title, string $headRef, string $outcome, ?string $dl, ?int $cardId): bool
+    {
+        if (! PrOutcome::requiresClosure($outcome)) {
+            return true;
+        }
+        if ($dl !== null && ClosureGrammar::closesDl($title, $dl)) {
+            return true;
+        }
+
+        return $cardId !== null
+            && (ClosureGrammar::closesCard($title, $cardId) || PrOutcome::mergeClosesCard($outcome, $headRef, $cardId, $title));
+    }
+
+    /**
+     * {@see claimsClosure()} for a token that does not parse (DL-390): the evidence the gate would
+     * have needed had it been spelled so that it parses. The same two routes, with only the token
+     * term read by the near-miss probe instead of the grammar: a closing verb flush against the
+     * unreadable spelling ({@see ClosureGrammar::closesUnreadableToken()}), or an integration merge
+     * whose head ref carries a card-shaped one ({@see PrOutcome::structuralRouteOpen()}, which
+     * {@see PrOutcome::mergeClosesCard()} is composed from). Asked only where no token parses.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function claimsClosureOfUnreadableToken(array $payload, string $outcome): bool
+    {
+        $title = $this->prTitle($payload);
+        $head = $this->prHead($payload);
+
+        return ! PrOutcome::requiresClosure($outcome)
+            || ClosureGrammar::closesUnreadableToken($title)
+            || (PrOutcome::structuralRouteOpen($outcome, $head, $title) && CardTokenGrammar::looksLikeCardToken($head));
     }
 
     /**

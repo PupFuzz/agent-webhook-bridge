@@ -39,6 +39,11 @@ class PrCorrelationCommentTest extends TestCase
 
     private const REPO = 'acme/widget';
 
+    /** A merge title carrying the DL-305 closure evidence a resolved DL-390 would need. */
+    private const CLOSES_DL_390 = 'feat: a thing (closes DL-390)';
+
+    private string|false $origGhToken;
+
     private string $dir;
 
     private GitHubIssueCommentsStub $github;
@@ -81,12 +86,15 @@ class PrCorrelationCommentTest extends TestCase
             'bridge.providers.github.credential_helper' => '',
         ]);
         $this->github = new GitHubIssueCommentsStub;
+        $this->origGhToken = getenv('GH_TOKEN');
+        putenv('GH_TOKEN');
     }
 
     protected function tearDown(): void
     {
         ClassifierResolver::flush();
         File::deleteDirectory($this->dir);
+        putenv($this->origGhToken === false ? 'GH_TOKEN' : 'GH_TOKEN='.$this->origGhToken);
         parent::tearDown();
     }
 
@@ -96,7 +104,7 @@ class PrCorrelationCommentTest extends TestCase
     {
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=dl_unresolved', $body);
@@ -151,7 +159,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->dlCards = ['42' => [5]];
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/DL-42-card_77-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/DL-42-card_77-thing', title: 'feat: a thing (closes DL-42)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=card_token_near_miss', $body);
@@ -226,7 +234,7 @@ class PrCorrelationCommentTest extends TestCase
     public function test_a_redelivered_or_reclosed_failure_does_not_post_a_second_comment(): void
     {
         $this->fakePeers();
-        $pr = $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true);
+        $pr = $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true);
 
         $this->dispatch('d1', $pr);
         $this->dispatch('d2', $pr);   // a new delivery id: replay, or a reopen + close of the same PR
@@ -262,7 +270,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->fakePeers();
         Log::spy();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
         $dispatch = AgentDispatch::query()->sole();
         $this->assertNotNull($dispatch->processed_at);
@@ -277,7 +285,7 @@ class PrCorrelationCommentTest extends TestCase
         // now names a card off the board is still the one `merged` report this PR gets.
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
         $this->dispatch('d2', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
 
         $this->assertStringContainsString('cause=dl_unresolved', $this->onlyComment(702));
@@ -288,7 +296,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->fakePeers();
 
         $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: false));
-        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
         $posts = $this->github->posts(702);
         $this->assertCount(2, $posts);
@@ -301,7 +309,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->fakePeers();
         $this->github->seed(702, 'why did the bridge post <!-- agent-webhook-bridge:pr-correlation outcome=merged --> here?');
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
         $this->assertStringContainsString('cause=dl_unresolved', $this->onlyComment(702));
     }
@@ -312,7 +320,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->fakePeers();
         Log::spy();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
         $this->assertSame([], $this->github->posts(702));
         $this->assertNull(AgentDispatch::query()->sole()->error_message);
@@ -368,7 +376,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->fakePeers();
         $title = "feat: @octocat ![x](https://evil.example/x.png) <!-- cause=none --> `tick` \u{202E}gnp.exe [link](https://evil.example)";
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-@octocat-![x]', title: $title, merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-@octocat-![x]', title: $title.' (closes DL-390)', merged: true));
 
         $body = $this->onlyComment(702);
         foreach (['@', '![', 'evil.example', '<!-- cause=none', "\u{202E}", 'octocat', '[link]'] as $needle) {
@@ -376,7 +384,196 @@ class PrCorrelationCommentTest extends TestCase
         }
     }
 
+    // --- closure evidence: a merge that claims to finish nothing is not a correlation failure -------
+
+    public function test_a_merge_whose_title_only_mentions_a_dl_no_card_carries_posts_nothing(): void
+    {
+        // The review repro: had DL-305 resolved, the DL-305 gate would still have withheld the
+        // move, so a "Board not updated" comment would send its reader to mark a card finished.
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'docs: explain the DL-305 rule', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    public function test_a_merge_whose_title_closes_a_dl_no_card_carries_posts_one_comment(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'docs: explain the rule (closes DL-305)', merged: true));
+
+        $this->assertStringContainsString('cause=dl_unresolved', $this->onlyComment(702));
+    }
+
+    public function test_a_merge_naming_an_unresolved_dl_only_in_its_head_branch_posts_nothing(): void
+    {
+        // The structural route of the gate is a CARD token in the head ref: a resolved DL-390
+        // merged from this branch with this title would move nothing either.
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    public function test_a_merge_whose_title_only_mentions_an_unreadable_card_token_posts_nothing(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'docs: notes on card_77', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    public function test_a_merge_whose_title_closes_an_unreadable_card_token_posts_one_comment(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: a thing (closes card_77)', merged: true));
+
+        $this->assertStringContainsString('cause=token_unreadable', $this->onlyComment(702));
+    }
+
+    public function test_a_release_merge_from_a_branch_naming_an_unreadable_card_token_posts_nothing(): void
+    {
+        // The structural route is an integration merge's; a release merge needs a closing form.
+        $this->fakePeers();
+
+        $release = $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing', merged: true);
+        $release['pull_request']['base']['ref'] = 'main';
+
+        $this->dispatch('d1', $release);
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    public function test_a_near_miss_refusal_on_a_merge_that_claims_no_closure_posts_nothing(): void
+    {
+        // The DL-287 refusal target is built before the closure gate, so it carried the
+        // evidence whether or not the merge claimed to finish anything.
+        $this->dlCards = ['42' => [5]];
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'docs: DL-42 notes (card_77)', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    // --- what an unstamped ref comment may claim ----------------------------------------------------
+
+    public function test_an_unstamped_pr_number_beside_a_stamped_pr_url_names_only_the_dropped_key(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 739)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('the `pr_number` this pull request carries was not recorded on card#5', $body);
+        $this->assertStringNotContainsString('`pr_url`', $body);
+        $this->assertStringNotContainsString('this pull request was not recorded', $body);
+        $this->assertStringContainsString('pr_url', (string) json_encode($this->cards->patchesTo(5)));   // control: the url WAS stamped
+    }
+
+    public function test_a_close_that_drops_only_a_dl_number_does_not_say_the_card_tracks_another_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5);
+        $card['payload'] = ['dl_number' => 'DL-0007'];
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-DL-42-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('the `dl_number` this pull request carries was not recorded on card#5', $body);
+        $this->assertStringNotContainsString('different pull request', $body);
+        $this->assertStringContainsString('kbcard patch --task 5 --dl DL-42', $body);
+    }
+
+    public function test_a_pinned_card_whose_ref_is_not_stamped_posts_one_comment_and_is_not_moved(): void
+    {
+        // The pin holds the STAGE and still stamps (KanbanMoveCardHandler), so a dropped ref on
+        // a pinned card is reported like any other (DL-390 Decision 7).
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 739);
+        $card['block_reason'] = 'held by operator';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+
+        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $this->onlyComment(702));
+        $this->assertSame([], array_filter($this->cards->patchesTo(5), fn (array $p) => isset($p['workflow_stage_id'])));
+    }
+
+    // --- the dedupe read and the per-request memo --------------------------------------------------
+
+    public function test_a_dedupe_read_that_cannot_complete_posts_nothing_and_is_logged(): void
+    {
+        $this->github->seedUnreadable(702);
+        $this->fakePeers();
+        Log::spy();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+
+        $this->assertSame([], $this->github->posts(702));
+        $this->assertNull(AgentDispatch::query()->sole()->error_message);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
+            && ($context['reason'] ?? null) === 'dedupe_read_incomplete')->once();
+    }
+
+    public function test_a_refused_post_is_attempted_once_per_request_across_a_bundled_dls_cards(): void
+    {
+        $this->bundledDlOnCardsTrackingAnotherPr();
+        $this->github = new GitHubIssueCommentsStub(postStatus: 403);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'feat: a thing (closes DL-42)', merged: true));
+
+        $this->assertCount(2, array_filter($this->cards->log, fn (array $e) => $e['method'] === 'PATCH' && isset($e['data']['workflow_stage_id'])));   // control: both cards reported
+        $this->assertCount(1, $this->github->posts(702));
+    }
+
+    public function test_a_refused_dedupe_read_is_attempted_once_per_request_across_a_bundled_dls_cards(): void
+    {
+        $this->bundledDlOnCardsTrackingAnotherPr();
+        $this->github = new GitHubIssueCommentsStub(listStatus: 403);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'feat: a thing (closes DL-42)', merged: true));
+
+        $this->assertCount(1, array_filter($this->github->requests, fn (array $r) => $r['method'] === 'GET'));
+    }
+
+    // --- the posting identity ----------------------------------------------------------------------
+
+    public function test_without_the_receivers_token_file_a_gh_token_in_the_environment_is_not_used(): void
+    {
+        // `bridge:replay` runs these handlers from a shell, where GH_TOKEN and the credential store
+        // are live; the comment must post under the receiver's identity or not at all.
+        File::delete($this->dir.'/github/token');
+        putenv('GH_TOKEN=gh-env-token-for-this-test');
+        $this->fakePeers();
+        Log::spy();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+
+        $this->assertSame([], $this->github->requests);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
+            && ($context['reason'] ?? null) === 'token_unresolved')->once();
+    }
+
     // --- fixtures -----------------------------------------------------------------------------------
+
+    private function bundledDlOnCardsTrackingAnotherPr(): void
+    {
+        $this->dlCards = ['42' => [5, 6]];
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8], 6 => ['id' => 6, 'board_id' => 8]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 739), 6 => $this->card(6, pr: 739)]);
+    }
 
     private function onlyComment(int $number): string
     {

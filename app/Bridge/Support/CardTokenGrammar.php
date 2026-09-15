@@ -166,6 +166,12 @@ final class CardTokenGrammar
         return self::probe()->id($text);
     }
 
+    /** {@see looksLikeCardToken()} for a spelling flush at offset 0 — {@see parseAnchored()}'s near-miss twin. */
+    public static function looksLikeCardTokenAnchored(string $text): bool
+    {
+        return self::probe()->matchesAnchored($text);
+    }
+
     /**
      * The probe's derived corpus for this stem — {@see NearMissProbe::vectors()}.
      * Which cells WARN is {@see parse()}'s answer, not this list's: the cells

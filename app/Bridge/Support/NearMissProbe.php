@@ -69,6 +69,16 @@ final class NearMissProbe
     }
 
     /**
+     * {@see matches()} for a spelling flush at offset 0 only — the near-miss twin of the grammars'
+     * `parseAnchored()`, for {@see ClosureGrammar}, which reads a token only where it sits directly
+     * after a closing verb.
+     */
+    public function matchesAnchored(string $text): bool
+    {
+        return preg_match($this->pattern(), $text, $m, PREG_OFFSET_CAPTURE) === 1 && $m[0][1] === 0;
+    }
+
+    /**
      * WHICH id the near-miss names — `4811` for `card_4811` — or null when the
      * text is not a near-miss at all. The SAME pattern {@see matches} answers
      * from, with the digit run it already had to match now captured, so the two

@@ -19,6 +19,9 @@ final class GitHubIssueCommentsStub
     /** @var array<int, list<string>> PR number → comment bodies stored */
     private array $stored = [];
 
+    /** @var array<int, true> PR numbers whose comment list also carries an entry with no `body` */
+    private array $unreadable = [];
+
     /** @var array<int, list<string>> PR number → comment bodies POSTed (attempted, stored or not) */
     private array $attempted = [];
 
@@ -40,6 +43,12 @@ final class GitHubIssueCommentsStub
         $this->stored[$number][] = $body;
     }
 
+    /** A comment entry the list answers without a `body`, so the list cannot be read to the end. */
+    public function seedUnreadable(int $number): void
+    {
+        $this->unreadable[$number] = true;
+    }
+
     public function answer(Request $request): PromiseInterface
     {
         $this->requests[] = ['method' => $request->method(), 'url' => $request->url()];
@@ -53,7 +62,10 @@ final class GitHubIssueCommentsStub
                 return Http::response(['message' => 'Resource not accessible by personal access token'], $this->listStatus);
             }
 
-            return Http::response(array_map(static fn (string $body): array => ['body' => $body], $this->stored[$number] ?? []));
+            return Http::response(array_merge(
+                array_map(static fn (string $body): array => ['body' => $body], $this->stored[$number] ?? []),
+                isset($this->unreadable[$number]) ? [['id' => 1]] : [],
+            ));
         }
 
         $body = $request->data()['body'] ?? null;

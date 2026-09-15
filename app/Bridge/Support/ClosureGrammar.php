@@ -190,6 +190,25 @@ final class ClosureGrammar
         return in_array($dl, self::closedDls($text), true);
     }
 
+    /**
+     * Does this text carry a closing verb flush against a card- or DL-SHAPED token that does not
+     * parse — `Closes card_77`, `Fixes DL_239`? That closes nothing (only a parsed token does); it is
+     * what a caller reporting an unreadable token on a merge (DL-390) needs to tell a claimed closure
+     * from a mention. Read through the same choke point, so a `[no-close]` title or a quoted revert
+     * claims nothing here either.
+     */
+    public static function closesUnreadableToken(string $text): bool
+    {
+        foreach (self::remainders($text) as $rest) {
+            if ((CardTokenGrammar::parseAnchored($rest) === null && CardTokenGrammar::looksLikeCardTokenAnchored($rest))
+                || (DlTokenGrammar::parseAnchored($rest) === null && DlTokenGrammar::looksLikeDlTokenAnchored($rest))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Does this text carry ANY closing form at all? */
     public static function hasClosure(string $text): bool
     {

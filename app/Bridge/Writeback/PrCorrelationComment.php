@@ -54,10 +54,12 @@ final class PrCorrelationComment
      * Every cause that comments. The handler-side ones ARE the `writeback_move_failed` reason
      * codes those refusals already emit, so the comment and the alert name one cause with one string.
      * The refusals about the INSTALL rather than the pull request (`mapped_board_unreadable_to_this_token`,
-     * `board_scope_lookup_unfiltered`, a kanban 4xx, a pin, a malformed payload) are deliberately
-     * absent: the PR author can do nothing about them, and a comment naming the card there would be a
-     * wrong-but-specific accusation. So is a merge whose card correlated but carried no closure
-     * evidence (DL-305): that is a deliberate no-op, and a title citing another card is routine.
+     * `board_scope_lookup_unfiltered`, a kanban 4xx, a malformed payload) are deliberately absent: the
+     * PR author can do nothing about them, and a comment naming the card there would be a
+     * wrong-but-specific accusation. A pin is not a cause either, but a pinned card is still stamped,
+     * so a ref that stamp drops is reported like any other. Nor does a merge that claims to finish
+     * nothing comment (DL-305), whether its card correlated or its token did not: the classifier
+     * attaches no evidence there, since a title citing another card or DL is routine.
      */
     private const CAUSES = [
         self::DL_UNRESOLVED,
@@ -248,9 +250,12 @@ final class PrCorrelationComment
     private function unstampedRef(string $card, string $task): array
     {
         $keys = $this->droppedRefs === [] ? 'correlation ref' : implode(' and ', array_map(static fn (string $k): string => "`{$k}`", $this->droppedRefs));
-        $why = "{$card} already carries a different {$keys}. A card tracks one pull request and the first write wins, so this pull request was not recorded on {$card}. This concerns the card's correlation refs; its stage is decided separately.";
+        $was = count($this->droppedRefs) > 1 ? 'were' : 'was';
+        $notRecorded = "the {$keys} this pull request carries {$was} not recorded on {$card}";
+        $why = "{$card} already carries a different {$keys}, and the first value written wins, so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";
+        $prRefDropped = $this->droppedRefs === [] || array_intersect(['pr_number', 'pr_url'], $this->droppedRefs) !== [];
 
-        if ($this->outcome === 'closed_unmerged') {
+        if ($this->outcome === 'closed_unmerged' && $prRefDropped) {
             $stage = $this->stageId === null ? 'its `closed_unmerged` stage' : "workflow stage {$this->stageId}";
 
             return [
@@ -260,10 +265,15 @@ final class PrCorrelationComment
             ];
         }
 
+        $flags = array_filter([
+            $prRefDropped ? "--pr {$this->prNumber}" : '',
+            in_array('dl_number', $this->droppedRefs, true) ? '--dl '.$this->firstParsed('dl') : '',
+        ]);
+
         return [
-            "Correlation incomplete: this pull request was not recorded on {$card}.",
+            "Correlation incomplete: {$notRecorded}.",
             $why,
-            "kbcard show --task {$task}\n# only if this pull request should be the one {$card} tracks:\nkbcard patch --task {$task} --pr {$this->prNumber}",
+            "kbcard show --task {$task}\n# only if what this pull request carries should replace what {$card} carries:\nkbcard patch --task {$task} ".implode(' ', $flags),
         ];
     }
 

@@ -30,9 +30,9 @@ use Illuminate\Support\Facades\Log;
  * client would be a second place for those to drift (canon #5). What it is NOT is a
  * write client: nothing here creates, edits or deletes a hook.
  *
- * ⚑ NOR PR-STATE AND HOOKS ONLY (DL-390). {@see self::hasIssueCommentStartingWith} reads a pull
- * request's COMMENTS, for the same reasons the hook read lives here. The bridge's GitHub writes
- * are {@see GitHubWriteClient}'s, and this class still makes none.
+ * ⚑ IT ALSO READS PULL-REQUEST COMMENTS (DL-390): {@see self::hasIssueCommentStartingWith}, kept
+ * here for the same reasons the hook read is. The bridge's GitHub writes are
+ * {@see GitHubWriteClient}'s, and this class still makes none.
  */
 final class GitHubReadClient
 {

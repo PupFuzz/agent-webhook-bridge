@@ -163,6 +163,12 @@ final class DlTokenGrammar
         return self::probe()->matches($text);
     }
 
+    /** {@see looksLikeDlToken()} for a spelling flush at offset 0 — {@see parseAnchored()}'s near-miss twin. */
+    public static function looksLikeDlTokenAnchored(string $text): bool
+    {
+        return self::probe()->matchesAnchored($text);
+    }
+
     /**
      * The probe's derived corpus for this stem — {@see NearMissProbe::vectors()}.
      * Which cells WARN is {@see parse()}'s answer, not this list's: `DL-239` is
