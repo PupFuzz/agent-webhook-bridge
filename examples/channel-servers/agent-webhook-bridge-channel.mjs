@@ -291,7 +291,9 @@ const TOOL_DEFINITIONS = [
             'other lanes (other_swimlanes) and in no lane (no_swimlane); a count the bridge ' +
             'could not stand behind is null with a reason in its *_unmeasured key — never ' +
             'read a null as zero. Terminal columns are left out unless include_terminal is ' +
-            'true. " and * are refused. Omit it and the response is exactly the default.',
+            'true. Refused when it contains " * % / \\, a control character or any non-ASCII ' +
+            'character (kanban cannot match those exactly). Omit it and the response is ' +
+            'exactly the default.',
         },
         include_terminal: {
           type: 'boolean',

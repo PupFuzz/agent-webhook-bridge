@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\Http;
  * kanban's own parser would — including the parser that predates `swimlane_id=none`.
  *
  * Board 10: Backlog (50), In Review (51), Shipped (52, lane type `done`); lanes 4 (the seat's)
- * and 9. The lane read answers `$laneRows`; the tag read answers `$tagRows`; a one-row count
+ * and 9. The lane read answers `$laneRows`; the tag read answers `$tagRows` a page of the request's
+ * `limit` at a time, with `links.next` set while rows remain, as kanban pages; a one-row count
  * search answers the number of `$tagRows` its own `swimlane_id=` / `workflow_stage_id=` terms
  * select, so a count the tool reports is one a real server would have given for that query.
  *
@@ -62,7 +63,11 @@ trait TaggedBoardFake
                     return Http::response(['data' => $laneRows, 'links' => ['next' => null], 'meta' => ['total' => count($laneRows)]]);
                 }
                 if (($query['limit'] ?? null) !== '1') {
-                    return $refused('tag') ?? Http::response(['data' => $tagRows, 'links' => ['next' => null], 'meta' => ['total' => count($tagRows)]]);
+                    $perPage = max(1, (int) ($query['limit'] ?? count($tagRows)));
+                    $page = max(1, (int) ($query['page'] ?? 1));
+                    $next = count($tagRows) > $page * $perPage ? 'https://kanban.example.com/api/v3/tasks/search.json?page='.($page + 1) : null;
+
+                    return $refused('tag') ?? Http::response(['data' => array_slice($tagRows, ($page - 1) * $perPage, $perPage), 'links' => ['next' => $next], 'meta' => ['total' => count($tagRows)]]);
                 }
 
                 return $refused(str_contains($q, 'swimlane_id=none') ? 'none' : 'other')

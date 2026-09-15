@@ -657,6 +657,66 @@ class KanbanClientTest extends TestCase
         Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=8 tags:"lane:A"') && str_contains($r->url(), 'page=2'));
     }
 
+    /**
+     * ⛔ ONE PAGE WALK, ONE CEILING FLAG. The tag row read and the board read share the walk, and the
+     * flag is what lets a caller tell a population from the first MAX_PAGES × SEARCH_LIMIT rows of one.
+     */
+    public function test_the_tag_row_read_says_when_its_page_walk_stopped_at_the_ceiling(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])]);
+
+        $read = $this->client()->tagRowsRead(8, 'lane:A');
+
+        $this->assertTrue($read->truncated);
+        $this->assertCount(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT, $read->cards);
+        Http::assertSentCount(KanbanClient::MAX_PAGES);
+    }
+
+    public function test_the_tag_row_read_is_complete_when_kanban_says_there_is_no_next_page(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['data' => [['id' => 999, 'tags' => ['lane:A']]], 'links' => ['next' => null]]);
+
+        $read = $this->client()->tagRowsRead(8, 'lane:A');
+
+        $this->assertFalse($read->truncated);
+        $this->assertCount(KanbanClient::SEARCH_LIMIT + 1, $read->cards);
+    }
+
+    /**
+     * `readBoardCards()` answers what it answered before the walk was shared: the bare board scope as
+     * `q` (no trailing term), and `truncated` only when the walk ran out of pages.
+     */
+    public function test_read_board_cards_flags_a_walk_that_stopped_at_the_ceiling(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])]);
+
+        $read = $this->client()->readBoardCards(8);
+
+        $this->assertTrue($read['truncated']);
+        $this->assertCount(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT, $read['cards']);
+        Http::assertSentCount(KanbanClient::MAX_PAGES);
+        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/tasks/search.json?q=board_id%3D8&limit=200&page=1'));
+    }
+
+    public function test_read_board_cards_is_not_truncated_when_kanban_says_there_is_no_next_page(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['data' => [['id' => 999]], 'links' => ['next' => null]]);
+
+        $read = $this->client()->readBoardCards(8);
+
+        $this->assertFalse($read['truncated']);
+        $this->assertCount(KanbanClient::SEARCH_LIMIT + 1, $read['cards']);
+        Http::assertSentCount(2);
+    }
+
     public function test_board_structure_reads_stages_terminal_columns_and_lanes_from_one_preload_read(): void
     {
         Http::fake(['*/boards/8/preload.json' => Http::response(['data' => [

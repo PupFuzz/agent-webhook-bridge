@@ -180,7 +180,7 @@ class BoardMyCardsTagReadTest extends TestCase
         $this->assertNull($block['no_swimlane_unmeasured']);
         $this->assertSame(0, $block['other_swimlanes']);
         $this->assertNull($block['other_swimlanes_unmeasured']);
-        $this->assertSame(['total' => 3, 'returned' => 3, 'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'truncated' => false, 'stage_filter' => null], $block['cards_window']);
+        $this->assertSame(['total' => 3, 'returned' => 3, 'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'truncated' => false, 'stage_filter' => null, 'total_is_lower_bound' => false], $block['cards_window']);
     }
 
     public function test_other_swimlanes_counts_the_tagged_cards_in_another_lane_through_kanbans_own_predicate(): void
@@ -405,8 +405,61 @@ class BoardMyCardsTagReadTest extends TestCase
         $block = $this->tagCards(['tag' => 'lane:A']);
 
         $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $block['cards']);
-        $this->assertSame(['total' => 60, 'returned' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'truncated' => true, 'stage_filter' => null], $block['cards_window']);
+        $this->assertSame(['total' => 60, 'returned' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'truncated' => true, 'stage_filter' => null, 'total_is_lower_bound' => false], $block['cards_window']);
         $this->assertSame(60, $block['no_swimlane'], 'the counts are over the population, not the cut');
+    }
+
+    /**
+     * ⛔ A TAG READ CUT AT THE PAGE CEILING IS NOT THE POPULATION. The walk stops at MAX_PAGES ×
+     * SEARCH_LIMIT rows, so past it `total` counts only what was read, and a count checked against
+     * those rows can agree by luck: here every row past the ceiling is in the seat's own lane, so
+     * neither count moves. ⚑ RED-WHEN-REVERTED: a walk that drops its ceiling flag reports both counts
+     * as numbers over a short population.
+     */
+    public function test_a_tag_read_cut_at_the_page_ceiling_says_its_total_is_a_lower_bound_and_reports_no_count(): void
+    {
+        $ceiling = KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT;
+        $this->fakeTaggedBoard([], self::rowsUpTo($ceiling + 1));
+
+        $block = $this->tagCards(['tag' => 'lane:A']);
+
+        foreach (['other_swimlanes', 'no_swimlane'] as $count) {
+            $this->assertNull($block[$count], "{$count}: a count over rows the call could not finish reading is not reported");
+            $this->assertSame(BoardMyCardsTool::UNMEASURED_TAG_READ_INCOMPLETE, $block["{$count}_unmeasured"], $count);
+        }
+        $this->assertSame($ceiling, $block['cards_window']['total']);
+        $this->assertTrue($block['cards_window']['total_is_lower_bound'] ?? null);
+        $this->assertSame([], array_values(array_filter(self::sentSearches(), fn (string $q): bool => str_ends_with($q, '[count]'))), 'no count search is paid for when its answer could not be reported');
+    }
+
+    /** The presence witness for the test above: the same walk, ending exactly at the ceiling. */
+    public function test_a_tag_read_that_ends_on_the_last_page_the_ceiling_allows_is_complete(): void
+    {
+        $ceiling = KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT;
+        $this->fakeTaggedBoard([], self::rowsUpTo($ceiling));
+
+        $block = $this->tagCards(['tag' => 'lane:A']);
+
+        $this->assertSame($ceiling, $block['cards_window']['total']);
+        $this->assertFalse($block['cards_window']['total_is_lower_bound']);
+        $this->assertSame(3, $block['other_swimlanes']);
+        $this->assertSame(2, $block['no_swimlane']);
+        $this->assertCount(KanbanClient::MAX_PAGES, array_filter(self::sentSearches(), fn (string $q): bool => $q === 'board_id=10 tags:"lane:A"'), 'the fake answers a page at a time, so the read walked every page');
+    }
+
+    /**
+     * Rows 1–3 in lane 9, 4–5 in no lane, and every other row in the seat's own lane 4.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function rowsUpTo(int $count): array
+    {
+        $rows = [];
+        for ($id = 1; $id <= $count; $id++) {
+            $rows[] = self::taggedRow($id, 50, $id <= 3 ? 9 : ($id <= 5 ? null : 4));
+        }
+
+        return $rows;
     }
 
     // ─── the default is unchanged ────────────────────────────────────────────
@@ -457,6 +510,7 @@ class BoardMyCardsTagReadTest extends TestCase
             'tag a list' => [['tag' => ['lane:A']], 'ONE tag'],
             'tag a glob' => [['tag' => 'lane:*'], '`*`'],
             'tag with a quote' => [['tag' => 'lane:"A'], '`*`'],
+            'tag with a percent sign' => [['tag' => 'lane:%'], '`%`'],
             'tag longer than kanban accepts' => [['tag' => str_repeat('a', KanbanFieldLimits::TAG_MAX + 1)], 'at most'],
             'tag an explicit null' => [['tag' => null], 'EMPTY'],
             'tag empty' => [['tag' => ''], 'EMPTY'],
@@ -482,6 +536,75 @@ class BoardMyCardsTagReadTest extends TestCase
             $this->assertFalse($res['ok'], "{$door}: ".json_encode($res['body']));
             $this->assertStringContainsString($needle, (string) $res['body']['error'], $door);
             $this->assertSame($before, Http::recorded()->count(), "{$door}: a refused argument costs no board request");
+        }
+    }
+
+    /**
+     * Every character PHP's `json_encode` rewrites with no flags — the encoding kanban's `array` cast
+     * stores `tags` in — measured with `php -r` over bytes 0x00–0x7F: the control bytes 0x00–0x1F,
+     * `"`, `/` and `\`; and every non-ASCII character, which it writes as `\uXXXX`. `"` has its own
+     * refusal above; a lone byte ≥ 0x80 that is not UTF-8 cannot reach the tool through either JSON
+     * door, so the non-ASCII rows are one character of each UTF-8 length.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function tagsKanbanStoresEscaped(): array
+    {
+        $cases = [];
+        for ($byte = 0x00; $byte <= 0x1F; $byte++) {
+            $cases[sprintf('control byte 0x%02X', $byte)] = ['lane:'.chr($byte).'A'];
+        }
+
+        return $cases + [
+            'a slash' => ['repo:owner/name'],
+            'a backslash' => ['lane:A\\B'],
+            'a two-byte character' => ["lane:\u{00E9}"],
+            'a three-byte character' => ["lane:\u{2192}A"],
+            'a four-byte character' => ["lane:\u{1F600}"],
+            'a non-breaking space inside the tag' => ["lane:\u{00A0}A"],
+        ];
+    }
+
+    /**
+     * ⛔ A TAG KANBAN'S EXACT MATCH CANNOT FIND IS REFUSED, NEVER ANSWERED AS AN EMPTY BLOCK. Kanban
+     * matches `tags LIKE '%"<tag>"%'` over the JSON text its `array` cast stored, so a tag whose JSON
+     * spelling differs from the tag matches no card — even one carrying it — and `cards: []` beside
+     * two agreeing zeros would read as a measured answer.
+     */
+    #[DataProvider('tagsKanbanStoresEscaped')]
+    public function test_a_tag_kanban_stores_escaped_is_refused_on_both_doors_before_any_board_request(string $tag): void
+    {
+        $this->fakeTaggedBoard([], [self::taggedRow(1, 50, null)]);
+
+        foreach (['http', 'ssh'] as $door) {
+            $before = Http::recorded()->count();
+            $res = $this->through($door, ['tag' => $tag]);
+            $this->assertFalse($res['ok'], "{$door}: ".json_encode($res['body']));
+            $this->assertStringContainsString('stores tags as JSON', (string) $res['body']['error'], $door);
+            $this->assertSame($before, Http::recorded()->count(), "{$door}: a refused argument costs no board request");
+        }
+    }
+
+    /**
+     * The presence witness for the two refusals above: every other printable ASCII character,
+     * DEL and `_` included, is sent to kanban inside the tag term. `_` stays accepted because agent
+     * names carry it, so `created-by:` and `idem:` tags do.
+     */
+    public function test_every_other_printable_ascii_character_is_read_as_part_of_the_tag(): void
+    {
+        $accepted = '';
+        for ($byte = 0x20; $byte <= 0x7F; $byte++) {
+            if (! in_array(chr($byte), ['"', '*', '%', '/', '\\'], true)) {
+                $accepted .= chr($byte);
+            }
+        }
+        $this->assertStringContainsString('_', $accepted);
+        $this->fakeTaggedBoard([], [self::taggedRow(1, 50, null)]);
+
+        foreach (str_split($accepted, KanbanFieldLimits::TAG_MAX - 2) as $chunk) {
+            $tag = "x{$chunk}x";
+            $this->assertSame($tag, $this->tagCards(['tag' => $tag])['tag']);
+            $this->assertContains('board_id=10 tags:"'.$tag.'"', self::sentSearches());
         }
     }
 

@@ -436,48 +436,60 @@ final class KanbanClient
      */
     public function swimlaneCards(int $boardId, int $swimlaneId): array
     {
-        return $this->pagedSearchRows($boardId, "swimlane_id={$swimlaneId}", false, "swimlane-search {$swimlaneId}");
+        return $this->pagedSearch($boardId, " swimlane_id={$swimlaneId}", false, "swimlane-search {$swimlaneId}")->cards;
     }
 
     /**
-     * Every row a board-scoped search answers, page by page until kanban says there is no next
-     * page — the one page walk behind {@see swimlaneCards} and {@see cardRowsByTag}. `$terms` are
-     * the `q` terms after the board scope, which this method writes itself. Each page is its own read
-     * and reports its own unreadable body through {@see correlationRows}, labelled
-     * `<read> page <n>`.
+     * Every row a board-scoped search answers, page by page until kanban says there is no next page,
+     * and whether the walk stopped at the MAX_PAGES ceiling instead — the ONE page walk behind
+     * {@see readBoard}, {@see swimlaneCards} and {@see tagRowsRead} (DL-028). `$terms` are the `q`
+     * terms after the board scope, which this method writes itself, each led by a space as
+     * {@see stageTerm} spells one; `''` sends the bare scope.
      *
-     * ⚠ THE WALK STOPS AT MAX_PAGES × SEARCH_LIMIT ROWS WITHOUT SAYING SO. A caller that reports
-     * a total over these rows reports at most that many.
+     * The stop condition follows the documented board-read contract: a DL-146 kanban serves
+     * `links.next`, so the walk stops when it is null — authoritative, with no extra request even when
+     * the total is an exact multiple of SEARCH_LIMIT. A pre-DL-146 kanban omits `links`, so a page
+     * shorter than SEARCH_LIMIT is the last. That fallback and the ceiling flag are decided on the RAW
+     * batch length (rows kanban returned), NOT the filtered row count: a non-array row would otherwise
+     * desync the decision (a missed-truncation false negative, the DL-026 silent-loss class). The
+     * fallback MUST stay `< SEARCH_LIMIT` (continue while `>=`): an `=== SEARCH_LIMIT` test would loop
+     * forever against an upstream that ever returned an over-full page. The flag assumes kanban honours
+     * `page` (it does — server-side `forPage` over a total `id`-desc order, so pages don't skip/dup).
      *
-     * @return list<array<string, mixed>>
+     * ⚠ A NULL `$read` IS A PURE WALK: a page whose body carries no card collection adds no rows and logs
+     * nothing, and the signal is the caller's ({@see correlationCards}). A named `$read` reports each
+     * such page through {@see correlationRows}, labelled `<read> page <n>` — which page went unreadable
+     * is the difference between a read nobody can make and one cut short mid-walk.
      */
-    private function pagedSearchRows(int $boardId, string $terms, bool $archivedOnly, string $read): array
+    private function pagedSearch(int $boardId, string $terms, bool $archivedOnly, ?string $read): BoardRead
     {
         $cards = [];
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
-            $query = ['q' => "board_id={$boardId} {$terms}", 'limit' => self::SEARCH_LIMIT, 'page' => $page];
+            $query = ['q' => "board_id={$boardId}{$terms}", 'limit' => self::SEARCH_LIMIT, 'page' => $page];
             if ($archivedOnly) {
                 $query['archived'] = 1;
             }
             $json = $this->http()->get('/tasks/search.json', $query)->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            foreach (self::correlationRows(self::rowList($batch), "{$read} page {$page}", $boardId) as $row) {
+            $rows = self::rowList($batch);
+            foreach ($read === null ? $rows ?? [] : self::correlationRows($rows, "{$read} page {$page}", $boardId) as $row) {
                 $cards[] = $row;
             }
-            // RAW batch length, never the filtered/merged count — {@see readBoard} owns why.
             $batchSize = is_array($batch) ? count($batch) : 0;
 
             $links = is_array($json) ? ($json['links'] ?? null) : null;
             if (is_array($links) && array_key_exists('next', $links)) {
                 if ($links['next'] === null) {
-                    return $cards;
+                    return new BoardRead($cards, false);   // DL-146: no next page ⇒ fully read
                 }
             } elseif ($batchSize < self::SEARCH_LIMIT) {
-                return $cards;
+                return new BoardRead($cards, false);   // pre-DL-146 fallback: short/empty page ⇒ fully read
             }
         }
 
-        return $cards;
+        // Ran all MAX_PAGES pages and never hit a stop ⇒ the population is at or beyond the ceiling and
+        // rows past it were not read.
+        return new BoardRead($cards, true);
     }
 
     /**
@@ -506,15 +518,25 @@ final class KanbanClient
      * the other.
      *
      * ⛔ IT PAGES (card#9260). It read ONE page of SEARCH_LIMIT rows until then, so a tag on more
-     * cards than that answered a silently short list — to `board_my_cards`' coord leg and tag
-     * read, whose `total` is the size of this list, as much as to the writers. The walk is
-     * {@see swimlaneCards}' own, and a population past SEARCH_LIMIT costs one request per page.
+     * cards than that answered a silently short list — to `board_my_cards`' coord leg as much as to
+     * the writers. The walk is {@see pagedSearch}, and a population past SEARCH_LIMIT costs one request
+     * per page. ⚠ This projection drops the walk's ceiling flag; a caller that reports a size over
+     * these rows reads {@see tagRowsRead} instead.
      *
      * @return list<array<string, mixed>>
      */
     public function cardRowsByTag(int $boardId, string $tag, bool $archivedOnly = false): array
     {
-        return $this->pagedSearchRows($boardId, "tags:\"{$tag}\"", $archivedOnly, 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''));
+        return $this->tagRowsRead($boardId, $tag, $archivedOnly)->cards;
+    }
+
+    /**
+     * {@see cardRowsByTag}'s rows WITH the walk's ceiling flag: `truncated` is true when the walk
+     * stopped at MAX_PAGES × SEARCH_LIMIT rows, so their count is a lower bound on the population.
+     */
+    public function tagRowsRead(int $boardId, string $tag, bool $archivedOnly = false): BoardRead
+    {
+        return $this->pagedSearch($boardId, " tags:\"{$tag}\"", $archivedOnly, 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''));
     }
 
     /**
@@ -775,51 +797,15 @@ final class KanbanClient
     }
 
     /**
-     * Read a board's cards via the task-search endpoint (server-side board_id
-     * filter), paging to completion (DL-028). The stop condition follows the
-     * documented board-read contract: a DL-146 kanban serves `links.next`, so we
-     * stop when it's null (authoritative — no extra request even when the total is
-     * an exact multiple of SEARCH_LIMIT). A pre-DL-146 kanban omits `links` ⇒ fall
-     * back to the short-page heuristic (a page shorter than SEARCH_LIMIT is the
-     * last). A hard MAX_PAGES ceiling bounds a pathological/non-paging upstream.
-     * (The default correlation path is `ref`, DL-031 — this scan read is the
-     * fallback.) Pure: no logging.
-     *
-     * The short-page fallback and the `$truncated` flag are decided on the RAW
-     * batch length (rows kanban returned), NOT the array-filtered/merged count —
-     * a non-array row would otherwise desync the decision (a missed-truncation
-     * false negative, the DL-026 silent-loss class). The fallback MUST stay
-     * `< SEARCH_LIMIT` (continue while `>=`): an `=== SEARCH_LIMIT` test would
-     * loop forever against an upstream that ever returned an over-full page. The
-     * truncation flag assumes kanban honors `page` (it does — server-side
-     * `forPage` over a total `id`-desc order, so pages don't skip/dup).
+     * Read a board's cards via the task-search endpoint (server-side board_id filter), paged to
+     * completion by {@see pagedSearch}, which owns the stop condition and the ceiling flag (DL-028).
+     * (The default correlation path is `ref`, DL-031 — this scan read is the fallback.) Pure: no
+     * logging — {@see correlationCards} owns the signal on the correlation path, and
+     * {@see readBoardCards} passes the flag out for its callers to report.
      */
     private function readBoard(int $boardId): BoardRead
     {
-        $cards = [];
-        for ($page = 1; $page <= self::MAX_PAGES; $page++) {
-            $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
-            $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            // Extraction shared with the other three reads ({@see rowList}); the SIGNAL is not —
-            // this method stays pure and correlationCards() owns the warning for it.
-            foreach (self::rowList($batch) ?? [] as $row) {
-                $cards[] = $row;
-            }
-            $batchSize = is_array($batch) ? count($batch) : 0;
-
-            $links = is_array($json) ? ($json['links'] ?? null) : null;
-            if (is_array($links) && array_key_exists('next', $links)) {
-                if ($links['next'] === null) {
-                    return new BoardRead($cards, false);   // DL-146: no next page ⇒ fully read
-                }
-            } elseif ($batchSize < self::SEARCH_LIMIT) {
-                return new BoardRead($cards, false);   // pre-DL-146 fallback: short/empty page ⇒ fully read
-            }
-        }
-
-        // Ran all MAX_PAGES pages and never hit a stop ⇒ the board is at or beyond
-        // the ceiling and cards past it were not read.
-        return new BoardRead($cards, true);
+        return $this->pagedSearch($boardId, '', false, null);
     }
 
     /**
