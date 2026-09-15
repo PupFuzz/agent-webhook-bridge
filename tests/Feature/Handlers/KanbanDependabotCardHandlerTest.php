@@ -48,6 +48,35 @@ class KanbanDependabotCardHandlerTest extends TestCase
             // Fakes the scan correlation path; pin scan (default is now `ref`, DL-031).
             'bridge.writeback.correlation' => 'scan',
         ]);
+        // Registered FIRST so no later per-test `Http::fake()` can shadow it (G-020); a test
+        // varies the board by setting the two properties the closure reads at request time.
+        Http::fake(['*/boards/8/custom_fields.json' => fn () => $this->customFieldsStatus === 200
+            ? Http::response($this->customFieldsBody)
+            : Http::response(['message' => 'nope'], $this->customFieldsStatus)]);
+    }
+
+    /**
+     * What the create path's custom-field read answers. The default registers every create key
+     * with `origin` as FREE TEXT, which accepts any value — the pre-DL shape of every fixture here.
+     *
+     * @var array<string, mixed>
+     */
+    private array $customFieldsBody = ['data' => [
+        ['key' => 'pr_number', 'type' => 'number', 'options' => null],
+        ['key' => 'pr_url', 'type' => 'url', 'options' => null],
+        ['key' => 'origin', 'type' => 'string', 'options' => null],
+    ]];
+
+    private int $customFieldsStatus = 200;
+
+    /** @param  list<array{value: string, label: string}|string>  $options */
+    private function boardWithOriginEnum(array $options): void
+    {
+        $this->customFieldsBody = ['data' => [
+            ['key' => 'pr_number', 'type' => 'number', 'options' => null],
+            ['key' => 'pr_url', 'type' => 'url', 'options' => null],
+            ['key' => 'origin', 'type' => 'enum', 'options' => $options],
+        ]];
     }
 
     protected function tearDown(): void
@@ -348,6 +377,116 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
             && ! array_key_exists('swimlane_id', $r->data()));
+    }
+
+    // ---- the create payload's CONSTANT values are sent only where the board accepts them ----
+
+    /** The prod board-8 shape: `origin` is an enum whose options do not include `dependabot`. */
+    public function test_a_board_whose_origin_enum_lacks_the_value_gets_the_card_without_origin(): void
+    {
+        Log::spy();
+        $this->boardWithOriginEnum([
+            ['value' => 'preemptive', 'label' => 'Preemptive'],
+            ['value' => 'consumer-driven', 'label' => 'Consumer-driven'],
+            ['value' => 'incident-triggered', 'label' => 'Incident-triggered'],
+            ['value' => 'user-requested', 'label' => 'User-requested'],
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']
+            && $r['payload']['pr_number'] === 42);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'kanban_dependabot_card: created') && $ctx['card_id'] === 99)->once();
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'does not accept')
+            && $ctx['key'] === 'origin' && $ctx['value'] === 'dependabot' && $ctx['board'] === 8)->once();
+    }
+
+    /** The presence witness for the test above: the same enum WITH the value still gets it. */
+    public function test_a_board_whose_origin_enum_offers_the_value_still_gets_origin(): void
+    {
+        $this->boardWithOriginEnum(['preemptive', 'dependabot']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && ($r['payload']['origin'] ?? null) === 'dependabot'
+            && array_keys($r['payload']) === KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS);
+    }
+
+    /** No `origin` field at all is the same answer as an enum without the value: not accepted. */
+    public function test_a_board_registering_no_origin_field_gets_the_card_without_origin(): void
+    {
+        $this->customFieldsBody = ['data' => [['key' => 'pr_number', 'type' => 'number'], ['key' => 'pr_url', 'type' => 'url']]];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']);
+    }
+
+    public function test_an_unreadable_custom_field_read_creates_the_card_without_origin_and_warns(): void
+    {
+        Log::spy();
+        $this->customFieldsStatus = 500;
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'could NOT read')
+            && $ctx['key'] === 'origin' && $ctx['board'] === 8 && str_contains((string) $ctx['error'], '500'))->once();
+    }
+
+    /** A 200 carrying no collection is could-not-see too (card#5698), never "no fields registered". */
+    public function test_a_custom_field_read_carrying_no_collection_creates_the_card_without_origin_and_warns(): void
+    {
+        Log::spy();
+        $this->customFieldsBody = ['meta' => []];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'could NOT read')
+            && $ctx['key'] === 'origin')->once();
+    }
+
+    public function test_the_move_path_never_reads_the_boards_custom_fields(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'custom_fields.json'));
+    }
+
+    public function test_every_constant_payload_key_is_a_create_payload_key(): void
+    {
+        $this->assertSame([], array_values(array_diff(array_keys(KanbanDependabotCardHandler::CONSTANT_PAYLOAD_VALUES), KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS)));
     }
 
     public function test_existing_card_is_moved_not_recreated(): void

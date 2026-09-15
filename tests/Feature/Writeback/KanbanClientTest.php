@@ -828,6 +828,38 @@ class KanbanClientTest extends TestCase
         $this->assertNull($this->client()->boardCustomFieldKeys(8));
     }
 
+    /** Kanban's `optionValues()` reads an option as its `value` or as the bare string — both shapes. */
+    public function test_board_custom_fields_reads_enum_options_in_both_shapes_and_a_non_enum_accepts_anything(): void
+    {
+        Http::fake(['*/boards/8/custom_fields.json' => Http::response(['data' => [
+            ['key' => 'origin', 'type' => 'enum', 'options' => [['value' => 'preemptive', 'label' => 'P'], 'user-requested']],
+            ['key' => 'empty_enum', 'type' => 'enum', 'options' => null],
+            ['key' => 'pr_url', 'type' => 'url', 'options' => null],
+            ['key' => 'untyped'],
+        ]])]);
+
+        $fields = $this->client()->boardCustomFields(8);
+
+        $this->assertNotNull($fields);
+        $this->assertSame(['origin', 'empty_enum', 'pr_url', 'untyped'], $fields->keys());
+        $this->assertTrue($fields->accepts('origin', 'preemptive'));
+        $this->assertTrue($fields->accepts('origin', 'user-requested'));
+        $this->assertFalse($fields->accepts('origin', 'dependabot'));
+        $this->assertFalse($fields->accepts('empty_enum', 'anything'));
+        $this->assertTrue($fields->accepts('pr_url', 'free'));
+        $this->assertTrue($fields->accepts('untyped', 'free'));
+        $this->assertFalse($fields->accepts('not_registered', 'dependabot'));
+        $this->assertTrue($fields->has('origin'));
+        $this->assertFalse($fields->has('not_registered'));
+    }
+
+    public function test_board_custom_fields_returns_null_when_the_read_carried_no_collection(): void
+    {
+        Http::fake(['*/boards/8/custom_fields.json' => Http::response(['meta' => []])]);
+
+        $this->assertNull($this->client()->boardCustomFields(8));
+    }
+
     /**
      * The RUNTIME callers keep degrading to a no-op — a 5xx on a deterministic body would
      * retry-storm an unfixable event for ~11 days (DL-020) — but the degradation stops being
