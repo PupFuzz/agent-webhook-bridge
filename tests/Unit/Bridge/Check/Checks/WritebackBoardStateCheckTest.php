@@ -220,7 +220,11 @@ class WritebackBoardStateCheckTest extends TestCase
 
     public function test_a_board_registering_every_dependabot_custom_field_is_reported_ok(): void
     {
-        $this->fakeBoard(customFieldKeys: ['pr_number', 'pr_url', 'origin']);
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'string'],
+        ]);
 
         $findings = $this->findings($this->mapping(createDependabotCards: true));
 
@@ -265,19 +269,19 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertStringNotContainsString('does not accept', $this->joined($findings));
     }
 
-    /**
-     * Only a `string` field, an untyped one, or an enum offering the value takes a string constant
-     * (kanban `CustomFieldValidator::validateValue()`), so every other type must WARN — never the
-     * false `ok` a "non-enum accepts anything" rule printed while the create still 422d.
-     */
     /** @return array<string, array{string}> */
-    public static function typesRefusingAString(): array
+    public static function typesTheBridgeSendsNoStringConstantTo(): array
     {
         return ['multi_select' => ['multi_select'], 'number' => ['number'], 'date' => ['date'], 'boolean' => ['boolean'], 'url' => ['url']];
     }
 
-    #[DataProvider('typesRefusingAString')]
-    public function test_a_constant_in_a_field_type_that_refuses_a_string_warns_and_names_the_type(string $type): void
+    /**
+     * Only a `string` field or an enum offering the value is sent a string constant, so every other
+     * type must WARN — never the false `ok` a "non-enum accepts anything" rule printed while the
+     * create still 422d.
+     */
+    #[DataProvider('typesTheBridgeSendsNoStringConstantTo')]
+    public function test_a_constant_in_a_field_of_any_other_type_warns_and_names_the_type(string $type): void
     {
         $this->fakeBoard(customFieldRecords: [
             ['key' => 'pr_number', 'type' => 'number'],
@@ -304,6 +308,23 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $this->assertSame(Severity::Ok, $findings[2]['severity']);
         $this->assertStringContainsString("origin='dependabot' is accepted by board 8 (owner/repo)", $findings[2]['message']);
+    }
+
+    /** A record whose `type` cannot be read is not verifiable: warn and say so, never `ok`, never "of type ". */
+    public function test_a_constant_in_a_field_record_with_no_readable_type_warns_that_it_cannot_be_verified(): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin'],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertStringContainsString("does not accept origin='dependabot'", $findings[2]['message']);
+        $this->assertStringContainsString('its origin field record carries no readable type, so the value cannot be verified', $findings[2]['message']);
+        $this->assertStringNotContainsString('of type', $findings[2]['message']);
     }
 
     /** A THROWING read is the per-mapping catch's unvalidated, and no constant verdict is made. */

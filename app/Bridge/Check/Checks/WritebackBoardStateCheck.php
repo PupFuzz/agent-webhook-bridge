@@ -137,6 +137,7 @@ final class WritebackBoardStateCheck implements Check
                                 $type = $fields->type($key);
                                 $why = match (true) {
                                     ! $fields->has($key) => 'no such custom field is registered',
+                                    $type === null => "its {$key} field record carries no readable type, so the value cannot be verified",
                                     $type === 'enum' => "not one of the enum options of its {$key} field",
                                     default => "its {$key} field is of type ".UntrustedText::forOperator((string) $type).', which does not take this value',
                                 };

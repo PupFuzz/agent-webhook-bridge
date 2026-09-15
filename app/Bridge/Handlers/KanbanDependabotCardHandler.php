@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\BoardCustomFields;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
@@ -87,8 +88,11 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
     /**
      * The create payload's CONSTANT values, by key (DL-392). A constant is not a fact about
-     * the PR, so a board that does not accept it — an `enum` without that option, or no such
-     * field — gets the card WITHOUT the key rather than a 422 that loses the card. Unlike the
+     * the PR, so a board that does not accept it by {@see BoardCustomFields::accepts()} — no such
+     * field, an `enum` without that option, a field of any type but `string` / `enum`, or a record
+     * with no readable `type` — gets the card WITHOUT the key rather than a 422 that loses the card.
+     * A value kanban would take in a `number`, `date` or `url` field is still omitted there, which
+     * a test pins as impossible for every value listed here. Unlike the
      * per-PR keys, the value is the same on every board, which is what lets `bridge:check`
      * verify it against each mapped board before any PR arrives.
      *

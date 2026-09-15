@@ -6,13 +6,14 @@ namespace App\Bridge\Writeback;
  * What ONE `boards/{id}/custom_fields.json` read says about a board's payload keys and which
  * VALUES each will take, so the create path and `bridge:check` ask one question of one read.
  *
- * `accepts()` answers for a STRING value by kanban's own per-type rule
- * (`CustomFieldValidator::validateValue()`): a `string` field takes one up to
- * {@see STRING_MAX_BYTES}; an `enum` takes one of its option values, each read the way
- * `optionValues()` reads it (its `value`, or the bare string); every other type — `number`,
- * `date`, `boolean`, `multi_select` (an array), `url` (an absolute http(s) URL), or a type kanban
- * does not know — refuses it. A record with no `type` (a kanban predating the field) is taken
- * to accept it, which is what the bridge assumed of every field before DL-392.
+ * `accepts()` answers true for a STRING value in exactly two cases, each exact against kanban's
+ * `CustomFieldValidator`: a `string` field, for a value up to {@see STRING_MAX_BYTES}; and an `enum`
+ * whose options include it, each option read the way `optionValues()` reads it (its `value`, or
+ * the bare string). Every other type is refused, and so is a record carrying no readable `type`,
+ * whose acceptance cannot be verified. The refusal is exact for `boolean`, `multi_select` and a type
+ * kanban does not know, but CONSERVATIVE for `number`, `date` and `url`: kanban takes a string there
+ * in canonical numeric, `YYYY-MM-DD` or absolute http(s) form, and those format checks are not
+ * modelled, so such a value is omitted rather than risking a 422.
  */
 final class BoardCustomFields
 {
@@ -78,7 +79,6 @@ final class BoardCustomFields
         }
 
         return match ($this->fieldsByKey[$key]['type']) {
-            null => true,
             'string' => strlen($value) <= self::STRING_MAX_BYTES,
             'enum' => in_array($value, $this->fieldsByKey[$key]['options'], true),
             default => false,

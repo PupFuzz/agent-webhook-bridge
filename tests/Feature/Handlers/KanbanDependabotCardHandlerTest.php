@@ -10,6 +10,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
@@ -480,6 +481,39 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && array_keys($r['payload']) === ['pr_number', 'pr_url']);
     }
 
+    /** @return array<string, array{array<string, mixed>}> */
+    public static function originRecordsWithNoReadableType(): array
+    {
+        return [
+            'no type key' => [['key' => 'origin', 'options' => null]],
+            'null type' => [['key' => 'origin', 'type' => null]],
+            'non-string type' => [['key' => 'origin', 'type' => ['string']]],
+        ];
+    }
+
+    /** A record whose `type` cannot be read cannot be verified, so the constant is omitted — never sent on a guess. */
+    #[DataProvider('originRecordsWithNoReadableType')]
+    public function test_an_origin_field_record_with_no_readable_type_gets_the_card_without_origin(array $originRecord): void
+    {
+        Log::spy();
+        $this->customFieldsBody = ['data' => [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            $originRecord,
+        ]];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'does not accept')
+            && $ctx['key'] === 'origin' && $ctx['field_type'] === null)->once();
+    }
+
     public function test_an_unreadable_custom_field_read_creates_the_card_without_origin_and_warns(): void
     {
         Log::spy();
@@ -530,6 +564,44 @@ class KanbanDependabotCardHandlerTest extends TestCase
     public function test_every_constant_payload_key_is_a_create_payload_key(): void
     {
         $this->assertSame([], array_values(array_diff(array_keys(KanbanDependabotCardHandler::CONSTANT_PAYLOAD_VALUES), KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS)));
+    }
+
+    /**
+     * `BoardCustomFields::accepts()` refuses a string in a `number`, `date` or `url` field, although
+     * kanban's `CustomFieldValidator` takes one there in canonical numeric, `YYYY-MM-DD` or absolute
+     * http(s) form. That refusal is exact only while no constant has one of those forms, so a constant
+     * that does must red here instead of being silently omitted on a board that would take it. The
+     * three predicates are kanban-board `dev`'s `validateNumber` / `validateDate` / `validateUrl`.
+     */
+    public function test_no_constant_payload_value_has_a_form_kanban_takes_in_a_number_date_or_url_field(): void
+    {
+        $forms = [
+            'number' => fn (string $v) => preg_match('/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/D', $v) === 1,
+            'date' => function (string $v) {
+                if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $v) !== 1) {
+                    return false;
+                }
+                $p = explode('-', $v);
+
+                return checkdate((int) $p[1], (int) $p[2], (int) $p[0]);
+            },
+            'url' => function (string $v) {
+                $parsed = parse_url($v);
+
+                return $parsed !== false && ! empty($parsed['scheme']) && ! empty($parsed['host'])
+                    && in_array($parsed['scheme'], ['http', 'https'], true);
+            },
+        ];
+        foreach (['number' => '-12.5', 'date' => '2026-09-15', 'url' => 'https://example.com/x'] as $form => $positive) {
+            $this->assertTrue($forms[$form]($positive), "the {$form} predicate must recognise {$positive}");
+        }
+
+        $this->assertNotSame([], KanbanDependabotCardHandler::CONSTANT_PAYLOAD_VALUES);
+        foreach (KanbanDependabotCardHandler::CONSTANT_PAYLOAD_VALUES as $key => $value) {
+            foreach ($forms as $form => $matches) {
+                $this->assertFalse($matches($value), "constant {$key}='{$value}' has a form kanban takes in a {$form} field, which accepts() refuses");
+            }
+        }
     }
 
     public function test_existing_card_is_moved_not_recreated(): void
