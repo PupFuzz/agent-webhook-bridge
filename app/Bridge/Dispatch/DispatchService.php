@@ -323,10 +323,10 @@ final class DispatchService
                     }
                     $handler->handle($target, $agent);
                 } catch (Throwable $e) {
-                    $note = self::exceptionNote($e);
+                    $note = RedactedErrorText::note($e);
                     Log::warning('bridge dispatch: handler failed', [
                         'agent' => $agent->agentName, 'handler' => $target->handler,
-                    ] + self::exceptionLogContext($e, $note));
+                    ] + RedactedErrorText::logContext($e));
                 }
             }
 
@@ -578,42 +578,14 @@ final class DispatchService
 
     private function recordError(AgentDispatch $dispatch, Throwable $e): void
     {
-        $message = self::exceptionNote($e);
+        $message = RedactedErrorText::note($e);
         // reason => null clears a prior pass's drop reason on a --force replay
         // transition; processed_at is deliberately left untouched (null) so the
         // row stays replayable.
         $dispatch->update(['error_message' => $message, 'outcome' => AgentDispatch::OUTCOME_ERRORED, 'reason' => null]);
         Log::warning('bridge dispatch: classifier failed', [
             'agent' => $dispatch->agent_name,
-        ] + self::exceptionLogContext($e, $message));
-    }
-
-    /**
-     * Format an exception for the stored, operator-readable `error_message`:
-     * class + message ONLY, never `(string) $e` (the full trace + absolute server
-     * paths — that stays in the log, not the DB field).
-     */
-    private static function exceptionNote(Throwable $e): string
-    {
-        return $e::class.': '.RedactedErrorText::of($e);
-    }
-
-    /**
-     * The log context for a failed dispatch. ⛔ NOT `'exception' => $e`: the log formatter
-     * renders the object with its raw message — for a `RequestException`, a body summary
-     * already cut at `RequestException::$truncateAt`, which no redactor can repair (card#9486).
-     * The class, the throw site and the trace are kept; the message is the redacted one.
-     *
-     * @return array{error: string, exception: class-string, at: string, trace: string}
-     */
-    private static function exceptionLogContext(Throwable $e, string $note): array
-    {
-        return [
-            'error' => $note,
-            'exception' => $e::class,
-            'at' => $e->getFile().':'.$e->getLine(),
-            'trace' => $e->getTraceAsString(),
-        ];
+        ] + RedactedErrorText::logContext($e));
     }
 
     /**

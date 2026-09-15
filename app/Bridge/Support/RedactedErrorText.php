@@ -27,8 +27,8 @@ use Throwable;
  *    {@see UntrustedText::forOperator()}; logs and durable records are different sinks.
  *  - It cannot recover a message that ALREADY EMBEDS a truncated one — an exception thrown as
  *    `new X('…'.$requestException->getMessage())` carries the cut in its own text, and this
- *    class sees only that text. Such a wrapper is where the fix belongs, and the census below
- *    counts it as a read.
+ *    class sees only that text. Such a wrapper is where the fix belongs, and the census named
+ *    below counts it as a read.
  *  - Its redaction is {@see SecretScrubber::text()}'s, with every bound that class states.
  *
  * `Tests\Feature\Support\ExceptionMessageRedactionCensusTest` (DL-389) reds on any new read of an
@@ -63,6 +63,48 @@ final class RedactedErrorText
         }
 
         return "{$status}: {$body}";
+    }
+
+    /** The exception's class and its redacted text — the one-line note a record or a log line carries. */
+    public static function note(Throwable $e): string
+    {
+        return $e::class.': '.self::of($e);
+    }
+
+    /**
+     * THE ONE LOG-CONTEXT SHAPE for a caught or reported exception: the note, the class, the
+     * HTTP status when there is one, the throw site and the trace.
+     *
+     * ⛔ NOT `'exception' => $e`: the log formatter renders the object with its raw message — for
+     * a `RequestException`, the summary Laravel already cut, which no redactor can repair.
+     *
+     * @return array{error: string, exception: class-string, status?: int, at: string, trace: string}
+     */
+    public static function logContext(Throwable $e): array
+    {
+        return ['error' => self::note($e), 'exception' => $e::class]
+            + ($e instanceof RequestException ? ['status' => $e->response->status()] : [])
+            + ['at' => $e->getFile().':'.$e->getLine(), 'trace' => $e->getTraceAsString()];
+    }
+
+    /**
+     * Replace a `RequestException`'s message with {@see self::of()}'s text, IN PLACE.
+     *
+     * ⚑ WHY IN PLACE, and why it is safe. The framework's console renderer
+     * (`Illuminate\Foundation\Exceptions\Handler::renderForConsole()`, and `nunomaduro/collision`'s adapter where it is installed)
+     * does not run `Illuminate\Foundation\Exceptions\Handler::map()`, so the only text every renderer after a report is guaranteed
+     * to read is the OBJECT's own message. Laravel itself rewrites that message at report time —
+     * `RequestException::report()` re-prepares it — so this replaces the text at the same moment
+     * with the redacted one. Nothing else about the exception changes: class, code (the status),
+     * response, file, line and trace are the same object's, so a `catch (RequestException)` or a
+     * retry decision sees exactly what it saw before.
+     */
+    public static function replaceMessage(RequestException $e): void
+    {
+        $text = self::of($e);
+        (function () use ($text): void {
+            $this->message = $text;
+        })->call($e);
     }
 
     /** A response body, redacted in full and then bounded. */
