@@ -47,7 +47,7 @@ final class PrCorrelationComment
     /** A DL token parsed, no card on the mapped board carries it, and no card token is there to fall back to. */
     public const DL_UNRESOLVED = 'dl_unresolved';
 
-    /** No token parsed, but a card- or DL-shaped spelling that does not parse is present. */
+    /** No card was selected — no token parsed, or only a DL no card carries — and a card- or DL-shaped spelling that does not parse is present. */
     public const TOKEN_UNREADABLE = 'token_unreadable';
 
     /**

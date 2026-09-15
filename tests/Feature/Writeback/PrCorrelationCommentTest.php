@@ -460,6 +460,121 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertSame([], $this->github->requests);
     }
 
+    // --- a parsed DL beside an unreadable card token: the unreadable token's own closure evidence counts --
+
+    public function test_a_near_miss_refusal_on_an_integration_merge_from_a_branch_naming_the_unreadable_token_posts_one_comment(): void
+    {
+        // Had `card_77` parsed, the branch route would have closed card#77 and the DL-218 guard moved it,
+        // so the refused move is one this pull request claimed; the title's DL is only a mention.
+        $this->dlCards = ['42' => [5]];
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (DL-42)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=card_token_near_miss card=5 -->', $body);
+        $this->assertStringContainsString('`DL-42` from the title', $body);
+        $this->assertStringContainsString('a card-shaped token from the head branch that does not parse (it appears to name card 77)', $body);
+        $this->assertSame([], $this->cards->patchesTo(5));   // the refusal itself is unchanged: nothing written
+    }
+
+    public function test_a_near_miss_refusal_on_a_merge_whose_title_closes_the_unreadable_token_posts_one_comment(): void
+    {
+        $this->dlCards = ['42' => [5]];
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: closes card_77 (DL-42)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=card_token_near_miss card=5 -->', $body);
+        $this->assertStringContainsString('`DL-42` from the title', $body);
+        $this->assertStringContainsString('a card-shaped token from the title that does not parse (it appears to name card 77)', $body);
+        $this->assertSame([], $this->cards->patchesTo(5));
+    }
+
+    public function test_an_unresolved_dl_on_an_integration_merge_from_a_branch_naming_an_unreadable_token_posts_one_token_unreadable_comment(): void
+    {
+        // The claim is the unreadable card token's, not the DL's, so the comment names that cause and
+        // does not send its reader to stamp a DL the pull request only mentions.
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (DL-999)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=token_unreadable card=none -->', $body);
+        $this->assertStringContainsString('`DL-999` from the title', $body);
+        $this->assertStringContainsString('a card-shaped token from the head branch that does not parse (it appears to name card 77)', $body);
+        $this->assertStringNotContainsString('--dl DL-999', $body);
+    }
+
+    public function test_an_unresolved_dl_on_a_merge_whose_title_closes_an_unreadable_token_posts_one_token_unreadable_comment(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: closes card_77 (DL-999)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=token_unreadable card=none -->', $body);
+        $this->assertStringContainsString('`DL-999` from the title', $body);
+        $this->assertStringContainsString('a card-shaped token from the title that does not parse (it appears to name card 77)', $body);
+        $this->assertStringNotContainsString('--dl DL-999', $body);
+    }
+
+    public function test_the_same_merge_with_a_card_token_that_parses_moves_that_card_and_posts_nothing_beside_a_resolving_dl(): void
+    {
+        $this->assertParsingBranchMovesCard77AndPostsNothing(['42' => [5]], 'feat: a thing (DL-42)');
+    }
+
+    public function test_the_same_merge_with_a_card_token_that_parses_moves_that_card_and_posts_nothing_beside_an_unresolved_dl(): void
+    {
+        $this->assertParsingBranchMovesCard77AndPostsNothing([], 'feat: a thing (DL-999)');
+    }
+
+    public function test_an_unresolved_dl_beside_an_unreadable_token_on_a_merge_that_claims_nothing_posts_nothing(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'docs: DL-999 notes (card_77)', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    public function test_a_release_merge_from_a_branch_naming_an_unreadable_token_beside_a_resolving_dl_posts_nothing(): void
+    {
+        $this->dlCards = ['42' => [5]];
+        $this->assertReleaseMergePostsNothing('feat: a thing (DL-42)');
+    }
+
+    public function test_a_release_merge_from_a_branch_naming_an_unreadable_token_beside_an_unresolved_dl_posts_nothing(): void
+    {
+        $this->assertReleaseMergePostsNothing('feat: a thing (DL-999)');
+    }
+
+    /** @param  array<string, list<int>>  $dlCards */
+    private function assertParsingBranchMovesCard77AndPostsNothing(array $dlCards, string $title): void
+    {
+        $this->dlCards = $dlCards;
+        $this->onBoard = [77 => ['id' => 77, 'board_id' => 8]];
+        $this->cards = new KanbanCardStub([77 => $this->card(77)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-77-thing', title: $title, merged: true));
+
+        $this->assertSame(52, $this->cards->patchesTo(77)[0]['workflow_stage_id'] ?? null);   // control: it moved
+        $this->assertSame([], $this->github->requests);
+    }
+
+    private function assertReleaseMergePostsNothing(string $title): void
+    {
+        $this->fakePeers();
+        $release = $this->closedPr(702, head: 'feat/card_77-thing', title: $title, merged: true);
+        $release['pull_request']['base']['ref'] = 'main';
+
+        $this->dispatch('d1', $release);
+
+        $this->assertSame([], $this->github->requests);
+    }
+
     // --- what an unstamped ref comment may claim ----------------------------------------------------
 
     public function test_an_unstamped_pr_number_beside_a_stamped_pr_url_names_only_the_dropped_key(): void

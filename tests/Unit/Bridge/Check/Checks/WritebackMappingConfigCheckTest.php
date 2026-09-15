@@ -295,11 +295,6 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
     }
 
-    /**
-     * The check recognizes a file leg by the `source` LABEL the resolver stamps, so the
-     * override label is part of that contract: were it to drift, this check would start
-     * warning about a healthy install whose token is a file.
-     */
     public function test_a_token_path_override_counts_as_a_file_token(): void
     {
         $override = $this->dir.'/override-token';
@@ -311,6 +306,44 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         $this->assertCount(1, $this->warnings($findings));
         $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
+    }
+
+    public function test_a_placed_token_file_counts_as_a_file_token_beside_a_gh_token(): void
+    {
+        $this->placeTokenFile();
+        putenv('GH_TOKEN=ghp_ambient');
+
+        // Orphaned on purpose — the witness for the absence below.
+        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
+
+        $this->assertCount(1, $this->warnings($findings));
+        $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
+        $this->assertStringNotContainsString('no GitHub read token resolves from a FILE', $this->joined($findings));
+    }
+
+    public function test_a_token_path_override_whose_file_is_missing_is_reported_inert_even_with_a_gh_token(): void
+    {
+        // The override is authoritative: a missing file resolves nothing, and GH_TOKEN is not consulted.
+        config(['bridge.providers.github.token_path' => $this->dir.'/no-such-override-token']);
+        putenv('GH_TOKEN=ghp_ambient');
+
+        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
+
+        $this->assertCount(1, $this->warnings($findings));
+        $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
+    }
+
+    public function test_a_credential_store_only_promote_leg_is_reported_inert_in_the_fpm_runtime(): void
+    {
+        $helper = $this->dir.'/store-helper';
+        File::put($helper, "#!/bin/sh\nprintf 'password=ghp_from_the_store\\n'\n");
+        chmod($helper, 0o700);
+        config(['bridge.providers.github.credential_helper' => $helper]);
+
+        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
+
+        $this->assertCount(1, $this->warnings($findings));
+        $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
     }
 
     // ---- card#7348 / DL-305: the mention-vs-closure setup line ----

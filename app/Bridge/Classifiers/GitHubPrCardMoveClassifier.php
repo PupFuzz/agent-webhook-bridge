@@ -394,6 +394,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
                     return new ClassifyResult(targets: array_merge(
                         $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null)
+                            || $this->claimsClosureOfUnreadableToken($payload, $moveOutcome)
                             ? $this->correlationEvidence($payload, $moveOutcome)
                             : []),
                         $overlayTargets,
@@ -467,12 +468,19 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // DL-234(e) condition that keeps the probe behind the both-null guard
                 // elsewhere. The probe is per-stem, so the DL that just parsed above
                 // cannot draw a line claiming it did not.
-                $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
+                $nearMiss = $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
+
+                // DL-390: reported when either token carries the closure evidence the gate would need
+                // had it resolved. Only the unreadable token's claim makes it `token_unreadable`, so
+                // the remedy never stamps a DL the pull request merely mentions.
+                $cause = match (true) {
+                    $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null) => PrCorrelationComment::DL_UNRESOLVED,
+                    $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome) => PrCorrelationComment::TOKEN_UNREADABLE,
+                    default => null,
+                };
 
                 return new ClassifyResult(targets: array_merge(
-                    $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null)
-                        ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::DL_UNRESOLVED)
-                        : [],
+                    $cause !== null ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, $cause) : [],
                     $overlayTargets,
                 ));
             } else {
@@ -796,7 +804,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * term read by the near-miss probe instead of the grammar: a closing verb flush against the
      * unreadable spelling ({@see ClosureGrammar::closesUnreadableToken()}), or an integration merge
      * whose head ref carries a card-shaped one ({@see PrOutcome::structuralRouteOpen()}, which
-     * {@see PrOutcome::mergeClosesCard()} is composed from). Asked only where no token parses.
+     * {@see PrOutcome::mergeClosesCard()} is composed from). Asked only where no CARD token parses:
+     * with no token at all, and beside a DL that resolved to nothing or to a card the unreadable
+     * token appears not to name (the DL-287 refusal), where the DL's own claim is asked separately.
      *
      * @param  array<mixed>  $payload
      */
