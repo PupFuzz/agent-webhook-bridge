@@ -709,8 +709,8 @@ rejects outright.
 
 ⚠ **Those board-caused 4xx (401/403/404/422) are reported as 422 refusals, not as the
 retryable 502**, because they fail identically however many times you send them; a 5xx
-still answers **502**, which is the one you may retry (a timeout is not a 502 — see the owner
-section's *no answer* row). Since card#8486 that
+still answers **502**, and so does a call kanban never answered (a timeout or a failed
+connection) — that is the one you may retry. Since card#8486 that
 is the rule for **every** tool on this door, not this one's alone —
 [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339)
 owns it, and the rows above are what it means for a *correction* specifically.
@@ -901,9 +901,10 @@ lands **after** the bridge's and does not replace it.
 
 **⚠ Not idempotent.** Only a refusal (`422`) tells you nothing was written. Any other answer —
 a `502`, a `500`, a non-JSON answer, a failed ssh leg, or a timeout — may follow a POST that
-landed, so re-sending can post the comment twice. A timeout between the bridge and kanban is not
-a `502` at all today ([§ A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339),
-the *no answer* row). The bridge's HTTP client does not retry on its own.
+landed, so re-sending can post the comment twice. A timeout between the bridge and kanban answers
+the same `502` a kanban 5xx does ([§ A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339),
+the *no answer* row, DL-387), and it cannot say whether kanban acted before the answer was lost.
+The bridge's HTTP client does not retry on its own.
 
 **⚠ A PINNED card still takes a comment.** The DL-178 hold governs a card's stage, its lifecycle
 and the fields `PinGuard::PINNED_FIELDS` names. A comment writes no field.
@@ -941,7 +942,7 @@ no write on a not-on-board refusal.
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
 | 422 | A caller-fixable bad request (an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
-| 502 | Upstream kanban error (may be retryable). |
+| 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
 ### An argument the tool does not declare is refused, on every tool (DL-379)
@@ -995,8 +996,8 @@ two route classes are authorized differently:
 | **422** on a WRITE | **422 refusal**, bridge-authored | kanban's own validator rejected a VALUE you sent. Deterministic — and this is what keeps the mirrored length caps safe to go stale. ⛔ The board's response **body is never echoed**; the message is the bridge's own. |
 | **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. |
 | **any other 4xx** — **400**, 408, 429 … | **502** (retryable) | outside the permanent sets on purpose: the bridge has no diagnosis to offer for them, and a rate limit really does clear. |
-| **5xx** | **502** (retryable) | it may clear. This is the one you may retry — ⚠ **except `board_comment_card`'s POST**, which has no idempotency key: a 502 there may follow a comment that landed, so a retry can post a duplicate. |
-| **no answer** — the connection failed or timed out | ⚠ **not a 502, today.** Over HTTP a **500** error page, which the channel server reports as *non-JSON response from the bridge*. Over ssh `bridge:tools-call` exits **1** with the exception printed where the JSON envelope belongs, reported as *the ssh … leg FAILED* with that text as partial output. | the dispatcher maps a request kanban ANSWERED; one that got no answer is not caught. The board may or may not have acted — for a write, assume it may have landed. |
+| **5xx** | **502** (retryable) | it may clear. This is the one you may retry — ⚠ **except a write with no key to correlate on**: `board_comment_card`'s POST has no idempotency key, so a 502 there may follow a comment that landed and a retry can post a duplicate; a `board_create_card` sent **without an `idempotency_key`** may follow a card that landed the same way, and a retry can create a second one. |
+| **no answer** — the connection failed or timed out | **502** (retryable), the same body a 5xx gets — over ssh the same envelope and exit **2** (DL-387) | the bridge's HTTP client raises one exception class for every request that got no response, and the dispatcher maps it beside the 5xx. The board may or may not have acted before the answer was lost — for a write, assume it may have landed. The `5xx` row's warnings hold here too: a retried `board_comment_card` can post twice, and a retried `board_create_card` without an `idempotency_key` can create twice. ⚠ One call keeps its own answer: `board_create_card`'s placement read-back runs after the card exists and reports `placement_observed: false` instead. |
 
 ⚠ **Every 422 above writes and creates NOTHING** — the refusal is the whole outcome.
 
@@ -1030,10 +1031,11 @@ produced the same string, and for the dead-door case that string was empty):
 | `non-JSON response from the bridge (<label>): <snippet>` | **The transport worked and the bridge answered with something that is not JSON** — typically a PHP warning or an error page prepended to the body. The snippet is the answer; the transport is not the suspect. |
 | `could not spawn ssh to <target>: …` / `ssh to <target> exceeded the <N>ms deadline` | No child, or a leg that connected and then hung. |
 
-⚠ **The first row is also what a seat sees when the ssh leg WORKED and the bridge's own call to
-kanban got no answer** (the *no answer* row above): `bridge:tools-call` exits 1, and the partial
-output is the uncaught exception (`ConnectionException`, `cURL error …`) rather than an ssh
-diagnosis. Read the partial output before suspecting the key or sshd.
+⚠ **A bridge whose own call to kanban got no answer is not a row here**: since DL-387 it answers
+the `502` envelope (the *no answer* row above), exit 2 over ssh, and the channel server relays that
+body as an error. A bridge from before DL-387 exits 1 over ssh instead, and a seat sees the first
+row with the uncaught exception (`ConnectionException`, `cURL error …`) as its partial output —
+read that before suspecting the key or sshd.
 
 A seat on a snapshot older than 0.9.8 gets the second message for **both** of the first two
 rows — see § Staying in sync in [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)

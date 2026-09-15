@@ -4840,4 +4840,189 @@ class AgentToolsCallTest extends TestCase
             $res->json('error'),
         );
     }
+
+    // ─── a board call that gets NO answer (DL-387) ────────────────────────────
+
+    /**
+     * What the no-answer arm below walks: every registered tool's success path — the fixture
+     * {@see undeclaredKeyFixture} already owns, so a tool added later is in it — plus a named
+     * scenario for each branch that path never sends a request down.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function unansweredCallScenarios(): array
+    {
+        $extra = [];
+        foreach ([
+            'board_my_cards with a shared lane and a coord block',
+            'board_create_card idempotency hit',
+            'board_create_card raced duplicate collapsed',
+            'board_correct_card lookup misses into the archive side',
+            'board_take_card lookup misses into the archive side',
+            'board_comment_card lookup misses into the archive side',
+        ] as $scenario) {
+            $extra[$scenario] = [$scenario];
+        }
+
+        return self::registeredTools() + $extra;
+    }
+
+    /**
+     * Built FRESH per run: some fixtures count their own reads.
+     *
+     * @return array{tool: string, args: array<string, mixed>, fake: \Closure}
+     */
+    private function unansweredCallScenario(string $scenario): array
+    {
+        $lookupMiss = fn (string $tool, array $args, \Closure $fake): array => ['tool' => $tool, 'args' => $args, 'fake' => $fake];
+
+        return match ($scenario) {
+            'board_my_cards with a shared lane and a coord block' => (function (): array {
+                $this->writeAgent('me', $this->token, ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55],
+                    "  shared_swimlane_id: 9\n  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+
+                return ['tool' => 'board_my_cards'] + $this->undeclaredKeyFixture('board_my_cards');
+            })(),
+            'board_create_card idempotency hit' => ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'idempotency_key' => 'k1'],
+                'fake' => $this->archiveAxisFake(live: [['id' => 7]], archived: [], newId: 77)],
+            'board_create_card raced duplicate collapsed' => ['tool' => 'board_create_card', 'args' => ['title' => 'x', 'idempotency_key' => 'k1'],
+                'fake' => $this->archiveAxisFake(live: [], archived: [], newId: 8, postCreate: [['id' => 8], ['id' => 9]])],
+            'board_correct_card lookup misses into the archive side' => $lookupMiss('board_correct_card', ['card_id' => 42, 'name' => 'n'], $this->correctFake(live: [])),
+            'board_take_card lookup misses into the archive side' => $lookupMiss('board_take_card', ['card_id' => 42], $this->takeFake(live: [])),
+            'board_comment_card lookup misses into the archive side' => $lookupMiss('board_comment_card', ['card_id' => 42, 'content' => 'a note'], $this->commentFake(live: [])),
+            default => ['tool' => $scenario] + $this->undeclaredKeyFixture($scenario),
+        };
+    }
+
+    /**
+     * What a clean run of each scenario must answer, and the requests that prove it walked the
+     * branch it is named for. The census below counts whatever a clean run sends, so a fixture
+     * that drifts off its branch would take that branch's requests out of the population and
+     * still pass; this pins the branch instead. Each entry matches `METHOD url` of one request.
+     *
+     * @return array{status: int, sends: list<string>}
+     */
+    private function unansweredCallBranch(string $scenario): array
+    {
+        $search = '\\S+/tasks/search\\.json\\?';
+
+        return match ($scenario) {
+            'board_my_cards' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}.*swimlane_id=4#"]],
+            'board_my_cards with a shared lane and a coord block' => ['status' => 200, 'sends' => ["#^GET {$search}.*swimlane_id=9#", '#^GET \\S+/boards/12/preload\\.json#']],
+            'board_create_card' => ['status' => 200, 'sends' => ["#^GET {$search}.*archived=1#", '#^POST \\S+/tasks\\.json$#', '#^GET \\S+/tasks/77\\.json$#']],
+            'board_create_card idempotency hit' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/7\\.json$#']],
+            'board_create_card raced duplicate collapsed' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks\\.json$#', '#^PATCH \\S+/tasks/9\\.json$#']],
+            'board_correct_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
+            'board_take_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
+            'board_comment_card' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks/42/comments\\.json$#']],
+            'board_correct_card lookup misses into the archive side',
+            'board_take_card lookup misses into the archive side',
+            'board_comment_card lookup misses into the archive side' => ['status' => 422, 'sends' => ["#^GET {$search}.*archived=1#"]],
+            default => $this->fail("no clean-run branch for the scenario `{$scenario}` — name its status and the requests that prove its branch"),
+        };
+    }
+
+    /**
+     * ⭐ EVERY UPSTREAM CALL, DERIVED RATHER THAN LISTED. A clean run of the scenario counts the
+     * board requests it sends; run N then fails the Nth with a connection failure and answers the
+     * rest from the scenario's fixture. A request added to a tool's path later joins the population
+     * without anybody editing this test.
+     *
+     * One call keeps its own answer and is asserted as that, not skipped: `board_create_card`'s
+     * placement read-back runs after the card exists and reports no placement when it cannot read
+     * one (DL-299), so a 502 there would tell the seat to retry a create that landed.
+     */
+    #[DataProvider('unansweredCallScenarios')]
+    public function test_a_board_call_that_gets_no_answer_is_the_retryable_502_on_every_upstream_call(string $scenario): void
+    {
+        $fake = null;
+        $failAt = 0;
+        $sent = 0;
+        $failed = null;
+        $log = [];
+        Http::fake(function ($request) use (&$fake, &$failAt, &$sent, &$failed, &$log) {
+            $log[] = $request->method().' '.urldecode($request->url());
+            if (++$sent === $failAt) {
+                $failed = $request->method().' '.urldecode($request->url());
+
+                return Http::failedConnection('cURL error 28: Operation timed out after 15000 milliseconds with 0 bytes received')($request);
+            }
+
+            return $fake($request);
+        });
+        $tool = $this->unansweredCallScenario($scenario)['tool'];
+        $run = function (int $at) use ($scenario, &$fake, &$failAt, &$sent, &$failed, &$log) {
+            $s = $this->unansweredCallScenario($scenario);
+            [$fake, $failAt, $sent, $failed, $log] = [$s['fake'], $at, 0, null, []];
+
+            return $this->callTool(['tool' => $s['tool'], 'args' => $s['args']]);
+        };
+
+        $answered = $run(0);
+        $requests = $sent;
+        $branch = $this->unansweredCallBranch($scenario);
+        $population = "{$scenario}: the clean run answered {$answered->status()} after sending ".count($log)." request(s):\n  ".implode("\n  ", $log);
+        $this->assertSame($branch['status'], $answered->status(), $population);
+        foreach ($branch['sends'] as $signature) {
+            $this->assertNotEmpty(preg_grep($signature, $log), "{$population}\nnone of which matches {$signature}, so the fixture no longer walks the branch this scenario is named for");
+        }
+
+        for ($at = 1; $at <= $requests; $at++) {
+            $res = $run($at);
+            $this->assertNotNull($failed, "{$scenario}: run {$at} sent fewer requests than the clean run");
+
+            if (preg_match('#^GET .*/tasks/\d+\.json$#', (string) $failed) === 1) {
+                $this->assertSame('board_create_card', $tool, "only the create's placement read-back keeps its own answer, and {$failed} is not it");
+                $res->assertStatus($answered->status())->assertJsonPath('result.placement_observed', false);
+
+                continue;
+            }
+
+            $res->assertStatus(502);
+            $this->assertStringStartsWith('application/json', (string) $res->headers->get('Content-Type'), "{$scenario}: {$failed}");
+            $this->assertSame(['ok' => false, 'error' => 'upstream board error'], $res->json(), "{$scenario}: {$failed}");
+        }
+    }
+
+    /**
+     * The presence witness beside the status: an unanswered call and a board 5xx are ONE refusal,
+     * byte for byte, on the non-idempotent write the card#9459 warning is about. The operator's
+     * half is the log line, which carries the transport's own text through the redaction primitive.
+     */
+    public function test_no_answer_on_the_comment_write_is_byte_for_byte_the_refusal_a_5xx_gets_and_only_redacted_text_is_logged(): void
+    {
+        Log::spy();
+        $unanswered = false;
+        $posts = 0;
+        $fake = $this->commentFake(live: [$this->commentableCardRow()], postStatus: 503);
+        Http::fake(function ($request) use ($fake, &$unanswered, &$posts) {
+            if ($request->method() === 'POST') {
+                $posts++;
+                if ($unanswered) {
+                    return Http::failedConnection('cURL error 28: Operation timed out after 15000 milliseconds for https://kanban.example.com/api/v3/tasks/42/comments.json?api_token=planted-not-a-credential')($request); // gitleaks:allow — synthetic value the scrubber must remove
+                }
+            }
+
+            return $fake($request);
+        });
+        $call = ['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'note']];
+
+        $fiveHundred = $this->callTool($call);
+        $unanswered = true;
+        $noAnswer = $this->callTool($call);
+
+        $this->assertSame(2, $posts, 'both calls must have reached the comment POST');
+        $fiveHundred->assertStatus(502);
+        $noAnswer->assertStatus(502)->assertJsonPath('ok', false);
+        $this->assertSame($fiveHundred->getContent(), $noAnswer->getContent());
+        $this->assertSame($fiveHundred->headers->get('Content-Type'), $noAnswer->headers->get('Content-Type'));
+        $this->assertStringNotContainsString('planted-not-a-credential', (string) $noAnswer->getContent());
+
+        Log::shouldHaveReceived('warning', [
+            \Mockery::pattern('/^agent-tools: the board did not answer/'),
+            \Mockery::on(fn (array $context): bool => $context['tool'] === 'board_comment_card'
+                && str_contains($context['error'], 'cURL error 28')
+                && ! str_contains($context['error'], 'planted-not-a-credential')),
+        ]);
+    }
 }

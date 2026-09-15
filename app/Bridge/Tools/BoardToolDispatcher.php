@@ -5,7 +5,9 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Writeback\WritebackClientFactory;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -18,9 +20,16 @@ use Illuminate\Support\Facades\Log;
  * NOT an HTTP response; each door maps that outcome to its own signal (JsonResponse
  * status vs process exit code) and serializes the identical body from {@see DispatchOutcome::body}.
  *
- * Exception→status mapping is UNCHANGED from the controller's original inline form:
+ * Exception→status mapping:
  *  - {@see ToolRefusalException} → 422 (caller-fixable, deterministic).
  *  - {@see RequestException} (an upstream kanban 4xx/5xx) → 502; the upstream body is not leaked.
+ *  - {@see ConnectionException} (the board never answered: a timeout or a failed connection,
+ *    on ANY request a tool makes) → the SAME 502 body (DL-387). Laravel's client raises this
+ *    class for a transfer failure that carries no response (one carrying a 4xx/5xx response is
+ *    the {@see RequestException} above), and no tool catches it except `board_create_card`'s
+ *    placement read-back, which reports no placement instead
+ *    (DL-299). The body names no transport detail — the door's caller is a seat, and the
+ *    message carries the board's URL — while the log line carries it redacted.
  *  - {@see ConfigException} from {@see WritebackClientFactory::make} → 503 (install/provisioning fault).
  *
  * The one structured audit line per call moves here too, now carrying a
@@ -57,6 +66,9 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardToolDispatcher
 {
+    /** ⚠ One constant: an unanswered call and a board 5xx are ONE refusal to the caller, byte for byte (DL-387). */
+    private const UPSTREAM_ERROR = 'upstream board error';
+
     public function __construct(private BoardToolsRegistry $tools) {}
 
     /**
@@ -130,7 +142,13 @@ final class BoardToolDispatcher
             // leak the upstream body.
             Log::warning('agent-tools: upstream kanban error', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'status' => $e->response->status()]);
 
-            return DispatchOutcome::failure(502, 'upstream board error');
+            return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
+        } catch (ConnectionException $e) {
+            // ⚠ For a write, the board may have acted before the answer was lost — the same
+            // may-have-landed a 5xx carries, which docs/board-tools.md states per tool.
+            Log::warning('agent-tools: the board did not answer', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
+
+            return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
         }
 
         Log::info('agent-tools: ok', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport]);

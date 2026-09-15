@@ -56,8 +56,8 @@ use Illuminate\Support\Facades\Log;
  * ⚠ NO IDEMPOTENCY — THE SAME CHOICE AS `board_correct_card`, AND ITS COST IS DIFFERENT HERE. A
  * correction re-sent writes the same value twice; a comment re-sent after a POST that had in fact
  * landed posts it TWICE. Only a named refusal says nothing was written: any other answer — a 502,
- * or a transport failure or timeout, which {@see BoardToolDispatcher} does not catch and so is no
- * 502 at all — may follow a POST that landed. A duplicate note is visible and harmless to the
+ * which is also what a POST that got no answer returns (DL-387), or anything else — may follow a
+ * POST that landed. A duplicate note is visible and harmless to the
  * card's state. Stated rather than hidden.
  *
  * REFUSALS ARE DETERMINISTIC: a permanent board 4xx on the lookup or the write is a named
