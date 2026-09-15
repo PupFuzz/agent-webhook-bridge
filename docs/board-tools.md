@@ -99,6 +99,8 @@ never silently no-ops.
 | `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own lane, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
 | `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **An EMPTY value is refused, not ignored** — `""`, whitespace, an invisible character, or an explicit `null`. Omit the argument entirely to read every column; a silently-dropped filter would hand you *more* cards than you asked for, and the two doors disagreed about it. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
 | `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
+| `tag` | no | **ONE tag, matched exactly** (for example `lane:A`). Adds a `tag_cards` block: every live card on **your board** carrying it, in **any lane or in none**, each with its own `swimlane_id`. See § [Cards carrying a tag, in any lane](#cards-carrying-a-tag-in-any-lane-tag-include_terminal). Trimmed as the HTTP door trims. **Refused** (422, before any board read): a non-string, an EMPTY value (`""`, whitespace, an invisible character, an explicit `null`), a value containing `"`, `*` or `%`, a value containing a character kanban stores escaped (a control character, `/`, `\` or any non-ASCII character — no exact tag match can find it), and one longer than kanban's tag cap. ⛔ Omit it and the response is exactly the default. |
+| `include_terminal` | no | Boolean (default `false`). Keeps cards in **terminal columns** — the columns kanban types `lane_type: done` — in the `tag_cards` read. **Refused** without `tag` (it would change nothing), and when not a boolean, an explicit `null` included. |
 
 Any other key — `status` for `stage`, say — is **refused** (422) before any board read, naming the key and the accepted set: see § [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
 
@@ -138,7 +140,19 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "coord_board_observed": true,
   "configured_coord_board_id": 12,
   "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ],
-  "coord_cards_window": { /* total / returned / limit / truncated — NO stage_filter */ }
+  "coord_cards_window": { /* total / returned / limit / truncated — NO stage_filter */ },
+  // ONLY when `tag` was passed:
+  "tag_cards": {
+    "tag": "lane:A",
+    "include_terminal": false,
+    "excluded_terminal_stage_ids": [53],   // the lane_type `done` columns left out ([] when none)
+    "cards": [ { /* the card shape above */ "swimlane_id": null } ],  // null ⇒ in NO lane
+    "cards_window": { /* the same five keys, over this block's population, plus: */ "total_is_lower_bound": false },
+    "other_swimlanes": 2,            // cards in a lane other than yours, or null …
+    "other_swimlanes_unmeasured": null,   // … and then WHY, by name
+    "no_swimlane": 3,                // cards in no lane, or null …
+    "no_swimlane_unmeasured": null        // … and then WHY, by name
+  }
 }
 ```
 
@@ -187,7 +201,8 @@ for, and the old response gave no hint it was oversized or partial.
   (`board_tools.description_max_bytes`), so a whole titles-only window costs no more than
   one description already does. 16,384 / 310.3 = 52.8 ⇒ **52 cards per list**.
 - **It bounds ONE list.** An install with a shared lane *and* a coord leg has three lists
-  and can return three capped ones. That is a bound, not a promise of the budget.
+  and can return three capped ones, and a call passing `tag` adds a fourth. That is a bound,
+  not a promise of the budget.
 - **`cards_window` is how a capped read says it is capped.** `total` is the population
   **before** the cut — that is what makes `truncated` worth reading. ⛔ **Never treat a
   `truncated: true` list as the whole board**, exactly as you must never treat a truncated
@@ -233,6 +248,68 @@ for, and the old response gave no hint it was oversized or partial.
   board whose structure this bridge could not read at all (an empty stage map — logged
   upstream), a **numeric id is taken unverified** and a **name is refused**, saying so:
   validating an id against an empty map would turn a degraded read into a dead argument.
+
+### Cards carrying a tag, in any lane (`tag`, `include_terminal`)
+
+⛔ **Your lane read cannot tell you that none of your cards carry a tag.** It searches your
+lane, so a card in another lane or in **no lane** was never in what it read. Measured
+(card#9260): a seat read its lane, found no `lane:A` cards and reported its sprint empty while
+three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could have said so.
+
+`tag` reads your board by tag instead (card#9260, DL-383). What `tag_cards` holds:
+
+- **The population** — every live card on your configured board carrying the tag, **minus
+  terminal columns** unless `include_terminal: true`, **narrowed by `stage`** when you pass it.
+  `cards_window.total`, `other_swimlanes` and `no_swimlane` all count that one population.
+  - **Terminal** is the board's own declaration: a column kanban types `lane_type: done`. It is
+    not the writeback's terminal rule, and a board that does not type its finished columns
+    `done` has none — `excluded_terminal_stage_ids` lists what was left out.
+  - A `stage` that names a terminal column is **refused** without `include_terminal: true`,
+    rather than answering an empty block.
+- **`cards`** — capped by `limit` like every list here, newest kept, with `cards_window`.
+  **Each card carries `swimlane_id`**: a lane id, or **`null` when the card is in no lane**.
+  A card whose row carried no readable lane field has **no** `swimlane_id` key, never a null
+  that would call it laneless. `cards_window.total_is_lower_bound` is `true` when the tag read
+  stopped at the bridge's page ceiling (`KanbanClient::MAX_PAGES` × `SEARCH_LIMIT` rows): `total`
+  then counts only the rows read, and both counts are `tag_read_incomplete`.
+- **`other_swimlanes` / `no_swimlane`** — how many of the population sit in a lane other than
+  your configured `swimlane_id` (your shared lane counts as another lane), and in none.
+  ⛔ **A `null` is not zero.** Each count is kanban's own answer to its `swimlane_id=` filter,
+  and it is reported only when the bridge can stand behind it. Otherwise it is `null` and
+  `<key>_unmeasured` names why:
+
+  | `*_unmeasured` | Meaning |
+  | --- | --- |
+  | `server_filter_unconfirmed` | (`no_swimlane` only) your kanban's search does not say when a term falls back to free text — it is **older than kanban v0.43.0**, and so also too old to know `swimlane_id=none` — so no laneless count was asked: its answer could not be told from a word search. |
+  | `server_filter_not_honoured` | kanban searched a term of the count as free text. On `no_swimlane` this is **kanban v0.43.0–v0.44.x**, which does not know `swimlane_id=none`: it searches the word instead, and its `0` is not your answer. |
+  | `server_total_absent` | the count response carried no `meta.total`. |
+  | `disagrees_with_rows` | kanban's count and the lane fields on the rows this call read do not agree. |
+  | `board_swimlanes_unreadable` | (`other_swimlanes` only) the board structure read carried no lane list to count against. |
+  | `tag_read_incomplete` | the tag read stopped at the page ceiling, so its rows are not the whole population and no count over them could be checked. No count search was sent. Narrow with `stage`. |
+
+  Before the laneless count, the bridge sends your board one bare-word search and reads only
+  whether kanban says it ran as free text: that is what makes kanban's silence on the count
+  itself mean `none` was applied. And a count reaches you only when it also equals the tally of
+  the same lane over the tag rows. ⚠ That check is not a second reading of the TAG: kanban's
+  count and the rows both come from its own `tags:"…"` match and differ only on the lane, so
+  the check stands behind the lane count, never behind the tag match. A board with no lane but
+  yours answers `other_swimlanes: 0` without a count search, still checked against the rows.
+- ⚠ **This read crosses the lane boundary on purpose.** The bridge-enforced read isolation
+  described below holds for your lane lists; `tag_cards` lists cards in other agents' lanes
+  that carry the tag you name, on your own board. It is one exact tag: `*` (a wildcard to kanban),
+  `"`, and `%` (a wildcard to a kanban older than v0.36.0) are refused. `_` is accepted — agent
+  names carry it — and kanban v0.36.0 and later match it literally; an older kanban reads it as
+  any one character.
+- ⛔ **A tag kanban stores escaped is refused, not answered as empty.** Kanban stores tags as
+  JSON and its exact tag match compares against that stored text, so a tag containing a control
+  character, `/`, `\` or any non-ASCII character (any byte ≥ 0x80) matches no card, even one
+  that carries it. The read would answer `cards: []` beside counts of `0`, so the tool refuses
+  the tag (422, before any board read) instead. The limitation is kanban's (kanban card#9522).
+- **Cost:** a call with `tag` adds the tag read (paged) and one-row searches — the
+  `other_swimlanes` count, the free-text disclosure check, and the `no_swimlane` count. The
+  board structure read is the one the default call already makes.
+- ⛔ **Without `tag`, nothing changes:** the same keys and values, from the same requests (a coord
+  leg's tag search now also sends `page=1`), and no `swimlane_id` on the lane cards.
 
 ### Where these cards are (`board_id` vs `configured_board_id`)
 
@@ -311,7 +388,9 @@ membership, never by swimlane — so the boundary keeping you out of another
 agent's lane is your `board_tools.swimlane_id` config plus a fail-closed row
 filter: every returned row is re-checked against your configured swimlane and any
 non-matching row is **dropped and logged**. The upstream `swimlane_id=` search
-term is efficiency + defense-in-depth, not the boundary.
+term is efficiency + defense-in-depth, not the boundary. ⚠ **The `tag` read is the
+deliberate exception** (DL-383): it lists the cards on your board carrying the one
+tag you name, in any lane — see § Cards carrying a tag, in any lane.
 
 ### An empty window is not always an empty lane
 
@@ -326,6 +405,22 @@ proxy, an auth portal — answered the URL. ⛔ **The converse is not covered an
 claimed:** a kanban that dropped or renamed the `swimlane_id=` filter still answers a
 well-formed empty collection, which the bridge cannot tell from a genuinely empty lane
 (`docs/kanban-integration-contract.md` §2 owns that hazard, on the far end).
+
+⚠ **The `tag` read pages through the same walk, and `tag_cards` cannot tell you when a page
+went unreadable.** Your lane lists, the coord cards and the tag read all page through
+`KanbanClient::pagedSearch()`. A page
+answered `200` with no card collection in its body adds no rows and logs the warning above for
+that page (*"the tag-row-search lane:A page 2 read returned a 200 whose body carried no card
+collection"*). Unless that body still carries a non-null `links.next`, the walk stops there and
+calls itself **complete**. `tag_cards` then answers from the rows read before that page:
+`cards_window.total` under-counts (it is `0` when the first page was the unreadable one), and
+`cards_window.total_is_lower_bound` stays `false`, because it reports only the page ceiling. The
+two counts do not check completeness. Each is its own search compared with those rows, so a count
+can show the gap (as `disagrees_with_rows`) only when an unread card sits in another lane or in
+none. An unread card in your own lane moves neither count. Nothing in the response tells this case
+apart from a complete read, so the bridge log is where it shows. Kanban's own search endpoint
+answers every page as a paginated collection carrying both `data` and `links`. A page with
+neither means something in front of kanban answered.
 
 ## `board_create_card`
 
@@ -891,7 +986,7 @@ a question you did not ask.
 - **The message names every undeclared key in the call and the accepted set**, in one refusal:
 
   ```text
-  board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`. Nothing was sent to the board — no card was read or written.
+  board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`, `tag`, `include_terminal`. Nothing was sent to the board — no card was read or written.
   ```
 
 - **A tool may give a key a reason** (`Tool::refusedArgumentReason()`), which replaces only the

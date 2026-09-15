@@ -638,6 +638,152 @@ class KanbanClientTest extends TestCase
             && str_contains($r->url(), 'archived=1'));
     }
 
+    /**
+     * ⛔ card#9260: this read took ONE page, so a tag on more than SEARCH_LIMIT live cards answered a
+     * silently short list — and `board_my_cards` reports the size of that list as its `total`.
+     * ⚑ RED-WHEN-REVERTED: a single-page read returns SEARCH_LIMIT rows here.
+     */
+    public function test_card_rows_by_tag_reads_every_page(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['data' => [['id' => 999, 'tags' => ['lane:A']]], 'links' => ['next' => null]]);
+
+        $rows = $this->client()->cardRowsByTag(8, 'lane:A');
+
+        $this->assertCount(KanbanClient::SEARCH_LIMIT + 1, $rows);
+        Http::assertSentCount(2);
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=8 tags:"lane:A"') && str_contains($r->url(), 'page=2'));
+    }
+
+    /**
+     * ⛔ ONE PAGE WALK, ONE CEILING FLAG. The tag row read and the board read share the walk, and the
+     * flag is what lets a caller tell a population from the first MAX_PAGES × SEARCH_LIMIT rows of one.
+     */
+    public function test_the_tag_row_read_says_when_its_page_walk_stopped_at_the_ceiling(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])]);
+
+        $read = $this->client()->tagRowsRead(8, 'lane:A');
+
+        $this->assertTrue($read->truncated);
+        $this->assertCount(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT, $read->cards);
+        Http::assertSentCount(KanbanClient::MAX_PAGES);
+    }
+
+    public function test_the_tag_row_read_is_complete_when_kanban_says_there_is_no_next_page(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['data' => [['id' => 999, 'tags' => ['lane:A']]], 'links' => ['next' => null]]);
+
+        $read = $this->client()->tagRowsRead(8, 'lane:A');
+
+        $this->assertFalse($read->truncated);
+        $this->assertCount(KanbanClient::SEARCH_LIMIT + 1, $read->cards);
+    }
+
+    /**
+     * `readBoardCards()` answers what it answered before the walk was shared: the bare board scope as
+     * `q` (no trailing term), and `truncated` only when the walk ran out of pages.
+     */
+    public function test_read_board_cards_flags_a_walk_that_stopped_at_the_ceiling(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])]);
+
+        $read = $this->client()->readBoardCards(8);
+
+        $this->assertTrue($read['truncated']);
+        $this->assertCount(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT, $read['cards']);
+        Http::assertSentCount(KanbanClient::MAX_PAGES);
+        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/tasks/search.json?q=board_id%3D8&limit=200&page=1'));
+    }
+
+    public function test_read_board_cards_is_not_truncated_when_kanban_says_there_is_no_next_page(): void
+    {
+        $full = array_map(fn (int $i) => ['id' => $i], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fakeSequence()
+            ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['data' => [['id' => 999]], 'links' => ['next' => null]]);
+
+        $read = $this->client()->readBoardCards(8);
+
+        $this->assertFalse($read['truncated']);
+        $this->assertCount(KanbanClient::SEARCH_LIMIT + 1, $read['cards']);
+        Http::assertSentCount(2);
+    }
+
+    public function test_board_structure_reads_stages_terminal_columns_and_lanes_from_one_preload_read(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => [
+            'workflows' => [['stages' => [
+                ['id' => 52, 'name' => 'Shipped', 'position' => 3, 'lane_type' => 'done'],
+                ['id' => 50, 'name' => 'Backlog', 'position' => 1, 'lane_type' => 'backlog_inventory'],
+                ['id' => 53, 'position' => 4, 'lane_type' => 'done'],
+            ]]],
+            'swimlanes' => [['id' => 31], ['id' => 32]],
+        ]])]);
+
+        $structure = $this->client()->boardStructure(8);
+
+        $this->assertSame([50 => 'Backlog', 52 => 'Shipped'], $structure->stageNames);
+        $this->assertSame([52, 50, 53], $structure->stageIds, 'a stage with no name is still a stage a count can be narrowed to');
+        $this->assertSame([52, 53], $structure->terminalStageIds);
+        $this->assertSame([31, 32], $structure->swimlaneIds);
+        Http::assertSentCount(1);
+    }
+
+    public function test_board_structure_keeps_the_absent_versus_empty_lane_split(): void
+    {
+        Http::fakeSequence()
+            ->push(['data' => ['workflows' => [], 'swimlanes' => []]])
+            ->push(['data' => ['workflows' => []]]);
+
+        $this->assertSame([], $this->client()->boardStructure(8)->swimlaneIds);
+        $this->assertNull($this->client()->boardStructure(8)->swimlaneIds);
+    }
+
+    public function test_tag_totals_count_server_side_inside_q_and_read_the_free_text_disclosure(): void
+    {
+        Http::fakeSequence()
+            ->push(['data' => [], 'meta' => ['total' => 4]])
+            ->push(['data' => [], 'meta' => ['total' => 0, 'match_mode' => 'substring_and']])
+            ->push(['data' => []]);
+
+        $other = $this->client()->tagTotalInSwimlanes(8, 'lane:A', [31, 32], [50, 51]);
+        $none = $this->client()->tagTotalWithoutSwimlane(8, 'lane:A');
+        $bare = $this->client()->tagTotalWithoutSwimlane(8, 'lane:A', [50]);
+
+        $this->assertSame([4, false], [$other->total, $other->freeTextRan]);
+        $this->assertSame([0, true], [$none->total, $none->freeTextRan]);
+        $this->assertSame([null, false], [$bare->total, $bare->freeTextRan]);
+        $sent = Http::recorded()->map(fn ($pair) => urldecode($pair[0]->url()))->all();
+        $this->assertStringContainsString('q=board_id=8 swimlane_id=31,32 tags:"lane:A" workflow_stage_id=50,51&limit=1', $sent[0]);
+        $this->assertStringContainsString('q=board_id=8 swimlane_id=none tags:"lane:A"&limit=1', $sent[1]);
+        $this->assertStringContainsString('q=board_id=8 swimlane_id=none tags:"lane:A" workflow_stage_id=50&limit=1', $sent[2]);
+    }
+
+    /**
+     * The probe reads ONE fact — whether `meta` names a free-text arm — so a response that says so
+     * and one that does not must give different answers, from the same request.
+     */
+    public function test_the_free_text_disclosure_probe_searches_a_bare_word_on_the_board_and_reads_only_match_mode(): void
+    {
+        Http::fakeSequence()
+            ->push(['data' => [], 'meta' => ['total' => 3, 'match_mode' => 'fulltext_prefix_and']])
+            ->push(['data' => [], 'meta' => ['total' => 3]]);
+
+        $this->assertTrue($this->client()->searchDisclosesFreeText(8));
+        $this->assertFalse($this->client()->searchDisclosesFreeText(8));
+        $sent = Http::recorded()->map(fn ($pair) => urldecode($pair[0]->url()))->all();
+        $this->assertStringContainsString('q=board_id=8 '.KanbanClient::FREE_TEXT_PROBE_TERM.'&limit=1', $sent[0]);
+        $this->assertSame($sent[0], $sent[1]);
+    }
+
     public function test_board_swimlane_ids_reads_the_preload_endpoint(): void
     {
         Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [

@@ -4,7 +4,11 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Writeback\BoardRead;
+use App\Bridge\Writeback\BoardStructure;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Bridge\Writeback\SearchTotal;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -90,6 +94,17 @@ use Illuminate\Support\Facades\Log;
  * cases, so each read is caught separately and names its own: what a 403 or a 404 MEANS differs
  * between a board-scoped read and a card search, and a refusal naming the wrong one denies the
  * true cause to the operator by name.
+ *
+ * ⭐ `tag` IS THE ONE READ HERE THAT CROSSES SWIMLANES ON PURPOSE (card#9260, DL-383). A seat
+ * whose sprint cards sat at `swimlane_id: null` read its own lane, found none, and wrote that its
+ * sprint was empty: the lane read never contained them, and nothing in the response varied
+ * between "no such cards" and "not in your lane". `tag_cards` reads the board by tag, so every
+ * card carrying it is listed WITH its own `swimlane_id` — `null` by name — and the block counts
+ * the ones in other lanes and in none, each count reported only when it can be stood behind (see
+ * {@see swimlaneCount}). ⚠ This is a deliberate widening of the read-isolation boundary above,
+ * for the one exact tag the caller names on its own board: a glob is refused, so it cannot be
+ * turned into a whole-board read. Without `tag` the call makes the same requests and returns the
+ * same keys it did before.
  */
 final class BoardMyCardsTool implements Tool
 {
@@ -111,13 +126,32 @@ final class BoardMyCardsTool implements Tool
      *   - 16,384 / 310.3 = 52.8 ⇒ 52 cards per list.
      *
      * ⚠ It bounds ONE list. An install with a shared lane AND a coord leg can
-     * return three saturated lists; that is a bound, not a promise of the budget.
+     * return three saturated lists, and a call passing `tag` a fourth; that is a
+     * bound, not a promise of the budget.
      *
      * ⛔ WHICH 52 IS NOT A DETAIL — see `cardWindow`. A cap that kept the OLDEST cards
      * bounds the response and answers the wrong question, which is the same defect this
      * constant exists to fix wearing a smaller number.
      */
     public const DEFAULT_MAX_CARDS = 52;
+
+    /** The board's preload read carried no swimlane collection, so there is no lane list to count against. */
+    public const UNMEASURED_SWIMLANES_UNREADABLE = 'board_swimlanes_unreadable';
+
+    /** The board's search does not say when a term falls back to free text (a kanban older than v0.43.0), so `swimlane_id=none` could not be shown to be applied, and no laneless count was asked. */
+    public const UNMEASURED_FILTER_UNCONFIRMED = 'server_filter_unconfirmed';
+
+    /** The count search ran a `q` token as free text — on `swimlane_id=none`, a kanban older than that term. */
+    public const UNMEASURED_FILTER_NOT_HONOURED = 'server_filter_not_honoured';
+
+    /** The count search's response carried no `meta.total`. */
+    public const UNMEASURED_TOTAL_ABSENT = 'server_total_absent';
+
+    /** The server's count and the lane fields on the tag rows this call read do not agree. */
+    public const UNMEASURED_DISAGREES_WITH_ROWS = 'disagrees_with_rows';
+
+    /** The tag read stopped at the client's page ceiling, so its rows are not the population: no count over them could be checked, and none was asked. */
+    public const UNMEASURED_TAG_READ_INCOMPLETE = 'tag_read_incomplete';
 
     public function name(): string
     {
@@ -126,7 +160,7 @@ final class BoardMyCardsTool implements Tool
 
     public function acceptedArguments(): array
     {
-        return ['include_description', 'stage', 'limit'];
+        return ['include_description', 'stage', 'limit', 'tag', 'include_terminal'];
     }
 
     public function refusedArgumentReason(string $key): ?string
@@ -141,6 +175,8 @@ final class BoardMyCardsTool implements Tool
         // refusal that costs an upstream request is a refusal that costs an
         // upstream request on every retry of a caller that has not fixed its args.
         $limit = $this->cardLimit($args);
+        $tag = $this->tagArgument($args);
+        $includeTerminal = $this->includeTerminal($args, $tag);
         $boardId = (int) $cfg->boardId;
         $swimlaneId = (int) $cfg->swimlaneId;
         // ⛔ TWO `try`s FOR TWO KANBAN ROUTE CLASSES, NOT A STYLE CHOICE (card#8486 R1). The
@@ -149,14 +185,18 @@ final class BoardMyCardsTool implements Tool
         // One `try` over both could only name one of them, so the refusal it composed would
         // deny the true cause by name on whichever call actually failed.
         try {
-            $stageNames = $client->boardStageNames($boardId);
+            $structure = $client->boardStructure($boardId);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'stages', BoardReadRoute::BoardScoped, "the structure of your board {$boardId}");
         }
+        $stageNames = $structure->stageNames;
 
         // Resolved against the stage names just read, so a name that names nothing —
         // or names two things — is refused before any card search is paid for.
         $stageFilter = $this->stageFilter($args, $stageNames, $boardId);
+        if ($tag !== null && ! $includeTerminal && $stageFilter !== null && in_array($stageFilter, $structure->terminalStageIds, true)) {
+            throw new ToolRefusalException("board_my_cards: `stage` {$stageFilter} is a terminal column of board {$boardId} (kanban lane type `done`), and the `tag` read leaves terminal columns out unless `include_terminal` is true — so it could only answer an empty tag window. Pass `include_terminal: true`, or name a column that is not terminal.");
+        }
 
         try {
             $ownRead = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
@@ -165,6 +205,15 @@ final class BoardMyCardsTool implements Tool
                 : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
+        }
+
+        $tagRead = null;
+        if ($tag !== null) {
+            try {
+                $tagRead = $client->tagRowsRead($boardId, $tag);
+            } catch (RequestException $e) {
+                throw $this->readRefusal($e, $agentName, 'tag', BoardReadRoute::Search, "the cards carrying your `tag` on your board {$boardId}");
+            }
         }
 
         // ⛔ THE BOARD AXIS IS READ OVER EVERY ROW THIS CALL READ — before the stage filter
@@ -176,7 +225,12 @@ final class BoardMyCardsTool implements Tool
         // no reason to stop looking at what was actually read, so this stays exactly the
         // population it was before the cap existed. ⚑ Read isolation is a different axis
         // and is unaffected: `filterSwimlane()` above still runs over every row.
-        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRead, $sharedRead ?? []), $boardId, $agentName, $sharedRead === null ? 'own' : 'own+shared');
+        [$observedBoard, $boardObserved] = $this->observedBoard(
+            array_merge($ownRead, $sharedRead ?? [], $tagRead->cards ?? []),
+            $boardId,
+            $agentName,
+            implode('+', array_keys(array_filter(['own' => true, 'shared' => $sharedRead !== null, 'tag' => $tagRead !== null]))),
+        );
 
         [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($ownRead, $stageFilter), $limit, $stageFilter);
         $result = [
@@ -196,6 +250,10 @@ final class BoardMyCardsTool implements Tool
                 'cards_by_stage' => $this->groupByStage($sharedCards, $stageNames, $descriptionCap),
                 'cards_window' => $sharedWindow,
             ];
+        }
+
+        if ($tag !== null) {
+            $result['tag_cards'] = $this->tagBlock($client, $structure, $tagRead, $tag, $includeTerminal, $stageFilter, $limit, $descriptionCap, $boardId, $swimlaneId, $agentName);
         }
 
         if ($cfg->coordBoardId !== null && $cfg->addressTags !== []) {
@@ -249,6 +307,291 @@ final class BoardMyCardsTool implements Tool
         ]);
 
         return BoardCallRefusal::readRefusal($this->name(), $route, $status, $what, 'so NO cards were returned — this is not an empty window');
+    }
+
+    /**
+     * The one exact tag the caller asks about, or null when it named none. Only an ABSENT key
+     * means "no tag read": the HTTP door's `ConvertEmptyStringsToNull` turns `""` into a present
+     * null, and folding that into absent would answer the default response — the lane read, the
+     * very shape this argument exists to see past — as though the tag read had come back.
+     *
+     * ⛔ `"` AND `*` ARE REFUSED because they change what kanban's `tags:"…"` term means: a quote
+     * ends the term early, and `*` turns an exact match into a glob, which would make this
+     * cross-lane read a whole-board read.
+     *
+     * ⛔ `%` IS REFUSED because kanban escapes the LIKE wildcards of an exact tag match only from
+     * v0.36.0 (`LikePattern::escape`). Before it, `tag: "%"` matches every tagged card on the board.
+     * `_` is the other wildcard and is NOT refused: agent names carry it ({@see AgentNameShape}), so
+     * `created-by:` and `idem:` tags do. From kanban v0.36.0 both match literally; before it a `_`
+     * matches any one character, which widens the read to tags differing there, never to the board.
+     *
+     * ⛔ A TAG KANBAN STORES ESCAPED IS REFUSED, NEVER ANSWERED AS AN EMPTY BLOCK. Kanban casts `tags`
+     * to `array`, which Laravel stores through `json_encode` with no flags (`getJsonCastFlags`, read in
+     * the Laravel version kanban v0.45.0 locks), and matches `tags LIKE '%"<tag>"%'` over that stored text. A
+     * character the encoding rewrites — a control byte 0x00–0x1F, `"`, `/`, `\`, or any byte ≥ 0x80
+     * (every non-ASCII character; invalid UTF-8 fails the encode) — so makes the tag match no card, even
+     * one carrying it, and the block would answer `cards: []` beside two counts agreeing on `0`. The
+     * check IS that encoding, so it cannot drift from a hand-kept list. Kanban's side: kanban card#9522.
+     *
+     * @param  array<string, mixed>  $args
+     */
+    private function tagArgument(array $args): ?string
+    {
+        if (! array_key_exists('tag', $args)) {
+            return null;
+        }
+        $raw = $args['tag'];
+        if (! is_string($raw) && $raw !== null) {
+            throw new ToolRefusalException('board_my_cards: `tag` must be ONE tag, as a string (for example `lane:A`). It is matched exactly and never coerced from another type.');
+        }
+        $tag = $raw === null ? '' : BoardToolArgs::trimmed($raw);
+        if ($tag === '') {
+            throw new ToolRefusalException('board_my_cards: `tag` was sent EMPTY. Omit the argument entirely for the default response; an empty value is not a tag and is refused rather than silently ignored, which would answer the lane read as though no card carried the tag.');
+        }
+        if (strpbrk($tag, '"*') !== false) {
+            throw new ToolRefusalException('board_my_cards: `tag` may not contain `"` or `*`. The tag read matches ONE tag exactly; a quote would break the board search term and `*` would turn it into a wildcard over every lane.');
+        }
+        if (str_contains($tag, '%')) {
+            throw new ToolRefusalException('board_my_cards: `tag` may not contain `%`. A kanban older than v0.36.0 reads `%` in an exact tag match as a wildcard, which would widen this read to other tags — `%` alone matches every tagged card on your board.');
+        }
+        if (json_encode($tag) !== '"'.$tag.'"') {
+            throw new ToolRefusalException('board_my_cards: `tag` may not contain a control character, `/`, `\\` or any non-ASCII character. Kanban stores tags as JSON, which writes each of those as an escape, and its exact tag match compares against that stored text — so no card would match, even one carrying the tag, and the answer would look like an empty one. No spelling of such a tag can be matched by this read.');
+        }
+        if (mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
+            throw new ToolRefusalException('board_my_cards: `tag` is '.mb_strlen($tag).' characters — kanban accepts at most '.KanbanFieldLimits::TAG_MAX.' per tag, so no card can carry it.');
+        }
+
+        return $tag;
+    }
+
+    /**
+     * Whether the tag read keeps cards in terminal columns. A present null is refused rather
+     * than read as the default, for `stage`'s reason: the HTTP door hands `""` over as null. And
+     * it is refused without `tag`, because it changes nothing else in the response — an argument
+     * that is accepted and has no effect answers `ok` for a question the caller did not get
+     * answered (DL-379).
+     *
+     * @param  array<string, mixed>  $args
+     */
+    private function includeTerminal(array $args, ?string $tag): bool
+    {
+        if (! array_key_exists('include_terminal', $args)) {
+            return false;
+        }
+        $include = $args['include_terminal'];
+        if (! is_bool($include)) {
+            throw new ToolRefusalException('board_my_cards: `include_terminal` must be a boolean when provided (an empty or null value included). Omit it to leave terminal columns out of the tag read.');
+        }
+        if ($tag === null) {
+            throw new ToolRefusalException('board_my_cards: `include_terminal` applies only to the `tag` read, and this call names no `tag` — it would change nothing, so it is refused rather than ignored. Pass `tag` with it, or omit it.');
+        }
+
+        return $include;
+    }
+
+    /**
+     * The `tag_cards` block: every card on the configured board carrying `$tag`, whatever lane it
+     * is in, each with its own `swimlane_id`.
+     *
+     * ⭐ ONE POPULATION FOR EVERY NUMBER IN THE BLOCK: the tag rows, minus terminal columns unless
+     * the caller opted in, narrowed by `stage`. The window's `total`, `other_swimlanes` and
+     * `no_swimlane` are all counted over it, so they can be read against one another.
+     *
+     * ⛔ NO READ-ISOLATION ROW FILTER, deliberately: crossing lanes is the whole point, and the
+     * lane a card is in is reported on the card instead ({@see withSwimlane}).
+     *
+     * ⛔ A TAG READ THAT STOPPED AT THE PAGE CEILING IS NOT THE POPULATION. `cards_window.total_is_lower_bound`
+     * says so, and both counts are `tag_read_incomplete` with no count request sent: a count is checked
+     * against these rows, and rows short of the population can agree with it by luck.
+     *
+     * @return array{tag: string, include_terminal: bool, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
+     */
+    private function tagBlock(KanbanClient $client, BoardStructure $structure, BoardRead $read, string $tag, bool $includeTerminal, ?int $stageFilter, int $limit, ?int $descriptionCap, int $boardId, int $swimlaneId, string $agentName): array
+    {
+        $excluded = $includeTerminal ? [] : $structure->terminalStageIds;
+        $population = $this->onStage($this->offStages($read->cards, $excluded), $stageFilter);
+        [$cards, $window] = $this->filteredWindow($population, $limit, $stageFilter);
+        $window += ['total_is_lower_bound' => $read->truncated];
+
+        // The same narrowing, spelled as kanban column ids for the two server counts. `[]` means
+        // every column of the board is excluded, so neither count can be anything but zero.
+        $countStages = match (true) {
+            $stageFilter !== null => [$stageFilter],
+            $excluded === [] => null,
+            default => array_values(array_diff($structure->stageIds, $excluded)),
+        };
+
+        [$rowsOther, $rowsNone] = $this->laneTally($population, $swimlaneId);
+
+        if ($read->truncated) {
+            [$other, $otherUnmeasured] = $this->unmeasured(self::UNMEASURED_TAG_READ_INCOMPLETE, null, $rowsOther, 'other_swimlanes', $agentName, $boardId);
+        } elseif ($structure->swimlaneIds === null) {
+            [$other, $otherUnmeasured] = [null, self::UNMEASURED_SWIMLANES_UNREADABLE];
+        } else {
+            $complement = array_values(array_diff($structure->swimlaneIds, [$swimlaneId]));
+            try {
+                $otherTotal = $complement === [] || $countStages === []
+                    ? new SearchTotal(0, false)
+                    : $client->tagTotalInSwimlanes($boardId, $tag, $complement, $countStages);
+            } catch (RequestException $e) {
+                throw $this->readRefusal($e, $agentName, 'tag other_swimlanes', BoardReadRoute::Search, "the count of cards carrying your `tag` in other swimlanes of your board {$boardId}");
+            }
+            [$other, $otherUnmeasured] = $this->swimlaneCount($otherTotal, $rowsOther, 'other_swimlanes', $agentName, $boardId);
+        }
+
+        if ($read->truncated) {
+            [$none, $noneUnmeasured] = $this->unmeasured(self::UNMEASURED_TAG_READ_INCOMPLETE, null, $rowsNone, 'no_swimlane', $agentName, $boardId);
+        } else {
+            if ($countStages === []) {
+                $noneTotal = new SearchTotal(0, false);
+            } else {
+                try {
+                    $discloses = $client->searchDisclosesFreeText($boardId);
+                } catch (RequestException $e) {
+                    throw $this->readRefusal($e, $agentName, 'tag no_swimlane probe', BoardReadRoute::Search, "the check that the search on your board {$boardId} says when it falls back to free text, which the count of cards carrying your `tag` in no swimlane needs");
+                }
+                try {
+                    $noneTotal = $discloses ? $client->tagTotalWithoutSwimlane($boardId, $tag, $countStages) : null;
+                } catch (RequestException $e) {
+                    throw $this->readRefusal($e, $agentName, 'tag no_swimlane', BoardReadRoute::Search, "the count of cards carrying your `tag` in no swimlane on your board {$boardId}");
+                }
+            }
+            [$none, $noneUnmeasured] = $this->swimlaneCount($noneTotal, $rowsNone, 'no_swimlane', $agentName, $boardId);
+        }
+
+        return [
+            'tag' => $tag,
+            'include_terminal' => $includeTerminal,
+            'excluded_terminal_stage_ids' => $excluded,
+            'cards' => array_map(fn (array $row): array => $this->withSwimlane($this->projectCard($row, $structure->stageNames, $descriptionCap), $row), $cards),
+            'cards_window' => $window,
+            'other_swimlanes' => $other,
+            'other_swimlanes_unmeasured' => $otherUnmeasured,
+            'no_swimlane' => $none,
+            'no_swimlane_unmeasured' => $noneUnmeasured,
+        ];
+    }
+
+    /**
+     * A server count, or null and the named reason it cannot be reported (card#9260).
+     *
+     * ⛔ A ZERO FROM A KANBAN THAT DID NOT APPLY THE FILTER LOOKS EXACTLY LIKE A REAL ZERO, and
+     * `swimlane_id=none` is a term an older kanban does not refuse: it searches the text instead.
+     * So a count is reported only when ALL of these hold:
+     *  (0) the board's search was shown to disclose free text at all
+     *      ({@see KanbanClient::searchDisclosesFreeText}) — `$server` is null when it was not, and
+     *      no count was asked. Without it, (1) is silent on a kanban too old to disclose (v0.36.0,
+     *      the lane read's `swimlane_id=` term, to v0.42.x), and a text search's `0` agreeing with
+     *      a row tally of `0` would be reported as measured;
+     *  (1) the response does not disclose a free-text arm ({@see SearchTotal::$freeTextRan}) —
+     *      what a v0.43/v0.44 kanban says about `none`;
+     *  (2) it equals the tally of the same lane over the tag rows this call already read. ⚠ The two
+     *      are NOT independent readings: both select the cards through kanban's own `tags:"…"`
+     *      predicate, and they differ only on the LANE — the server's `swimlane_id=` filter against
+     *      each row's own field. Agreement stands behind the lane count, never behind the tag match:
+     *      a tag that predicate cannot match reads `0` in both, which is why {@see tagArgument}
+     *      refuses those tags. It also holds against a card moved between the requests.
+     * The order is the order of the reasons' specificity, not of trust. A tag read cut short at the
+     * page ceiling never reaches here: {@see tagBlock} names it `tag_read_incomplete` first.
+     *
+     * @return array{0: ?int, 1: ?string}
+     */
+    private function swimlaneCount(?SearchTotal $server, int $rowsTally, string $key, string $agentName, int $boardId): array
+    {
+        $reason = match (true) {
+            $server === null => self::UNMEASURED_FILTER_UNCONFIRMED,
+            $server->freeTextRan => self::UNMEASURED_FILTER_NOT_HONOURED,
+            $server->total === null => self::UNMEASURED_TOTAL_ABSENT,
+            $server->total !== $rowsTally => self::UNMEASURED_DISAGREES_WITH_ROWS,
+            default => null,
+        };
+        if ($reason === null) {
+            return [$server->total, null];
+        }
+
+        return $this->unmeasured($reason, $server?->total, $rowsTally, $key, $agentName, $boardId);
+    }
+
+    /**
+     * A count reported as `null` with its named reason, logged with both figures it had.
+     *
+     * @return array{0: null, 1: string}
+     */
+    private function unmeasured(string $reason, ?int $serverTotal, int $rowsTally, string $key, string $agentName, int $boardId): array
+    {
+        Log::warning('board_my_cards: a tag-read swimlane count is reported as unmeasured, not as a number', [
+            'agent' => $agentName, 'board' => $boardId, 'count' => $key, 'reason' => $reason,
+            'server_total' => $serverTotal, 'rows_tally' => $rowsTally,
+        ]);
+
+        return [null, $reason];
+    }
+
+    /**
+     * How many of these rows sit in a lane other than `$swimlaneId`, and how many in none — read
+     * off each row's own `swimlane_id`. A row with no readable lane field counts toward neither.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array{0: int, 1: int}
+     */
+    private function laneTally(array $rows, int $swimlaneId): array
+    {
+        $other = 0;
+        $none = 0;
+        foreach ($rows as $row) {
+            if (! array_key_exists('swimlane_id', $row)) {
+                continue;
+            }
+            if ($row['swimlane_id'] === null) {
+                $none++;
+            } elseif (is_numeric($row['swimlane_id']) && (int) $row['swimlane_id'] !== $swimlaneId) {
+                $other++;
+            }
+        }
+
+        return [$other, $none];
+    }
+
+    /**
+     * The projected card plus the lane the row says it is in. ⚠ A PRESENT NULL AND AN ABSENT KEY
+     * ARE DIFFERENT ANSWERS ON THIS AXIS — a card really can be in no lane (DL-302's asymmetry,
+     * {@see observedBoard}). So `null` is reported only when the row said null; a row that
+     * carried no readable lane field gets no `swimlane_id` key at all, never a null that would
+     * call it laneless.
+     *
+     * @param  array<string, mixed>  $card
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    private function withSwimlane(array $card, array $row): array
+    {
+        if (array_key_exists('swimlane_id', $row) && $row['swimlane_id'] === null) {
+            $card['swimlane_id'] = null;
+        } elseif (is_numeric($row['swimlane_id'] ?? null)) {
+            $card['swimlane_id'] = (int) $row['swimlane_id'];
+        }
+
+        return $card;
+    }
+
+    /**
+     * Drop the rows in any of `$stageIds`. A row with no readable stage is kept: it cannot be
+     * shown to be in a terminal column.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @param  list<int>  $stageIds
+     * @return list<array<string, mixed>>
+     */
+    private function offStages(array $rows, array $stageIds): array
+    {
+        if ($stageIds === []) {
+            return $rows;
+        }
+
+        return array_values(array_filter(
+            $rows,
+            fn (array $row): bool => ! (is_numeric($row['workflow_stage_id'] ?? null) && in_array((int) $row['workflow_stage_id'], $stageIds, true)),
+        ));
     }
 
     /**
