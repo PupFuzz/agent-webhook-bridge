@@ -610,4 +610,81 @@ class ToolsCallCommandTest extends TestCase
         }
         Http::assertNothingSent();
     }
+
+    // ─── a board call that gets NO answer (DL-387) ───────────────────────────
+
+    /**
+     * Arguments that pass `$tool`'s own validation, so its first board request is sent.
+     *
+     * @return array<string, mixed>
+     */
+    private function argsReachingTheBoard(string $tool): array
+    {
+        return match ($tool) {
+            'board_my_cards' => [],
+            'board_create_card' => ['title' => 't'],
+            'board_correct_card' => ['card_id' => 42, 'name' => 'n'],
+            'board_take_card' => ['card_id' => 42],
+            'board_comment_card' => ['card_id' => 42, 'content' => 'a note'],
+            default => $this->fail("no arguments for the registered tool `{$tool}` — add them, so this door's no-answer arm covers it"),
+        };
+    }
+
+    /**
+     * Every registered tool, derived from the registry: the first board request gets no answer,
+     * and the door writes the 502 envelope alone on stdout and exits 2 — never an uncaught
+     * exception where the envelope belongs.
+     */
+    public function test_a_board_call_that_gets_no_answer_is_the_502_envelope_and_exit_2_on_every_registered_tool(): void
+    {
+        $this->writeSshAgent();
+        $sent = 0;
+        Http::fake(function ($request) use (&$sent) {
+            $sent++;
+
+            return Http::failedConnection()($request);
+        });
+
+        $tools = (new BoardToolsRegistry)->known();
+        $this->assertNotEmpty($tools);
+        foreach ($tools as $tool) {
+            $sent = 0;
+            $r = $this->runCommand('me', (string) json_encode(['tool' => $tool, 'args' => $this->argsReachingTheBoard($tool)]));
+
+            $this->assertSame(1, $sent, "{$tool}: the call must reach the board once and send nothing after the unanswered request");
+            $this->assertSame(2, $r['exit'], "{$tool}: ".$r['stdout']);
+            $this->assertSame('{"ok":false,"error":"upstream board error"}', $r['stdout'], $tool);
+        }
+    }
+
+    /**
+     * The non-idempotent write, after a lookup that succeeded: an unanswered comment POST and a
+     * board 5xx on it are one envelope and one exit code on this door.
+     */
+    public function test_no_answer_on_the_comment_write_is_the_envelope_and_exit_a_5xx_gets_on_this_door(): void
+    {
+        $this->writeSshAgent();
+        $unanswered = false;
+        $posts = 0;
+        Http::fake(function ($request) use (&$unanswered, &$posts) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                return Http::response(['data' => str_contains($url, 'archived=1') ? [] : [['id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'name' => 'c', 'tags' => []]]]);
+            }
+            $posts++;
+
+            return $unanswered ? Http::failedConnection()($request) : Http::response('boom', 503);
+        });
+        $stdin = (string) json_encode(['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => 'a note']]);
+
+        $fiveHundred = $this->runCommand('me', $stdin);
+        $unanswered = true;
+        $noAnswer = $this->runCommand('me', $stdin);
+
+        $this->assertSame(2, $posts, 'both runs must have reached the comment POST');
+        $this->assertSame(2, $fiveHundred['exit']);
+        $this->assertSame(2, $noAnswer['exit']);
+        $this->assertSame('{"ok":false,"error":"upstream board error"}', $noAnswer['stdout']);
+        $this->assertSame($fiveHundred['stdout'], $noAnswer['stdout']);
+    }
 }
