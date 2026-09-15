@@ -312,7 +312,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 Log::warning('kanban_dependabot_card: could NOT read which values the board accepts — creating the card WITHOUT this constant payload key', $context + ['error' => $error ?? 'the custom-field read carried no collection']);
             } elseif (! $fields->accepts($key, $value)) {
                 unset($payload[$key]);
-                Log::info('kanban_dependabot_card: the board does not accept this constant payload value — creating the card without the key', $context);
+                Log::info('kanban_dependabot_card: the board does not accept this constant payload value — creating the card without the key', $context + ['field_type' => $fields->type($key)]);
             }
         }
 

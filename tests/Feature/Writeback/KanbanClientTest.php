@@ -828,29 +828,41 @@ class KanbanClientTest extends TestCase
         $this->assertNull($this->client()->boardCustomFieldKeys(8));
     }
 
-    /** Kanban's `optionValues()` reads an option as its `value` or as the bare string — both shapes. */
-    public function test_board_custom_fields_reads_enum_options_in_both_shapes_and_a_non_enum_accepts_anything(): void
+    /**
+     * Kanban's `optionValues()` reads an option as its `value` or as the bare string — both shapes.
+     * A string is taken only by a `string` field, an untyped one, or an enum offering it: kanban's
+     * `CustomFieldValidator::validateValue()` refuses it for every other type.
+     */
+    public function test_board_custom_fields_reads_enum_options_in_both_shapes_and_only_a_string_field_accepts_anything(): void
     {
         Http::fake(['*/boards/8/custom_fields.json' => Http::response(['data' => [
             ['key' => 'origin', 'type' => 'enum', 'options' => [['value' => 'preemptive', 'label' => 'P'], 'user-requested']],
             ['key' => 'empty_enum', 'type' => 'enum', 'options' => null],
+            ['key' => 'free_text', 'type' => 'string', 'options' => null],
             ['key' => 'pr_url', 'type' => 'url', 'options' => null],
+            ['key' => 'tags_ms', 'type' => 'multi_select', 'options' => ['free']],
+            ['key' => 'num', 'type' => 'number'],
             ['key' => 'untyped'],
         ]])]);
 
         $fields = $this->client()->boardCustomFields(8);
 
         $this->assertNotNull($fields);
-        $this->assertSame(['origin', 'empty_enum', 'pr_url', 'untyped'], $fields->keys());
+        $this->assertSame(['origin', 'empty_enum', 'free_text', 'pr_url', 'tags_ms', 'num', 'untyped'], $fields->keys());
         $this->assertTrue($fields->accepts('origin', 'preemptive'));
         $this->assertTrue($fields->accepts('origin', 'user-requested'));
         $this->assertFalse($fields->accepts('origin', 'dependabot'));
         $this->assertFalse($fields->accepts('empty_enum', 'anything'));
-        $this->assertTrue($fields->accepts('pr_url', 'free'));
+        $this->assertTrue($fields->accepts('free_text', 'free'));
+        $this->assertFalse($fields->accepts('pr_url', 'free'));
+        $this->assertFalse($fields->accepts('tags_ms', 'free'));
+        $this->assertFalse($fields->accepts('num', 'free'));
         $this->assertTrue($fields->accepts('untyped', 'free'));
         $this->assertFalse($fields->accepts('not_registered', 'dependabot'));
         $this->assertTrue($fields->has('origin'));
         $this->assertFalse($fields->has('not_registered'));
+        $this->assertSame('multi_select', $fields->type('tags_ms'));
+        $this->assertNull($fields->type('untyped'));
     }
 
     public function test_board_custom_fields_returns_null_when_the_read_carried_no_collection(): void

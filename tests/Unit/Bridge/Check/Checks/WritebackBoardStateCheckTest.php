@@ -12,6 +12,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -262,6 +263,47 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertSame(Severity::Ok, $findings[2]['severity']);
         $this->assertStringContainsString("origin='dependabot' is accepted by board 8 (owner/repo)", $findings[2]['message']);
         $this->assertStringNotContainsString('does not accept', $this->joined($findings));
+    }
+
+    /**
+     * Only a `string` field, an untyped one, or an enum offering the value takes a string constant
+     * (kanban `CustomFieldValidator::validateValue()`), so every other type must WARN — never the
+     * false `ok` a "non-enum accepts anything" rule printed while the create still 422d.
+     */
+    /** @return array<string, array{string}> */
+    public static function typesRefusingAString(): array
+    {
+        return ['multi_select' => ['multi_select'], 'number' => ['number'], 'date' => ['date'], 'boolean' => ['boolean'], 'url' => ['url']];
+    }
+
+    #[DataProvider('typesRefusingAString')]
+    public function test_a_constant_in_a_field_type_that_refuses_a_string_warns_and_names_the_type(string $type): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => $type, 'options' => [['value' => 'dependabot', 'label' => 'D']]],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertStringContainsString("does not accept origin='dependabot'", $findings[2]['message']);
+        $this->assertStringContainsString("its origin field is of type {$type}", $findings[2]['message']);
+    }
+
+    public function test_a_constant_in_a_string_field_is_reported_ok(): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'string'],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Ok, $findings[2]['severity']);
+        $this->assertStringContainsString("origin='dependabot' is accepted by board 8 (owner/repo)", $findings[2]['message']);
     }
 
     /** A THROWING read is the per-mapping catch's unvalidated, and no constant verdict is made. */

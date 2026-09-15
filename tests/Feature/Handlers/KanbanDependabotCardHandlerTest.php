@@ -437,6 +437,49 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && array_keys($r['payload']) === ['pr_number', 'pr_url']);
     }
 
+    /**
+     * Kanban's `CustomFieldValidator::validateValue()` refuses a bare string in a `multi_select`
+     * field (it takes an array) — even one whose options include the value.
+     */
+    public function test_a_multi_select_origin_field_gets_the_card_without_origin(): void
+    {
+        Log::spy();
+        $this->customFieldsBody = ['data' => [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'multi_select', 'options' => [['value' => 'dependabot', 'label' => 'D']]],
+        ]];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'does not accept')
+            && $ctx['key'] === 'origin' && $ctx['field_type'] === 'multi_select')->once();
+    }
+
+    public function test_a_number_origin_field_gets_the_card_without_origin(): void
+    {
+        $this->customFieldsBody = ['data' => [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'number'],
+        ]];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && array_keys($r['payload']) === ['pr_number', 'pr_url']);
+    }
+
     public function test_an_unreadable_custom_field_read_creates_the_card_without_origin_and_warns(): void
     {
         Log::spy();

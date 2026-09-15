@@ -134,7 +134,12 @@ final class WritebackBoardStateCheck implements Check
                             if ($fields->accepts($key, $value)) {
                                 yield Finding::ok("writeback: create_dependabot_cards' constant {$key}='{$value}' is accepted by board {$mapping->boardId} ({$repo})");
                             } else {
-                                $why = $fields->has($key) ? "not one of the enum options of its {$key} field" : 'no such custom field is registered';
+                                $type = $fields->type($key);
+                                $why = match (true) {
+                                    ! $fields->has($key) => 'no such custom field is registered',
+                                    $type === 'enum' => "not one of the enum options of its {$key} field",
+                                    default => "its {$key} field is of type ".UntrustedText::forOperator((string) $type).', which does not take this value',
+                                };
                                 yield Finding::warn("writeback: board {$mapping->boardId} ({$repo}) does not accept {$key}='{$value}', the constant create_dependabot_cards writes ({$why}) — its dependabot cards are created WITHOUT {$key}; the cards themselves are unaffected");
                             }
                         }
