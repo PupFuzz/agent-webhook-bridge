@@ -656,7 +656,14 @@ class AgentToolsCallTest extends TestCase
     /**
      * An agent whose name alone fills the tag leaves no room for ANY key — a configuration
      * fault, so the refusal must say so rather than tell the seat to shorten a one-character
-     * key. The control one character shorter leaves room for exactly one, and creates.
+     * key. The control one character shorter leaves room for exactly one, so the bridge's
+     * pre-request idem cap lets the create through with that tag exactly at the cap.
+     *
+     * ⚠ This pins ONLY the bridge's pre-request idem cap, not a create the real board would
+     * accept: the control's `created-by:<name>` is longer than kanban's tag cap, so kanban
+     * would 422 it. `archiveAxisFake` does not apply the `tags.*` rule, which is why the
+     * control asserts what the bridge SENT rather than a created card. That `created-by:`
+     * overflow is the declined sibling recorded on DL-394 (Bounds 2).
      */
     public function test_an_agent_name_that_leaves_no_room_for_a_key_is_refused_as_an_install_fault(): void
     {
@@ -678,8 +685,7 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringNotContainsString('characters — at most', $error, 'a config fault is not a key-length refusal');
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k']], 'tools-bearer-one')
-            ->assertStatus(200)
-            ->assertJsonPath('result.created', true);
+            ->assertStatus(200);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/tasks.json')
             && in_array("idem:{$roomForOne}:k", $r['tags'], true));
     }
