@@ -730,7 +730,7 @@ final class BoardCorrectCardTool implements Tool
      * is a refusal rather than the retryable 502: a 404 means the card stopped existing
      * between the ownership check and the write (deleted or archived under us), a 403
      * means the token may read the card and not write it, a 401 means the token is no
-     * longer accepted at all, and a 422 means kanban's own validator rejected a VALUE —
+     * longer accepted at all, and a 422 means the board refused a VALUE the PATCH carried —
      * which no number of retries will change either.
      *
      * ⛔ THE 422 ARM IS THE ONE THAT MAKES THE BRIDGE-SIDE VALUE BOUNDS SAFE TO GET
@@ -764,7 +764,7 @@ final class BoardCorrectCardTool implements Tool
             404 => "board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
             403 => "board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. ".BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it)').' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => "board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.",
-            422 => "board_correct_card: the board REJECTED the write to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. ".BoardCallRefusal::bridgeBoundsClause('name').' Change what the board names below, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
+            422 => "board_correct_card: the board REJECTED the write to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. ".BoardCallRefusal::bridgeBoundsClause('name').' Change what the reason at the end of this message names, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
         });
     }
 }

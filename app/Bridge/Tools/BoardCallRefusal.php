@@ -30,8 +30,9 @@ use Illuminate\Http\Client\RequestException;
  * limit really does clear.
  *
  * ⭐ READ AND WRITE ARE SEPARATE SETS BECAUSE 422 MEANS SOMETHING ONLY A WRITE CAN MEAN.
- * A 422 on a write is kanban's own validator refusing a VALUE the caller sent — deterministic,
- * and the backstop that makes {@see KanbanFieldLimits}'s mirrored caps safe to go stale. Since
+ * A 422 on a write is the board refusing a VALUE the write carried — deterministic, and the
+ * backstop that makes {@see KanbanFieldLimits}'s mirrored caps safe to go stale. (Not necessarily
+ * kanban's validator: a proxy can answer 422, so no refusal names one as the author.) Since
  * DL-384 that refusal relays the board's own reason ({@see boardReason}), so a stale cap costs
  * the seat nothing it cannot read. A read
  * sends no such value, so a 422 there is a malformed-query/API-surface fault the bridge cannot
@@ -167,14 +168,18 @@ final class BoardCallRefusal
      * were already inside both did exactly that (rt#484). What the board DID refuse is
      * {@see boardReason}'s to relay.
      *
-     * ⚠ "EACH TAG YOU PASSED", NOT "EACH TAG": the check runs on the caller's tags only. A tag the
-     * bridge stamps itself (`created-by:<agent>`, `idem:<agent>:<key>`) is not bounded here.
+     * ⛔ "EACH TAG YOU PASSED", NOT "EACH TAG", AND NO CONCLUSION DRAWN FROM THE PASS. The check runs
+     * on the caller's tags only. A tag the bridge writes itself (`created-by:<agent>`,
+     * `idem:<agent>:<key>`, and on a correction every tag it keeps from the card) is not bounded
+     * here, and an `idempotency_key` that passes its own check can still make the `idem:` tag longer
+     * than kanban's tag cap. So a pass does not establish that the board refused something other
+     * than these bounds, and the clause names the unchecked tags instead of saying it did.
      *
      * @param  string  $nameArgument  what the calling tool's own argument for kanban's `name` is called
      */
     public static function bridgeBoundsClause(string $nameArgument): string
     {
-        return "The bridge's own length checks passed before it sent: any `{$nameArgument}` you sent is within ".KanbanFieldLimits::NAME_MAX.' characters and each tag you passed within '.KanbanFieldLimits::TAG_MAX.', so the board refused something other than those two bounds.';
+        return "The bridge's own length checks passed before it sent: any `{$nameArgument}` you sent is within ".KanbanFieldLimits::NAME_MAX.' characters and each tag you passed within '.KanbanFieldLimits::TAG_MAX.'. Those checks do not cover a tag the bridge writes itself: its `created-by:` and `idem:` stamps, and on a correction the tags it keeps from the card.';
     }
 
     /** A 422 body over this many bytes is sized, never parsed — a validator's answer is a small fraction of it. */
@@ -191,7 +196,7 @@ final class BoardCallRefusal
     private const RELAY_NO_REASON = "The board's 422 body named no field and carried no message, so it gave no reason to relay.";
 
     /**
-     * THE BOARD'S OWN REASON FOR A 422, relayed to the seat: each field kanban's validator named
+     * THE BOARD'S OWN REASON FOR A 422, relayed to the seat: each field the 422 body names
      * and its message, redacted and bounded (DL-384). ONE primitive for every write on this door,
      * so every tool's 422 relays the same way.
      *
@@ -208,16 +213,20 @@ final class BoardCallRefusal
      * ⛔ DECODE, THEN REDACT EACH ENTRY, THEN ESCAPE AND BOUND IT. Redacting the RAW body first was
      * the obvious order and is the wrong one: kanban's JSON escapes `/` as `\/`, and a credential
      * whose alphabet includes `/` is cut at the backslash by {@see SecretScrubber}'s run, leaving its
-     * tail to be decoded into the relay. Each entry is redacted as the one-pair JSON object
-     * `{"<path>":"<message>"}`, so the scrubber's JSON-key rule still sees the key a flattened entry
-     * would otherwise lose (`payload.api_token` → `[REDACTED]`); an entry that does not survive
-     * that round trip is shown as `[REDACTED]`. Then {@see UntrustedText::forOperator()} collapses
+     * tail to be decoded into the relay. A field name is scrubbed as the bare text it is. A message
+     * is scrubbed TWICE, and neither pass alone is enough: first as the bare message, so JSON
+     * embedded in it is seen as JSON (inside the pair below its quotes are escaped, and the
+     * scrubber's JSON-key rule cannot match it); then as the one-pair JSON object
+     * `{"<path>":"<message>"}`, so the key rule also sees the key a flattened entry would otherwise
+     * lose (`payload.api_token` → `[REDACTED]`). The bare pass runs first, so the relay is never
+     * weaker than {@see SecretScrubber::text()} on the message; an entry that does not survive the
+     * round trip is shown as `[REDACTED]`. Then {@see UntrustedText::forOperator()} collapses
      * whitespace, escapes control and bidi characters and bounds the span, so a message cannot
      * forge a second line of the refusal.
      *
-     * ⚠ WHAT IT DOES NOT DO: the redaction is {@see SecretScrubber::text()}'s, with every bound that
-     * class states; the bounds are on SIZE, not on meaning — a message can still say anything a
-     * single escaped line can.
+     * ⚠ WHAT IT DOES NOT DO: the redaction is at least {@see SecretScrubber::text()}'s on each field
+     * name and message, with every bound that class states; the bounds are on SIZE, not on meaning —
+     * a message can still say anything a single escaped line can.
      */
     public static function boardReason(RequestException $e): string
     {
@@ -246,7 +255,7 @@ final class BoardCallRefusal
         $shown = [];
         $used = 0;
         foreach ($entries as [$path, $message]) {
-            $entry = ($path === '' ? '' : '`'.UntrustedText::forOperator(SecretScrubber::text($path)).'`').': '.self::relayedSpan($path, $message);
+            $entry = ($path === '' ? '' : '`'.UntrustedText::forOperator(SecretScrubber::text($path)).'`: ').self::relayedSpan($path, $message);
             $size = mb_strlen($entry);
             if (count($shown) === self::RELAY_MAX_ENTRIES || ($shown !== [] && $used + $size > self::RELAY_MAX_CHARS)) {
                 break;
@@ -283,10 +292,10 @@ final class BoardCallRefusal
         return $entries;
     }
 
-    /** One message, redacted with its own key in view, then escaped and bounded — see {@see boardReason}. */
+    /** One message, redacted bare and then with its own key in view, then escaped and bounded — see {@see boardReason}. */
     private static function relayedSpan(string $path, string $message): string
     {
-        $pair = json_encode([$path => $message], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_FORCE_OBJECT);
+        $pair = json_encode([$path => SecretScrubber::text($message)], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_FORCE_OBJECT);
         $redacted = is_string($pair) ? json_decode(SecretScrubber::text($pair), true) : null;
         $value = is_array($redacted) ? ($redacted[$path] ?? null) : null;
 

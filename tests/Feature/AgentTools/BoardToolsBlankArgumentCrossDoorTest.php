@@ -9,6 +9,7 @@ use App\Bridge\Tools\ToolsCallStdio;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -375,6 +376,53 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             $this->assertStringContainsString('NO card was created', $error, $door);
             $this->assertStringContainsString('checks passed before it sent', $error, $door);
             $this->assertStringNotContainsString('Shorten', $error, "{$door}: the bridge's checks passed, so no length may be blamed");
+        }
+    }
+
+    /**
+     * ⛔ THE BRIDGE'S OWN TAGS ARE NOT CHECKED, SO ITS SENTENCE MUST NOT CLAIM THE BOARD REFUSED
+     * "SOMETHING OTHER THAN" THE BOUNDS. An `idempotency_key` passes its own charset/length check
+     * and still makes `idem:<agent>:<key>` longer than kanban's tag cap. The fake applies kanban's
+     * `tags.*` rule to whatever the create actually sent, so the refused index is the real one.
+     */
+    public function test_a_board_422_on_a_bridge_stamped_tag_is_not_blamed_on_something_else_on_both_doors(): void
+    {
+        Http::fake(function (Request $request) {
+            if (str_contains($request->url(), '/tasks/search.json')) {
+                return Http::response(['data' => []]);
+            }
+            $tags = $request->method() === 'POST' ? ($request->data()['tags'] ?? []) : [];
+            foreach (is_array($tags) ? $tags : [] as $i => $tag) {
+                if (is_string($tag) && mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
+                    return Http::response(['message' => "The tags.{$i} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', 'errors' => [
+                        "tags.{$i}" => ["The tags.{$i} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.'],
+                    ]], 422);
+                }
+            }
+
+            return Http::response(['data' => ['id' => 42]], 201);
+        });
+        $call = ['tool' => 'board_create_card', 'args' => [
+            'title' => 'a real title', 'tags' => ['priority:high'], 'idempotency_key' => str_repeat('k', 60),
+        ]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $writes = $this->writesIn($r['requests']);
+            $this->assertCount(1, $writes, "{$door}: the create must have reached the board");
+            $sent = $writes[0]['body']['tags'];
+            $index = array_search('idem:me:'.str_repeat('k', 60), $sent, true);
+            $this->assertIsInt($index, "{$door}: fixture drift — the create no longer sends the over-cap idem tag");
+
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString("`tags.{$index}`: The tags.{$index} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', $error, $door);
+            $this->assertStringContainsString('each tag you passed within '.KanbanFieldLimits::TAG_MAX, $error, $door);
+            $this->assertStringContainsString('`idem:`', $error, "{$door}: the sentence must say the bridge's own tags are not checked");
+            $this->assertStringNotContainsString('something other than', $error, "{$door}: the checks do not establish what the board refused");
         }
     }
 

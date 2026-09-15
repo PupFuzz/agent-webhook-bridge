@@ -407,7 +407,7 @@ final class BoardCreateCardTool implements Tool
      * A 4xx the BOARD answered on the CREATE itself. Every arm is deterministic, so every
      * one is a refusal rather than the retryable 502: a 401 means the token is no longer
      * accepted, a 403 that the writeback user may not create here, a 404 that the create
-     * ROUTE is not there, and a 422 that kanban's own validator rejected a VALUE — which no
+     * ROUTE is not there, and a 422 that the board refused a VALUE the create carried — which no
      * number of retries will change either.
      *
      * ⛔ THE 422 ARM IS WHAT MAKES THE BRIDGE-SIDE BOUNDS SAFE TO GO STALE — the title cap
@@ -437,7 +437,7 @@ final class BoardCreateCardTool implements Tool
             404 => "board_create_card: the board answered 404 for the create itself, which is an API-surface fault rather than anything about board {$boardId} — NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.",
             403 => "board_create_card: the board refused the create (403) — the bridge's writeback user may not create cards on board {$boardId}. ".BoardCallRefusal::writeGatesClause('POST', 'task.create').' NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => 'board_create_card: the board did not accept the bridge\'s writeback token at all on the create (401) — it has been revoked, rotated or replaced with a value the board does not know. NO card was created. This is an INSTALL fault; retrying will not change it.',
-            422 => 'board_create_card: the board REJECTED the create (422), so NO card was created, and re-sending the same call unchanged will be refused the same way. '.BoardCallRefusal::bridgeBoundsClause('title').' Kanban calls your `title` `name`. Change what the board names below, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
+            422 => 'board_create_card: the board REJECTED the create (422), so NO card was created, and re-sending the same call unchanged will be refused the same way. '.BoardCallRefusal::bridgeBoundsClause('title').' Kanban calls your `title` `name`. Change what the reason at the end of this message names, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
         });
     }
 

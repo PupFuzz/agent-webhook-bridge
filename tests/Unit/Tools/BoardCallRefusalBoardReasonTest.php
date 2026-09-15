@@ -55,10 +55,10 @@ class BoardCallRefusalBoardReasonTest extends TestCase
 
     public function test_an_errors_value_that_is_a_bare_string_is_relayed_without_a_field(): void
     {
-        $text = self::reasonOf(['errors' => 'the board is locked']);
+        $prefix = "The board's own reason (its text, redacted and bounded by the bridge): ";
 
-        $this->assertStringContainsString(': the board is locked', $text);
-        $this->assertStringNotContainsString('``', $text);
+        $this->assertSame($prefix.'the board is locked', self::reasonOf(['errors' => 'the board is locked']));
+        $this->assertSame($prefix.'first | second', self::reasonOf(['errors' => ['first', 'second']]));
     }
 
     public function test_a_body_with_no_usable_errors_relays_its_message_labelled_as_naming_no_field(): void
@@ -156,6 +156,35 @@ class BoardCallRefusalBoardReasonTest extends TestCase
         $text = self::reason($body);
 
         $this->assertStringContainsString('`auth`: sent Bearer [REDACTED]', $text);
+        $this->assertStringNotContainsString(self::PLANTED, $text);
+    }
+
+    /**
+     * ⛔ JSON INSIDE A MESSAGE. Redacted only as the one-pair object, the message's own quotes are
+     * escaped (`\"password\"`), and the scrubber's JSON-key rule cannot see the key; the message is
+     * therefore also scrubbed as the bare text it is.
+     */
+    public function test_json_embedded_in_a_message_is_redacted_as_the_scrubber_redacts_the_bare_message(): void
+    {
+        $text = self::reasonOf(['errors' => ['payload' => ['got {"password":"'.self::PLANTED.'"}']]]);
+
+        $this->assertStringContainsString('`payload`: got {"password":"[REDACTED]"}', $text);
+        $this->assertStringNotContainsString(self::PLANTED, $text);
+    }
+
+    public function test_a_credential_in_a_field_name_is_redacted(): void
+    {
+        $text = self::reasonOf(['errors' => ['access_token='.self::PLANTED => ['is not a field']]]);
+
+        $this->assertStringContainsString('`access_token=[REDACTED]`: ', $text);
+        $this->assertStringNotContainsString(self::PLANTED, $text);
+    }
+
+    public function test_a_credential_in_a_message_only_body_is_redacted(): void
+    {
+        $text = self::reasonOf(['message' => 'Board is archived (access_token='.self::PLANTED.').']);
+
+        $this->assertStringContainsString('The board named no field; its own message (redacted and bounded by the bridge) is: Board is archived (access_token=[REDACTED]', $text);
         $this->assertStringNotContainsString(self::PLANTED, $text);
     }
 

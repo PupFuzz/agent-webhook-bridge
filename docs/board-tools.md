@@ -961,8 +961,10 @@ answers **422** to a write — `board_create_card`'s create, the PATCH of `board
    passed them, so the refusal says they passed and never tells you to shorten a field they cover:
    for a create or a correction, any `title`/`name` you sent is within kanban's `name` cap and each
    tag you passed within its tag cap; for a comment, the body is within kanban's `content` cap.
-   ⚠ A tag the bridge stamps itself (`created-by:<you>`, `idem:<you>:<key>`) is not a tag you
-   passed, and no check bounds it.
+   ⚠ A tag the bridge writes itself (`created-by:<you>`, `idem:<you>:<key>`, and on a correction
+   every tag kept from the card) is not a tag you passed, and no check bounds it — so a pass does
+   not say what the board refused. A long `idempotency_key` alone can make the `idem:` tag longer
+   than kanban's tag cap; the board's reason then names that `tags.N`.
 2. **The board's own reason**, last, read from the 422 body:
 
 | The 422 body | The refusal ends with |
@@ -976,14 +978,15 @@ answers **422** to a write — `board_create_card`'s create, the PATCH of `board
 
 **Bounded and redacted.** `App\Bridge\Tools\BoardCallRefusal::boardReason()` is the one primitive,
 and its constants own the figures (the body byte bound, the entry count, the total size) — read
-them there. Each field name and message is redacted by `SecretScrubber` with its own key in view (so
-a value under a nested credential-named key is redacted), then rendered by
+them there. Each field name is redacted by `SecretScrubber` as bare text. Each message is redacted
+twice: as the bare message (so JSON embedded in it is recognised), then with its own key in view (so
+a value under a nested credential-named key is redacted). Both are then rendered by
 `UntrustedText::forOperator()`: whitespace collapsed to one line, control and bidi characters escaped,
 and the span cut with a `[TRUNCATED, <N> SOURCE CHARS]` marker. Entries past the count or size bound
 are counted, `[<N> MORE NOT SHOWN]`, and not shown.
 
 - ⚠ **The relayed text is the board's, not the bridge's.** It is bounded in size, not in meaning.
-  The redaction is `SecretScrubber`'s, with every bound that class states.
+  The redaction is at least `SecretScrubber::text()`'s on each field name and message, with every bound that class states.
 - **The shape did not change:** the reason is inside the `error` string, and `{ok: false, error}`,
   the 422 status and the ssh exit `1` are as before.
 - **A 422 on a READ relays nothing** and stays the retryable 502 (the row above says why).

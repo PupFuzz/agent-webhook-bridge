@@ -3624,8 +3624,8 @@ class AgentToolsCallTest extends TestCase
 
     public function test_my_cards_leaves_a_422_on_a_read_as_a_retryable_upstream_error(): void
     {
-        // ⭐ THE READ/WRITE SPLIT, ASSERTED AS THE DECISION IT IS. A 422 is kanban's own
-        // validator refusing a VALUE the caller SENT — and a read sends none, so on this side
+        // ⭐ THE READ/WRITE SPLIT, ASSERTED AS THE DECISION IT IS. A 422 is the board
+        // refusing a VALUE the write SENT — and a read sends none, so on this side
         // it is a malformed-query/API-surface fault the bridge has no cause to name. It is
         // mapped on the WRITE arms below and deliberately not here; without this leg the two
         // status sets would be indistinguishable from one.
@@ -4290,7 +4290,7 @@ class AgentToolsCallTest extends TestCase
         return [
             '404 — the card went between the check and the write' => [404, 'no longer exists'],
             '401 — the token is not accepted at all' => [401, 'did not accept the bridge\'s writeback token'],
-            '422 — kanban\'s own validator refused the value' => [422, 'identity.kanban_user_id'],
+            '422 — the board refused a value in the write' => [422, 'identity.kanban_user_id'],
         ];
     }
 
