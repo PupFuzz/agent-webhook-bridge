@@ -17,6 +17,7 @@ use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CardTokenVerdict;
+use App\Bridge\Writeback\PrCorrelationComment;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -97,6 +98,13 @@ use Illuminate\Support\Facades\Log;
  *
  * {@see PrOutcome::requiresClosure()} owns which outcomes are gated and why the others
  * are not.
+ *
+ * A MERGE OR CLOSE WHOSE CORRELATION FAILS IS REPORTED ON THE PR (DL-390). Every move target
+ * of those outcomes carries {@see PrCorrelationComment::evidence()} for the handler's refusals,
+ * and the no-op arms that ARE correlation failures — a DL no card carries with no card token
+ * to fall back to, and a token present but unreadable — emit a `github_pr_correlation_comment`
+ * target of their own. A PR carrying no token at all, and a merge withheld for want of closure
+ * evidence, are not correlation failures and emit none.
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
  * with no parseable card reference, or a repo with no `writeback.json` mapping →
@@ -303,9 +311,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $cardResolution = $this->cardTokenResolution($payload);
         $cardToken = $cardResolution['token'];
         if ($dl === null && $cardToken === null) {
-            $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
+            $nearMiss = $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
-            return new ClassifyResult(targets: $overlayTargets);   // no card-first token in the PR → move no-op (overlay may also be empty)
+            // no card-first token in the PR → move no-op (overlay may also be empty); an UNREADABLE
+            // one on a merge or close is a correlation failure and says so on the PR (DL-390)
+            return new ClassifyResult(targets: array_merge(
+                $nearMiss ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::TOKEN_UNREADABLE) : [],
+                $overlayTargets,
+            ));
         }
 
         // The title-vs-branch card-token CONFLICT (card#5287): the head branch is this
@@ -377,7 +390,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$this->titleAndHead($payload));
 
                     return new ClassifyResult(targets: array_merge(
-                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true),
+                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->correlationEvidence($payload, $moveOutcome)),
                         $overlayTargets,
                     ));
                 }
@@ -420,7 +433,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         return new ClassifyResult(targets: $overlayTargets);
                     }
 
-                    return new ClassifyResult(targets: array_merge($this->moveTargets($closing, $repo, $moveOutcome, $stampRefs), $overlayTargets));
+                    return new ClassifyResult(targets: array_merge(
+                        $this->moveTargets($closing, $repo, $moveOutcome, $stampRefs, evidence: $this->correlationEvidence($payload, $moveOutcome)),
+                        $overlayTargets,
+                    ));
                 }
                 // States the RULING, never the outcome (card#7348 / DL-305 corrected this).
                 // It used to end "moving card#N, not the DL card(s)" — true when the only
@@ -448,7 +464,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // cannot draw a line claiming it did not.
                 $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
-                return new ClassifyResult(targets: $overlayTargets);
+                return new ClassifyResult(targets: array_merge(
+                    $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::DL_UNRESOLVED),
+                    $overlayTargets,
+                ));
             } else {
                 // (2) DL unresolved → fall through to the present card#.
                 Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)");
@@ -507,8 +526,42 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 ],
                 $cardResolution['uncorroborated'] ? ['card_token_uncorroborated' => true] : [],
                 $this->stampRefs($stampText, $this->prNumber($payload), $this->prUrl($payload), $conflictDl),
+                $this->correlationEvidence($payload, $moveOutcome),
             )),
         ], $overlayTargets));
+    }
+
+    /**
+     * The DL-390 evidence a merge or close carries to whichever handler reports its correlation
+     * failure — `[]` on every other outcome, so those payloads are byte-identical to before.
+     *
+     * @param  array<mixed>  $payload
+     * @return array<string, array{pr_number: int, tokens: list<array{kind: string, id: ?int, parsed: bool, source: string}>}>
+     */
+    private function correlationEvidence(array $payload, string $outcome): array
+    {
+        return PrCorrelationComment::evidence($outcome, $this->prNumber($payload), $this->prHead($payload), $this->prTitle($payload));
+    }
+
+    /**
+     * The comment target for a correlation failure decided HERE, where no move target exists to
+     * carry it (DL-390). Keyed `pr-<number>`: one per event, whatever the cause.
+     *
+     * @param  array<mixed>  $payload
+     * @return list<ReactionTarget>
+     */
+    private function correlationCommentTargets(array $payload, string $repo, string $outcome, string $cause): array
+    {
+        $evidence = $this->correlationEvidence($payload, $outcome);
+        if ($evidence === []) {
+            return [];
+        }
+
+        return [ReactionTarget::make(
+            PrCorrelationComment::HANDLER,
+            'pr-'.$evidence[PrCorrelationComment::EVIDENCE_KEY]['pr_number'],
+            payload: ['repo' => $repo, 'outcome' => $outcome, 'cause' => $cause] + $evidence,
+        )];
     }
 
     /**
@@ -588,11 +641,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * is refused before anything is read or written, which is why it carries no stamp
      * refs and why no caller passes both.
      *
+     * `$evidence` is {@see correlationEvidence()}'s, passed by the pull_request paths only.
+     *
      * @param  list<int>  $cardIds
      * @param  array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}  $stampRefs
+     * @param  array<string, mixed>  $evidence
      * @return list<ReactionTarget>
      */
-    private function moveTargets(array $cardIds, string $repo, string $outcome, array $stampRefs = [], bool $cardTokenNearMiss = false): array
+    private function moveTargets(array $cardIds, string $repo, string $outcome, array $stampRefs = [], bool $cardTokenNearMiss = false, array $evidence = []): array
     {
         $targets = [];
         foreach ($cardIds as $cardId) {
@@ -600,7 +656,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 'card_id' => $cardId,
                 'repo' => $repo,
                 'outcome' => $outcome,
-            ], $stampRefs, $cardTokenNearMiss ? ['card_token_near_miss' => true] : []));
+            ], $stampRefs, $cardTokenNearMiss ? ['card_token_near_miss' => true] : [], $evidence));
         }
 
         return $targets;
@@ -1271,7 +1327,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * which is why the per-stem parse check above is what makes the claim true
      * rather than the caller's guard.
      */
-    private function warnTokenNearMiss(string $text, string $surface): void
+    private function warnTokenNearMiss(string $text, string $surface): bool
     {
         // Each stem is probed only where ITS OWN grammar found nothing. At the
         // both-null call site that is implied by the guard, so this is the same
@@ -1289,6 +1345,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         foreach ($nearMisses as $what => $accepted) {
             Log::warning("kanban_move_card: {$surface} appears to name {$what} but the token does not parse ({$accepted}) — no move (FR-7 near-miss): {$text}");
         }
+
+        return $nearMisses !== [];
     }
 
     /**

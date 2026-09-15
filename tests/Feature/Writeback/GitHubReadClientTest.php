@@ -76,6 +76,47 @@ class GitHubReadClientTest extends TestCase
         $this->assertTrue($pr['title']->isEmpty());
     }
 
+    public function test_issue_comment_prefix_read_matches_a_comment_that_starts_with_it_not_one_that_quotes_it(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response([
+            ['body' => 'quoting <!-- m --> in passing'],
+            ['body' => "<!-- m -->\nthe real one"],
+        ])]);
+
+        $this->assertTrue((new GitHubReadClient('ghp_x'))->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+
+        Http::assertSent(fn (Request $r) => $r->url() === 'https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=1'
+            && $r->hasHeader('Authorization', 'Bearer ghp_x'));
+    }
+
+    public function test_issue_comment_prefix_read_answers_false_only_on_an_exhausted_readable_list(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['https://api.github.com/*' => Http::response([['body' => 'quoting <!-- m --> in passing']])]);
+
+        $this->assertFalse((new GitHubReadClient('ghp_x'))->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+    }
+
+    public function test_issue_comment_prefix_read_is_unknown_at_the_page_bound_not_absent(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response(array_fill(0, 100, ['body' => 'unrelated']))]);
+
+        $this->assertNull((new GitHubReadClient('ghp_x'))->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+        Http::assertSentCount(10);
+    }
+
+    public function test_issue_comment_prefix_read_is_unknown_on_an_unreadable_body_or_entry(): void
+    {
+        Log::shouldReceive('warning')->twice()->withArgs(fn (string $m) => str_contains($m, 'comment-list read for o/r#7') && str_contains($m, 'UNKNOWN, not false'));
+        Http::fakeSequence('https://api.github.com/*')
+            ->push(['message' => 'a proxy answered'])
+            ->push([['user' => ['login' => 'x']]]);
+        $client = new GitHubReadClient('ghp_x');
+
+        $this->assertNull($client->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+        $this->assertNull($client->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+    }
+
     public function test_compare_status_reads_status_and_builds_the_triple_dot_range(): void
     {
         Http::fake(['https://api.github.com/*' => Http::response([
