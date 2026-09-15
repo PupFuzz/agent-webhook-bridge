@@ -16,6 +16,10 @@ use Symfony\Component\Console\Output\ConsoleSectionOutput;
  * Symfony's own cursor-up / erase-below sequence through a private path this class cannot
  * reach. Undecorated, a section records lines only through `addContent()` (stripped here),
  * the sequence carries no foreign byte, and nothing in `app/` sets a max height.
+ *
+ * `addContent()` IS reached undecorated: `QuestionHelper` records a typed answer through it
+ * when the question is asked on a section, and `setMaxHeight()` writes recorded content
+ * straight to the stream. The strip there is what keeps that answer's bytes off the terminal.
  */
 final class StrippingSectionOutput extends ConsoleSectionOutput
 {

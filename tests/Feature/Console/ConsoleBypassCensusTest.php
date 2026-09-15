@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use Symfony\Component\Console\Output\OutputInterface;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
 
@@ -9,19 +10,38 @@ use Tests\TestCase;
  * ⛔ LEG D OF card#9251 (DL-393): every place in `app/` that can put bytes on fd 1 or fd 2
  * WITHOUT going through the console output the choke wraps, each one ruled.
  *
- * The choke covers every write made through an `OutputInterface`. What it cannot cover is a
- * write that never touches one — a raw `fwrite(STDOUT)`, an `echo`, a child process that
- * inherits the descriptors, PHP's own error display. This census is the population of those,
- * derived from the token stream by {@see SourceScan::sitesInApp()} on every run and compared
- * both ways against {@see self::RULINGS}: a new site reds, and so does a ruling whose site has
- * gone. A stream name inside a string literal — code a child process runs, a `defined()` test,
- * a path handed to `fopen` — is a site too.
+ * ⭐ THE PREDICATE IS OVER WRITER CATEGORIES, NOT WRITER NAMES. A list of names let a freshly
+ * built output object, a member-form dumper, Termwind and Laravel Prompts through unseen. A
+ * token is a site when it is:
  *
- * ⚠ WHAT IT CANNOT DECIDE, it says by name rather than passing. A handle held in a variable
- * (`fwrite($h, …)`) is a site whose target the token stream does not carry: its descriptor
- * reads `undecidable: <the argument>`, and its ruling must be `UNDECIDABLE_RULED_BY_READING`,
- * with the reading that decided it. A dynamically-named call (`call_user_func('fwrite', …)`,
- * `$fn(…)`) is not a token this scan can see at all — DL-393's bound, not a pass.
+ * - OUTPUT CONSTRUCTION: `new X`, `new static|self|parent`, `new class extends X`, `X::class`
+ *   (a container resolve), or a string literal naming X, where X is ANY class or interface
+ *   that is-a Symfony `OutputInterface`. That is decided by autoloading X, not by its name.
+ * - RAW STREAM: the `STDOUT`/`STDERR` constants, a stream path literal (also inside a string),
+ *   the stream-or-path argument of an `fwrite`-family call, `ini_set('display_errors')`.
+ * - LANGUAGE OUTPUT: `echo`, `print`, `<?=`, inline HTML, `exit`/`die` with a non-integer, and
+ *   PHP's own printing functions, a set the language closes. The return-mode ones count
+ *   only when not returning.
+ * - DUMPER: `dump()`/`dd()`, any `->dump(`/`::dump(`/`->dd(` member call, and any name in
+ *   `Symfony\Component\VarDumper\` or Laravel's `CliDumper`.
+ * - TERMWIND: any name in `Termwind\`.
+ * - PROMPTS: any name in `Laravel\Prompts\`, including its `use` imports and a `Prompt`
+ *   subclass's `extends`.
+ * - PROCESS PASSTHROUGH: `passthru`, `system` and PHP's other process-spawning functions,
+ *   backticks, `->tty()`/`->setTty()`.
+ *
+ * Names resolve through the file's `namespace` and `use` imports, so an alias hides nothing.
+ * The population is derived by {@see SourceScan::sitesInApp()} on every run and compared both
+ * ways against {@see self::RULINGS}: a new site reds, and so does a ruling whose site has gone.
+ *
+ * ⚠ WHAT IT CANNOT SEE (DL-393 bound (1)): a writer reached through a VARIABLE (`new $class`,
+ * `$class::make()`, `app($abstract)`, `$fn()`, `$object->$method()`, `call_user_func('fwrite', …)`),
+ * and a call into vendor code outside the named namespaces that opens an output of its own.
+ * The token stream carries the call, not what the callee does.
+ *
+ * A handle held in a variable (`fwrite($h, …)`) is a site the scan sees but cannot decide: its
+ * descriptor reads `undecidable: <the argument>`, and its ruling must be
+ * `UNDECIDABLE_RULED_BY_READING`, with the reading that decided it.
  */
 class ConsoleBypassCensusTest extends TestCase
 {
@@ -31,22 +51,41 @@ class ConsoleBypassCensusTest extends TestCase
 
     private const UNDECIDABLE_RULED_BY_READING = 'UNDECIDABLE_RULED_BY_READING';
 
-    /** Functions whose Nth argument (0-based) is the stream or path written to. */
+    /** An output object that IS the choke, or that the choke wraps before anything writes to it. */
+    private const INSIDE_THE_CHOKE = 'INSIDE_THE_CHOKE';
+
+    /** RAW STREAM: functions whose Nth argument (0-based) is the stream or path written to. */
     private const HANDLE_ARGUMENT = [
         'fwrite' => 0, 'fputs' => 0, 'fprintf' => 0, 'vfprintf' => 0, 'fpassthru' => 0,
         'file_put_contents' => 0, 'stream_copy_to_stream' => 1,
     ];
 
-    /** Functions that write to the process's own output, or hand a child its descriptors. */
-    private const WRITERS = [
-        'printf', 'vprintf', 'readfile', 'error_log', 'passthru', 'system', 'exec', 'shell_exec',
-        'popen', 'proc_open', 'pcntl_exec', 'var_dump', 'dump', 'dd', 'debug_zval_dump', 'debug_print_backtrace',
+    /** LANGUAGE OUTPUT: PHP's functions that print to the process's own output. */
+    private const LANGUAGE_OUTPUT = [
+        'printf', 'vprintf', 'var_dump', 'debug_zval_dump', 'debug_print_backtrace', 'readfile', 'error_log', 'phpinfo', 'phpcredits',
     ];
 
-    /** Writers that RETURN instead of printing when their second argument is `true`. */
-    private const RETURN_MODE = ['var_export', 'print_r'];
+    /** LANGUAGE OUTPUT that RETURNS instead of printing when its second argument is `true`. */
+    private const RETURN_MODE = ['var_export', 'print_r', 'highlight_string', 'highlight_file', 'show_source'];
 
-    private const METHODS = ['tty', 'settty'];
+    /** PROCESS PASSTHROUGH: a child that inherits this process's descriptors. */
+    private const PROCESS_PASSTHROUGH = ['passthru', 'system', 'exec', 'shell_exec', 'popen', 'proc_open', 'pcntl_exec'];
+
+    private const PROCESS_PASSTHROUGH_METHODS = ['tty', 'settty'];
+
+    private const DUMPER_FUNCTIONS = ['dump', 'dd'];
+
+    private const DUMPER_METHODS = ['dump', 'dd', 'dumprawsql', 'ddrawsql'];
+
+    /** Every name under one of these prefixes belongs to a writer that opens its own output. */
+    private const WRITER_NAMESPACES = [
+        'symfony\\component\\vardumper\\' => 'dumper',
+        'illuminate\\foundation\\console\\clidumper' => 'dumper',
+        'termwind\\' => 'termwind',
+        'laravel\\prompts\\' => 'prompts',
+    ];
+
+    private const NAME_TOKENS = [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_NAME_RELATIVE];
 
     /** The constant names are case-sensitive (prose says "stdout" constantly); the paths are not. */
     private const HANDLE_LITERAL = '#\bSTD(?:OUT|ERR)\b|(?i:php://(?:stdout|stderr|output|fd/)|/dev/(?:tty|stdout|stderr|fd/))#';
@@ -57,6 +96,16 @@ class ConsoleBypassCensusTest extends TestCase
      * @var array<string, array{string, string, string}>
      */
     private const RULINGS = [
+        'Bridge/Console/StrippingConsoleKernel.php::call#1' => ['output: new Symfony\Component\Console\Output\BufferedOutput', self::INSIDE_THE_CHOKE,
+            'the default call() buffer: Artisan receives it only through StrippingOutput::wrap() on the next line, and output() only reads it back'],
+        'Bridge/Console/StrippingConsoleKernel.php::handle#1' => ['output: new Symfony\Component\Console\Output\ConsoleOutput', self::INSIDE_THE_CHOKE,
+            "php artisan's real stdout/stderr, wrapped by StrippingOutput::wrap() in the same expression, before Artisan or Kernel::handle()'s exception render holds it"],
+        'Bridge/Console/StrippingConsoleOutput.php::section#1' => ['output: new App\Bridge\Console\StrippingSectionOutput', self::INSIDE_THE_CHOKE,
+            'the stripping section: permanently undecorated, and its doWrite() and addContent() strip'],
+        'Bridge/Console/StrippingOutput.php::wrap#1' => ['output: new App\Bridge\Console\StrippingConsoleOutput', self::INSIDE_THE_CHOKE,
+            'the choke decorator itself, over an output with an error stream'],
+        'Bridge/Console/StrippingOutput.php::wrap#2' => ['output: new App\Bridge\Console\StrippingOutput', self::INSIDE_THE_CHOKE,
+            'the choke decorator itself (`new self`)'],
         'Bridge/Handlers/SpawnDetachedHandler.php::handle#1' => ['proc_open', self::NOT_A_TERMINAL_WRITE,
             'the descriptor spec binds 0 to /dev/null and 1 and 2 to the spawn log file: the child inherits no terminal descriptor, from the receiver or from bridge:replay'],
         'Bridge/Support/BridgePaths.php::filterJsonlLocked#1' => ['fwrite(undecidable: $tmp)', self::UNDECIDABLE_RULED_BY_READING,
@@ -91,6 +140,15 @@ class ConsoleBypassCensusTest extends TestCase
             "moves PHP's own notices OFF the envelope channel onto fd 2; their text is PHP's, and fd 2 of the ssh forced command is the remote caller's channel"],
     ];
 
+    /** @var list<array{0: int|string, 1: string}>|null */
+    private static ?array $contextTokens = null;
+
+    /** @var array{namespace: string, classes: array<string, string>, functions: array<string, string>, imports: array<int, string>, prefixes: array<int, true>, declarations: list<array{int, string, ?string}>} */
+    private static array $context;
+
+    /** @var array<string, bool> */
+    private static array $isOutput = [];
+
     public function test_every_console_bypass_in_app_is_ruled(): void
     {
         $found = SourceScan::sitesInApp(self::siteAt(...));
@@ -109,7 +167,7 @@ class ConsoleBypassCensusTest extends TestCase
     public function test_an_undecidable_site_is_ruled_as_undecidable_and_every_ruling_carries_a_reason(): void
     {
         foreach (self::RULINGS as $site => [$descriptor, $ruling, $reason]) {
-            $this->assertContains($ruling, [self::TERMINAL_DELIBERATE, self::NOT_A_TERMINAL_WRITE, self::UNDECIDABLE_RULED_BY_READING], $site);
+            $this->assertContains($ruling, [self::TERMINAL_DELIBERATE, self::NOT_A_TERMINAL_WRITE, self::UNDECIDABLE_RULED_BY_READING, self::INSIDE_THE_CHOKE], $site);
             $this->assertNotSame('', trim($reason), "{$site} has no reason");
             $this->assertSame(
                 str_contains($descriptor, 'undecidable:'),
@@ -120,9 +178,10 @@ class ConsoleBypassCensusTest extends TestCase
     }
 
     /**
-     * ⭐ THE CONTROL: every vocabulary member is found in a planted source, and every near miss
-     * — a method or declaration of the same name, a comment, a return-mode call, an integer
-     * exit, a plain file path, an unrelated ini key, lower-case prose — is not.
+     * ⭐ THE CONTROL for the raw-stream, language-output and process-passthrough categories:
+     * every member is found in a planted source, and every near miss is not. The near misses
+     * are a method or declaration of the same name, a comment, a return-mode call, an integer
+     * exit, a plain file path, an unrelated ini key and lower-case prose.
      */
     public function test_the_scan_finds_each_planted_bypass_and_skips_each_near_miss(): void
     {
@@ -230,6 +289,83 @@ PHP;
     }
 
     /**
+     * ⭐ THE CONTROL for the categories a name list could not express: output construction,
+     * dumpers, Termwind and Prompts, each reached through a fully-qualified name, an import, an
+     * alias, a group import and a container resolve. The near misses are the same classes used
+     * WITHOUT constructing or calling a writer: an import of an output class, an `instanceof`, a
+     * type hint, a class constant, a same-named method on another object, an unimported function
+     * of the same short name, a declared `dump()` method, and a namespace string that names no class.
+     */
+    public function test_the_scan_finds_each_planted_category_writer_and_skips_each_near_miss(): void
+    {
+        $plant = <<<'PHP'
+<?php
+namespace Plant;
+use Symfony\Component\Console\Output\ConsoleOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+use function Laravel\Prompts\confirm;
+use Laravel\Prompts\{Prompt, TextPrompt};
+use function Termwind\renderUsing as termwindUsing;
+function categories(OutputInterface $o, $class) {
+    new ConsoleOutput();
+    (new \Symfony\Component\Console\Output\StreamOutput($o))->write('x');
+    app(ConsoleOutput::class);
+    resolve('Symfony\Component\Console\Output\BufferedOutput');
+    new class extends \Symfony\Component\Console\Output\NullOutput {};
+    dump($o);
+    \dd($o);
+    $o->dump();
+    $o?->dd();
+    Foo::dump($o);
+    \Symfony\Component\VarDumper\VarDumper::dump($o);
+    \Termwind\render('<p>x</p>');
+    termwindUsing($o);
+    confirm('ok?');
+    new TextPrompt('x');
+    Prompt::theme();
+    $o instanceof ConsoleOutput;
+    $v = OutputInterface::VERBOSITY_QUIET;
+    $o->render();
+    render('x');
+    new \ArrayObject();
+    $s = 'Symfony\Component\Console\Output';
+}
+class Choke extends \Symfony\Component\Console\Output\Output
+{
+    public function dump(): void {}
+    public static function make(): static { return new static(); }
+    protected function doWrite(string $message, bool $newline): void {}
+}
+class Asks extends Prompt {}
+PHP;
+
+        $this->assertSame([
+            'Plant.php::(file scope)#1' => 'prompts: use Laravel\Prompts\confirm',
+            'Plant.php::(file scope)#2' => 'prompts: use Laravel\Prompts\Prompt',
+            'Plant.php::(file scope)#3' => 'prompts: use Laravel\Prompts\TextPrompt',
+            'Plant.php::(file scope)#4' => 'termwind: use Termwind\renderUsing',
+            'Plant.php::categories#1' => 'output: new Symfony\Component\Console\Output\ConsoleOutput',
+            'Plant.php::categories#2' => 'output: new Symfony\Component\Console\Output\StreamOutput',
+            'Plant.php::categories#3' => 'output: Symfony\Component\Console\Output\ConsoleOutput::class',
+            'Plant.php::categories#4' => 'output: literal Symfony\Component\Console\Output\BufferedOutput',
+            'Plant.php::categories#5' => 'output: new class extends Symfony\Component\Console\Output\NullOutput',
+            'Plant.php::categories#6' => 'dump',
+            'Plant.php::categories#7' => 'dd',
+            'Plant.php::categories#8' => '->dump()',
+            'Plant.php::categories#9' => '->dd()',
+            'Plant.php::categories#10' => '::dump()',
+            'Plant.php::categories#11' => 'dumper: Symfony\Component\VarDumper\VarDumper::',
+            'Plant.php::categories#12' => 'termwind: Termwind\render()',
+            'Plant.php::categories#13' => 'termwind: Termwind\renderUsing()',
+            'Plant.php::categories#14' => 'prompts: Laravel\Prompts\confirm()',
+            'Plant.php::categories#15' => 'prompts: new Laravel\Prompts\TextPrompt',
+            'Plant.php::categories#16' => 'prompts: Laravel\Prompts\Prompt::',
+            'Plant.php::make#1' => 'output: new Plant\Choke',
+            'Plant.php::(file scope)#5' => 'prompts: Laravel\Prompts\Prompt',
+        ], SourceScan::sites($plant, 'Plant.php', self::siteAt(...)));
+    }
+
+    /**
      * @param  list<array{0: int|string, 1: string}>  $tokens
      */
     private static function siteAt(array $tokens, int $i, int $scopeStart): ?string
@@ -255,29 +391,111 @@ PHP;
             return self::exitSite($tokens, $i);
         }
         if ($type === T_CONSTANT_ENCAPSED_STRING || $type === T_ENCAPSED_AND_WHITESPACE) {
-            if (preg_match(self::HANDLE_LITERAL, $text, $m) !== 1 || self::isHandleArgument($tokens, $i)) {
-                return null;
+            if (preg_match(self::HANDLE_LITERAL, $text, $m) === 1) {
+                return self::isHandleArgument($tokens, $i) ? null : 'literal: '.$m[0];
             }
 
-            return 'literal: '.$m[0];
+            return $type === T_CONSTANT_ENCAPSED_STRING ? self::classLiteralSite($text, $tokens) : null;
         }
-        if ($type !== T_STRING && $type !== T_NAME_FULLY_QUALIFIED) {
+        if ($type === T_CLASS && $previous === T_NEW) {
+            return self::anonymousClassSite($tokens, $i);
+        }
+        if ($type === T_STATIC && $previous === T_NEW) {
+            $class = self::resolveClass($tokens, $i);
+
+            return $class === null ? null : self::constructionSite('new '.$class, $class, $tokens);
+        }
+        if (! in_array($type, self::NAME_TOKENS, true)) {
+            return null;
+        }
+
+        $context = self::context($tokens);
+        if (isset($context['prefixes'][$i])) {
+            return null;
+        }
+        if (isset($context['imports'][$i])) {
+            $category = self::writerCategory($context['imports'][$i]);
+
+            return $category === null ? null : $category.': use '.$context['imports'][$i];
+        }
+
+        $isCall = ($tokens[$i + 1][1] ?? null) === '(';
+        if ($isMember) {
+            return $isCall ? self::memberSite($tokens, $i) : null;
+        }
+        if (in_array($previous, [T_FUNCTION, T_CONST, T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM, T_NAMESPACE, T_GOTO, T_CASE], true)) {
             return null;
         }
 
         $name = ltrim($text, '\\');
-        $isCall = ($tokens[$i + 1][1] ?? null) === '(';
-
-        if (in_array($name, ['STDOUT', 'STDERR'], true) && ! $isCall && ! $isMember) {
+        if (in_array($name, ['STDOUT', 'STDERR'], true) && ! $isCall) {
             return self::isHandleArgument($tokens, $i) ? null : 'const '.$name;
         }
-        if (! $isCall || in_array($previous, [T_FUNCTION, T_NEW, T_CONST], true)) {
+        if ($isCall && $previous !== T_NEW) {
+            return self::functionSite($tokens, $i);
+        }
+
+        $class = (string) self::resolveClass($tokens, $i);
+        if ($previous === T_NEW) {
+            return self::constructionSite('new '.$class, $class, $tokens);
+        }
+        $isStatic = ($tokens[$i + 1][0] ?? null) === T_DOUBLE_COLON;
+        if ($isStatic && ($tokens[$i + 2][0] ?? null) === T_CLASS) {
+            return self::constructionSite($class.'::class', $class, $tokens);
+        }
+        $category = self::writerCategory($class);
+
+        return $category === null ? null : $category.': '.$class.($isStatic ? '::' : '');
+    }
+
+    /** @param  list<array{0: int|string, 1: string}>  $tokens */
+    private static function memberSite(array $tokens, int $i): ?string
+    {
+        [$previous, $operator] = $tokens[$i - 1];
+        $lower = strtolower($tokens[$i][1]);
+
+        if (in_array($lower, self::DUMPER_METHODS, true)) {
+            // `VarDumper::dump(` is already a site as a DUMPER class reference.
+            $owner = $tokens[$i - 2] ?? null;
+            if ($previous === T_DOUBLE_COLON && $owner !== null && in_array($owner[0], self::NAME_TOKENS, true)
+                && self::writerCategory((string) self::resolveClass($tokens, $i - 2)) !== null) {
+                return null;
+            }
+
+            return ($previous === T_DOUBLE_COLON ? '::' : '->').$tokens[$i][1].'()';
+        }
+
+        return $previous === T_OBJECT_OPERATOR && in_array($lower, self::PROCESS_PASSTHROUGH_METHODS, true) ? $operator.$tokens[$i][1].'()' : null;
+    }
+
+    /** @param  list<array{0: int|string, 1: string}>  $tokens */
+    private static function functionSite(array $tokens, int $i): ?string
+    {
+        [$type, $text] = $tokens[$i];
+        $context = self::context($tokens);
+        $name = ltrim($text, '\\');
+        $imported = $type === T_STRING ? ($context['functions'][strtolower($name)] ?? null) : null;
+
+        $candidates = match (true) {
+            $imported !== null => [$imported],
+            $type === T_NAME_FULLY_QUALIFIED => [$name],
+            $type === T_STRING => [ltrim($context['namespace'].'\\'.$name, '\\'), $name],
+            default => [(string) self::resolveClass($tokens, $i)],
+        };
+        foreach ($candidates as $function) {
+            $category = self::writerCategory($function);
+            if ($category !== null) {
+                return $category.': '.$function.'()';
+            }
+        }
+
+        // Only a name PHP can resolve to the GLOBAL function is one of the language's own.
+        $global = end($candidates);
+        if (str_contains($global, '\\')) {
             return null;
         }
-        $lower = strtolower($name);
-        if ($isMember) {
-            return $previous === T_OBJECT_OPERATOR && in_array($lower, self::METHODS, true) ? '->'.$name.'()' : null;
-        }
+        $lower = strtolower($global);
+
         if (array_key_exists($lower, self::HANDLE_ARGUMENT)) {
             $argument = self::arguments($tokens, $i + 1)[self::HANDLE_ARGUMENT[$lower]] ?? [];
             $target = self::handleTarget($argument);
@@ -297,7 +515,216 @@ PHP;
                 : null;
         }
 
-        return in_array($lower, self::WRITERS, true) ? $lower : null;
+        return in_array($lower, [...self::LANGUAGE_OUTPUT, ...self::PROCESS_PASSTHROUGH, ...self::DUMPER_FUNCTIONS], true) ? $lower : null;
+    }
+
+    /**
+     * A class declared in the scanned file that cannot be autoloaded (a planted source) is
+     * judged by the class it declares it extends.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function constructionSite(string $what, string $class, array $tokens): ?string
+    {
+        $category = self::writerCategory($class);
+        if ($category !== null) {
+            return $category.': '.$what;
+        }
+        if (! class_exists($class)) {
+            foreach (self::context($tokens)['declarations'] as [, $declared, $extends]) {
+                if ($extends !== null && strcasecmp($declared, $class) === 0) {
+                    $class = $extends;
+                }
+            }
+        }
+
+        return self::isOutputClass($class) ? 'output: '.$what : null;
+    }
+
+    /** @param  list<array{0: int|string, 1: string}>  $tokens */
+    private static function classLiteralSite(string $literal, array $tokens): ?string
+    {
+        $inner = str_replace('\\\\', '\\', substr($literal, 1, -1));
+        if (preg_match('/\A\\\\?[A-Za-z_]\w*(?:\\\\[A-Za-z_]\w*)+\z/', $inner) !== 1) {
+            return null;
+        }
+        $class = ltrim($inner, '\\');
+
+        return self::constructionSite('literal '.$class, $class, $tokens);
+    }
+
+    /** @param  list<array{0: int|string, 1: string}>  $tokens */
+    private static function anonymousClassSite(array $tokens, int $i): ?string
+    {
+        $depth = 0;
+        for ($j = $i + 1, $n = count($tokens); $j < $n; $j++) {
+            $text = $tokens[$j][1];
+            if ($text === '(') {
+                $depth++;
+            } elseif ($text === ')') {
+                $depth--;
+            } elseif ($text === '{' && $depth === 0) {
+                return null;
+            } elseif ($depth === 0 && in_array($tokens[$j][0], self::NAME_TOKENS, true)
+                && in_array($tokens[$j - 1][0], [T_EXTENDS, T_IMPLEMENTS, ','], true)) {
+                $class = (string) self::resolveClass($tokens, $j);
+                $site = self::constructionSite('new class extends '.$class, $class, $tokens);
+                if ($site !== null) {
+                    return $site;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static function writerCategory(string $name): ?string
+    {
+        $lower = strtolower(ltrim($name, '\\'));
+        foreach (self::WRITER_NAMESPACES as $prefix => $category) {
+            if (str_starts_with($lower, $prefix)) {
+                return $category;
+            }
+        }
+
+        return null;
+    }
+
+    private static function isOutputClass(string $class): bool
+    {
+        return self::$isOutput[strtolower($class)] ??= (class_exists($class) || interface_exists($class))
+            && is_a($class, OutputInterface::class, true);
+    }
+
+    /**
+     * The fully-qualified class the name token at $i names in its file, `self`/`static`/`parent`
+     * included; null for `self`/`static`/`parent` outside any declaration.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function resolveClass(array $tokens, int $i): ?string
+    {
+        [$type, $text] = $tokens[$i];
+        $context = self::context($tokens);
+        $lower = strtolower($text);
+
+        if ($type === T_STATIC || in_array($lower, ['self', 'static', 'parent'], true)) {
+            $resolved = null;
+            foreach ($context['declarations'] as [$at, $class, $extends]) {
+                if ($at < $i) {
+                    $resolved = $lower === 'parent' ? $extends : $class;
+                }
+            }
+
+            return $resolved;
+        }
+
+        return self::qualify($context, $type, $text);
+    }
+
+    /**
+     * @param  array{namespace: string, classes: array<string, string>}  $context
+     */
+    private static function qualify(array $context, int|string $type, string $text): string
+    {
+        if ($type === T_NAME_FULLY_QUALIFIED) {
+            return ltrim($text, '\\');
+        }
+        if ($type === T_NAME_RELATIVE) {
+            return ltrim($context['namespace'].'\\'.substr($text, strlen('namespace\\')), '\\');
+        }
+        $segments = explode('\\', $text, 2);
+        $imported = $context['classes'][strtolower($segments[0])] ?? null;
+        if ($imported !== null) {
+            return $imported.(isset($segments[1]) ? '\\'.$segments[1] : '');
+        }
+
+        return ltrim($context['namespace'].'\\'.$text, '\\');
+    }
+
+    /**
+     * The file's namespace, its `use` imports (class and function maps, and the token index of
+     * every imported name), and its class-like declarations in order. Built once per file: the
+     * walk hands the SAME token array to every call, and an identical array compares in O(1).
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     * @return array{namespace: string, classes: array<string, string>, functions: array<string, string>, imports: array<int, string>, prefixes: array<int, true>, declarations: list<array{int, string, ?string}>}
+     */
+    private static function context(array $tokens): array
+    {
+        if (self::$contextTokens === $tokens) {
+            return self::$context;
+        }
+
+        $context = ['namespace' => '', 'classes' => [], 'functions' => [], 'imports' => [], 'prefixes' => [], 'declarations' => []];
+        $pendingExtends = [];
+        $depth = 0;
+        for ($j = 0, $n = count($tokens); $j < $n; $j++) {
+            [$type, $text] = $tokens[$j];
+            if ($text === '{' || $type === T_CURLY_OPEN || $type === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $depth++;
+
+                continue;
+            }
+            if ($text === '}') {
+                $depth--;
+
+                continue;
+            }
+            if ($type === T_NAMESPACE && in_array($tokens[$j + 1][0] ?? null, [T_STRING, T_NAME_QUALIFIED], true)) {
+                $context['namespace'] = $tokens[$j + 1][1];
+
+                continue;
+            }
+            if (in_array($type, [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM], true) && ($tokens[$j + 1][0] ?? null) === T_STRING
+                && ! in_array($tokens[$j - 1][0] ?? null, [T_DOUBLE_COLON, T_NEW], true)) {
+                $context['declarations'][] = [$j, ltrim($context['namespace'].'\\'.$tokens[$j + 1][1], '\\'), null];
+                $pendingExtends[] = ($tokens[$j + 2][0] ?? null) === T_EXTENDS ? $tokens[$j + 3] : null;
+
+                continue;
+            }
+            if ($type !== T_USE || $depth !== 0 || ($tokens[$j + 1][1] ?? null) === '(') {
+                continue;
+            }
+
+            $statementKind = ($tokens[$j + 1][0] ?? null) === T_FUNCTION ? 'functions' : (($tokens[$j + 1][0] ?? null) === T_CONST ? 'const' : 'classes');
+            $kind = $statementKind;
+            $prefix = '';
+            for ($k = $j + 1; $k < $n && $tokens[$k][1] !== ';'; $k++) {
+                [$itemType, $itemText] = $tokens[$k];
+                if ($itemType === T_FUNCTION) {
+                    $kind = 'functions';
+                } elseif ($itemType === T_CONST) {
+                    $kind = 'const';
+                } elseif ($itemText === ',' || $itemText === '}') {
+                    $kind = $statementKind;
+                } elseif (in_array($itemType, [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true) && ($tokens[$k - 1][0] ?? null) !== T_AS) {
+                    if (($tokens[$k + 1][0] ?? null) === T_NS_SEPARATOR) {
+                        $prefix = ltrim($itemText, '\\').'\\';
+                        $context['prefixes'][$k] = true;
+
+                        continue;
+                    }
+                    $imported = $prefix.ltrim($itemText, '\\');
+                    $alias = ($tokens[$k + 1][0] ?? null) === T_AS ? $tokens[$k + 2][1] : substr((string) strrchr('\\'.$imported, '\\'), 1);
+                    $context['imports'][$k] = $imported;
+                    if ($kind !== 'const') {
+                        $context[$kind][strtolower($alias)] = $imported;
+                    }
+                }
+            }
+            $j = $k;
+        }
+
+        foreach ($pendingExtends as $d => $extends) {
+            if ($extends !== null) {
+                $context['declarations'][$d][2] = self::qualify($context, $extends[0], $extends[1]);
+            }
+        }
+
+        self::$contextTokens = $tokens;
+
+        return self::$context = $context;
     }
 
     /**
