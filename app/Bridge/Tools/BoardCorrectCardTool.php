@@ -153,9 +153,9 @@ use Illuminate\Support\Facades\Log;
  * exists and a value kanban's validator rejects are all permanent — and reporting them
  * as the dispatcher's retryable 502 would send a seat into the retry loop DL-020 exists
  * to warn about. Each names its own cause, and the ones that are an INSTALL fault
- * rather than a caller fault say so. ⛔ The 422 arm never echoes the board's body: it is
- * an upstream response, and the tool's own bounded messages are what the seat can act
- * on.
+ * rather than a caller fault say so. ⛔ The 422 arm relays the board's own reason only
+ * through {@see BoardCallRefusal::boardReason} (DL-384): the body is an upstream response,
+ * so what reaches the seat is its field errors, redacted and bounded, never the body itself.
  */
 final class BoardCorrectCardTool implements Tool
 {
@@ -737,9 +737,9 @@ final class BoardCorrectCardTool implements Tool
      * WRONG. Those bounds ({@see KanbanFieldLimits}) mirror rules that live in kanban's
      * repo, so they can go stale; with 422 on the retryable path, a stale bound became a
      * seat retrying forever against `502 upstream board error` with no diagnosis. It is
-     * mapped here instead, and the message is BRIDGE-AUTHORED: the board's response body
-     * is never echoed — it is an upstream artefact whose shape and contents this tool
-     * does not control, and the caller can act on {@see BoardCallRefusal::bridgeBoundsClause}.
+     * mapped here instead. Since DL-384 the message says what the bridge's own checks
+     * established ({@see BoardCallRefusal::bridgeBoundsClause}) and relays the board's own
+     * reason, redacted and bounded ({@see BoardCallRefusal::boardReason}), last.
      *
      * ⭐ WHICH statuses are permanent is {@see BoardCallRefusal}'s (card#8486); WHAT each one
      * means for a CORRECTION stays here, because that is a property of this write and not of
@@ -764,7 +764,7 @@ final class BoardCorrectCardTool implements Tool
             404 => "board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
             403 => "board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. ".BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it)').' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => "board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.",
-            422 => "board_correct_card: the board REJECTED the value you sent for card {$cardId} (422) — kanban's own validator refused it, so nothing was written and re-sending the same call cannot succeed. ".BoardCallRefusal::bridgeBoundsClause().' Shorten or simplify the field you were correcting, and report it to your operator if it persists.',
+            422 => "board_correct_card: the board REJECTED the write to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. ".BoardCallRefusal::bridgeBoundsClause('name').' Change what the board names below, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
         });
     }
 }

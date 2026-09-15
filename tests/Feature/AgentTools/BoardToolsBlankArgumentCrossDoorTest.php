@@ -337,6 +337,70 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertSame([], $this->writesIn($ssh['requests']));
     }
 
+    // ─── a board 422's own reason (DL-384) ───────────────────────────────────
+
+    private const PLANTED = 'planted-not-a-credential'; // gitleaks:allow — synthetic value the scrubber must remove
+
+    private static function board422Body(): string
+    {
+        return (string) json_encode([
+            'message' => 'The payload field is invalid.',
+            'errors' => ['payload' => ['The payload field is invalid (access_token='.self::PLANTED.').']],
+        ]);
+    }
+
+    /**
+     * ⭐ rt#484's SHAPE: a title and tags inside both mirrored caps, the board answers 422 for a
+     * field the bridge does not check, and the refusal used to tell the seat to shorten its
+     * title, description or tags. It must name the board's own field and message instead —
+     * redacted — and say the bridge's own checks passed, identically on both doors.
+     */
+    public function test_a_board_422_on_a_create_that_passed_the_bridge_checks_relays_the_boards_reason_on_both_doors(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(self::board422Body(), 422)]);
+        $call = ['tool' => 'board_create_card', 'args' => [
+            'title' => str_repeat('t', 159), 'description' => str_repeat('d', 4000), 'tags' => ['priority:high'],
+        ]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertCount(1, $this->writesIn($r['requests']), "{$door}: the create must have reached the board");
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString('`payload`: The payload field is invalid (access_token=[REDACTED]', $error, $door);
+            $this->assertStringNotContainsString(self::PLANTED, $error, $door);
+            $this->assertStringContainsString('NO card was created', $error, $door);
+            $this->assertStringContainsString('checks passed before it sent', $error, $door);
+            $this->assertStringNotContainsString('Shorten', $error, "{$door}: the bridge's checks passed, so no length may be blamed");
+        }
+    }
+
+    /**
+     * The other half of DL-384's rule: what the bridge's own check DID establish is still named.
+     * A title over the mirrored cap is refused naming the cap, before any request, on both doors.
+     */
+    public function test_a_title_over_the_mirrored_cap_is_refused_naming_the_cap_before_any_request_on_both_doors(): void
+    {
+        Http::fake(['*' => Http::response(self::board422Body(), 422)]);
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => str_repeat('t', KanbanFieldLimits::NAME_MAX + 1)]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertSame([], $r['requests'], "{$door}: an over-long title must be refused before any request");
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString('`title` is '.(KanbanFieldLimits::NAME_MAX + 1).' characters', $error, $door);
+            $this->assertStringContainsString('at most '.KanbanFieldLimits::NAME_MAX, $error, $door);
+            $this->assertStringNotContainsString('payload', $error, $door);
+        }
+    }
+
     // ─── board_comment_card: `content` ───────────────────────────────────────
 
     private function fakeCommentableBoard(): void

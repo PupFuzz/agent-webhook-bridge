@@ -2967,11 +2967,12 @@ class AgentToolsCallTest extends TestCase
      * deterministic (its validator will refuse the same value forever), so it is a
      * refusal, not the retryable 502 the seat would loop on.
      *
-     * ⛔ And the message is BRIDGE-AUTHORED: the board's response body is never echoed
-     * into the seat's error, so this asserts the upstream text is ABSENT as well as the
-     * bridge's own text present — an absence-only assertion would certify anything.
+     * ⭐ SINCE DL-384 THE BOARD'S OWN REASON IS RELAYED, and the bridge's text says only what
+     * its own checks established. This body names NO field (`errors` is empty), so what is
+     * relayed is the board's `message`, labelled as naming no field — and the bridge's
+     * sentence must not tell the seat to shorten anything: its `name` check passed.
      */
-    public function test_correct_maps_a_422_on_the_write_to_a_refusal_that_does_not_echo_the_board(): void
+    public function test_correct_relays_the_boards_message_on_a_422_naming_no_field_and_does_not_blame_the_mirrored_bounds(): void
     {
         Http::fake($this->correctFake(
             live: [$this->ownCardRow()],
@@ -2983,8 +2984,11 @@ class AgentToolsCallTest extends TestCase
 
         $res->assertStatus(422);
         $error = (string) $res->json('error');
-        $this->assertStringContainsString('REJECTED the value you sent', $error);
-        $this->assertStringNotContainsString('must not be greater', $error, 'the board\'s own response body must not reach the seat');
+        $this->assertStringStartsWith('board_correct_card: the board REJECTED the write to card 42 (422)', $error);
+        $this->assertStringContainsString('The board named no field; its own message', $error);
+        $this->assertStringContainsString('The name field must not be greater than 255 characters.', $error);
+        $this->assertStringContainsString('checks passed before it sent', $error);
+        $this->assertStringNotContainsString('Shorten', $error, 'the bridge\'s own name check passed, so no length may be blamed');
     }
 
     /**
@@ -3750,6 +3754,11 @@ class AgentToolsCallTest extends TestCase
      * No `idempotency_key`, so no read runs at all and the POST is the only request: the
      * status under test is unambiguously the CREATE's.
      *
+     * ⚑ The 422 arm is not here: since DL-384 it RELAYS the board's own reason, so the
+     * non-echo assertion below is true of these three arms only. The 422 arm is asserted by
+     * {@see test_a_board_422_is_relayed_on_every_write_and_stays_the_retryable_502_on_every_read}
+     * and the cross-door tests.
+     *
      * @return array<string, array{int, string}>
      */
     public static function permanentCreateWriteStatuses(): array
@@ -3758,7 +3767,6 @@ class AgentToolsCallTest extends TestCase
             'rotated/revoked token' => [401, 'revoked, rotated'],
             'writeback user cannot create here' => [403, '`task.create`'],
             'create route missing' => [404, 'API-surface fault'],
-            'kanban validator refused a value' => [422, 'REJECTED the value you sent'],
         ];
     }
 
@@ -3773,8 +3781,8 @@ class AgentToolsCallTest extends TestCase
         $error = (string) $res->json('error');
         $this->assertStringContainsString($needle, $error);
         $this->assertStringContainsString('NO card was created', $error);
-        // ⛔ The message is BRIDGE-AUTHORED — the board's response body is an upstream
-        // artefact this door does not control and never reaches the seat.
+        // ⛔ These three arms are BRIDGE-AUTHORED — the board's response body is an upstream
+        // artefact this door does not control, and on a 401/403/404 none of it reaches the seat.
         $this->assertStringNotContainsString('must not be greater', $error);
     }
 
@@ -4271,7 +4279,7 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(422);
         $error = (string) $res->json('error');
         $this->assertStringContainsString($phrase, $error);
-        // The board's own body is never echoed, and the retryable 502's text never appears.
+        // The board's non-JSON body (`nope`) is not relayed, and the retryable 502's text never appears.
         $this->assertStringNotContainsString('upstream board error', $error);
         $this->assertStringNotContainsString('nope', $error);
     }
@@ -4981,6 +4989,107 @@ class AgentToolsCallTest extends TestCase
             $res->assertStatus(502);
             $this->assertStringStartsWith('application/json', (string) $res->headers->get('Content-Type'), "{$scenario}: {$failed}");
             $this->assertSame(['ok' => false, 'error' => 'upstream board error'], $res->json(), "{$scenario}: {$failed}");
+        }
+    }
+
+    // ─── a board 422 on every upstream call (DL-384) ─────────────────────────
+
+    /** The field the planted 422 names. Not a field any tool validates, so no bridge check can be what refused it. */
+    private const BOARD_422_FIELD = 'payload.origin';
+
+    /** Synthetic: the query-pair shape `SecretScrubber` redacts. */
+    private const BOARD_422_SECRET = 'planted-not-a-credential'; // gitleaks:allow — synthetic value the scrubber must remove
+
+    private static function board422Body(): string
+    {
+        return (string) json_encode([
+            'message' => 'The payload.origin field is invalid.',
+            'errors' => [self::BOARD_422_FIELD => ['The payload.origin field is invalid (access_token='.self::BOARD_422_SECRET.').']],
+        ]);
+    }
+
+    /**
+     * ⭐ THE 422 POPULATION IS DERIVED, EXACTLY AS THE NO-ANSWER ARM ABOVE DERIVES ITS OWN: the
+     * same scenarios, the same clean-run branch pins, and run N answers the Nth request with a
+     * 422 naming a field and carrying a planted credential. A request added to a tool's path
+     * later joins this population without anybody editing this test.
+     *
+     * What each request class must answer (DL-384's audit, stated where it is enforced):
+     *  - a WRITE (POST, or a PATCH that is not the collapse's archive) → the 422 refusal, carrying
+     *    the board's own field and message, redacted;
+     *  - a READ → the retryable 502, byte for byte, relaying nothing: a read sends no value for a
+     *    validator to reject (DL-339), so the board's text there names nothing the seat can change;
+     *  - the duplicate collapse's archive PATCH → the retryable 502: it runs after the card was
+     *    created and only when a retry is idempotent (DL-339's one exception);
+     *  - the create's placement read-back → its own answer, `placement_observed: false` (DL-299).
+     */
+    #[DataProvider('unansweredCallScenarios')]
+    public function test_a_board_422_is_relayed_on_every_write_and_stays_the_retryable_502_on_every_read(string $scenario): void
+    {
+        $fake = null;
+        $failAt = 0;
+        $sent = 0;
+        $refused = null;
+        $log = [];
+        Http::fake(function ($request) use (&$fake, &$failAt, &$sent, &$refused, &$log) {
+            $log[] = $request->method().' '.urldecode($request->url());
+            if (++$sent === $failAt) {
+                $refused = $request;
+
+                return Http::response(self::board422Body(), 422);
+            }
+
+            return $fake($request);
+        });
+        $tool = $this->unansweredCallScenario($scenario)['tool'];
+        $run = function (int $at) use ($scenario, &$fake, &$failAt, &$sent, &$refused, &$log) {
+            $s = $this->unansweredCallScenario($scenario);
+            [$fake, $failAt, $sent, $refused, $log] = [$s['fake'], $at, 0, null, []];
+
+            return $this->callTool(['tool' => $s['tool'], 'args' => $s['args']]);
+        };
+
+        $answered = $run(0);
+        $requests = $sent;
+        $branch = $this->unansweredCallBranch($scenario);
+        $population = "{$scenario}: the clean run answered {$answered->status()} after sending ".count($log)." request(s):\n  ".implode("\n  ", $log);
+        $this->assertSame($branch['status'], $answered->status(), $population);
+        foreach ($branch['sends'] as $signature) {
+            $this->assertNotEmpty(preg_grep($signature, $log), "{$population}\nnone of which matches {$signature}, so the fixture no longer walks the branch this scenario is named for");
+        }
+
+        $writes = 0;
+        for ($at = 1; $at <= $requests; $at++) {
+            $res = $run($at);
+            $this->assertNotNull($refused, "{$scenario}: run {$at} sent fewer requests than the clean run");
+            $which = $refused->method().' '.urldecode($refused->url());
+
+            if (preg_match('#^GET .*/tasks/\d+\.json$#', $which) === 1) {
+                $this->assertSame('board_create_card', $tool, "only the create's placement read-back keeps its own answer, and {$which} is not it");
+                $res->assertStatus($answered->status())->assertJsonPath('result.placement_observed', false);
+
+                continue;
+            }
+
+            $collapseArchive = $refused->method() === 'PATCH' && ($refused->data()['_action'] ?? null) === 'archive';
+            if ($refused->method() === 'GET' || $collapseArchive) {
+                $res->assertStatus(502);
+                $this->assertSame(['ok' => false, 'error' => 'upstream board error'], $res->json(), "{$scenario}: {$which}");
+
+                continue;
+            }
+
+            $writes++;
+            $res->assertStatus(422);
+            $error = (string) $res->json('error');
+            $this->assertStringContainsString('(422)', $error, "{$scenario}: {$which}");
+            $this->assertStringContainsString('`'.self::BOARD_422_FIELD.'`: The payload.origin field is invalid (access_token=[REDACTED]', $error, "{$scenario}: {$which}");
+            $this->assertStringNotContainsString(self::BOARD_422_SECRET, $error, "{$scenario}: {$which}");
+            $this->assertStringNotContainsString('upstream board error', $error, "{$scenario}: {$which}");
+        }
+
+        if (in_array($scenario, ['board_create_card', 'board_correct_card', 'board_take_card', 'board_comment_card', 'board_create_card raced duplicate collapsed'], true)) {
+            $this->assertGreaterThan(0, $writes, "{$scenario}: the census never reached a write, so the relay arm was not exercised");
         }
     }
 

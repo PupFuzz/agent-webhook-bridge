@@ -638,7 +638,7 @@ rejects outright.
 | kanban answered **403** on the write | The card is yours but the writeback user may not write it — **install fault**, and **several independent gates answer 403 on this route, so every one must be audited** (`BoardCallRefusal::writeGatesClause()` enumerates them — including kanban's board write gate, which refuses every write to an archived or trashed board): the token's per-token **abilities** (`EnforceTokenAbilities` — a PATCH needs `write`), and the writeback user's **board role**, which needs **`task.update`** — kanban authorizes a PATCH by the fields it carries, so anything other than `workflow_stage_id` alone is an `update`, not a `move` (kanban DL-204 → `TaskPolicy::update` → `BoardPermissions::TASK_UPDATE`, an independently grantable `board_custom` slot in `CUSTOM_TASK_SLOT_MAP`). ⚠ **`task.update` is NEW for the board-tools door** — `board_my_cards` needs only `board.view` and `board_create_card` only `task.create` — so an install granting exactly those 403s here with a perfectly valid token. A **Member**-role writeback user already holds it. See [`writeback.md` § 1](writeback.md#1-a-least-privilege-writeback-token) for the full grant list. |
 | kanban answered **401** on either call | The token was not accepted at all — revoked, rotated, or replaced with a value the board does not know. **Install fault**; retrying cannot help. |
 | kanban answered **404** on the write | The card stopped existing between the ownership check and the write. **Nothing was written.** |
-| kanban answered **422** on the write | Kanban's own validator rejected the value. Deterministic, so it is a refusal and not the retryable 502 — this is what keeps the two mirrored length caps above safe to go stale. ⛔ The board's response **body is never echoed** into your error; the message is the bridge's own. |
+| kanban answered **422** on the write | The board refused a value in the write. Deterministic, so it is a refusal and not the retryable 502. The refusal says the bridge's own length checks passed, so it never tells you to shorten a field they cover, and it ends with **the board's own reason**, redacted and bounded — see [§ What a board 422 relays](#what-a-board-422-relays-dl-384) (DL-384). |
 
 ⚠ **Those board-caused 4xx (401/403/404/422) are reported as 422 refusals, not as the
 retryable 502**, because they fail identically however many times you send them; a 5xx
@@ -926,8 +926,8 @@ two route classes are authorized differently:
 | **403** on a WRITE | **422 refusal**, naming **every gate that can answer it** | the token's abilities, the writeback user's board role (`task.create` for a create, `task.update` for a correction **or a take**, `comment.create` for a comment), **and kanban's board write gate** — an archived or trashed board refuses every write whatever the token and role allow. `BoardCallRefusal::writeGatesClause()` is the ONE place they are enumerated (count them there, not here); a 403 cannot say which refused. |
 | **404** on a card **SEARCH** | **422 refusal**, "API-surface fault" | the ROUTE answered 404, which is a statement about the API surface rather than about a card (a card that is simply not yours is a different refusal, with its own message). |
 | **404** on a **board-scoped** read | **422 refusal**, "the BOARD itself" | the configured board id does not resolve on that route: no board carries it, or it is in the trash (that route does not resolve trashed boards). A missing API surface is the other, less likely candidate. |
-| **422** on a WRITE | **422 refusal**, bridge-authored | kanban's own validator rejected a VALUE you sent. Deterministic — and this is what keeps the mirrored length caps safe to go stale. ⛔ The board's response **body is never echoed**; the message is the bridge's own. |
-| **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. |
+| **422** on a WRITE | **422 refusal**, ending with **the board's own reason** | the board refused a value in the write. Deterministic — and this is what keeps the mirrored length caps safe to go stale. The bridge's sentence says only what its own checks established, and the board's field errors follow it, redacted and bounded: [§ What a board 422 relays](#what-a-board-422-relays-dl-384) (DL-384). |
+| **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. Nothing of the board's body is relayed. |
 | **any other 4xx** — **400**, 408, 429 … | **502** (retryable) | outside the permanent sets on purpose: the bridge has no diagnosis to offer for them, and a rate limit really does clear. |
 | **5xx** | **502** (retryable) | it may clear. This is the one you may retry — ⚠ **except a write with no key to correlate on**: `board_comment_card`'s POST has no idempotency key, so a 502 there may follow a comment that landed and a retry can post a duplicate; a `board_create_card` sent **without an `idempotency_key`** may follow a card that landed the same way, and a retry can create a second one. |
 | **no answer** — the connection failed or timed out | **502** (retryable), the same body a 5xx gets — over ssh the same envelope and exit **2** (DL-387) | the bridge's HTTP client raises one exception class for every request that got no response, and the dispatcher maps it beside the 5xx. The board may or may not have acted before the answer was lost — for a write, assume it may have landed. The `5xx` row's warnings hold here too: a retried `board_comment_card` can post twice, and a retried `board_create_card` without an `idempotency_key` can create twice. ⚠ One call keeps its own answer: `board_create_card`'s placement read-back runs after the card exists and reports `placement_observed: false` instead. |
@@ -950,6 +950,43 @@ exactly when a retry is idempotent by construction — and the card has **alread
 created** by then, so "permanent, do not retry" would be the wrong instruction. That leg
 keeps the retryable 502: your retry re-enters the correlate-before-create read, which hands
 back the card if the fault cleared and names the install fault if it did not.
+
+### What a board 422 relays (DL-384)
+
+**This section OWNS what a write's 422 refusal carries; the rows above point at it.** When kanban
+answers **422** to a write — `board_create_card`'s create, the PATCH of `board_correct_card` or
+`board_take_card`, `board_comment_card`'s POST — the refusal has two parts, in this order:
+
+1. **What the bridge's own checks established, and nothing more.** A write that reached the board
+   passed them, so the refusal says they passed and never tells you to shorten a field they cover:
+   for a create or a correction, any `title`/`name` you sent is within kanban's `name` cap and each
+   tag you passed within its tag cap; for a comment, the body is within kanban's `content` cap.
+   ⚠ A tag the bridge stamps itself (`created-by:<you>`, `idem:<you>:<key>`) is not a tag you
+   passed, and no check bounds it.
+2. **The board's own reason**, last, read from the 422 body:
+
+| The 422 body | The refusal ends with |
+| --- | --- |
+| Laravel's validation shape, `{message, errors: {<field>: [<message>, …]}}` | ``The board's own reason (its text, redacted and bounded by the bridge): `<field>`: <message> \| …`` — every message of every field, in body order; a nested object becomes a dotted path (`payload.origin`); a bare-string `errors` is relayed with no field. Laravel's `message` is dropped beside field errors: it summarises the first of them. |
+| JSON with no usable `errors` and a string `message` | `The board named no field; its own message (redacted and bounded by the bridge) is: <message>` |
+| JSON with neither | `The board's 422 body named no field and carried no message, so it gave no reason to relay.` |
+| Not JSON (a proxy's HTML page, say) | `The board's 422 body is not JSON the bridge can read (<N> bytes), so none of it is relayed.` |
+| Empty | `The board's 422 carried no body, so it gave no reason to relay.` |
+| Over the byte bound | `The board's 422 body is <N> bytes, over the <bound>-byte bound the bridge relays from, so none of it is shown.` |
+
+**Bounded and redacted.** `App\Bridge\Tools\BoardCallRefusal::boardReason()` is the one primitive,
+and its constants own the figures (the body byte bound, the entry count, the total size) — read
+them there. Each field name and message is redacted by `SecretScrubber` with its own key in view (so
+a value under a nested credential-named key is redacted), then rendered by
+`UntrustedText::forOperator()`: whitespace collapsed to one line, control and bidi characters escaped,
+and the span cut with a `[TRUNCATED, <N> SOURCE CHARS]` marker. Entries past the count or size bound
+are counted, `[<N> MORE NOT SHOWN]`, and not shown.
+
+- ⚠ **The relayed text is the board's, not the bridge's.** It is bounded in size, not in meaning.
+  The redaction is `SecretScrubber`'s, with every bound that class states.
+- **The shape did not change:** the reason is inside the `error` string, and `{ok: false, error}`,
+  the 422 status and the ssh exit `1` are as before.
+- **A 422 on a READ relays nothing** and stays the retryable 502 (the row above says why).
 
 ### What the CALLER sees when the leg itself fails (DL-312)
 
