@@ -42,6 +42,8 @@ php artisan bridge:check                    # identical to --format=text
 
 **`message` strings are NOT part of the contract.** They are operator prose, carried so a document is diagnosable by a human reading it. They have been reworded before (DL-236) and will be again. **A consumer keying on message text has re-created the coupling this surface exists to break** — key on `severity`, `disposition`, check `id`, and the structured `event_consumers` fields instead. `CheckJsonContractTest` deliberately does not pin them.
 
+**The document passes the console output choke (DL-393)** like every other `bridge:*` write. JSON already escapes every C0 control inside a string, so what the choke can remove from this document is a raw DEL and the C1 and Unicode format characters (`\p{Cf}`: bidi overrides, zero-width characters) that `JSON_UNESCAPED_UNICODE` otherwise carries as real bytes. It removes them only from inside strings, because no other part of the document can hold them, so the document stays valid JSON. In practice that means a `message`, a rewording under the row above.
+
 ## 3. Top-level shape
 
 ```jsonc

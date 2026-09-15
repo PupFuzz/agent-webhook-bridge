@@ -1,6 +1,8 @@
 <?php
 
+use App\Bridge\Console\StrippingConsoleKernel;
 use App\Bridge\Support\RedactedErrorText;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -9,7 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
-return Application::configure(basePath: dirname(__DIR__))
+$app = Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         commands: __DIR__.'/../routes/console.php',
@@ -50,3 +52,10 @@ return Application::configure(basePath: dirname(__DIR__))
             return false;
         });
     })->create();
+
+// ⛔ The console output choke (card#9251, DL-393). Bound HERE, after create(), and never in a
+// service provider: `Application::handleCommand()` resolves the kernel before providers are
+// registered, so a provider re-bind would leave the unwrapped kernel running, silently.
+$app->singleton(ConsoleKernel::class, StrippingConsoleKernel::class);
+
+return $app;

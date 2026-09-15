@@ -1811,7 +1811,11 @@ corrupting one golden file's arithmetic and observing the named failure.
   drives each dispatch through a **decorated** `BufferedOutput`, where every channel carries its own
   ANSI attribute. It asserts the attribute is present/absent and that the channels are DISTINCT from
   each other — never the colour name — so an upstream scheme change moves a colour while a channel
-  collapsing into another still reds. The genuine residual that remains is narrow and is a fact about
+  collapsing into another still reds. **[Annotation 2026-09-15, DL-393 — additive: since the
+  console output choke, no Artisan run is decorated, `--ansi` included. The channels this
+  instrument tells apart are therefore byte-identical on an operator's terminal as well, so it
+  witnesses the severity→channel MAP, which no terminal rendering shows today. DL-393
+  Decision 7(b) records that as an operator-visible consequence.]** The genuine residual that remains is narrow and is a fact about
   the INSTALL, not about the instrument: no install shape reaches the `warn` arm of the inventory
   dispatch, because every conditional slot in `handle()` records a not-run reason by design, so
   `unexplainedNotRun()` is empty on every real run.

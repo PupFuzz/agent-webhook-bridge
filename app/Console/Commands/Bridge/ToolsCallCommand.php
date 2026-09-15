@@ -45,7 +45,7 @@ use App\Bridge\Tools\ToolsCallStdio;
  * Stdout purity is load-bearing: the ssh channel captures this process's fd 1 as
  * the tool result, so the command writes NOTHING to stdout but the one JSON
  * envelope (raw {@see fwrite}, never `$this->info/line/warn/error`, which the
- * OutputStyle targets at fd 1 and would decorate). Every diagnostic goes to STDERR
+ * OutputStyle targets at fd 1). Every diagnostic goes to STDERR
  * or the log. `display_errors` is pinned to stderr as early as the command runs so
  * a post-boot notice cannot prepend to the envelope (a true php STARTUP error
  * before userland is uncatchable here — the client-side JSON.parse in the .mjs is
