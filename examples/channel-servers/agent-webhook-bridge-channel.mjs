@@ -340,7 +340,11 @@ const TOOL_DEFINITIONS = [
         idempotency_key: {
           type: 'string',
           description:
-            'Optional but recommended: [A-Za-z0-9.-]{1,64}. Re-using it returns the ' +
+            'Optional but recommended: [A-Za-z0-9.-]{1,64}, and shorter for your agent: ' +
+            'the key is stored in the tag idem:<agent>:<key> and kanban caps a tag at ' +
+            '64 characters, so the key may be at most 64 minus the length of ' +
+            '"idem:<agent>:" for your agent name; a longer key is REFUSED (422) before ' +
+            'any request is sent, naming your cap. Re-using it returns the ' +
             'same LIVE card instead of creating a duplicate. If that card was ARCHIVED ' +
             'the call is REFUSED (422) naming the card to unarchive — an archived card ' +
             'is a retire, so no replacement is created; pass a NEW key for new work.',

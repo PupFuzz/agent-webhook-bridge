@@ -48,6 +48,9 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
     private string $token = 'tools-bearer-xdoor';   // gitleaks:allow — test fixture
 
+    /** The one agent both doors authenticate as; a test about the agent name's length sets its own. */
+    private string $agent = 'me';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -81,7 +84,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     {
         $auth = $transport === 'http' ? "  auth:\n    token_path: {$this->dir}/me-tools-token\n" : '';
 
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n"
+        File::put($this->dir.'/'.$this->agent.'.yml', "identity:\n  kanban_user_id: ".crc32($this->agent)."\nsubscriptions: []\n"
             ."board_tools:\n  enabled: true\n  transport: {$transport}\n".$auth
             ."  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
     }
@@ -130,7 +133,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
         $fake = new FakeToolsCallStdio((string) json_encode($call));
         $this->app->instance(ToolsCallStdio::class, $fake);
-        $exit = $this->artisan('bridge:tools-call', ['--agent' => 'me'])->run();
+        $exit = $this->artisan('bridge:tools-call', ['--agent' => $this->agent])->run();
 
         /** @var array<string, mixed> $body */
         $body = json_decode($fake->capturedOut(), true);
@@ -380,13 +383,16 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     }
 
     /**
-     * ⛔ THE BRIDGE'S OWN TAGS ARE NOT CHECKED, SO ITS SENTENCE MUST NOT CLAIM THE BOARD REFUSED
-     * "SOMETHING OTHER THAN" THE BOUNDS. An `idempotency_key` passes its own charset/length check
-     * and still makes `idem:<agent>:<key>` longer than kanban's tag cap. The fake applies kanban's
-     * `tags.*` rule to whatever the create actually sent, so the refused index is the real one.
+     * ⛔ A TAG THE BRIDGE WRITES ITSELF AND NO CHECK BOUNDS, SO ITS SENTENCE MUST NOT CLAIM THE
+     * BOARD REFUSED "SOMETHING OTHER THAN" THE BOUNDS. `created-by:<agent>` is bounded only by
+     * the agent's configured name, so an agent name long enough makes it longer than kanban's
+     * tag cap. The fake applies kanban's `tags.*` rule to whatever the create actually sent, so
+     * the refused index is the real one. (Until card#9588 the fixture was an over-long
+     * `idempotency_key`; that stamp is now bounded before any request — the next test.)
      */
     public function test_a_board_422_on_a_bridge_stamped_tag_is_not_blamed_on_something_else_on_both_doors(): void
     {
+        $this->agent = str_repeat('a', KanbanFieldLimits::TAG_MAX - strlen('created-by:') + 1);
         Http::fake(function (Request $request) {
             if (str_contains($request->url(), '/tasks/search.json')) {
                 return Http::response(['data' => []]);
@@ -402,9 +408,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
             return Http::response(['data' => ['id' => 42]], 201);
         });
-        $call = ['tool' => 'board_create_card', 'args' => [
-            'title' => 'a real title', 'tags' => ['priority:high'], 'idempotency_key' => str_repeat('k', 60),
-        ]];
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ['priority:high']]];
 
         $http = $this->throughHttpDoor($call);
         $ssh = $this->throughSshDoor($call);
@@ -415,14 +419,36 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             $writes = $this->writesIn($r['requests']);
             $this->assertCount(1, $writes, "{$door}: the create must have reached the board");
             $sent = $writes[0]['body']['tags'];
-            $index = array_search('idem:me:'.str_repeat('k', 60), $sent, true);
-            $this->assertIsInt($index, "{$door}: fixture drift — the create no longer sends the over-cap idem tag");
+            $index = array_search('created-by:'.$this->agent, $sent, true);
+            $this->assertIsInt($index, "{$door}: fixture drift — the create no longer sends the over-cap created-by tag");
 
             $error = (string) $r['body']['error'];
             $this->assertStringContainsString("`tags.{$index}`: The tags.{$index} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', $error, $door);
             $this->assertStringContainsString('each tag you passed within '.KanbanFieldLimits::TAG_MAX, $error, $door);
-            $this->assertStringContainsString('`idem:`', $error, "{$door}: the sentence must say the bridge's own tags are not checked");
+            $this->assertStringContainsString('`created-by:`', $error, "{$door}: the sentence must say the bridge's unchecked stamp is not checked");
+            $this->assertStringNotContainsString('`idem:`', $error, "{$door}: the `idem:` stamp IS bounded before any request (card#9588), so naming it unchecked is false");
             $this->assertStringNotContainsString('something other than', $error, "{$door}: the checks do not establish what the board refused");
+        }
+    }
+
+    /**
+     * card#9588: an `idempotency_key` one character past what `idem:<agent>:` leaves of kanban's
+     * tag cap is refused before any request, with one envelope on both doors.
+     */
+    public function test_an_idempotency_key_past_the_agents_effective_cap_is_refused_before_any_request_on_both_doors(): void
+    {
+        $this->fakeUncorrelatedBoard();
+        $cap = KanbanFieldLimits::TAG_MAX - strlen('idem:me:');
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'idempotency_key' => str_repeat('k', $cap + 1)]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertSame([], $r['requests'], "{$door}: an over-cap key must be refused before any request");
+            $this->assertStringContainsString("at most {$cap} for agent `me`", (string) $r['body']['error'], $door);
         }
     }
 

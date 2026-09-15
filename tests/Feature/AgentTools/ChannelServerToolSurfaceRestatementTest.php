@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardCreateCardTool;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
@@ -122,6 +123,20 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         );
 
         return $block;
+    }
+
+    /**
+     * card#9588: `idempotency_key` is bounded by what `idem:<agent>:` leaves of kanban's tag cap,
+     * not by its own `{1,64}`, so the property a seat reads must name the tag the key is stored in
+     * and that cap. Both needles are derived — the tag from the tool's own builder, the cap from
+     * its constant followed by a word, because a bare `64` is satisfied by `{1,64}` alone.
+     */
+    public function test_the_create_entry_states_the_tag_the_idempotency_key_is_capped_by(): void
+    {
+        $block = $this->property('board_create_card', 'idempotency_key');
+
+        $this->assertStringContainsString(BoardCreateCardTool::idemTag('<agent>', '<key>'), $block, 'board_create_card\'s `idempotency_key` no longer names the tag the key is stored in — a seat cannot work out its effective cap and sends a key the bridge refuses');
+        $this->assertStringContainsString(KanbanFieldLimits::TAG_MAX.' characters', $block, 'board_create_card\'s `idempotency_key` no longer names the tag cap that bounds the key');
     }
 
     /** @return array<string, array{string}> */

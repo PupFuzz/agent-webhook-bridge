@@ -615,6 +615,91 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * card#9588 — the key is stored inside `idem:<agent>:<key>`, and kanban caps a TAG at
+     * {@see KanbanFieldLimits::TAG_MAX}, so the key's real cap is what the prefix leaves. The
+     * expected cap is spelled from the literal prefix here rather than read from the tool, so
+     * a tool that derived it wrongly cannot agree with itself.
+     */
+    public function test_an_idempotency_key_at_the_agents_effective_cap_is_accepted_and_its_tag_fills_the_tag_cap(): void
+    {
+        $cap = KanbanFieldLimits::TAG_MAX - strlen('idem:me:');
+        $key = str_repeat('k', $cap);
+        Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => $key]])
+            ->assertStatus(200)
+            ->assertJsonPath('result.created', true);
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/tasks.json')
+            && in_array("idem:me:{$key}", $r['tags'], true)
+            && mb_strlen("idem:me:{$key}") === KanbanFieldLimits::TAG_MAX);
+    }
+
+    public function test_an_idempotency_key_one_over_the_agents_effective_cap_is_refused_before_any_request(): void
+    {
+        $cap = KanbanFieldLimits::TAG_MAX - strlen('idem:me:');
+        Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => str_repeat('k', $cap + 1)]]);
+
+        $res->assertStatus(422);
+        Http::assertNothingSent();
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('`idempotency_key` is '.($cap + 1).' characters', $error);
+        $this->assertStringContainsString("at most {$cap} for agent `me`", $error);
+        $this->assertStringContainsString('`idem:me:<key>`', $error);
+        $this->assertStringContainsString('NO card was created', $error);
+        $this->assertStringNotContainsString(str_repeat('k', $cap + 1), $error, 'the refusal names the length, not the key');
+    }
+
+    /**
+     * An agent whose name alone fills the tag leaves no room for ANY key — a configuration
+     * fault, so the refusal must say so rather than tell the seat to shorten a one-character
+     * key. The control one character shorter leaves room for exactly one, and creates.
+     */
+    public function test_an_agent_name_that_leaves_no_room_for_a_key_is_refused_as_an_install_fault(): void
+    {
+        $scope = ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55];
+        $full = str_repeat('a', KanbanFieldLimits::TAG_MAX - strlen('idem::'));
+        $roomForOne = str_repeat('b', KanbanFieldLimits::TAG_MAX - strlen('idem::') - 1);
+        $this->writeAgent($full, 'tools-bearer-full', $scope);
+        $this->writeAgent($roomForOne, 'tools-bearer-one', $scope);
+        Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k']], 'tools-bearer-full');
+
+        $res->assertStatus(422);
+        Http::assertNothingSent();
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString("agent name `{$full}`", $error);
+        $this->assertStringContainsString('INSTALL fault', $error);
+        $this->assertStringContainsString('NO card was created', $error);
+        $this->assertStringNotContainsString('characters — at most', $error, 'a config fault is not a key-length refusal');
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k']], 'tools-bearer-one')
+            ->assertStatus(200)
+            ->assertJsonPath('result.created', true);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/tasks.json')
+            && in_array("idem:{$roomForOne}:k", $r['tags'], true));
+    }
+
+    /**
+     * Regression pin: a keyed create that succeeds today sends the SAME BYTES after the cap
+     * check exists. Captured green against the tool before the check was added.
+     */
+    public function test_a_keyed_create_within_the_cap_sends_a_byte_identical_body(): void
+    {
+        Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 5));
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => [
+            'title' => 't', 'description' => 'd', 'tags' => ['priority:high'], 'idempotency_key' => 'Daily-Report.2026',
+        ]])->assertStatus(200);
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/tasks.json')
+            && $r->body() === '{"board_id":10,"workflow_stage_id":55,"name":"t","payload":[],"tags":["priority:high","created-by:me","idem:me:daily-report.2026"],"swimlane_id":4,"description":"d"}');
+    }
+
     public function test_missing_title_is_refused(): void
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
