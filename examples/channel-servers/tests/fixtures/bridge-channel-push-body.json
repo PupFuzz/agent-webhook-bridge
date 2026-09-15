@@ -1,0 +1,18 @@
+{
+    "intent": {
+        "kind": "column_move",
+        "subject_id": "4719",
+        "provider": "kanban",
+        "actor": {
+            "id": "137",
+            "name": "Example User",
+            "is_known_agent": false
+        },
+        "summary": "moved by Example User: subject 4719 to In Progress",
+        "payload": {
+            "board_id": 8,
+            "from_stage": "Next",
+            "to_stage": "In Progress"
+        }
+    }
+}
