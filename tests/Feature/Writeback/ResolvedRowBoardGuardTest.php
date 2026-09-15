@@ -292,6 +292,9 @@ class ResolvedRowBoardGuardTest extends TestCase
             self::ALERT_URL.'*' => Http::response('', 204),
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 6, 'payload' => ['pr_number' => 42]]]]),
             '*/tasks/6.json' => Http::response(['data' => ['id' => 6, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            // The refused row leaves no card, so the arm goes on to CREATE, which first reads
+            // which payload values the board accepts (DL-392).
+            '*/boards/'.self::MAPPED_BOARD.'/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number', 'type' => 'number'], ['key' => 'pr_url', 'type' => 'url'], ['key' => 'origin', 'type' => 'string']]]),
             '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
         ]);
 
@@ -299,6 +302,7 @@ class ResolvedRowBoardGuardTest extends TestCase
 
         $this->assertNoWriteTo(6);
         $this->assertRefused(6, 'dependabot_card');
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/boards/'.self::MAPPED_BOARD.'/custom_fields.json'));
     }
 
     // ------------------------------------------------------------ coord-card post-create

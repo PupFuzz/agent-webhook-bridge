@@ -169,17 +169,17 @@ final class BoardCallRefusal
      * {@see boardReason}'s to relay.
      *
      * ⛔ "EACH TAG YOU PASSED", NOT "EACH TAG", AND NO CONCLUSION DRAWN FROM THE PASS. The check runs
-     * on the caller's tags only. A tag the bridge writes itself (`created-by:<agent>`,
-     * `idem:<agent>:<key>`, and on a correction every tag it keeps from the card) is not bounded
-     * here, and an `idempotency_key` that passes its own check can still make the `idem:` tag longer
-     * than kanban's tag cap. So a pass does not establish that the board refused something other
-     * than these bounds, and the clause names the unchecked tags instead of saying it did.
+     * on the caller's tags only. A tag the bridge writes itself (`created-by:<agent>`, bounded only
+     * by the configured agent name, and on a correction every tag it keeps from the card) is not
+     * bounded here. So a pass does not establish that the board refused something other than these
+     * bounds, and the clause names the unchecked tags instead of saying it did. The `idem:` stamp is
+     * not among them: {@see BoardCreateCardTool::idemTag} caps the key before any request (card#9588).
      *
      * @param  string  $nameArgument  what the calling tool's own argument for kanban's `name` is called
      */
     public static function bridgeBoundsClause(string $nameArgument): string
     {
-        return "The bridge's own length checks passed before it sent: any `{$nameArgument}` you sent is within ".KanbanFieldLimits::NAME_MAX.' characters and each tag you passed within '.KanbanFieldLimits::TAG_MAX.'. Those checks do not cover a tag the bridge writes itself: its `created-by:` and `idem:` stamps, and on a correction the tags it keeps from the card.';
+        return "The bridge's own length checks passed before it sent: any `{$nameArgument}` you sent is within ".KanbanFieldLimits::NAME_MAX.' characters and each tag you passed within '.KanbanFieldLimits::TAG_MAX.'. Those checks do not cover a tag the bridge writes itself: its `created-by:` stamp, and on a correction the tags it keeps from the card.';
     }
 
     /** A 422 body over this many bytes is sized, never parsed — a validator's answer is a small fraction of it. */

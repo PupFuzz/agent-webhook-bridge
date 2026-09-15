@@ -12,6 +12,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -197,6 +198,11 @@ class WritebackBoardStateCheckTest extends TestCase
 
     // ---- #2949: the dependabot create payload's custom fields ----
 
+    /**
+     * `origin` is not in the missing list any more: its value is a CONSTANT the handler omits
+     * where the board does not accept it, so its absence no longer 422s the create — it is
+     * reported by the constant-value leg below instead.
+     */
     public function test_a_board_missing_the_dependabot_custom_fields_names_every_missing_key(): void
     {
         $this->fakeBoard(customFieldKeys: ['pr_number']);
@@ -205,18 +211,133 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $this->assertSame(Severity::Warn, $findings[1]['severity']);
         $this->assertStringContainsString('create_dependabot_cards is on for owner/repo', $findings[1]['message']);
-        $this->assertStringContainsString('MISSING the custom field(s) pr_url, origin', $findings[1]['message']);
+        $this->assertStringContainsString('MISSING the custom field(s) pr_url the create payload always sets', $findings[1]['message']);
         $this->assertStringContainsString('SILENTLY no-op until they are registered', $findings[1]['message']);
+        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertStringContainsString("does not accept origin='dependabot'", $findings[2]['message']);
+        $this->assertStringContainsString('no such custom field is registered', $findings[2]['message']);
     }
 
     public function test_a_board_registering_every_dependabot_custom_field_is_reported_ok(): void
     {
-        $this->fakeBoard(customFieldKeys: ['pr_number', 'pr_url', 'origin']);
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'string'],
+        ]);
 
         $findings = $this->findings($this->mapping(createDependabotCards: true));
 
         $this->assertSame(Severity::Ok, $findings[1]['severity']);
         $this->assertStringContainsString('create_dependabot_cards custom fields ok on board 8', $findings[1]['message']);
+        $this->assertSame(Severity::Ok, $findings[2]['severity']);
+        $this->assertStringContainsString("origin='dependabot' is accepted by board 8 (owner/repo)", $findings[2]['message']);
+    }
+
+    // ---- card#9485: a constant the create payload writes must be a live option on the board ----
+
+    public function test_a_constant_the_boards_enum_does_not_offer_warns_and_names_the_omission(): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'enum', 'options' => [['value' => 'preemptive', 'label' => 'P'], ['value' => 'user-requested', 'label' => 'U']]],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertCount(3, $findings);
+        $this->assertSame(Severity::Ok, $findings[1]['severity']);
+        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertStringContainsString("board 8 (owner/repo) does not accept origin='dependabot'", $findings[2]['message']);
+        $this->assertStringContainsString('not one of the enum options', $findings[2]['message']);
+        $this->assertStringContainsString('created WITHOUT origin', $findings[2]['message']);
+    }
+
+    public function test_a_constant_the_boards_enum_offers_is_reported_ok(): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'enum', 'options' => ['preemptive', 'dependabot']],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Ok, $findings[2]['severity']);
+        $this->assertStringContainsString("origin='dependabot' is accepted by board 8 (owner/repo)", $findings[2]['message']);
+        $this->assertStringNotContainsString('does not accept', $this->joined($findings));
+    }
+
+    /** @return array<string, array{string}> */
+    public static function typesTheBridgeSendsNoStringConstantTo(): array
+    {
+        return ['multi_select' => ['multi_select'], 'number' => ['number'], 'date' => ['date'], 'boolean' => ['boolean'], 'url' => ['url']];
+    }
+
+    /**
+     * Only a `string` field or an enum offering the value is sent a string constant, so every other
+     * type must WARN — never the false `ok` a "non-enum accepts anything" rule printed while the
+     * create still 422d.
+     */
+    #[DataProvider('typesTheBridgeSendsNoStringConstantTo')]
+    public function test_a_constant_in_a_field_of_any_other_type_warns_and_names_the_type(string $type): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => $type, 'options' => [['value' => 'dependabot', 'label' => 'D']]],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertStringContainsString("does not accept origin='dependabot'", $findings[2]['message']);
+        $this->assertStringContainsString("its origin field is of type {$type}", $findings[2]['message']);
+    }
+
+    public function test_a_constant_in_a_string_field_is_reported_ok(): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin', 'type' => 'string'],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Ok, $findings[2]['severity']);
+        $this->assertStringContainsString("origin='dependabot' is accepted by board 8 (owner/repo)", $findings[2]['message']);
+    }
+
+    /** A record whose `type` cannot be read is not verifiable: warn and say so, never `ok`, never "of type ". */
+    public function test_a_constant_in_a_field_record_with_no_readable_type_warns_that_it_cannot_be_verified(): void
+    {
+        $this->fakeBoard(customFieldRecords: [
+            ['key' => 'pr_number', 'type' => 'number'],
+            ['key' => 'pr_url', 'type' => 'url'],
+            ['key' => 'origin'],
+        ]);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertStringContainsString("does not accept origin='dependabot'", $findings[2]['message']);
+        $this->assertStringContainsString('its origin field record carries no readable type, so the value cannot be verified', $findings[2]['message']);
+        $this->assertStringNotContainsString('of type', $findings[2]['message']);
+    }
+
+    /** A THROWING read is the per-mapping catch's unvalidated, and no constant verdict is made. */
+    public function test_a_failing_custom_field_read_is_unvalidated_and_makes_no_constant_verdict(): void
+    {
+        $this->fakeBoard(customFieldsStatus: 500);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
+        $this->assertStringContainsString('could not read board 8 (owner/repo)', $findings[1]['message']);
+        $this->assertStringNotContainsString("origin='dependabot' is accepted", $this->joined($findings));
+        $this->assertStringNotContainsString('does not accept', $this->joined($findings));
     }
 
     /** card#5698 — the dependabot twin of the swimlane pair above, same asymmetry. */
@@ -228,7 +349,9 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString("could NOT check create_dependabot_cards' custom fields", $findings[1]['message']);
+        $this->assertStringContainsString("nor whether it accepts origin='dependabot'", $findings[1]['message']);
         $this->assertStringNotContainsString('is MISSING the custom field(s)', $this->joined($findings));
+        $this->assertStringNotContainsString('does not accept', $this->joined($findings));
     }
 
     public function test_a_board_with_no_custom_fields_registered_still_names_every_missing_key(): void
@@ -692,6 +815,8 @@ class WritebackBoardStateCheckTest extends TestCase
      *                               response from `swimlaneIds: []` — the whole distinction
      *                               card#5698 turns on, and one an `[]` default cannot express.
      * @param  bool  $omitCustomFieldData  the same, for `data` on the custom-fields read.
+     * @param  list<array<string, mixed>>|null  $customFieldRecords  whole field records (type, options),
+     *                                                               replacing the key-only `$customFieldKeys`
      */
     private function fakeBoard(
         int $total = 1,
@@ -701,9 +826,11 @@ class WritebackBoardStateCheckTest extends TestCase
         int $customFieldsStatus = 200,
         bool $omitSwimlanes = false,
         bool $omitCustomFieldData = false,
+        ?array $customFieldRecords = null,
     ): void {
         $stages ??= [['id' => 50, 'name' => 'In Progress', 'position' => 1.0]];
-        Http::fake(function (Request $request) use ($total, $swimlaneIds, $customFieldKeys, $stages, $customFieldsStatus, $omitSwimlanes, $omitCustomFieldData) {
+        $customFieldRecords ??= array_map(fn (string $k) => ['key' => $k], $customFieldKeys);
+        Http::fake(function (Request $request) use ($total, $swimlaneIds, $customFieldRecords, $stages, $customFieldsStatus, $omitSwimlanes, $omitCustomFieldData) {
             if (str_contains($request->url(), 'custom_fields.json')) {
                 if ($customFieldsStatus !== 200) {
                     return Http::response(['message' => 'nope'], $customFieldsStatus);
@@ -711,7 +838,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
                 return $omitCustomFieldData
                     ? Http::response(['meta' => []])
-                    : Http::response(['data' => array_map(fn (string $k) => ['key' => $k], $customFieldKeys)]);
+                    : Http::response(['data' => $customFieldRecords]);
             }
             if (str_contains($request->url(), 'preload.json')) {
                 $data = ['workflows' => [['stages' => $stages]]];

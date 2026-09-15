@@ -91,6 +91,10 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         // the issue declares that the map does carry, else the default lane. Nothing was
         // refused, so there is no failure to signal.
         'kanban_coord_card_move: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — moving to the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column' => 'config-gap diagnostic — the move proceeds to a mapped lane, no refusal to signal',
+        // A FAIL-OPEN diagnostic on a create that SUCCEEDS (DL-392): the board's custom-field
+        // read could not say which values it accepts, so the card is created without the
+        // constant payload key. Nothing was refused; routing it would alert a completed create.
+        'kanban_dependabot_card: could NOT read which values the board accepts — creating the card WITHOUT this constant payload key' => 'fail-open diagnostic — the create proceeds without the constant key, no refusal to signal',
         // Log::error, and its twin lives in the shared CardCollapse primitive where there
         // is no (repo, outcome) dedup tuple. Recorded as a remainder on card#5968; routing
         // one copy and not the other would be a fresh asymmetry.

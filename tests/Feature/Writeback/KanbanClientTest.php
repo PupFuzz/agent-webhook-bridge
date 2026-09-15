@@ -829,6 +829,52 @@ class KanbanClientTest extends TestCase
     }
 
     /**
+     * Kanban's `optionValues()` reads an option as its `value` or as the bare string — both shapes.
+     * `accepts()` answers true only for a `string` field within its byte cap or an enum offering the
+     * value; every other type, and a record with no readable `type`, is refused.
+     */
+    public function test_board_custom_fields_reads_enum_options_in_both_shapes_and_accepts_only_a_capped_string_field_or_an_offering_enum(): void
+    {
+        Http::fake(['*/boards/8/custom_fields.json' => Http::response(['data' => [
+            ['key' => 'origin', 'type' => 'enum', 'options' => [['value' => 'preemptive', 'label' => 'P'], 'user-requested']],
+            ['key' => 'empty_enum', 'type' => 'enum', 'options' => null],
+            ['key' => 'free_text', 'type' => 'string', 'options' => null],
+            ['key' => 'pr_url', 'type' => 'url', 'options' => null],
+            ['key' => 'tags_ms', 'type' => 'multi_select', 'options' => ['free']],
+            ['key' => 'num', 'type' => 'number'],
+            ['key' => 'untyped'],
+        ]])]);
+
+        $fields = $this->client()->boardCustomFields(8);
+
+        $this->assertNotNull($fields);
+        $this->assertSame(['origin', 'empty_enum', 'free_text', 'pr_url', 'tags_ms', 'num', 'untyped'], $fields->keys());
+        $this->assertTrue($fields->accepts('origin', 'preemptive'));
+        $this->assertTrue($fields->accepts('origin', 'user-requested'));
+        $this->assertFalse($fields->accepts('origin', 'dependabot'));
+        $this->assertFalse($fields->accepts('empty_enum', 'anything'));
+        $this->assertTrue($fields->accepts('free_text', 'free'));
+        $this->assertTrue($fields->accepts('free_text', str_repeat('a', 4096)));
+        $this->assertFalse($fields->accepts('free_text', str_repeat('a', 4097)));
+        $this->assertFalse($fields->accepts('pr_url', 'free'));
+        $this->assertFalse($fields->accepts('tags_ms', 'free'));
+        $this->assertFalse($fields->accepts('num', 'free'));
+        $this->assertFalse($fields->accepts('untyped', 'free'));
+        $this->assertFalse($fields->accepts('not_registered', 'dependabot'));
+        $this->assertTrue($fields->has('origin'));
+        $this->assertFalse($fields->has('not_registered'));
+        $this->assertSame('multi_select', $fields->type('tags_ms'));
+        $this->assertNull($fields->type('untyped'));
+    }
+
+    public function test_board_custom_fields_returns_null_when_the_read_carried_no_collection(): void
+    {
+        Http::fake(['*/boards/8/custom_fields.json' => Http::response(['meta' => []])]);
+
+        $this->assertNull($this->client()->boardCustomFields(8));
+    }
+
+    /**
      * The RUNTIME callers keep degrading to a no-op — a 5xx on a deterministic body would
      * retry-storm an unfixable event for ~11 days (DL-020) — but the degradation stops being
      * SILENT. "The endpoint answered a body with no card collection" and "no card matched"

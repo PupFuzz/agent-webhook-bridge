@@ -67,7 +67,9 @@ use Illuminate\Support\Facades\Log;
  * differently under an ASCII casefold than under a Unicode-aware collation, and
  * the metacharacters mis-split or wildcard-over-match the kanban tokenizer. The
  * idempotency_key is charset-constrained to `[A-Za-z0-9.-]{1,64}` for the same
- * tokenizer reason AND lowercased after it validates, so the bridge always
+ * tokenizer reason, LENGTH-capped at what {@see idemTag}'s prefix leaves of kanban's tag
+ * cap (card#9588 — the key is stored inside that tag, so `{1,64}` is not its real bound),
+ * AND lowercased after it validates, so the bridge always
  * stores/searches one deterministic `idem:<agent>:<key>` tag (a
  * `Report`/`report` pair cannot mint two probe tags whose correlation would
  * then depend on the backend's collation).
@@ -100,14 +102,14 @@ final class BoardCreateCardTool implements Tool
         $title = $this->requireTitle($args);
         $description = $this->optionalDescription($args);
         $callerTags = CallerTagPolicy::sanitize($args, $this->name());
-        $idemKey = $this->validateIdempotencyKey($args);
+        $idemKey = $this->validateIdempotencyKey($args, $agentName);
 
         $boardId = (int) $cfg->boardId;
         $tags = $callerTags;
         $tags[] = "created-by:{$agentName}";
         $idemTag = null;
         if ($idemKey !== null) {
-            $idemTag = "idem:{$agentName}:{$idemKey}";
+            $idemTag = self::idemTag($agentName, $idemKey);
             $tags[] = $idemTag;
 
             // Correlate-before-create (DL-198 leg 1): a prior call with the same
@@ -526,9 +528,19 @@ final class BoardCreateCardTool implements Tool
     }
 
     /**
+     * The tag an `idempotency_key` is stored and searched under — its ONE spelling, and so
+     * also where the key's effective cap comes from ({@see validateIdempotencyKey}): kanban
+     * caps the whole tag, so a key may use only what this prefix leaves of it.
+     */
+    public static function idemTag(string $agentName, string $key): string
+    {
+        return "idem:{$agentName}:{$key}";
+    }
+
+    /**
      * @param  array<string, mixed>  $args
      */
-    private function validateIdempotencyKey(array $args): ?string
+    private function validateIdempotencyKey(array $args, string $agentName): ?string
     {
         if (! array_key_exists('idempotency_key', $args) || $args['idempotency_key'] === null) {
             return null;
@@ -536,6 +548,17 @@ final class BoardCreateCardTool implements Tool
         $key = $args['idempotency_key'];
         if (! is_string($key) || preg_match('/^[A-Za-z0-9.-]{1,64}$/D', $key) !== 1) {
             throw new ToolRefusalException('board_create_card: `idempotency_key` must match [A-Za-z0-9.-]{1,64} — other characters (notably " * _ %) are kanban tag-search metacharacters that could correlate the wrong card');
+        }
+
+        // ⛔ `{1,64}` is the key's charset bound, not its length cap (card#9588): the key is
+        // stored INSIDE a tag kanban caps at TAG_MAX, so a longer one is refused by the board
+        // on every attempt — a 422 no retry clears. Refused here instead, before any read.
+        $cap = KanbanFieldLimits::TAG_MAX - mb_strlen(self::idemTag($agentName, ''));
+        if ($cap < 1) {
+            throw new ToolRefusalException("board_create_card: this agent name `{$agentName}` is ".mb_strlen($agentName).' characters, so the tag an `idempotency_key` is stored in (`'.self::idemTag($agentName, '<key>').'`) reaches kanban\'s '.KanbanFieldLimits::TAG_MAX.'-character tag cap (`tags.* => string|max:64`) before any key is added, and no key can be accepted for this agent. NO card was created and nothing was sent to the board. This is an INSTALL fault — the agent\'s configured name — not something your arguments can fix; report it to your operator.');
+        }
+        if (mb_strlen($key) > $cap) {
+            throw new ToolRefusalException('board_create_card: `idempotency_key` is '.mb_strlen($key)." characters — at most {$cap} for agent `{$agentName}`, because the bridge stores it in the tag `".self::idemTag($agentName, '<key>').'` and kanban accepts at most '.KanbanFieldLimits::TAG_MAX.' characters per tag (`tags.* => string|max:64`). NO card was created and nothing was sent to the board; pass a shorter key.');
         }
 
         // Normalize case AFTER the charset check: whether the stored/searched
