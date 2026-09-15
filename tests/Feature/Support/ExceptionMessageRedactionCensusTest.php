@@ -95,6 +95,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Handlers/KanbanDependabotCardHandler.php::restampNames#1' => 'mixed $title is the payload\'s pr_title, written as a card name; the only caller passes $p[\'pr_title\']',
         'Bridge/Handlers/KanbanMoveCardHandler.php::dlNumberOf#1' => 'mixed $value is a card payload dl_number; the cast is behind is_scalar()',
         'Bridge/Tools/BoardMyCardsTool.php::capDescription#1' => 'mixed $raw is a board row\'s description; the cast is behind is_scalar()',
+        'Bridge/Tools/BoardCallRefusal.php::errorEntries#1' => 'mixed $value is a value decoded from a board 422 body\'s `errors`; the array literal holds it only behind is_string()',
         'Bridge/Check/Checks/BoardToolsHttpProbeCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Check/Checks/ChannelTransportCheck.php::markerLeg#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Check/Checks/WritebackAlertChannelCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

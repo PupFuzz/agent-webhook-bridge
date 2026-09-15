@@ -2951,7 +2951,7 @@ class BridgeCommandsTest extends TestCase
      * graceful child exit sent COM_QUIT on the fork-inherited DB connection, surfacing in
      * the PARENT as "MySQL server has gone away" under a real MariaDB driver.
      */
-    public function test_check_reports_channel_socket_live_when_a_session_listens(): void
+    public function test_check_reports_channel_socket_live_when_a_process_accepts_the_connection(): void
     {
         $sock = $this->dir.'/live.sock';
         $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);

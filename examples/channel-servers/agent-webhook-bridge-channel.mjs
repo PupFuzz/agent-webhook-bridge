@@ -232,6 +232,9 @@ const TOOL_DEFINITIONS = [
       'claim a free one — but ONLY in your own lanes: coordination cards appear in the ' +
       'coord_cards block of this same response, they are on a different board, and they ' +
       'are NOT takeable (the attempt is refused write-free and says so). ' +
+      'Your lane read NEVER shows a card that is in another lane or in NO lane, so ' +
+      '"none of my cards carry tag X" is not something the lane read can tell you: pass ' +
+      'tag to read every card on your board carrying that tag, whatever lane it is in. ' +
       'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
@@ -265,9 +268,9 @@ const TOOL_DEFINITIONS = [
             'is the primary form (it is what each card reports under "stage" alongside ' +
             'the id the bridge groups by). A STRING is treated as a stage NAME, matched ' +
             'case-insensitively, and is REFUSED if it names no stage or more than one — ' +
-            'the bridge never guesses which column you meant. Does not apply to the ' +
-            'coordination cards: those are on a different board, whose stage ids are ' +
-            'unrelated to yours.',
+            'the bridge never guesses which column you meant. Narrows the tag_cards read ' +
+            'too. Does not apply to the coordination cards: those are on a different ' +
+            'board, whose stage ids are unrelated to yours.',
         },
         limit: {
           type: 'integer',
@@ -278,6 +281,25 @@ const TOOL_DEFINITIONS = [
             'when you genuinely need a whole lane: the response grows in proportion. ' +
             'Prefer narrowing with stage. Read the window block to see whether a cut ' +
             'happened and how much is behind it.',
+        },
+        tag: {
+          type: 'string',
+          description:
+            'ONE tag, matched exactly (for example lane:A). Adds a tag_cards block: every ' +
+            'live card on YOUR board carrying it, in ANY lane or in none, each with its own ' +
+            'swimlane_id (null means the card is in no lane). The block counts the cards in ' +
+            'other lanes (other_swimlanes) and in no lane (no_swimlane); a count the bridge ' +
+            'could not stand behind is null with a reason in its *_unmeasured key — never ' +
+            'read a null as zero. Terminal columns are left out unless include_terminal is ' +
+            'true. Refused when it contains " * % / \\, a control character or any non-ASCII ' +
+            'character (kanban cannot match those exactly). Omit it and the response is ' +
+            'exactly the default.',
+        },
+        include_terminal: {
+          type: 'boolean',
+          description:
+            'Keep cards in terminal columns (kanban lane type done) in the tag_cards read ' +
+            '(default false). Refused without tag.',
         },
       },
       additionalProperties: false,

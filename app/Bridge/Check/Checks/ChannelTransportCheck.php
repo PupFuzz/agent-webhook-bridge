@@ -32,7 +32,7 @@ use App\Bridge\Support\UntrustedText;
  * - The `.FAILED` MARKER is the connector's own report: a session that lost the bind
  *   race exits with a message Claude Code swallows, leaving that session deaf
  *   invisibly. Surfacing the marker is what makes it loud on demand.
- * - The LIVENESS PROBE is the one leg that distinguishes a live consumer from a stale
+ * - The LIVENESS PROBE is the one leg that distinguishes a live listener from a stale
  *   socket. A present socket file proves nothing — the bridge would still push HTTP 202
  *   at a dead endpoint and record the dispatch as done. ⚠ Since card#9172/DL-370 it no
  *   longer CALLS that `delivered`: a dispatch that ran one logs
@@ -66,7 +66,7 @@ use App\Bridge\Support\UntrustedText;
  * MARKER: the unix probe needs a socket file no fixture creates, the one `channel.url`
  * fixture has no port, and no fixture writes a marker. THE COMMAND-LEVEL SUITE DOES REACH
  * BOTH PROBES, though — mutating them reds
- * `BridgeCommandsTest::test_check_reports_channel_socket_live_when_a_session_listens`
+ * `BridgeCommandsTest::test_check_reports_channel_socket_live_when_a_process_accepts_the_connection`
  * (which stands up a real in-process listener, on every host — card#7209 removed the fork
  * and with it the `pcntl` skip) and
  * `::test_check_reports_channel_http_endpoint_live_when_listener_present`. The MARKER leg
@@ -153,7 +153,7 @@ final class ChannelTransportCheck implements PerAgentCheck
             && filetype($socket) === 'socket'
         ) {
             if ($this->probe->probe('unix://'.$socket)['connected']) {
-                yield Finding::ok("agent {$name}: channel socket live — a session is listening on {$socket}");
+                yield Finding::ok("agent {$name}: channel socket live — a process accepted a connection on {$socket}. That is not evidence a session is attached: verify a wake in the session per CLAUDE_DEPLOYMENT.md § Live-event path, step 2.");
             } else {
                 yield Finding::warn("agent {$name}: channel socket {$socket} exists but nothing is listening (stale socket / no live session) — live-wake no-ops until a session starts. If a session IS running, its connector may have come up deaf (look for a .FAILED marker).");
             }

@@ -20,7 +20,7 @@ use Tests\TestCase;
  * FOUR LEGS OF THIS CHECK ARE INVISIBLE TO THE GOLDEN CORPUS — the unwritable parent dir,
  * the HTTP bind-failure marker, and BOTH liveness probes. A green golden run is evidence
  * for none of them. THE COMMAND-LEVEL SUITE REACHES THE TWO PROBES: mutating either reds
- * `BridgeCommandsTest::test_check_reports_channel_socket_live_when_a_session_listens` or
+ * `BridgeCommandsTest::test_check_reports_channel_socket_live_when_a_process_accepts_the_connection` or
  * `::test_check_reports_channel_http_endpoint_live_when_listener_present`. The other two
  * legs were not in that mutation run, so this file claims no whole-suite scope for them —
  * it asserts all four directly.
@@ -311,7 +311,7 @@ class ChannelTransportCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Ok, $findings[0]->severity);
-        $this->assertSame("agent prod-agent: channel socket live — a session is listening on {$socket}", $findings[0]->message);
+        $this->assertSame("agent prod-agent: channel socket live — a process accepted a connection on {$socket}. That is not evidence a session is attached: verify a wake in the session per CLAUDE_DEPLOYMENT.md § Live-event path, step 2.", $findings[0]->message);
         $this->assertSame(['unix://'.$socket], $probe->dsns);
     }
 

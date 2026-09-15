@@ -51,7 +51,7 @@ test('board_my_cards advertises exactly the arguments the bridge accepts', async
   // to orient — a bare `{}`.
   assert.deepEqual(
     Object.keys(def.inputSchema.properties).sort(),
-    ['include_description', 'limit', 'stage'],
+    ['include_description', 'include_terminal', 'limit', 'stage', 'tag'],
     'the advertised argument set drifted from the bridge tool',
   );
   assert.equal(def.inputSchema.type, 'object');
@@ -61,6 +61,8 @@ test('board_my_cards advertises exactly the arguments the bridge accepts', async
   // The TYPES, which are what a client validates a model's call against.
   assert.deepEqual(def.inputSchema.properties.include_description.type, 'boolean');
   assert.deepEqual(def.inputSchema.properties.limit.type, 'integer');
+  assert.deepEqual(def.inputSchema.properties.tag.type, 'string');
+  assert.deepEqual(def.inputSchema.properties.include_terminal.type, 'boolean');
   assert.equal(def.inputSchema.properties.limit.minimum, 1, 'the bridge refuses limit < 1');
   assert.deepEqual(
     def.inputSchema.properties.stage.anyOf,

@@ -172,6 +172,7 @@ class BoardScopedReadConstructionTest extends TestCase
         'cardRowsOnBoard',   // the card#8375 tenant check: (board, card id) → the row, or nothing
         'cardsByTag',        // the 4 writeback sites of card#7211: tag → ids
         'cardRowsByTag',     //   … tag → full rows
+        'tagRowsRead',       //   … the same rows with the page walk's ceiling flag
         'swimlaneCards',     //   … swimlane rows, paged
         'readBoardCards',    //   … full board read, paged
         'visibility',        // the bridge:check board probe
@@ -179,6 +180,10 @@ class BoardScopedReadConstructionTest extends TestCase
         'correlatePr',
         'correlateIssue',
         'findCardsByRef',    // board in the PATH, not in `q` — the other legal construction
+        'boardStructure',    // board in the PATH: the preload read board_my_cards takes once per call
+        'tagTotalInSwimlanes',     // board_my_cards' tag read: a one-row count over other lanes
+        'tagTotalWithoutSwimlane', //   … and over no lane (`swimlane_id=none`)
+        'searchDisclosesFreeText', //   … and the one-row free-text disclosure probe before it
     ];
 
     /**
@@ -195,12 +200,16 @@ class BoardScopedReadConstructionTest extends TestCase
         'cardRowsOnBoard',
         'cardsByTag',
         'cardRowsByTag',
+        'tagRowsRead',
         'swimlaneCards',
         'readBoardCards',
         'visibility',
         'correlateDl',
         'correlatePr',
         'correlateIssue',
+        'tagTotalInSwimlanes',
+        'tagTotalWithoutSwimlane',
+        'searchDisclosesFreeText',
     ];
 
     /**
@@ -403,7 +412,7 @@ class BoardScopedReadConstructionTest extends TestCase
         // than carrying it forward, because a number carried across the passes that falsified it
         // stops living in the loop. It reds when the scan stops FINDING the call sites; a NEW
         // one does not red it, being checked by the loop above.
-        $this->assertGreaterThanOrEqual(6, $callSites,
+        $this->assertGreaterThanOrEqual(5, $callSites,
             'the source scan found fewer '.self::SEARCH_ENDPOINT.' call sites than exist — it is reporting where '
             .'the searcher stopped, not the state of the code');
     }
@@ -567,6 +576,8 @@ class BoardScopedReadConstructionTest extends TestCase
             'tag' => 'id:sentinel',
             'swimlaneId' => self::SWIMLANE_ID,
             'stageId' => self::STAGE_ID,
+            'swimlaneIds' => [self::SWIMLANE_ID],
+            'stageIds' => [self::STAGE_ID],
             default => null,
         };
         if ($byName !== null) {

@@ -165,7 +165,7 @@ Apply the YAML edit per § *The #1 Laravel trap* below, then `php artisan bridge
 | Signal | What it establishes — and no more |
 |---|---|
 | GitHub shows `200` for the delivery | the receiver accepted it. A gate-dropped event is answered `200` too. |
-| `bridge:check` exits `0`, including `channel HTTP endpoint live` / `channel socket live` | something accepted a connection at the endpoint. A listener is not a session — the socket line's *"a session is listening"* is worded past what its probe (a connect-and-close) measures. |
+| `bridge:check` exits `0`, including `channel HTTP endpoint live` / `channel socket live` | something accepted a connection at the endpoint. A listener is not a session. |
 | `bridge:stats` shows `errored (replayable)` = `0` | no classifier threw. `bridge:stats` has no delivered-vs-dropped split: a dropped event and a pushed one both count as `processed`. |
 | `delivered` in `bridge:inspect` | every handler for that dispatch returned — the legend printed under that table says what it is not. |
 | `bridge dispatch: channel_push unconfirmed` beside `bridge channel_push: accepted by transport (unconfirmed)` with `"status":202` | the endpoint wrote the notification to its own transport. |
