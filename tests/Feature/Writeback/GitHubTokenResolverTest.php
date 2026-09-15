@@ -320,6 +320,26 @@ class GitHubTokenResolverTest extends TestCase
         $this->assertSame('ghp_env', $r->token);
     }
 
+    public function test_file_only_resolution_never_reaches_the_store_or_gh_token(): void
+    {
+        putenv('GH_TOKEN=gh-env-token-for-this-test');
+        $this->useStub($this->stubEchoPath());
+        $this->assertTrue($this->resolver()->resolveFor('Owner/Repo')->ok());   // control: the full precedence resolves
+
+        $this->assertFalse($this->resolver()->resolveFromFile()->ok());
+
+        $this->writeFileToken();
+        $this->assertSame('ghp_file', $this->resolver()->resolveFromFile()->token);
+    }
+
+    public function test_file_only_resolution_keeps_the_override_authoritative(): void
+    {
+        $this->writeFileToken();
+        config(['bridge.providers.github.token_path' => $this->dir.'/missing']);
+
+        $this->assertFalse($this->resolver()->resolveFromFile()->ok());
+    }
+
     public function test_resolution_is_memoized_per_repo(): void
     {
         // A stub that appends a call marker per invocation; a memoized resolveFor

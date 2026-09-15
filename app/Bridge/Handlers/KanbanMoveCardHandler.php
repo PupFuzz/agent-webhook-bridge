@@ -15,6 +15,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -87,6 +88,11 @@ use Throwable;
  * backward move ONLY from the abandon stage (terminal-safe — a Shipped/Released card
  * is never there); elsewhere `reopened` is forward-only like `opened`. A marker-gated
  * override alert (notifyRevive) fires after the move.
+ *
+ * A refusal about WHICH CARD an event is about — a near-miss token, a card id off the mapped board,
+ * a card on another board, an uncorroborated title token, a correlation ref not stamped — is ALSO
+ * reported on the pull request itself (DL-390), through {@see PrCorrelationCommenter} at the site
+ * that decided it. That report never throws and never changes the outcome decided here.
  */
 final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
@@ -109,9 +115,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      */
     private array $stageOrderMemo = [];
 
-    public function __construct(?WritebackAlertNotifier $alerts = null)
+    private PrCorrelationCommenter $comments;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null, ?PrCorrelationCommenter $comments = null)
     {
         $this->alerts = $alerts ?? new WritebackAlertNotifier;
+        $this->comments = $comments ?? new PrCorrelationCommenter;
     }
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void
@@ -191,6 +200,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 ['card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
                 $repo, $outcome, $cardId, 'card_token_near_miss',
             );
+            $this->comments->report($payload, 'card_token_near_miss');
 
             return;
         }
@@ -209,7 +219,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // decides whether we may WRITE the row we got, and only that one can record the
         // (card board, mapped board) divergence pair — a refusal here never learns the
         // card's board, which is the point of refusing before the read.
-        if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
+        $refusal = '';
+        if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome, $refusal)) {
+            // Only the foreign-id verdict is the PR's to hear about; the commenter drops the
+            // install-fault reasons this guard can also refuse under.
+            $this->comments->report($payload, $refusal);
+
             return;
         }
 
@@ -266,6 +281,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // request earlier, and it is the only arm that records the (card board, mapped
         // board) divergence. Its refused set on this path is expected to be EMPTY.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
+            $this->comments->report($payload, MappedBoardGuard::REASON);
+
             return;
         }
 
@@ -303,6 +320,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
+            $this->comments->report($payload, 'card_token_uncorroborated');
 
             return;
         }
@@ -618,6 +636,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             );
             $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
             $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $mapping, $cardId, $client, $repo, $outcome);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', ['dropped' => array_keys($dropped)]);
         }
 
         if ($refs === []) {
