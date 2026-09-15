@@ -30,6 +30,13 @@ return Application::configure(basePath: dirname(__DIR__))
             fn (Request $request) => $request->is('api/*'),
         );
 
+        // Registered FIRST and returning void, so reporting continues: a RequestException carried as
+        // ANY exception's previous is rewritten before the default log line or a renderer prints
+        // the chain, which the typed callback below cannot see (card#9486, DL-389).
+        $exceptions->report(function (Throwable $e): void {
+            RedactedErrorText::replaceMessagesInChain($e);
+        });
+
         // ⛔ A RequestException that escapes the bridge — a durable writeback handler rethrows a
         // transient 5xx on purpose, so kanban re-delivers — reaches this handler with Laravel's
         // message, a body summary already cut at RequestException::$truncateAt. Its text is

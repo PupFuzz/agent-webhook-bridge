@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\RedactedErrorText;
 use App\Models\WebhookEvent;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Debug\ExceptionHandler;
@@ -132,6 +133,44 @@ class RequestExceptionReportingTest extends TestCase
         $written = (string) file_get_contents($this->log);
         $this->assertStringNotContainsString(StraddlingRequestException::STEM, $written);
         $this->assertStringContainsString('HTTP request returned status code 422', $written);
+    }
+
+    /**
+     * A wrapper that is NOT a `RequestException` carries one as its `previous`: the log formatter
+     * and the console renderer both print the whole chain's messages, so every `RequestException`
+     * in it is rewritten, not only a top-level one. The chain here nests the fixture two deep.
+     */
+    public function test_a_request_exception_wrapped_as_a_previous_is_redacted_in_the_log_and_on_the_console(): void
+    {
+        $wrapped = static fn (): \RuntimeException => new \RuntimeException('dispatch failed', 0, new \LogicException('inner', 0, StraddlingRequestException::make()));
+
+        app(ExceptionHandler::class)->report($wrapped());
+        $written = (string) file_get_contents($this->log);
+        $this->assertStringNotContainsString(StraddlingRequestException::STEM, $written);
+        $this->assertStringContainsString('dispatch failed', $written, 'the wrapper is still reported by the default line');
+        $this->assertStringContainsString('HTTP request returned status code 422: ', $written, 'the previous chain is still printed, redacted');
+
+        Artisan::command('c9486:wraps', fn () => throw $wrapped());
+        $output = new BufferedOutput(OutputInterface::VERBOSITY_VERBOSE);
+        $this->assertSame(1, app(ConsoleKernel::class)->handle(new ArrayInput(['command' => 'c9486:wraps']), $output));
+        $rendered = $output->fetch();
+        $this->assertStringNotContainsString(StraddlingRequestException::STEM, $rendered);
+        $this->assertStringContainsString('HTTP request returned status code 422', $rendered);
+    }
+
+    /** Reporting one object twice, or one a caught arm already rendered, yields one stable text. */
+    public function test_the_rewrite_is_idempotent_across_repeated_reports(): void
+    {
+        $e = StraddlingRequestException::make();
+        $viaCatch = RedactedErrorText::of($e);
+
+        app(ExceptionHandler::class)->report(new \RuntimeException('first', 0, $e));
+        $first = $e->getMessage();
+        app(ExceptionHandler::class)->report($e);
+
+        $this->assertSame($viaCatch, $first);
+        $this->assertSame($first, $e->getMessage());
+        $this->assertSame(RedactedErrorText::of($e), $e->getMessage());
     }
 
     public function test_an_uncaught_request_exception_renders_redacted_over_http_and_stays_a_5xx(): void

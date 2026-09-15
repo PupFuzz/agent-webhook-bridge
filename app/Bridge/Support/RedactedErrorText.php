@@ -107,6 +107,25 @@ final class RedactedErrorText
         })->call($e);
     }
 
+    /**
+     * {@see self::replaceMessage()} on EVERY `RequestException` in $e's `getPrevious()` chain, $e
+     * included — a wrapper's log line and console render print the whole chain's messages.
+     *
+     * Safe to apply more than once: {@see self::of()} rebuilds from the response, never from the
+     * message, so a second pass writes the same text. A chain that loops back on itself is walked
+     * once.
+     */
+    public static function replaceMessagesInChain(Throwable $e): void
+    {
+        $seen = [];
+        for ($link = $e; $link !== null && ! isset($seen[spl_object_id($link)]); $link = $link->getPrevious()) {
+            $seen[spl_object_id($link)] = true;
+            if ($link instanceof RequestException) {
+                self::replaceMessage($link);
+            }
+        }
+    }
+
     /** A response body, redacted in full and then bounded. */
     public static function body(string $body): string
     {

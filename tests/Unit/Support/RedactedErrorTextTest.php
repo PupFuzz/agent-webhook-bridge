@@ -77,4 +77,21 @@ class RedactedErrorTextTest extends TestCase
         // escaping it for a terminal is `UntrustedText::forOperator()`'s job, not this class's.
         $this->assertSame("HTTP request returned status code 500: \rline\t\n", RedactedErrorText::of($this->exception("\rline\t\n", 500)));
     }
+
+    public function test_every_request_exception_in_a_chain_is_rewritten_and_a_looping_chain_is_walked_once(): void
+    {
+        $inner = StraddlingRequestException::make();
+        $middle = new RuntimeException('middle', 0, $inner);
+        $outer = new RuntimeException('outer', 0, $middle);
+        (function () use ($outer): void {
+            $this->previous = $outer;
+        })->call($inner);
+
+        RedactedErrorText::replaceMessagesInChain($outer);
+
+        $this->assertStringNotContainsString(StraddlingRequestException::STEM, $inner->getMessage());
+        $this->assertSame(RedactedErrorText::of($inner), $inner->getMessage());
+        $this->assertSame('outer', $outer->getMessage(), 'a non-RequestException link keeps its own message');
+        $this->assertSame('middle', $middle->getMessage());
+    }
 }

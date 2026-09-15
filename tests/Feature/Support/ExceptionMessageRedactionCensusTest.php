@@ -22,11 +22,15 @@ use Throwable;
  * THE POPULATION — exactly {@see self::siteAt()}'s predicate, over every `*.php` under `app/`:
  *  - a `getMessage` or `__toString` method call through `->` or `?->`, whatever it is called on
  *    (so `$e->getPrevious()->getMessage()` is a site);
- *  - a `(string)` cast of, or an array value `=>` of, a VARIABLE — optionally followed by a chain of
- *    `->getPrevious()` / `?->getPrevious()` calls and by nothing else (no further `->`, `?->`, `::`
- *    or `[`) — where the variable is BOUND: by an enclosing `catch` (any declared types), or by a
+ *  - an OPERAND in one of these positions: after a `(string)` cast, after `=>` (a keyed array
+ *    value), on either side of a `.` concatenation or after `.=` (both call `__toString()`), or as
+ *    an unkeyed element of an array literal (`[$e]`, `[$x, $e]` — not an index, a call argument
+ *    or a key). An OPERAND is a VARIABLE, optionally followed by a chain of `->getPrevious()` /
+ *    `?->getPrevious()` calls and by nothing else (no further `->`, `?->`, `::`, `[` or `(`),
+ *    where the variable is BOUND: by an enclosing `catch` (any declared types), or by a
  *    parameter of the enclosing named function whose declared type names a `Throwable` class
- *    (union and nullable types included) or is `mixed`/`object`, or cannot be resolved. A
+ *    (union and nullable types included) or is `mixed`/`object`, untyped (an attribute such as
+ *    `#[\SensitiveParameter]` is not a type), or cannot be resolved. A
  *    parameter typed only with scalars, arrays or non-`Throwable` classes cannot hold an exception
  *    and binds nothing. `'exception' => $e` is the log-context shape this catches: the log
  *    formatter renders the object with its raw message.
@@ -41,10 +45,11 @@ use Throwable;
  * Migrating a site removes it from the population: `RedactedErrorText::of($e)` reads no text here.
  *
  * ⚠ WHAT THAT PREDICATE DOES NOT REACH, stated so a green is not read as more:
- *  - An exception object handed on as anything but an array value or a cast — `throw $e`,
- *    `previous: $e`, `report($e)`, a positional argument, a `return`. An exception that escapes to
- *    Laravel's exception handler is covered by the report registration in `bootstrap/app.php`
- *    (`RequestExceptionReportingTest`), not by this census.
+ *  - An exception object handed on in any other position — `throw $e`, `previous: $e`,
+ *    `report($e)`, a positional or named call argument, a `return`, a ternary or `??` arm. One that
+ *    escapes to Laravel's exception handler, directly or as any exception's `previous`, is covered
+ *    by the report registrations in `bootstrap/app.php` (`RequestExceptionReportingTest`), not by
+ *    this census.
  *  - A variable bound some other way (`$err = $e; … 'exception' => $err`, a closure's `use`, a
  *    property), a closure's parameters (a site inside a closure is checked against the ENCLOSING
  *    named function's parameters), and string interpolation of the object itself.
@@ -220,6 +225,19 @@ class ExceptionMessageRedactionCensusTest extends TestCase
             {
                 Log::warning('x', ['r' => $r, 't' => $t?->getPrevious(), 'c' => $c, 'o' => $o, 'u' => $u, 'p' => $r->getPrevious()->getPrevious(), 'q' => $t->getPrevious()->getCode()]);
             }
+
+            public function shapes(#[\SensitiveParameter] $a, Throwable $e, string $s, array $m): void
+            {
+                Log::warning('failed: '.$e);
+                Log::warning($e->getPrevious().' then '.$s.$s);
+                $s .= $e;
+                Log::warning('x', [$e]);
+                Log::warning('x', [$s, $e->getPrevious()]);
+                $this->pass($s, $e, $s);
+                $m[$e] ?? [$e => 1, $s];
+                $fn = static fn (array $x) => $x;
+                ['a' => $a];
+            }
         }
         PHP;
 
@@ -237,6 +255,12 @@ class ExceptionMessageRedactionCensusTest extends TestCase
                 'Fixture.php::typed#3' => ['by' => 'param', 'types' => ['App\Bridge\Exceptions\ConfigException']],
                 'Fixture.php::typed#4' => ['by' => 'param', 'types' => ['mixed']],
                 'Fixture.php::typed#5' => ['by' => 'param', 'types' => ['Illuminate\Http\Client\RequestException']],
+                'Fixture.php::shapes#1' => ['by' => 'param', 'types' => ['Throwable']],
+                'Fixture.php::shapes#2' => ['by' => 'param', 'types' => ['Throwable']],
+                'Fixture.php::shapes#3' => ['by' => 'param', 'types' => ['Throwable']],
+                'Fixture.php::shapes#4' => ['by' => 'param', 'types' => ['Throwable']],
+                'Fixture.php::shapes#5' => ['by' => 'param', 'types' => ['Throwable']],
+                'Fixture.php::shapes#6' => ['by' => 'param', 'types' => ['mixed']],
             ],
             $sites,
         );
@@ -268,19 +292,87 @@ class ExceptionMessageRedactionCensusTest extends TestCase
             return self::binding($tokens, $i, $scopeStart, $var) ?? ['by' => 'none', 'types' => []];
         }
 
-        if (! in_array($token[0], [T_DOUBLE_ARROW, T_STRING_CAST], true) || ($tokens[$i + 1][0] ?? null) !== T_VARIABLE) {
-            return null;
-        }
-        $j = $i + 2;
-        while (in_array($tokens[$j][1] ?? null, ['->', '?->'], true) && ($tokens[$j + 1][1] ?? null) === 'getPrevious'
-            && ($tokens[$j + 2][1] ?? null) === '(' && ($tokens[$j + 3][1] ?? null) === ')') {
-            $j += 4;
-        }
-        if (in_array($tokens[$j][1] ?? null, ['->', '?->', '::', '['], true)) {
-            return null;
+        // The operand to the RIGHT of a `=>`, a `(string)` cast, a `.` / `.=`, or an unkeyed
+        // array-literal slot (`[` or `,` directly inside one).
+        $right = in_array($token[0], [T_DOUBLE_ARROW, T_STRING_CAST, T_CONCAT_EQUAL], true) || $token[1] === '.'
+            || (in_array($token[1], ['[', ','], true) && self::insideArrayLiteral($tokens, $i, $scopeStart));
+        if ($right && ($end = self::operandEnd($tokens, $i + 1)) !== null
+            && (! in_array($token[1], ['[', ','], true) || in_array($tokens[$end + 1][1] ?? null, [',', ']'], true))) {
+            return self::binding($tokens, $i, $scopeStart, $tokens[$i + 1][1]);
         }
 
-        return self::binding($tokens, $i, $scopeStart, $tokens[$i + 1][1]);
+        // The operand to the LEFT of a `.`, unless a `.` / `.=` already claimed it from its right.
+        if ($token[1] === '.' && ($start = self::operandStart($tokens, $i - 1)) !== null
+            && ! in_array($tokens[$start - 1][1] ?? null, ['.', '.='], true)) {
+            return self::binding($tokens, $i, $scopeStart, $tokens[$start][1]);
+        }
+
+        return null;
+    }
+
+    /**
+     * The index of the last token of an exception OPERAND starting at $k — a variable, optionally
+     * followed by `->getPrevious()` / `?->getPrevious()` calls and by nothing that reads further
+     * into it — or `null`.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function operandEnd(array $tokens, int $k): ?int
+    {
+        if (($tokens[$k][0] ?? null) !== T_VARIABLE) {
+            return null;
+        }
+        while (in_array($tokens[$k + 1][1] ?? null, ['->', '?->'], true) && ($tokens[$k + 2][1] ?? null) === 'getPrevious'
+            && ($tokens[$k + 3][1] ?? null) === '(' && ($tokens[$k + 4][1] ?? null) === ')') {
+            $k += 4;
+        }
+
+        return in_array($tokens[$k + 1][1] ?? null, ['->', '?->', '::', '[', '('], true) ? null : $k;
+    }
+
+    /**
+     * The index of the variable that begins an exception OPERAND ending at $k, or `null`.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function operandStart(array $tokens, int $k): ?int
+    {
+        while (($tokens[$k][1] ?? null) === ')' && ($tokens[$k - 1][1] ?? null) === '(' && ($tokens[$k - 2][1] ?? null) === 'getPrevious'
+            && in_array($tokens[$k - 3][1] ?? null, ['->', '?->'], true)) {
+            $k -= 4;
+        }
+
+        return ($tokens[$k][0] ?? null) === T_VARIABLE && ! in_array($tokens[$k - 1][1] ?? null, ['->', '?->', '::'], true) ? $k : null;
+    }
+
+    /**
+     * Whether $i (a `[` or a `,`) sits directly inside an ARRAY LITERAL — not an index, a call's
+     * argument list, a `use` list or a parameter list.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function insideArrayLiteral(array $tokens, int $i, int $scopeStart): bool
+    {
+        $open = $i;
+        if ($tokens[$i][1] === ',') {
+            $depth = 0;
+            for ($open = $i - 1; $open >= $scopeStart; $open--) {
+                $text = $tokens[$open][1];
+                if (in_array($text, [')', ']', '}'], true)) {
+                    $depth++;
+                } elseif (in_array($text, ['(', '[', '{'], true) || $tokens[$open][0] === T_CURLY_OPEN || $tokens[$open][0] === T_ATTRIBUTE) {
+                    if ($depth-- === 0) {
+                        break;
+                    }
+                }
+            }
+            if ($open < $scopeStart || $tokens[$open][1] !== '[') {
+                return false;
+            }
+        }
+
+        return ! in_array($tokens[$open - 1][0] ?? null, [T_VARIABLE, T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)
+            && ! in_array($tokens[$open - 1][1] ?? null, [']', ')', '}'], true);
     }
 
     /**
@@ -341,6 +433,14 @@ class ExceptionMessageRedactionCensusTest extends TestCase
     {
         $names = [];
         for ($k = $var - 1; isset($tokens[$k]) && ! in_array($tokens[$k][1], ['(', ','], true); $k--) {
+            if ($tokens[$k][1] === ']') {
+                // An attribute (`#[\SensitiveParameter]`) is not a type: skip back past its `#[`.
+                for ($depth = 1; $depth > 0 && isset($tokens[$k - 1]); $k--) {
+                    $depth += $tokens[$k - 1][1] === ']' ? 1 : (in_array($tokens[$k - 1][1], ['[', '#['], true) ? -1 : 0);
+                }
+
+                continue;
+            }
             if (in_array($tokens[$k][0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED, T_ARRAY, T_CALLABLE, T_STATIC], true)) {
                 $names[] = $tokens[$k][1];
             }
