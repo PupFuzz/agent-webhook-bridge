@@ -9,6 +9,7 @@ use App\Bridge\Tools\ToolsCallStdio;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -335,6 +336,117 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertSame($http['body'], $ssh['body'], 'the two doors must answer a blank tag identically');
         $this->assertSame([], $this->writesIn($http['requests']));
         $this->assertSame([], $this->writesIn($ssh['requests']));
+    }
+
+    // ─── a board 422's own reason (DL-384) ───────────────────────────────────
+
+    private const PLANTED = 'planted-not-a-credential'; // gitleaks:allow — synthetic value the scrubber must remove
+
+    private static function board422Body(): string
+    {
+        return (string) json_encode([
+            'message' => 'The payload field is invalid.',
+            'errors' => ['payload' => ['The payload field is invalid (access_token='.self::PLANTED.').']],
+        ]);
+    }
+
+    /**
+     * ⭐ rt#484's SHAPE: a title and tags inside both mirrored caps, the board answers 422 for a
+     * field the bridge does not check, and the refusal used to tell the seat to shorten its
+     * title, description or tags. It must name the board's own field and message instead —
+     * redacted — and say the bridge's own checks passed, identically on both doors.
+     */
+    public function test_a_board_422_on_a_create_that_passed_the_bridge_checks_relays_the_boards_reason_on_both_doors(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(self::board422Body(), 422)]);
+        $call = ['tool' => 'board_create_card', 'args' => [
+            'title' => str_repeat('t', 159), 'description' => str_repeat('d', 4000), 'tags' => ['priority:high'],
+        ]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertCount(1, $this->writesIn($r['requests']), "{$door}: the create must have reached the board");
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString('`payload`: The payload field is invalid (access_token=[REDACTED]', $error, $door);
+            $this->assertStringNotContainsString(self::PLANTED, $error, $door);
+            $this->assertStringContainsString('NO card was created', $error, $door);
+            $this->assertStringContainsString('checks passed before it sent', $error, $door);
+            $this->assertStringNotContainsString('Shorten', $error, "{$door}: the bridge's checks passed, so no length may be blamed");
+        }
+    }
+
+    /**
+     * ⛔ THE BRIDGE'S OWN TAGS ARE NOT CHECKED, SO ITS SENTENCE MUST NOT CLAIM THE BOARD REFUSED
+     * "SOMETHING OTHER THAN" THE BOUNDS. An `idempotency_key` passes its own charset/length check
+     * and still makes `idem:<agent>:<key>` longer than kanban's tag cap. The fake applies kanban's
+     * `tags.*` rule to whatever the create actually sent, so the refused index is the real one.
+     */
+    public function test_a_board_422_on_a_bridge_stamped_tag_is_not_blamed_on_something_else_on_both_doors(): void
+    {
+        Http::fake(function (Request $request) {
+            if (str_contains($request->url(), '/tasks/search.json')) {
+                return Http::response(['data' => []]);
+            }
+            $tags = $request->method() === 'POST' ? ($request->data()['tags'] ?? []) : [];
+            foreach (is_array($tags) ? $tags : [] as $i => $tag) {
+                if (is_string($tag) && mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
+                    return Http::response(['message' => "The tags.{$i} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', 'errors' => [
+                        "tags.{$i}" => ["The tags.{$i} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.'],
+                    ]], 422);
+                }
+            }
+
+            return Http::response(['data' => ['id' => 42]], 201);
+        });
+        $call = ['tool' => 'board_create_card', 'args' => [
+            'title' => 'a real title', 'tags' => ['priority:high'], 'idempotency_key' => str_repeat('k', 60),
+        ]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $writes = $this->writesIn($r['requests']);
+            $this->assertCount(1, $writes, "{$door}: the create must have reached the board");
+            $sent = $writes[0]['body']['tags'];
+            $index = array_search('idem:me:'.str_repeat('k', 60), $sent, true);
+            $this->assertIsInt($index, "{$door}: fixture drift — the create no longer sends the over-cap idem tag");
+
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString("`tags.{$index}`: The tags.{$index} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', $error, $door);
+            $this->assertStringContainsString('each tag you passed within '.KanbanFieldLimits::TAG_MAX, $error, $door);
+            $this->assertStringContainsString('`idem:`', $error, "{$door}: the sentence must say the bridge's own tags are not checked");
+            $this->assertStringNotContainsString('something other than', $error, "{$door}: the checks do not establish what the board refused");
+        }
+    }
+
+    /**
+     * The other half of DL-384's rule: what the bridge's own check DID establish is still named.
+     * A title over the mirrored cap is refused naming the cap, before any request, on both doors.
+     */
+    public function test_a_title_over_the_mirrored_cap_is_refused_naming_the_cap_before_any_request_on_both_doors(): void
+    {
+        Http::fake(['*' => Http::response(self::board422Body(), 422)]);
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => str_repeat('t', KanbanFieldLimits::NAME_MAX + 1)]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertSame([], $r['requests'], "{$door}: an over-long title must be refused before any request");
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString('`title` is '.(KanbanFieldLimits::NAME_MAX + 1).' characters', $error, $door);
+            $this->assertStringContainsString('at most '.KanbanFieldLimits::NAME_MAX, $error, $door);
+            $this->assertStringNotContainsString('payload', $error, $door);
+        }
     }
 
     // ─── board_comment_card: `content` ───────────────────────────────────────

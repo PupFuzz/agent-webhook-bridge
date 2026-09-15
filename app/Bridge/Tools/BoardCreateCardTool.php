@@ -407,13 +407,15 @@ final class BoardCreateCardTool implements Tool
      * A 4xx the BOARD answered on the CREATE itself. Every arm is deterministic, so every
      * one is a refusal rather than the retryable 502: a 401 means the token is no longer
      * accepted, a 403 that the writeback user may not create here, a 404 that the create
-     * ROUTE is not there, and a 422 that kanban's own validator rejected a VALUE — which no
+     * ROUTE is not there, and a 422 that the board refused a VALUE the create carried — which no
      * number of retries will change either.
      *
      * ⛔ THE 422 ARM IS WHAT MAKES THE BRIDGE-SIDE BOUNDS SAFE TO GO STALE — the title cap
-     * above and {@see CallerTagPolicy}'s tag cap mirror rules that live in kanban's repo, so
-     * reaching a board 422 with both satisfied is precisely the signal that one has moved.
-     * The message is BRIDGE-AUTHORED: the board's response body is never echoed.
+     * above and {@see CallerTagPolicy}'s tag cap mirror rules that live in kanban's repo. A
+     * create that reached the board passed both, so the arm says so and relays the board's own
+     * reason ({@see BoardCallRefusal::boardReason}, DL-384) rather than sending the seat to
+     * shorten a field that was never the cause (rt#484). The reason goes LAST, so the board's
+     * text cannot run into a sentence the bridge vouches for.
      *
      * ⭐ THE 403 ARM DOES NOT ENUMERATE ITS OWN GATES — {@see BoardCallRefusal::writeGatesClause}
      * does, for every write on this door. This arm enumerated them longhand when it was first
@@ -435,7 +437,7 @@ final class BoardCreateCardTool implements Tool
             404 => "board_create_card: the board answered 404 for the create itself, which is an API-surface fault rather than anything about board {$boardId} — NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.",
             403 => "board_create_card: the board refused the create (403) — the bridge's writeback user may not create cards on board {$boardId}. ".BoardCallRefusal::writeGatesClause('POST', 'task.create').' NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => 'board_create_card: the board did not accept the bridge\'s writeback token at all on the create (401) — it has been revoked, rotated or replaced with a value the board does not know. NO card was created. This is an INSTALL fault; retrying will not change it.',
-            422 => 'board_create_card: the board REJECTED the value you sent (422) — kanban\'s own validator refused it, so NO card was created and re-sending the same call cannot succeed. '.BoardCallRefusal::bridgeBoundsClause().' Shorten or simplify your `title`, `description` or tags, and report it to your operator if it persists.',
+            422 => 'board_create_card: the board REJECTED the create (422), so NO card was created, and re-sending the same call unchanged will be refused the same way. '.BoardCallRefusal::bridgeBoundsClause('title').' Kanban calls your `title` `name`. Change what the reason at the end of this message names, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
         });
     }
 
