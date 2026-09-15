@@ -101,7 +101,7 @@ use Illuminate\Support\Facades\Log;
  *
  * A MERGE OR CLOSE WHOSE CORRELATION FAILS IS REPORTED ON THE PR (DL-390). Every move target
  * of those outcomes carries {@see PrCorrelationComment::evidence()} for the handler's refusals,
- * and the no-op arms that ARE correlation failures — a DL no card carries with no card token
+ * and the no-op arms that ARE correlation failures — a DL no card carries with no parsed card token
  * to fall back to, and a token present but unreadable — emit a `github_pr_correlation_comment`
  * target of their own — on a merge, only when the PR carries the closure evidence that token would
  * have needed had it resolved ({@see claimsClosure()}). A PR carrying no token at all, and a merge

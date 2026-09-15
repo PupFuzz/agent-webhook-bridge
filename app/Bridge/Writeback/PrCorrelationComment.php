@@ -44,7 +44,7 @@ final class PrCorrelationComment
     /** The outcomes that comment: a merge or a close. `opened` / `reopened` / `started` never do. */
     public const OUTCOMES = [PrOutcome::INTEGRATION_MERGE, PrOutcome::RELEASE_MERGE, 'closed_unmerged'];
 
-    /** A DL token parsed, no card on the mapped board carries it, and no card token is there to fall back to. */
+    /** A DL token parsed, no card on the mapped board carries it, and no card token parsed to fall back to. */
     public const DL_UNRESOLVED = 'dl_unresolved';
 
     /** No card was selected — no token parsed, or only a DL no card carries — and a card- or DL-shaped spelling that does not parse is present. */
@@ -213,7 +213,7 @@ final class PrCorrelationComment
         return match ($this->cause) {
             self::DL_UNRESOLVED => [
                 $notMoved,
-                "No card on {$board} carries `dl_number` {$this->firstParsed('dl')}, and no card token is present to fall back to.",
+                "No card on {$board} carries `dl_number` {$this->firstParsed('dl')}, and no card token parsed to fall back to.",
                 "kbcard patch --task <card-id> --dl {$this->firstParsed('dl')} --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>",
             ],
             self::TOKEN_UNREADABLE => [

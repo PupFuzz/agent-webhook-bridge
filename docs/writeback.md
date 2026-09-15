@@ -1037,7 +1037,7 @@ When a PR **merges** (`merged` / `merged_to_main`) or is **closed unmerged** and
 
 | `cause` (in the comment) | Decided by | What happened | Remedy the comment gives |
 | --- | --- | --- | --- |
-| `dl_unresolved` | classifier | a `DL-NNN` parsed, no card on the mapped board carries it, and no card token is present to fall back to — no move | `kbcard patch --task <card-id> --dl DL-NNN --pr <n>`, then `kbcard move --task <card-id> --column <column>` |
+| `dl_unresolved` | classifier | a `DL-NNN` parsed, no card on the mapped board carries it, and no card token parsed to fall back to — no move | `kbcard patch --task <card-id> --dl DL-NNN --pr <n>`, then `kbcard move --task <card-id> --column <column>` |
 | `token_unreadable` | classifier | no card was selected — no token parsed, or only a DL no card carries — and a card- or DL-shaped spelling that does not parse is present — no move | `patch --pr` and `move` by hand; the comment lists the accepted spellings |
 | `card_token_near_miss` | move handler | the DL-287 refusal | `patch --pr` and `move` by hand |
 | `card_id_outside_mapped_board` | move handler | the card id is not on the mapped board, and the mapped board itself reads back | `patch --pr` and `move` by hand |
