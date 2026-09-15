@@ -105,25 +105,44 @@ final class WritebackBoardStateCheck implements Check
                     }
                 }
                 // #2949: a create_dependabot_cards mapping's board MUST define every
-                // custom field the create payload sets (pr_number, pr_url, origin),
+                // custom field the create payload always sets (pr_number, pr_url),
                 // else POST /tasks.json 422s on the unregistered key and the handler
                 // SILENTLY no-ops (permanent-4xx, DL-020) — the create path's twin of
                 // the DL-027 swimlane gap above. A static config/board mismatch never
                 // self-resolves, so surface it here (DL-026 "degraded must be loud").
+                // DL-392: a CONSTANT the payload writes (origin) is sent only where the
+                // board accepts it, so it is not required — its own leg says, per
+                // constant, whether this board's cards will carry it.
                 if ($mapping->createDependabotCards) {
-                    $required = KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS;
-                    $present = $client->boardCustomFieldKeys($mapping->boardId);
-                    if ($present === null) {
+                    $constants = KanbanDependabotCardHandler::CONSTANT_PAYLOAD_VALUES;
+                    $required = array_values(array_diff(KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS, array_keys($constants)));
+                    $constantList = implode(', ', array_map(fn (string $k, string $v) => "{$k}='{$v}'", array_keys($constants), $constants));
+                    $fields = $client->boardCustomFields($mapping->boardId);
+                    if ($fields === null) {
                         // card#5698, the twin of the swimlane leg above: a board with no
                         // custom fields registered answers `[]` and IS accused correctly.
                         // A read carrying no collection accuses on this run's blindness.
-                        yield Finding::unvalidated("writeback: could NOT check create_dependabot_cards' custom fields for {$repo} — board {$mapping->boardId}'s custom-field read carried no collection at all (an empty one would have been an answer), so the required keys (".implode(', ', $required).") could not be looked up; unregistered keys would look exactly like this. Verify board_id + the token's membership and re-run.");
+                        yield Finding::unvalidated("writeback: could NOT check create_dependabot_cards' custom fields for {$repo} — board {$mapping->boardId}'s custom-field read carried no collection at all (an empty one would have been an answer), so neither the required keys (".implode(', ', $required).") nor whether it accepts {$constantList} could be looked up; unregistered keys would look exactly like this. Verify board_id + the token's membership and re-run.");
                     } else {
-                        $missing = array_values(array_diff($required, $present));
+                        $missing = array_values(array_diff($required, $fields->keys()));
                         if ($missing !== []) {
-                            yield Finding::warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
+                            yield Finding::warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload always sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
                         } else {
                             yield Finding::ok("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
+                        }
+                        foreach ($constants as $key => $value) {
+                            if ($fields->accepts($key, $value)) {
+                                yield Finding::ok("writeback: create_dependabot_cards' constant {$key}='{$value}' is accepted by board {$mapping->boardId} ({$repo})");
+                            } else {
+                                $type = $fields->type($key);
+                                $why = match (true) {
+                                    ! $fields->has($key) => 'no such custom field is registered',
+                                    $type === null => "its {$key} field record carries no readable type, so the value cannot be verified",
+                                    $type === 'enum' => "not one of the enum options of its {$key} field",
+                                    default => "its {$key} field is of type ".UntrustedText::forOperator((string) $type).', which does not take this value',
+                                };
+                                yield Finding::warn("writeback: board {$mapping->boardId} ({$repo}) does not accept {$key}='{$value}', the constant create_dependabot_cards writes ({$why}) — its dependabot cards are created WITHOUT {$key}; the cards themselves are unaffected");
+                            }
                         }
                     }
                 }

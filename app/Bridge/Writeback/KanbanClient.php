@@ -877,36 +877,35 @@ final class KanbanClient
     }
 
     /**
-     * The custom-field keys registered on a board — for the bridge:check validation
-     * (#2949) that a `create_dependabot_cards` mapping's board defines every key the
-     * create payload sets (pr_number, pr_url, origin). Kanban does NOT carry custom
-     * fields on the lightweight preload (it carries swimlanes/stages only), so this
-     * reads the dedicated GET /boards/{id}/custom_fields.json. A board's payload keys
-     * are its custom-field `key`s (kanban 422s any unregistered key — DL-028 upstream).
+     * The custom fields registered on a board — their `key`s and, for an `enum`, the values
+     * it accepts ({@see BoardCustomFields}). Read by `bridge:check` (#2949, DL-392) and by the
+     * dependabot create path, which sends a constant payload value only where the board
+     * accepts it. Kanban does NOT carry custom fields on the lightweight preload (it carries
+     * swimlanes/stages only), so this reads the dedicated GET /boards/{id}/custom_fields.json.
+     * A board's payload keys are its custom-field `key`s (kanban 422s any unregistered key —
+     * DL-028 upstream).
      *
      * NULL means the read carried no custom-field collection, on the same rule as
      * {@see idList} and for the same reason — a board with no custom fields
-     * registered is an ordinary `[]`, so only the absent-collection case is
-     * could-not-see. This projects `key` STRINGS rather than ids, which is why it
-     * does not route through `idList` itself; the discrimination is the shared part,
-     * not the projection.
+     * registered is an ordinary empty set, so only the absent-collection case is
+     * could-not-see. Throws on non-2xx.
+     */
+    public function boardCustomFields(int $boardId): ?BoardCustomFields
+    {
+        $fields = $this->http()->get("/boards/{$boardId}/custom_fields.json")->throw()->json('data');
+
+        return is_array($fields) ? BoardCustomFields::fromResponse($fields) : null;
+    }
+
+    /**
+     * The custom-field keys registered on a board — {@see boardCustomFields}' key projection,
+     * with its null-versus-empty split.
      *
      * @return list<string>|null
      */
     public function boardCustomFieldKeys(int $boardId): ?array
     {
-        $fields = $this->http()->get("/boards/{$boardId}/custom_fields.json")->throw()->json('data');
-        if (! is_array($fields)) {
-            return null;
-        }
-        $keys = [];
-        foreach ($fields as $f) {
-            if (is_array($f) && isset($f['key']) && is_string($f['key'])) {
-                $keys[] = $f['key'];
-            }
-        }
-
-        return $keys;
+        return $this->boardCustomFields($boardId)?->keys();
     }
 
     /**
