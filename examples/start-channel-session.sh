@@ -112,12 +112,12 @@ fi
 # ── 5. Stale-listener guard (transport-specific) ──────────────────────────────────────
 if [ "$TRANSPORT" = "http" ]; then
     if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/" 2>/dev/null; then
-        echo "A channel server is already listening on 127.0.0.1:${PORT} — a session is up. Aborting." >&2
+        echo "The channel port is already held by a process on 127.0.0.1:${PORT} (a running session, or a channel server left behind by one) — refusing to start a second." >&2
         exit 1
     fi
 elif [ -S "$SOCK" ]; then
     if curl -s -o /dev/null --max-time 1 --unix-socket "$SOCK" http://localhost/ 2>/dev/null; then
-        echo "A channel server is already listening at $SOCK — a session is up. Aborting." >&2
+        echo "The channel socket is already held by a process at $SOCK (a running session, or a channel server left behind by one) — refusing to start a second." >&2
         exit 1
     fi
     echo "Removing stale channel socket (no listener): $SOCK"

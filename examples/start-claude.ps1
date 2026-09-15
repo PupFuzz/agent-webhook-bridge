@@ -79,12 +79,12 @@ if (-not $Channel) {
 }
 if ($ResolveOnly) { Write-Output $Channel; exit 0 }
 
-# ===== 2. single-session / stale-listener guard (a LISTENING local port == a session is up) =====
+# ===== 2. single-session / stale-listener guard (a LISTENING local port is held by a process: a running session, or a channel server left behind by one) =====
 # Get-NetTCPConnection catches 127.0.0.1, ::1 and 0.0.0.0 binds (a netstat literal matches only one).
 $listening = Get-NetTCPConnection -State Listen -LocalPort $LocalPort -ErrorAction SilentlyContinue |
              Where-Object { $_.LocalAddress -in '127.0.0.1', '::1', '0.0.0.0' }
 if ($listening) {
-  Write-Host "A channel server is already listening on port $LocalPort -- a session is up. Aborting."
+  Write-Host "The channel port is already held by a process on port $LocalPort (a running session, or a channel server left behind by one) -- refusing to start a second."
   exit 1
 }
 
