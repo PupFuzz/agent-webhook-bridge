@@ -575,6 +575,97 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertSame([], $this->github->requests);
     }
 
+    // --- the DL and the cause a comment names are the classifier's, never re-read from the token list --
+
+    public function test_a_dl_unresolved_comment_names_the_dl_the_classifier_looked_up_not_the_head_branch_dl(): void
+    {
+        // The lookup reads the title before the head branch, and the token list reads the branch
+        // first. DL-12 is carried by card 5; naming it would send the reader to stamp it twice.
+        $this->dlCards = ['12' => [5]];
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-12-thing', title: 'feat: a thing (closes DL-999)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=dl_unresolved card=none -->', $body);
+        $this->assertStringContainsString('carries `dl_number` DL-999,', $this->causeLine($body));
+        $this->assertStringContainsString('kbcard patch --task <card-id> --dl DL-999 --pr 702', $this->remedy($body));
+        $this->assertStringNotContainsString('DL-12', $this->causeLine($body));
+        $this->assertStringNotContainsString('DL-12', $this->remedy($body));
+        $this->assertStringContainsString('`DL-12` from the head branch', $body);   // listed as read, never claimed
+    }
+
+    public function test_a_near_miss_refusal_beside_a_closed_unreadable_dl_spelling_and_a_mentioned_card_token_posts_nothing(): void
+    {
+        // `closes DL_7` claims a DL-shaped spelling. Beside a DL that parsed, the only unreadable token
+        // in question is the card-shaped `card_77`, and the title only mentions it.
+        $this->dlCards = ['42' => [5]];
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: closes DL_7 (DL-42) see card_77', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+        $this->assertSame([], $this->cards->patchesTo(5));   // the refusal itself is unchanged: nothing written
+    }
+
+    public function test_an_unresolved_dl_beside_a_closed_unreadable_dl_spelling_and_a_mentioned_card_token_posts_nothing(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: closes DL_7 (DL-999) see card_5', merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
+    public function test_a_merge_whose_title_closes_an_unreadable_dl_spelling_where_nothing_parses_posts_one_token_unreadable_comment(): void
+    {
+        // Where no DL parsed, a DL-shaped spelling IS the unreadable token, so its closure counts there.
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: a thing (closes DL_7)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=token_unreadable card=none -->', $body);
+        $this->assertStringContainsString('a DL-shaped token from the title that does not parse', $body);
+    }
+
+    public function test_a_close_whose_title_only_mentions_a_dl_no_card_carries_names_it_without_a_dl_remedy(): void
+    {
+        // A close is reported without closure evidence, but a DL the title does not close is never
+        // offered for stamping. No unreadable token is present, so the cause stays `dl_unresolved`.
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'feat: a thing (DL-999)', merged: false));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=dl_unresolved card=none -->', $body);
+        $this->assertStringContainsString('carries `dl_number` DL-999,', $this->causeLine($body));
+        $this->assertStringNotContainsString('--dl', $this->remedy($body));
+        $this->assertStringContainsString('kbcard patch --task <card-id> --pr 702', $this->remedy($body));
+    }
+
+    public function test_a_close_from_a_branch_naming_an_unreadable_card_token_beside_a_mentioned_dl_posts_token_unreadable_without_a_dl_remedy(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (DL-999)', merged: false));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=token_unreadable card=none -->', $body);
+        $this->assertStringNotContainsString('--dl', $this->remedy($body));
+    }
+
+    public function test_a_close_whose_title_closes_a_dl_no_card_carries_beside_an_unreadable_card_token_offers_the_dl(): void
+    {
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: closes DL-999', merged: false));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('<!-- cause=dl_unresolved card=none -->', $body);
+        $this->assertStringContainsString('kbcard patch --task <card-id> --dl DL-999 --pr 702', $this->remedy($body));
+    }
+
     // --- what an unstamped ref comment may claim ----------------------------------------------------
 
     public function test_an_unstamped_pr_number_beside_a_stamped_pr_url_names_only_the_dropped_key(): void
@@ -688,6 +779,20 @@ class PrCorrelationCommentTest extends TestCase
         $this->dlCards = ['42' => [5, 6]];
         $this->onBoard = [5 => ['id' => 5, 'board_id' => 8], 6 => ['id' => 6, 'board_id' => 8]];
         $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 739), 6 => $this->card(6, pr: 739)]);
+    }
+
+    private function causeLine(string $body): string
+    {
+        $this->assertSame(1, preg_match('/^- \*\*Cause:\*\* .*$/m', $body, $m), 'no Cause line in the comment');
+
+        return $m[0];
+    }
+
+    private function remedy(string $body): string
+    {
+        $this->assertSame(1, preg_match('/^```\n(.*?)\n```$/ms', $body, $m), 'no remedy block in the comment');
+
+        return $m[1];
     }
 
     private function onlyComment(int $number): string

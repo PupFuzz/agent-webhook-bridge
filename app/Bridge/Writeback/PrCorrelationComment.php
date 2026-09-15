@@ -19,6 +19,9 @@ use App\Bridge\Support\DlTokenGrammar;
  * quoted (GitHub already shows both on the page this comment lands on). A token is carried as a
  * KIND, an INTEGER and a SOURCE from a closed set, and re-spelled here (`card#<int>`, `DL-<int>`);
  * the outcome and cause are checked against closed sets; everything else rendered is an integer.
+ * A DL is re-spelled from its digits too, and a sentence or a `--dl` remedy never takes one out of
+ * the token list: it names the DL the classifier looked up (`dl`, offered to `--dl` only when
+ * `title_closes_dl`) or the one the stamp offered (`stamp_dl`). The list is a listing, not a source.
  * This is the whitelist arm `UntrustedText`'s docblock prefers wherever a value's shape permits one:
  * an escape's blind spot is whatever its author failed to think of, a whitelist's is what it admits.
  *
@@ -91,6 +94,9 @@ final class PrCorrelationComment
         private readonly ?int $stageId,
         private readonly array $tokens,
         private readonly array $droppedRefs,
+        private readonly ?string $dl,
+        private readonly bool $titleClosesDl,
+        private readonly ?string $stampDl,
     ) {}
 
     public static function isCause(string $reason): bool
@@ -151,6 +157,10 @@ final class PrCorrelationComment
 
         $cardId = $payload['card_id'] ?? null;
         $dropped = $refusalContext['dropped'] ?? null;
+        $dl = self::dl($payload['dl'] ?? null);
+        if ($cause === self::DL_UNRESOLVED && $dl === null) {
+            return null;
+        }
 
         return new self(
             $repo,
@@ -162,6 +172,9 @@ final class PrCorrelationComment
             $mapping->stageFor($outcome),
             self::renderableTokens($evidence['tokens'] ?? null),
             is_array($dropped) ? array_values(array_intersect(self::REF_KEYS, $dropped)) : [],
+            $dl,
+            ($payload['title_closes_dl'] ?? null) === true,
+            self::dl($payload['stamp_dl'] ?? null),
         );
     }
 
@@ -213,8 +226,11 @@ final class PrCorrelationComment
         return match ($this->cause) {
             self::DL_UNRESOLVED => [
                 $notMoved,
-                "No card on {$board} carries `dl_number` {$this->firstParsed('dl')}, and no card token parsed to fall back to.",
-                "kbcard patch --task <card-id> --dl {$this->firstParsed('dl')} --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>",
+                "No card on {$board} carries `dl_number` {$this->dl}, and no card token parsed to fall back to."
+                    .($this->titleClosesDl ? '' : " The title does not close {$this->dl}, so the remedy does not stamp it."),
+                $this->titleClosesDl
+                    ? "kbcard patch --task <card-id> --dl {$this->dl} --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>"
+                    : $byHand,
             ],
             self::TOKEN_UNREADABLE => [
                 $notMoved,
@@ -267,7 +283,7 @@ final class PrCorrelationComment
 
         $flags = array_filter([
             $prRefDropped ? "--pr {$this->prNumber}" : '',
-            in_array('dl_number', $this->droppedRefs, true) ? '--dl '.$this->firstParsed('dl') : '',
+            in_array('dl_number', $this->droppedRefs, true) && $this->stampDl !== null ? '--dl '.$this->stampDl : '',
         ]);
 
         return [
@@ -277,15 +293,10 @@ final class PrCorrelationComment
         ];
     }
 
-    private function firstParsed(string $kind): string
+    /** A `DL-<digits>` value from the payload, re-spelled from its digits; null for anything else. */
+    private static function dl(mixed $value): ?string
     {
-        foreach ($this->tokens as $t) {
-            if ($t['parsed'] && $t['kind'] === $kind && $t['id'] !== null) {
-                return ($kind === 'dl' ? 'DL-' : 'card#').$t['id'];
-            }
-        }
-
-        return $kind === 'dl' ? 'DL-<number>' : 'card#<id>';
+        return is_string($value) && preg_match('/\ADL-(\d+)\z/', $value, $m) === 1 ? 'DL-'.$m[1] : null;
     }
 
     /** @param  array{kind: string, id: ?int, parsed: bool, source: string}  $t */

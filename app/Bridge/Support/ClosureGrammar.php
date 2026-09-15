@@ -191,17 +191,30 @@ final class ClosureGrammar
     }
 
     /**
-     * Does this text carry a closing verb flush against a card- or DL-SHAPED token that does not
-     * parse — `Closes card_77`, `Fixes DL_239`? That closes nothing (only a parsed token does); it is
-     * what a caller reporting an unreadable token on a merge (DL-390) needs to tell a claimed closure
-     * from a mention. Read through the same choke point, so a `[no-close]` title or a quoted revert
-     * claims nothing here either.
+     * Does this text carry a closing verb flush against a card-SHAPED token that does not parse —
+     * `Closes card_77`? That closes nothing (only a parsed token does); it is what a caller reporting
+     * an unreadable token (DL-390) needs to tell a claimed closure from a mention. Read through the
+     * same choke point, so a `[no-close]` title or a quoted revert claims nothing here either. One
+     * method per stem, because a caller beside a DL that parsed asks about the card stem only.
      */
-    public static function closesUnreadableToken(string $text): bool
+    public static function closesUnreadableCardToken(string $text): bool
+    {
+        return self::anyRemainder($text, static fn (string $rest): bool => CardTokenGrammar::parseAnchored($rest) === null
+            && CardTokenGrammar::looksLikeCardTokenAnchored($rest));
+    }
+
+    /** {@see self::closesUnreadableCardToken()} for a DL-SHAPED token that does not parse — `Fixes DL_239`. */
+    public static function closesUnreadableDlToken(string $text): bool
+    {
+        return self::anyRemainder($text, static fn (string $rest): bool => DlTokenGrammar::parseAnchored($rest) === null
+            && DlTokenGrammar::looksLikeDlTokenAnchored($rest));
+    }
+
+    /** @param  callable(string): bool  $flush */
+    private static function anyRemainder(string $text, callable $flush): bool
     {
         foreach (self::remainders($text) as $rest) {
-            if ((CardTokenGrammar::parseAnchored($rest) === null && CardTokenGrammar::looksLikeCardTokenAnchored($rest))
-                || (DlTokenGrammar::parseAnchored($rest) === null && DlTokenGrammar::looksLikeDlTokenAnchored($rest))) {
+            if ($flush($rest)) {
                 return true;
             }
         }

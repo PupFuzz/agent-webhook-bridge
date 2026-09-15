@@ -20,8 +20,8 @@ use App\Bridge\Writeback\PrCorrelationCommenter;
  * event the dispatcher strips every non-durable target as agent-facing, and a pull request an agent
  * merged itself is exactly the one whose correlation failure must still be reported.
  *
- * Payload: `repo`, `outcome`, `cause` ({@see PrCorrelationComment}), and the classifier's
- * `pr_correlation` evidence.
+ * Payload: `repo`, `outcome`, `cause` ({@see PrCorrelationComment}), `dl` (the DL the classifier
+ * looked up, or null) and `title_closes_dl`, and the classifier's `pr_correlation` evidence.
  */
 final class GitHubPrCorrelationCommentHandler implements DurableReaction, Handler
 {

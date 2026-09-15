@@ -317,8 +317,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             // no card-first token in the PR → move no-op (overlay may also be empty); an UNREADABLE
             // one on a merge or close is a correlation failure and says so on the PR (DL-390)
             return new ClassifyResult(targets: array_merge(
-                $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome)
-                    ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::TOKEN_UNREADABLE)
+                $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome, null)
+                    ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, PrCorrelationComment::TOKEN_UNREADABLE, null, false)
                     : [],
                 $overlayTargets,
             ));
@@ -394,7 +394,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
                     return new ClassifyResult(targets: array_merge(
                         $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null)
-                            || $this->claimsClosureOfUnreadableToken($payload, $moveOutcome)
+                            || $this->claimsClosureOfUnreadableToken($payload, $moveOutcome, $dl)
                             ? $this->correlationEvidence($payload, $moveOutcome)
                             : []),
                         $overlayTargets,
@@ -471,16 +471,20 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 $nearMiss = $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
                 // DL-390: reported when either token carries the closure evidence the gate would need
-                // had it resolved. Only the unreadable token's claim makes it `token_unreadable`, so
-                // the remedy never stamps a DL the pull request merely mentions.
+                // had it resolved, or on a close, which needs none. The cause is `dl_unresolved` when
+                // the title closes the DL; otherwise `token_unreadable` when the unreadable card token
+                // is claimed; otherwise, on a close, `dl_unresolved`. The DL and whether the title
+                // closes it ride the target, so the comment offers `--dl` only for a DL the title closes.
+                $titleClosesDl = ClosureGrammar::closesDl($this->prTitle($payload), $dl);
                 $cause = match (true) {
+                    $titleClosesDl => PrCorrelationComment::DL_UNRESOLVED,
+                    $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome, $dl) => PrCorrelationComment::TOKEN_UNREADABLE,
                     $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null) => PrCorrelationComment::DL_UNRESOLVED,
-                    $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome) => PrCorrelationComment::TOKEN_UNREADABLE,
                     default => null,
                 };
 
                 return new ClassifyResult(targets: array_merge(
-                    $cause !== null ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, $cause) : [],
+                    $cause !== null ? $this->correlationCommentTargets($payload, $repo, $moveOutcome, $cause, $dl, $titleClosesDl) : [],
                     $overlayTargets,
                 ));
             } else {
@@ -560,12 +564,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
     /**
      * The comment target for a correlation failure decided HERE, where no move target exists to
-     * carry it (DL-390). Keyed `pr-<number>`: one per event, whatever the cause.
+     * carry it (DL-390). Keyed `pr-<number>`: one per event, whatever the cause. `dl` is the DL this
+     * arm looked up (null where none parsed) and `title_closes_dl` whether the title closes it — the
+     * facts the comment renders, so it never re-reads a DL from the token list.
      *
      * @param  array<mixed>  $payload
      * @return list<ReactionTarget>
      */
-    private function correlationCommentTargets(array $payload, string $repo, string $outcome, string $cause): array
+    private function correlationCommentTargets(array $payload, string $repo, string $outcome, string $cause, ?string $dl, bool $titleClosesDl): array
     {
         $evidence = $this->correlationEvidence($payload, $outcome);
         if ($evidence === []) {
@@ -575,7 +581,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         return [ReactionTarget::make(
             PrCorrelationComment::HANDLER,
             'pr-'.$evidence[PrCorrelationComment::EVIDENCE_KEY]['pr_number'],
-            payload: ['repo' => $repo, 'outcome' => $outcome, 'cause' => $cause] + $evidence,
+            payload: ['repo' => $repo, 'outcome' => $outcome, 'cause' => $cause, 'dl' => $dl, 'title_closes_dl' => $titleClosesDl] + $evidence,
         )];
     }
 
@@ -781,8 +787,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * Does this event carry the closure evidence the gate needs to move what `$dl` resolved to, or
      * `$cardId`? {@see closureFilter()} asks it per card. The DL-390 report asks it with NO card, for
-     * a DL that resolved to nothing (where no card token parses, so only `Closes DL-NNN` can answer
-     * yes) and for the near-miss refusal's DL, so a merge that claims to finish nothing is never
+     * a DL that resolved to nothing (where no card token parses, so on a merge only `Closes DL-NNN`
+     * can answer yes) and for the near-miss refusal's DL, so a merge that claims to finish nothing is never
      * reported as a correlation failure by a second copy of this gate.
      */
     private function claimsClosure(string $title, string $headRef, string $outcome, ?string $dl, ?int $cardId): bool
@@ -802,21 +808,25 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * {@see claimsClosure()} for a token that does not parse (DL-390): the evidence the gate would
      * have needed had it been spelled so that it parses. The same two routes, with only the token
      * term read by the near-miss probe instead of the grammar: a closing verb flush against the
-     * unreadable spelling ({@see ClosureGrammar::closesUnreadableToken()}), or an integration merge
+     * unreadable spelling ({@see ClosureGrammar::closesUnreadableCardToken()}), or an integration merge
      * whose head ref carries a card-shaped one ({@see PrOutcome::structuralRouteOpen()}, which
      * {@see PrOutcome::mergeClosesCard()} is composed from). Asked only where no CARD token parses:
      * with no token at all, and beside a DL that resolved to nothing or to a card the unreadable
      * token appears not to name (the DL-287 refusal), where the DL's own claim is asked separately.
+     * A closing verb before a DL-SHAPED spelling ({@see ClosureGrammar::closesUnreadableDlToken()})
+     * counts only where `$dl` is null: beside a DL that parsed, the unreadable token those arms
+     * report is card-shaped, and `Closes DL_7` claims nothing about it.
      *
      * @param  array<mixed>  $payload
      */
-    private function claimsClosureOfUnreadableToken(array $payload, string $outcome): bool
+    private function claimsClosureOfUnreadableToken(array $payload, string $outcome, ?string $dl): bool
     {
         $title = $this->prTitle($payload);
         $head = $this->prHead($payload);
 
         return ! PrOutcome::requiresClosure($outcome)
-            || ClosureGrammar::closesUnreadableToken($title)
+            || ClosureGrammar::closesUnreadableCardToken($title)
+            || ($dl === null && ClosureGrammar::closesUnreadableDlToken($title))
             || (PrOutcome::structuralRouteOpen($outcome, $head, $title) && CardTokenGrammar::looksLikeCardToken($head));
     }
 
