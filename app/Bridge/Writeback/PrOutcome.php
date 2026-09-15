@@ -205,10 +205,21 @@ final class PrOutcome
      */
     public static function mergeClosesCard(string $outcome, string $headRef, int $cardId, string $title): bool
     {
+        return self::structuralRouteOpen($outcome, $headRef, $title)
+            && CardTokenGrammar::parse($headRef) === $cardId;
+    }
+
+    /**
+     * {@see self::mergeClosesCard()} without its card term: the integration merge, the `[no-close]`
+     * marker and the revert refusal. Split out so a caller asking about a head ref whose card token
+     * does NOT parse (DL-390's report of an unreadable token) takes every other condition of the
+     * route from here rather than from a copy.
+     */
+    public static function structuralRouteOpen(string $outcome, string $headRef, string $title): bool
+    {
         return $outcome === self::INTEGRATION_MERGE
             && ! NoCloseGrammar::marks($title)
-            && ! RevertGrammar::isRevert($title, $headRef)
-            && CardTokenGrammar::parse($headRef) === $cardId;
+            && ! RevertGrammar::isRevert($title, $headRef);
     }
 
     /**

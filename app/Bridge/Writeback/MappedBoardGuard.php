@@ -261,6 +261,10 @@ final class MappedBoardGuard
      * ⚑ THE ALERT WITHHOLDS THE CARD ID (DL-314): this arm holds an id it did NOT establish as
      * this install's — the definition of the case that rule exists for — so the id stays in
      * the `Log::warning` context (the local operator's surface) and never reaches the channel.
+     *
+     * @param  string  $reason  OUT: the reason code this refusal alerted under, set only when this returns
+     *                          true — for a caller that reports the refusal somewhere the alert does not
+     *                          reach (DL-390's PR comment), which must tell a foreign id from an install fault
      */
     public static function refusesCardIdOutsideMappedBoard(
         WritebackAlertNotifier $alerts,
@@ -270,6 +274,7 @@ final class MappedBoardGuard
         int $cardId,
         string $repo,
         string $outcome,
+        string &$reason = '',
     ): bool {
         $answeredNoMatchingRow = false;
 
@@ -292,10 +297,11 @@ final class MappedBoardGuard
             // A 4xx on a BOARD-SCOPED read says nothing about whose card the id is — the query
             // named this install's own board — so the foreign-id hypothesis is excluded here
             // and the slug says the token's scope instead.
+            $reason = RefusalContext::readReason('boardscope', $e, foreignIdExcluded: true);
             $alerts->warnAndNotifyCardIdWithheld(
                 $arm.': REFUSED — the board-scoped lookup that establishes whether this card id is on the mapped board was itself refused by kanban (4xx), so membership could not be established and nothing was read unscoped (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel',
                 ['card_id' => $cardId, 'repo' => $repo, 'mapped_board' => $mapping->boardId] + RefusalContext::from($e),
-                $repo, $outcome, RefusalContext::readReason('boardscope', $e, foreignIdExcluded: true),
+                $repo, $outcome, $reason,
             );
 
             return true;

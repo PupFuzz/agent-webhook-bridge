@@ -61,6 +61,41 @@ final class GitHubTokenResolver
     {
         // 1 + 2: explicit token file — the override path when configured, else the
         // conventional <secret_dir>/github/token. Either short-circuits the store.
+        $file = $this->resolveFileLeg();
+        if ($file !== null) {
+            return $file;
+        }
+        $path = $this->tokenPath();
+
+        // 3: store-native (per-repo).
+        $store = $this->resolveFromStore($repo);
+        if ($store !== null) {
+            return $store;   // a resolved token OR a fail-loud problem
+        }
+
+        // 4: ambient GH_TOKEN.
+        $env = $this->envToken();
+        if ($env !== null) {
+            return TokenResolution::resolved($env, 'GH_TOKEN');
+        }
+
+        return TokenResolution::problem("no github token: {$path} absent, no [git-credential-map] entry for {$repo}, and GH_TOKEN is unset");
+    }
+
+    /**
+     * Legs 1 + 2 ONLY: the placed file the receiver resolves under PHP-FPM, for a caller whose GitHub
+     * identity must be the same wherever it runs (DL-390's pull-request comment, which `bridge:replay`
+     * also reaches from a shell, where the store and `GH_TOKEN` would otherwise resolve). The override
+     * stays authoritative. Not memoized: it spawns nothing. Never throws.
+     */
+    public function resolveFromFile(): TokenResolution
+    {
+        return $this->resolveFileLeg() ?? TokenResolution::problem('no github token file at '.$this->tokenPath());
+    }
+
+    /** Legs 1 + 2: a resolution, a fail-loud problem, or null when neither applies (no override set, no file placed). */
+    private function resolveFileLeg(): ?TokenResolution
+    {
         $override = $this->hasTokenPathOverride();
         $path = $this->tokenPath();
         try {
@@ -76,19 +111,7 @@ final class GitHubTokenResolver
             return TokenResolution::problem("no github token at the configured token_path {$path}");
         }
 
-        // 3: store-native (per-repo).
-        $store = $this->resolveFromStore($repo);
-        if ($store !== null) {
-            return $store;   // a resolved token OR a fail-loud problem
-        }
-
-        // 4: ambient GH_TOKEN.
-        $env = $this->envToken();
-        if ($env !== null) {
-            return TokenResolution::resolved($env, 'GH_TOKEN');
-        }
-
-        return TokenResolution::problem("no github token: {$path} absent, no [git-credential-map] entry for {$repo}, and GH_TOKEN is unset");
+        return null;
     }
 
     /**

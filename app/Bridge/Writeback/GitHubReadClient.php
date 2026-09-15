@@ -5,7 +5,6 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Support\ForeignText;
 use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -30,10 +29,14 @@ use Illuminate\Support\Facades\Log;
  * timeout, and throw-on-non-2xx so the caller owns the posture. A second read-only GitHub
  * client would be a second place for those to drift (canon #5). What it is NOT is a
  * write client: nothing here creates, edits or deletes a hook.
+ *
+ * ⚑ IT ALSO READS PULL-REQUEST COMMENTS (DL-390): {@see self::hasIssueCommentStartingWith}, kept
+ * here for the same reasons the hook read is. The bridge's GitHub writes are
+ * {@see GitHubWriteClient}'s, and this class still makes none.
  */
 final class GitHubReadClient
 {
-    public const API_BASE = 'https://api.github.com';
+    public const API_BASE = GitHubApi::BASE;
 
     /** Kept under a human-interactive command's patience; a slow GitHub is skipped per card. */
     public const TIMEOUT_SECONDS = 15;
@@ -51,6 +54,15 @@ final class GitHubReadClient
      * something is answering this URL that is not a repo's hook list.
      */
     private const HOOK_PAGE_LIMIT = 10;
+
+    /** GitHub's maximum page size for `GET /repos/{repo}/issues/{n}/comments`. */
+    private const COMMENT_PAGE_SIZE = 100;
+
+    /**
+     * How many comment pages {@see self::hasIssueCommentStartingWith} walks before it answers "not
+     * established". A bound on a loop, not a belief about pull requests, exactly as HOOK_PAGE_LIMIT.
+     */
+    private const COMMENT_PAGE_LIMIT = 10;
 
     /**
      * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
@@ -160,6 +172,68 @@ final class GitHubReadClient
                     self::warnUnreadableBody(
                         "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
                         ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                    );
+
+                    return null;
+                }
+
+                return false;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Does any comment on issue or pull request $number START WITH $prefix? (DL-390)
+     *
+     * Matched here and answered as a boolean, for the hook read's reason: no caller holds other
+     * people's comment text. STARTS WITH, not contains, so a comment that merely QUOTES the prefix
+     * is not mistaken for the one that carries it.
+     *
+     * `null` means THIS READ ESTABLISHED NEITHER: the walk hit {@see self::COMMENT_PAGE_LIMIT}, a 200
+     * carried something that is not a list of comments, or an entry had no readable `body`. A caller
+     * deduping a write on this answer must read `null` as "cannot tell", never as "absent" — on a
+     * response-shape change every entry is unreadable, and "absent" would re-post on every event.
+     *
+     * Throws RequestException on any non-2xx, like every other read here.
+     */
+    public function hasIssueCommentStartingWith(string $repo, int $number, string $prefix): ?bool
+    {
+        $unreadableElement = false;
+
+        for ($page = 1; $page <= self::COMMENT_PAGE_LIMIT; $page++) {
+            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/issues/{$number}/comments", [
+                'per_page' => self::COMMENT_PAGE_SIZE,
+                'page' => $page,
+            ])->throw()->json();
+
+            if (! is_array($body) || ! array_is_list($body)) {
+                self::warnUnreadableBody(
+                    "the comment-list read for {$repo}#{$number} returned a 200 whose body is not a JSON list of comments — whether a comment is already there is UNKNOWN, not false",
+                    ['repo' => $repo, 'number' => $number, 'read' => 'list-issue-comments', 'page' => $page],
+                );
+
+                return null;
+            }
+
+            foreach ($body as $comment) {
+                $text = is_array($comment) ? ($comment['body'] ?? null) : null;
+                if (! is_string($text)) {
+                    $unreadableElement = true;
+
+                    continue;
+                }
+                if (str_starts_with($text, $prefix)) {
+                    return true;
+                }
+            }
+
+            if (count($body) < self::COMMENT_PAGE_SIZE) {
+                if ($unreadableElement) {
+                    self::warnUnreadableBody(
+                        "the comment-list read for {$repo}#{$number} returned a 200 carrying at least one comment with no readable `body` — whether a comment is already there is UNKNOWN, not false",
+                        ['repo' => $repo, 'number' => $number, 'read' => 'list-issue-comments', 'page' => $page],
                     );
 
                     return null;
@@ -317,12 +391,6 @@ final class GitHubReadClient
 
     private function http(): PendingRequest
     {
-        return Http::withToken($this->token)
-            ->withHeaders([
-                'Accept' => 'application/vnd.github+json',
-                'X-GitHub-Api-Version' => '2022-11-28',
-                'User-Agent' => 'agent-webhook-bridge',   // GitHub rejects a UA-less request
-            ])
-            ->timeout($this->timeoutSeconds ?? self::TIMEOUT_SECONDS);
+        return GitHubApi::request($this->token, $this->timeoutSeconds ?? self::TIMEOUT_SECONDS);
     }
 }
