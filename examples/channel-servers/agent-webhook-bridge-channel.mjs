@@ -640,9 +640,9 @@ if (TOOLS_SSH_TARGET !== '' && TOOLS_ENDPOINT !== '') {
 
 const INSTRUCTIONS = [
   `Events from the agent-webhook-bridge arrive as <channel source="${SERVER_NAME}" kind="..." target_id="...">.`,
-  'The body is JSON: {"intent": {kind, target_id, payload, ...}}.',
+  'The body is JSON: {"intent": {kind, subject_id, summary, payload, ...}}; the kind and target_id attributes are copied from it (target_id is intent.subject_id) and are absent when a body carries no intent.',
   'These channel EVENTS are one-way notifications: read them and act — no reply is sent back through the event.',
-  'kind identifies what happened upstream (e.g. card_updated, card_assigned); target_id names the resource; payload carries handler-specific data.',
+  'kind identifies what happened upstream (e.g. new_card, column_move, content_edit); target_id names the resource the event is about; summary describes the event in prose; payload carries kind-specific data.',
   ...(TOOLS_ENABLED
     ? [
         `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${TOOL_DEFINITIONS.map((tool) => tool.name).join(', ')} —`,
