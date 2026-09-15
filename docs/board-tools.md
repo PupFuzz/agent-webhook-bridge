@@ -406,6 +406,22 @@ claimed:** a kanban that dropped or renamed the `swimlane_id=` filter still answ
 well-formed empty collection, which the bridge cannot tell from a genuinely empty lane
 (`docs/kanban-integration-contract.md` §2 owns that hazard, on the far end).
 
+⚠ **The `tag` read pages through the same walk, and `tag_cards` cannot tell you when a page
+went unreadable.** Your lane lists, the coord cards and the tag read all page through
+`KanbanClient::pagedSearch()`. A page
+answered `200` with no card collection in its body adds no rows and logs the warning above for
+that page (*"the tag-row-search lane:A page 2 read returned a 200 whose body carried no card
+collection"*). Unless that body still carries a non-null `links.next`, the walk stops there and
+calls itself **complete**. `tag_cards` then answers from the rows read before that page:
+`cards_window.total` under-counts (it is `0` when the first page was the unreadable one), and
+`cards_window.total_is_lower_bound` stays `false`, because it reports only the page ceiling. The
+two counts do not check completeness. Each is its own search compared with those rows, so a count
+can show the gap (as `disagrees_with_rows`) only when an unread card sits in another lane or in
+none. An unread card in your own lane moves neither count. Nothing in the response tells this case
+apart from a complete read, so the bridge log is where it shows. Kanban's own search endpoint
+answers every page as a paginated collection carrying both `data` and `links`. A page with
+neither means something in front of kanban answered.
+
 ## `board_create_card`
 
 **Arguments:**
