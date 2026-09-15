@@ -4787,7 +4787,7 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
         $res->assertStatus(422)->assertJsonPath('ok', false);
         $this->assertSame(
-            'board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`. Nothing was sent to the board — no card was read or written.',
+            'board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`, `tag`, `include_terminal`. Nothing was sent to the board — no card was read or written.',
             $res->json('error'),
         );
     }

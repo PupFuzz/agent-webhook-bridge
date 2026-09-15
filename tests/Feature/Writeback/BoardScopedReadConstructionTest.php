@@ -179,6 +179,10 @@ class BoardScopedReadConstructionTest extends TestCase
         'correlatePr',
         'correlateIssue',
         'findCardsByRef',    // board in the PATH, not in `q` — the other legal construction
+        'boardStructure',    // board in the PATH: the preload read board_my_cards takes once per call
+        'tagTotalInSwimlanes',     // board_my_cards' tag read: a one-row count over other lanes
+        'tagTotalWithoutSwimlane', //   … and over no lane (`swimlane_id=none`)
+        'searchDisclosesFreeText', //   … and the one-row free-text disclosure probe before it
     ];
 
     /**
@@ -201,6 +205,9 @@ class BoardScopedReadConstructionTest extends TestCase
         'correlateDl',
         'correlatePr',
         'correlateIssue',
+        'tagTotalInSwimlanes',
+        'tagTotalWithoutSwimlane',
+        'searchDisclosesFreeText',
     ];
 
     /**
@@ -567,6 +574,8 @@ class BoardScopedReadConstructionTest extends TestCase
             'tag' => 'id:sentinel',
             'swimlaneId' => self::SWIMLANE_ID,
             'stageId' => self::STAGE_ID,
+            'swimlaneIds' => [self::SWIMLANE_ID],
+            'stageIds' => [self::STAGE_ID],
             default => null,
         };
         if ($byName !== null) {

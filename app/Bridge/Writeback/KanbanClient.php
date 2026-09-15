@@ -436,11 +436,32 @@ final class KanbanClient
      */
     public function swimlaneCards(int $boardId, int $swimlaneId): array
     {
+        return $this->pagedSearchRows($boardId, "swimlane_id={$swimlaneId}", false, "swimlane-search {$swimlaneId}");
+    }
+
+    /**
+     * Every row a board-scoped search answers, page by page until kanban says there is no next
+     * page — the one page walk behind {@see swimlaneCards} and {@see cardRowsByTag}. `$terms` are
+     * the `q` terms after the board scope, which this method writes itself. Each page is its own read
+     * and reports its own unreadable body through {@see correlationRows}, labelled
+     * `<read> page <n>`.
+     *
+     * ⚠ THE WALK STOPS AT MAX_PAGES × SEARCH_LIMIT ROWS WITHOUT SAYING SO. A caller that reports
+     * a total over these rows reports at most that many.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function pagedSearchRows(int $boardId, string $terms, bool $archivedOnly, string $read): array
+    {
         $cards = [];
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
-            $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} swimlane_id={$swimlaneId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
+            $query = ['q' => "board_id={$boardId} {$terms}", 'limit' => self::SEARCH_LIMIT, 'page' => $page];
+            if ($archivedOnly) {
+                $query['archived'] = 1;
+            }
+            $json = $this->http()->get('/tasks/search.json', $query)->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
-            foreach (self::correlationRows(self::rowList($batch), "swimlane-search {$swimlaneId} page {$page}", $boardId) as $row) {
+            foreach (self::correlationRows(self::rowList($batch), "{$read} page {$page}", $boardId) as $row) {
                 $cards[] = $row;
             }
             // RAW batch length, never the filtered/merged count — {@see readBoard} owns why.
@@ -473,8 +494,7 @@ final class KanbanClient
      * `?archived` is passed and `whereNotNull('archived_at')` when it is — the
      * parameter is a SWITCH, not a widening, and the endpoint offers no both-sides
      * mode. So an archived twin is only ever visible to a SECOND call, and the
-     * default (`false`) is byte-identical to every read this method served before:
-     * no `archived` key reaches the query string at all, which is what keeps a
+     * default (`false`) sends no `archived` key at all, which is what keeps a
      * pre-DL-296 kanban answering the live search identically.
      *
      * ⛔ It carries {@see cardsByTag}'s DL-026 degraded-read warning, and did NOT until
@@ -485,17 +505,90 @@ final class KanbanClient
      * {@see warnUnreadableCollection}, so neither can lose it again by being switched for
      * the other.
      *
+     * ⛔ IT PAGES (card#9260). It read ONE page of SEARCH_LIMIT rows until then, so a tag on more
+     * cards than that answered a silently short list — to `board_my_cards`' coord leg and tag
+     * read, whose `total` is the size of this list, as much as to the writers. The walk is
+     * {@see swimlaneCards}' own, and a population past SEARCH_LIMIT costs one request per page.
+     *
      * @return list<array<string, mixed>>
      */
     public function cardRowsByTag(int $boardId, string $tag, bool $archivedOnly = false): array
     {
-        $query = ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT];
-        if ($archivedOnly) {
-            $query['archived'] = 1;
-        }
-        $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
+        return $this->pagedSearchRows($boardId, "tags:\"{$tag}\"", $archivedOnly, 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''));
+    }
 
-        return self::correlationRows(self::rowList($data), 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''), $boardId);
+    /**
+     * How many LIVE cards on a board carry `$tag` and sit in one of `$swimlaneIds` — kanban's own
+     * `swimlane_id=` predicate, counted server-side from `meta.total` with a one-row page.
+     * `$stageIds`, when given, narrows the count to those columns.
+     *
+     * @param  non-empty-list<int>  $swimlaneIds
+     * @param  non-empty-list<int>|null  $stageIds
+     */
+    public function tagTotalInSwimlanes(int $boardId, string $tag, array $swimlaneIds, ?array $stageIds = null): SearchTotal
+    {
+        return $this->searchTotal($boardId, 'swimlane_id='.implode(',', $swimlaneIds)." tags:\"{$tag}\"".self::stageTerm($stageIds));
+    }
+
+    /**
+     * How many LIVE cards on a board carry `$tag` and sit in NO swimlane — kanban's
+     * `swimlane_id=none` term (kanban DL-268, first released in kanban v0.45.0).
+     *
+     * ⛔ A KANBAN THAT PREDATES THE TERM DOES NOT REFUSE IT. `none` is not a digit list, so an
+     * older parser routes the token to free text and answers a count of cards whose TEXT matches
+     * it — zero, or some other number. The returned {@see SearchTotal::$freeTextRan} is that
+     * server's own disclosure of the fall-through, and it is silent on a server too old to
+     * disclose anything, which {@see searchDisclosesFreeText} asks. The caller owns what to do
+     * with both.
+     *
+     * @param  non-empty-list<int>|null  $stageIds
+     */
+    public function tagTotalWithoutSwimlane(int $boardId, string $tag, ?array $stageIds = null): SearchTotal
+    {
+        return $this->searchTotal($boardId, "swimlane_id=none tags:\"{$tag}\"".self::stageTerm($stageIds));
+    }
+
+    /**
+     * The bare word {@see searchDisclosesFreeText} searches for. Every kanban parser searches a
+     * bare word as text; only whether the response says so is read, never what it matched.
+     */
+    public const FREE_TEXT_PROBE_TERM = 'freetextdisclosureprobe';
+
+    /**
+     * Whether this kanban's search says when a `q` term fell through to free text (kanban DL-246,
+     * first released in kanban v0.43.0), asked with a one-row board-scoped search for a bare word.
+     *
+     * ⛔ A SILENT COUNT RESPONSE PROVES NOTHING ON ITS OWN. {@see SearchTotal::$freeTextRan} is
+     * false both when every term was a filter and when the server predates the disclosure, so a
+     * term an older parser does not know ({@see tagTotalWithoutSwimlane}) reads the same either
+     * way. A server that answers true here is one whose silence on another search means its
+     * terms were read as filters.
+     */
+    public function searchDisclosesFreeText(int $boardId): bool
+    {
+        return $this->searchTotal($boardId, self::FREE_TEXT_PROBE_TERM)->freeTextRan;
+    }
+
+    /**
+     * A one-row board-scoped search read for its `meta`: the total kanban counted, null when the body carried
+     * none (a kanban predating DL-146 pagination, or something other than kanban answering), and
+     * whether any `q` token fell through to free text.
+     */
+    private function searchTotal(int $boardId, string $terms): SearchTotal
+    {
+        $body = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} {$terms}", 'limit' => 1])->throw()->json();
+        $meta = is_array($body) && is_array($body['meta'] ?? null) ? $body['meta'] : null;
+
+        return new SearchTotal(
+            $meta !== null && is_numeric($meta['total'] ?? null) ? (int) $meta['total'] : null,
+            $meta !== null && array_key_exists('match_mode', $meta),
+        );
+    }
+
+    /** @param  non-empty-list<int>|null  $stageIds */
+    private static function stageTerm(?array $stageIds): string
+    {
+        return $stageIds === null ? '' : ' workflow_stage_id='.implode(',', $stageIds);
     }
 
     /**
@@ -506,8 +599,8 @@ final class KanbanClient
      * stage lacking an id or name is skipped; empty when the read carries no stages (the
      * caller then falls back to the raw id).
      *
-     * ⭐ THE ORDER IS `position`, NOT THE PAYLOAD'S ARRAY ORDER, and it is ordered HERE
-     * because this is the only place that can see the field (card#8985 r2). `position` is
+     * ⭐ THE ORDER IS `position`, NOT THE PAYLOAD'S ARRAY ORDER, and it is ordered in this client
+     * ({@see boardStructure}) because this is the only place that can see the field (card#8985 r2). `position` is
      * kanban's fractional ordering double — the same field {@see boardStageOrder()} exists
      * to read — and it is DISCARDED by this projection, so a caller handed the map has no
      * way to recover it and no way to sort by it without paying a second `preload.json`
@@ -527,9 +620,37 @@ final class KanbanClient
      */
     public function boardStageNames(int $boardId): array
     {
+        return $this->boardStructure($boardId)->stageNames;
+    }
+
+    /**
+     * {@see boardStageNames}' map plus the rest of what the same `preload.json` read carries about
+     * a board's columns and lanes, from ONE request: every stage id, the stages kanban marks
+     * `lane_type: done`, and the swimlane ids with {@see boardSwimlaneIds}' null-versus-empty
+     * split. `board_my_cards` reads this once per call.
+     *
+     * ⚠ `lane_type` IS KANBAN'S COLUMN SEMANTICS, NOT THE BRIDGE'S TERMINAL SET. The writeback's
+     * terminal rule is `WritebackMapping::isTerminalStage()`, configured per mapping; this is
+     * what the board itself declares, and a board whose finished columns are not typed `done`
+     * has no terminal stage here.
+     */
+    public function boardStructure(int $boardId): BoardStructure
+    {
+        $data = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data');
+        $stages = iterator_to_array(self::stagesIn(is_array($data) ? ($data['workflows'] ?? null) : null, $boardId), false);
+
         $rows = [];
-        foreach ($this->preloadStages($boardId) as $s) {
-            if (isset($s['id'], $s['name']) && is_numeric($s['id']) && is_string($s['name']) && $s['name'] !== '') {
+        $stageIds = [];
+        $terminal = [];
+        foreach ($stages as $s) {
+            if (! isset($s['id']) || ! is_numeric($s['id'])) {
+                continue;
+            }
+            $stageIds[] = (int) $s['id'];
+            if (($s['lane_type'] ?? null) === 'done') {
+                $terminal[] = (int) $s['id'];
+            }
+            if (isset($s['name']) && is_string($s['name']) && $s['name'] !== '') {
                 $rows[] = [
                     'index' => count($rows),
                     'id' => (int) $s['id'],
@@ -556,7 +677,12 @@ final class KanbanClient
             $byId[$row['id']] = $row['name'];
         }
 
-        return $byId;
+        return new BoardStructure(
+            $byId,
+            array_values(array_unique($stageIds)),
+            array_values(array_unique($terminal)),
+            self::idList(is_array($data) ? ($data['swimlanes'] ?? null) : null),
+        );
     }
 
     /**
@@ -1051,7 +1177,17 @@ final class KanbanClient
      */
     private function preloadStages(int $boardId): iterable
     {
-        $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
+        yield from self::stagesIn($this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows'), $boardId);
+    }
+
+    /**
+     * The `workflows[].stages[]` descent over an already-read workflows value — shared by
+     * {@see preloadStages} and {@see boardStructure}, which read the preload body differently.
+     *
+     * @return iterable<array<string, mixed>>
+     */
+    private static function stagesIn(mixed $workflows, int $boardId): iterable
+    {
         if (! is_array($workflows)) {
             self::warnUnreadableStages($boardId);
 
