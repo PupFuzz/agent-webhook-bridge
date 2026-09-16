@@ -22,6 +22,18 @@ use App\Bridge\Support\UntrustedText;
  * the identical two-legged assertion — a caller that writes only one of the two legs is the
  * shape this trait's own docblock warns about.
  *
+ * ⛔ SINCE THE OUTPUT CHOKE (DL-393) THE CENSUS LEG CANNOT SEE A PRODUCER THAT DID NOTHING,
+ * so the PRESENCE leg is what measures the producer — for every caller, not just the one that
+ * noticed. The choke strips the live class on the way out, so a rendered line can be clean
+ * whether the producer escaped or never ran at all. ⚠ IT IS NOT SYMMETRIC, AND THE ASYMMETRY IS
+ * THE TRAP: the choke DELETES `\r` but KEEPS `\t`, while `UntrustedText::forOperator()`
+ * COLLAPSES a whitespace run to a single space and escapes neither. So an unescaped `\t`
+ * reaching the sink still reds this census and an unescaped `\r` does not — measured on
+ * `ReconcileCommandTest`'s relayed-body arm, where with the producer's escape removed every
+ * assertion stayed GREEN until the payload carried a `\t`. A caller whose foreign value can
+ * only arrive in a class the choke DELETES must therefore pick a presence witness the two treat
+ * differently (the collapsed space is one), or it is pinning the choke and not its producer.
+ *
  * ⭐ HOISTED AT THE SECOND REAL CALLER (canon #5), not at the first: it began as one
  * producer's private method and the kanban card-field producer needed the identical
  * census. A second copy of a security-invariant assertion is the shape where one copy

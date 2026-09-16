@@ -502,14 +502,14 @@ An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** 
 The preflight reports the resolved posture **and what the store is actually holding**, because the posture line alone is a restatement of the config: it reads identically on an install with four rows and on the one that produced this leg — 894 MB of a 1.2 GB store being 30 days of full payloads, under a retention that was working correctly the whole time.
 
 ```
-retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
+OK: retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
+OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
 ⛔ **On MariaDB the `(~73% of the database)` clause is NOT printed** — the line withholds the share in words and names what to size the store by instead:
 
 ```
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
+OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
 ⚠ **The elision is deliberate — the withheld-share clause is quoted NOWHERE in this repo's prose.** It is printed verbatim by `App\Bridge\Check\Checks\RetentionPostureCheck::payloadShare()`, read it there; hand copies of it are what let a correction to this section leave the executable copy saying the opposite for a whole review round (card#8374). The bullet below owns the operator procedure the clause points at.

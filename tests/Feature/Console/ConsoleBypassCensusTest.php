@@ -29,6 +29,11 @@ use Tests\TestCase;
  *   subclass's `extends`.
  * - PROCESS PASSTHROUGH: `passthru`, `system` and PHP's other process-spawning functions,
  *   backticks, `->tty()`/`->setTty()`.
+ * - HIDDEN INPUT: `->secret()`, `->setHidden()`, `->setHiddenFallback()`. Under DL-393
+ *   Decision 8's `QuestionHelper::disableStty()` the masked read raises and `doAsk()` SWALLOWS
+ *   that unless the question is explicitly non-fallback, so the answer is read back VISIBLY and
+ *   the terminal ECHOES what is typed — a secret onto the screen and into the scrollback, on
+ *   bytes the choke never sees, because the tty wrote them and not this process (bound (12)).
  *
  * Names resolve through the file's `namespace` and `use` imports, so an alias hides nothing.
  * The population is derived by {@see SourceScan::sitesInApp()} on every run and compared both
@@ -72,6 +77,9 @@ class ConsoleBypassCensusTest extends TestCase
     private const PROCESS_PASSTHROUGH = ['passthru', 'system', 'exec', 'shell_exec', 'popen', 'proc_open', 'pcntl_exec'];
 
     private const PROCESS_PASSTHROUGH_METHODS = ['tty', 'settty'];
+
+    /** HIDDEN INPUT: a masked console read whose fallback under `disableStty()` is a VISIBLE one. */
+    private const HIDDEN_INPUT_METHODS = ['secret', 'sethidden', 'sethiddenfallback'];
 
     private const DUMPER_FUNCTIONS = ['dump', 'dd'];
 
@@ -185,7 +193,8 @@ class ConsoleBypassCensusTest extends TestCase
      * ⭐ THE CONTROL for the raw-stream, language-output and process-passthrough categories:
      * every member is found in a planted source, and every near miss is not. The near misses
      * are a method or declaration of the same name, a comment, a return-mode call, an integer
-     * exit, a plain file path, an unrelated ini key and lower-case prose.
+     * exit, a plain file path, an unrelated ini key, lower-case prose, and — for HIDDEN INPUT —
+     * a STATIC call and a PROPERTY of the same name, neither of which reads the terminal.
      */
     public function test_the_scan_finds_each_planted_bypass_and_skips_each_near_miss(): void
     {
@@ -238,12 +247,18 @@ function planted(\$h, \$x, \$cmd, \$p, \$o) {
     \$s = STDOUT;
     ini_set('display_errors', 'stderr');
     ini_set('memory_limit', '1G');
+    \$o->secret('Paste the token');
+    \$o->setHidden(true);
+    \$o->setHiddenFallback(false);
+    Foo::secret('x');
+    \$o->secretPath;
     // fwrite(STDOUT, 'a comment is not a site');
 }
 class K
 {
     public function system(): void {}
     public function echo(): void {}
+    public function secret(): void {}
     public function print(): void {}
 }
 ?>
@@ -287,6 +302,9 @@ PHP;
             'Plant.php::planted#33' => 'backtick',
             'Plant.php::planted#34' => 'const STDOUT',
             'Plant.php::planted#35' => "ini_set('display_errors')",
+            'Plant.php::planted#36' => '->secret()',
+            'Plant.php::planted#37' => '->setHidden()',
+            'Plant.php::planted#38' => '->setHiddenFallback()',
             'Plant.php::(file scope)#1' => 'inline html',
             'Plant.php::(file scope)#2' => '<?=',
         ], SourceScan::sites($plant, 'Plant.php', self::siteAt(...)));
@@ -469,7 +487,12 @@ PHP;
             return ($previous === T_DOUBLE_COLON ? '::' : '->').$tokens[$i][1].'()';
         }
 
-        return $previous === T_OBJECT_OPERATOR && in_array($lower, self::PROCESS_PASSTHROUGH_METHODS, true) ? $operator.$tokens[$i][1].'()' : null;
+        if ($previous === T_OBJECT_OPERATOR
+            && in_array($lower, [...self::PROCESS_PASSTHROUGH_METHODS, ...self::HIDDEN_INPUT_METHODS], true)) {
+            return $operator.$tokens[$i][1].'()';
+        }
+
+        return null;
     }
 
     /** @param  list<array{0: int|string, 1: string}>  $tokens */

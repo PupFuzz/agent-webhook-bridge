@@ -471,13 +471,22 @@ class ReconcileCommandTest extends TestCase
      * diagnostic must still REACH the operator (the whole point of relaying it), so an
      * assertion that only checked for the absence of `\r` would be satisfied by a fix that
      * dropped the body.
+     *
+     * ⛔ THE SECOND `\r` IS WHAT MEASURES THE PRODUCER, and it is MID-BODY on purpose. Since
+     * the output choke (DL-393) DELETES `\r` downstream, the leading one renders identically
+     * whether `UntrustedText::forOperator()` ran or not: measured, with the producer's escape
+     * removed and no `\t` in the body, every assertion here still PASSED. `forOperator()`
+     * COLLAPSES the run to a space exactly where the choke would delete it, so the escaped
+     * `divergences, nothing` and the unescaped `divergences,nothing` differ and the presence leg
+     * fails on the producer alone. The `\t` is a second, independent witness — the choke KEEPS
+     * `\t`, so an unescaped one reds the census leg. Both legs are watched red at the producer.
      */
     public function test_a_relayed_kanban_error_body_cannot_move_the_operators_cursor(): void
     {
         $this->writeWriteback();
         Http::fake([
             '*preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
-            '*tasks/search.json*' => Http::response("\rboard 8: 0 divergences, nothing to do\t\n", 500),
+            '*tasks/search.json*' => Http::response("\rboard 8: 0 divergences,\rnothing to do\t\n", 500),
             'https://api.github.com/*' => Http::response(['full_name' => 'owner/repo'], 200),
         ]);
 
@@ -486,7 +495,7 @@ class ReconcileCommandTest extends TestCase
 
         $this->assertStringContainsString('read failed', $output);
         // PRESENCE WITNESS — the relayed diagnostic still reaches the operator, on ONE line.
-        $this->assertStringContainsString('board 8: 0 divergences, nothing to do', $output);
+        $this->assertForeignValueEscapedInto($output, "\rboard 8: 0 divergences,\rnothing to do\t");
         $this->assertMatchesRegularExpression(
             '/read failed — [^\n]*board 8: 0 divergences, nothing to do/',
             $output,
