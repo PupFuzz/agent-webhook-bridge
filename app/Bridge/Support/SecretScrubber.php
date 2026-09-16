@@ -48,6 +48,15 @@ namespace App\Bridge\Support;
  *    and a space is exactly what a paste error leaves in a userinfo — the leak card#9528
  *    records, on `UrlValidator`'s *check for paste errors* branch. Every direction is worked
  *    in {@see self::stripCredentialComponents()} and pinned in `Tests\Unit\Support\SecretScrubberTest`.
+ *  - ⛔ THAT BINDING IS A PROPERTY OF THE VALUE HANDED TO THE RULE, NOT OF WHAT {@see self::text()}
+ *    FINDS, and the difference is a LIVE BOUND rather than a detail: `text()`'s embedded-URL
+ *    run itself still ends at WHITESPACE, so in somebody else's finished string an `@` sitting
+ *    behind a space is never handed to the rule at all —
+ *    `text('url is https://svc:pw <secret>@host/x and more')` comes back VERBATIM. The run is
+ *    not widened because crossing whitespace would swallow the rest of every message that
+ *    quotes a URL. The shape is closed where the value is OURS instead: {@see self::url()}
+ *    puts the rule over the WHOLE value, and the `bridge:check` / `bridge:provision` config
+ *    doors refuse such a value outright (`UrlValidator::configDoorHttpUrl()`).
  *  - The redaction of a query/fragment runs to the next WHITESPACE, so non-whitespace text
  *    following a redacted URL is dropped with it — a comma-joined second URL, a closing
  *    bracket, a trailing sentence period (see {@see self::text()} for why it is not
@@ -81,47 +90,76 @@ final class SecretScrubber
     private const SENSITIVE = 'authorization|bearer|token|secret|passwd|password|api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|credential|x-api-key';
 
     /**
-     * The characters a key may carry AROUND a {@see self::SENSITIVE} word and still be one key.
+     * What a key may carry AROUND a {@see self::SENSITIVE} word and still be one key: anything
+     * up to the previous REAL delimiter, bound by EXCLUSION rather than by an alphabet.
      *
      * ⛔ WHY THE WORD IS NOT MATCHED ON ITS OWN, BOUNDED BY `\b` (card#9528). `\b` before the
      * alternation cannot fire inside `api_token=`, because `_` is a word character — so
      * `api_token=<secret>` went out verbatim, while `my-password=<secret>` was caught. That made
      * the rule's reach a function of which SPELLINGS the list happened to enumerate, and the
      * list can never be complete: a key is whatever the far end named its field. Matching the
-     * word ANYWHERE IN THE KEY is the rule the JSON leg has always used; this is that rule, with
-     * the character set a bare (non-quoted) key can be written in.
+     * word ANYWHERE IN THE KEY is the rule the JSON leg has always used.
+     *
+     * ⛔ AND WHY THE KEY IS NOT SPELLED AS AN ALPHABET EITHER — the same defect one layer in,
+     * caught in this card's R1 review. `[A-Za-z0-9._-]*` moved the dependence from `SENSITIVE`'s
+     * word list to a CHARACTER list, and missed the bracketed nested form every PHP, Rails and
+     * Laravel query uses: `params[api_token]=` and its percent-encoded `user%5Btoken%5D=` both
+     * went out verbatim. The delimiters below are the ones that genuinely END a key — the pair
+     * separator, the start of a query, the `=` that splits the pair, whitespace, and the quote
+     * that ends a JSON string — which is the same bound this rule's own VALUE run has always
+     * used (`[^&\s"]+`), now applied to both halves of the pair instead of one.
      */
-    private const KEY_CHARS = '[A-Za-z0-9._-]*';
+    private const KEY_CHARS = '[^&?=\s"]*';
 
     /**
-     * ASCII whitespace, plus every character in Unicode's SPACE SEPARATOR (`Zs`) category,
-     * written as its UTF-8 bytes.
+     * What separates an auth scheme from its value: one or more characters that are NOT a
+     * VISIBLE ASCII character. Bound by exclusion, so no separator has to be enumerated.
      *
-     * ⛔ WHY NOT `\s` WITH THE `u` MODIFIER (card#9528 comment 5426). `\s` alone is ASCII-only,
-     * so `Bearer<U+00A0><token>` passed through unredacted and `UntrustedText::forOperator()`
-     * then normalized the separator — printing the token with an ordinary space in front of it,
-     * which reads as though the redactor had looked at it and passed it. The `u` modifier would
-     * fix the class and break the function: on input that is not valid UTF-8 `preg_replace`
-     * returns null, and this class casts to string, so a single stray byte anywhere in a foreign
-     * body would silently empty the whole text. Byte alternatives have no such failure mode.
+     * ⛔ THE ENUMERATION IS THE DEFECT, NOT THE PARTICULAR LIST (card#9528 comment 5426 and its
+     * R1 review). This started as `\s`, which is ASCII-only without the `u` modifier, so
+     * `Bearer<U+00A0><token>` went out unredacted while `UntrustedText::forOperator()` collapsed
+     * the separator to a plain space — the token printed as though the redactor had looked at it
+     * and passed it. Replacing `\s` with `\s` + the `Zs` table fixed U+00A0 and left U+2028,
+     * U+2029, U+0085 and U+180E leaking the same way, because `Zs` is not the class the defect
+     * belongs to: the class is *whatever the operator's surface renders as a space*, and no
+     * Unicode category names it. So the rule stops asking WHICH character this is. A credential
+     * separator is never a visible ASCII character, and every space — ASCII, Unicode, present
+     * or future — is covered by that one sentence. `SecretScrubberTest` derives its population
+     * from `UntrustedText::forOperator()`'s own rendering rather than from any table.
      *
-     * ⚠ IT IS `Zs` PLUS ASCII AND NOTHING WIDER — U+200B ZERO WIDTH SPACE (`Cf`) is not in it,
-     * and neither is any other format character. `SecretScrubberTest` re-derives the population
-     * from PCRE's own `\p{Zs}` table on every run rather than trusting this sentence.
+     * ⛔ THE `u` MODIFIER IS STILL NOT USED, and now cannot be needed: on input that is not
+     * valid UTF-8 `preg_replace` returns null, and this class casts to string, so one stray byte
+     * anywhere in a foreign body would silently empty the whole text. A byte-level exclusion has
+     * no such failure mode and needs no well-formed input to be correct.
+     *
+     * ⚠ THE BOUND, STATED: a VISIBLE ASCII character between the scheme and its value — the
+     * `:` of a hand-written `Bearer: <token>` — is not a separator here and is not treated as
+     * one. It is not the wire form (RFC 7235 writes `auth-scheme 1*SP token68`), and admitting
+     * it would make the rule eat ordinary prose after every `bearer.` in a sentence.
      */
-    private const SPACE = '(?:\s|\xc2\xa0|\xe1\x9a\x80|\xe2\x80[\x80-\x8a\xaf]|\xe2\x81\x9f|\xe3\x80\x80)';
+    private const SCHEME_SEPARATOR = '[^\x21-\x7E]+';
 
     /**
-     * ONE character of an auth-scheme's value.
+     * ONE character of an auth-scheme's value: anything that is not a TRUE delimiter of it.
      *
-     * ⛔ `\\.` ADMITS ANY BACKSLASH ESCAPE, AND WITHOUT IT THE RUN ENDED INSIDE THE SECRET
-     * (card#9528 comment 5425). The value the bridge most often scrubs arrives inside a JSON
-     * body, where a forward slash is written `\/` — so `Bearer abc\/<secret>` redacted `abc` and
-     * printed the rest. `|` is here for the same reason from the other direction: Sanctum writes
-     * a token as `<id>|<secret>`, which is the shape of kanban's own API tokens, so the run
-     * stopped exactly at the separator and kept the half that matters.
+     * ⛔ AN ALPHABET HERE IS THE SAME DEFECT AS AN ALPHABET ANYWHERE ELSE IN THIS CLASS, and
+     * this constant is where the R1 review of card#9528 found it still standing. The run was
+     * `[A-Za-z0-9._~+\/=|-]`, so it ended at the first character the list forgot — `:` `%` `!`
+     * `'` `,` `;` `(` were all outside it — and `Basic user:<secret>` came back as
+     * `Basic [REDACTED]:<secret>`: the DANGEROUS form, because the output CARRIES `[REDACTED]`
+     * and an operator, a reviewer and any presence-of-`[REDACTED]` assertion all read the leak
+     * as a redaction. A credential in an HTTP header cannot contain whitespace or a bare `"`;
+     * anything else it can. So the run ends at those, and at nothing else — the same shape the
+     * `key=value` rule's own value run and the `mzr_` prefix rule already used.
+     *
+     * ⛔ `\\.` ADMITS ANY BACKSLASH ESCAPE, and without it the run ended inside the secret
+     * (comment 5425): the bodies this class most often reads are JSON, where a forward slash is
+     * written `\/`, so `Bearer abc\/<secret>` redacted `abc` and printed the rest. The backslash
+     * is excluded from the class for the same reason it is in the embedded-URL run — an
+     * ambiguous alternation (a backslash matching either arm) is what makes a quantifier
+     * backtrack exponentially.
      */
-    private const SCHEME_VALUE_CHAR = '(?:\\\\.|[A-Za-z0-9._~+\/=|-])';
+    private const SCHEME_VALUE = '(?:\\\\.|[^\s"\\\\])';
 
     private const REDACTED = '[REDACTED]';
 
@@ -180,7 +218,7 @@ final class SecretScrubber
         // The key is matched by CONTAINING a sensitive word, not by BEING one —
         // {@see self::KEY_CHARS} owns why.
         $text = (string) preg_replace(
-            '/((?<![A-Za-z0-9._-])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.')'.self::KEY_CHARS.'=)[^&\s"]+/i',
+            '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.')'.self::KEY_CHARS.'=)[^&\s"]+/i',
             '$1'.self::REDACTED,
             $text,
         );
@@ -188,10 +226,11 @@ final class SecretScrubber
         // HTTP `Bearer`/`Basic` auth schemes echoed as raw text (e.g. an echoed
         // Authorization header). These keywords are never followed by a prose word in
         // an error body, so redact the value at ANY length — a short-but-real token
-        // must not slip through. The separator is {@see self::SPACE} and the value
-        // {@see self::SCHEME_VALUE_CHAR}; each constant owns what its own bound cost.
+        // must not slip through. Both bounds are by EXCLUSION: the separator is
+        // {@see self::SCHEME_SEPARATOR} and the value {@see self::SCHEME_VALUE}, and each
+        // constant owns why enumerating its own characters was the defect.
         $text = (string) preg_replace(
-            '/\b(Bearer|Basic)'.self::SPACE.'+'.self::SCHEME_VALUE_CHAR.'+/i',
+            '/\b(Bearer|Basic)'.self::SCHEME_SEPARATOR.self::SCHEME_VALUE.'+/i',
             '$1 '.self::REDACTED,
             $text,
         );
@@ -202,7 +241,7 @@ final class SecretScrubber
         // counting as one) to avoid mangling the very reason the body exists to surface.
         // Keyed/short credentials stay covered by the JSON/query/Bearer rules.
         $text = (string) preg_replace(
-            '/\btoken'.self::SPACE.'+'.self::SCHEME_VALUE_CHAR.'{16,}/i',
+            '/\btoken'.self::SCHEME_SEPARATOR.self::SCHEME_VALUE.'{16,}/i',
             'token '.self::REDACTED,
             $text,
         );

@@ -134,17 +134,70 @@ class UrlValidatorTest extends TestCase
     }
 
     #[DataProvider('illegalUserinfoCharacters')]
-    public function test_a_userinfo_carrying_a_character_illegal_unencoded_is_refused(string $char): void
+    public function test_a_userinfo_carrying_a_character_illegal_unencoded_is_refused_at_a_config_door(string $char): void
     {
         $canary = 'CANARY9528SYNTHETICVALUE';
 
         try {
-            UrlValidator::httpUrl('https://svc:'.$canary.$char.'tail@bridge.example.com/webhooks', 'bridge.receiver_base_url');
-            $this->fail('the validator accepted a userinfo carrying a character RFC 3986 does not allow unencoded');
+            UrlValidator::configDoorHttpUrl('https://svc:'.$canary.$char.'tail@bridge.example.com/webhooks', 'bridge.receiver_base_url');
+            $this->fail('the config door accepted a userinfo carrying a character RFC 3986 does not allow unencoded');
         } catch (ConfigException $e) {
             $this->assertStringNotContainsString($canary, $e->getMessage());
             $this->assertStringContainsString("bridge.receiver_base_url 'https://***@bridge.example.com/webhooks'", $e->getMessage());
             $this->assertStringContainsString('illegal unencoded', $e->getMessage());
+        }
+    }
+
+    /**
+     * ⛔ THE SCOPE OF THE ACCEPTANCE CHANGE, AND THE REASON IT IS A DEDICATED PATH RATHER THAN
+     * A WIDER `httpUrl()` (OPERATOR RULING, 2026-09-16; canon #3).
+     *
+     * The ruling narrowed the refusal to the CONFIG DOORS — `bridge:check` and
+     * `bridge:provision`, where the value is being JUDGED and QUOTED. The premise the first
+     * cut was granted on (*"none is a runtime path"*) was false: `httpUrl()`/`secureHttpUrl()`
+     * are also asked at RUNTIME, by `WritebackClientFactory` on every writeback and by
+     * `IdleNudgeConfig` on every nudge pass. Such an install WORKS TODAY — Guzzle parses and
+     * normalizes `svc:pw"tail` to `svc:pw%22tail` — so refusing there would stop a board
+     * moving to protect nothing: the REDACTOR is what keeps the credential off the operator's
+     * terminal, and it applies everywhere regardless of this predicate.
+     *
+     * ⛔ ABSENCE WOULD BE SATISFIED BY DELETING THE CHECK. That is why this asserts the value
+     * comes back IDENTICAL and the paired case above asserts the door still refuses it: the
+     * two together say the rule moved, not that it went away.
+     */
+    #[DataProvider('illegalUserinfoCharacters')]
+    public function test_the_runtime_validators_still_accept_what_a_config_door_refuses(string $char): void
+    {
+        $value = 'https://svc:CANARY9528SYNTHETICVALUE'.$char.'tail@bridge.example.com/webhooks';
+
+        $this->assertSame($value, UrlValidator::httpUrl($value, 'bridge.receiver_base_url'));
+        $this->assertSame($value, UrlValidator::secureHttpUrl($value, 'bridge.providers.kanban.api_base_url'));
+    }
+
+    /**
+     * The secret-bearing door keeps BOTH rules, and in the order that names the more serious
+     * fault first: a cleartext base with an illegal userinfo is refused for the https floor,
+     * because that one puts the credential on the wire.
+     */
+    public function test_the_secure_config_door_carries_the_https_floor_and_the_userinfo_rule(): void
+    {
+        $this->assertSame(
+            'https://kanban.example/api/v3',
+            UrlValidator::configDoorSecureHttpUrl('https://kanban.example/api/v3', 'bridge.providers.kanban.api_base_url'),
+        );
+
+        try {
+            UrlValidator::configDoorSecureHttpUrl('https://svc:pw"tail@kanban.example/api/v3', 'bridge.providers.kanban.api_base_url');
+            $this->fail('the secure config door accepted an illegal userinfo');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString('illegal unencoded', $e->getMessage());
+        }
+
+        try {
+            UrlValidator::configDoorSecureHttpUrl('http://svc:pw"tail@kanban.internal/api/v3', 'bridge.providers.kanban.api_base_url');
+            $this->fail('the secure config door accepted a cleartext remote base');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString('must use https', $e->getMessage());
         }
     }
 
@@ -179,7 +232,9 @@ class UrlValidatorTest extends TestCase
     #[DataProvider('acceptedUserinfoValues')]
     public function test_a_userinfo_rfc_3986_allows_unencoded_is_still_accepted(string $value): void
     {
-        $this->assertSame($value, UrlValidator::httpUrl($value, 'bridge.receiver_base_url'));
+        // Asked of the CONFIG DOOR, because that is the only predicate that could over-reach:
+        // `httpUrl()` judges no userinfo character at all.
+        $this->assertSame($value, UrlValidator::configDoorHttpUrl($value, 'bridge.receiver_base_url'));
     }
 
     public function test_a_refused_value_with_nothing_to_hide_is_quoted_unchanged(): void

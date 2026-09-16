@@ -110,7 +110,7 @@ final class WritebackIdentityOffer
         // reaches this line having validated nothing. Refusing is a fail-soft fallback, not a
         // throw: the operator is told the config is the fault and setup still finishes.
         try {
-            UrlValidator::secureHttpUrl($apiBaseUrl, 'bridge.providers.kanban.api_base_url');
+            UrlValidator::configDoorSecureHttpUrl($apiBaseUrl, 'bridge.providers.kanban.api_base_url');
         } catch (ConfigException $e) {
             return $this->fallback($configDir, $apiBaseUrl, $e->getMessage());
         }

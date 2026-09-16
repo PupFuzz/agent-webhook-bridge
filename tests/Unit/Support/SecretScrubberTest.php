@@ -3,6 +3,7 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\SecretScrubber;
+use App\Bridge\Support\UntrustedText;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -387,6 +388,23 @@ class SecretScrubberTest extends TestCase
             'key joining the sensitive word with an underscore' => ['api_token=CANARYSYNTHETIC', 'api_token=[REDACTED]'],
             'key joining the sensitive word with a dot' => ['auth.token=CANARYSYNTHETIC', 'auth.token=[REDACTED]'],
             'key prefixed before an enumerated spelling' => ['x_api_key=CANARYSYNTHETIC', 'x_api_key=[REDACTED]'],
+            // ⭐ R1 REVIEW OF THIS CARD: the first cut replaced the value CHARACTER LIST with a
+            // WIDER character list, so the run still ended at the first character the list
+            // happened to forget — `:` `%` `!` `'` `,` `;` `(` were all outside it. Each row
+            // below came back as `[REDACTED]` followed by the rest of the secret. The run is
+            // now bound by EXCLUSION, to the next character that cannot be inside an HTTP
+            // header value at all, so no row here is a spelling this list has to enumerate.
+            'basic carrying a colon — the form Basic credentials are written in' => ['Basic user:CANARYSYNTHETIC', 'Basic [REDACTED]'],
+            'bearer carrying a percent-escape' => ['Bearer C%2FtailCANARYSYNTHETIC', 'Bearer [REDACTED]'],
+            'bearer carrying an apostrophe — a sub-delim legal unencoded in a userinfo' => ["Bearer C'CANARYSYNTHETIC", 'Bearer [REDACTED]'],
+            'bearer carrying an exclamation mark' => ['Bearer C!CANARYSYNTHETIC', 'Bearer [REDACTED]'],
+            'bearer carrying a comma' => ['Bearer a,CANARYSYNTHETIC', 'Bearer [REDACTED]'],
+            'bearer carrying a semicolon' => ['Bearer a;CANARYSYNTHETIC', 'Bearer [REDACTED]'],
+            'bearer carrying a parenthesis' => ['Bearer a(CANARYSYNTHETIC', 'Bearer [REDACTED]'],
+            // The KEY was an enumeration too, and the bracketed nested form is the ordinary
+            // PHP/Rails/Laravel query spelling — raw, and percent-encoded as a browser sends it.
+            'key in the bracketed nested form' => ['params[api_token]=CANARYSYNTHETIC', 'params[api_token]=[REDACTED]'],
+            'key in the percent-encoded bracketed form' => ['user%5Btoken%5D=CANARYSYNTHETIC', 'user%5Btoken%5D=[REDACTED]'],
         ];
     }
 
@@ -400,29 +418,42 @@ class SecretScrubberTest extends TestCase
     }
 
     /**
-     * ⭐ card#9528 comment 5426 REPORTED U+00A0; THE POPULATION IS DERIVED, NOT LISTED.
+     * ⭐ THE POPULATION IS THE DEFECT CLASS, DERIVED FROM THE OPERATOR SURFACE ITSELF — not
+     * from a Unicode table (card#9528 comment 5426, and its R1 review).
      *
-     * The auth-scheme rules separated the keyword from its value with PCRE's `\s`, which is
-     * ASCII-only without the `u` modifier — so EVERY space separator outside ASCII had the same
-     * hole, and `UntrustedText::forOperator()` then normalizes the separator, printing the
-     * unredacted token with an ordinary space in front of it.
+     * The reported defect is *a separator the operator's terminal renders as an ordinary
+     * space*: the token then prints with a space in front of it, which reads as though the
+     * redactor had looked at it and passed it.
      *
-     * ⛔ THE LOOP RE-DERIVES ITS OWN DENOMINATOR from PCRE's `\p{Zs}` table on every run rather
-     * than from a list written here, so a codepoint the table gains is covered or reds. Two
-     * guards keep it from asserting nothing: the population must be non-empty, and it must
-     * contain the reported instance.
+     * ⛔ THE PREVIOUS CUT OF THIS TEST DERIVED ITS DENOMINATOR FROM `\p{Zs}` — the same table
+     * the constant under test encoded — so it could only ever prove that two copies of one
+     * list agreed, and U+2028, U+2029 and U+0085 leaked while sitting OUTSIDE ITS OWN
+     * DENOMINATOR. A drift guard between two copies of a list is not a test of the defect.
+     *
+     * So membership is decided by `UntrustedText::forOperator()`'s OWN rendering: a codepoint
+     * is in the class when the surface an operator reads turns it into a plain space. Nothing
+     * here knows or cares which Unicode category that is, which is why a table that moves
+     * cannot move this denominator out from under the assertion.
+     *
+     * ⛔ THREE GUARDS, AND THE THIRD IS A CONTROL RATHER THAN A COVERAGE CLAIM. The population
+     * must be non-empty; it must contain BOTH the originally reported instance (U+00A0) and
+     * the one the replaced denominator could not see (U+2028); and it must EXCLUDE an ordinary
+     * letter — without that last one a classifier answering *yes* to everything would satisfy
+     * the whole loop.
      */
-    public function test_text_redacts_an_auth_scheme_separated_by_any_unicode_space(): void
+    public function test_text_redacts_an_auth_scheme_separated_by_anything_the_operator_reads_as_a_space(): void
     {
         $separators = [];
         for ($codepoint = 0; $codepoint <= 0xFFFF; $codepoint++) {
             $char = mb_chr($codepoint, 'UTF-8');
-            if (is_string($char) && preg_match('/^\p{Zs}$/u', $char) === 1) {
+            if (is_string($char) && UntrustedText::forOperator('A'.$char.'B') === 'A B') {
                 $separators[$codepoint] = $char;
             }
         }
         $this->assertNotSame([], $separators, 'the derived separator population is empty, so the loop below asserts nothing');
         $this->assertArrayHasKey(0xA0, $separators, 'the reported instance is outside the derived population, so this test is not about it');
+        $this->assertArrayHasKey(0x2028, $separators, 'U+2028 renders as a space and leaked the whole token past the \p{Zs} denominator this replaced');
+        $this->assertArrayNotHasKey(0x78, $separators, 'the letter x classifies as a separator, so the classifier says yes to everything and the loop proves nothing');
 
         foreach ($separators as $codepoint => $separator) {
             foreach (['Bearer', 'Basic', 'token'] as $scheme) {
@@ -430,9 +461,45 @@ class SecretScrubberTest extends TestCase
                 $scrubbed = SecretScrubber::text($scheme.$separator.'CANARYSYNTHETICVALUE');
 
                 $this->assertStringNotContainsString('CANARYSYNTHETIC', $scrubbed, $where);
-                $this->assertStringContainsString('[REDACTED]', $scrubbed, $where);
+                $this->assertSame($scheme.' [REDACTED]', $scrubbed, $where);
             }
         }
+    }
+
+    /**
+     * The other half of the same class, and the reason the rule is not written in terms of
+     * *whitespace* at all: a separator the operator surface ESCAPES rather than collapses
+     * (`\x{200B}`) still sits between a scheme and its value, and the token behind it is no
+     * less a credential. The separator is bound by EXCLUSION — anything that is not a visible
+     * ASCII character — so these need no enumerating either, and the derived loop above is a
+     * SUBSET of what the rule reaches rather than its edge.
+     */
+    public function test_text_redacts_an_auth_scheme_separated_by_a_character_the_operator_surface_shows(): void
+    {
+        foreach (["\u{200B}" => 'U+200B ZERO WIDTH SPACE', "\u{180E}" => 'U+180E MONGOLIAN VOWEL SEPARATOR', "\u{FEFF}" => 'U+FEFF BOM'] as $separator => $where) {
+            $scrubbed = SecretScrubber::text('Bearer'.$separator.'CANARYSYNTHETICVALUE');
+
+            $this->assertStringNotContainsString('CANARYSYNTHETIC', $scrubbed, $where);
+            $this->assertSame('Bearer [REDACTED]', $scrubbed, $where);
+        }
+    }
+
+    /**
+     * ⛔ THE COST CONTROL FOR THE WIDER BINDING, and what says the run was BOUND rather than
+     * merely widened again. The separator is now *anything that is not a visible ASCII
+     * character*, so a rule reading one class too far would start eating ordinary prose — and
+     * every line here is text an upstream error body genuinely carries. GREEN before this
+     * change and after it.
+     */
+    public function test_the_scheme_binding_does_not_eat_prose(): void
+    {
+        $this->assertSame('Basically everything failed', SecretScrubber::text('Basically everything failed'));
+        $this->assertSame('token expired', SecretScrubber::text('token expired'));
+        $this->assertSame('the bearer. next', SecretScrubber::text('the bearer. next'));
+        // ⚠ A STATED COST, NOT A PROPERTY: `Bearer` FOLLOWED BY A WORD IS REDACTED, exactly as
+        // it was before this change. These keywords are not followed by prose in the bodies
+        // this class reads, and a short-but-real token must not slip through on a length floor.
+        $this->assertSame('Bearer [REDACTED] required', SecretScrubber::text('Bearer authentication required'));
     }
 
     public function test_url_still_applies_the_text_rules_to_what_survives(): void
