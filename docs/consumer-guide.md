@@ -124,6 +124,7 @@ php artisan bridge:inbox --hook-format=plain
   - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
   - `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
   - `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
+  - ⚠ **Whichever format, the output passes the console output choke (DL-393).** In plain markdown, C0 controls other than newline and tab, DEL, C1 and Unicode format characters (`\p{Cf}`, including a zero-width joiner inside an emoji sequence) are removed from an intent's text on the way out. The hook envelope's JSON already escapes every C0 and non-ASCII character, so a raw DEL is the only thing the choke can remove from it. `inbox.jsonl` itself is never changed.
 - `--agent=<name>` — surface only that agent's intents (its `inbox-<agent>.jsonl`, or the shared file filtered by the `agent` tag), with its own seen cursor. For a single install fanning out to N agents; see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents). Defaults to `BRIDGE_DEFAULT_AGENT` when unset.
 - `--no-cursor-advance` — print unseen intents without marking them seen (a peek). The next run re-surfaces them.
 

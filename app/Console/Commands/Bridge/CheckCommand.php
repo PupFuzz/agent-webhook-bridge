@@ -1023,11 +1023,29 @@ class CheckCommand extends BridgeCommand
      * contract is that one arm, so a new severity can never change what `bridge:check`
      * exits.
      *
-     * IT TAKES NO PREFIX. Stage 1 migrated every prefixing call site into a
-     * {@see Check}, and a check yields display-ready messages: a
-     * Finding has no scope field, and one check's two message shapes
-     * (`board_tools ssh: …` and `board_tools ssh probe: …`) cannot share a render-time
-     * prefix anyway.
+     * ⭐ THE ONE PREFIX IT TAKES is the severity marker (card#9251, operator decision
+     * 2026-09-15, Option 1: the plain-text console). Until now this method took NO
+     * prefix — stage 1 migrated every SCOPE prefix into a {@see Check}, and a Finding has
+     * no scope field to add one from — and severity was carried by colour alone: DL-393
+     * removed colour from every Artisan command, which left `fail`/`warn`/`ok` lines
+     * differing only in wording. `FAIL: `/`WARN: `/`UNVALIDATED: `/`OK: ` restores that
+     * signal in TEXT, ahead of the check's own (still unprefixed) message — the two
+     * prefixes answer different questions and neither could stand in for the other: a
+     * scope prefix names WHICH check spoke, the marker names WHAT IT CONCLUDED. The
+     * marker is a SEPARATE `match` from the channel one below, deliberately: colour and
+     * the marker are two independent renderings of the same severity, and folding them
+     * into one arm would make a future third rendering (say, an exit-summary word) look
+     * like it has to share the channel mapping's cases instead of adding its own.
+     * THE MARKER NEVER ENTERS THE JSON DOCUMENT — it is applied only inside the
+     * `! $this->json` branch below, and that is what `SeverityMarkerTest` checks: none of
+     * the four tokens appears in a `--format=json` capture, with `"message": "…"` witnesses
+     * beside the absences so an empty capture cannot pass for a clean one.
+     * ⚠ THAT IS NOT A CLAIM THAT THE DOCUMENT'S BYTES ARE PINNED, and nothing pins them.
+     * `CheckJsonContractTest` asserts the exact key sets, the schema and the counts, and
+     * says in its own docblock that it deliberately does NOT assert the `message` strings;
+     * and the document passes the same output choke every other write does, so a `message`
+     * can lose a raw DEL, C1 or `\p{Cf}` byte it carried raw — `docs/check-json-contract.md`
+     * §2 records that as a rewording, which the contract's own table licenses.
      *
      * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
      * check that never ran, and yellow would nag a documented-correct population
@@ -1064,11 +1082,17 @@ class CheckCommand extends BridgeCommand
             // its own sentence is foreign, which makes the escape opt-in and an omission
             // invisible. The escape now happens where the foreign value is produced or
             // interpolated, so this renderer has nothing left to do about it.
+            $marker = match ($finding->severity) {
+                Severity::Fail => 'FAIL: ',
+                Severity::Warn => 'WARN: ',
+                Severity::Unvalidated => 'UNVALIDATED: ',
+                Severity::Ok => 'OK: ',
+            };
             match ($finding->severity) {
-                Severity::Fail => $this->error($finding->message),
-                Severity::Warn => $this->warn($finding->message),
-                Severity::Unvalidated => $this->line($finding->message),
-                Severity::Ok => $this->info($finding->message),
+                Severity::Fail => $this->error($marker.$finding->message),
+                Severity::Warn => $this->warn($marker.$finding->message),
+                Severity::Unvalidated => $this->line($marker.$finding->message),
+                Severity::Ok => $this->info($marker.$finding->message),
             };
         }
 

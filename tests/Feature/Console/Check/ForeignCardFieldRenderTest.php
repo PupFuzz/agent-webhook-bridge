@@ -127,6 +127,12 @@ class ForeignCardFieldRenderTest extends TestCase
      * an escape that moved the bytes of a healthy install's report would be a regression
      * dressed as a fix, and the census above is equally satisfied by a renderer that mangles
      * every line.
+     *
+     * ⚑ `WARN: ` PREFIXED, NOT VERBATIM, SINCE DL-393 DECISION 8: every text-format finding
+     * line now carries its severity marker, and this check's findings are always
+     * {@see Finding::warn()}. The marker is `emitFinding()`'s own, uninvolved in the escape
+     * this test controls for, so the assertion narrows to what the CONTROL is actually
+     * about — the message BODY survives untouched — rather than re-asserting the marker.
      */
     public function test_ordinary_card_fields_render_unchanged(): void
     {
@@ -136,9 +142,9 @@ class ForeignCardFieldRenderTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(
-            $findings[0]->message,
+            'WARN: '.$findings[0]->message,
             trim($this->render($findings)),
-            'a finding with no hostile byte in it must render to its own message, verbatim',
+            'a finding with no hostile byte in it must render to its own message, verbatim, behind its severity marker',
         );
     }
 
