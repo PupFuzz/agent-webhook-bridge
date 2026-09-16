@@ -710,7 +710,9 @@ abort `bridge:check` on a misconfiguration it exists to report. Both routes are 
 because a single-route test passes against the narrower `try` — and one mutant proves it does.
 
 **The fixture set reaches only the healthy branch of both units, and the coverage table does not
-say so.** Every golden fixture prints `database: connected` and `install-suffix DSN check: ok`. The
+say so.** Every golden fixture prints `OK: database: connected` and
+`OK: install-suffix DSN check: ok` — the severity marker DL-393 Decision 8 added is part of the
+line, and no unprefixed form of either survives anywhere in the corpus. The
 crosstalk predicate nevertheless reads **`observed`**, and the reason is worth recording because it
 generalizes: the negated mutant enters the failure branch with a null diagnosis and prints an
 **empty** error line — `Illuminate\Console\Command::error()` takes an untyped parameter, so null

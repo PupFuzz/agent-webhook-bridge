@@ -90,10 +90,16 @@ final class StrippingConsoleKernel extends Kernel
      *   !self::$stty || ...`) for every question, whether or not it carries an
      *   autocompleter. `Command::choice()` always builds a `ChoiceQuestion`, and
      *   `ChoiceQuestion`'s OWN constructor sets one over its choices — Laravel never
-     *   asks for it. The same flag also skips `getHiddenResponse()`'s stty-masked read
-     *   for a `secret()`/hidden question; `app/` calls neither `choice()` nor a hidden
-     *   question that isn't `isHiddenFallback()` (Symfony's own default), so what a
-     *   hidden question falls back to is a PLAIN, visible read — a bound, not a live gap.
+     *   asks for it. The same flag also skips `getHiddenResponse()`'s stty-masked read for
+     *   ANY hidden question, and under it the NON-fallback question is the safe one — it
+     *   throws. The hazardous one is the fallback-TRUE question, which is Symfony's own
+     *   default and what `$this->secret()` passes: `doAsk()` SWALLOWS the failure and reads
+     *   the answer back as a PLAIN, VISIBLE read, echoed to the screen and the scrollback
+     *   (bound (12)). `app/` calls no `choice()` and no hidden read today, and that absence
+     *   is CHECKED rather than read once — `ConsoleBypassCensusTest`'s HIDDEN INPUT category
+     *   reds on one anywhere in `app/`, over method names it DERIVES from vendor on every
+     *   run rather than recalls, so a future one arrives as a red test with a ruling to
+     *   write. What that derivation cannot reach is stated as its own bound, there.
      */
     private static function disableInteractiveEscapes(): void
     {

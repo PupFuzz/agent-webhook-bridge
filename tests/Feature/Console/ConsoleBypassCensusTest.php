@@ -2,13 +2,23 @@
 
 namespace Tests\Feature\Console;
 
+use Illuminate\Console\Command;
+use Illuminate\Console\OutputStyle;
+use Illuminate\Console\View\Components\Factory as ComponentFactory;
+use ReflectionClass;
+use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Question\Question;
+use Symfony\Component\Console\Style\SymfonyStyle;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
 
 /**
- * ⛔ LEG D OF card#9251 (DL-393): every place in `app/` that can put bytes on fd 1 or fd 2
- * WITHOUT going through the console output the choke wraps, each one ruled.
+ * ⛔ LEG D OF card#9251 (DL-393): every place in `app/` that can put bytes on the operator's
+ * TERMINAL without going through the console output the choke wraps, each one ruled. Most of
+ * those are this process writing fd 1 or fd 2 around the choke, or a child inheriting them —
+ * but HIDDEN INPUT is not, and the class is stated as the terminal rather than as the two
+ * descriptors because of it: there the TTY echoes bytes this process never writes at all.
  *
  * ⭐ THE PREDICATE IS OVER WRITER CATEGORIES, NOT WRITER NAMES. A list of names let a freshly
  * built output object, a member-form dumper, Termwind and Laravel Prompts through unseen. A
@@ -29,11 +39,16 @@ use Tests\TestCase;
  *   subclass's `extends`.
  * - PROCESS PASSTHROUGH: `passthru`, `system` and PHP's other process-spawning functions,
  *   backticks, `->tty()`/`->setTty()`.
- * - HIDDEN INPUT: `->secret()`, `->setHidden()`, `->setHiddenFallback()`. Under DL-393
- *   Decision 8's `QuestionHelper::disableStty()` the masked read raises and `doAsk()` SWALLOWS
- *   that unless the question is explicitly non-fallback, so the answer is read back VISIBLY and
- *   the terminal ECHOES what is typed — a secret onto the screen and into the scrollback, on
- *   bytes the choke never sees, because the tty wrote them and not this process (bound (12)).
+ * - HIDDEN INPUT: a masked console read. Under DL-393 Decision 8's
+ *   `QuestionHelper::disableStty()` the masked read raises and `doAsk()` SWALLOWS that unless
+ *   the question is explicitly non-fallback, so the answer is read back VISIBLY and the
+ *   terminal ECHOES what is typed — a secret onto the screen and into the scrollback, on bytes
+ *   the choke never sees, because the tty wrote them and not this process (bound (12)). ⭐ Its
+ *   members are METHOD NAMES ({@see self::HIDDEN_INPUT_METHODS}), and that list is DERIVED
+ *   rather than recalled: {@see self::hiddenReadEntryPoints()} re-computes from VENDOR, on
+ *   every run, every method of the classes a command reaches a hidden read through, and
+ *   {@see self::HIDDEN_READ_RULINGS} rules each one in or out with the reading that decided it.
+ *   A recalled list had already missed one (R3 MF1, `askHidden()`).
  *
  * Names resolve through the file's `namespace` and `use` imports, so an alias hides nothing.
  * The population is derived by {@see SourceScan::sitesInApp()} on every run and compared both
@@ -42,7 +57,13 @@ use Tests\TestCase;
  * ⚠ WHAT IT CANNOT SEE (DL-393 bound (1)): a writer reached through a VARIABLE (`new $class`,
  * `$class::make()`, `app($abstract)`, `$fn()`, `$object->$method()`, `call_user_func('fwrite', …)`),
  * and a call into vendor code outside the named namespaces that opens an output of its own.
- * The token stream carries the call, not what the callee does.
+ * The token stream carries the call, not what the callee does. For the NAME-matched categories
+ * (hidden input, process passthrough, dumper methods) it also cannot see an entry point whose
+ * own NAME is outside the category — the hidden-input names are derived from vendor and ruled
+ * below, so what stays blind there is a wrapper OUTSIDE those root classes, and a spelling that
+ * is no member call at all (Symfony's `#[Ask(hidden: true)]` attribute is the shape; it is
+ * reached only through `InvokableCommand`, which Laravel never builds). A member call it DOES
+ * see through either operator: `->` and `?->` are both members for every category here.
  *
  * A handle held in a variable (`fwrite($h, …)`) is a site the scan sees but cannot decide: its
  * descriptor reads `undecidable: <the argument>`, and its ruling must be
@@ -78,8 +99,63 @@ class ConsoleBypassCensusTest extends TestCase
 
     private const PROCESS_PASSTHROUGH_METHODS = ['tty', 'settty'];
 
-    /** HIDDEN INPUT: a masked console read whose fallback under `disableStty()` is a VISIBLE one. */
-    private const HIDDEN_INPUT_METHODS = ['secret', 'sethidden', 'sethiddenfallback'];
+    /**
+     * HIDDEN INPUT: a masked console read whose fallback under `disableStty()` is a VISIBLE one.
+     *
+     * ⛔ NOT A RECALLED LIST. Every name here is the `app/`-visible spelling of an entry point
+     * {@see self::hiddenReadEntryPoints()} derives from VENDOR, and
+     * {@see test_every_vendor_hidden_read_entry_point_is_ruled} reds if vendor offers one this
+     * list does not carry. `askhidden` is the name a recalled list missed (R3 MF1): Laravel's
+     * `OutputStyle` IS a `SymfonyStyle`, so `$this->output->askHidden(…)` is a masked read on
+     * every command that spells no `secret` or `hidden` marker anywhere in `app/`.
+     */
+    private const HIDDEN_INPUT_METHODS = ['askhidden', 'secret', 'sethidden', 'sethiddenfallback'];
+
+    /**
+     * A method REACHES A HIDDEN READ when its own source — SIGNATURE INCLUDED, so that declaring
+     * one of these counts as well as calling one — marks a question hidden or performs the
+     * stty-masked read.
+     */
+    private const HIDDEN_READ = '/setHidden\s*\(|setHiddenFallback\s*\(|getHiddenResponse\s*\(/';
+
+    /**
+     * ⭐ THE HIDDEN-INPUT POPULATION, DERIVED FROM VENDOR AND RULED ONE BY ONE — the artifact
+     * that makes "a future masked read in `app/` arrives as a red test" a CHECKED claim.
+     *
+     * The ROOTS are what a command reaches a hidden read through with NO variable indirection:
+     * `$this` (`Illuminate\Console\Command`), `$this->output` (`Illuminate\Console\OutputStyle`,
+     * which `InteractsWithIO::setOutput(OutputStyle $output)` pins the property to), a `Question`
+     * built by hand, `QuestionHelper` (the mechanism itself), and every
+     * `Illuminate\Console\View\Components\*` class, which `$this->components-><name>()` dispatches
+     * to by class short name. {@see self::hiddenReadRoots()} re-derives them; the components are
+     * globbed off `Factory`'s own directory rather than listed.
+     *
+     * A ruling with a SPELLING is reachable from `app/` and its name must be in
+     * {@see self::HIDDEN_INPUT_METHODS}; a ruling with `null` is ruled OUT, and the reading says
+     * why it is not a masked console read a command can spell.
+     *
+     * @var array<string, array{?string, string}>
+     */
+    private const HIDDEN_READ_RULINGS = [
+        'Illuminate\Console\Command::__construct' => [null,
+            'matches only on `$this->setHidden($this->isHidden())` — Symfony COMMAND VISIBILITY in `artisan list`. No question is built and nothing is read'],
+        'Illuminate\Console\Command::secret' => ['secret',
+            "`\$this->secret('…')`: builds a Question, `setHidden(true)->setHiddenFallback(true)`, and hands it to `\$this->output->askQuestion()`. Bound (12)'s hazard, spelled the way Laravel documents it"],
+        'Illuminate\Console\Command::setHidden' => [null,
+            'command visibility again (`parent::setHidden($this->hidden = $hidden)`), sharing its NAME with the Question marker. ⚠ The token predicate matches on the name, so a `$command->setHidden(true)` in `app/` would red this census as a hidden input it is not — a FALSE POSITIVE that arrives loud, with a ruling to write, which is the direction a census must fail in'],
+        'Illuminate\Console\View\Components\Secret::render' => ['secret',
+            "`\$this->components->secret('…')`: `Factory::__call` dispatches the component's short name to `render()`, which builds the same hidden fallback-true question. Its `app/` spelling is that short name, already covered"],
+        'Symfony\Component\Console\Helper\QuestionHelper::doAsk' => [null,
+            'private: the branch that performs the masked read and SWALLOWS its failure when the question is hidden-fallback. What the entry points reach, never a spelling `app/` can write'],
+        'Symfony\Component\Console\Helper\QuestionHelper::getHiddenResponse' => [null,
+            'private: the stty-masked read itself, reached only through `doAsk()`'],
+        'Symfony\Component\Console\Question\Question::setHidden' => ['sethidden',
+            '`$question->setHidden(true)` on a hand-built question — the marker both `askHidden()` and `secret()` call inside vendor'],
+        'Symfony\Component\Console\Question\Question::setHiddenFallback' => ['sethiddenfallback',
+            'a site whichever way it is called: `false` makes a masked read THROW under `disableStty()`, and `true` (or its absence, the default) is bound (12)'."'".'s visible echo'],
+        'Symfony\Component\Console\Style\SymfonyStyle::askHidden' => ['askhidden',
+            "`\$this->output->askHidden('…')`: `OutputStyle` extends `SymfonyStyle`, so this sits on `\$this->output` of EVERY command. It calls `setHidden(true)` INSIDE vendor, where a token scan over `app/` never looks, and passes no fallback, so Symfony's default TRUE applies and the answer is echoed. The spelling a recalled name list missed (R3 MF1)"],
+    ];
 
     private const DUMPER_FUNCTIONS = ['dump', 'dd'];
 
@@ -190,11 +266,13 @@ class ConsoleBypassCensusTest extends TestCase
     }
 
     /**
-     * ⭐ THE CONTROL for the raw-stream, language-output and process-passthrough categories:
-     * every member is found in a planted source, and every near miss is not. The near misses
-     * are a method or declaration of the same name, a comment, a return-mode call, an integer
-     * exit, a plain file path, an unrelated ini key, lower-case prose, and — for HIDDEN INPUT —
-     * a STATIC call and a PROPERTY of the same name, neither of which reads the terminal.
+     * ⭐ THE CONTROL for the raw-stream, language-output, process-passthrough and hidden-input
+     * categories: every member is found in a planted source, and every near miss is not. The
+     * near misses are a method or declaration of the same name, a comment, a return-mode call,
+     * an integer exit, a plain file path, an unrelated ini key, lower-case prose, and — for
+     * HIDDEN INPUT — a STATIC call and a PROPERTY of the same name, neither of which reads the
+     * terminal. ⛔ The NULLSAFE spelling of each member-call category is planted as a POSITIVE
+     * (R3 MF2): `?->` was silently not a site, in the two categories that exist to red.
      */
     public function test_the_scan_finds_each_planted_bypass_and_skips_each_near_miss(): void
     {
@@ -250,8 +328,17 @@ function planted(\$h, \$x, \$cmd, \$p, \$o) {
     \$o->secret('Paste the token');
     \$o->setHidden(true);
     \$o->setHiddenFallback(false);
+    \$o->askHidden('Paste the token');
+    \$o?->secret('Paste the token');
+    \$o?->setHidden(true);
+    \$o?->setHiddenFallback(false);
+    \$o?->askHidden('Paste the token');
+    \$p?->tty();
+    \$p?->setTty(true);
     Foo::secret('x');
+    Foo::askHidden('x');
     \$o->secretPath;
+    \$o?->secretPath;
     // fwrite(STDOUT, 'a comment is not a site');
 }
 class K
@@ -259,6 +346,7 @@ class K
     public function system(): void {}
     public function echo(): void {}
     public function secret(): void {}
+    public function askHidden(): void {}
     public function print(): void {}
 }
 ?>
@@ -305,6 +393,13 @@ PHP;
             'Plant.php::planted#36' => '->secret()',
             'Plant.php::planted#37' => '->setHidden()',
             'Plant.php::planted#38' => '->setHiddenFallback()',
+            'Plant.php::planted#39' => '->askHidden()',
+            'Plant.php::planted#40' => '?->secret()',
+            'Plant.php::planted#41' => '?->setHidden()',
+            'Plant.php::planted#42' => '?->setHiddenFallback()',
+            'Plant.php::planted#43' => '?->askHidden()',
+            'Plant.php::planted#44' => '?->tty()',
+            'Plant.php::planted#45' => '?->setTty()',
             'Plant.php::(file scope)#1' => 'inline html',
             'Plant.php::(file scope)#2' => '<?=',
         ], SourceScan::sites($plant, 'Plant.php', self::siteAt(...)));
@@ -385,6 +480,97 @@ PHP;
             'Plant.php::make#1' => 'output: new Plant\Choke',
             'Plant.php::(file scope)#5' => 'prompts: Laravel\Prompts\Prompt',
         ], SourceScan::sites($plant, 'Plant.php', self::siteAt(...)));
+    }
+
+    /**
+     * ⭐ THE HIDDEN INPUT NAMES ARE RE-DERIVED FROM VENDOR ON EVERY RUN, which is what makes the
+     * claim "a future masked read in `app/` arrives as a red test" CHECKED rather than recalled.
+     * It fails BOTH ways: a vendor upgrade that adds an entry point reds with the new method
+     * named, and a ruling whose method vendor has removed reds too.
+     *
+     * ⚠ WHAT IT DOES NOT ESTABLISH: that no OTHER vendor class can mask an input. The roots are
+     * the ones a command reaches with no variable indirection, so a wrapper outside them that
+     * marks a question hidden internally is bound (1), stated on the class docblock, not covered
+     * here. The derivation closes the gap a NAME LIST has against its OWN roots; it does not
+     * close the gap a name list has against all of vendor.
+     */
+    public function test_every_vendor_hidden_read_entry_point_is_ruled(): void
+    {
+        $found = self::hiddenReadEntryPoints();
+
+        $this->assertSame(
+            array_keys(self::HIDDEN_READ_RULINGS),
+            array_keys($found),
+            'vendor offers a method that reaches a hidden console read which this census has not ruled, or a ruled one has gone — rule it in HIDDEN_READ_RULINGS with the reading that decided it',
+        );
+
+        // ⛔ THE CONTROL, both directions, against the very class the miss was on: the entry
+        // point a recalled list missed IS derived, and its non-hidden sibling on that same
+        // class is NOT — so a predicate that matched everything, or nothing, reds here.
+        $this->assertArrayHasKey(SymfonyStyle::class.'::askHidden', $found);
+        $this->assertArrayNotHasKey(SymfonyStyle::class.'::ask', $found);
+
+        foreach (self::HIDDEN_READ_RULINGS as $method => [$spelling, $reading]) {
+            $this->assertNotSame('', trim($reading), "{$method} has no reading");
+            if ($spelling !== null) {
+                $this->assertContains(
+                    $spelling,
+                    self::HIDDEN_INPUT_METHODS,
+                    "{$method} is reachable from app/ as ->{$spelling}(), so HIDDEN_INPUT_METHODS must carry that name or the census cannot see it",
+                );
+            }
+        }
+    }
+
+    /**
+     * Every method of {@see self::hiddenReadRoots()} whose own source matches
+     * {@see self::HIDDEN_READ}, keyed `<declaring class>::<method>`.
+     *
+     * @return array<string, true>
+     */
+    private static function hiddenReadEntryPoints(): array
+    {
+        $found = [];
+        foreach (self::hiddenReadRoots() as $class) {
+            foreach ((new ReflectionClass($class))->getMethods() as $method) {
+                $file = $method->getFileName();
+                if ($file === false) {
+                    continue;
+                }
+                $source = implode('', array_slice(
+                    (array) file($file),
+                    $method->getStartLine() - 1,
+                    $method->getEndLine() - $method->getStartLine() + 1,
+                ));
+                if (preg_match(self::HIDDEN_READ, $source) === 1) {
+                    $found[$method->getDeclaringClass()->getName().'::'.$method->getName()] = true;
+                }
+            }
+        }
+        ksort($found);
+
+        return $found;
+    }
+
+    /**
+     * The classes a command reaches a hidden read through with no variable indirection. The view
+     * components are globbed off `Factory`'s OWN directory rather than listed, so a framework
+     * upgrade that adds one is scanned without an edit here.
+     *
+     * @return list<class-string>
+     */
+    private static function hiddenReadRoots(): array
+    {
+        $roots = [Command::class, OutputStyle::class, Question::class, QuestionHelper::class];
+
+        $directory = dirname((string) (new ReflectionClass(ComponentFactory::class))->getFileName());
+        foreach ((array) glob($directory.'/*.php') as $file) {
+            /** @var class-string $component */
+            $component = 'Illuminate\Console\View\Components\\'.basename((string) $file, '.php');
+            $roots[] = $component;
+        }
+
+        return $roots;
     }
 
     /**
@@ -487,7 +673,11 @@ PHP;
             return ($previous === T_DOUBLE_COLON ? '::' : '->').$tokens[$i][1].'()';
         }
 
-        if ($previous === T_OBJECT_OPERATOR
+        // ⛔ BOTH MEMBER OPERATORS. `?->` is `app/`'s own idiom, and gating on T_OBJECT_OPERATOR
+        // alone made every nullsafe hidden-input and process-passthrough call invisible while the
+        // dumper arm above already normalised either one (R3 MF2). A STATIC call of the same name
+        // stays a near miss: a class-level helper called `secret()` or `tty()` reads no terminal.
+        if (in_array($previous, [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR], true)
             && in_array($lower, [...self::PROCESS_PASSTHROUGH_METHODS, ...self::HIDDEN_INPUT_METHODS], true)) {
             return $operator.$tokens[$i][1].'()';
         }

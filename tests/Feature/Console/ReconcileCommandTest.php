@@ -480,6 +480,14 @@ class ReconcileCommandTest extends TestCase
      * `divergences, nothing` and the unescaped `divergences,nothing` differ and the presence leg
      * fails on the producer alone. The `\t` is a second, independent witness — the choke KEEPS
      * `\t`, so an unescaped one reds the census leg. Both legs are watched red at the producer.
+     *
+     * ⛔ THE TWO DISCRIMINATING MUTATIONS OF THIS BODY, measured at R3 and recorded here so the
+     * next author cannot weaken it silently. With the producer's escape removed: deleting the
+     * MID-BODY `\r` must leave ONLY the census leg red (the `\t` still reaches the sink), and
+     * deleting the TRAILING `\t` must leave ONLY the presence leg red (the collapsed space still
+     * differs). No SINGLE byte of this payload makes the arm vacuous, and that property — not
+     * the particular bytes — is what an edit here has to preserve. A mutation that reds neither
+     * leg has removed a witness rather than a defect.
      */
     public function test_a_relayed_kanban_error_body_cannot_move_the_operators_cursor(): void
     {
@@ -494,17 +502,16 @@ class ReconcileCommandTest extends TestCase
         $output = Artisan::output();
 
         $this->assertStringContainsString('read failed', $output);
-        // PRESENCE WITNESS — the relayed diagnostic still reaches the operator, on ONE line.
+        // BOTH LEGS IN ONE CALL: the census over the live control class, and the presence
+        // witness that the relayed diagnostic still reaches the operator on ONE line. The
+        // census is deliberately NOT spelled again afterwards — the helper already ran it on
+        // this same buffer, and a second copy of it reads as a second, different assertion.
         $this->assertForeignValueEscapedInto($output, "\rboard 8: 0 divergences,\rnothing to do\t");
         $this->assertMatchesRegularExpression(
             '/read failed — [^\n]*board 8: 0 divergences, nothing to do/',
             $output,
             'the relayed body must not be able to start a line of its own',
         );
-        // THE CENSUS, spelled once for every producer that has one (canon #5). `\n` is
-        // excluded — the console writes one per line — and nothing else is: no sentence this
-        // install wrote carries a `\r` or a `\t`.
-        $this->assertNoLiveControlByte($output);
     }
 
     /**
