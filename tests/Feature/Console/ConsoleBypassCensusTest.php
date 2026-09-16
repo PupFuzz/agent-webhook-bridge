@@ -96,8 +96,12 @@ class ConsoleBypassCensusTest extends TestCase
      * @var array<string, array{string, string, string}>
      */
     private const RULINGS = [
+        'Bridge/Console/StrippingConsoleKernel.php::(file scope)#1' => ['prompts: use Laravel\Prompts\Prompt', self::INSIDE_THE_CHOKE,
+            "the choke's own import, for disableInteractiveEscapes()'s Prompt::fallbackWhen(true) call — it does not construct a Prompt or write through one"],
         'Bridge/Console/StrippingConsoleKernel.php::call#1' => ['output: new Symfony\Component\Console\Output\BufferedOutput', self::INSIDE_THE_CHOKE,
             'the default call() buffer: Artisan receives it only through StrippingOutput::wrap() on the next line, and output() only reads it back'],
+        'Bridge/Console/StrippingConsoleKernel.php::disableInteractiveEscapes#1' => ['prompts: Laravel\Prompts\Prompt::', self::INSIDE_THE_CHOKE,
+            'operator decision 2026-09-15 (Option 1, the plain-text console): Prompt::fallbackWhen(true) diverts every Laravel Prompts call with a registered fallback to its line-based form, process-wide — it is the mechanism, not a bypass of it'],
         'Bridge/Console/StrippingConsoleKernel.php::handle#1' => ['output: new Symfony\Component\Console\Output\ConsoleOutput', self::INSIDE_THE_CHOKE,
             "php artisan's real stdout/stderr, wrapped by StrippingOutput::wrap() in the same expression, before Artisan or Kernel::handle()'s exception render holds it"],
         'Bridge/Console/StrippingConsoleOutput.php::section#1' => ['output: new App\Bridge\Console\StrippingSectionOutput', self::INSIDE_THE_CHOKE,

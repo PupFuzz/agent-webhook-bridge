@@ -3,7 +3,9 @@
 namespace App\Bridge\Console;
 
 use Illuminate\Foundation\Console\Kernel;
+use Laravel\Prompts\Prompt;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\ConsoleOutput;
@@ -40,6 +42,8 @@ final class StrippingConsoleKernel extends Kernel
      */
     public function handle($input, $output = null)
     {
+        self::disableInteractiveEscapes();
+
         return parent::handle($input, StrippingOutput::wrap($output ?? new ConsoleOutput));
     }
 
@@ -51,9 +55,50 @@ final class StrippingConsoleKernel extends Kernel
      */
     public function call($command, array $parameters = [], $outputBuffer = null)
     {
+        self::disableInteractiveEscapes();
+
         $this->callBuffer = $outputBuffer ?? new BufferedOutput;
 
         return parent::call($command, $parameters, StrippingOutput::wrap($this->callBuffer));
+    }
+
+    /**
+     * ⛔ THE PLAIN-TEXT CONSOLE (card#9251, operator decision 2026-09-15, Option 1): no
+     * terminal control sequence leaves the process at all, with no per-writer exception.
+     * Colour is one source of those (Decision 4); the other two are Laravel Prompts and
+     * Symfony's `QuestionHelper` autocomplete, which draw with cursor-movement and
+     * erase sequences of their OWN that the strip in {@see TerminalSafeText} cannot
+     * distinguish from a foreign payload without also destroying them — undecorating the
+     * formatter (Decision 4) does not touch either, because neither goes through a
+     * formatter tag. Both are switched off through a SUPPORTED seam, not a vendor patch,
+     * and both are process-wide statics, so calling them once per entry — before Artisan
+     * or a command exists — covers every command without a per-call-site change:
+     *
+     * - `Prompt::fallbackWhen(true)` sets a static every `Laravel\Prompts\*` prompt class
+     *   inherits (none of them redeclare it), OR'd with whatever `configurePrompts()`
+     *   passes later (`windows_os() || runningUnitTests()`), so it only WIDENS. A prompt
+     *   renders through its line-based fallback — registered per-command by
+     *   `Illuminate\Console\Concerns\ConfiguresPrompts::configurePrompts()`, which every
+     *   `Illuminate\Console\Command::run()` calls — the moment one exists for that class;
+     *   `confirm()`/`select()`/etc. do, because Laravel registers one for each. A Prompt
+     *   subclass with NO registered fallback (`Note`, `Callout`, `Table`, `Spinner`,
+     *   `Progress`, `Title`, `Clear`, `DataTable`) is unaffected: `shouldFallback()`
+     *   requires `isset($fallbacks[static::class])`, so the flag alone does not divert
+     *   it. `app/` calls none of them (DL-393 Decision 5's Prompts population).
+     * - `QuestionHelper::disableStty()` — a public method, documented "Prevents usage of
+     *   stty" — makes `doAsk()` skip the autocomplete branch (`null === $autocomplete ||
+     *   !self::$stty || ...`) for every question, whether or not it carries an
+     *   autocompleter. `Command::choice()` always builds a `ChoiceQuestion`, and
+     *   `ChoiceQuestion`'s OWN constructor sets one over its choices — Laravel never
+     *   asks for it. The same flag also skips `getHiddenResponse()`'s stty-masked read
+     *   for a `secret()`/hidden question; `app/` calls neither `choice()` nor a hidden
+     *   question that isn't `isHiddenFallback()` (Symfony's own default), so what a
+     *   hidden question falls back to is a PLAIN, visible read — a bound, not a live gap.
+     */
+    private static function disableInteractiveEscapes(): void
+    {
+        Prompt::fallbackWhen(true);
+        QuestionHelper::disableStty();
     }
 
     /**
