@@ -39,13 +39,15 @@ namespace App\Bridge\Support;
  * query string is dropped whether or not it held anything. A leaked credential is the
  * failure mode designed against; a redacted-but-benign field is not. Three consequences of
  * that choice, stated so no caller reads the output as minimal:
- *  - The userinfo binds at the LAST at-sign before whitespace, so one sitting in a PATH or a
- *    QUERY is taken for a userinfo terminator and the scheme aside, everything in front of
- *    it — host and path included — is replaced. The alternative, stopping the userinfo at
- *    the first `/`, `?` or `#`, cannot reach an at-sign behind any of those three, and `/`
- *    is in the base64 alphabet while `?` and `#` are ordinary generated-password
- *    characters, so that bound echoed real credentials. Both directions are worked in
- *    {@see self::stripCredentialComponents()} and pinned in `Tests\Unit\Support\SecretScrubberTest`.
+ *  - The userinfo binds at the LAST at-sign, WHATEVER LIES BEFORE IT, so one sitting in a
+ *    PATH or a QUERY is taken for a userinfo terminator and the scheme aside, everything in
+ *    front of it — host and path included — is replaced. Every narrower bound tried here has
+ *    LEAKED: stopping at the first `/`, `?` or `#` cannot reach an at-sign behind any of
+ *    those three, and `/` is in the base64 alphabet while `?` and `#` are ordinary
+ *    generated-password characters; stopping at WHITESPACE cannot reach one behind a space,
+ *    and a space is exactly what a paste error leaves in a userinfo — the leak card#9528
+ *    records, on `UrlValidator`'s *check for paste errors* branch. Every direction is worked
+ *    in {@see self::stripCredentialComponents()} and pinned in `Tests\Unit\Support\SecretScrubberTest`.
  *  - The redaction of a query/fragment runs to the next WHITESPACE, so non-whitespace text
  *    following a redacted URL is dropped with it — a comma-joined second URL, a closing
  *    bracket, a trailing sentence period (see {@see self::text()} for why it is not
@@ -78,6 +80,49 @@ final class SecretScrubber
      */
     private const SENSITIVE = 'authorization|bearer|token|secret|passwd|password|api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|credential|x-api-key';
 
+    /**
+     * The characters a key may carry AROUND a {@see self::SENSITIVE} word and still be one key.
+     *
+     * ⛔ WHY THE WORD IS NOT MATCHED ON ITS OWN, BOUNDED BY `\b` (card#9528). `\b` before the
+     * alternation cannot fire inside `api_token=`, because `_` is a word character — so
+     * `api_token=<secret>` went out verbatim, while `my-password=<secret>` was caught. That made
+     * the rule's reach a function of which SPELLINGS the list happened to enumerate, and the
+     * list can never be complete: a key is whatever the far end named its field. Matching the
+     * word ANYWHERE IN THE KEY is the rule the JSON leg has always used; this is that rule, with
+     * the character set a bare (non-quoted) key can be written in.
+     */
+    private const KEY_CHARS = '[A-Za-z0-9._-]*';
+
+    /**
+     * ASCII whitespace, plus every character in Unicode's SPACE SEPARATOR (`Zs`) category,
+     * written as its UTF-8 bytes.
+     *
+     * ⛔ WHY NOT `\s` WITH THE `u` MODIFIER (card#9528 comment 5426). `\s` alone is ASCII-only,
+     * so `Bearer<U+00A0><token>` passed through unredacted and `UntrustedText::forOperator()`
+     * then normalized the separator — printing the token with an ordinary space in front of it,
+     * which reads as though the redactor had looked at it and passed it. The `u` modifier would
+     * fix the class and break the function: on input that is not valid UTF-8 `preg_replace`
+     * returns null, and this class casts to string, so a single stray byte anywhere in a foreign
+     * body would silently empty the whole text. Byte alternatives have no such failure mode.
+     *
+     * ⚠ IT IS `Zs` PLUS ASCII AND NOTHING WIDER — U+200B ZERO WIDTH SPACE (`Cf`) is not in it,
+     * and neither is any other format character. `SecretScrubberTest` re-derives the population
+     * from PCRE's own `\p{Zs}` table on every run rather than trusting this sentence.
+     */
+    private const SPACE = '(?:\s|\xc2\xa0|\xe1\x9a\x80|\xe2\x80[\x80-\x8a\xaf]|\xe2\x81\x9f|\xe3\x80\x80)';
+
+    /**
+     * ONE character of an auth-scheme's value.
+     *
+     * ⛔ `\\.` ADMITS ANY BACKSLASH ESCAPE, AND WITHOUT IT THE RUN ENDED INSIDE THE SECRET
+     * (card#9528 comment 5425). The value the bridge most often scrubs arrives inside a JSON
+     * body, where a forward slash is written `\/` — so `Bearer abc\/<secret>` redacted `abc` and
+     * printed the rest. `|` is here for the same reason from the other direction: Sanctum writes
+     * a token as `<id>|<secret>`, which is the shape of kanban's own API tokens, so the run
+     * stopped exactly at the separator and kept the half that matters.
+     */
+    private const SCHEME_VALUE_CHAR = '(?:\\\\.|[A-Za-z0-9._~+\/=|-])';
+
     private const REDACTED = '[REDACTED]';
 
     /**
@@ -102,13 +147,24 @@ final class SecretScrubber
         // survives unredacted — trading a diagnostic loss for a credential leak, which is
         // the wrong side to be wrong on. The bound is stated on the class and in DL-344.
         //
-        // `\/` is admitted into the scheme and the run because a JSON body escapes forward
-        // slashes: Symfony's `JsonResponse::DEFAULT_ENCODING_OPTIONS` does NOT set
+        // A BACKSLASH ESCAPE IS PART OF THE RUN, NOT THE END OF IT, because a JSON body escapes:
+        // Symfony's `JsonResponse::DEFAULT_ENCODING_OPTIONS` does NOT set
         // `JSON_UNESCAPED_SLASHES`, so kanban's 4xx bodies — the only input
         // {@see RefusalContext::from()} ever has — carry `https:\/\/…`. Keyed on `://`
         // alone this pass was inert on exactly the surface it was written for.
+        // ⛔ ADMITTING `\/` ALONE WAS THE SAME BUG ONE ESCAPE FURTHER IN (card#9528 (b)): a
+        // userinfo carrying a raw `"` is written `\"`, the run stopped at that backslash BEFORE
+        // the `@`, and the positional rule below was handed a run with no userinfo in it. In a
+        // JSON string EVERY backslash begins an escape, so `\\.` is the rule and `\/` was a
+        // special case of it.
+        // ⚠ `'` IS NOT EXCLUDED, and `"` still is. `'` is an RFC 3986 sub-delim — legal
+        // UNENCODED in a userinfo, so a real password carries one and stopping there leaked it
+        // (the shape `ProvisionCommand` was masking with a caller-side substitution). `"` is
+        // illegal there, is what DELIMITS a URL inside a JSON string, and is now refused at the
+        // config door by {@see UrlValidator::httpUrl()} — so admitting it would buy nothing and
+        // cost every JSON body the rest of its text.
         $text = (string) preg_replace_callback(
-            '#\bhttps?:(?:\\\\?/){2}(?:\\\\/|[^\s<>"\'\\\\])+#i',
+            '#\bhttps?:(?:\\\\?/){2}(?:\\\\.|[^\s<>"\\\\])+#i',
             static fn (array $m): string => self::stripCredentialComponents($m[0]),
             $text,
         );
@@ -121,8 +177,10 @@ final class SecretScrubber
         );
 
         // query / form-encoded: token=abc&… → token=[REDACTED]&…
+        // The key is matched by CONTAINING a sensitive word, not by BEING one —
+        // {@see self::KEY_CHARS} owns why.
         $text = (string) preg_replace(
-            '/\b((?:'.self::SENSITIVE.')=)[^&\s"]+/i',
+            '/((?<![A-Za-z0-9._-])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.')'.self::KEY_CHARS.'=)[^&\s"]+/i',
             '$1'.self::REDACTED,
             $text,
         );
@@ -130,20 +188,21 @@ final class SecretScrubber
         // HTTP `Bearer`/`Basic` auth schemes echoed as raw text (e.g. an echoed
         // Authorization header). These keywords are never followed by a prose word in
         // an error body, so redact the value at ANY length — a short-but-real token
-        // must not slip through.
+        // must not slip through. The separator is {@see self::SPACE} and the value
+        // {@see self::SCHEME_VALUE_CHAR}; each constant owns what its own bound cost.
         $text = (string) preg_replace(
-            '/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i',
+            '/\b(Bearer|Basic)'.self::SPACE.'+'.self::SCHEME_VALUE_CHAR.'+/i',
             '$1 '.self::REDACTED,
             $text,
         );
 
         // GitHub's `token <pat>` scheme. Unlike Bearer/Basic, bare `token` DOES occur
         // in prose ("token expired", "token cannot write …"), so require a
-        // credential-LONG value (>=16 of the token charset) to avoid mangling the very
-        // reason the body exists to surface. Keyed/short credentials stay covered by
-        // the JSON/query/Bearer rules.
+        // credential-LONG value (>=16 characters of the value alphabet, an escape pair
+        // counting as one) to avoid mangling the very reason the body exists to surface.
+        // Keyed/short credentials stay covered by the JSON/query/Bearer rules.
         $text = (string) preg_replace(
-            '/\btoken\s+[A-Za-z0-9._~+\/=-]{16,}/i',
+            '/\btoken'.self::SPACE.'+'.self::SCHEME_VALUE_CHAR.'{16,}/i',
             'token '.self::REDACTED,
             $text,
         );
@@ -186,7 +245,7 @@ final class SecretScrubber
      */
     private static function stripCredentialComponents(string $value): string
     {
-        // userinfo — everything up to the LAST `@` before whitespace.
+        // userinfo — everything up to the LAST `@`, whatever it contains.
         //
         // ⛔ THE BINDING IS THE LAST `@`, NOT THE FIRST DELIMITER, AND THAT IS THE WHOLE
         // POINT. A userinfo bounded by `[^/?#]*` cannot reach an `@` sitting behind a `/`,
@@ -196,12 +255,20 @@ final class SecretScrubber
         // redacted to an operator and to any presence assertion. The scheme is optional;
         // see {@see self::url()} for why.
         //
-        // ⚠ WHAT THAT BINDING COSTS, worked: `https://h/@you/x` → `https://***@you/x`, and
-        // `https://board.example/api?to=a@b.example` → `https://***@b.example`. An at-sign
-        // outside a userinfo takes the host and path with it. Over-redaction is the side
-        // this class declares it errs on, and the alternative bound leaked.
+        // ⛔ `[^\s]*` WAS THE SAME MISTAKE IN ITS LAST SURVIVING SPELLING (card#9528 (a)). It
+        // could not reach an `@` behind a SPACE, and a space in a userinfo is exactly what a
+        // paste error leaves — so `https://svc:pa ss@host` came back WHOLE on
+        // {@see UrlValidator::httpUrl()}'s *contains whitespace; check for paste errors*
+        // branch, the one branch such a value is guaranteed to reach. `.*` with `s` is the
+        // binding: no character terminates a userinfo except the `@` that ends it.
+        //
+        // ⚠ WHAT THAT BINDING COSTS, worked: `https://h/@you/x` → `https://***@you/x`,
+        // `https://board.example/api?to=a@b.example` → `https://***@b.example`, and now also
+        // `https://svc:pw@remote host@x` → `https://***@x` — an at-sign ANYWHERE later takes
+        // the host, the path and any prose between with it. Over-redaction is the side this
+        // class declares it errs on, and every narrower bound tried here leaked.
         $value = (string) preg_replace(
-            '#^([A-Za-z][A-Za-z0-9+.-]*:(?:\\\\?/){2})?[^\s]*@#',
+            '#^([A-Za-z][A-Za-z0-9+.-]*:(?:\\\\?/){2})?.*@#s',
             '${1}***@',
             $value,
         );

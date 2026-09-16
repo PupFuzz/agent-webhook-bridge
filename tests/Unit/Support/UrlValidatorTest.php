@@ -84,6 +84,14 @@ class UrlValidatorTest extends TestCase
                 'https://***@kanban.example:notaport/api',
                 'is not a valid URL',
             ],
+            // ⭐ card#9528 SHAPE (a): the space is INSIDE the userinfo, so the scrubber's old
+            // bound could not reach the `@` behind it and this branch — the one a paste error
+            // always lands on — quoted the whole password.
+            'whitespace INSIDE the userinfo' => [
+                'https://svc:'.$canary.' tail@kanban.example/api/v3',
+                'https://***@kanban.example/api/v3',
+                'contains whitespace',
+            ],
         ];
     }
 
@@ -99,6 +107,79 @@ class UrlValidatorTest extends TestCase
             $this->assertStringContainsString($verdict, $e->getMessage());
             $this->assertStringContainsString('bridge.providers.kanban.api_base_url', $e->getMessage());
         }
+    }
+
+    /**
+     * ⭐ THE ACCEPTANCE CHANGE card#9528 AUTHORIZES (operator decision on the card, 2026-09-16).
+     *
+     * `httpUrl()` checked only non-empty string, whitespace, `parse_url`, scheme and host — no
+     * userinfo character validation at all — so `https://svc:pw"tail@host/webhooks` was ACCEPTED
+     * and the credential then travelled into places that echo it back (a kanban error body
+     * quoting the URL it was handed) in a form no reader of a finished string can recognise.
+     *
+     * Every character below is already ILLEGAL UNENCODED in a userinfo under RFC 3986, whose
+     * userinfo is `*( unreserved / pct-encoded / sub-delims / ":" )`. So this refuses input that
+     * was never valid — loudly, at validation time, instead of carrying it.
+     *
+     * ⛔ BOTH DIRECTIONS. The refusal must not print the credential it refuses, and it must still
+     * name a value the operator can find in their own config.
+     *
+     * @return list<array{0: string}>
+     */
+    public static function illegalUserinfoCharacters(): array
+    {
+        return [
+            ['"'], ['\\'], ['|'], ['<'], ['>'], ['^'], ['`'], ['{'], ['}'], ['['], [']'], ["\x7F"],
+        ];
+    }
+
+    #[DataProvider('illegalUserinfoCharacters')]
+    public function test_a_userinfo_carrying_a_character_illegal_unencoded_is_refused(string $char): void
+    {
+        $canary = 'CANARY9528SYNTHETICVALUE';
+
+        try {
+            UrlValidator::httpUrl('https://svc:'.$canary.$char.'tail@bridge.example.com/webhooks', 'bridge.receiver_base_url');
+            $this->fail('the validator accepted a userinfo carrying a character RFC 3986 does not allow unencoded');
+        } catch (ConfigException $e) {
+            $this->assertStringNotContainsString($canary, $e->getMessage());
+            $this->assertStringContainsString("bridge.receiver_base_url 'https://***@bridge.example.com/webhooks'", $e->getMessage());
+            $this->assertStringContainsString('illegal unencoded', $e->getMessage());
+        }
+    }
+
+    /**
+     * ⛔ THE CONTROL, AND THE REFUSAL ABOVE PROVES NOTHING WITHOUT IT. A predicate that simply
+     * refused every `@`-bearing value would satisfy every case in `illegalUserinfoCharacters`
+     * while turning a working install's config into a refusal.
+     *
+     * The first four carry a userinfo built only of what RFC 3986 permits there: unreserved
+     * characters, the sub-delims (`!$&'()*+,;=`), `:` and percent-encoding. The last three carry
+     * NO userinfo at all — their `@` sits behind the authority's first `/` or `?`, where `@` is
+     * a perfectly legal path or query character — which is why the userinfo is bound to the
+     * AUTHORITY here, rather than to the last `@` in the whole value the way the REDACTOR binds
+     * it. The redactor errs toward removing too much; a validator erring that way refuses a
+     * config that works.
+     *
+     * @return list<array{0: string}>
+     */
+    public static function acceptedUserinfoValues(): array
+    {
+        return [
+            ['https://svc:p4ss-w0rd_x.y~z@bridge.example.com/webhooks'],
+            ["https://user:p!\$&'()*+,;=@bridge.example.com/webhooks"],
+            ['https://svc:a%20b%2Fc@bridge.example.com/webhooks'],
+            ['https://svc:pw@bridge.example.com:8443/webhooks'],
+            ['https://bridge.example.com/@you/webhooks'],
+            ['https://board.example/api?to=a@b.example'],
+            ['https://[::1]/api/v3'],
+        ];
+    }
+
+    #[DataProvider('acceptedUserinfoValues')]
+    public function test_a_userinfo_rfc_3986_allows_unencoded_is_still_accepted(string $value): void
+    {
+        $this->assertSame($value, UrlValidator::httpUrl($value, 'bridge.receiver_base_url'));
     }
 
     public function test_a_refused_value_with_nothing_to_hide_is_quoted_unchanged(): void
