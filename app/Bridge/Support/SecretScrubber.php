@@ -214,9 +214,46 @@ final class SecretScrubber
             $text,
         );
 
+        // A credential echoed in HEADER form: `Authorization: <value>`, `X-Api-Key: <value>`.
+        // It matched NO rule until card#9528's R1 review — the rule below needs an `=`, the
+        // JSON rule needs quotes, and an opaque `Authorization:` value is not a `Bearer`
+        // scheme — so the value went out verbatim under a name this class's own SENSITIVE
+        // list already knows.
+        //
+        // ⛔ THE SENSITIVE WORD MUST END THE KEY HERE, WHICH IS THE OPPOSITE OF THE RULE BELOW
+        // AND IS DELIBERATE. There, the far end names the field, so the word is matched
+        // ANYWHERE in the key. Here the key is a HEADER NAME — a closed vocabulary in which a
+        // credential is called `api_token`, `x-api-key`, `client_secret` — while a compound
+        // that uses the word as a MODIFIER (`secret_dir:`, `token_path:`) names a PATH that
+        // `bridge:check` prints and an operator has to be able to read in that very line.
+        // Matching key-contains here would redact an operator's own configuration out of the
+        // diagnostic that exists to show it to them.
+        //
+        // ⚠ THE VALUE RUNS TO THE END OF THE LINE, stopping at a `"`. It takes the whole line
+        // because a header value legitimately carries spaces (`Authorization: Bearer <token>`)
+        // and ending at the first one would leave the credential itself standing; it stops at
+        // `"` so a JSON body keeps everything after the string this matched.
+        // ⚠ STATED COST: a line whose key is a bare ambiguous word — `the token: expired` —
+        // loses the rest of that line. It is the same prose cost the auth-scheme rules carry,
+        // on the side this class declares it errs on.
+        $text = (string) preg_replace(
+            '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.'):[ \t]*)[^\r\n"]+/i',
+            '$1'.self::REDACTED,
+            $text,
+        );
+
         // query / form-encoded: token=abc&… → token=[REDACTED]&…
         // The key is matched by CONTAINING a sensitive word, not by BEING one —
         // {@see self::KEY_CHARS} owns why.
+        //
+        // ⚠ THE VALUE RUN ENDS AT WHITESPACE, AND THAT IS A BOUND RATHER THAN A CLEARANCE.
+        // For genuine form-encoding a space IS the end of the value, but this class mostly
+        // reads PROSE, where `password=a <secret>` leaves `password=[REDACTED] <secret>` —
+        // the shape this card calls the dangerous one, because the output carries
+        // `[REDACTED]`. It is not widened because crossing whitespace here would eat the
+        // rest of every sentence that mentions a form field, and a value with a space in it
+        // is not what an encoder emits; a credential that reaches this rule with a literal
+        // space in it is covered only as far as that space.
         $text = (string) preg_replace(
             '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.')'.self::KEY_CHARS.'=)[^&\s"]+/i',
             '$1'.self::REDACTED,

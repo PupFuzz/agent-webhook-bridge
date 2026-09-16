@@ -485,6 +485,48 @@ class SecretScrubberTest extends TestCase
     }
 
     /**
+     * ⭐ THE HEADER FORM, WHICH NO RULE MATCHED AT ALL (card#9528 R1 review).
+     *
+     * `authorization` and `x-api-key` are both in this class's OWN sensitive list, and an
+     * echoed `Name: value` header still carried its value out verbatim: the `key=value` rule
+     * needs an `=`, the JSON rule needs quotes, and an opaque `Authorization:` value is not a
+     * `Bearer` scheme. An echoed request header is ordinary content of the upstream error
+     * bodies this class exists to read.
+     */
+    public function test_text_redacts_a_credential_echoed_in_the_header_form(): void
+    {
+        foreach ([
+            'authorization' => ['upstream echoed authorization: CANARYSYNTHETICVALUE', 'upstream echoed authorization: [REDACTED]'],
+            'x-api-key' => ['X-Api-Key: CANARYSYNTHETICVALUE', 'X-Api-Key: [REDACTED]'],
+            'authorization carrying a scheme' => ['Authorization: Bearer CANARYSYNTHETICVALUE', 'Authorization: [REDACTED]'],
+            'api_token, the underscore-joined spelling' => ['api_token: CANARYSYNTHETICVALUE', 'api_token: [REDACTED]'],
+            'client_secret' => ['client_secret: CANARYSYNTHETICVALUE', 'client_secret: [REDACTED]'],
+        ] as $where => [$text, $expected]) {
+            $scrubbed = SecretScrubber::text($text);
+
+            $this->assertStringNotContainsString('CANARYSYNTHETIC', $scrubbed, $where);
+            $this->assertSame($expected, $scrubbed, $where);
+        }
+    }
+
+    /**
+     * ⛔ THE COST CONTROL FOR THE RULE ABOVE, AND IT IS WHAT FIXES THAT RULE'S BOUND. These
+     * lines carry a PATH, not a credential, and `bridge:check` prints exactly this shape — so
+     * a colon rule keyed on the sensitive word appearing ANYWHERE in the key (which is the
+     * right rule for `key=value`, where the far end names the field) would redact an
+     * operator's own configuration out of the diagnostic that exists to show it to them.
+     *
+     * The discriminator is that a credential header ENDS with the sensitive word
+     * (`api_token`, `x-api-key`, `client_secret`) while these compounds use it as a MODIFIER.
+     * Without this test the rule above is satisfied by one that takes every line.
+     */
+    public function test_a_path_whose_key_merely_mentions_a_sensitive_word_is_left_readable(): void
+    {
+        $this->assertSame('secret_dir: /srv/bridge/.config', SecretScrubber::text('secret_dir: /srv/bridge/.config'));
+        $this->assertSame('token_path: /srv/bridge/.config/kanban/token', SecretScrubber::text('token_path: /srv/bridge/.config/kanban/token'));
+    }
+
+    /**
      * ⛔ THE COST CONTROL FOR THE WIDER BINDING, and what says the run was BOUND rather than
      * merely widened again. The separator is now *anything that is not a visible ASCII
      * character*, so a rule reading one class too far would start eating ordinary prose — and
