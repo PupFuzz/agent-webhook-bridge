@@ -22,6 +22,26 @@ use App\Bridge\Support\UntrustedText;
  * the identical two-legged assertion — a caller that writes only one of the two legs is the
  * shape this trait's own docblock warns about.
  *
+ * ⛔ WHERE THE OUTPUT CHOKE (DL-393) TAKES THE CENSUS LEG'S POWER AWAY — AND WHERE IT DOES NOT.
+ * On a subject that PASSED THROUGH THE CHOKE the live class was stripped on the way out, so the
+ * line reads clean whether the producer escaped or never ran at all, and only the PRESENCE leg
+ * still measures the producer. ⚠ THAT IS A PROPERTY OF THE SUBJECT, NOT OF THIS TRAIT, and the
+ * callers divide on it: the predicate is whether the asserted string came from `Artisan::output()`
+ * (today `ReconcileCommandTest`, `ProvisionTest` and `WritebackIdentityOfferTest` — re-derive by
+ * grepping `tests/` for this trait's two methods and reading what each subject is built from).
+ * A caller asserting on a `Finding::$message` or on a bare `BufferedOutput` — the unit-level
+ * ones — passed through NO choke: there the census leg is unweakened, and it is frequently the
+ * ONLY leg. Do not read this paragraph as licence to weaken or drop it there.
+ *
+ * ⚠ ON A CHOKED SUBJECT THE STRIP IS NOT SYMMETRIC, AND THE ASYMMETRY IS THE TRAP: the choke
+ * DELETES `\r` but KEEPS `\t`, while `UntrustedText::forOperator()` COLLAPSES a whitespace run to
+ * a single space and escapes neither. So an unescaped `\t` reaching the sink still reds this
+ * census and an unescaped `\r` cannot — measured on `ReconcileCommandTest`'s relayed-body arm,
+ * where with the producer's escape removed the `\t` half was red at the producer all along and
+ * the `\r` half was the UNMEASURED one. A caller whose foreign value can only arrive in a class
+ * the choke DELETES must therefore pick a presence witness the two treat differently (the
+ * collapsed space is one), or it is pinning the choke and not its producer.
+ *
  * ⭐ HOISTED AT THE SECOND REAL CALLER (canon #5), not at the first: it began as one
  * producer's private method and the kanban card-field producer needed the identical
  * census. A second copy of a security-invariant assertion is the shape where one copy

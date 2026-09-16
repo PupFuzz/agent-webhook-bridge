@@ -7,6 +7,14 @@ namespace App\Bridge\Support;
  * principal this install did not author, into something safe to put on an operator's
  * terminal (card#9121, card#9200, DL-366).
  *
+ * ⚑ IT IS NOT THE LAST LAYER BETWEEN A FOREIGN BYTE AND THE TERMINAL (card#9251, DL-393).
+ * Every console write also passes the output choke (`App\Bridge\Console\TerminalSafeText`),
+ * which STRIPS the same class from whatever reaches the stream, declared or not. The two do
+ * different jobs and neither replaces the other: this is the reversible, bounded DIAGNOSTIC a
+ * producer chooses so the operator can see what was hidden and how much; the choke is the
+ * unconditional net under every producer that did not choose, and it bounds no length and
+ * reaches no log, stored row or JSON consumer.
+ *
  * ⛔ IT IS NOT THE ONLY OWNER OF "MAKE A FOREIGN STRING SAFE TO PRINT", and the earlier
  * revision of this docblock that claimed it was annexed a job another class does better
  * (card#9200, canon #5). The DISCRIMINATOR IS WHETHER THE VALUE HAS A CLOSED GRAMMAR:

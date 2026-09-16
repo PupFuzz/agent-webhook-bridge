@@ -481,6 +481,8 @@ php artisan bridge:tick                               # one bounded pass over th
 php artisan bridge:sign --scope=<scope> [--provider=github] [--body-file=]   # print `sha256=<hex>` for a raw body read from stdin (DL-322)
 ```
 
+**Console output is plain text: no colour, and no terminal control sequence at all (DL-393, operator decision 2026-09-15, Option 1).** Every Artisan command's output passes an output choke that strips control, C1, bidi and zero-width characters before they reach your terminal, and `--ansi` does not turn colour back on. Two vendor-drawn interactive renderers are switched to their plain-text form for the same reason: `php artisan migrate` (and any other command's) yes/no or pick-one prompt renders as an ordinary typed question rather than an arrow-key box, and Symfony's autocomplete no longer redraws the line as you type. `bridge:check` shows a finding's severity as a leading word — `FAIL: `/`WARN: `/`UNVALIDATED: `/`OK: ` — ahead of its message, as well as through the exit code, the `unvalidated` tally and NEXT STEPS. ⚠ **If you scripted against `bridge:check`'s TEXT output (not `--format=json`, which carries no marker — `docs/check-json-contract.md` §2 records what the choke can still change in that document), the new marker is a leading token your parser did not expect.** ⚠ **One route around the choke is yours to choose:** selecting Laravel's `stderr` log channel (`LOG_CHANNEL` / `LOG_STACK`) writes every log record of an interactive run straight to the terminal, unstripped. The default `stack`/`single` channels write to `storage/logs/laravel.log`.
+
 `bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required. ⚠ **Retention itself still has no cron** — the one crontab line DL-325 allows drives the periodic-job REGISTRY, and retention is not a row in it (`docs/periodic-jobs.md`); adopting the tick does not schedule this command and never will. `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate. **`writeback_board_divergences` is deliberately outside retention entirely** (DL-300): it exists to outlive the log, so a window on it would be the defect it closes with a longer fuse.
 
 **When you still want it:** draining a large backlog in ONE unbounded pass (the gate is deliberately bounded to `retention.batch` rows per delivery), a window different from the configured one, or any install running with `BRIDGE_RETENTION_ENABLED=false`. See `CLAUDE_DECISIONS.md` DL-012 (the command) and DL-199 (the gate).
@@ -502,14 +504,14 @@ An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** 
 The preflight reports the resolved posture **and what the store is actually holding**, because the posture line alone is a restatement of the config: it reads identically on an install with four rows and on the one that produced this leg — 894 MB of a 1.2 GB store being 30 days of full payloads, under a retention that was working correctly the whole time.
 
 ```
-retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
+OK: retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
+OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
 ⛔ **On MariaDB the `(~73% of the database)` clause is NOT printed** — the line withholds the share in words and names what to size the store by instead:
 
 ```
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
+OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
 ⚠ **The elision is deliberate — the withheld-share clause is quoted NOWHERE in this repo's prose.** It is printed verbatim by `App\Bridge\Check\Checks\RetentionPostureCheck::payloadShare()`, read it there; hand copies of it are what let a correction to this section leave the executable copy saying the opposite for a whole review round (card#8374). The bullet below owns the operator procedure the clause points at.
