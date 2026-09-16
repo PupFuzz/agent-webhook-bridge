@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-09-16
+
 ### Added
 
 - **card#9260 (DL-383)** — **`board_my_cards` can read a tag across every lane of the seat's board: pass `tag` and every card carrying it is listed with its own `swimlane_id`, `null` for a card in no lane, beside counts of the ones in other lanes and in none.** A seat reading only its lane found no `lane:A` cards and reported its sprint empty while three sat at `swimlane_id: null`; the lane read never contained them, and nothing in its response could say so.
