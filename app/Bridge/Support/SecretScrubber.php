@@ -139,29 +139,41 @@ final class SecretScrubber
      */
     private const SCHEME_SEPARATOR = '[^\x21-\x7E]+';
 
+    private const REDACTED = '[REDACTED]';
+
     /**
-     * ONE character of an auth-scheme's value: anything that is not a TRUE delimiter of it.
+     * ONE character of a credential VALUE: any backslash escape, or anything that is not a TRUE
+     * delimiter of the value AT THIS CALL SITE. `$extraTerminators` is that site's own delimiter
+     * set, written as the inside of a character class; the bare `"` and the backslash are common
+     * to all four runs and are added here.
      *
-     * ⛔ AN ALPHABET HERE IS THE SAME DEFECT AS AN ALPHABET ANYWHERE ELSE IN THIS CLASS, and
-     * this constant is where the R1 review of card#9528 found it still standing. The run was
+     * ⛔ ONE RULE, AND THE SECOND SPELLING OF IT WAS THE DEFECT (card#9528 R2 review). This
+     * class STATED the rule at the embedded-URL run — in a JSON string EVERY backslash begins an
+     * escape, so `\\.` is the rule and `\/` was a special case of it — and then wrote it twice:
+     * the auth-scheme run applied it, while the HEADER-form run (`[^\r\n"]+`) and the
+     * `key=value` value run (`[^&\s"]+`) did not. Both therefore ended at the `\` of a
+     * JSON-escaped `\"` INSIDE the credential and printed `[REDACTED]` followed by the rest of
+     * the secret. A third spelling of the bound would have multiplied the defect rather than
+     * closed it, so the rule has ONE home and each site names only what genuinely ENDS its own
+     * value (canon #5).
+     *
+     * ⛔ AN ALPHABET HERE IS THE SAME DEFECT AS AN ALPHABET ANYWHERE ELSE IN THIS CLASS, and the
+     * auth-scheme run is where the R1 review of card#9528 found it still standing. It was
      * `[A-Za-z0-9._~+\/=|-]`, so it ended at the first character the list forgot — `:` `%` `!`
      * `'` `,` `;` `(` were all outside it — and `Basic user:<secret>` came back as
      * `Basic [REDACTED]:<secret>`: the DANGEROUS form, because the output CARRIES `[REDACTED]`
      * and an operator, a reviewer and any presence-of-`[REDACTED]` assertion all read the leak
      * as a redaction. A credential in an HTTP header cannot contain whitespace or a bare `"`;
-     * anything else it can. So the run ends at those, and at nothing else — the same shape the
-     * `key=value` rule's own value run and the `mzr_` prefix rule already used.
+     * anything else it can.
      *
-     * ⛔ `\\.` ADMITS ANY BACKSLASH ESCAPE, and without it the run ended inside the secret
-     * (comment 5425): the bodies this class most often reads are JSON, where a forward slash is
-     * written `\/`, so `Bearer abc\/<secret>` redacted `abc` and printed the rest. The backslash
-     * is excluded from the class for the same reason it is in the embedded-URL run — an
-     * ambiguous alternation (a backslash matching either arm) is what makes a quantifier
-     * backtrack exponentially.
+     * ⛔ THE BACKSLASH IS EXCLUDED FROM THE CLASS AND ADMITTED ONLY BY `\\.`: an ambiguous
+     * alternation (a backslash matching either arm) is what makes a quantifier backtrack
+     * exponentially.
      */
-    private const SCHEME_VALUE = '(?:\\\\.|[^\s"\\\\])';
-
-    private const REDACTED = '[REDACTED]';
+    private static function valueRun(string $extraTerminators): string
+    {
+        return '(?:\\\\.|[^'.$extraTerminators.'"\\\\])';
+    }
 
     /**
      * Redact credential-adjacent values that arbitrary text — an upstream error body, an
@@ -199,10 +211,18 @@ final class SecretScrubber
         // UNENCODED in a userinfo, so a real password carries one and stopping there leaked it
         // (the shape `ProvisionCommand` was masking with a caller-side substitution). `"` is
         // illegal there, is what DELIMITS a URL inside a JSON string, and is now refused at the
-        // config door by {@see UrlValidator::httpUrl()} — so admitting it would buy nothing and
-        // cost every JSON body the rest of its text.
+        // config door by {@see UrlValidator::configDoorHttpUrl()} — so admitting it would buy
+        // nothing and cost every JSON body the rest of its text.
+        // ⚠ `<` AND `>` END THE RUN TOO, STATED HERE BECAUSE THE RUN HAD BEEN RELYING ON IT
+        // UNSTATED (card#9528 R2 review). They delimit a URL in prose and in HTML/markdown, so
+        // the run ends BEFORE the `@` and the positional rule is handed no userinfo at all:
+        // `text('GET https://svc:<secret><tail@board.example/api/v3 failed')` comes back
+        // VERBATIM, inside a `json_encode`d body as well. An unstated bound reads as a
+        // guarantee. The exposure is FOREIGN TEXT ONLY — a value of ours carrying either
+        // character is refused at the config door by
+        // {@see UrlValidator::configDoorHttpUrl()}.
         $text = (string) preg_replace_callback(
-            '#\bhttps?:(?:\\\\?/){2}(?:\\\\.|[^\s<>"\\\\])+#i',
+            '#\bhttps?:(?:\\\\?/){2}'.self::valueRun('\s<>').'+#i',
             static fn (array $m): string => self::stripCredentialComponents($m[0]),
             $text,
         );
@@ -229,15 +249,18 @@ final class SecretScrubber
         // Matching key-contains here would redact an operator's own configuration out of the
         // diagnostic that exists to show it to them.
         //
-        // ⚠ THE VALUE RUNS TO THE END OF THE LINE, stopping at a `"`. It takes the whole line
-        // because a header value legitimately carries spaces (`Authorization: Bearer <token>`)
-        // and ending at the first one would leave the credential itself standing; it stops at
-        // `"` so a JSON body keeps everything after the string this matched.
+        // ⚠ THE VALUE RUNS TO THE END OF THE LINE, stopping at a BARE `"`. It takes the whole
+        // line because a header value legitimately carries spaces (`Authorization: Bearer
+        // <token>`) and ending at the first one would leave the credential itself standing; it
+        // stops at a bare `"` so a JSON body keeps everything after the string this matched.
+        // ⛔ AN ESCAPED `\"` IS PART OF THE VALUE AND NO LONGER ENDS THE RUN (card#9528 R2
+        // review): this run stopped at that backslash INSIDE the credential and printed
+        // `[REDACTED]` followed by the rest of it. {@see self::valueRun()} owns the rule.
         // ⚠ STATED COST: a line whose key is a bare ambiguous word — `the token: expired` —
         // loses the rest of that line. It is the same prose cost the auth-scheme rules carry,
         // on the side this class declares it errs on.
         $text = (string) preg_replace(
-            '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.'):[ \t]*)[^\r\n"]+/i',
+            '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.'):[ \t]*)'.self::valueRun('\r\n').'+/i',
             '$1'.self::REDACTED,
             $text,
         );
@@ -254,8 +277,10 @@ final class SecretScrubber
         // rest of every sentence that mentions a form field, and a value with a space in it
         // is not what an encoder emits; a credential that reaches this rule with a literal
         // space in it is covered only as far as that space.
+        // ⛔ AN ESCAPED `\"` IS PART OF THE VALUE AND DOES NOT END THE RUN, on the same
+        // measurement and for the same reason as the header run above — {@see self::valueRun()}.
         $text = (string) preg_replace(
-            '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.')'.self::KEY_CHARS.'=)[^&\s"]+/i',
+            '/((?<![^&?=\s"])'.self::KEY_CHARS.'(?:'.self::SENSITIVE.')'.self::KEY_CHARS.'=)'.self::valueRun('&\s').'+/i',
             '$1'.self::REDACTED,
             $text,
         );
@@ -264,10 +289,10 @@ final class SecretScrubber
         // Authorization header). These keywords are never followed by a prose word in
         // an error body, so redact the value at ANY length — a short-but-real token
         // must not slip through. Both bounds are by EXCLUSION: the separator is
-        // {@see self::SCHEME_SEPARATOR} and the value {@see self::SCHEME_VALUE}, and each
-        // constant owns why enumerating its own characters was the defect.
+        // {@see self::SCHEME_SEPARATOR} and the value {@see self::valueRun()}, and each owns
+        // why enumerating its own characters was the defect.
         $text = (string) preg_replace(
-            '/\b(Bearer|Basic)'.self::SCHEME_SEPARATOR.self::SCHEME_VALUE.'+/i',
+            '/\b(Bearer|Basic)'.self::SCHEME_SEPARATOR.self::valueRun('\s').'+/i',
             '$1 '.self::REDACTED,
             $text,
         );
@@ -278,7 +303,7 @@ final class SecretScrubber
         // counting as one) to avoid mangling the very reason the body exists to surface.
         // Keyed/short credentials stay covered by the JSON/query/Bearer rules.
         $text = (string) preg_replace(
-            '/\btoken'.self::SCHEME_SEPARATOR.self::SCHEME_VALUE.'{16,}/i',
+            '/\btoken'.self::SCHEME_SEPARATOR.self::valueRun('\s').'{16,}/i',
             'token '.self::REDACTED,
             $text,
         );

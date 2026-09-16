@@ -345,6 +345,77 @@ class SecretScrubberTest extends TestCase
     }
 
     /**
+     * ⭐ THE SAME ESCAPED-QUOTE TERMINATOR AT THE OTHER TWO VALUE RUNS (card#9528 R2 review).
+     *
+     * The class STATED the rule — in a JSON string every backslash begins an escape — and then
+     * carried TWO spellings of it. The embedded-URL and auth-scheme runs applied it; the
+     * HEADER-form run (`[^\r\n"]+`) and the `key=value` value run (`[^&\s"]+`) did not, so both
+     * ended at the `\` of an escaped `\"` INSIDE the credential and printed `[REDACTED]`
+     * followed by the rest of the secret — the DANGEROUS form this card is named for, because
+     * an operator, a reviewer and any presence-of-`[REDACTED]` assertion all read it as a
+     * redaction. All four runs now come from ONE helper on {@see SecretScrubber}, so there is
+     * no third spelling of the bound to forget.
+     *
+     * ⛔ THE CANARY SITS ON BOTH SIDES OF THE ESCAPE, and that is what makes the absence
+     * assertion able to fail at all: the HEAD was already redacted before this change and only
+     * the TAIL leaked, so a canary planted only in front of the quote passes on the broken code.
+     *
+     * ⛔ ONE CASE PER PHPUNIT TEST, NOT A LOOP INSIDE ONE. Both runs carry the same defect, and
+     * a loop stops at the first failing case — which would have left the second run's leak
+     * unwitnessed behind the first one's red.
+     *
+     * @return list<array{0: string, 1: string}>
+     */
+    public static function valueRunsEndingAtAnEscapedQuote(): array
+    {
+        return [
+            // [the credential-bearing text, the whole scrubbed result of the json_encode()d body]
+            'header form' => ['authorization: CANARYSYNTHETIC"CANARYSYNTHETICTAIL', '{"e":"authorization: [REDACTED]"}'],
+            'key=value form' => ['token=CANARYSYNTHETIC"CANARYSYNTHETICTAIL', '{"e":"token=[REDACTED]"}'],
+        ];
+    }
+
+    /**
+     * ⛔ THE INPUT IS BUILT BY `json_encode`, NOT HAND-TYPED, for the reason
+     * `test_text_reaches_a_url_whose_slashes_are_json_escaped` states.
+     */
+    #[DataProvider('valueRunsEndingAtAnEscapedQuote')]
+    public function test_text_redacts_a_value_run_that_ends_at_a_json_escaped_quote(string $value, string $expected): void
+    {
+        $body = json_encode(['e' => $value]);
+        $this->assertIsString($body);
+        $this->assertStringContainsString('\\"', $body, 'the encoder did not escape the quote, so this input is not the wire form');
+
+        $scrubbed = SecretScrubber::text($body);
+
+        $this->assertStringNotContainsString('CANARYSYNTHETIC', $scrubbed);
+        $this->assertSame($expected, $scrubbed);
+    }
+
+    /**
+     * ⛔ A STATED BOUND THAT WAS BEING RELIED ON UNSTATED (card#9528 R2 review): `<` AND `>`
+     * END THE EMBEDDED-URL RUN.
+     *
+     * They delimit a URL in prose and in HTML/markdown, so the run ends BEFORE the `@` and the
+     * positional rule is handed a run with no userinfo in it — the line comes back VERBATIM,
+     * canary and all. An unstated bound reads as a guarantee, which is the entire reason this
+     * class states its bounds; the exposure is foreign text only, because a value of ours
+     * carrying either character is refused at the config door.
+     *
+     * ⚠ THIS PINS THE BOUND, NOT THE FIX — green before this change and after it. It is also
+     * the control on the consolidation onto one value-run helper: drop `<>` from this site's
+     * extra terminators and this case reds.
+     */
+    public function test_the_embedded_url_run_ends_at_an_angle_bracket_and_that_is_a_stated_bound(): void
+    {
+        foreach (['<', '>'] as $delimiter) {
+            $raw = 'GET https://svc:CANARYSYNTHETIC'.$delimiter.'tail@board.example/api/v3 failed';
+
+            $this->assertSame($raw, SecretScrubber::text($raw), $delimiter.' no longer ends the embedded-URL run, so the stated bound is wrong');
+        }
+    }
+
+    /**
      * The same early terminator on a character RFC 3986 ALLOWS UNENCODED in a userinfo, so
      * `UrlValidator::httpUrl()` accepts such a base and a generated password can legitimately
      * carry one: `'` is a sub-delim. The run excluded it, so it ended before the `@`.
