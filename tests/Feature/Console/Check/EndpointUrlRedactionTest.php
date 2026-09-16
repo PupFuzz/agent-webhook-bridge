@@ -79,6 +79,24 @@ class EndpointUrlRedactionTest extends TestCase
                 'http://svc:'.self::CANARY.'?x@kanban.internal/api/v3',
                 'http://***@kanban.internal/api/v3',
             ],
+            // ⭐ card#9528 SHAPE (a) — A SPACE INSIDE THE PASSWORD. The binding stopped at the
+            // first whitespace, so it could not reach the `@` behind the space, and this is the
+            // branch a pasted-with-a-space credential ALWAYS lands on: the value came back
+            // whole, on the line that says "check for paste errors".
+            'receiver_base_url, a SPACE inside the password — the whole value came back' => [
+                'bridge.receiver_base_url',
+                'https://svc:'.self::CANARY.' tail@bridge.example.com/webhooks',
+                'https://***@bridge.example.com/webhooks',
+            ],
+            // ⭐ card#9528 SHAPE (b) — A RAW `"` INSIDE THE PASSWORD. `httpUrl()` ACCEPTED this
+            // value, so `bridge:check` printed no finding about it at all and the credential
+            // travelled on to the surfaces that echo it. ⛔ ABSENCE ALONE IS VACUOUS HERE — a
+            // check that says nothing passes it — so the presence half is what this row is for.
+            'receiver_base_url, a raw QUOTE inside the password — accepted in silence' => [
+                'bridge.receiver_base_url',
+                'https://svc:'.self::CANARY.'"tail@bridge.example.com/webhooks',
+                'https://***@bridge.example.com/webhooks',
+            ],
         ];
     }
 

@@ -740,6 +740,45 @@ class ProvisionTest extends TestCase
     }
 
     /**
+     * ⛔ `--list` DIED WITH AN ARTISAN STACK TRACE ON THE API-BASE KEY (card#9528 R1 review).
+     * The per-subscription validation of `bridge.providers.kanban.api_base_url` runs BEFORE
+     * the `--list` branch and sat inside no `try`, so its `ConfigException` escaped `handle()`
+     * — on the one mode an operator uses to SEE what is registered while the config is broken,
+     * and the one mode the receiver base's own refusal deliberately exempts.
+     *
+     * ⚑ BOTH ROWS ARE THE SAME DEFECT AND THE SECOND IS PRE-EXISTING — the https floor has
+     * thrown from that line since DL-175 — which is why the fix is a guard at the call rather
+     * than a clause about the rule this card added.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function apiBasesThatFailValidation(): array
+    {
+        return [
+            'userinfo carrying a character illegal unencoded' => ['https://svc:canary-pw-9528"tail@kanban.example.com/api/v3', 'illegal unencoded'], // gitleaks:allow — test fixture
+            'cleartext http to a remote host' => ['http://kanban.internal/api/v3', 'must use https'],
+        ];
+    }
+
+    #[DataProvider('apiBasesThatFailValidation')]
+    public function test_list_names_an_api_base_it_cannot_validate_instead_of_dying_on_it(string $apiBase, string $verdict): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => $apiBase]);
+        $labels = $this->multiAgentFixture('https://bridge.example.com/webhooks', ['5' => null, '6' => true, '7' => false]);
+
+        $rc = Artisan::call('bridge:provision', ['--list' => true]);
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        foreach ($labels as $label) {
+            $this->assertStringContainsString("{$label} FAIL — bridge.providers.kanban.api_base_url", $out);
+        }
+        $this->assertStringContainsString($verdict, $out);
+        $this->assertStringNotContainsString('canary-pw', $out);
+        Http::assertNothingSent();
+    }
+
+    /**
      * The presence witness for the refusals above, on the one axis they could over-reach
      * along: `bridge:check` holds the receiver base to `httpUrl()`, not the https floor of
      * `secureHttpUrl()`, so a cleartext http base on a non-loopback host still provisions.
@@ -774,15 +813,74 @@ class ProvisionTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * ⭐ card#9528 SHAPE (a) ON THIS COMMAND. A space in the userinfo is refused by the
+     * whitespace branch — it always was — and the refusal quoted the whole password, because
+     * the scrubber's userinfo binding could not reach an `@` sitting behind a space.
+     */
+    public function test_the_syntax_refusal_redacts_a_userinfo_containing_whitespace(): void
+    {
+        config(['bridge.receiver_base_url' => 'https://svc:canary-pw-9528 tail@bridge.example.com/webhooks']); // gitleaks:allow — test fixture
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        $rc = Artisan::call('bridge:provision');
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString("REFUSED — bridge.receiver_base_url 'https://***@bridge.example.com/webhooks'", $out);
+        $this->assertStringContainsString('contains whitespace', $out);
+        $this->assertStringNotContainsString('canary-pw', $out);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⭐ card#9528 SHAPE (b) ON THIS COMMAND, AND WHAT ACTUALLY CLOSES IT.
+     *
+     * A raw `"` is illegal unencoded in a userinfo, and `httpUrl()` ACCEPTED it — so this run
+     * went upstream, kanban's 422 echoed the submitted URL back as `…canary-pw-9528\"tail@…`,
+     * and the `API error` line printed it. Neither of the two substitutions `ProvisionCommand`'s
+     * `apiErrorText()` makes matches that form (it escapes slashes, not quotes), and the
+     * scrubber's embedded-URL run stopped at the backslash before reaching the `@`. (The class is
+     * NAMED, not `{@see}`-linked: pint turns a docblock FQCN into a real import.)
+     *
+     * ⛔ THE REDACTOR IS NOT WHAT CLOSES IT HERE — the VALIDATOR is. The base is now refused
+     * before any request, so the credential never reaches an upstream that could echo it; the
+     * scrubber's own half of the fix is pinned in `SecretScrubberTest`. The create fixture is
+     * still wired, so a regression that re-accepts the base fails on the echoed canary rather
+     * than silently on a missing line, and `assertNothingSent` is what says the refusal came
+     * first rather than after the POST.
+     */
+    public function test_a_receiver_base_whose_userinfo_carries_a_raw_quote_is_refused_before_any_upstream_call(): void
+    {
+        $base = 'https://svc:canary-pw-9528"tail@bridge.example.com/webhooks'; // gitleaks:allow — test fixture
+        // Scope 5 has NO existing hook, so this run POSTs a create — which is what makes the
+        // leak reachable on the unmodified validator: the create is refused with a body echoing
+        // the submitted URL, and the `API error` line relays it. A fixture where every hook
+        // already exists never POSTs, so it could only witness the missing refusal.
+        $labels = $this->multiAgentFixture($base, ['5' => null, '6' => true, '7' => false], self::CREATE_ECHOES_URL);
+
+        $rc = Artisan::call('bridge:provision');
+        $out = Artisan::output();
+
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString("REFUSED — bridge.receiver_base_url 'https://***@bridge.example.com/webhooks'", $out);
+        $this->assertStringContainsString('illegal unencoded', $out);
+        $this->assertStringNotContainsString('canary-pw', $out);
+        foreach ($labels as $label) {
+            $this->assertStringNotContainsString($label, $out);
+        }
+        Http::assertNothingSent();
+    }
+
     private function httpUrlRejection(string $base): string
     {
         try {
-            UrlValidator::httpUrl($base, 'bridge.receiver_base_url');
+            UrlValidator::configDoorHttpUrl($base, 'bridge.receiver_base_url');
         } catch (ConfigException $e) {
             return $e->getMessage();
         }
 
-        $this->fail("UrlValidator::httpUrl() accepts '{$base}', so it is not a base bridge:check rejects");
+        $this->fail("UrlValidator::configDoorHttpUrl() accepts '{$base}', so it is not a base bridge:check rejects");
     }
 
     public function test_a_base_with_no_credentials_prints_its_receiver_urls_unchanged(): void

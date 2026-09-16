@@ -3,6 +3,7 @@
 namespace Tests\Feature\Writeback;
 
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
@@ -44,6 +45,42 @@ class WritebackClientFactoryTest extends TestCase
         // pass every assertion below.
         WritebackClientFactory::make();
         $this->addToAssertionCount(1);
+    }
+
+    /**
+     * ⭐ THE RUNTIME HALF OF THE card#9528 OPERATOR RULING (2026-09-16), ON THE PATH WITH THE
+     * WIDEST BLAST RADIUS.
+     *
+     * This factory is reached on EVERY writeback — the card-move handler, the coord writers,
+     * the dependabot create, the block-reason write, promote-on-release, every board tool,
+     * the standup and `bridge:reconcile`. A `ConfigException` here is a 5xx on the durable
+     * handlers, retried for as long as the config stays as it is.
+     *
+     * An install whose api base carries an unencoded `"` in its userinfo WORKS TODAY (Guzzle
+     * normalizes it to `%22`), so refusing here would stop that install's board moving while
+     * protecting nothing: the credential is kept off the operator's terminal by the REDACTOR,
+     * which runs whatever this predicate says. The refusal belongs at the config doors, where
+     * the value is being judged — and the second half of this test is what keeps that from
+     * reading as *the rule was dropped*.
+     */
+    public function test_a_userinfo_the_config_door_refuses_is_still_accepted_at_runtime(): void
+    {
+        $base = 'https://svc:canary-pw-9528"tail@kanban.example.com/api/v3'; // gitleaks:allow — test fixture
+        config(['bridge.providers.kanban.api_base_url' => $base]);
+        $this->writeToken('wb-token', 0o600);   // gitleaks:allow — test fixture
+
+        WritebackClientFactory::make();
+        $this->addToAssertionCount(1);
+
+        // The paired control: the same value at a CONFIG DOOR is still refused, so this test
+        // cannot be satisfied by a validator that stopped judging userinfo characters at all.
+        try {
+            UrlValidator::configDoorSecureHttpUrl($base, 'bridge.providers.kanban.api_base_url');
+            $this->fail('the config door accepted the value the runtime path is allowed to keep');
+        } catch (ConfigException $e) {
+            $this->assertStringContainsString('illegal unencoded', $e->getMessage());
+            $this->assertStringNotContainsString('canary-pw', $e->getMessage());
+        }
     }
 
     public function test_a_present_but_unreadable_token_throws_config_exception(): void

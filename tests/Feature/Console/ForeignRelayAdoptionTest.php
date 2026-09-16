@@ -111,13 +111,17 @@ class ForeignRelayAdoptionTest extends TestCase
             'ruling' => '✔ NOT FOREIGN ×1 — a `JobSpecException` over options the operator typed.',
         ],
         'Bridge/ProvisionCommand.php' => [
-            'relays' => 5, 'escaped' => 3,
+            'relays' => 6, 'escaped' => 3,
             'ruling' => '⛔ FOREIGN ×1 — the `API error` arm, relaying the kanban response body from '
                 .'`WebhookProvisioner::ensure()`\'s live calls, credential-redacted in full before it is bounded '
-                .'(`ProvisionCommand::apiErrorText()`, DL-377). ✔ NOT FOREIGN ×4 — local secret-file permission '
+                .'(`ProvisionCommand::apiErrorText()`, DL-377). ✔ NOT FOREIGN ×5 — local secret-file permission '
                 .'and read faults on paths this install configured; the receiver-base refusal, a `ConfigException` '
-                .'`UrlValidator::httpUrl()` composes from this install\'s own `BRIDGE_RECEIVER_BASE_URL` before any '
-                .'request is made, quoting it through `SecretScrubber::url()`; and the identity_id WRITE arm (DL-369), whose '
+                .'`UrlValidator::configDoorHttpUrl()` composes from this install\'s own `BRIDGE_RECEIVER_BASE_URL` before any '
+                .'request is made, quoting it through `SecretScrubber::url()`; the per-subscription API-base refusal '
+                .'(card#9528), the same `ConfigException` shape over this install\'s own `BRIDGE_KANBAN_API_BASE_URL`, '
+                .'composed by `UrlValidator::configDoorSecureHttpUrl()` before any request and quoted the same way — '
+                .'caught per subscription rather than thrown, which is what stops `--list` dying on it; '
+                .'and the identity_id WRITE arm (DL-369), whose '
                 .'own comment rules it: `WritebackIdentityOffer::commit()` throws only a `ConfigException` or a '
                 .'file-write fault, so no upstream response body can reach it. ⚑ THE FOURTH RELAY ARRIVED FROM '
                 .'`dev` WHILE THIS BRANCH WAS PARKED and this entry read 3 — which is what the pin is for. Ruled '

@@ -130,7 +130,20 @@ class ProvisionCommand extends BridgeCommand
                     continue;
                 }
 
-                UrlValidator::secureHttpUrl($apiBaseUrl, "bridge.providers.{$sub->provider}.api_base_url");
+                // ⛔ GUARDED, AND THE GUARD IS THE FIX (card#9528 R1 review). This line runs for
+                // every subscription INCLUDING under `--list`, which reaches it before its own
+                // branch below — so an unguarded throw left the one mode an operator uses to
+                // inspect a broken install dying with an Artisan stack trace instead of a named
+                // refusal. Per SUBSCRIPTION rather than per run: the verdict is about one
+                // provider's own key, and another provider's rows stay readable.
+                try {
+                    UrlValidator::configDoorSecureHttpUrl($apiBaseUrl, "bridge.providers.{$sub->provider}.api_base_url");
+                } catch (ConfigException $e) {
+                    $this->error(OutputFormatter::escape("{$label} FAIL — ".$e->getMessage()));
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
                 $client = new KanbanProvisionClient($apiBaseUrl, $token);
                 $receiverUrl = ReceiverUrl::for($receiverBaseUrl, $sub->provider, $sub->scopeId);
                 $shown = $this->shownReceiverUrl($receiverUrl, $sub->provider, $sub->scopeId);
@@ -176,10 +189,12 @@ class ProvisionCommand extends BridgeCommand
     /**
      * Why this run may not use `$receiverBaseUrl` at all, or null when it may.
      *
-     * ⛔ THE RULE IS {@see UrlValidator::httpUrl()}, the one `install.endpoint_urls` fails
-     * `bridge:check` on for this field — never a scheme check of this command's own. Not
+     * ⛔ THE RULE IS {@see UrlValidator::configDoorHttpUrl()}, the one `install.endpoint_urls`
+     * fails `bridge:check` on for this field — never a scheme check of this command's own. Not
      * `secureHttpUrl()`: that is the floor for the endpoints that carry a secret, and
-     * `bridge:check` does not hold the receiver base to it.
+     * `bridge:check` does not hold the receiver base to it. The `configDoor…` tier is what
+     * `bridge:check` asks, so asking the same one here is what keeps the two commands from
+     * disagreeing about one value.
      *
      * `--list` is exempt (operator ruling, 2026-09-14): its listing never reads the base, and
      * it shows every webhook on the scope, so a row registered at an earlier malformed base
@@ -190,7 +205,7 @@ class ProvisionCommand extends BridgeCommand
     private function receiverBaseRefusal(string $receiverBaseUrl): ?string
     {
         try {
-            UrlValidator::httpUrl($receiverBaseUrl, 'bridge.receiver_base_url');
+            UrlValidator::configDoorHttpUrl($receiverBaseUrl, 'bridge.receiver_base_url');
 
             return null;
         } catch (ConfigException $e) {
