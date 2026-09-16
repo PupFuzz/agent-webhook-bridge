@@ -62,7 +62,14 @@ class SeverityMarkerTest extends TestCase
         $this->assertStringNotContainsString("\ndatabase: connected", $output);
     }
 
-    public function test_the_json_document_carries_no_marker_and_is_unchanged(): void
+    /**
+     * ⚠ THE NAME IS THE CLAIM, so it stops where the assertions do: the document carries no
+     * MARKER. It is NOT a byte-level pin of the document, which nothing in this suite has —
+     * `CheckJsonContractTest` pins key sets, schema and counts and deliberately not the
+     * `message` strings, and the document passes the output choke like every other write.
+     * An earlier name said "and is unchanged", which asserted a guarantee no arm below makes.
+     */
+    public function test_the_json_document_carries_no_marker(): void
     {
         $this->bootConfigDirMissing();
 

@@ -469,7 +469,7 @@ PHP;
             'Plant.php::categories#6' => 'dump',
             'Plant.php::categories#7' => 'dd',
             'Plant.php::categories#8' => '->dump()',
-            'Plant.php::categories#9' => '->dd()',
+            'Plant.php::categories#9' => '?->dd()',
             'Plant.php::categories#10' => '::dump()',
             'Plant.php::categories#11' => 'dumper: Symfony\Component\VarDumper\VarDumper::',
             'Plant.php::categories#12' => 'termwind: Termwind\render()',
@@ -670,7 +670,9 @@ PHP;
                 return null;
             }
 
-            return ($previous === T_DOUBLE_COLON ? '::' : '->').$tokens[$i][1].'()';
+            // The LITERAL operator, as the member arm below emits: one descriptor convention
+            // for one operator, so a `?->dd()` site is not described as `->dd()` in a RULINGS key.
+            return $operator.$tokens[$i][1].'()';
         }
 
         // ⛔ BOTH MEMBER OPERATORS. `?->` is `app/`'s own idiom, and gating on T_OBJECT_OPERATOR

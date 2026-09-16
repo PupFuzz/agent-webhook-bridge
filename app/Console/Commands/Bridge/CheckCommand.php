@@ -1036,8 +1036,16 @@ class CheckCommand extends BridgeCommand
      * the marker are two independent renderings of the same severity, and folding them
      * into one arm would make a future third rendering (say, an exit-summary word) look
      * like it has to share the channel mapping's cases instead of adding its own.
-     * `--format=json` is UNCHANGED — the marker is applied only inside the `! $this->json`
-     * branch below, and `CheckJsonContractTest` pins the document byte-identical.
+     * THE MARKER NEVER ENTERS THE JSON DOCUMENT — it is applied only inside the
+     * `! $this->json` branch below, and that is what `SeverityMarkerTest` checks: none of
+     * the four tokens appears in a `--format=json` capture, with `"message": "…"` witnesses
+     * beside the absences so an empty capture cannot pass for a clean one.
+     * ⚠ THAT IS NOT A CLAIM THAT THE DOCUMENT'S BYTES ARE PINNED, and nothing pins them.
+     * `CheckJsonContractTest` asserts the exact key sets, the schema and the counts, and
+     * says in its own docblock that it deliberately does NOT assert the `message` strings;
+     * and the document passes the same output choke every other write does, so a `message`
+     * can lose a raw DEL, C1 or `\p{Cf}` byte it carried raw — `docs/check-json-contract.md`
+     * §2 records that as a rewording, which the contract's own table licenses.
      *
      * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
      * check that never ran, and yellow would nag a documented-correct population
