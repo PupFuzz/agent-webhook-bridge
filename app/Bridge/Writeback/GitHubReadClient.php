@@ -86,14 +86,22 @@ final class GitHubReadClient
     }
 
     /**
-     * Does this repo carry a webhook whose delivery URL is `$receiverUrl`? (card#9150)
+     * Does this repo carry a webhook whose delivery URL is `$receiverUrl` — and, where the
+     * answer is no, how many webhooks does it carry? (card#9150, widened by card#9717)
      *
-     * ⛔ IT RETURNS A BOOLEAN, AND THAT IS A SECURITY BOUNDARY RATHER THAN A STYLE CHOICE.
-     * The hook list is the WHOLE FLEET's: every other install's receiver endpoint is in the
-     * response body. Matching INSIDE this method is what makes "no other endpoint can reach
+     * ⛔ IT RETURNS A VERDICT AND A COUNT, AND THAT IS A SECURITY BOUNDARY RATHER THAN A STYLE
+     * CHOICE. The hook list is the WHOLE FLEET's: every other install's receiver endpoint is in
+     * the response body. Matching INSIDE this method is what makes "no other endpoint can reach
      * an operator log, a finding or a traceback" true by construction — a `list<string>`
      * return would put that guarantee back on every caller's discipline, and the first
-     * caller to interpolate its result into a diagnostic would publish the fleet.
+     * caller to interpolate its result into a diagnostic would publish the fleet. ⚠ THE COUNT
+     * card#9717 ADDS IS A PROPERTY OF THE LIST AND NEVER A VALUE FROM IT, which is the whole
+     * reason it is an `int`: {@see GitHubHookListAnswer} owns that boundary and why anything
+     * richer would breach it.
+     *
+     * ⚠ THE COUNT IS ANSWERED ONLY WHERE THE ENUMERATION RAN TO THE END. A match returns
+     * mid-walk, so a count on that path would be *hooks seen so far* under the name *hooks on
+     * the repo*; the page bound and every unreadable-body path establish nothing at all.
      *
      * ⭐ THE THIRD ANSWER IS THE POINT. `null` means THIS READ DID NOT ESTABLISH EITHER —
      * the enumeration hit {@see self::HOOK_PAGE_LIMIT}, or a 200 came back carrying
@@ -107,7 +115,7 @@ final class GitHubReadClient
      * token that may not enumerate hooks on this repo, which is the caller's to classify —
      * NOT an empty result (an unreadable API response is not an empty one).
      */
-    public function hasRepoWebhookFor(string $repo, string $receiverUrl): ?bool
+    public function hasRepoWebhookFor(string $repo, string $receiverUrl): GitHubHookListAnswer
     {
         // ⛔ HOISTED ABOVE THE PAGE LOOP (card#9150 r3). Declared per page, its `return null`
         // fired at the end of whichever page saw the unreadable entry and pre-empted every
@@ -117,6 +125,10 @@ final class GitHubReadClient
         // but the claim *a match still wins* was FALSE across a page boundary while three
         // surfaces asserted it unconditionally.
         $unreadableElement = false;
+        // ⚠ HOOKS SEEN, WHICH IS THE REPO'S HOOK COUNT ONLY WHERE THE WALK REACHES THE SHORT
+        // PAGE BELOW — the one place this is read. Every other exit abandons it rather than
+        // reporting a partial walk as a total (card#9717).
+        $hooksSeen = 0;
 
         for ($page = 1; $page <= self::HOOK_PAGE_LIMIT; $page++) {
             $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
@@ -130,7 +142,7 @@ final class GitHubReadClient
                     ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
                 );
 
-                return null;
+                return GitHubHookListAnswer::undetermined();
             }
 
             // ⛔ AN ELEMENT THIS PROJECTION CANNOT READ MAKES THE ENUMERATION INCOMPLETE, and
@@ -158,9 +170,11 @@ final class GitHubReadClient
                 // `ReceiverUrl` owns why the two predicates differ and why provision keeps
                 // the exact one.
                 if (ReceiverUrl::deliversTo($url, $receiverUrl)) {
-                    return true;
+                    return GitHubHookListAnswer::found();
                 }
             }
+
+            $hooksSeen += count($body);
 
             // A SHORT PAGE IS THE END OF THE LIST, which is what makes `false` an
             // EXHAUSTED enumeration rather than "not on page 1" — the distinction the
@@ -174,14 +188,14 @@ final class GitHubReadClient
                         ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
                     );
 
-                    return null;
+                    return GitHubHookListAnswer::undetermined();
                 }
 
-                return false;
+                return GitHubHookListAnswer::exhausted($hooksSeen);
             }
         }
 
-        return null;
+        return GitHubHookListAnswer::undetermined();
     }
 
     /**

@@ -200,6 +200,10 @@ final class NextSteps
             // box can perform (`bridge:provision` skips every non-kanban provider by design),
             // so what is named is the re-ask.
             NextStepState::GithubWebhookMissing => 'php artisan bridge:check',
+            // The same re-ask, and for a second reason on top of that one: the action this
+            // state asks for is a QUESTION nobody on this box can answer (which install serves
+            // the repo), so there is no command that could be named even in principle.
+            NextStepState::GithubWebhookOtherHooksOnly => 'php artisan bridge:check',
             // Same again: what answers a silent record is someone LOOKING at the repo's webhook settings, which no
             // command on this box can do.
             NextStepState::GithubDeliverySilent => 'php artisan bridge:check',
@@ -208,7 +212,8 @@ final class NextSteps
 
     /**
      * One entry per (agent, scope) whose github webhook this run READ THE REPO'S HOOK LIST FOR
-     * and did not find (card#9150), then one per (agent, scope) whose delivery record went quiet (DL-382).
+     * and did not find — in the state the leg ruled that absence to be (card#9150, card#9717) —
+     * then one per (agent, scope) whose delivery record went quiet (DL-382).
      *
      * ⛔ ITS HOOK INPUT IS THE MEASURED-ABSENT SET AND NOTHING ELSE. {@see CheckContext::$githubWebhooksMissing}
      * is written only by the leg's `fail` arm, so an unmeasured scope cannot reach this block
@@ -234,10 +239,14 @@ final class NextSteps
         $steps = [];
         foreach ($ctx->githubWebhooksMissing as $missing) {
             foreach ($missing['agents'] as $agent) {
+                // ⛔ THE STATE IS READ, NOT DECIDED (card#9717). Which of the two measured-absent
+                // states this scope is in turns on a hook COUNT that only the leg saw, and the
+                // leg published its ruling with the entry — so the block cannot disagree with
+                // the `fail` line printed above it about which remedy the operator is owed.
                 $steps[] = new NextStep(
                     agent: $agent,
-                    state: NextStepState::GithubWebhookMissing,
-                    command: self::commandFor(NextStepState::GithubWebhookMissing, $agent),
+                    state: $missing['state'],
+                    command: self::commandFor($missing['state'], $agent),
                     doc: self::WEBHOOK_DOC,
                     scope: $missing['scope'],
                 );

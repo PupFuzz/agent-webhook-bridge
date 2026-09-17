@@ -152,6 +152,40 @@ enum NextStepState: string
     case GithubWebhookMissing = 'github_webhook_missing';
 
     /**
+     * The same measured absence one step more precise: a github subscription this agent
+     * DECLARES has no webhook delivering to this install's receiver, AND the repo carries other
+     * webhooks (card#9717). Keyed to a SCOPE like {@see self::GithubWebhookMissing}, and
+     * {@see NextStep::$scope} carries it. Command: `bridge:check`, once someone has established
+     * which of the two situations below this is and acted on it.
+     *
+     * ⛔ IT IS A SECOND STATE AND NOT A REWORDING, BECAUSE THE NEXT ACTION GENUINELY DIFFERS —
+     * which is this enum's cut (see the class docblock: states are cut by WHOSE NEXT ACTION IT
+     * IS). A repo carrying hooks that are not ours is EITHER an install whose own hook was
+     * deleted while other integrations kept theirs, OR a repo already served by ANOTHER
+     * install's bridge that this install still declares. The first is fixed by adding a hook;
+     * the second by removing THIS install's declaration — and doing the first on the second
+     * points a SECOND card-mover at one board, where two movers race on every PR event. So the
+     * next action is *find out which install owns this repo*, not *add a hook*, and a state that
+     * rendered both as {@see self::GithubWebhookMissing} would be issuing one of two opposite
+     * instructions on a coin toss. That is card#7756's cost one surface over, and the same
+     * reason {@see self::BridgeSideUnverified} split from {@see self::BridgeSideIncomplete}
+     * rather than hedging in prose.
+     *
+     * ⛔ THE SEVERITY DOES NOT MOVE WITH THE STATE. The `checks[]` finding behind this is a
+     * `fail`, exactly as {@see self::GithubWebhookMissing}'s is: this install is deaf on that
+     * scope either way, and where the cause is a stale declaration the stale declaration is
+     * itself the fault. What changes is the cause named and the remedy offered, never the
+     * verdict.
+     *
+     * ⛔ WHAT THE OTHER HOOKS ARE IS NOT KNOWN HERE AND NEVER WILL BE. The leg counts the repo's
+     * hooks and never reads their delivery URLs out of the box — that list is the whole fleet's
+     * (DL-368 Decision 6) — so this state is *the repo carries hooks, none of them ours* and
+     * NOT *another install serves this repo*. The second is a conclusion only a person with
+     * sight of the repo's settings, or of the fleet's install list, can reach.
+     */
+    case GithubWebhookOtherHooksOnly = 'github_webhook_other_hooks_only';
+
+    /**
      * A github subscription this agent DECLARES has gone quiet by its OWN DELIVERY RECORD — the receiver has recorded
      * no delivery for that scope at all, or none within the silence threshold derived from the scope's own gaps
      * between deliveries (DL-382). Keyed to a SCOPE like {@see self::GithubWebhookMissing}, and

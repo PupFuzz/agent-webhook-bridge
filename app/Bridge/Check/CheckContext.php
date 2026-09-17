@@ -515,11 +515,16 @@ final class CheckContext
      * run-once {@see Check}'s always is. This field is how the names reach the consumer.
      *
      * ⛔ IT CARRIES ONLY THE MEASURED-ABSENT POPULATION, never the could-not-look one, and
-     * that bound is the whole card: an entry here becomes a NEXT STEPS instruction to go add
-     * a webhook, and issuing that against a repo whose hooks this run never enumerated would
-     * send an operator to re-create a hook that is already there.
+     * that bound is the whole card: an entry here becomes a NEXT STEPS instruction, and issuing
+     * one against a repo whose hooks this run never enumerated would send an operator to
+     * re-create a hook that is already there.
      *
-     * @var list<array{scope: string, agents: list<string>}>
+     * ⚑ EACH ENTRY CARRIES ITS OWN `state` SINCE card#9717, because the measured absence has two
+     * causes with opposite remedies — a repo with no hooks at all, and a repo whose hooks are
+     * all somebody else's — and the leg that COUNTED them decides which. The block renders the
+     * published state rather than re-deriving it from a number a second time.
+     *
+     * @var list<array{scope: string, agents: list<string>, state: NextStepState}>
      */
     public array $githubWebhooksMissing = [];
 
