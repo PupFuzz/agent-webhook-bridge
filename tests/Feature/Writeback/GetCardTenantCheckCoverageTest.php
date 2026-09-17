@@ -151,6 +151,12 @@ class GetCardTenantCheckCoverageTest extends TestCase
         // every row is put through `MappedBoardGuard::refuses()` before the repo gate
         // (DL-298) — the board gate first, so a foreign-board card is never a quiet drop.
         'Bridge/Handlers/KanbanDependabotCardHandler.php::cardsForRepo#1' => 'correlatePr($mapping->boardId, $prNumber, $sourceRepo)',
+        // The owner-tag clear's fresh read (DL-386). It holds no id of its own: every caller has
+        // just MOVED this card, after establishing it on the mapped board by that caller's own
+        // entry above (or, on the token arm, by `refusesCardIdOutsideMappedBoard()` — the id is
+        // author-supplied there, and the move was only reached because the check passed). The
+        // row is re-checked through `MappedBoardGuard::refuses()` before its tags are written.
+        'Bridge/Writeback/OwnerTag.php::clearAfterTerminalMove#1' => 'the id each terminal mover has already written its move to — resolved by that mover\'s own board-scoped read, or its pre-read check',
     ];
 
     /**

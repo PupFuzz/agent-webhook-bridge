@@ -7,15 +7,19 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\BoardCustomFields;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -70,14 +74,31 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     private const ALERT_OUTCOME = 'dependabot_card';
 
     /**
-     * The board custom-field keys this handler's create payload sets. Single
+     * The board custom-field keys this handler's create payload can set. Single
      * source of truth: the create call below builds exactly these keys, and
      * bridge:check (#2949) reads this to verify the target board registers them
      * (an unregistered key 422s the create and is silently swallowed — DL-020).
+     * The keys also named in {@see CONSTANT_PAYLOAD_VALUES} are the exception: they
+     * are sent only where the board accepts their value, so the check reports them
+     * on their own leg rather than as required.
      *
      * @var list<string>
      */
     public const CREATE_PAYLOAD_KEYS = ['pr_number', 'pr_url', 'origin'];
+
+    /**
+     * The create payload's CONSTANT values, by key (DL-392). A constant is not a fact about
+     * the PR, so a board that does not accept it by {@see BoardCustomFields::accepts()} — no such
+     * field, an `enum` without that option, a field of any type but `string` / `enum`, or a record
+     * with no readable `type` — gets the card WITHOUT the key rather than a 422 that loses the card.
+     * A value kanban would take in a `number`, `date` or `url` field is still omitted there, which
+     * a test pins as impossible for every value listed here. Unlike the
+     * per-PR keys, the value is the same on every board, which is what lets `bridge:check`
+     * verify it against each mapped board before any PR arrives.
+     *
+     * @var array<string, string>
+     */
+    public const CONSTANT_PAYLOAD_VALUES = ['origin' => 'dependabot'];
 
     /**
      * The MOVE-LESS outcome of a retitled PR (DL-328) — a handler-internal outcome with no
@@ -204,6 +225,11 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                         return;
                     }
                     $client->moveCard((int) $survivor['id'], $stageId);
+                    // No stage-order read on this path, so terminality answers from the merged /
+                    // merged_to_main stages alone.
+                    if ($mapping->isTerminalStage($stageId, [])) {
+                        OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_dependabot_card', (int) $survivor['id'], $repo, self::ALERT_OUTCOME, $prNumber);
+                    }
                     // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
                     // resolved by search, not by a token, so its own board is recorded here.
                     Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));
@@ -215,7 +241,8 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // bridge:check (#2949) verifies the board registers are ONE source of
             // truth: add a key to the constant without a value here and array_combine
             // throws (count mismatch) — they cannot silently drift.
-            $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, 'dependabot']);
+            $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, self::CONSTANT_PAYLOAD_VALUES['origin']]);
+            $payload = $this->withoutUnacceptedConstants($client, $payload, $mapping, $repo, $prNumber);
             $tags = ['dependencies', 'triaged'];
             if ($mapping->cardIdTagTemplate !== null) {
                 // The CONFIGURED spelling (card#7124 review), for the same reason the
@@ -258,6 +285,42 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+    }
+
+    /**
+     * Drop every {@see CONSTANT_PAYLOAD_VALUES} key the mapped board does not accept (DL-392).
+     *
+     * ⛔ AN UNREADABLE READ OMITS TOO, LOUDLY. A throw or a body with no collection says nothing
+     * about the board, so neither "accepted" nor "not accepted" is established; the card is the
+     * record of the PR and the constant is metadata about it, so the create goes ahead without
+     * the constant and a `warning` names the read that failed. Sending it instead would stake the
+     * card on a value this read could not vouch for — the exact 422 this method exists to stop.
+     * Rethrowing a 5xx for redelivery instead would stake it on this one endpoint recovering.
+     *
+     * @param  array<string, int|string>  $payload
+     * @return array<string, int|string>
+     */
+    private function withoutUnacceptedConstants(KanbanClient $client, array $payload, WritebackMapping $mapping, string $repo, int $prNumber): array
+    {
+        $error = null;
+        try {
+            $fields = $client->boardCustomFields($mapping->boardId);
+        } catch (RequestException|ConnectionException $e) {
+            $fields = null;
+            $error = RedactedErrorText::note($e);
+        }
+        foreach (self::CONSTANT_PAYLOAD_VALUES as $key => $value) {
+            $context = ['repo' => $repo, 'pr' => $prNumber, 'board' => $mapping->boardId, 'key' => $key, 'value' => $value];
+            if ($fields === null) {
+                unset($payload[$key]);
+                Log::warning('kanban_dependabot_card: could NOT read which values the board accepts — creating the card WITHOUT this constant payload key', $context + ['error' => $error ?? 'the custom-field read carried no collection']);
+            } elseif (! $fields->accepts($key, $value)) {
+                unset($payload[$key]);
+                Log::info('kanban_dependabot_card: the board does not accept this constant payload value — creating the card without the key', $context + ['field_type' => $fields->type($key)]);
+            }
+        }
+
+        return $payload;
     }
 
     /**

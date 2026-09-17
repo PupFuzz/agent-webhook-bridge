@@ -10,6 +10,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\StraddlingRequestException;
 use Tests\TestCase;
 
 /**
@@ -252,6 +253,30 @@ class StandupServiceTest extends TestCase
 
         $this->assertArrayNotHasKey('now_depth', $board);
         $this->assertStringContainsString('board read failed', $board['now_depth_unavailable']);
+    }
+
+    /**
+     * ⛔ The digest line relays the read's exception, and a `RequestException`'s own message is
+     * already cut at `RequestException::$truncateAt` — relayed raw it carried the head of a
+     * credential the body echoed (card#9486). The cause is still named.
+     */
+    public function test_a_failed_board_read_names_the_cause_without_a_credential_the_body_echoed(): void
+    {
+        Http::fake(['kanban.example.com/*' => Http::response(StraddlingRequestException::body(), 422)]);
+        $this->writeWriteback([
+            'board_id' => 8,
+            'stages' => ['merged' => 52],
+            'move_coord_cards' => true,
+            'coord_card_stage_id' => 21,
+            'coord_card_terminal_stage_id' => 99,
+            'coord_card_lane_stage_ids' => ['now' => 13, 'later' => 15],
+        ]);
+
+        $cause = $this->service()->build()->toArray()['boards'][0]['now_depth_unavailable'];
+
+        $this->assertStringNotContainsString(StraddlingRequestException::STEM, $cause);
+        $this->assertStringContainsString('board read failed: HTTP request returned status code 422', $cause);
+        $this->assertStringContainsString('***@bridge.example.com', $cause);
     }
 
     public function test_a_truncated_board_read_omits_the_depth_rather_than_reporting_a_lower_bound(): void

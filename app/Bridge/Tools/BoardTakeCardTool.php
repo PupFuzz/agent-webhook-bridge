@@ -35,9 +35,9 @@ use Illuminate\Support\Facades\Log;
  * the whole of it, and EVERY other key throws before any board request. What
  * {@see USER_NAMING_ARGS} changes is the MESSAGE and never the outcome — the spellings it
  * enumerates are refused in a sentence that names the key and says why the tool will never
- * have it, and every other unknown key (`owner`, `assigned_to`, a casefolded or padded
- * spelling) is refused just as hard by the generic arm, which also says the assignee comes
- * from the bridge identity and never from the arguments. No caller is left believing it
+ * have it, and every other unknown key (`owner`, `assigned_to`, a padded spelling) is
+ * refused just as hard, with a reason that says the assignee comes from the bridge identity
+ * and never from the arguments. No caller is left believing it
  * assigned somebody either way.
  *
  * ⭐ AND IT LOOKS UP EXACTLY ONE SEAT: ITS OWN. The bridge therefore never needs, and must
@@ -47,10 +47,10 @@ use Illuminate\Support\Facades\Log;
  * ⭐ WHY A SEPARATE TOOL AND NOT AN ARGUMENT ON `board_correct_card` — the fork this card
  * turned on, recorded so it can be attacked rather than inherited:
  *  - THE AUTHORIZATIONS ARE DIFFERENT, AND THIS ONE IS WIDER. A correction is scoped to
- *    cards the seat MINTED (`created-by:<agent>`, bridge-stamped and caller-unforgeable).
- *    A take must work on cards the seat did NOT mint — the pm mints work INTO a seat's
- *    lane for that seat to pull, which is the case the feature exists for — so the two
- *    cannot share a predicate. Folding a WIDER authority into that tool, keyed on which
+ *    cards that are ALREADY the seat's — MINTED by it (`created-by:<agent>`) or, since
+ *    DL-376, ASSIGNED to it. A take must work on cards that are neither yet — the pm mints
+ *    work INTO a seat's lane for that seat to pull, which is the case the feature exists
+ *    for — so the two cannot share a predicate. Folding a WIDER authority into that tool, keyed on which
  *    argument happened to be passed, is the laundering shape its own docblock refuses for
  *    the field set.
  *  - A CORRECTION WRITES WHAT THE CALLER SUPPLIED; A TAKE WRITES WHAT THE BRIDGE RESOLVED.
@@ -59,8 +59,8 @@ use Illuminate\Support\Facades\Log;
  *  - REFUSE-ON-CONFLICT HAS NO ANALOGUE IN A CORRECTION, which writes unconditionally once
  *    ownership is proven. A take's central behaviour is a REFUSAL that reads the card first.
  *
- * ⭐ THE AUTHORIZATION, STATED RATHER THAN INHERITED. `board_correct_card`'s mint-stamp
- * model is under an open question of its own (card#9201/#9202) and nothing here rests on
+ * ⭐ THE AUTHORIZATION, STATED RATHER THAN INHERITED. `board_correct_card`'s model was
+ * widened by DL-376 (card#9201/#9202) to minted-OR-assigned, and nothing here rests on
  * it. A take is authorized by TWO independent narrowings, both read off the ROW and neither
  * sufficient alone:
  *  1. THE CARD IS ON THIS AGENT'S CONFIGURED BOARD — established through
@@ -143,15 +143,15 @@ final class BoardTakeCardTool implements Tool
 {
     /**
      * Arguments that NAME A USER, each refused by name. They are enumerated rather than
-     * left to the generic unknown-argument refusal because the generic one says "this
-     * tool accepts `card_id`", which reads as a spelling mistake — and the caller sending
+     * left to the unknown-argument reason every other key gets because that one opens
+     * "unknown argument", which reads as a spelling mistake — and the caller sending
      * one of these has a MODEL of the tool that is wrong in the one way that matters.
      *
      * ⛔ IT IS A MESSAGE-QUALITY LIST, NOT A BOUNDARY, and reading it as one inverts where
-     * the guarantee lives. The boundary is {@see refuseForeignArguments}'s accept set — the
-     * single exact key `card_id` — so a user-naming spelling absent from this list is refused
-     * too, generically, before any board request. Adding a spelling here buys a better
-     * sentence; it does not widen or narrow what this tool accepts.
+     * the guarantee lives. The boundary is {@see acceptedArguments} — the single exact key
+     * `card_id` — which {@see BoardToolDispatcher} enforces, so a user-naming spelling absent
+     * from this list is refused too, with that reason, before any board request. Adding a spelling
+     * here buys a better sentence; it does not widen or narrow what this tool accepts.
      *
      * @var list<string>
      */
@@ -170,12 +170,35 @@ final class BoardTakeCardTool implements Tool
         return 'board_take_card';
     }
 
+    /**
+     * `card_id` is the whole accepted set, and that is the tool's central property rather than
+     * a small contract — so the two classes of near-miss get their own reason, and every other
+     * key is still told where the assignee comes from.
+     */
+    public function acceptedArguments(): array
+    {
+        return ['card_id'];
+    }
+
+    public function refusedArgumentReason(string $key): string
+    {
+        $lower = strtolower($key);
+        if (in_array($lower, self::USER_NAMING_ARGS, true)) {
+            return "`{$key}` is not an argument here, and it never will be — this tool assigns the card to YOU and to nobody else, and it works out who you are from the bridge identity your call authenticated as, NOT from anything you send. (If you are trying to assign work to a DIFFERENT seat, no board tool can do that: ask your operator.)";
+        }
+
+        if (in_array($lower, self::OVERRIDE_ARGS, true)) {
+            return "`{$key}` is not an argument here — this tool has no override. A card already held by another seat is refused and NOTHING is written; taking one off them, or releasing one, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
+        }
+
+        return "unknown argument `{$key}` — the assignee is resolved from your bridge identity, never from your arguments.";
+    }
+
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         // Arguments first, then identity, then the board — so a refused call reads
         // nothing and writes nothing, and an install fault is reported as itself rather
         // than as a board lookup that went nowhere.
-        $this->refuseForeignArguments($args);
         $cardId = $this->requireCardId($args);
         $userId = SeatKanbanUser::forCallingSeat($this->name());
 
@@ -226,34 +249,6 @@ final class BoardTakeCardTool implements Tool
     }
 
     /**
-     * Refuse any argument this tool does not own. `card_id` is the whole accepted set, and
-     * that is the tool's central property rather than a small contract — so the two classes
-     * of near-miss get their own message.
-     *
-     * @param  array<string, mixed>  $args
-     */
-    private function refuseForeignArguments(array $args): void
-    {
-        foreach (array_keys($args) as $key) {
-            $key = (string) $key;
-            if ($key === 'card_id') {
-                continue;
-            }
-
-            $lower = strtolower($key);
-            if (in_array($lower, self::USER_NAMING_ARGS, true)) {
-                throw new ToolRefusalException("board_take_card: `{$key}` is not an argument here, and it never will be — this tool assigns the card to YOU and to nobody else, and it works out who you are from the bridge identity your call authenticated as, NOT from anything you send. NOTHING WAS WRITTEN and the value you sent was ignored entirely. Call it with `card_id` alone. (If you are trying to assign work to a DIFFERENT seat, no board tool can do that: ask your operator.)");
-            }
-
-            if (in_array($lower, self::OVERRIDE_ARGS, true)) {
-                throw new ToolRefusalException("board_take_card: `{$key}` is not an argument here — this tool has no override. A card already held by another seat is refused and NOTHING is written; taking one off them, or releasing one, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`). Call it with `card_id` alone.");
-            }
-
-            throw new ToolRefusalException("board_take_card: unknown argument `{$key}` — this tool accepts `card_id` and nothing else (the assignee is resolved from your bridge identity, never from your arguments). Nothing was written.");
-        }
-    }
-
-    /**
      * @param  array<string, mixed>  $args
      */
     private function requireCardId(array $args): int
@@ -286,13 +281,13 @@ final class BoardTakeCardTool implements Tool
     private function takeableRow(KanbanClient $client, BoardToolsConfig $cfg, int $boardId, int $cardId, string $agentName): array
     {
         try {
-            $live = $client->cardRowsOnBoard($boardId, $cardId);
+            $found = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName);
         } catch (RequestException $e) {
             throw $this->lookupRefusal($e, $cardId, $agentName);
         }
 
-        $row = BoardScopedRow::forCard($live, $boardId, $cardId);
-        if ($row !== null) {
+        if ($found->live !== null) {
+            $row = $found->live;
             $lane = $this->workableLane($row, $cfg);
             if ($lane === null) {
                 Log::warning('board_take_card: refused — the card is on the agent\'s board but not in a lane it works', [
@@ -306,25 +301,7 @@ final class BoardTakeCardTool implements Tool
             return [$row, $lane];
         }
 
-        if ($live !== []) {
-            // The lookup answered SOMEBODY ELSE'S row: a broken read, never a verdict about
-            // this card (DL-323 Decision 2's `board_scope_lookup_unfiltered`).
-            Log::warning('board_take_card: the board-scoped lookup answered a row that is not this card on this board — refusing without a scope verdict', [
-                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'rows' => count($live),
-            ]);
-
-            throw new ToolRefusalException("board_take_card: the board lookup for card {$cardId} answered a row that is not that card on your board — that is a BROKEN READ, not a verdict about the card, so nothing was written. Report it to your operator.");
-        }
-
-        // Only on a live MISS, so it costs nothing on any successful call — the other side
-        // of kanban's archive SWITCH (DL-296: no both-sides mode).
-        try {
-            $archived = $client->cardRowsOnBoard($boardId, $cardId, archivedOnly: true);
-        } catch (RequestException $e) {
-            throw $this->lookupRefusal($e, $cardId, $agentName);
-        }
-
-        $retired = BoardScopedRow::forCard($archived, $boardId, $cardId);
+        $retired = $found->archived;
         if ($retired !== null && $this->workableLane($retired, $cfg) !== null) {
             throw new ToolRefusalException("board_take_card: card {$cardId} is ARCHIVED — an archived card is a deliberate retire, so there is no work on it to claim and nothing was written. Unarchive it if the work is live again.");
         }
@@ -443,9 +420,10 @@ final class BoardTakeCardTool implements Tool
     }
 
     /**
-     * A 4xx the BOARD answered on the scope lookup. Anything else (5xx, a timeout) is
-     * re-thrown for the dispatcher's retryable 502 — the correct answer for a fault that
-     * MAY clear. The route is named explicitly: this lookup is a card SEARCH, which kanban
+     * A 4xx the BOARD answered on the scope lookup, mapped to a named refusal.
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
+     * The route is named explicitly: this lookup is a card SEARCH, which kanban
      * floors to the caller's own boards, so a membership gap arrives as a not-found refusal
      * (carried by {@see outOfScopeMessage}) and never as a 403.
      */
@@ -500,7 +478,7 @@ final class BoardTakeCardTool implements Tool
             404 => "board_take_card: card {$cardId} no longer exists — it was removed between the scope check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
             403 => "board_take_card: the board refused the assignment write to card {$cardId} (403) — the card is one you may take, but the bridge's writeback user may not write it. ".BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — an assignee PATCH carries a field other than `workflow_stage_id` alone, so kanban authorizes it as update rather than move (kanban DL-204)').' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => "board_take_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.",
-            422 => "board_take_card: the board REJECTED the assignment write to card {$cardId} (422) — kanban's own validator refused it, so nothing was written and re-sending the same call cannot succeed. The only value this call sends is `assigned_user_id: {$userId}`, resolved from this bridge's config for your agent, so the likeliest cause is that this install's `identity.kanban_user_id` for you does not name a user the board accepts. Report it to your operator.",
+            422 => "board_take_card: the board REJECTED the assignment write to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. The only value this call sends is `assigned_user_id: {$userId}`, resolved from this bridge's config for your agent — so if the reason at the end of this message names that field, this install's `identity.kanban_user_id` for you does not name a user the board accepts. Report it to your operator. ".BoardCallRefusal::boardReason($e),
         });
     }
 }

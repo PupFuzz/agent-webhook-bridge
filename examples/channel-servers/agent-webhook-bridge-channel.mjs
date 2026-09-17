@@ -232,6 +232,9 @@ const TOOL_DEFINITIONS = [
       'claim a free one — but ONLY in your own lanes: coordination cards appear in the ' +
       'coord_cards block of this same response, they are on a different board, and they ' +
       'are NOT takeable (the attempt is refused write-free and says so). ' +
+      'Your lane read NEVER shows a card that is in another lane or in NO lane, so ' +
+      '"none of my cards carry tag X" is not something the lane read can tell you: pass ' +
+      'tag to read every card on your board carrying that tag, whatever lane it is in. ' +
       'A board fault ' +
       'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
       'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
@@ -265,9 +268,9 @@ const TOOL_DEFINITIONS = [
             'is the primary form (it is what each card reports under "stage" alongside ' +
             'the id the bridge groups by). A STRING is treated as a stage NAME, matched ' +
             'case-insensitively, and is REFUSED if it names no stage or more than one — ' +
-            'the bridge never guesses which column you meant. Does not apply to the ' +
-            'coordination cards: those are on a different board, whose stage ids are ' +
-            'unrelated to yours.',
+            'the bridge never guesses which column you meant. Narrows the tag_cards read ' +
+            'too. Does not apply to the coordination cards: those are on a different ' +
+            'board, whose stage ids are unrelated to yours.',
         },
         limit: {
           type: 'integer',
@@ -278,6 +281,25 @@ const TOOL_DEFINITIONS = [
             'when you genuinely need a whole lane: the response grows in proportion. ' +
             'Prefer narrowing with stage. Read the window block to see whether a cut ' +
             'happened and how much is behind it.',
+        },
+        tag: {
+          type: 'string',
+          description:
+            'ONE tag, matched exactly (for example lane:A). Adds a tag_cards block: every ' +
+            'live card on YOUR board carrying it, in ANY lane or in none, each with its own ' +
+            'swimlane_id (null means the card is in no lane). The block counts the cards in ' +
+            'other lanes (other_swimlanes) and in no lane (no_swimlane); a count the bridge ' +
+            'could not stand behind is null with a reason in its *_unmeasured key — never ' +
+            'read a null as zero. Terminal columns are left out unless include_terminal is ' +
+            'true. Refused when it contains " * % / \\, a control character or any non-ASCII ' +
+            'character (kanban cannot match those exactly). Omit it and the response is ' +
+            'exactly the default.',
+        },
+        include_terminal: {
+          type: 'boolean',
+          description:
+            'Keep cards in terminal columns (kanban lane type done) in the tag_cards read ' +
+            '(default false). Refused without tag.',
         },
       },
       additionalProperties: false,
@@ -318,7 +340,11 @@ const TOOL_DEFINITIONS = [
         idempotency_key: {
           type: 'string',
           description:
-            'Optional but recommended: [A-Za-z0-9.-]{1,64}. Re-using it returns the ' +
+            'Optional but recommended: [A-Za-z0-9.-]{1,64}, and shorter for your agent: ' +
+            'the key is stored in the tag idem:<agent>:<key> and kanban caps a tag at ' +
+            '64 characters, so the key may be at most 64 minus the length of ' +
+            '"idem:<agent>:" for your agent name; a longer key is REFUSED (422) before ' +
+            'any request is sent, naming your cap. Re-using it returns the ' +
             'same LIVE card instead of creating a duplicate. If that card was ARCHIVED ' +
             'the call is REFUSED (422) naming the card to unarchive — an archived card ' +
             'is a retire, so no replacement is created; pass a NEW key for new work.',
@@ -331,10 +357,13 @@ const TOOL_DEFINITIONS = [
   {
     name: 'board_correct_card',
     description:
-      'Correct a card YOU filed — its name, description or tags — instead of ' +
-      'minting a second card to say the first one is wrong. Scoped to cards ' +
-      'carrying your own bridge-stamped created-by: tag on your own board; ' +
-      'anything else is REFUSED, never silently ignored. A PRESENT argument is a ' +
+      'Correct a card that is YOURS — its name, description or tags — instead of ' +
+      'minting a second card to say the first one is wrong. A card on your own ' +
+      'board is yours when it carries your own bridge-stamped created-by: tag OR ' +
+      'is assigned to your own kanban user (resolved from your bridge identity — ' +
+      'no argument names a user); the result says which one authorized the write ' +
+      '(authorized_by: minted | assigned). Anything else is REFUSED, never ' +
+      'silently ignored. A PRESENT argument is a ' +
       'correction and an ABSENT one leaves that field alone, so tags: [] means ' +
       '"drop my tags" and an empty description clears the body. Column moves, ' +
       'correlation refs (dl/pr/issue), external ids, card type and block_reason ' +
@@ -427,6 +456,48 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ['card_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_comment_card',
+    description:
+      'APPEND a comment to a card on YOUR board — the safe way to add a note to a card. ' +
+      'It never reads or replaces the card: board_correct_card\'s description REPLACES the ' +
+      'whole body, so appending with it needs the card\'s current text first, and a card ' +
+      'outside your board_my_cards window has none to give you. A comment is a new row under ' +
+      'the card and cannot overwrite anything. ' +
+      'Any LIVE card on your own board may be commented on — you do not need to have filed it, ' +
+      'hold it, or work its lane. A card on another board (coord_cards included), an ARCHIVED ' +
+      'card, or an id that is not on your board is REFUSED and nothing is written. ' +
+      'The bridge writes "FROM: <your seat>" as the comment\'s FIRST line, from the identity ' +
+      'your call authenticated as — no argument names the author, and every seat shares one ' +
+      'kanban user, so that line is the attribution. ' +
+      'APPEND-ONLY: there is no edit or delete. It takes card_id and content and nothing else. ' +
+      'NOT idempotent: only a refusal (422) tells you nothing was written. Any other failure ' +
+      '— a 502, a 500, a non-JSON answer, a failed ssh leg or a timeout — may have landed ' +
+      'the comment, so re-sending it can post a duplicate. ' +
+      'A board fault that cannot clear (the bridge token revoked/rotated, or the writeback ' +
+      'role unable to create comments) is REFUSED (422) naming the INSTALL fault — do not ' +
+      'retry it; tell your operator, quoting the message as-is.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'integer',
+          description:
+            'The id of the card to comment on, as board_my_cards reports it. Must be an ' +
+            'integer — a decorated string is refused, never coerced.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'The comment text (markdown). Trimmed; blank is refused. At most 65535 characters ' +
+            'INCLUDING the bridge\'s "FROM: <your seat>" line and the blank line after it ' +
+            '(kanban\'s own limit).',
+        },
+      },
+      required: ['card_id', 'content'],
       additionalProperties: false,
     },
   },
@@ -595,15 +666,15 @@ if (TOOLS_SSH_TARGET !== '' && TOOLS_ENDPOINT !== '') {
 
 const INSTRUCTIONS = [
   `Events from the agent-webhook-bridge arrive as <channel source="${SERVER_NAME}" kind="..." target_id="...">.`,
-  'The body is JSON: {"intent": {kind, target_id, payload, ...}}.',
+  'The body is JSON: {"intent": {kind, subject_id, summary, payload, ...}}; the kind and target_id attributes are copied from it (target_id is intent.subject_id) and are absent when a body carries no intent.',
   'These channel EVENTS are one-way notifications: read them and act — no reply is sent back through the event.',
-  'kind identifies what happened upstream (e.g. card_updated, card_assigned); target_id names the resource; payload carries handler-specific data.',
+  'kind identifies what happened upstream (e.g. new_card, column_move, content_edit); target_id names the resource the event is about; summary describes the event in prose; payload carries kind-specific data.',
   ...(TOOLS_ENABLED
     ? [
-        'This server ALSO exposes request/response board tools scoped to YOUR channel identity:',
-        'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane) and',
-        'board_correct_card (correct a card YOU filed — never mint a second card to say the first is wrong) —',
-        'call them to see, capture or fix board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
+        `This server ALSO exposes request/response board tools scoped to YOUR channel identity: ${TOOL_DEFINITIONS.map((tool) => tool.name).join(', ')} —`,
+        'call them to see, capture, fix or annotate board work without a kanban token (each tool\'s own description says what it does);',
+        'never mint a second card to say the first is wrong — correct it, or comment on it;',
+        'every write is confined by the bridge to your own board, and each tool\'s description states its scope.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED

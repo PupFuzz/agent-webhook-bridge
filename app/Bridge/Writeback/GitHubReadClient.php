@@ -2,9 +2,9 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\ForeignText;
 use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -29,10 +29,14 @@ use Illuminate\Support\Facades\Log;
  * timeout, and throw-on-non-2xx so the caller owns the posture. A second read-only GitHub
  * client would be a second place for those to drift (canon #5). What it is NOT is a
  * write client: nothing here creates, edits or deletes a hook.
+ *
+ * ⚑ IT ALSO READS PULL-REQUEST COMMENTS (DL-390): {@see self::hasIssueCommentStartingWith}, kept
+ * here for the same reasons the hook read is. The bridge's GitHub writes are
+ * {@see GitHubWriteClient}'s, and this class still makes none.
  */
 final class GitHubReadClient
 {
-    public const API_BASE = 'https://api.github.com';
+    public const API_BASE = GitHubApi::BASE;
 
     /** Kept under a human-interactive command's patience; a slow GitHub is skipped per card. */
     public const TIMEOUT_SECONDS = 15;
@@ -50,6 +54,15 @@ final class GitHubReadClient
      * something is answering this URL that is not a repo's hook list.
      */
     private const HOOK_PAGE_LIMIT = 10;
+
+    /** GitHub's maximum page size for `GET /repos/{repo}/issues/{n}/comments`. */
+    private const COMMENT_PAGE_SIZE = 100;
+
+    /**
+     * How many comment pages {@see self::hasIssueCommentStartingWith} walks before it answers "not
+     * established". A bound on a loop, not a belief about pull requests, exactly as HOOK_PAGE_LIMIT.
+     */
+    private const COMMENT_PAGE_LIMIT = 10;
 
     /**
      * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
@@ -73,14 +86,22 @@ final class GitHubReadClient
     }
 
     /**
-     * Does this repo carry a webhook whose delivery URL is `$receiverUrl`? (card#9150)
+     * Does this repo carry a webhook whose delivery URL is `$receiverUrl` — and, where the
+     * answer is no, how many webhooks does it carry? (card#9150, widened by card#9717)
      *
-     * ⛔ IT RETURNS A BOOLEAN, AND THAT IS A SECURITY BOUNDARY RATHER THAN A STYLE CHOICE.
-     * The hook list is the WHOLE FLEET's: every other install's receiver endpoint is in the
-     * response body. Matching INSIDE this method is what makes "no other endpoint can reach
+     * ⛔ IT RETURNS A VERDICT AND A COUNT, AND THAT IS A SECURITY BOUNDARY RATHER THAN A STYLE
+     * CHOICE. The hook list is the WHOLE FLEET's: every other install's receiver endpoint is in
+     * the response body. Matching INSIDE this method is what makes "no other endpoint can reach
      * an operator log, a finding or a traceback" true by construction — a `list<string>`
      * return would put that guarantee back on every caller's discipline, and the first
-     * caller to interpolate its result into a diagnostic would publish the fleet.
+     * caller to interpolate its result into a diagnostic would publish the fleet. ⚠ THE COUNT
+     * card#9717 ADDS IS A PROPERTY OF THE LIST AND NEVER A VALUE FROM IT, which is the whole
+     * reason it is an `int`: {@see GitHubHookListAnswer} owns that boundary and why anything
+     * richer would breach it.
+     *
+     * ⚠ THE COUNT IS ANSWERED ONLY WHERE THE ENUMERATION RAN TO THE END. A match returns
+     * mid-walk, so a count on that path would be *hooks seen so far* under the name *hooks on
+     * the repo*; the page bound and every unreadable-body path establish nothing at all.
      *
      * ⭐ THE THIRD ANSWER IS THE POINT. `null` means THIS READ DID NOT ESTABLISH EITHER —
      * the enumeration hit {@see self::HOOK_PAGE_LIMIT}, or a 200 came back carrying
@@ -94,7 +115,7 @@ final class GitHubReadClient
      * token that may not enumerate hooks on this repo, which is the caller's to classify —
      * NOT an empty result (an unreadable API response is not an empty one).
      */
-    public function hasRepoWebhookFor(string $repo, string $receiverUrl): ?bool
+    public function hasRepoWebhookFor(string $repo, string $receiverUrl): GitHubHookListAnswer
     {
         // ⛔ HOISTED ABOVE THE PAGE LOOP (card#9150 r3). Declared per page, its `return null`
         // fired at the end of whichever page saw the unreadable entry and pre-empted every
@@ -104,6 +125,10 @@ final class GitHubReadClient
         // but the claim *a match still wins* was FALSE across a page boundary while three
         // surfaces asserted it unconditionally.
         $unreadableElement = false;
+        // ⚠ HOOKS SEEN, WHICH IS THE REPO'S HOOK COUNT ONLY WHERE THE WALK REACHES THE SHORT
+        // PAGE BELOW — the one place this is read. Every other exit abandons it rather than
+        // reporting a partial walk as a total (card#9717).
+        $hooksSeen = 0;
 
         for ($page = 1; $page <= self::HOOK_PAGE_LIMIT; $page++) {
             $body = $this->http()->get(self::API_BASE."/repos/{$repo}/hooks", [
@@ -117,7 +142,7 @@ final class GitHubReadClient
                     ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
                 );
 
-                return null;
+                return GitHubHookListAnswer::undetermined();
             }
 
             // ⛔ AN ELEMENT THIS PROJECTION CANNOT READ MAKES THE ENUMERATION INCOMPLETE, and
@@ -145,9 +170,11 @@ final class GitHubReadClient
                 // `ReceiverUrl` owns why the two predicates differ and why provision keeps
                 // the exact one.
                 if (ReceiverUrl::deliversTo($url, $receiverUrl)) {
-                    return true;
+                    return GitHubHookListAnswer::found();
                 }
             }
+
+            $hooksSeen += count($body);
 
             // A SHORT PAGE IS THE END OF THE LIST, which is what makes `false` an
             // EXHAUSTED enumeration rather than "not on page 1" — the distinction the
@@ -159,6 +186,68 @@ final class GitHubReadClient
                     self::warnUnreadableBody(
                         "the webhook-list read for {$repo} returned a 200 carrying at least one hook entry with no readable `config.url` — this run could not enumerate the repo's hooks, so whether one points at this install is UNKNOWN, not false",
                         ['repo' => $repo, 'read' => 'list-hooks', 'page' => $page],
+                    );
+
+                    return GitHubHookListAnswer::undetermined();
+                }
+
+                return GitHubHookListAnswer::exhausted($hooksSeen);
+            }
+        }
+
+        return GitHubHookListAnswer::undetermined();
+    }
+
+    /**
+     * Does any comment on issue or pull request $number START WITH $prefix? (DL-390)
+     *
+     * Matched here and answered as a boolean, for the hook read's reason: no caller holds other
+     * people's comment text. STARTS WITH, not contains, so a comment that merely QUOTES the prefix
+     * is not mistaken for the one that carries it.
+     *
+     * `null` means THIS READ ESTABLISHED NEITHER: the walk hit {@see self::COMMENT_PAGE_LIMIT}, a 200
+     * carried something that is not a list of comments, or an entry had no readable `body`. A caller
+     * deduping a write on this answer must read `null` as "cannot tell", never as "absent" — on a
+     * response-shape change every entry is unreadable, and "absent" would re-post on every event.
+     *
+     * Throws RequestException on any non-2xx, like every other read here.
+     */
+    public function hasIssueCommentStartingWith(string $repo, int $number, string $prefix): ?bool
+    {
+        $unreadableElement = false;
+
+        for ($page = 1; $page <= self::COMMENT_PAGE_LIMIT; $page++) {
+            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/issues/{$number}/comments", [
+                'per_page' => self::COMMENT_PAGE_SIZE,
+                'page' => $page,
+            ])->throw()->json();
+
+            if (! is_array($body) || ! array_is_list($body)) {
+                self::warnUnreadableBody(
+                    "the comment-list read for {$repo}#{$number} returned a 200 whose body is not a JSON list of comments — whether a comment is already there is UNKNOWN, not false",
+                    ['repo' => $repo, 'number' => $number, 'read' => 'list-issue-comments', 'page' => $page],
+                );
+
+                return null;
+            }
+
+            foreach ($body as $comment) {
+                $text = is_array($comment) ? ($comment['body'] ?? null) : null;
+                if (! is_string($text)) {
+                    $unreadableElement = true;
+
+                    continue;
+                }
+                if (str_starts_with($text, $prefix)) {
+                    return true;
+                }
+            }
+
+            if (count($body) < self::COMMENT_PAGE_SIZE) {
+                if ($unreadableElement) {
+                    self::warnUnreadableBody(
+                        "the comment-list read for {$repo}#{$number} returned a 200 carrying at least one comment with no readable `body` — whether a comment is already there is UNKNOWN, not false",
+                        ['repo' => $repo, 'number' => $number, 'read' => 'list-issue-comments', 'page' => $page],
                     );
 
                     return null;
@@ -200,6 +289,19 @@ final class GitHubReadClient
      * that goes null on a deleted fork, and nothing here reads it. An absent ref reads as
      * `''`, which names no card: the safe direction, and the same one the title takes.
      *
+     * ⛔ `title` AND `head_ref` ARE THE TWO FIELDS ON THIS PROJECTION A STRANGER CHOOSES,
+     * so they leave here as {@see ForeignText} and not as `string` (card#9200, DL-366). Both
+     * are authored by whoever opened the PR — on a public repo, anyone with a fork — and
+     * MEASURED, not assumed: GitHub accepts a branch ref carrying U+202E and U+200B and
+     * returns it byte-identical (card#9266). They are the two that cannot simply be escaped
+     * here, because `RevertGrammar` and `NoCloseGrammar` match on the RAW bytes and an
+     * escaped ref would match nothing; `ForeignText` keeps the raw bytes reachable through a
+     * named, pinned accessor while making an interpolation a build error. ⚑ THE OTHER FIVE
+     * KEYS STAY `string` BECAUSE THEIR AUTHOR IS GITHUB, NOT THE PR'S OPENER: `state`,
+     * `merged` and `merge_commit_sha` are generated, `html_url` is composed by GitHub from
+     * the repo and number, and `base_ref` names a branch that must already exist in the BASE
+     * repo — a fork's opener cannot create one there.
+     *
      * ⭐ `merged` IS NULLABLE, and the null is the whole point (card#8787). It was a plain
      * `bool` collapsed from `($pr['merged'] ?? false) === true`, so a 200 whose body carried
      * no `merged` at all was byte-identical to an honest `merged: false` — and both silently
@@ -210,7 +312,7 @@ final class GitHubReadClient
      * the two apart, and {@see warnUnreadableBody} names the cause here for the callers that
      * cannot.
      *
-     * @return array{state: string, merged: ?bool, base_ref: string, html_url: string, merge_commit_sha: string, title: string, head_ref: string}
+     * @return array{state: string, merged: ?bool, base_ref: string, html_url: string, merge_commit_sha: string, title: ForeignText, head_ref: ForeignText}
      */
     public function getPull(string $repo, int $number): array
     {
@@ -233,8 +335,8 @@ final class GitHubReadClient
             'base_ref' => is_string($base) ? $base : '',
             'html_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
             'merge_commit_sha' => is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '',
-            'title' => is_string($pr['title'] ?? null) ? $pr['title'] : '',
-            'head_ref' => is_string($head) ? $head : '',
+            'title' => ForeignText::of(is_string($pr['title'] ?? null) ? $pr['title'] : ''),
+            'head_ref' => ForeignText::of(is_string($head) ? $head : ''),
         ];
     }
 
@@ -303,12 +405,6 @@ final class GitHubReadClient
 
     private function http(): PendingRequest
     {
-        return Http::withToken($this->token)
-            ->withHeaders([
-                'Accept' => 'application/vnd.github+json',
-                'X-GitHub-Api-Version' => '2022-11-28',
-                'User-Agent' => 'agent-webhook-bridge',   // GitHub rejects a UA-less request
-            ])
-            ->timeout($this->timeoutSeconds ?? self::TIMEOUT_SECONDS);
+        return GitHubApi::request($this->token, $this->timeoutSeconds ?? self::TIMEOUT_SECONDS);
     }
 }

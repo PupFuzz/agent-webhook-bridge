@@ -12,6 +12,7 @@ use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -19,6 +20,7 @@ use App\Bridge\Writeback\TrackedRefKind;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -225,7 +227,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
         $promoted = 0;
         foreach ($candidates as $cardId => $candidate) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'])) {
+            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $mapping)) {
                 $promoted++;
             }
         }
@@ -260,7 +262,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      *
      * @param  array{card_board: mixed, mapped_board: int}  $boardContext
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext): bool
+    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, WritebackMapping $mapping): bool
     {
         try {
             $pr = $github->getPull($repo, $prNumber);
@@ -344,6 +346,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+        OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release');
         Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;

@@ -5,7 +5,9 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Writeback\WritebackClientFactory;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -18,9 +20,16 @@ use Illuminate\Support\Facades\Log;
  * NOT an HTTP response; each door maps that outcome to its own signal (JsonResponse
  * status vs process exit code) and serializes the identical body from {@see DispatchOutcome::body}.
  *
- * Exception→status mapping is UNCHANGED from the controller's original inline form:
+ * Exception→status mapping:
  *  - {@see ToolRefusalException} → 422 (caller-fixable, deterministic).
  *  - {@see RequestException} (an upstream kanban 4xx/5xx) → 502; the upstream body is not leaked.
+ *  - {@see ConnectionException} (the board never answered: a timeout or a failed connection,
+ *    on ANY request a tool makes) → the SAME 502 body (DL-387). Laravel's client raises this
+ *    class for a transfer failure that carries no response (one carrying a 4xx/5xx response is
+ *    the {@see RequestException} above), and no tool catches it except `board_create_card`'s
+ *    placement read-back, which reports no placement instead
+ *    (DL-299). The body names no transport detail — the door's caller is a seat, and the
+ *    message carries the board's URL — while the log line carries it redacted.
  *  - {@see ConfigException} from {@see WritebackClientFactory::make} → 503 (install/provisioning fault).
  *
  * The one structured audit line per call moves here too, now carrying a
@@ -57,6 +66,9 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardToolDispatcher
 {
+    /** ⚠ One constant: an unanswered call and a board 5xx are ONE refusal to the caller, byte for byte (DL-387). */
+    private const UPSTREAM_ERROR = 'upstream board error';
+
     public function __construct(private BoardToolsRegistry $tools) {}
 
     /**
@@ -112,6 +124,13 @@ final class BoardToolDispatcher
             return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (writeback token)');
         }
 
+        $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs);
+        if ($refusal !== null) {
+            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
+
+            return DispatchOutcome::failure(422, $refusal);
+        }
+
         try {
             $result = $tool->call($rawArgs, $cfg, $client, $agentName);
         } catch (ToolRefusalException $e) {
@@ -123,7 +142,13 @@ final class BoardToolDispatcher
             // leak the upstream body.
             Log::warning('agent-tools: upstream kanban error', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'status' => $e->response->status()]);
 
-            return DispatchOutcome::failure(502, 'upstream board error');
+            return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
+        } catch (ConnectionException $e) {
+            // ⚠ For a write, the board may have acted before the answer was lost — the same
+            // may-have-landed a 5xx carries, which docs/board-tools.md states per tool.
+            Log::warning('agent-tools: the board did not answer', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
+
+            return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
         }
 
         Log::info('agent-tools: ok', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport]);
@@ -135,5 +160,52 @@ final class BoardToolDispatcher
         ClientHalfLedger::record($agentName, $transport, $provenance, $clientVersion);
 
         return DispatchOutcome::success($toolName, $result);
+    }
+
+    /**
+     * The one refusal for argument keys the resolved tool does not declare, or null when every
+     * key is declared. Every offending key is named in one message — a caller fixing them one
+     * round-trip at a time learns nothing from the second refusal it could not have been told
+     * in the first — and the accepted set is named alongside, so the fix is readable off the
+     * refusal itself.
+     *
+     * ⚠ It sits AFTER the writeback client is built, not beside the `args` shape check above,
+     * so a call that is both mis-keyed and made to an install with no writeback token answers
+     * the 503 install fault first. Building the client sends no request, so the refusal still
+     * precedes every board read and write.
+     *
+     * @param  array<array-key, mixed>  $args
+     */
+    private function undeclaredArgumentsRefusal(Tool $tool, array $args): ?string
+    {
+        $accepted = $tool->acceptedArguments();
+        $reasons = [];
+        $unknown = [];
+        foreach (array_keys($args) as $key) {
+            $key = (string) $key;
+            if (in_array($key, $accepted, true)) {
+                continue;
+            }
+            $reason = $tool->refusedArgumentReason($key);
+            if ($reason === null) {
+                $unknown[] = "`{$key}`";
+            } else {
+                $reasons[] = $reason;
+            }
+        }
+
+        if ($reasons === [] && $unknown === []) {
+            return null;
+        }
+
+        if ($unknown !== []) {
+            $reasons[] = (count($unknown) === 1 ? 'unknown argument ' : 'unknown arguments ').implode(', ', $unknown).'.';
+        }
+        // Each clause is its own sentence, so only the one straight after `<tool>: ` keeps a
+        // lower-case opening.
+        $reasons = array_map(static fn (string $r, int $i): string => $i === 0 ? $r : ucfirst($r), $reasons, array_keys($reasons));
+        $acceptedList = $accepted === [] ? 'no arguments' : implode(', ', array_map(static fn (string $k): string => "`{$k}`", $accepted));
+
+        return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written.";
     }
 }

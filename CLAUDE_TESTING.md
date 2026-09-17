@@ -429,7 +429,7 @@ read first, means a value edited on the `<env>` line alone would be silently ign
 **Job 1 — `PHPUnit + Pint + PHPStan (SQLite)`:**
 - Push to `main`/`dev`; pull requests to `main`/`dev`
 - Runs on **PHP 8.5** (via the `setup-app` composite action), `pdo_sqlite` + `pdo_mysql` extensions installed. The job **label** still reads "PHP 8.3" — it's a required-status-check identifier pinned in `dev`/`main` branch protection, so renaming it must be done together with a `gh api` branch-protection contexts update (see DL-040), not in a routine PR.
-- Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), the doc-sync gate (`bin/check-doc-refs.php` — three rules; each run prints the surface it actually read, and that is deliberately not copied here: every rule's surface is narrower than its name, so a restatement drifts), then PHPUnit against SQLite `:memory:`
+- Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), the doc-sync gate (`bin/check-doc-refs.php` — each run prints the surface every rule actually read, and that is deliberately not copied here: every rule's surface is narrower than its name, so a restatement drifts), then PHPUnit against SQLite `:memory:`
 
 **Job 2 — `PHPUnit (MariaDB ${{ matrix.mariadb }})` (matrix: `["10.6", "11"]`):**
 - Spins up a `mariadb:<version>` service container matching the production driver versions
@@ -466,6 +466,8 @@ docker rm -f bridge-test-mariadb
 | A security-sensitive change | additional regression tests for the attack surface (e.g. `WebhookReceiveTest` covers path-traversal scope, empty secret, relative secret_dir) |
 | A change to `bridge:check`'s output, or a refactor of it | see § The `bridge:check` golden harness below — a behavior-preserving refactor is checked by the golden files, an intended change regenerates them |
 | A `Check` migrated into the DL-242 registry | `tests/Unit/Bridge/Check/Checks/<Name>CheckTest.php`, scoped to **the legs the golden suite cannot reach** — `catch` arms, `switch` arms, and any leg needing an unreachable backend or a controlled HTTP outcome. Do NOT re-cover golden-measured legs: the golden files pin the operator-visible line, which is the stronger measurement. Every absence assertion needs a witness that the check ran |
+| A change to what reaches the console for EVERY command (the output choke, DL-393) | `tests/Feature/Console/OutputChokeTest.php`, which runs a real `php artisan` SUBPROCESS and asserts the raw stdout and stderr bytes. An `Artisan::call()` / `$this->artisan()` test enters through `Kernel::call()` and never reaches `handle()`, where the uncaught-exception render happens. ⚠ Since DL-393 `Artisan::output()` is stripped too, so a test that only asserts a control byte is ABSENT through it can no longer tell whether a producer escaped the byte. Pair it with the presence witness of the escaped form (`AssertsNoLiveControlByte::assertForeignValueEscapedInto()`). ⚠ `$this->artisan()` binds its own mocked `OutputStyle` in the container, which replaces the wrapped output: that path is not choked. A pty-level claim (an interactive renderer's actual bytes on a real terminal) is NOT something PHPUnit measures — DL-393 Decision 8 was verified with a throwaway `pty.fork()` script, not a committed test; take that on the DL's word, not a suite run. |
+| A change to `bridge:check`'s per-finding severity marker (DL-393 Decision 8) | `tests/Feature/Console/Check/SeverityMarkerTest.php` pins the `FAIL: `/`WARN: `/`UNVALIDATED: `/`OK: ` prefix against the real renderer and checks that the `--format=json` document carries none of the four tokens, with `message` witnesses beside the absences. ⚠ It does NOT pin that document's bytes, and nothing does: `CheckJsonContractTest` asserts key sets, schema and counts and deliberately not the `message` strings, and the document passes the choke like every other write (`docs/check-json-contract.md` §2). Regenerating `tests/Fixtures/check-golden/*.txt` after a change here needs the WHOLE-corpus diff checked line-for-line against the marker alone — a script, not a skim — because every fixture that prints a finding changes. |
 | A structural coverage / census class over the source tree | read the source through `Tests\Support\SourceScan`, never a fresh walk of your own; a file population narrower than `app/` needs a minuted reason — see § *Structural coverage classes derive ONE population* |
 
 ## The `bridge:check` golden harness (DL-242)
@@ -545,11 +547,12 @@ what turns that from an intention into a measurement.
 
 Several tests here are not behavioural — they are **census instruments** over the source tree. They
 answer "is every X in this repo accounted for?", where a MISS is silent: the suite goes green over
-the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
+the site nobody listed. Among them — and a named list here is a lead, not the membership (`command grep -rl 'SourceScan::' tests/` is) —
+`GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
 `WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
 handlers, and every read of a card's `board_id` in `app/`), `PinnedFieldWriteCoverageTest` (every
 `->patchCard(` in `app/`, against the DL-342 pinned-field rule) and `WritebackSuccessBoardRecordTest`
-(a kanban write made under the DL-009 mapped-board regime) are the ones that derive their
+(a kanban write made under the DL-009 mapped-board regime) derive their
 population THROUGH the shared primitive. ⛔
 **They are not the whole census population of this repo** — see *The un-migrated remainder* below
 before you conclude that a class you are reading is out of scope for the rule.

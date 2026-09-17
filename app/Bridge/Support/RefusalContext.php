@@ -20,8 +20,8 @@ use Illuminate\Http\Client\RequestException;
  *
  * The body is scrubbed BEFORE truncation: a credential could otherwise be split
  * across the truncation boundary, leaving its head unredacted. ⛔ That ORDER is the
- * contract, not a style choice, and it is why {@see self::from()} — not the scrubber —
- * owns the truncation.
+ * contract, not a style choice. Since card#9486 {@see RedactedErrorText::body()} owns it,
+ * because a caught exception's text needs the same order and a second copy could drift.
  *
  * The scrubbing itself is {@see SecretScrubber}'s. It used to live here, and card#8433
  * moved it out when a second subject (a third-party job handler's exception message)
@@ -30,8 +30,6 @@ use Illuminate\Http\Client\RequestException;
  */
 final class RefusalContext
 {
-    private const MAX_BODY = 500;
-
     /**
      * @return array{status: int, body: string}
      */
@@ -39,7 +37,7 @@ final class RefusalContext
     {
         return [
             'status' => $e->response->status(),
-            'body' => self::truncate(SecretScrubber::text($e->response->body())),
+            'body' => RedactedErrorText::body($e->response->body()),
         ];
     }
 
@@ -121,14 +119,5 @@ final class RefusalContext
             403 => $foreignIdExcluded ? $verb.'_403_token_scope' : $verb.'_403_foreign_card_id_or_token_scope',
             default => $verb.'_4xx',
         };
-    }
-
-    private static function truncate(string $body): string
-    {
-        if (mb_strlen($body) <= self::MAX_BODY) {
-            return $body;
-        }
-
-        return mb_substr($body, 0, self::MAX_BODY).'…(truncated)';
     }
 }

@@ -7,13 +7,15 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
-use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -86,6 +88,11 @@ use Throwable;
  * backward move ONLY from the abandon stage (terminal-safe — a Shipped/Released card
  * is never there); elsewhere `reopened` is forward-only like `opened`. A marker-gated
  * override alert (notifyRevive) fires after the move.
+ *
+ * A refusal about WHICH CARD an event is about — a near-miss token, a card id off the mapped board,
+ * a card on another board, an uncorroborated title token, a correlation ref not stamped — is ALSO
+ * reported on the pull request itself (DL-390), through {@see PrCorrelationCommenter} at the site
+ * that decided it. That report never throws and never changes the outcome decided here.
  */
 final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
@@ -108,9 +115,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      */
     private array $stageOrderMemo = [];
 
-    public function __construct(?WritebackAlertNotifier $alerts = null)
+    private PrCorrelationCommenter $comments;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null, ?PrCorrelationCommenter $comments = null)
     {
         $this->alerts = $alerts ?? new WritebackAlertNotifier;
+        $this->comments = $comments ?? new PrCorrelationCommenter;
     }
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void
@@ -190,6 +200,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 ['card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
                 $repo, $outcome, $cardId, 'card_token_near_miss',
             );
+            $this->comments->report($payload, 'card_token_near_miss');
 
             return;
         }
@@ -208,7 +219,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // decides whether we may WRITE the row we got, and only that one can record the
         // (card board, mapped board) divergence pair — a refusal here never learns the
         // card's board, which is the point of refusing before the read.
-        if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
+        $refusal = '';
+        if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome, $refusal)) {
+            // Only the foreign-id verdict is the PR's to hear about; the commenter drops the
+            // install-fault reasons this guard can also refuse under.
+            $this->comments->report($payload, $refusal);
+
             return;
         }
 
@@ -265,6 +281,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // request earlier, and it is the only arm that records the (card board, mapped
         // board) divergence. Its refused set on this path is expected to be EMPTY.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
+            $this->comments->report($payload, MappedBoardGuard::REASON);
+
             return;
         }
 
@@ -302,6 +320,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
+            $this->comments->report($payload, 'card_token_uncorroborated');
 
             return;
         }
@@ -445,6 +464,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 return;
             }
             throw $e;   // transient → 5xx → retry
+        }
+        // The PR outcomes' order was read by the no-regression guard above; `started` never
+        // reads it, and an empty order answers from the merged / merged_to_main stages alone.
+        if ($mapping->isTerminalStage($stageId, $this->stageOrderMemo[$mapping->boardId] ?? [])) {
+            OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome);
         }
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
@@ -612,6 +636,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             );
             $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
             $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $mapping, $cardId, $client, $repo, $outcome);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', ['dropped' => array_keys($dropped)]);
         }
 
         if ($refs === []) {
@@ -762,7 +787,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         } catch (Throwable $e) {
             $this->alerts->warnAndNotify(
                 'kanban_move_card: the card note could not be sent to kanban — the dropped correlation leg stays in this log but is NOT visible on the card',
-                ['card_id' => $cardId, 'marker' => $note->marker, 'error' => SecretScrubber::text($e->getMessage())],
+                ['card_id' => $cardId, 'marker' => $note->marker, 'error' => RedactedErrorText::of($e)],
                 $repo, $outcome, $cardId, 'cardnote_send_failed',
             );
         }
@@ -843,7 +868,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
-                'board' => $mapping->boardId, 'error' => $e->getMessage(),
+                'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),
             ]);
 
             return false;   // fail-open: a diagnostic guard must not break the writeback
@@ -871,7 +896,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // card has reached a terminal (Shipped/Released) stage, so a stale close
             // can't resurrect a shipped/released card. No terminal stage configured
             // ⇒ no terminal concept on this board ⇒ allow the backward move.
-            $terminalFloor = $this->terminalFloor($mapping, $order);
+            $terminalFloor = $mapping->terminalFloor($order);
 
             return $terminalFloor !== null && $currentPos >= $terminalFloor;
         }
@@ -894,25 +919,5 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // Forward outcomes (opened / merged / merged_to_main): refuse any move to a
         // stage earlier than the card's current one.
         return $targetPos < $currentPos;
-    }
-
-    /**
-     * The earliest board position among the mapping's terminal ("done") targets —
-     * the `merged` (Shipped) and `merged_to_main` (Released) stages. Null when the
-     * mapping configures neither (no terminal concept on this board).
-     *
-     * @param  array<int, float>  $order
-     */
-    private function terminalFloor(WritebackMapping $mapping, array $order): ?float
-    {
-        $positions = [];
-        foreach (['merged', 'merged_to_main'] as $terminalOutcome) {
-            $stage = $mapping->stageFor($terminalOutcome);
-            if ($stage !== null && isset($order[$stage])) {
-                $positions[] = $order[$stage];
-            }
-        }
-
-        return $positions === [] ? null : min($positions);
     }
 }

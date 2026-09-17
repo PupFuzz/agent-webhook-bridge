@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 
 /**
  * The offline SSH-transport pinned-line + sshd-posture probe for `bridge:check`
@@ -246,10 +247,11 @@ final class SshTransportProbe
         }
 
         if ($this->env->fipsEnabled()) {
+            $algorithm = $this->keyAlgorithmForMessage($line->keyAlgorithm);
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is ".$this->keyAlgorithmForMessage($line->keyAlgorithm).' — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
+                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is {$algorithm} — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)");
             } else {
-                $findings[] = Finding::ok("the pinned key for agent {$agentName} (".$this->keyAlgorithmForMessage($line->keyAlgorithm).') is FIPS-approved');
+                $findings[] = Finding::ok("the pinned key for agent {$agentName} ({$algorithm}) is FIPS-approved");
             }
         }
 
@@ -275,17 +277,21 @@ final class SshTransportProbe
     {
         $r = $this->env->sshRoundTrip($target, (string) json_encode(['tool' => 'board_my_cards']));
         if ($r['exit'] !== 0) {
-            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".trim($r['stderr']).')')];
+            // ⛔ ESCAPED AT THE INTERPOLATION (card#9200, DL-366). Everything this leg
+            // echoes below crossed the wire from a REMOTE host: its stderr, its stdout, and
+            // the `error` string inside its envelope are bytes THAT host chose, and each was
+            // being interpolated verbatim into a line on the operator's terminal.
+            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".UntrustedText::forOperator(trim($r['stderr'])).')')];
         }
 
         $decoded = json_decode($r['stdout'], true);
         if (! is_array($decoded) || ! array_key_exists('ok', $decoded)) {
-            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".substr(trim($r['stdout']), 0, 200))];
+            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".UntrustedText::forOperator(substr(trim($r['stdout']), 0, 200)))];
         }
         if ($decoded['ok'] !== true) {
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
-            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")];
+            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: ".UntrustedText::forOperator($error).')')];
         }
 
         $result = $decoded['result'] ?? null;
@@ -553,6 +559,16 @@ final class SshTransportProbe
      * {@see BoardMyCardsTool} states the LOUDER version of this for its own byte cap — a
      * failed encode for the whole response — and that consequence belongs to ITS renderer,
      * which sets no substitute flag. It is not this one's, and reading it across was wrong.
+     *
+     * ⛔ THE TOKEN IS ESCAPED HERE (card#9200, DL-366). The bytes are foreign for the reason
+     * DL-363 established about this file: `authorized_keys` lives under the INSPECTED
+     * account's home, so that account chose them, and `bridge:check` reads it routinely as
+     * root. The echo cap bounds the LENGTH; it validates no shape, so an ESC or a bidi
+     * override in the algorithm token reached the terminal intact. ⚑ The cut is taken on the
+     * RAW field and the escape applied to the cut, in that order: the cap is a bound on what
+     * the FILE held, and measuring it on an escaped string would report a 43-byte algorithm
+     * name as truncated because one `\x{202E}` renders eight wide. The `unknown` arm echoes
+     * nothing foreign and is escaped nowhere.
      */
     private function keyAlgorithmForMessage(?string $algorithm): string
     {
@@ -561,7 +577,8 @@ final class SshTransportProbe
         }
 
         $cut = mb_strcut($algorithm, 0, self::KEY_ALGORITHM_ECHO_MAX, 'UTF-8');
+        $echo = '`'.UntrustedText::forOperator($cut).'`';
 
-        return $cut === $algorithm ? '`'.$algorithm.'`' : '`'.$cut.'` (truncated)';
+        return $cut === $algorithm ? $echo : $echo.' (truncated)';
     }
 }

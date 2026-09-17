@@ -42,6 +42,8 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 # DB_TIMEZONE=+00:00                  # MySQL session time_zone; defaults to +00:00 and must match app.timezone (DL-346)
 ```
 
+⚠ **ACCEPTANCE CHANGE since card#9528 / DL-395 — a credential inside either endpoint URL must be PERCENT-ENCODED, or `bridge:check` and `bridge:provision` refuse it.** If `BRIDGE_RECEIVER_BASE_URL` or `BRIDGE_KANBAN_API_BASE_URL` carries a userinfo — the `user:password@` part in front of the host, e.g. for a reverse proxy's basic auth — and that credential contains any character RFC 3986 does not allow there unencoded, the value is now **refused** by the two commands that JUDGE it, where it used to be accepted: `bridge:check` **fails** on it, and `bridge:provision` refuses — the receiver base for the whole run in every mode except `--list`, the API base per subscription (nothing sent upstream, no secret written). ⛔ **The refusal is scoped to those config doors and nothing else.** The writeback (every card move, board tool, standup and reconcile) and the idle nudge keep accepting exactly what they accept today — such an install works, because the HTTP client percent-encodes the value itself — so this change cannot stop a running install's board from moving. Fix the value at your convenience; it is the two commands above that will keep refusing until you do. The characters allowed unencoded are the unreserved set `A-Za-z0-9-._~`, the sub-delims `!$&'()*+,;=`, `:` and `%`; a **space**, a **`"`**, a backslash, a `|`, a bracket or a control byte is not among them. **Such a value was never a valid URL** — the change is that the bridge now says so at validation time instead of carrying the credential on into error text that echoes it back to a terminal, a CI log or an agent transcript. **What to do:** percent-encode the credential in the URL (a space becomes `%20`, a `"` becomes `%22`), or — better — take the credential out of the URL entirely and give it to the proxy another way. The refusal names the field and quotes the value with the userinfo already redacted, so it is safe to paste into a ticket.
+
 **There are TWO kanban token paths, and they belong to TWO DIFFERENT kanban ACCOUNTS.** They are not two paths for one credential. Placing the same broad token at both collapses the separation DL-009 exists to keep — and nothing checks it, so the install looks finished:
 
 | Path | Whose kanban account | Who reads it |
@@ -89,6 +91,14 @@ php artisan bridge:provision                      # register kanban webhook subs
                                                   # pipe, a redirect, cron, a script, or a run told to skip prompts) it
                                                   # makes NO call at all and prints the by-hand recipe instead.
                                                   # docs/writeback.md § 2
+                                                  # It REFUSES (non-zero; nothing sent upstream, no secret written)
+                                                  # every subscription whose composed receiver URL reaches no receiver
+                                                  # route in this app — a mis-set BRIDGE_RECEIVER_BASE_URL (DL-377).
+                                                  # --allow-unreachable-receiver provisions it anyway, e.g. behind a
+                                                  # proxy that rewrites the request path, and prints that it did.
+                                                  # A BRIDGE_RECEIVER_BASE_URL bridge:check rejects as a URL (e.g.
+                                                  # ftp://…) is REFUSED for the whole run in every mode except
+                                                  # --list, and the override does not apply (card#9510).
 php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUESTION, NOT AN OPTIONAL EXTRA: should
                                                   # this agent read, file and correct its own cards from inside its
                                                   # session? YES -> run this; it prints a paste-ready board_tools:
@@ -103,7 +113,91 @@ php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUES
                                                   # Roles/handoff (ssh door): docs/board-tools-enablement.md
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
 sudo systemctl reload apache2 php8.5-fpm
+# NOT DONE YET: configure AND verify the live-event path — § "Live-event path" right below.
+# GitHub answering 200 is not evidence that any agent will ever be woken.
 ```
+
+## Live-event path — configure it, then SEE a wake
+
+⛔ **An install is done when an event has been SEEN arriving in an agent session — not when GitHub gets a `200`.** Every cheaper signal is true of its own stage and blind to the stages after it, so each one can read healthy over a dead wake path. Measured on a peer install (roundtable #449): every recent hook delivery answered `200`, `bridge:stats` showed nothing errored, `bridge:check` reported the channel socket live, the merge push read `delivered` in the ledger — and no event reached either agent session. The same signals were reproduced for this section on a local install whose channel endpoint was a listener answering `202` with no session behind it — over the HTTP transport, so `bridge:check` said `channel HTTP endpoint live` where the peer install's socket line said live. This section owns the configure step, the verify step and how to read a drop; what each `classifier.config` key does stays in [`docs/config-schema.md`](docs/config-schema.md) § *`classifier.config:` keys*.
+
+### 1. Configure — what GitHub sends is not what wakes
+
+**What reaches the bridge** is chosen in GitHub, on the repo webhook's event list — [`docs/writeback.md`](docs/writeback.md) § *4. The repo webhook* owns creating that hook. ⚠ A github entry's `subscriptions[].event_filter` does **not** narrow it: dispatch matches a subscription on provider and scope only (`App\Bridge\Support\SubscriptionRegistry::subscribedTo()`), and `event_filter` is read only when `bridge:provision` registers **kanban** subscriptions.
+
+**What wakes a seat** is chosen by its classifier's families. The merge-wake case on an impl repo:
+
+```yaml
+# $BRIDGE_DIR/<agent>.yml — only the parts this path needs
+subscriptions:
+  - provider: github
+    scopes: ["your-org/your-repo"]
+classifier:
+  class: App\Bridge\Classifiers\CoordinationClassifier
+  config:
+    families: [coord-message, impl-ci-wake]  # a non-empty list REPLACES the default [coord-message]: keep it listed if this seat also takes coordination messages
+    release_branch: main                     # the push that wakes is a push to THIS branch
+    impl_non_wake_disposition: inbox_stage   # while establishing the path — see below
+channel:
+  socket: ${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-<channel-name>.sock   # or `url:` — docs/config-schema.md § channel
+```
+
+On the repo webhook, subscribe the **`push`** and **`workflow_run`** events (*Pushes* and *Workflow runs* in GitHub's individual-event picker). Under `impl-ci-wake` (`App\Bridge\Classifiers\CoordinationClassifier::implCiWakeFamily()`) these wake:
+
+- a `push` to `release_branch` that is not a branch delete — intent kind `impl_release_landed`;
+- a completed `workflow_run` whose conclusion is not in `benign_conclusions` — `impl_ci_failed`, narrowable with `ci_failure_workflow_patterns` — or a successful one whose name matches `provenance_patterns` — `impl_provenance_ok`.
+
+Everything else that family receives is a **non-wake**, and follows `impl_non_wake_disposition`.
+
+⛔ **`pull_request.closed` is NOT a wake — merged or not.** `impl-ci-wake` consumes only `push` and `workflow_run` (`App\Bridge\Classifiers\CoordinationClassifier::IMPL_CI_WAKE_EVENT_TYPES`) however it is configured, and `coord-message` surfaces a pull request only as a coordination message addressed to a seat — `closed` is not among its default actions (`coord_extra_actions` is how an install would add one), and a release PR on an impl repo carries no addressing. **A merge wakes a seat through the push to the release branch it produces.** Subscribing the hook to *Pull requests* changes none of this.
+
+**Why `inbox_stage` while establishing the path.** Under the default `drop`, a push to any other branch reads `dropped` · `classifier emitted no reactions` — the same row as a family that is not enabled or a repo `impl_repos` excludes, so the ledger cannot tell you the family is live. Under `inbox_stage` that push is staged instead: a `delivered` row with no `channel_push`, and an `impl_push` intent in `inbox.jsonl` — evidence that GitHub, the receiver and this family work for this repo, without waiting for a release. **It is not a wake and does not satisfy § 2.** ⚠ It is a quiet digest only on a `route_intents: false` channel; the `impl_non_wake_disposition` row in `docs/config-schema.md` owns what it does under `route_intents: true`. Set it back to `drop` once § 2 has passed if you do not want that inbox history.
+
+Apply the YAML edit per § *The #1 Laravel trap* below, then `php artisan bridge:check`.
+
+### 2. Verify — a wake SEEN in the session, and nothing less
+
+1. **Start the seat's session and leave it idle at a prompt.** The reference channel server is a child of that session (§ *Update an existing install* owns what that means for restarting it). Whether a notification that reaches a session mid-turn is surfaced then, later, or not at all is not established — § *Per-agent dispatch: done vs errored*.
+2. **Cause a real event, delivered by GitHub, that an enabled family wakes on.** For the merge-wake case, a push to `release_branch` — a real merge is fine, provided the account that pushes it is not one this seat declares as its own (§ 3's `echo: own write` row). For `coord-message`, a message addressed to the seat per `wake_membership` (`docs/config-schema.md`).
+3. **Look in the SESSION** for a `<channel source="…">` block whose JSON body carries an `intent.kind` naming what you caused (`impl_release_landed`) and an `intent.subject_id` that matches it (for a release landing, the landed commit SHA). **That block is the only evidence that passes this step.**
+4. **No block ⇒ the step FAILED**, whatever else is green. Go to § 3 below and read the ledger row before naming a stage.
+
+**None of these passes it.** Each was true in the local reproduction while no session received anything (the socket line is the peer install's; the reproduction ran the HTTP transport):
+
+| Signal | What it establishes — and no more |
+|---|---|
+| GitHub shows `200` for the delivery | the receiver accepted it. A gate-dropped event is answered `200` too. |
+| `bridge:check` exits `0`, including `channel HTTP endpoint live` / `channel socket live` | something accepted a connection at the endpoint. A listener is not a session. |
+| `bridge:stats` shows `errored (replayable)` = `0` | no classifier threw. `bridge:stats` has no delivered-vs-dropped split: a dropped event and a pushed one both count as `processed`. |
+| `delivered` in `bridge:inspect` | every handler for that dispatch returned — the legend printed under that table says what it is not. |
+| `bridge dispatch: channel_push unconfirmed` beside `bridge channel_push: accepted by transport (unconfirmed)` with `"status":202` | the endpoint wrote the notification to its own transport. |
+| an intent line in `inbox.jsonl` | staged, not woken. |
+
+⛔ **Do not verify with a re-send.** Delivery dedup keys on a hash of the signed body (`App\Bridge\Adapters\GitHubAdapter`), so a body byte-identical to one this install already processed is answered `200` and does nothing — no new event row, no log line, no push (measured). A signed synthetic delivery (§ *Smoke-test the receiver with a signed delivery*) exercises the receiver, not GitHub's hook, and does not close this step either.
+
+### 3. No wake? Read the ledger row FIRST
+
+Do not name a stage from the symptom. The install in roundtable #449 was first told *"the classifier dropped it"* from the symptom alone, and its row read `delivered`. The ledger row is written whatever the log level; the log lines are not. `bridge dispatch: dropped at gate`, `bridge dispatch: delivered` and `bridge dispatch: channel_push unconfirmed` (`App\Bridge\Dispatch\DispatchService::markDropped()` / `markDelivered()`) and `bridge channel_push: accepted by transport (unconfirmed)` (`App\Bridge\Handlers\ChannelPushHandler::reportAcceptance()`) are logged at `info`, so an install whose `LOG_LEVEL` is above `info` writes none of those. `bridge dispatch: classifier failed` (`DispatchService::recordError()`) and the DL-373 line (`DispatchService::warnAccountEchoUnderReattribution()`) are logged at `warning`.
+
+1. **Find the event id** — the `event` key on that dispatch's `bridge dispatch:` line in `storage/logs/laravel.log`, or the query below. `bridge dispatch: classifier failed` carries no `event` key, so an errored dispatch's event id comes from the query, not from its log line:
+   ```sql
+   SELECT id, event_type, received_at FROM webhook_events ORDER BY id DESC LIMIT 5;
+   ```
+2. **`php artisan bridge:inspect <id>`** (`--agent=<name>` shows one seat's row). Read `outcome` and `reason / error`, then find the row:
+
+| `bridge:inspect` shows | Log line | What it means | Look next at |
+|---|---|---|---|
+| no event row for the delivery | — | this install never recorded it: GitHub got an error, the hook points somewhere else, or the body was identical to one already processed (the ⛔ above) | the hook's recent deliveries in GitHub; `bridge:check`'s `github webhook:` line |
+| the event, and **no dispatch row** for your agent | — | this agent's YAML does not subscribe this provider + scope (other agents can still have rows for the same event) | that agent's `subscriptions:` |
+| `errored` | `bridge dispatch: classifier failed` | the classifier threw | § *Diagnose* |
+| `dropped` · `classifier emitted no reactions` | `bridge dispatch: dropped at gate` | it reached the classifier and no enabled family acted on it. Examples, not a complete list: an event type no enabled family consumes (`pull_request.closed` under `impl-ci-wake`), a family missing from `families`, a repo outside `impl_repos`, a coordination message not addressed to this seat (default `coord_non_addressed_disposition: drop`, `App\Bridge\Classifiers\CoordinationClassifier::coordMessageFamily()`), a non-release push or a benign completed `workflow_run` under `impl_non_wake_disposition: drop` (under `inbox_stage` both are staged and the row reads `delivered`), an unfinished `workflow_run` | `classifier.config`; `bridge:check`'s `event-consumer:` line names received event types that no enabled classifier consumes |
+| `dropped` · `echo: own write` | `bridge dispatch: dropped at gate` | ⛔ **the echo gate — the event is this agent's OWN write.** Its actor (`sender.id`) resolved to this agent, whose `identity` ids are auto-seeded into echo suppression, or matched `treat_as_echo` / `treat_as_echo_ids`. On this path the common way to reach it is a merge pushed by the account the seat declares as `identity.github_user_id`: the seat's own release landing is dropped before anything could wake it. When the match was this agent's own github id under `CoordinationClassifier` (or a subclass), a `warning` beginning `bridge dispatch: the account-keyed echo gate named the serving agent` is logged beside it, with a remedy (DL-373). | the `identity:` and `echo_suppression:` rows in `docs/config-schema.md`; the impl-seat invariant on `App\Bridge\Classifiers\CoordinationClassifier::makeImplIntent()` |
+| `dropped` · `echo: own write (reattributed author)` | `bridge dispatch: dropped at gate` | the classifier recovered the author from the event's content, and it is this agent | the event's `FROM:` line; `scope_author_map` for that repo (`docs/config-schema.md`) |
+| `dropped` · `actor is not a signal` | `bridge dispatch: dropped at gate` | `treat_as_signal` is set and the actor is not on it | `echo_suppression.treat_as_signal` |
+| `delivered` · `echo: agent surface suppressed` | `bridge dispatch: delivered`, with `reason` | a gate hit on a writeback classifier: the agent-facing surface was stripped and only machine writeback ran — no wake, by design | § *Per-agent dispatch: done vs errored* |
+| `delivered`, blank | `bridge dispatch: delivered` | handlers ran and **no `channel_push` was attempted** — e.g. an `inbox_stage` non-wake event on a `route_intents: false` channel: staged, not woken | `inbox.jsonl`; whether the event was wake-worthy (§ 1) |
+| `delivered`, with an error naming the push failure (e.g. a connection exception) | `bridge dispatch: channel_push unconfirmed` with `handler_note`, and **no** `bridge channel_push:` line | the push failed at or before the endpoint — nothing listening is the normal state of an idle seat; the intent is in `inbox.jsonl` | the seat's session; `bridge:check`'s channel lines |
+| `delivered`, blank | `bridge dispatch: channel_push unconfirmed` **and** `bridge channel_push: accepted by transport (unconfirmed)` with `"status":202` | ⛔ **the bridge's half is complete — and this is the row a dead wake path leaves.** The endpoint wrote the notification to its transport, and nothing the bridge records sees past that. No block in the session ⇒ the fault is past the bridge: at the endpoint, or in the session that should be behind it. | restart the session that owns the channel server (§ *Update an existing install* owns how, and what not to do instead); the deployed channel-server version (§ *Multi-agent channel-server distribution*); `check-channel-snapshot.py`, run on the seat ([`docs/seat-tools.md`](docs/seat-tools.md)) |
 
 ## Update an existing install
 
@@ -112,9 +206,12 @@ cd ~/agent-webhook-bridge-<agent>
 git pull --ff-only
 # ⚠ Running a CUSTOM classifier/handler under app/Bridge/? Migrate it IN THIS STEP
 # if you're crossing a contract change — see the callout below.
-# ⚠ Files COPIED/hand-derived out of examples/ at install (the session launcher,
-# and on some hosts the channel-server .mjs) live OUTSIDE the repo — git pull
-# CANNOT update them. Reconcile each: see "Reconcile out-of-repo copies" below.
+# ⚠ When the pull above moves examples/channel-servers/, THAT PULL is what skews the
+# host: every per-agent SNAPSHOT taken from that directory is behind the reference
+# from here on, and nothing on the host announces it. Files COPIED/hand-derived out
+# of examples/ at install (the session launcher, and on some hosts the channel-server
+# .mjs) live OUTSIDE the repo — git pull CANNOT update them. Reconcile each: see
+# "Reconcile out-of-repo copies" below.
 composer install --no-dev --optimize-autoloader
 # ⚠ Channel server loading from THIS checkout? Reconcile its installed tree too —
 # node_modules is gitignored, so the pull moved package-lock.json and left the
@@ -151,9 +248,9 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 >
 > ⚠ **It can REFUSE, and a refusal is not a failure to work around.** If `webhook_events` discloses more than one clock offset — a history that spans a DST boundary or a host whose zone was changed — no single shift is correct for all of it, so the pass throws and names the offsets with their row counts rather than corrupting the rows it would get wrong. Prune below the transition and re-run, or ask for a per-row repair; do not edit the migration to pick one.
 
-### Reconcile out-of-repo copies (session launcher + channel server + custom classifier)
+### Reconcile out-of-repo copies (session launcher + channel server + custom classifier + seat-tools pack)
 
-`git pull` only touches the repo. A few things the install depends on are **copied or hand-derived from the shipped samples (`examples/` + `docs/customization.md`) at install time** and live OUTSIDE what the repo ships, so a pull can't update them and they drift silently from the refreshed references. After every update, reconcile each against its reference — **diff-and-port; these are operator-customized, never blind-overwrite.** The **launcher** doesn't trip `bridge:check` at all (it runs inside the Claude Code *session*, not the Laravel app), so the diff is its **only** drift signal — and a stale connector is exactly how a session comes up **deaf to live-wake** ([`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md) DL-154/DL-155). The **`.mjs` snapshot** is **partially** checked **once you declare `channel.server_path`** in the agent YAML (DL-229/DL-230): `bridge:check` then WARNs when the deployed `package.json` version is behind this checkout's, reports **`unvalidated`** when that manifest cannot be read at all (DL-251 — the compare never happened), and FAILs when the path is dangling, when it names a file rather than the directory, when the directory holds no entry `.mjs` (nothing to launch), when it has no `node_modules` (the `cp -R` whose `npm ci` never happened — node dies on `ERR_MODULE_NOT_FOUND` at the next session start), and — since it never executes node — **nothing about whether the deployment will actually LAUNCH**. Every run that reaches the snapshot legs — stale, current, newer, or the repo-direct symlink — gets one `unvalidated` line saying exactly that (DL-237). The completeness leg that used to stand in for the launch question (DL-230, v0.71.0) is **retired**: measured on a real artifact, a pruned-but-working copy missing 6 of 10 reference files FAILed it while `node` bound and exited 0, and the same copy with `channel-lib.mjs` removed exited 1 on `ERR_MODULE_NOT_FOUND` — the launch is more precise in both directions. Every one of those legs `stat`s the deployment, so when the bridge's OS user cannot traverse into the deployed directory they are all replaced by a single *not visible to this user* line naming that directory — reported at severity **`unvalidated`** since DL-251 (a warn before it), because in that state nothing was measured at all — run it as the agent's user if you need them to conclude. Undeclared, it reports *not validated* at severity **`unvalidated`** — counted in the run's closing tally, never `ok` (card 5170), so a green `bridge:check` is not evidence about the snapshot — and the diff is again your only signal — the bridge cannot infer the path (it may run as a different OS user and cannot read the agent's `.mcp.json`). **Answer the launch question ON THE SEAT** — `python3 bin/check-channel-snapshot.py <deployed dir>`, run as the OS user whose Claude Code session launches the server (exit 0 launch OK · 1 launch FAILED, with node's own stderr · 2 could not check). It is stdlib-only and self-contained, so copy the one file to a seat that has no bridge checkout. Do **not** ask `bridge:check` to launch it: the bridge commonly runs as a different OS user, and a launch from there certifies the entry loads for the *bridge's* PATH and node — a proxy again (DL-237). **The diff still matters even when declared:** the check never reads a file's **content** and never enumerates the deployment, so a hand-edited copy is invisible to it, as is any extra file of your own; a **stale** copy gets the STALE warn and nothing more. The version WARN catches a stale **snapshot**, not a hand-edited one (a local modification that never touched `version` still needs the diff). A custom classifier is the partial exception: `bridge:check` confirms it *loads* (FQCN resolves + implements `Classifier`) but **not** that it's *current* with the reference, so the diff is still the only signal that it's behind on an improvement (DL-158).
+`git pull` only touches the repo. A few things the install depends on are **copied or hand-derived from the shipped samples (`examples/` + `docs/customization.md`) at install time** and live OUTSIDE what the repo ships, so a pull can't update them and they drift silently from the refreshed references. After every update, reconcile each against its reference — **diff-and-port; these are operator-customized, never blind-overwrite.** The **launcher** doesn't trip `bridge:check` at all (it runs inside the Claude Code *session*, not the Laravel app), so the diff is its **only** drift signal — and a stale connector is exactly how a session comes up **deaf to live-wake** ([`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md) DL-154/DL-155). The **`.mjs` snapshot** is **partially** checked **once you declare `channel.server_path`** in the agent YAML (DL-229/DL-230): `bridge:check` then WARNs when the deployed `package.json` version is behind this checkout's, reports **`unvalidated`** when that manifest cannot be read at all (DL-251 — the compare never happened), and FAILs when the path is dangling, when it names a file rather than the directory, when the directory holds no entry `.mjs` (nothing to launch), when it has no `node_modules` (the `cp -R` whose `npm ci` never happened — node dies on `ERR_MODULE_NOT_FOUND` at the next session start), and — since it never executes node — **nothing about whether the deployment will actually LAUNCH**. Every run that reaches the snapshot legs — stale, current, newer, or the repo-direct symlink — gets one `unvalidated` line saying exactly that (DL-237). The completeness leg that used to stand in for the launch question (DL-230, v0.71.0) is **retired**: measured on a real artifact, a pruned-but-working copy missing 6 of 10 reference files FAILed it while `node` bound and exited 0, and the same copy with `channel-lib.mjs` removed exited 1 on `ERR_MODULE_NOT_FOUND` — the launch is more precise in both directions. Every one of those legs `stat`s the deployment, so when the bridge's OS user cannot traverse into the deployed directory they are all replaced by a single *not visible to this user* line naming that directory — reported at severity **`unvalidated`** since DL-251 (a warn before it), because in that state nothing was measured at all — run it as the agent's user if you need them to conclude. Undeclared, it reports *not validated* at severity **`unvalidated`** — counted in the run's closing tally, never `ok` (card 5170), so a green `bridge:check` is not evidence about the snapshot — and the diff is again your only signal — the bridge cannot infer the path (it may run as a different OS user and cannot read the agent's `.mcp.json`). **Answer the launch question ON THE SEAT** — `check-channel-snapshot.py <deployed dir>`, run as the OS user whose Claude Code session launches the server (exit 0 launch OK · 1 launch FAILED, with node's own stderr · 2 could not check). It is a declared seat tool that runs with no bridge checkout; [`docs/seat-tools.md`](docs/seat-tools.md) owns how it reaches the seat's PATH (item 5 below keeps a staged pack current), and from a checkout `python3 bin/check-channel-snapshot.py` is the same program. Do **not** ask `bridge:check` to launch it: the bridge commonly runs as a different OS user, and a launch from there certifies the entry loads for the *bridge's* PATH and node — a proxy again (DL-237). **The diff still matters even when declared:** the check never reads a file's **content** and never enumerates the deployment, so a hand-edited copy is invisible to it, as is any extra file of your own; a **stale** copy gets the STALE warn and nothing more. The version WARN catches a stale **snapshot**, not a hand-edited one (a local modification that never touched `version` still needs the diff). A custom classifier is the partial exception: `bridge:check` confirms it *loads* (FQCN resolves + implements `Classifier`) but **not** that it's *current* with the reference, so the diff is still the only signal that it's behind on an improvement (DL-158).
 
 1. **The session launcher.** The canonical [`examples/start-channel-session.sh`](examples/start-channel-session.sh) (bash, Linux UDS+HTTP) and [`examples/start-claude.ps1`](examples/start-claude.ps1) + [`examples/start-claude.bat`](examples/start-claude.bat) (Windows HTTP-tunnel) are **self-resolving** (see "The canonical channel launcher" below) — one copy serves any agent with no per-agent hardcoding, so a verbatim copy doesn't drift the way a hand-edited one did. After a pull, `diff` each deployed launcher against its sample and port any new guardrails. (A launcher predating DL-157 is hand-rolled + channel-pinned — replace it with the self-resolving one rather than re-porting.)
 
@@ -167,10 +264,13 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 
 4. **The custom classifier** (only if the install runs one — `classifier.class` in an agent YAML points at an operator-authored `App\Bridge\Classifiers\*` the bridge doesn't ship, e.g. a GitHub-issue-comment surfacer). It lives in the install's `app/Bridge/Classifiers/` so it *survives* a pull untouched — which is exactly the drift: it freezes at the reference it was copied from. **Exception — a filename the bridge later ships tracked:** if your overlay's class name becomes one the bridge *tracks* (e.g. `CoordinationClassifier` since **v0.50.0**), the pull **collides** instead of preserving (see the "Running a custom classifier?" callout above + the v0.50.0 Upgrading note in [`docs/CHANGELOG.md`](docs/CHANGELOG.md)) — retire the overlay first, then adopt the tracked class via `classifier.config`. A **new** install starts from the worked example in [`docs/customization.md`](docs/customization.md); on each update, **diff your classifier against that reference and adopt improvements** (e.g. the `comment_id`/`comment_created_at` forwarding, DL-158) — a reconcile-**merge** that preserves your deployment-specific extensions (extra event kinds, addressing/recipient logic), not a blind replace. `bridge:check` will tell you it loads; only the diff tells you it's current.
 
+5. **The seat-tools pack** (only where one is staged — a PM's `OUTBOUND/<agent>/`, or a checkout seat's link-shape pack). Unlike every item above, this one is regenerated rather than diff-and-ported: the pack is generated output, not an operator-customized copy. A **copy-shape** pack drifts like the channel-server copy, so after the update re-stage it from the release-pinned checkout and commit it with its exec bits. A **link-shape** pack follows the checkout, except when `seat-tools.json` gains or drops a tool. [`docs/seat-tools.md`](docs/seat-tools.md) owns the staging command, the `100755` requirement, the currency check (`diff -r -x node_modules` against a fresh stage; empty is current), what a changed declaration needs on a seat, and what the PM can and cannot see.
+
 Locate every copy so none is missed (run from the updated repo):
 
 ```bash
 find ~ -name 'agent-webhook-bridge-channel.mjs' -not -path '*/node_modules/*'              # all channel-server copies
+find ~ -name seat-pack.json -path '*seat-tools*'                                           # copy-shape seat-tools packs (a link-shape pack writes none)
 find ~ -maxdepth 4 \( -name 'start-claude.sh' -o -name 'start-channel-session.sh' \
    -o -name 'start-claude.ps1' -o -name 'start-claude.bat' \) -not -path '*/node_modules/*'
 # per .mjs copy, the one-field drift check (non-empty output ⇒ re-sync that copy + npm ci):
@@ -179,7 +279,9 @@ diff <(jq -r .version <copy-dir>/package.json) <(jq -r .version examples/channel
 
 #### Multi-agent channel-server distribution (uniform provenance)
 
-A multi-agent host snapshots `examples/channel-servers/` once **per agent**, and those snapshots freeze at install version and drift silently — we've found copies several minor versions stale. This is **not an access problem** (agents can pull): the only catch is that **`gh` CLI auth ≠ git-credential auth**, so a `gh`-based reachability test can mislead — use plain `git`. The canonical reconcile, run per snapshot:
+> ⚠ **This procedure REQUIRES a bridge checkout on the host that holds the snapshot.** Every step below reads `examples/channel-servers/` out of a working tree pinned to a release tag, so a seat that consumes the **channel** rather than the **bridge** — running from a snapshot directory with no `agent-webhook-bridge` clone — has nothing to run step 1 against. That is a requirement of the procedure, not a property of your fleet: check it before you start, and if it does not hold, read *"No checkout on the host holding the snapshot"* below instead.
+
+A multi-agent host snapshots `examples/channel-servers/` once **per agent**, and those snapshots freeze at install version and drift silently — we've found copies several minor versions stale. **On a host that HAS the checkout, repo ACCESS is not what stops the reconcile**: the tree is already on disk and `git fetch` reaches the remote — the only catch is that **`gh` CLI auth ≠ git-credential auth**, so a `gh`-based reachability test can mislead, use plain `git`. ⛔ That is a claim about **permissions on a host that has a checkout**, and it is not the claim that every seat has one — those are different facts, and only the first one is established here. The canonical reconcile, run per snapshot:
 
 ```bash
 # in the repo checkout, pin to the release the fleet should run (NOT a moving branch):
@@ -189,6 +291,17 @@ cp -a examples/channel-servers/. <snapshot-dir>/ # overwrite the snapshot from t
 ```
 
 Do this **at a session boundary** (Claude Code not running for that agent): a live connector holds the old `.mjs` in memory, and swapping it mid-session risks live-wake. `package.json` `version` is the drift signal (DL-038) — if a snapshot's version is behind the tag's, it's stale.
+
+> ⛔ **WHICH TAG YOU PIN DECIDES WHETHER ANY OF THIS BECOMES MEASURABLE, AND THERE IS A FLOOR: `0.9.15` is the first reporting snapshot** — the first `examples/channel-servers/` release that sends its own `client_version` on a board-tools call **at all**. (The pin is `App\Bridge\Tools\ClientVersion`'s `FIRST_REPORTING_SNAPSHOT`, and `tests/Unit/Docs/ClientVersionFloorLockstepTest.php` reds if this sentence and that constant ever disagree — it is a frozen historical fact, not the version this checkout bundles, so it does not move when the snapshot does.) Pin the fleet **below** that floor and the reconcile above still runs correctly on every seat — right tag, right `cp -a`, right `npm ci`, right session restart — while `bridge:check` keeps printing *CLIENT VERSION NOT REPORTED* at **`ok`**, never `warn`, for every one of them. The line is not silent — it names both causes it cannot tell apart (*an older copy, or a caller that is not a channel server at all*) and says to re-deploy — but **it is printed on the bridge, hours later, to whoever runs `bridge:check`, and nothing at the point where the tag is CHOSEN says a floor exists at all.** From the bridge's side those two causes are the same absence, so the line cannot say which seat is actually below the floor. Measured on a peer fleet (2026-09-13): three live seats calling board tools, `client_version` NULL on all three — and one of them had been reconciled that same day, correctly and to completion, onto a snapshot below the floor. **If the reported-version leg is part of why you are reconciling, pin at or above the floor** — `jq -r .version examples/channel-servers/package.json` in the pinned tree tells you what the tag you chose actually carries.
+>
+> ⚠ **BOOTSTRAP — the floor is crossed ONCE per seat, by hand, and never again.** The surface that reports staleness is distributed BY the artifact whose staleness was the problem, so the one range it can never speak about is exactly the range that predates it: a seat below the floor cannot be told *by this leg* that it is below the floor. (The `channel.server_path` legs still catch a stale deployment by `stat`ing it — but they need the deployment to be on the bridge's own filesystem and readable by its OS user, which is exactly what the reported version exists to do without.) Re-running the reconcile at the same tag re-reads the same `ok`. **Re-deploy that seat once onto a snapshot at or above the floor and restart its session** — the version is read when the channel server starts — and from then on the leg answers on its own, for every future drift.
+
+**No checkout on the host holding the snapshot.** The seat can read its own `package.json` `version`; what it has no local way to learn is what that value SHOULD be, because the comparison target — the checkout's `examples/channel-servers/package.json` — is the thing it does not have. So *"am I stale?"* is not answerable on that host, and the drift check and the reconcile above both read out of a directory that host does not have. What DOES work from there:
+
+- **The bridge can answer the staleness question on the seat's behalf.** The reference channel server sends its own snapshot version on **every board-tools call**, and `bridge:check`'s `client half REPORTED …` line prints that version beside the one this checkout bundles and WARNs when the seat is behind (DL-364). It compares a **reported** value rather than `stat`ing a directory, so it crosses OS users and hosts, unlike the `channel.server_path` legs. Have the seat make one board-tools call, then read the line on the bridge — [`docs/board-tools.md`](docs/board-tools.md) § *How it is wired (operator view)* owns that leg, including the states in which it reports no version at all (an absent report is **not** a stale seat). ⛔ **It answers for a seat AT OR ABOVE the reporting floor only, and that is the one fact the checkout-less host cannot derive locally either: `0.9.15` is the first reporting snapshot.** A seat on anything older sends no version, the line reads *not reported* at `ok`, and that is the ABSENCE of a staleness verdict rather than a clean one — read the floor callout above before concluding that a quiet fleet is a current one.
+- **`check-channel-snapshot.py` answers a DIFFERENT question** — *will this deployment launch* — and deliberately makes no claim about staleness (DL-237). It is a declared seat tool, so it runs on a seat with no checkout once installed there ([`docs/seat-tools.md`](docs/seat-tools.md)), but it is not a substitute for the version compare.
+
+**Re-syncing still needs the pinned tree on that host**, since the snapshot is a copy OF it: either give the host a checkout (`git clone` the repo, then `git checkout v<version>`) and run the reconcile above there, or have a host that already has one at that tag copy the tree across. The reconcile itself cannot be done from the snapshot alone.
 
 ### Smoke-test the receiver with a signed delivery
 
@@ -215,6 +328,8 @@ curl -X POST \
   "$BRIDGE_RECEIVER_BASE_URL/github?b=${SCOPE}"     # BRIDGE_RECEIVER_BASE_URL ends in /webhooks → POST /webhooks/github
 # then: php artisan bridge:stats   (expect errored=0) ; php artisan bridge:inspect <N>
 ```
+
+⚠ **This proves the receiver, not a wake** — `errored=0` and a `delivered` row are both true over a dead wake path. § *Live-event path — configure it, then SEE a wake* owns that verification.
 
 A `401 scope_mismatch` almost always means the body omitted (or mismatched) `repository.full_name` vs `?b=` — not an HMAC problem (G-018). A `401 unknown_scope` from **`bridge:sign` itself** (it names the path it looked at) means this install has no secret for that scope — the receiver would answer the same way, so fix it before reading anything into the `curl`.
 
@@ -336,14 +451,22 @@ php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB,
                                                       # § 7a). ⚠ Since DL-368 it also covers github subscriptions whose repo webhook is
                                                       # gone, and THAT fault is a `fail` — so an install printing that entry exits
                                                       # non-zero. The block still emits no finding of its own; the leg above it does.
+                                                      # Since DL-382 it also names a github subscription whose OWN delivery record
+                                                      # has gone quiet — a `warn`, needing no token, and blind to deliveries that
+                                                      # arrive and are then dropped (docs/writeback.md § A declared github scope that
+                                                      # has gone quiet).
                                                       # ⛔ --probe-tools does NOT verify a seat's half: it stamps the same ledger row from
                                                       # this box (docs/board-tools.md step 6), so it clears the line without the seat calling.
 php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences + per-divergence history
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
-php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift);
-                                                                            #   offers a missing writeback identity_id (DL-369)
+php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile] [--allow-unreachable-receiver]
+                                                                            # ensure kanban subscriptions (--reconcile fixes drift);
+                                                                            #   offers a missing writeback identity_id (DL-369);
+                                                                            #   refuses a receiver URL this app would not route unless
+                                                                            #   --allow-unreachable-receiver (DL-377); refuses outright a
+                                                                            #   base bridge:check rejects as a URL (card#9510)
 php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-port=] [--pubkey-from=]
                                                       # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked).
                                                       # For an ssh-transport agent it mints nothing and prints that agent's SETUP PACKET
@@ -357,6 +480,8 @@ php artisan bridge:jobs [list|add|remove|enable|disable|run] [name] [--json] [--
 php artisan bridge:tick                               # one bounded pass over that registry — the opt-in crontab ingress (DL-325)
 php artisan bridge:sign --scope=<scope> [--provider=github] [--body-file=]   # print `sha256=<hex>` for a raw body read from stdin (DL-322)
 ```
+
+**Console output is plain text: no colour, and no terminal control sequence at all (DL-393, operator decision 2026-09-15, Option 1).** Every Artisan command's output passes an output choke that strips control, C1, bidi and zero-width characters before they reach your terminal, and `--ansi` does not turn colour back on. Two vendor-drawn interactive renderers are switched to their plain-text form for the same reason: `php artisan migrate` (and any other command's) yes/no or pick-one prompt renders as an ordinary typed question rather than an arrow-key box, and Symfony's autocomplete no longer redraws the line as you type. `bridge:check` shows a finding's severity as a leading word — `FAIL: `/`WARN: `/`UNVALIDATED: `/`OK: ` — ahead of its message, as well as through the exit code, the `unvalidated` tally and NEXT STEPS. ⚠ **If you scripted against `bridge:check`'s TEXT output (not `--format=json`, which carries no marker — `docs/check-json-contract.md` §2 records what the choke can still change in that document), the new marker is a leading token your parser did not expect.** ⚠ **One route around the choke is yours to choose:** selecting Laravel's `stderr` log channel (`LOG_CHANNEL` / `LOG_STACK`) writes every log record of an interactive run straight to the terminal, unstripped. The default `stack`/`single` channels write to `storage/logs/laravel.log`.
 
 `bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required. ⚠ **Retention itself still has no cron** — the one crontab line DL-325 allows drives the periodic-job REGISTRY, and retention is not a row in it (`docs/periodic-jobs.md`); adopting the tick does not schedule this command and never will. `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate. **`writeback_board_divergences` is deliberately outside retention entirely** (DL-300): it exists to outlive the log, so a window on it would be the defect it closes with a longer fuse.
 
@@ -379,14 +504,14 @@ An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** 
 The preflight reports the resolved posture **and what the store is actually holding**, because the posture line alone is a restatement of the config: it reads identically on an install with four rows and on the one that produced this leg — 894 MB of a 1.2 GB store being 30 days of full payloads, under a retention that was working correctly the whole time.
 
 ```
-retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
+OK: retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
+OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
 ⛔ **On MariaDB the `(~73% of the database)` clause is NOT printed** — the line withholds the share in words and names what to size the store by instead:
 
 ```
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
+OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
 ⚠ **The elision is deliberate — the withheld-share clause is quoted NOWHERE in this repo's prose.** It is printed verbatim by `App\Bridge\Check\Checks\RetentionPostureCheck::payloadShare()`, read it there; hand copies of it are what let a correction to this section leave the executable copy saying the opposite for a whole review round (card#8374). The bullet below owns the operator procedure the clause points at.
@@ -453,11 +578,13 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
 
 ## Diagnose
 
+- **GitHub gets `200`, every diagnostic is green, and no agent wakes.** Read the ledger row before naming a stage — § *Live-event path — configure it, then SEE a wake* § 3.
 - **`bridge:stats` shows errored dispatches, `NOT replayable`.** Those events are past `retention.null_payloads_older_than` (default 7d) and their payloads are gone; `bridge:replay` refuses them and no command can recover them. Fix the classifier so the class stops recurring, and widen the window (then `php artisan config:cache`) if your detection latency needs it.
 - **`bridge:stats` shows errored dispatches.** A classifier threw. `bridge:inspect <id>` (or `storage/logs/laravel.log`) for detail → fix → `optimize:clear && reload php8.5-fpm` → `bridge:replay <id>`.
 - **Idle agent — channel pushes "failing".** Connection-refused with no Claude Code session up is NORMAL: row is **done with a note**, intent is in `inbox.jsonl` for the next `bridge:inbox`. Not an incident; `--force` re-attempts the push.
 - **A config edit "didn't take".** The optimize trap above — `optimize:clear && optimize && reload php8.5-fpm`.
 - **kanban-board webhook auto-deactivated.** A short reinstall won't trip it (transient 5xx are mid-curve, not fully-failed). `curl …/api/v3/webhooks | jq '.data[] | select(.board_id==5) | .active'`; if `false`, re-run `bridge:provision`.
+- **A github-subscribed agent gets no wakes.** Run `bridge:check` and read its `github delivery history` line for that scope first: it says whether this install has RECORDED deliveries for the scope and whether the silence is past what the scope's own record calls routine. A silent record points at the repo's webhook ([`docs/writeback.md` § A declared github scope that has gone quiet](docs/writeback.md#a-declared-github-scope-that-has-gone-quiet)). ⛔ **A healthy record does NOT clear the agent** — that leg witnesses the delivery side only, so deliveries recorded and then dropped before any wake (the echo gate, DL-373) read as healthy there; look at `agent.coordination_identity` and `bridge:inspect <id>` for a recorded event's dispatch outcome.
 - **`413` on legitimate payloads.** Raise `BRIDGE_MAX_BODY_BYTES` and the FPM pool's `post_max_size` together.
 
 ## Rollback

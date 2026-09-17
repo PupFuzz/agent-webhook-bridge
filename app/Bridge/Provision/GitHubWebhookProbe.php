@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -68,18 +70,39 @@ final class GitHubWebhookProbe
         $client = new GitHubReadClient((string) $resolution->token);
 
         try {
-            $found = $client->hasRepoWebhookFor($repo, $receiverUrl);
+            $answer = $client->hasRepoWebhookFor($repo, $receiverUrl);
         } catch (RequestException $e) {
             $status = $e->response->status();
 
             return GitHubWebhookProbeResult::http($status, self::hintFor($status), $source);
         } catch (Throwable $e) {   // timeout / connection — the read never happened
-            return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.$e->getMessage().')', $source);
+            // ⛔ ESCAPED HERE, AT THE PRODUCER (card#9200, DL-366), so
+            // `GitHubWebhookProbeResult::$reason` is a `string` that is safe for an operator's
+            // TERMINAL — for the consumer that puts it there and for any second one. ⚠ THAT IS
+            // the narrower of the two claims this repo spells "safe to print", and it is the
+            // one this value needs: these are cURL/Guzzle bytes about a connection that never
+            // held a credential, so unlike `TokenResolution::$problem` this span is not also
+            // put through `SecretScrubber`.
+            // ⚠ THE RULING IS THE TWIN'S, DELIBERATELY — {@see GitHubRepoProbe::probe()} has
+            // the byte-identical arm and escapes it for a reason that transfers without
+            // restatement: the arm above takes `$e->response->status()` (an `int`) plus bridge
+            // prose, so a Laravel `RequestException` — the shape that DOES embed a
+            // response-body summary — never lands here, and what does is cURL/Guzzle prose.
+            // Ruling that a non-member would take enumerating every `Throwable` Guzzle can
+            // raise, which was NOT done. One escape of a value nobody prints raw costs
+            // nothing; a wrong non-membership ruling costs a live defect. ⚑ IT WAS THE TWIN
+            // THAT WAS RULED AND THIS ONE THAT WAS NOT — the asymmetry, not the arm, was the
+            // defect (card#9200 review round).
+            return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')', $source);
         }
 
-        return match ($found) {
+        return match ($answer->found) {
             true => GitHubWebhookProbeResult::present($source),
-            false => GitHubWebhookProbeResult::absent($source),
+            // ⚠ THE COUNT RIDES ONLY THIS ARM, and it is the client that decides so: it is
+            // populated exactly where the enumeration ran to the end, which is the same
+            // condition that earns `Absent`. Passing it here rather than re-deriving it keeps
+            // one answer about one read (card#9717).
+            false => GitHubWebhookProbeResult::absent($source, $answer->hookCount),
             // The client's third answer: a 200 that was not a hook list, or a pagination
             // bound reached. It owns why each of those is not an absence.
             null => GitHubWebhookProbeResult::unreadable("GitHub answered 200 but this run could not enumerate {$repo}'s webhooks from it", $source),

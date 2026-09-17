@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardCreateCardTool;
+use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -70,12 +72,21 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         'board_correct_card' => "required: ['card_id']",
     ];
 
+    /**
+     * Tools whose schema restates a cap but takes no tags, so they are outside {@see tagTools}.
+     *
+     * @var array<string, string> tool name => the `required:` line that closes its schema
+     */
+    private const CAPPED_UNTAGGED_TOOLS = [
+        'board_comment_card' => "required: ['card_id', 'content']",
+    ];
+
     private function toolDefinition(string $tool): string
     {
         $src = BundledChannelServer::source();
         $start = strpos($src, "name: '{$tool}',");
         $this->assertNotFalse($start, "the channel server no longer defines {$tool} — a tool absent from TOOL_DEFINITIONS is unreachable from a seat");
-        $end = strpos($src, self::TAG_TOOLS[$tool], $start);
+        $end = strpos($src, self::TAG_TOOLS[$tool] ?? self::CAPPED_UNTAGGED_TOOLS[$tool], $start);
         $this->assertNotFalse($end, "{$tool}'s definition no longer ends where this test expects — re-anchor the extraction");
 
         return substr($src, $start, $end - $start);
@@ -112,6 +123,20 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         );
 
         return $block;
+    }
+
+    /**
+     * card#9588: `idempotency_key` is bounded by what `idem:<agent>:` leaves of kanban's tag cap,
+     * not by its own `{1,64}`, so the property a seat reads must name the tag the key is stored in
+     * and that cap. Both needles are derived — the tag from the tool's own builder, the cap from
+     * its constant followed by a word, because a bare `64` is satisfied by `{1,64}` alone.
+     */
+    public function test_the_create_entry_states_the_tag_the_idempotency_key_is_capped_by(): void
+    {
+        $block = $this->property('board_create_card', 'idempotency_key');
+
+        $this->assertStringContainsString(BoardCreateCardTool::idemTag('<agent>', '<key>'), $block, 'board_create_card\'s `idempotency_key` no longer names the tag the key is stored in — a seat cannot work out its effective cap and sends a key the bridge refuses');
+        $this->assertStringContainsString(KanbanFieldLimits::TAG_MAX.' characters', $block, 'board_create_card\'s `idempotency_key` no longer names the tag cap that bounds the key');
     }
 
     /** @return array<string, array{string}> */
@@ -160,6 +185,59 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
                 "name: '{$tool}',",
                 $definitions,
                 "the bridge registers `{$tool}` and the reference channel server does not advertise it — a tool absent from TOOL_DEFINITIONS is UNREACHABLE from every seat that deploys this directory, and the seat will report it missing as though the bridge lacked it"
+            );
+        }
+    }
+
+    /**
+     * The ADVERTISED argument set of each tool, held equal to the set the bridge ENFORCES. The
+     * schema's `additionalProperties: false` tells a client that no other key exists, and
+     * {@see BoardToolDispatcher} is what makes that true — but only for the
+     * keys each tool declares. A property the server advertises and the tool does not declare
+     * turns a model's schema-valid call into a refusal; a key the tool declares and the server
+     * omits is an argument no model can discover. Set EQUALITY for that reason, and the
+     * population is the registry, so a new tool cannot be exempted by omission.
+     *
+     * ⚠ THE EXTRACTION IS TEXTUAL, like every other check in this class, and asserts its own
+     * anchors: an entry is cut from its `name:` line to the next entry (or the array's close),
+     * its `properties` block from `inputSchema`'s `properties: {` to the line closing it at six
+     * spaces, and a property is a key at eight spaces inside that block. A reshaped file reds
+     * as an anchor failure rather than as a false clean.
+     */
+    public function test_every_tool_advertises_exactly_the_argument_keys_the_bridge_accepts(): void
+    {
+        $src = BundledChannelServer::source();
+        $registry = new BoardToolsRegistry;
+
+        foreach ($registry->known() as $tool) {
+            $start = strpos($src, "\n    name: '{$tool}',\n");
+            $this->assertNotFalse($start, "the channel server no longer defines {$tool} at the entry indentation this test reads — re-anchor it");
+            $next = strpos($src, "\n  {\n    name: '", $start + 1);
+            $close = strpos($src, "\n];\n", $start);
+            $this->assertNotFalse($close, 'the TOOL_DEFINITIONS literal no longer closes where this test expects — re-anchor it');
+            $entry = substr($src, $start, ($next === false || $next > $close ? $close : $next) - $start);
+
+            $this->assertMatchesRegularExpression(
+                '/^ {6}additionalProperties: false,$/m',
+                $entry,
+                "the channel server's {$tool} schema does not declare `additionalProperties: false`, so a client is not told that the bridge refuses every key outside the declared set",
+            );
+
+            $propsStart = strpos($entry, "\n      properties: {\n");
+            $this->assertNotFalse($propsStart, "{$tool}'s schema no longer opens `properties` where this test expects — re-anchor it");
+            $propsEnd = strpos($entry, "\n      },\n", $propsStart);
+            $this->assertNotFalse($propsEnd, "{$tool}'s `properties` block no longer closes where this test expects — re-anchor it");
+            preg_match_all('/^ {8}([A-Za-z_][A-Za-z0-9_]*): /m', substr($entry, $propsStart, $propsEnd - $propsStart), $m);
+
+            $advertised = $m[1];
+            sort($advertised);
+            $accepted = $registry->resolve($tool)?->acceptedArguments() ?? [];
+            sort($accepted);
+
+            $this->assertSame(
+                $accepted,
+                $advertised,
+                "the channel server advertises {$tool}'s arguments as [".implode(', ', $advertised).'] but the bridge accepts ['.implode(', ', $accepted).'] — an advertised key the bridge does not accept is refused on a schema-valid call, and an accepted key the schema omits is undiscoverable',
             );
         }
     }
@@ -293,6 +371,20 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
             'board_correct_card' => ['board_correct_card', 'name'],
             'board_create_card' => ['board_create_card', 'title'],
         ];
+    }
+
+    /**
+     * `board_comment_card` refuses on {@see KanbanFieldLimits::COMMENT_MAX} over the body it sends,
+     * so its `content` property must state that cap — the same failure as a stale NAME_MAX: a seat
+     * sends a comment the bridge refuses and reads the 422 as a bridge bug.
+     */
+    public function test_the_channel_server_advertises_the_comment_cap_the_bridge_refuses_on(): void
+    {
+        $this->assertStringContainsString(
+            (string) KanbanFieldLimits::COMMENT_MAX,
+            $this->property('board_comment_card', 'content'),
+            "the channel server's board_comment_card `content` property does not state the ".KanbanFieldLimits::COMMENT_MAX.'-character cap the bridge refuses on'
+        );
     }
 
     #[DataProvider('nameCapProperties')]

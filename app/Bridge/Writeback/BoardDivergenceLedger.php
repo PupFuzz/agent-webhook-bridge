@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Console\Commands\Bridge\StatsCommand;
 use App\Models\WritebackBoardDivergence;
 use Illuminate\Support\Facades\Log;
@@ -110,7 +111,7 @@ final class BoardDivergenceLedger
         } catch (Throwable $e) {
             Log::error(
                 'writeback: a board divergence could not be persisted — this observation now expires with the log',
-                ['disposition' => $disposition, 'error' => $e->getMessage()] + $boardContext,
+                ['disposition' => $disposition, 'error' => RedactedErrorText::of($e)] + $boardContext,
             );
         }
     }

@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
@@ -66,7 +67,9 @@ use Illuminate\Support\Facades\Log;
  * differently under an ASCII casefold than under a Unicode-aware collation, and
  * the metacharacters mis-split or wildcard-over-match the kanban tokenizer. The
  * idempotency_key is charset-constrained to `[A-Za-z0-9.-]{1,64}` for the same
- * tokenizer reason AND lowercased after it validates, so the bridge always
+ * tokenizer reason, LENGTH-capped at what {@see idemTag}'s prefix leaves of kanban's tag
+ * cap (card#9588 — the key is stored inside that tag, so `{1,64}` is not its real bound),
+ * AND lowercased after it validates, so the bridge always
  * stores/searches one deterministic `idem:<agent>:<key>` tag (a
  * `Report`/`report` pair cannot mint two probe tags whose correlation would
  * then depend on the backend's collation).
@@ -99,14 +102,14 @@ final class BoardCreateCardTool implements Tool
         $title = $this->requireTitle($args);
         $description = $this->optionalDescription($args);
         $callerTags = CallerTagPolicy::sanitize($args, $this->name());
-        $idemKey = $this->validateIdempotencyKey($args);
+        $idemKey = $this->validateIdempotencyKey($args, $agentName);
 
         $boardId = (int) $cfg->boardId;
         $tags = $callerTags;
         $tags[] = "created-by:{$agentName}";
         $idemTag = null;
         if ($idemKey !== null) {
-            $idemTag = "idem:{$agentName}:{$idemKey}";
+            $idemTag = self::idemTag($agentName, $idemKey);
             $tags[] = $idemTag;
 
             // Correlate-before-create (DL-198 leg 1): a prior call with the same
@@ -202,6 +205,16 @@ final class BoardCreateCardTool implements Tool
         return 'board_create_card';
     }
 
+    public function acceptedArguments(): array
+    {
+        return ['title', 'description', 'tags', 'idempotency_key'];
+    }
+
+    public function refusedArgumentReason(string $key): ?string
+    {
+        return null;
+    }
+
     /**
      * WHERE THE CARD ACTUALLY IS — the placement half of this tool's answer, read
      * back from the card itself (card#7225, DL-299). Both arms used to restate
@@ -277,7 +290,7 @@ final class BoardCreateCardTool implements Tool
             $card = $client->getCard($cardId);
         } catch (\Throwable $e) {
             Log::warning('board_create_card: the card could not be read back, so the response reports NO placement rather than the configured board/lane', [
-                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => $e->getMessage(),
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
             ]);
 
             return $unobserved;
@@ -356,8 +369,9 @@ final class BoardCreateCardTool implements Tool
 
     /**
      * A 4xx the BOARD answered on one of the two idempotency READS, mapped to a named
-     * refusal; anything else (5xx, a timeout) is re-thrown for the dispatcher's retryable
-     * 502 (card#8486, the mapping DL-326 built for `board_correct_card`).
+     * refusal (card#8486).
+     * Which statuses refuse and which are re-thrown is {@see BoardCallRefusal}'s; what a call
+     * that gets no answer returns is `docs/board-tools.md` § A PERMANENT board 4xx.
      *
      * ⭐ THE READS ARE WHERE A ROTATED TOKEN SURFACES ON THIS TOOL, and until this they
      * surfaced as a 502 the seat retried: kanban's v3 API is `auth:sanctum`, so a 401 is
@@ -395,13 +409,15 @@ final class BoardCreateCardTool implements Tool
      * A 4xx the BOARD answered on the CREATE itself. Every arm is deterministic, so every
      * one is a refusal rather than the retryable 502: a 401 means the token is no longer
      * accepted, a 403 that the writeback user may not create here, a 404 that the create
-     * ROUTE is not there, and a 422 that kanban's own validator rejected a VALUE — which no
+     * ROUTE is not there, and a 422 that the board refused a VALUE the create carried — which no
      * number of retries will change either.
      *
      * ⛔ THE 422 ARM IS WHAT MAKES THE BRIDGE-SIDE BOUNDS SAFE TO GO STALE — the title cap
-     * above and {@see CallerTagPolicy}'s tag cap mirror rules that live in kanban's repo, so
-     * reaching a board 422 with both satisfied is precisely the signal that one has moved.
-     * The message is BRIDGE-AUTHORED: the board's response body is never echoed.
+     * above and {@see CallerTagPolicy}'s tag cap mirror rules that live in kanban's repo. A
+     * create that reached the board passed both, so the arm says so and relays the board's own
+     * reason ({@see BoardCallRefusal::boardReason}, DL-384) rather than sending the seat to
+     * shorten a field that was never the cause (rt#484). The reason goes LAST, so the board's
+     * text cannot run into a sentence the bridge vouches for.
      *
      * ⭐ THE 403 ARM DOES NOT ENUMERATE ITS OWN GATES — {@see BoardCallRefusal::writeGatesClause}
      * does, for every write on this door. This arm enumerated them longhand when it was first
@@ -423,7 +439,7 @@ final class BoardCreateCardTool implements Tool
             404 => "board_create_card: the board answered 404 for the create itself, which is an API-surface fault rather than anything about board {$boardId} — NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.",
             403 => "board_create_card: the board refused the create (403) — the bridge's writeback user may not create cards on board {$boardId}. ".BoardCallRefusal::writeGatesClause('POST', 'task.create').' NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => 'board_create_card: the board did not accept the bridge\'s writeback token at all on the create (401) — it has been revoked, rotated or replaced with a value the board does not know. NO card was created. This is an INSTALL fault; retrying will not change it.',
-            422 => 'board_create_card: the board REJECTED the value you sent (422) — kanban\'s own validator refused it, so NO card was created and re-sending the same call cannot succeed. '.BoardCallRefusal::bridgeBoundsClause().' Shorten or simplify your `title`, `description` or tags, and report it to your operator if it persists.',
+            422 => 'board_create_card: the board REJECTED the create (422), so NO card was created, and re-sending the same call unchanged will be refused the same way. '.BoardCallRefusal::bridgeBoundsClause('title').' Kanban calls your `title` `name`. Change what the reason at the end of this message names, and report it to your operator if it names nothing you sent. '.BoardCallRefusal::boardReason($e),
         });
     }
 
@@ -512,9 +528,19 @@ final class BoardCreateCardTool implements Tool
     }
 
     /**
+     * The tag an `idempotency_key` is stored and searched under — its ONE spelling, and so
+     * also where the key's effective cap comes from ({@see validateIdempotencyKey}): kanban
+     * caps the whole tag, so a key may use only what this prefix leaves of it.
+     */
+    public static function idemTag(string $agentName, string $key): string
+    {
+        return "idem:{$agentName}:{$key}";
+    }
+
+    /**
      * @param  array<string, mixed>  $args
      */
-    private function validateIdempotencyKey(array $args): ?string
+    private function validateIdempotencyKey(array $args, string $agentName): ?string
     {
         if (! array_key_exists('idempotency_key', $args) || $args['idempotency_key'] === null) {
             return null;
@@ -522,6 +548,17 @@ final class BoardCreateCardTool implements Tool
         $key = $args['idempotency_key'];
         if (! is_string($key) || preg_match('/^[A-Za-z0-9.-]{1,64}$/D', $key) !== 1) {
             throw new ToolRefusalException('board_create_card: `idempotency_key` must match [A-Za-z0-9.-]{1,64} — other characters (notably " * _ %) are kanban tag-search metacharacters that could correlate the wrong card');
+        }
+
+        // ⛔ `{1,64}` is the key's charset bound, not its length cap (card#9588): the key is
+        // stored INSIDE a tag kanban caps at TAG_MAX, so a longer one is refused by the board
+        // on every attempt — a 422 no retry clears. Refused here instead, before any read.
+        $cap = KanbanFieldLimits::TAG_MAX - mb_strlen(self::idemTag($agentName, ''));
+        if ($cap < 1) {
+            throw new ToolRefusalException("board_create_card: this agent name `{$agentName}` is ".mb_strlen($agentName).' characters, so the tag an `idempotency_key` is stored in (`'.self::idemTag($agentName, '<key>').'`) reaches kanban\'s '.KanbanFieldLimits::TAG_MAX.'-character tag cap (`tags.* => string|max:64`) before any key is added, and no key can be accepted for this agent. NO card was created and nothing was sent to the board. This is an INSTALL fault — the agent\'s configured name — not something your arguments can fix; report it to your operator.');
+        }
+        if (mb_strlen($key) > $cap) {
+            throw new ToolRefusalException('board_create_card: `idempotency_key` is '.mb_strlen($key)." characters — at most {$cap} for agent `{$agentName}`, because the bridge stores it in the tag `".self::idemTag($agentName, '<key>').'` and kanban accepts at most '.KanbanFieldLimits::TAG_MAX.' characters per tag (`tags.* => string|max:64`). NO card was created and nothing was sent to the board; pass a shorter key.');
         }
 
         // Normalize case AFTER the charset check: whether the stored/searched

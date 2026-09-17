@@ -17,6 +17,7 @@ use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\Question;
+use Tests\Support\AssertsNoLiveControlByte;
 use Tests\TestCase;
 use Throwable;
 
@@ -49,6 +50,8 @@ use Throwable;
  */
 class WritebackIdentityOfferTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
+
     private string $dir;
 
     /**
@@ -67,6 +70,9 @@ class WritebackIdentityOfferTest extends TestCase
     private const EMAIL = 'writeback-service@example.com';
 
     private const NAME = 'Kanban Bridge Writeback';
+
+    /** A display name carrying a bidi override and a zero-width space — `\p{Cf}`, which the resolver accepts. */
+    private const FORMAT_CHAR_NAME = "acct\u{202E}evil\u{200B}x";
 
     protected function setUp(): void
     {
@@ -388,6 +394,50 @@ class WritebackIdentityOfferTest extends TestCase
         $this->assertStringNotContainsString('SPOOFED', $output);
         $this->assertStringContainsString('control character', $output);
         $this->assertNull($this->identityInFile());
+    }
+
+    /**
+     * ⛔ A FORMAT CHARACTER IS ESCAPED, NOT REFUSED. The resolver accepts `\p{Cf}` so a
+     * legitimate RTL name or emoji ZWJ sequence still resolves — which means a U+202E in the
+     * name would reorder the very line the operator reads to recognise the account. The offer
+     * is still MADE (the question is asked), and the name reaches that line with each hidden
+     * character shown as `\x{NNNN}` and none of them live.
+     */
+    public function test_a_display_name_carrying_a_format_character_is_offered_with_it_escaped(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeApi(fn () => Http::response(['data' => ['id' => 6, 'name' => self::FORMAT_CHAR_NAME, 'email' => self::EMAIL]]));
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString('resolves to kanban user 6 ("acct\\x{202E}evil\\x{200B}x")', $output);
+        $this->assertStringNotContainsString("\u{202E}", $output);
+        $this->assertStringNotContainsString("\u{200B}", $output);
+        $this->assertNoLiveControlByte($output);
+        $this->assertSame(['Write identity_id 6 into writeback.json?'], $this->prompts->getArrayCopy(), 'a format character must be escaped, not refused — the offer is still made');
+    }
+
+    /**
+     * The non-vacuity control over the FIXTURE: the name must actually carry the codepoints the
+     * escape exists to neutralise, or the test above passes against a name that never had any.
+     */
+    public function test_the_format_character_fixture_actually_carries_format_characters(): void
+    {
+        $this->assertStringContainsString("\u{202E}", self::FORMAT_CHAR_NAME);
+        $this->assertStringContainsString("\u{200B}", self::FORMAT_CHAR_NAME);
+        $this->assertSame(1, preg_match('/\p{Cf}/u', self::FORMAT_CHAR_NAME));
+    }
+
+    /** The control: a plain ASCII name passes through the escape byte for byte. */
+    public function test_a_plain_display_name_is_rendered_unchanged_by_the_escape(): void
+    {
+        $this->seedWritebackWithoutIdentity();
+        $this->fakeResolvedUser();
+
+        $output = $this->runConsole(false);
+
+        $this->assertStringContainsString('resolves to kanban user 6 ("'.self::NAME.'")', $output);
+        $this->assertStringNotContainsString('\\x', $output);
     }
 
     public function test_an_already_declared_identity_id_is_left_alone_and_asks_nothing(): void

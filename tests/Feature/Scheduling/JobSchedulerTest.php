@@ -11,6 +11,7 @@ use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Standup\StandupGate;
+use App\Bridge\Support\HandlerRegistry;
 use App\Models\ScheduledJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -46,7 +47,7 @@ class JobSchedulerTest extends TestCase
         ]);
 
         $this->handler = new RecordingJobHandler;
-        $this->handlers = new JobHandlerRegistry([], $this->app->make(StandupGate::class));
+        $this->handlers = new JobHandlerRegistry([], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         $this->handlers->register($this->handler);
         $this->handlers->register(new RecordingJobHandler('mutating_job', JobCapability::MutatesState));
     }
@@ -193,7 +194,7 @@ class JobSchedulerTest extends TestCase
     public function test_a_state_mutating_handler_disarmed_after_insert_is_refused_at_run(): void
     {
         // Armed at insert…
-        $handlers = new JobHandlerRegistry(['mutating_job'], $this->app->make(StandupGate::class));
+        $handlers = new JobHandlerRegistry(['mutating_job'], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         $handlers->register(new RecordingJobHandler('mutating_job', JobCapability::MutatesState));
         (new JobRegistry($handlers))->insert(new JobSpec(
             name: 'mutator',

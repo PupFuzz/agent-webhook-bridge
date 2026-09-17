@@ -23,12 +23,14 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
+use Tests\Support\AssertsSeatToolRemedy;
 use Tests\Support\ConsoleTable;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
 {
+    use AssertsSeatToolRemedy;
     use RefreshDatabase;
 
     private string $dir;
@@ -2949,7 +2951,7 @@ class BridgeCommandsTest extends TestCase
      * graceful child exit sent COM_QUIT on the fork-inherited DB connection, surfacing in
      * the PARENT as "MySQL server has gone away" under a real MariaDB driver.
      */
-    public function test_check_reports_channel_socket_live_when_a_session_listens(): void
+    public function test_check_reports_channel_socket_live_when_a_process_accepts_the_connection(): void
     {
         $sock = $this->dir.'/live.sock';
         $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
@@ -3615,7 +3617,10 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringNotContainsString('is MISSING', $out);
         $this->assertStringContainsString('was NOT launch-tested', $out);
-        $this->assertStringContainsString('bin/check-channel-snapshot.py', $out);
+        $disclosure = collect(explode("\n", $out))->first(fn (string $line) => str_contains($line, 'was NOT launch-tested'));
+        $this->assertIsString($disclosure);
+        $this->assertRemedyIsADeclaredSeatTool($disclosure);
+        $this->assertStringContainsString('docs/seat-tools.md', $disclosure);
         $this->assertStringContainsString('ON THAT SEAT', $out);
         // EXACTLY one per agent, never one per leg — it is a statement about the run.
         $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));

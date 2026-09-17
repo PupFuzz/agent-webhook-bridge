@@ -4,13 +4,13 @@ namespace App\Bridge\Standup;
 
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\Intent;
-use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Retention\RetentionService;
-use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AuthoredIntentPush;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -45,21 +45,13 @@ final class StandupService
     }
 
     /**
-     * Push a digest at the named seat over its own configured channel.
-     *
-     * Deliberately routed through the registered `channel_push` handler rather than
-     * `ChannelPushTransport` directly: that handler already owns the agent-config
-     * endpoint fallback, the fail-closed bearer read, the socket validation and the
-     * DL-014 prefix gate. A second sender would be a second, quietly-weaker set of those
-     * rules. The payload carries no `socket`/`url`, which is precisely what selects the
-     * agent-config branch — the only branch a token may ride.
+     * Push a digest at the named seat over its own configured channel, through the one
+     * sender every bridge-authored intent uses ({@see AuthoredIntentPush}).
      *
      * @throws HandlerException|ConfigException
      */
     public function push(StandupDigest $digest, string $agentName): void
     {
-        $agent = AgentConfig::load($agentName, (string) config('bridge.config_dir'));
-
         $intent = new Intent(
             kind: 'pm_standup',
             subjectId: 'standup:'.$digest->generatedAt,
@@ -72,20 +64,7 @@ final class StandupService
             payload: $digest->toArray(),
         );
 
-        $handler = $this->handlers->resolve(HandlerRegistry::CHANNEL_PUSH);
-        if ($handler === null) {
-            throw new HandlerException('standup: the channel_push handler is not registered');
-        }
-
-        $handler->handle(
-            ReactionTarget::make(
-                handler: HandlerRegistry::CHANNEL_PUSH,
-                targetId: $intent->subjectId,
-                debounceSeconds: 0,
-                payload: $intent->toArray(),
-            ),
-            $agent,
-        );
+        (new AuthoredIntentPush($this->handlers))->send($intent, $agentName);
     }
 
     /**
@@ -187,7 +166,7 @@ final class StandupService
             // board says WHY it has no number instead of the digest silently shipping
             // without a boards section.
             return array_map(
-                fn (int $boardId): BoardSnapshot => BoardSnapshot::unavailable($boardId, 'no usable kanban writeback client: '.$e->getMessage()),
+                fn (int $boardId): BoardSnapshot => BoardSnapshot::unavailable($boardId, 'no usable kanban writeback client: '.RedactedErrorText::of($e)),
                 array_keys($nowStages),
             );
         }
@@ -221,7 +200,7 @@ final class StandupService
         try {
             $read = $client->readBoardCards($boardId);
         } catch (Throwable $e) {
-            return BoardSnapshot::unavailable($boardId, 'board read failed: '.$e->getMessage());
+            return BoardSnapshot::unavailable($boardId, 'board read failed: '.RedactedErrorText::of($e));
         }
 
         if ($read['truncated']) {

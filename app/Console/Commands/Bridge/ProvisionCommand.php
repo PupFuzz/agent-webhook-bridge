@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Provision\KanbanProvisionClient;
@@ -10,10 +11,15 @@ use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Provision\WritebackIdentityOffer;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ReceiverUrl;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Support\UrlValidator;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Routing\Router;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Throwable;
 
@@ -28,10 +34,19 @@ use Throwable;
  * (delete + recreate reusing the secret); without it, drift is reported with a
  * non-zero exit. URL-drift orphan cleanup is manual (no local registry — the
  * live API is the source of truth).
+ *
+ * A receiver base `bridge:check` rejects as a URL is REFUSED for the whole run, in every mode
+ * but `--list`, before anything is sent upstream or written locally — see
+ * {@see self::receiverBaseRefusal()}.
+ * A subscription whose composed receiver URL reaches no receiver route in this app is
+ * REFUSED on its own, before anything is sent upstream or written for it, unless
+ * `--allow-unreachable-receiver` is given — see {@see self::mayRegister()}.
  */
 class ProvisionCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:provision {--agent= : limit to one agent} {--dry-run : preview, change nothing} {--list : show live subscriptions and exit} {--reconcile : fix inactive/filter-drifted subscriptions (delete + recreate, reusing the secret)}';
+    private const ALLOW_UNREACHABLE_RECEIVER = 'allow-unreachable-receiver';
+
+    protected $signature = 'bridge:provision {--agent= : limit to one agent} {--dry-run : preview, change nothing} {--list : show live subscriptions and exit} {--reconcile : fix inactive/filter-drifted subscriptions (delete + recreate, reusing the secret)} {--'.self::ALLOW_UNREACHABLE_RECEIVER.' : register a receiver URL even though it reaches no receiver route in this app (e.g. an install behind a proxy that rewrites the request path)}';
 
     protected $description = 'Register webhook subscriptions on kanban-board for each agent config';
 
@@ -48,6 +63,12 @@ class ProvisionCommand extends BridgeCommand
         $receiverBaseUrl = (string) config('bridge.receiver_base_url');
         if ($receiverBaseUrl === '') {
             $this->error('bridge.receiver_base_url (BRIDGE_RECEIVER_BASE_URL) must be configured');
+
+            return self::FAILURE;
+        }
+        $refusal = $this->option('list') ? null : $this->receiverBaseRefusal($receiverBaseUrl);
+        if ($refusal !== null) {
+            $this->error(OutputFormatter::escape($refusal));
 
             return self::FAILURE;
         }
@@ -109,13 +130,33 @@ class ProvisionCommand extends BridgeCommand
                     continue;
                 }
 
-                UrlValidator::secureHttpUrl($apiBaseUrl, "bridge.providers.{$sub->provider}.api_base_url");
+                // ⛔ GUARDED, AND THE GUARD IS THE FIX (card#9528 R1 review). This line runs for
+                // every subscription INCLUDING under `--list`, which reaches it before its own
+                // branch below — so an unguarded throw left the one mode an operator uses to
+                // inspect a broken install dying with an Artisan stack trace instead of a named
+                // refusal. Per SUBSCRIPTION rather than per run: the verdict is about one
+                // provider's own key, and another provider's rows stay readable.
+                try {
+                    UrlValidator::configDoorSecureHttpUrl($apiBaseUrl, "bridge.providers.{$sub->provider}.api_base_url");
+                } catch (ConfigException $e) {
+                    $this->error(OutputFormatter::escape("{$label} FAIL — ".$e->getMessage()));
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
                 $client = new KanbanProvisionClient($apiBaseUrl, $token);
                 $receiverUrl = ReceiverUrl::for($receiverBaseUrl, $sub->provider, $sub->scopeId);
+                $shown = $this->shownReceiverUrl($receiverUrl, $sub->provider, $sub->scopeId);
+
+                if (! $this->option('list') && ! $this->mayRegister($label, $sub->provider, $sub->scopeId, $receiverUrl, $shown)) {
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
 
                 try {
                     if ($this->option('list')) {
-                        $this->listScope($client, $label, $sub->scopeId);
+                        $this->listScope($client, $label, $sub->provider, $sub->scopeId);
 
                         continue;
                     }
@@ -124,12 +165,17 @@ class ProvisionCommand extends BridgeCommand
                         $client, $sub->provider, $sub->scopeId, $receiverUrl,
                         $sub->eventFilter ?: null, (bool) $this->option('dry-run'), (bool) $this->option('reconcile'),
                     );
-                    $this->reportResult($label, $result, $receiverUrl);
+                    $this->reportResult($label, $result, $shown);
                     if (in_array($result->status, ['drift', 'cannot_reconcile'], true)) {
                         $rc = self::FAILURE;   // operator must act (re-run with --reconcile, or fix the secret)
                     }
                 } catch (Throwable $e) {
-                    $this->error("{$label} API error: {$e->getMessage()}");
+                    // ⛔ FOREIGN BYTES ON AN OPERATOR'S TERMINAL, escaped at the write for
+                    // the reason `ReconcileCommand`'s read arm spells out: this arm relays a
+                    // `RequestException` carrying the kanban RESPONSE BODY, there is no
+                    // `Finding` and no renderer in the path, and Guzzle's body-summary gate
+                    // passes `\r` (card#9121, DL-366).
+                    $this->error("{$label} API error: ".UntrustedText::forOperator($this->apiErrorText($e, $receiverUrl, $shown)));
                     $rc = self::FAILURE;
                 }
             }
@@ -138,6 +184,78 @@ class ProvisionCommand extends BridgeCommand
         $this->offerWritebackIdentity($configDir, $secretDir, $allAgents);
 
         return $rc;
+    }
+
+    /**
+     * Why this run may not use `$receiverBaseUrl` at all, or null when it may.
+     *
+     * ⛔ THE RULE IS {@see UrlValidator::configDoorHttpUrl()}, the one `install.endpoint_urls`
+     * fails `bridge:check` on for this field — never a scheme check of this command's own. Not
+     * `secureHttpUrl()`: that is the floor for the endpoints that carry a secret, and
+     * `bridge:check` does not hold the receiver base to it. The `configDoor…` tier is what
+     * `bridge:check` asks, so asking the same one here is what keeps the two commands from
+     * disagreeing about one value.
+     *
+     * `--list` is exempt (operator ruling, 2026-09-14): its listing never reads the base, and
+     * it shows every webhook on the scope, so a row registered at an earlier malformed base
+     * stays visible for cleanup. `--allow-unreachable-receiver` does not bypass it — that flag answers for a proxy that rewrites the PATH, and no proxy
+     * makes a base that is not an http(s) URL deliverable. The message is the validator's,
+     * which quotes the value through `SecretScrubber::url()`.
+     */
+    private function receiverBaseRefusal(string $receiverBaseUrl): ?string
+    {
+        try {
+            UrlValidator::configDoorHttpUrl($receiverBaseUrl, 'bridge.receiver_base_url');
+
+            return null;
+        } catch (ConfigException $e) {
+            return 'REFUSED — '.$e->getMessage().'; nothing was sent upstream or written. '
+                ."Fix BRIDGE_RECEIVER_BASE_URL in this install's .env and re-run (bridge:check fails on the same value). "
+                .'--'.self::ALLOW_UNREACHABLE_RECEIVER.' does not apply: it overrides only the receiver-route check.';
+        }
+    }
+
+    /**
+     * May this run hand `$receiverUrl` to the provisioner — which creates, deletes and
+     * recreates the upstream subscription and writes the per-scope secret?
+     *
+     * ⛔ THE PREDICATE IS {@see ReceiverUrl::reachesThisInstall()}, the one
+     * `install.endpoint_urls` fails `bridge:check` on — never a second rule about receiver
+     * paths. It is asked of the URL this subscription would actually register, so the gate
+     * runs per subscription and a dry run previews the refusal a real run would print.
+     * `--list` is exempt: it only reads.
+     *
+     * ⚠ `false` from that predicate is a verdict on PATH and QUERY against this app's router
+     * only. An install behind a proxy that rewrites the request path answers `false` and
+     * delivers, and nothing on this box can measure that hop — which is what the override
+     * exists for, and why the refusal names it.
+     *
+     * `$shown` is `$receiverUrl` as {@see self::shownReceiverUrl()} renders it.
+     */
+    private function mayRegister(string $label, string $provider, string $scopeId, string $receiverUrl, string $shown): bool
+    {
+        if (ReceiverUrl::reachesThisInstall($receiverUrl, $provider, $scopeId, app(Router::class)->getRoutes())) {
+            return true;
+        }
+
+        $flag = '--'.self::ALLOW_UNREACHABLE_RECEIVER;
+
+        if ($this->option(self::ALLOW_UNREACHABLE_RECEIVER)) {
+            $this->warn(OutputFormatter::escape(
+                "{$label} OVERRIDE — {$shown} reaches no receiver route in this app; provisioning it anyway because {$flag} was given."
+            ));
+
+            return true;
+        }
+
+        $this->error(OutputFormatter::escape(
+            "{$label} REFUSED — the receiver URL {$shown} reaches no receiver route in this app, so a delivery to it would be refused here; nothing was sent upstream or written. "
+            .'Likely cause: BRIDGE_RECEIVER_BASE_URL, which must already end in the receiver path (see .env.example) — a bare host, that path doubled, or a base carrying its own query (which swallows the ?b= appended after it) looks like this. '
+            .'Fix it in this install\'s .env and re-run (bridge:check fails on the same value). '
+            ."Only the path and query were checked, against this app's own router: if this install is served behind something that REWRITES the request path, re-run with {$flag} to provision it anyway."
+        ));
+
+        return false;
     }
 
     /**
@@ -252,7 +370,7 @@ class ProvisionCommand extends BridgeCommand
             $this->warn(sprintf(
                 'writeback: identity_id %d was NOT written — %s. Nothing else changed; put the number in by hand (docs/writeback.md § 2).',
                 $identity->id,
-                OutputFormatter::escape($e->getMessage()),
+                OutputFormatter::escape(RedactedErrorText::of($e)),
             ));
         }
     }
@@ -281,6 +399,54 @@ class ProvisionCommand extends BridgeCommand
         return SecretFile::read($agent->tokenPath($secretDir, $provider));
     }
 
+    /**
+     * A receiver URL as this command prints it: the part in front of the composed
+     * `/<provider>?b=<scope>` suffix through {@see SecretScrubber::url()} — the same redactor
+     * `bridge:check` quotes the base through — and the suffix kept as composed.
+     *
+     * ⛔ EVERY LINE THAT PRINTS A RECEIVER URL GOES THROUGH HERE, because a receiver base may
+     * carry credentials in its userinfo or query and each line is a separate chance to print
+     * them. The suffix is split off first because scrubbing the whole URL would redact the
+     * `?b=<scope>` the operator reads the line for, and it carries nothing of the base: this
+     * app composes it ({@see ReceiverUrl::for()}). A URL that does not end in this
+     * subscription's suffix — a live row someone else registered — is scrubbed whole.
+     */
+    private function shownReceiverUrl(string $url, string $provider, string $scopeId): string
+    {
+        $suffix = ReceiverUrl::for('', $provider, $scopeId);
+        if (! str_ends_with($url, $suffix)) {
+            return SecretScrubber::url($url);
+        }
+
+        return SecretScrubber::url(substr($url, 0, -strlen($suffix))).$suffix;
+    }
+
+    /**
+     * An exception from a provisioning call, as the `API error` line relays it, with the
+     * receiver URL's credentials removed. The URL was sent to kanban, so a refusal body can
+     * echo it back.
+     *
+     * ⛔ THE TEXT IS {@see RedactedErrorText::of()}'s, which rebuilds a `RequestException` from
+     * its FULL response body and redacts before it bounds (card#9486). The substitution below
+     * is handed to it as the caller-held redaction, so it too runs on the unbounded body.
+     *
+     * Each echo of `$receiverUrl`, raw or with JSON-escaped slashes, becomes `$shown` first.
+     * That match is by value, so it holds where {@see SecretScrubber::text()}'s own URL match
+     * stops short of the `@`: `UrlValidator::httpUrl()` accepts userinfo containing a character
+     * that ends that match, such as `'`, and `text()` then finds no userinfo to remove.
+     * `text()` covers every other credential-shaped span in the body, and it also removes the
+     * query of an echoed http(s) URL, so `?b=<scope>` shows as `?[REDACTED]` on this line.
+     */
+    private function apiErrorText(Throwable $e, string $receiverUrl, string $shown): string
+    {
+        $jsonSlashes = static fn (string $url): string => str_replace('/', '\\/', $url);
+
+        return RedactedErrorText::of(
+            $e,
+            static fn (string $text): string => str_replace([$receiverUrl, $jsonSlashes($receiverUrl)], [$shown, $jsonSlashes($shown)], $text),
+        );
+    }
+
     private function reportResult(string $label, ProvisionResult $result, string $url): void
     {
         match ($result->status) {
@@ -294,7 +460,7 @@ class ProvisionCommand extends BridgeCommand
         };
     }
 
-    private function listScope(KanbanProvisionClient $client, string $label, string $scopeId): void
+    private function listScope(KanbanProvisionClient $client, string $label, string $provider, string $scopeId): void
     {
         $subs = $client->listWebhooks($scopeId);
         if ($subs === []) {
@@ -303,8 +469,27 @@ class ProvisionCommand extends BridgeCommand
             return;
         }
         foreach ($subs as $sub) {
+            // ⛔ A SUBSCRIPTION ROW IS FOREIGN TEXT (card#9200, DL-366 Decision 12's shape).
+            // These are RAW kanban API rows, and a row's `url` is chosen by whoever registered
+            // the subscription on that board — not by this install. A `url` carrying
+            // `\x1B[2K\r` plus a plausible row overwrites the line this loop just printed, on
+            // the run an operator reads to decide whether to `--reconcile`.
+            // ⚠ NEITHER CENSUS IN card#9200 COULD SEE THIS ARM: Decision 11's counts
+            // `getMessage()` and this is the SUCCESS path of a read; Decision 12's was over
+            // `bridge:check`'s findings and there is no `Finding` and no renderer here.
+            // `$active` is NOT escaped — it is one of two words this file chose.
+            // ⚠ THE DISPLAY BOUND APPLIES TO THE WHOLE VALUE HERE, and that is stated rather
+            // than discovered: these are values, not spans inside bridge prose, so a row whose
+            // `url` runs past `UntrustedText::MAX_CHARS` is shown truncated — with the marker
+            // naming the source length, never silently.
+            // ⛔ SCRUBBED BEFORE IT IS BOUNDED, and scrubbed at all because a row this install
+            // registered carries the receiver base it was composed from, credentials included.
+            // The order matters: a truncation ahead of the redactor can cut off the `@` that
+            // ends a userinfo, and the redactor then finds no userinfo to remove.
             $active = ($sub['active'] ?? false) ? 'active' : 'INACTIVE';
-            $this->line("{$label} id={$sub['id']} {$active} → ".($sub['url'] ?? '?'));
+            $id = UntrustedText::forOperator((string) $sub['id']);
+            $url = UntrustedText::forOperator(isset($sub['url']) ? $this->shownReceiverUrl((string) $sub['url'], $provider, $scopeId) : '?');
+            $this->line("{$label} id={$id} {$active} → {$url}");
         }
     }
 }

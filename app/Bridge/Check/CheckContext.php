@@ -515,11 +515,73 @@ final class CheckContext
      * run-once {@see Check}'s always is. This field is how the names reach the consumer.
      *
      * ⛔ IT CARRIES ONLY THE MEASURED-ABSENT POPULATION, never the could-not-look one, and
-     * that bound is the whole card: an entry here becomes a NEXT STEPS instruction to go add
-     * a webhook, and issuing that against a repo whose hooks this run never enumerated would
-     * send an operator to re-create a hook that is already there.
+     * that bound is the whole card: an entry here becomes a NEXT STEPS instruction, and issuing
+     * one against a repo whose hooks this run never enumerated would send an operator to
+     * re-create a hook that is already there.
+     *
+     * ⚑ EACH ENTRY CARRIES ITS OWN `state` SINCE card#9717, because the measured absence has two
+     * causes with opposite remedies — a repo with no hooks at all, and a repo whose hooks are
+     * all somebody else's — and the leg that COUNTED them decides which. The block renders the
+     * published state rather than re-deriving it from a number a second time.
+     *
+     * @var list<array{scope: string, agents: list<string>, state: NextStepState}>
+     */
+    public array $githubWebhooksMissing = [];
+
+    /**
+     * The github scopes whose own delivery record this run READ and found silent past what that record calls
+     * routine — none recorded at all, or none within the threshold derived from the scope's own delivery gaps — each
+     * with the agents that subscribe it, in the order the leg reported them (DL-382).
+     *
+     * A context field for {@see self::$githubWebhooksMissing}'s reason: the scope and the agents live in the finding's
+     * prose, and the NEXT STEPS block cannot read a run-once check's result by agent.
+     *
+     * ⛔ ONLY THE LOUD POPULATION, and never a record this run could not read or could not derive a threshold from
+     * while the silence is inside the floor: an entry here becomes an instruction to go and look at a repo's webhook.
      *
      * @var list<array{scope: string, agents: list<string>}>
      */
-    public array $githubWebhooksMissing = [];
+    public array $githubDeliverySilent = [];
+
+    /**
+     * The github scopes this run can see, in first-seen order, each with the agents that subscribe it.
+     *
+     * ONE WALK FOR BOTH github SUBSCRIPTION LEGS — the hook-list leg and the delivery-history leg ask about the same
+     * population and must not be able to disagree about which scopes it holds.
+     *
+     * ⚠ ITS POPULATION IS THE AGENTS WHOSE YAML PARSED AND WHOSE CLASSIFIER RESOLVED ({@see self::$configs}) —
+     * narrower than the agents on disk. An agent that did not get that far has its own `fail` line and is recorded in
+     * {@see self::$agentScopeCoverage}; what a leg must not do is read its absence as "nobody subscribes that repo".
+     *
+     * THE SCOPE IS THE RAW SPELLING, never a canonicalized one: the receiver URL is composed from it byte for byte, the
+     * receiver records a delivery under it byte for byte, and the dispatcher matches a subscription against it byte for
+     * byte ({@see self::$githubScopeSpellings}). Two agents spelling one repo differently therefore ask two questions,
+     * which is correct — they registered two URLs, and GitHub would hold two hooks.
+     *
+     * ⚠ WHAT THAT DOES *NOT* BUY, stated because the obvious assumption is wrong: nothing here reports the SPLIT
+     * ITSELF. `WritebackMappingConfigCheck` carries the card#7124 `SPELLING SPLIT` leg, and its comparand is a
+     * `writeback.json` MAPPING KEY — so on an install with no writeback config (a pure coordination agent is the
+     * ordinary case) two agents spelling one repo differently produce independent verdicts and no line anywhere saying
+     * they are one repo.
+     *
+     * @return array<string, list<string>>
+     */
+    public function githubSubscriptionsByScope(): array
+    {
+        $scopes = [];
+        foreach ($this->configs as $cfg) {
+            foreach ($cfg->subscriptions as $sub) {
+                if ($sub->provider !== 'github') {
+                    continue;
+                }
+                $existing = $scopes[$sub->scopeId] ?? [];
+                if (! in_array($cfg->agentName, $existing, true)) {
+                    $existing[] = $cfg->agentName;
+                }
+                $scopes[$sub->scopeId] = $existing;
+            }
+        }
+
+        return $scopes;
+    }
 }

@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\Check\BuildsCheckCommandRegistry;
 use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenCapture;
 use Tests\Support\CheckGolden\GoldenChannelEnvironment;
@@ -49,6 +50,7 @@ use Tests\TestCase;
 class CheckGoldenTest extends TestCase
 {
     use BootsGoldenInstall;
+    use BuildsCheckCommandRegistry;
     use RefreshDatabase;
 
     protected function tearDown(): void
@@ -107,6 +109,21 @@ class CheckGoldenTest extends TestCase
             case 'bad-receiver-url':
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 config(['bridge.receiver_base_url' => 'not-a-url']);
+
+                return $default;
+
+            case 'receiver-url-unreachable':
+                // ⭐ THE PAIR WITH `bad-receiver-url` ABOVE, AND THE PAIRING IS THE POINT
+                // (card#9280). That value fails the SYNTAX floor; this one passes every syntax
+                // floor there is — a well-formed https URL with a host — and still composes a
+                // receiver URL that reaches no route in this app, which is the fault that had
+                // no home on any surface that moves an exit code. A fixture capturing the
+                // syntax refusal is no evidence for this arm: they are different legs, and the
+                // second one is the one an operator's install actually lands on.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                // The BARE HOST — `BRIDGE_RECEIVER_BASE_URL` already ends in the receiver
+                // path, so leaving it off is the documented mis-set shape.
+                config(['bridge.receiver_base_url' => 'https://bridge.example.com']);
 
                 return $default;
 
@@ -706,6 +723,7 @@ class CheckGoldenTest extends TestCase
             'secret-dir-unset',
             'provider-without-adapter',
             'bad-receiver-url',
+            'receiver-url-unreachable',
             'default-agent-has-no-config',
             'retention-disabled',
             'retention-misconfigured',
@@ -792,6 +810,14 @@ class CheckGoldenTest extends TestCase
             'secret-dir-unset' => ['bridge.secret_dir (BRIDGE_SECRET_DIR) is not set or not absolute'],
             'provider-without-adapter' => ['bridge.providers.gitlab is configured but has no adapter'],
             'bad-receiver-url' => ["bridge.receiver_base_url 'not-a-url' must use http or https"],
+            // ⛔ THE EXIT CODE IS A SUBJECT HERE, not just the sentence: this arm MOVES it,
+            // and a capture that pinned the prose alone would stay green if the severity were
+            // softened to a warn. Both halves, in the one fixture.
+            // ⛔ THE PROVIDER SET IS NOT A SUBJECT HERE — it is derived from
+            // `WebhookAdapterFactory::SUPPORTED` and pinned against that constant in
+            // `InstallEndpointUrlsCheckTest`; naming it here would be the second literal copy
+            // that goes on passing after the derived one moves (card#9280 r2).
+            'receiver-url-unreachable' => ['exit: 1', "bridge.receiver_base_url 'https://bridge.example.com' composes a receiver URL that reaches NO route in THIS application"],
             'default-agent-has-no-config' => ["BRIDGE_DEFAULT_AGENT 'ghost-agent' has no matching config"],
 
             // ---- retention postures (count deliberately unstated — see buildFixture()) ----
@@ -1182,24 +1208,22 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins the registered TOTAL as a literal, which the registration test pins
-        // BY ID. Two independent statements of the same fact on purpose: the id list catches
-        // a check being swapped, this catches the operator-facing line disagreeing with it.
-        // ⚑ THE LITERAL MOVES WITH THE REGISTERED SET, IN THE SAME COMMIT — 39 until
-        // card#8683 / DL-345 registered `standup.posture`, 41 until card#9150 / DL-368
-        // registered `github.webhook_subscription` and card#9152 / DL-373 registered
-        // `agent.coordination_identity`. ⛔ THOSE TWO LANDED TOGETHER, in one merge, each
-        // having moved the total by one on its own branch — so the figure each branch carried
-        // ALONE was never a state of this tree, and the two branches had moved it to the SAME
-        // wrong value by different routes. Git raised no conflict on most copies of it,
-        // because both sides matched. A merge that took either side's figure, or that
-        // re-typed a total instead of re-deriving one, would have been a clean-looking no-op.
-        // Deriving it from the registration list instead would make this term agree with that
-        // one by construction and stop being a second statement of the fact. ⛔ THE FIGURE IS
-        // THEREFORE IN THE ASSERTION AND DELIBERATELY NOT IN THIS PROSE: the sentence above
-        // carried a hand-written `40` while the assertion said 41, i.e. the restatement had
-        // already drifted from the thing it describes, which is the whole reason a count
-        // belongs in exactly one place.
+        // It also pins the registered TOTAL, DERIVED from the command's live registry, which
+        // `CheckCommandRegistrationTest` pins by id, rather than restated as a literal here
+        // (DL-382 R1 finding 4). ⚑ A LITERAL HAD ALREADY DRIFTED
+        // FROM THE REGISTERED SET ONCE — 39 until card#8683 / DL-345 registered
+        // `standup.posture`, 41 until card#9150 / DL-368 registered `github.webhook_subscription`
+        // and card#9152 / DL-373 registered `agent.coordination_identity`. ⛔ THOSE TWO LANDED
+        // TOGETHER, in one merge, each having moved the total by one on its own branch — so the
+        // figure each branch carried ALONE was never a state of this tree, and the two branches
+        // had moved it to the SAME wrong value by different routes. Git raised no conflict on
+        // most copies of it, because both sides matched. A merge that took either side's figure,
+        // or that re-typed a total instead of re-deriving one, would have been a clean-looking
+        // no-op — exactly the failure mode a derived count cannot repeat. A hand-written PROSE
+        // restatement drifted the same way once (this comment carried `40` while the assertion
+        // said 41), which is why the figure is not spelled out here either.
+        $registeredTotal = count($this->checkCommandRegistry()->registeredIds());
+
         foreach (self::fixtures() as [$name]) {
             $golden = $this->goldenFor($name);
 
@@ -1223,7 +1247,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(43, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame($registeredTotal, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,

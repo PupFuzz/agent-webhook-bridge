@@ -94,10 +94,17 @@ class JobsCommand extends BridgeCommand
      *
      * ⚑ IT REFUSES RATHER THAN GUESSES, in four places: as root (the line belongs in the
      * seat-owner account's own crontab, never root's — the notice has said so since DL-361);
-     * with no TTY and no `--yes` (the confirmation IS the gate, so a non-interactive run must
-     * not silently mutate a crontab); when the base path cannot be rendered into a line that
-     * runs; and when a `bridge:tick` line is already present, because a second line loses the
+     * with interaction switched off and no `--yes` (the confirmation IS the gate); when the
+     * base path cannot be rendered into a line that runs; and when a `bridge:tick` line is already present, because a second line loses the
      * shared pass lock and skips.
+     *
+     * ⚠ THE CONFIRMATION GUARD TESTS `isInteractive()`, NOT A TERMINAL: a PIPED answer
+     * confirms and writes the line with no human present, and a held-open silent stdin blocks
+     * at the prompt. Both are ACCEPTED by operator
+     * decision (card#9255, 2026-09-13 — automating the crontab install is acceptable), which is
+     * why this guard is not on `BridgeCommand::canPromptToConfirm()`. The refusal names
+     * `--no-interaction` alone although the quieting options clear `isInteractive()` too:
+     * they also silence the refusal line, so a run that prints it passed `--no-interaction`.
      */
     private function installTick(): int
     {
@@ -148,8 +155,10 @@ class JobsCommand extends BridgeCommand
 
         if (! $this->option('yes')) {
             if (! $this->input->isInteractive()) {
-                $this->stderr()->writeln('bridge:jobs install-tick: REFUSED — no TTY to confirm on and no `--yes`. '
-                    .'The confirmation IS the gate; this command does not mutate a crontab unasked.');
+                $this->stderr()->writeln('bridge:jobs install-tick: REFUSED — interaction is switched off for this run '
+                    .'(`--no-interaction`/`-n`), so there is no prompt to confirm at, and `--yes` was not passed. '
+                    .'The confirmation IS the gate; this command does not mutate a crontab unasked. '
+                    .'Re-run without `-n` to be asked, or pass `--yes` to install the line without asking.');
 
                 return self::FAILURE;
             }

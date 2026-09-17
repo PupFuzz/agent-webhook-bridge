@@ -13,6 +13,10 @@ namespace App\Bridge\Provision;
  * for a confirmation the operator has no way to give — so a response with no name resolves
  * to a FAILURE and the by-hand recipe, never to an offer of the id alone.
  *
+ * ⚠ `$name` IS THE RAW FOREIGN STRING, NOT A SAFE-TO-PRINT ONE: the resolver refuses `\p{Cc}` but
+ * accepts `\p{Cf}` (bidi overrides, zero-width characters). A consumer that prints it escapes it
+ * through `App\Bridge\Support\UntrustedText::forOperator()`, as {@see WritebackIdentityOffer} does.
+ *
  * ⚠ NOTHING ELSE FROM THAT RESPONSE IS CARRIED. The body is sensitive as a CLASS, whatever
  * this API version returns — see {@see KanbanIdentityResolver}.
  */

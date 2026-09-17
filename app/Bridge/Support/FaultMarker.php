@@ -70,7 +70,7 @@ final class FaultMarker
      */
     public static function record(string $key, Throwable $e, int $cadenceSeconds, string $message, array $context = []): void
     {
-        $error = SecretScrubber::text($e->getMessage());
+        $error = RedactedErrorText::of($e);
 
         self::log($message, $context + [
             'exception' => $e::class,

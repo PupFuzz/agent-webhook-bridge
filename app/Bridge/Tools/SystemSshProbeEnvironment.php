@@ -5,6 +5,7 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\PathResolvesToNoFileException;
 use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\PathVisibility;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedPathContents;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
@@ -233,7 +234,7 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
 
             return ['exit' => (int) $proc->getExitCode(), 'stdout' => $proc->getOutput(), 'stderr' => $proc->getErrorOutput()];
         } catch (\Throwable $e) {
-            return ['exit' => 1, 'stdout' => '', 'stderr' => $e->getMessage()];
+            return ['exit' => 1, 'stdout' => '', 'stderr' => RedactedErrorText::of($e)];
         }
     }
 }

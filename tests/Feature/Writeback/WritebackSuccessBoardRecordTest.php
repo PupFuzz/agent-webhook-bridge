@@ -216,6 +216,11 @@ class WritebackSuccessBoardRecordTest extends TestCase
                 .'two calls later, where the row is out of scope. Carried, never re-read. ONE capture serves '
                 .'the DL-298 gate at candidacy and this record alike.',
         ],
+        'OwnerTag.php:patchCard' => [
+            'sites' => 1,
+            'record' => 'PAIRED — the DL-386 owner-tag clear logs boardContext() of the FRESH row it read and '
+                .'re-checked immediately before the write, beside the tags it removed.',
+        ],
     ];
 
     /**

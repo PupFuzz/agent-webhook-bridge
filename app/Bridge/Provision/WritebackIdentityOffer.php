@@ -8,6 +8,7 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\FileContents;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\WritebackConfig;
 use Throwable;
@@ -109,7 +110,7 @@ final class WritebackIdentityOffer
         // reaches this line having validated nothing. Refusing is a fail-soft fallback, not a
         // throw: the operator is told the config is the fault and setup still finishes.
         try {
-            UrlValidator::secureHttpUrl($apiBaseUrl, 'bridge.providers.kanban.api_base_url');
+            UrlValidator::configDoorSecureHttpUrl($apiBaseUrl, 'bridge.providers.kanban.api_base_url');
         } catch (ConfigException $e) {
             return $this->fallback($configDir, $apiBaseUrl, $e->getMessage());
         }
@@ -130,6 +131,12 @@ final class WritebackIdentityOffer
             return $this->fallback($configDir, $apiBaseUrl, (string) $resolution->failure);
         }
 
+        // ⛔ THE NAME IS ESCAPED HERE, WHERE IT IS INTERPOLATED, because the resolver ACCEPTS
+        // `\p{Cf}` — a bidi override or zero-width character would otherwise make the name the
+        // operator reads a different string from the one the account holds, on the line whose
+        // job is recognising that account. Escaping keeps a legitimate RTL name or emoji ZWJ
+        // sequence resolvable while showing every hidden character; `UntrustedText` owns the
+        // rule and what it does not close.
         return new WritebackIdentityOfferPlan(
             $identity,
             [
@@ -138,7 +145,7 @@ final class WritebackIdentityOffer
                     self::path($configDir),
                     $writebackTokenPath,
                     $identity->id,
-                    $identity->name,
+                    UntrustedText::forOperator($identity->name),
                 ),
                 '  ⛔ Accept only if that is the writeback\'s OWN kanban user — docs/writeback.md § 1 owns why it must be '
                     .'neither a human\'s nor one your board tooling already authenticates as.',

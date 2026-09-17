@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
@@ -201,7 +202,7 @@ final class WritebackAlertNotifier
             // Context is drawn from $body (present on BOTH the notify and notifyUnpark
             // paths), never from a caller's locals — the unpark path has no
             // $outcome/$reason locals to reference.
-            Log::warning('writeback alert push failed', $body + ['error' => $e->getMessage()]);
+            Log::warning('writeback alert push failed', $body + ['error' => RedactedErrorText::of($e)]);
         }
     }
 

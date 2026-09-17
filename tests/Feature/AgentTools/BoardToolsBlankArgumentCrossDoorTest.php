@@ -9,6 +9,7 @@ use App\Bridge\Tools\ToolsCallStdio;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -47,6 +48,9 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
     private string $token = 'tools-bearer-xdoor';   // gitleaks:allow — test fixture
 
+    /** The one agent both doors authenticate as; a test about the agent name's length sets its own. */
+    private string $agent = 'me';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -80,7 +84,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     {
         $auth = $transport === 'http' ? "  auth:\n    token_path: {$this->dir}/me-tools-token\n" : '';
 
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n"
+        File::put($this->dir.'/'.$this->agent.'.yml', "identity:\n  kanban_user_id: ".crc32($this->agent)."\nsubscriptions: []\n"
             ."board_tools:\n  enabled: true\n  transport: {$transport}\n".$auth
             ."  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
     }
@@ -129,7 +133,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
 
         $fake = new FakeToolsCallStdio((string) json_encode($call));
         $this->app->instance(ToolsCallStdio::class, $fake);
-        $exit = $this->artisan('bridge:tools-call', ['--agent' => 'me'])->run();
+        $exit = $this->artisan('bridge:tools-call', ['--agent' => $this->agent])->run();
 
         /** @var array<string, mixed> $body */
         $body = json_decode($fake->capturedOut(), true);
@@ -335,6 +339,191 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertSame($http['body'], $ssh['body'], 'the two doors must answer a blank tag identically');
         $this->assertSame([], $this->writesIn($http['requests']));
         $this->assertSame([], $this->writesIn($ssh['requests']));
+    }
+
+    // ─── a board 422's own reason (DL-384) ───────────────────────────────────
+
+    private const PLANTED = 'planted-not-a-credential'; // gitleaks:allow — synthetic value the scrubber must remove
+
+    private static function board422Body(): string
+    {
+        return (string) json_encode([
+            'message' => 'The payload field is invalid.',
+            'errors' => ['payload' => ['The payload field is invalid (access_token='.self::PLANTED.').']],
+        ]);
+    }
+
+    /**
+     * ⭐ rt#484's SHAPE: a title and tags inside both mirrored caps, the board answers 422 for a
+     * field the bridge does not check, and the refusal used to tell the seat to shorten its
+     * title, description or tags. It must name the board's own field and message instead —
+     * redacted — and say the bridge's own checks passed, identically on both doors.
+     */
+    public function test_a_board_422_on_a_create_that_passed_the_bridge_checks_relays_the_boards_reason_on_both_doors(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(self::board422Body(), 422)]);
+        $call = ['tool' => 'board_create_card', 'args' => [
+            'title' => str_repeat('t', 159), 'description' => str_repeat('d', 4000), 'tags' => ['priority:high'],
+        ]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertCount(1, $this->writesIn($r['requests']), "{$door}: the create must have reached the board");
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString('`payload`: The payload field is invalid (access_token=[REDACTED]', $error, $door);
+            $this->assertStringNotContainsString(self::PLANTED, $error, $door);
+            $this->assertStringContainsString('NO card was created', $error, $door);
+            $this->assertStringContainsString('checks passed before it sent', $error, $door);
+            $this->assertStringNotContainsString('Shorten', $error, "{$door}: the bridge's checks passed, so no length may be blamed");
+        }
+    }
+
+    /**
+     * ⛔ A TAG THE BRIDGE WRITES ITSELF AND NO CHECK BOUNDS, SO ITS SENTENCE MUST NOT CLAIM THE
+     * BOARD REFUSED "SOMETHING OTHER THAN" THE BOUNDS. `created-by:<agent>` is bounded only by
+     * the agent's configured name, so an agent name long enough makes it longer than kanban's
+     * tag cap. The fake applies kanban's `tags.*` rule to whatever the create actually sent, so
+     * the refused index is the real one. (Until card#9588 the fixture was an over-long
+     * `idempotency_key`; that stamp is now bounded before any request — the next test.)
+     */
+    public function test_a_board_422_on_a_bridge_stamped_tag_is_not_blamed_on_something_else_on_both_doors(): void
+    {
+        $this->agent = str_repeat('a', KanbanFieldLimits::TAG_MAX - strlen('created-by:') + 1);
+        Http::fake(function (Request $request) {
+            if (str_contains($request->url(), '/tasks/search.json')) {
+                return Http::response(['data' => []]);
+            }
+            $tags = $request->method() === 'POST' ? ($request->data()['tags'] ?? []) : [];
+            foreach (is_array($tags) ? $tags : [] as $i => $tag) {
+                if (is_string($tag) && mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
+                    return Http::response(['message' => "The tags.{$i} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', 'errors' => [
+                        "tags.{$i}" => ["The tags.{$i} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.'],
+                    ]], 422);
+                }
+            }
+
+            return Http::response(['data' => ['id' => 42]], 201);
+        });
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ['priority:high']]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $writes = $this->writesIn($r['requests']);
+            $this->assertCount(1, $writes, "{$door}: the create must have reached the board");
+            $sent = $writes[0]['body']['tags'];
+            $index = array_search('created-by:'.$this->agent, $sent, true);
+            $this->assertIsInt($index, "{$door}: fixture drift — the create no longer sends the over-cap created-by tag");
+
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString("`tags.{$index}`: The tags.{$index} field must not be greater than ".KanbanFieldLimits::TAG_MAX.' characters.', $error, $door);
+            $this->assertStringContainsString('each tag you passed within '.KanbanFieldLimits::TAG_MAX, $error, $door);
+            $this->assertStringContainsString('`created-by:`', $error, "{$door}: the sentence must say the bridge's unchecked stamp is not checked");
+            $this->assertStringNotContainsString('`idem:`', $error, "{$door}: the `idem:` stamp IS bounded before any request (card#9588), so naming it unchecked is false");
+            $this->assertStringNotContainsString('something other than', $error, "{$door}: the checks do not establish what the board refused");
+        }
+    }
+
+    /**
+     * card#9588: an `idempotency_key` one character past what `idem:<agent>:` leaves of kanban's
+     * tag cap is refused before any request, with one envelope on both doors.
+     */
+    public function test_an_idempotency_key_past_the_agents_effective_cap_is_refused_before_any_request_on_both_doors(): void
+    {
+        $this->fakeUncorrelatedBoard();
+        $cap = KanbanFieldLimits::TAG_MAX - strlen('idem:me:');
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'idempotency_key' => str_repeat('k', $cap + 1)]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertSame([], $r['requests'], "{$door}: an over-cap key must be refused before any request");
+            $this->assertStringContainsString("at most {$cap} for agent `me`", (string) $r['body']['error'], $door);
+        }
+    }
+
+    /**
+     * The other half of DL-384's rule: what the bridge's own check DID establish is still named.
+     * A title over the mirrored cap is refused naming the cap, before any request, on both doors.
+     */
+    public function test_a_title_over_the_mirrored_cap_is_refused_naming_the_cap_before_any_request_on_both_doors(): void
+    {
+        Http::fake(['*' => Http::response(self::board422Body(), 422)]);
+        $call = ['tool' => 'board_create_card', 'args' => ['title' => str_repeat('t', KanbanFieldLimits::NAME_MAX + 1)]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        foreach (['http' => $http, 'ssh' => $ssh] as $door => $r) {
+            $this->assertFalse($r['ok'], $door);
+            $this->assertSame([], $r['requests'], "{$door}: an over-long title must be refused before any request");
+            $error = (string) $r['body']['error'];
+            $this->assertStringContainsString('`title` is '.(KanbanFieldLimits::NAME_MAX + 1).' characters', $error, $door);
+            $this->assertStringContainsString('at most '.KanbanFieldLimits::NAME_MAX, $error, $door);
+            $this->assertStringNotContainsString('payload', $error, $door);
+        }
+    }
+
+    // ─── board_comment_card: `content` ───────────────────────────────────────
+
+    private function fakeCommentableBoard(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'tags' => [], 'assigned_user_id' => null,
+            ]]]),
+            '*/tasks/42/comments.json' => Http::response(['data' => ['id' => 9, 'task_id' => 42]], 201),
+        ]);
+    }
+
+    #[DataProvider('visuallyBlankValues')]
+    public function test_a_visually_blank_comment_is_refused_on_both_doors(string $blank): void
+    {
+        $this->fakeCommentableBoard();
+        $call = ['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => $blank]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertFalse($http['ok'], 'HTTP door: '.json_encode($http['body']));
+        $this->assertFalse($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
+        $this->assertSame($http['body'], $ssh['body'], 'the two doors must answer a blank comment identically');
+        $this->assertStringStartsWith('board_comment_card: `content` is required and must be a non-empty string', (string) $http['body']['error']);
+        $this->assertSame([], $http['requests'], 'HTTP door reached the board');
+        $this->assertSame([], $ssh['requests'], 'ssh door posted a comment of nothing but its attribution line');
+    }
+
+    #[DataProvider('legitimateValues')]
+    public function test_a_legitimate_comment_is_posted_trimmed_and_attributed_identically_on_both_doors(string $sent, string $stored): void
+    {
+        $this->fakeCommentableBoard();
+        $call = ['tool' => 'board_comment_card', 'args' => ['card_id' => 42, 'content' => $sent]];
+
+        $http = $this->throughHttpDoor($call);
+        $ssh = $this->throughSshDoor($call);
+
+        $this->assertTrue($http['ok'], 'HTTP door: '.json_encode($http['body']));
+        $this->assertTrue($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
+        $this->assertSame($http['body'], $ssh['body']);
+
+        foreach (['HTTP' => $http, 'ssh' => $ssh] as $door => $leg) {
+            $this->assertSame([[
+                'method' => 'POST',
+                'path' => '/api/v3/tasks/42/comments.json',
+                'body' => ['content' => "FROM: me\n\n{$stored}"],
+            ]], $this->writesIn($leg['requests']), "{$door} door");
+        }
     }
 
     /**

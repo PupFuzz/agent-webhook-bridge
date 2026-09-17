@@ -3,10 +3,7 @@
 namespace Tests\Unit\Console;
 
 use App\Bridge\Check\CheckDisposition;
-use App\Bridge\Check\CheckRunner;
-use App\Bridge\Tools\SshProbeEnvironment;
-use App\Console\Commands\Bridge\CheckCommand;
-use ReflectionMethod;
+use Tests\Support\Check\BuildsCheckCommandRegistry;
 use Tests\TestCase;
 
 /**
@@ -37,6 +34,8 @@ use Tests\TestCase;
  */
 class CheckCommandRegistrationTest extends TestCase
 {
+    use BuildsCheckCommandRegistry;
+
     /**
      * Every check `bridge:check` registers, in registration order.
      *
@@ -55,6 +54,7 @@ class CheckCommandRegistrationTest extends TestCase
         'retention.posture',
         'jobs.posture',
         'standup.posture',
+        'idle_nudge.posture',
         'install.endpoint_urls',
         'install.provider_adapters',
         // per-agent planes (stages 1, 5a, 5b)
@@ -89,6 +89,10 @@ class CheckCommandRegistrationTest extends TestCase
         // between the event-consumer plane (which reads this bridge's own inbound history and
         // needs no network) and the board-tools one, because that is where its output lands.
         'github.webhook_subscription',
+        // DL-382 — the PASSIVE half of the same question, in the same slot: each declared scope
+        // judged against its own delivery record. Registered after the hook-list leg so that a
+        // scope whose hook that leg found gone reads its cause before its silence.
+        'github.delivery_history',
         // board-tools plane (stage 7b)
         'board_tools.suppressed',
         // card#8973 / DL-360 — registered beside the suppression scan and OUTSIDE the
@@ -108,24 +112,13 @@ class CheckCommandRegistrationTest extends TestCase
         'board_tools.ssh_live_probe',
     ];
 
-    /**
-     * The command's OWN registration, with both opt-in flags absent.
-     *
-     * The flag values do not change WHICH checks register — that is plan constraint (a),
-     * and this test would red if an `if` ever appeared around a `register()` call.
-     */
-    private function registry(): CheckRunner
-    {
-        $command = $this->app->make(CheckCommand::class);
-        $command->setLaravel($this->app);
-        $method = new ReflectionMethod($command, 'registry');
-
-        return $method->invoke($command, $this->app->make(SshProbeEnvironment::class), null, null);
-    }
+    // The command's OWN registration is reached via `BuildsCheckCommandRegistry::checkCommandRegistry()`, with
+    // both opt-in flags absent. The flag values do not change WHICH checks register — that is plan constraint (a),
+    // and this test would red if an `if` ever appeared around a `register()` call.
 
     public function test_it_registers_exactly_the_pinned_check_set_in_order(): void
     {
-        $this->assertSame(self::REGISTERED, $this->registry()->registeredIds());
+        $this->assertSame(self::REGISTERED, $this->checkCommandRegistry()->registeredIds());
     }
 
     public function test_the_pinned_set_has_no_duplicates(): void
@@ -150,7 +143,7 @@ class CheckCommandRegistrationTest extends TestCase
         // check as NotRun. This is what makes a forgotten slot invocation visible instead
         // of absent, and it is asserted against the REAL registered set rather than
         // synthetic doubles.
-        $inventory = $this->registry()->inventory();
+        $inventory = $this->checkCommandRegistry()->inventory();
 
         $this->assertSame(count(self::REGISTERED), $inventory->registered());
         $this->assertSame(count(self::REGISTERED), $inventory->count(CheckDisposition::NotRun));

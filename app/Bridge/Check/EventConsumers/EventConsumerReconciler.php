@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Check\EventConsumers;
 
+use App\Bridge\Support\RedactedErrorText;
 use App\Models\WebhookEvent;
 use Throwable;
 
@@ -60,7 +61,7 @@ final class EventConsumerReconciler
                 );
             }
         } catch (Throwable $e) {
-            return new EventConsumerReconciliation($scopes, $e->getMessage());
+            return new EventConsumerReconciliation($scopes, RedactedErrorText::of($e));
         }
 
         return new EventConsumerReconciliation($scopes);
@@ -82,8 +83,7 @@ final class EventConsumerReconciler
         $observedActions = [];
 
         $rows = WebhookEvent::query()
-            ->where('provider', 'github')
-            ->where('scope_id', $scope)
+            ->forExactScope('github', $scope)
             ->groupBy('event_type')
             ->selectRaw('event_type, COUNT(*) as occurrences, MAX(received_at) as last_seen')
             ->toBase()

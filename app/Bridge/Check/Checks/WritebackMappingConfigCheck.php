@@ -342,12 +342,7 @@ final class WritebackMappingConfigCheck implements Check
                 if ($mapping->stageFor('merged') !== null && $mapping->stageFor('merged') === $mapping->stageFor('merged_to_main')) {
                     yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but stages.merged and stages.merged_to_main are the same stage — the Shipped→Released promote is a no-op (nothing to move); map them to distinct columns or remove promote_on_release.");
                 }
-                // Reuse the authoritative resolver; a file leg's `source` starts with
-                // "token file" / "token_path override" (mirrors GitHubTokenResolver).
-                $promoteToken = (new GitHubTokenResolver)->resolveFor((string) $repo);
-                $fromFile = $promoteToken->ok() && $promoteToken->source !== null
-                    && (str_starts_with($promoteToken->source, 'token file') || str_starts_with($promoteToken->source, 'token_path override'));
-                if (! $fromFile) {
+                if (! (new GitHubTokenResolver)->resolveFromFile()->ok()) {
                     yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but no GitHub read token resolves from a FILE (<secret_dir>/github/token, or providers.github.token_path) — the promote leg runs in the FPM webhook runtime where GH_TOKEN is absent and the credential-store helper is CLI-only, so a store/GH_TOKEN-only token (usable by bridge:reconcile) leaves the promote leg INERT at runtime with no reconcile backstop. Place a read-only token file (chmod 600).");
                 }
             }

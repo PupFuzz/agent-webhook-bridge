@@ -66,7 +66,7 @@ test('the push 202 declares on the wire that this transport carries no delivery 
   // MCP client is what makes the 202 branch the one under test.
   await connectServer(t, { BRIDGE_CHANNEL_SOCKET: socketPath }, { name: 'receipt-test', runtimePrefix: 'receipt-unused-' });
 
-  const res = await push(socketPath, JSON.stringify({ intent: { kind: 'smoke_test', target_id: 'receipt' } }));
+  const res = await push(socketPath, JSON.stringify({ intent: { kind: 'smoke_test', subject_id: 'receipt' } }));
 
   assert.equal(res.status, 202, 'a live stdio transport still answers 202 — the write happened');
   assert.equal(

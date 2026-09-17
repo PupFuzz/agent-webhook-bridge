@@ -11,6 +11,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
+use App\Bridge\Support\RedactedErrorText;
 use Throwable;
 
 /**
@@ -72,7 +73,7 @@ final class ChannelTokenPathCheck implements PerAgentCheck
                 ChannelTokenFault::Missing,
                 ChannelTokenFault::InsecurePerms,
                 ChannelTokenFault::EmptyFile,
-                null => Finding::warn("agent {$name}: ".$e->getMessage().' — channel_push will FAIL until fixed'),
+                null => Finding::warn("agent {$name}: ".RedactedErrorText::of($e).' — channel_push will FAIL until fixed'),
             };
         }
 

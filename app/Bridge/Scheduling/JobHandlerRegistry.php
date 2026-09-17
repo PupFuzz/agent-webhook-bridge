@@ -2,9 +2,11 @@
 
 namespace App\Bridge\Scheduling;
 
+use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
 use App\Bridge\Scheduling\Handlers\StandupDigestJob;
 use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\CsvEnv;
+use App\Bridge\Support\HandlerRegistry;
 
 /**
  * The set of periodic-job handlers THIS BUILD has, and which of them this INSTALL has armed
@@ -36,8 +38,10 @@ final class JobHandlerRegistry
     public function __construct(
         private readonly array $armedMutators,
         StandupGate $standupGate,
+        HandlerRegistry $handlers,
     ) {
         $this->register(new StandupDigestJob($standupGate));
+        $this->register(new IdleNudgeJob($handlers));
     }
 
     /**

@@ -68,6 +68,11 @@ export function relayBridgeResponse(rawBody, legSuccess, sourceLabel, legDiagnos
 // Derive the channel `meta` keys from a raw request body. Best-effort JSON parse:
 // a non-JSON body (or a body without an object `intent`) yields an empty meta,
 // never a throw — the caller always gets a usable object.
+//
+// The `target_id` ATTRIBUTE is filled from the intent's `subject_id` FIELD (DL-388): that
+// is the field the bridge's Intent::toArray() carries. The attribute keeps its name because
+// every running session was already told to read `target_id`. An `intent.target_id` is not
+// read — no producer sends one.
 export function deriveMeta(body) {
   const meta = {};
   try {
@@ -77,8 +82,8 @@ export function deriveMeta(body) {
       if (typeof intent.kind === 'string') {
         meta.kind = intent.kind;
       }
-      if (typeof intent.target_id === 'string') {
-        meta.target_id = intent.target_id;
+      if (typeof intent.subject_id === 'string') {
+        meta.target_id = intent.subject_id;
       }
     }
   } catch {

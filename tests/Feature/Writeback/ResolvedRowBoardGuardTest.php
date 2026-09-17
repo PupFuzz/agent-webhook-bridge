@@ -7,12 +7,14 @@ use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Support\AgentConfig;
+use App\Models\WritebackBoardDivergence;
 use Closure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -142,16 +144,16 @@ class ResolvedRowBoardGuardTest extends TestCase
             'stages' => ['merged' => 52, 'merged_to_main' => 53],
             'promote_on_release' => true,
         ]);
+        $rows = [
+            5 => ['id' => 5, 'board_id' => self::MAPPED_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            6 => ['id' => 6, 'board_id' => self::FOREIGN_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+        ];
         Http::fake([
             self::ALERT_URL.'*' => Http::response('', 204),
-            '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'board_id' => self::MAPPED_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
-                ['id' => 6, 'board_id' => self::FOREIGN_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
-            ], 'links' => ['next' => null]]),
+            '*/tasks/search.json*' => Http::response(['data' => array_values($rows), 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
-            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
-        ]);
+        ] + (new KanbanCardStub($rows))->stub());
 
         $this->promote();
 
@@ -162,6 +164,9 @@ class ResolvedRowBoardGuardTest extends TestCase
         // CONTROL — the foreign row is neither promoted nor silently dropped.
         $this->assertNoWriteTo(6);
         $this->assertRefused(6, 'promote_on_release');
+        // The alert dedups per (repo, outcome, reason), so a second refusal — of the mapped
+        // row, by the post-promote owner-tag clear — could only show up in the ledger.
+        $this->assertSame([6], WritebackBoardDivergence::query()->pluck('card_id')->all());
     }
 
     // ------------------------------------------------------------------- dependabot card
@@ -287,6 +292,9 @@ class ResolvedRowBoardGuardTest extends TestCase
             self::ALERT_URL.'*' => Http::response('', 204),
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 6, 'payload' => ['pr_number' => 42]]]]),
             '*/tasks/6.json' => Http::response(['data' => ['id' => 6, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            // The refused row leaves no card, so the arm goes on to CREATE, which first reads
+            // which payload values the board accepts (DL-392).
+            '*/boards/'.self::MAPPED_BOARD.'/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number', 'type' => 'number'], ['key' => 'pr_url', 'type' => 'url'], ['key' => 'origin', 'type' => 'string']]]),
             '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
         ]);
 
@@ -294,6 +302,7 @@ class ResolvedRowBoardGuardTest extends TestCase
 
         $this->assertNoWriteTo(6);
         $this->assertRefused(6, 'dependabot_card');
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/boards/'.self::MAPPED_BOARD.'/custom_fields.json'));
     }
 
     // ------------------------------------------------------------ coord-card post-create

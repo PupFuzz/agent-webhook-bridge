@@ -79,7 +79,7 @@ class CheckJsonContractTest extends TestCase
 
         $this->assertCount(1, $doc['next_steps']);
         // `scope` joined in card#9150 on §2's ADDED-KEY row; it is null on every board-tools
-        // state and non-null only on `github_webhook_missing`, and it is ALWAYS PRESENT — a
+        // state and non-null only on the github states, and it is ALWAYS PRESENT — a
         // consumer telling an absent key from a null would handle two shapes for one field.
         $this->assertSame(['agent', 'scope', 'state', 'command', 'doc'], array_keys($doc['next_steps'][0]));
         $this->assertNull($doc['next_steps'][0]['scope']);
@@ -339,9 +339,12 @@ class CheckJsonContractTest extends TestCase
     public function test_a_leg_that_could_not_measure_carries_unvalidated_in_the_document(): void
     {
         // DL-251's JSON CONSEQUENCE, witnessed here because nothing else can witness it.
-        // No golden file can: `GoldenCapture` reads an undecorated buffer, so all four
-        // severities are the same bytes there and only the closing TALLY moves. No JSON
-        // document is committed. And this class asserted only that `severity` is one of
+        // No golden file can: no JSON document is committed, so the corpus witnesses this
+        // document's `severity` field nowhere at all. (⚠ The reason stated here until DL-393
+        // — that an undecorated capture renders all four severities as the same bytes — is
+        // no longer true of a FINDING line: Decision 8's `FAIL: `/`WARN: `/`UNVALIDATED: `/
+        // `OK: ` marker is in the committed text corpus. It was never the load-bearing half:
+        // the text corpus holds no JSON document either way.) And this class asserted only that `severity` is one of
         // four values — true before the sweep and after it.
         //
         // BOTH HALVES OF THE DOCUMENT, because the sweep touches both: a REGISTERED

@@ -6,11 +6,14 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\NoCloseGrammar;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RevertGrammar;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -140,7 +143,7 @@ class ReconcileCommand extends BridgeCommand
         try {
             $kanban = WritebackClientFactory::make();
         } catch (Throwable $e) {
-            $this->error('kanban writeback client: '.$e->getMessage());
+            $this->error('kanban writeback client: '.RedactedErrorText::of($e));
 
             return self::FAILURE;
         }
@@ -216,7 +219,17 @@ class ReconcileCommand extends BridgeCommand
         try {
             $read = $kanban->readBoardCards($boardId);
         } catch (Throwable $e) {
-            $this->error("board {$boardId} ({$repoList}): read failed — {$e->getMessage()}");
+            // ⛔ THE RELAYED MESSAGE IS FOREIGN BYTES ON AN OPERATOR'S TERMINAL, and this
+            // command has no `Finding` and no renderer between it and the console — so the
+            // rule's owner is called HERE, at the write (card#9121, DL-366). `KanbanClient`
+            // reads through `->throw()`, so a non-2xx arrives as an
+            // `Illuminate\Http\Client\RequestException` carrying the kanban RESPONSE BODY,
+            // which `RedactedErrorText::of()` renders under Guzzle's `bodySummary` gate,
+            // `/[^\pL\pM\pN\pP\pS\pZ\n\r\t]/u`: it fails closed on an ESC but PASSES
+            // `\r` — and a 500 body of `"\rboard 8: 0 divergences, nothing to do"` returns
+            // the cursor to column 0 and overwrites the line this command just printed, on
+            // the run an operator reads to decide whether to `--fix`.
+            $this->error("board {$boardId} ({$repoList}): read failed — ".UntrustedText::forOperator(RedactedErrorText::of($e)));
             $this->hadError = true;
 
             return;
@@ -234,7 +247,7 @@ class ReconcileCommand extends BridgeCommand
             // Loud, not silent: a board-wide order outage (preload down) would else
             // masquerade as per-card stage drift. Cards then report as unorderable and
             // the run exits non-zero (set per-card in reconcileCard).
-            $this->warn("board {$boardId}: could not read stage order ({$e->getMessage()}) — cards on it can't be direction-checked and won't be auto-moved");
+            $this->warn("board {$boardId}: could not read stage order (".UntrustedText::forOperator(RedactedErrorText::of($e)).") — cards on it can't be direction-checked and won't be auto-moved");
             $order = [];
         }
 
@@ -353,7 +366,8 @@ class ReconcileCommand extends BridgeCommand
 
             return;
         } catch (Throwable $e) {   // timeout / connection
-            $this->warn("card {$cardId} ({$cardRepo}#{$prNumber}): GitHub read failed ({$e->getMessage()}) — skipped");
+            // The same rule, a different remote: this arm relays GITHUB's response body.
+            $this->warn("card {$cardId} ({$cardRepo}#{$prNumber}): GitHub read failed (".UntrustedText::forOperator(RedactedErrorText::of($e)).') — skipped');
             $this->skipped++;
 
             return;
@@ -394,7 +408,7 @@ class ReconcileCommand extends BridgeCommand
         // report a withheld move on every release PR and withhold nothing.
         // `PrOutcome::requiresClosure()` still owns WHICH outcomes are gated — this
         // placement narrows where the answer can matter, never what the answer is.
-        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title'], $pr['head_ref'], $outcome, $cardId, $payload, $refs)) {
+        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching(), $outcome, $cardId, $payload, $refs)) {
             // The REVERT arm exists because the default sentence is FALSE about a revert
             // (card#8306): GitHub quotes the original title and wraps the original ref, so
             // the ref usually DOES name this card and the title usually DOES carry a
@@ -409,10 +423,16 @@ class ReconcileCommand extends BridgeCommand
             // the arm at all because it re-derives the identical proposition on a schedule —
             // a term on one path and not the other is the DL-305 §6 drift, and here the
             // divergence would be in the OPERATOR-FACING text rather than in the verdict.
+            // ⛔ `head_ref` REACHES THIS LINE THROUGH `forOperator()` AND COULD NOT REACH IT
+            // ANY OTHER WAY (card#9200, DL-366): it is a `ForeignText`, so the interpolation
+            // these two arms used to carry is now a phpstan error and a runtime `Error`. The
+            // MATCHERS take the raw bytes, which is the whole reason the value is a type here
+            // and not escaped at the client.
+            $ref = $pr['head_ref']->forOperator();
             $this->line(match (true) {
-                NoCloseGrammar::marks($pr['title']) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
-                RevertGrammar::isRevert($pr['title'], $pr['head_ref']) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$pr['head_ref']}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
-                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
+                NoCloseGrammar::marks($pr['title']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
+                RevertGrammar::isRevert($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$ref}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
+                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$ref}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
             });
             $this->skipped++;
 
@@ -447,7 +467,10 @@ class ReconcileCommand extends BridgeCommand
             return;
         }
 
-        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward');
+        // The mapping travels to the write only for a terminal target, where the applied move
+        // owes the owner: clear.
+        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward')
+            + ['repo' => (string) $repo, 'terminal_mapping' => $mapping->isTerminalStage($expected, $order) ? $mapping : null];
     }
 
     /**
@@ -475,12 +498,25 @@ class ReconcileCommand extends BridgeCommand
             case TrackedRefKind::PrUrl:
                 $owner = $byCanonRepo[$ref->canonRepo] ?? null;
                 if ($owner === null) {
-                    $this->line("card {$cardId}: pr_url repo {$ref->canonRepo} is not in scope for this board (unmapped, or excluded by --repo) — skipped");
+                    // ⛔ ESCAPED (card#9121, DL-366 Decision 12): `canonRepo` is parsed out of
+                    // a CARD's `pr_url` by `([^/]+/[^/]+?)`, which admits every byte but `/`,
+                    // and `canonicalizeSource()` reduces no byte class.
+                    $this->line("card {$cardId}: pr_url repo ".UntrustedText::forOperator($ref->canonRepo).' is not in scope for this board (unmapped, or excluded by --repo) — skipped');
                     $this->skipped++;
 
                     return $none;
                 }
 
+                // ⛔ PER VALUE, NOT PER ARM (card#9121 round 5). One parse of one foreign
+                // field returns five values with FIVE dispositions, and an earlier revision
+                // of this method ruled the ARM instead — "past here it is matched, so it is
+                // this install's own" — which was true of `canonRepo` and FALSE of `prUrl`
+                // on this same line. `$owner['repo']`/`$owner['mapping']` are the matched
+                // `writeback.json` entry; `canonRepo` IS the key it matched; `prNumber` is an
+                // `int`. `prUrl` is `PrUrlRef::$raw` — the stored URL VERBATIM, whose own
+                // docblock says `unnormalized`: `parse()` needs only a mapped repo and
+                // `/pull/<n>` matching SOMEWHERE, so everything else in it is the card
+                // author's. Its consumers escape it at each console write.
                 return [$owner['repo'], $owner['mapping'], $ref->canonRepo, $ref->prNumber, $ref->prUrl];
 
             case TrackedRefKind::PrNumber:
@@ -498,7 +534,11 @@ class ReconcileCommand extends BridgeCommand
                 return $none;
 
             case TrackedRefKind::DlOnly:
-                $this->line("card {$cardId} (DL {$ref->dl}): no PR reference (pr_url/pr_number) — DL→PR resolution is out of v1 scope; skipped");
+                // ⛔ ESCAPED (card#9121 round 5): `TrackedCardRef` stores this as
+                // `(string) $payload['dl_number']` behind a bare `is_scalar` — the same field
+                // and the same gate DL-366 Decision 12 declares foreign in
+                // `WritebackSourceCoverageCheck`.
+                $this->line("card {$cardId} (DL ".UntrustedText::forOperator((string) $ref->dl).'): no PR reference (pr_url/pr_number) — DL→PR resolution is out of v1 scope; skipped');
                 $this->skipped++;
 
                 return $none;
@@ -628,7 +668,11 @@ class ReconcileCommand extends BridgeCommand
     private function finish(bool $fix, int $maxMoves, KanbanClient $kanban): int
     {
         foreach ($this->planned as $p) {
-            $this->line(sprintf('DRIFT     card %d board %d: stage %d → %d (%s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $p['evidence']));
+            // ⛔ ESCAPED AT THE WRITE, not where `evidence` is composed (DL-366 Decision 11's
+            // stated layer: a command writing the console directly IS the renderer). It can
+            // hold a card's raw `pr_url`; `forOperator()` is the identity on the other two
+            // things it can hold (a GitHub `html_url`, a mapped `repo#number`).
+            $this->line(sprintf('DRIFT     card %d board %d: stage %d → %d (%s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], UntrustedText::forOperator($p['evidence'])));
         }
         foreach ($this->backward as $p) {
             if ($p['kind'] === 'unorderable') {
@@ -638,7 +682,7 @@ class ReconcileCommand extends BridgeCommand
             } else {
                 $label = 'backward — not moved (card is ahead of its PR state; likely a deliberate human move)';
             }
-            $this->line(sprintf('SKIP-DRIFT card %d board %d: stage %d ↛ %d (%s; %s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $label, $p['evidence']));
+            $this->line(sprintf('SKIP-DRIFT card %d board %d: stage %d ↛ %d (%s; %s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $label, UntrustedText::forOperator($p['evidence'])));
         }
 
         $moved = 0;
@@ -661,8 +705,11 @@ class ReconcileCommand extends BridgeCommand
                     Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['record']);
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
+                    if ($p['terminal_mapping'] !== null) {
+                        OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $p['terminal_mapping'], 'bridge_reconcile', $p['card_id'], $p['repo'], self::ALERT_OUTCOME);
+                    }
                 } catch (Throwable $e) {
-                    $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], $e->getMessage()));
+                    $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], UntrustedText::forOperator(RedactedErrorText::of($e))));
                     $this->hadError = true;
                 }
             }

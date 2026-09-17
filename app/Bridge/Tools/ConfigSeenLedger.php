@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\RedactedErrorText;
 use App\Models\BoardToolsConfigSeen;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -169,7 +170,7 @@ final class ConfigSeenLedger
         } catch (Throwable $e) {
             Log::warning(
                 'agent-tools: recording the board_tools block sighting failed part-way — if the sighting row itself did not land, bridge:check cannot report this seat\'s block as LOST if it later disappears; if only the first_seen_at stamp did not, the sighting STANDS and the LOST line prints "was seen at" until a later sighting stamps the left edge',
-                ['agent' => $agent, 'transport' => $bt->transport, 'error' => $e->getMessage()],
+                ['agent' => $agent, 'transport' => $bt->transport, 'error' => RedactedErrorText::of($e)],
             );
         }
     }
@@ -211,7 +212,7 @@ final class ConfigSeenLedger
         } catch (Throwable $e) {
             Log::warning(
                 'agent-tools: the board_tools retirement could not be recorded — the operator\'s decision is NOT durable, so bridge:check reports this seat as "retired in config but the tombstone could NOT be recorded" instead of RETIRED, the lost-block check is NOT silenced for it, and deleting the YAML of a seat this install HAS recorded, before a run prints RETIRED, brings it back as a LOST fail with nothing left to retire it with',
-                ['agent' => $agent, 'error' => $e->getMessage()],
+                ['agent' => $agent, 'error' => RedactedErrorText::of($e)],
             );
         }
     }

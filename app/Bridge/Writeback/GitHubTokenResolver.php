@@ -3,8 +3,11 @@
 namespace App\Bridge\Writeback;
 
 use App\Bridge\Support\PathHelper;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UntrustedText;
 use Illuminate\Support\Facades\Process;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
@@ -58,20 +61,11 @@ final class GitHubTokenResolver
     {
         // 1 + 2: explicit token file — the override path when configured, else the
         // conventional <secret_dir>/github/token. Either short-circuits the store.
-        $override = $this->hasTokenPathOverride();
+        $file = $this->resolveFileLeg();
+        if ($file !== null) {
+            return $file;
+        }
         $path = $this->tokenPath();
-        try {
-            $fileToken = SecretFile::read($path);   // throws on insecure perms; null when absent
-        } catch (Throwable $e) {
-            return TokenResolution::problem("github token file {$path}: {$e->getMessage()}");
-        }
-        if ($fileToken !== null && $fileToken !== '') {
-            return TokenResolution::resolved($fileToken, $override ? "token_path override ({$path})" : "token file ({$path})");
-        }
-        if ($override) {
-            // Authoritative but missing/blank → fail loud; NO store/env fallback.
-            return TokenResolution::problem("no github token at the configured token_path {$path}");
-        }
 
         // 3: store-native (per-repo).
         $store = $this->resolveFromStore($repo);
@@ -86,6 +80,38 @@ final class GitHubTokenResolver
         }
 
         return TokenResolution::problem("no github token: {$path} absent, no [git-credential-map] entry for {$repo}, and GH_TOKEN is unset");
+    }
+
+    /**
+     * Legs 1 + 2 ONLY: the placed file the receiver resolves under PHP-FPM, for a caller whose GitHub
+     * identity must be the same wherever it runs (DL-390's pull-request comment, which `bridge:replay`
+     * also reaches from a shell, where the store and `GH_TOKEN` would otherwise resolve). The override
+     * stays authoritative. Not memoized: it spawns nothing. Never throws.
+     */
+    public function resolveFromFile(): TokenResolution
+    {
+        return $this->resolveFileLeg() ?? TokenResolution::problem('no github token file at '.$this->tokenPath());
+    }
+
+    /** Legs 1 + 2: a resolution, a fail-loud problem, or null when neither applies (no override set, no file placed). */
+    private function resolveFileLeg(): ?TokenResolution
+    {
+        $override = $this->hasTokenPathOverride();
+        $path = $this->tokenPath();
+        try {
+            $fileToken = SecretFile::read($path);   // throws on insecure perms; null when absent
+        } catch (Throwable $e) {
+            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e));
+        }
+        if ($fileToken !== null && $fileToken !== '') {
+            return TokenResolution::resolved($fileToken, $override ? "token_path override ({$path})" : "token file ({$path})");
+        }
+        if ($override) {
+            // Authoritative but missing/blank → fail loud; NO store/env fallback.
+            return TokenResolution::problem("no github token at the configured token_path {$path}");
+        }
+
+        return null;
     }
 
     /**
@@ -111,11 +137,35 @@ final class GitHubTokenResolver
         try {
             $result = Process::input($request)->run([$bin, 'get']);
         } catch (Throwable $e) {
-            return TokenResolution::problem("git-credential-coord could not be run for {$repo}: {$e->getMessage()}");
+            return TokenResolution::problem("git-credential-coord could not be run for {$repo}: ".RedactedErrorText::of($e));
         }
 
         if (! $result->successful()) {
-            $err = trim($result->errorOutput());
+            // ⛔ REDUCED HERE, AT THE PRODUCER, so `TokenResolution::$problem` carries no
+            // live control codepoint and no credential-shaped value (card#9200, DL-366).
+            // These are a SUBPROCESS's stderr bytes: `git-credential-coord` is a separate
+            // program — operator-swappable via `bridge.providers.github.credential_helper` —
+            // and what it writes there can include an error relayed from a store file or a
+            // remote.
+            // ⭐ BOTH REDUCTIONS, AND THE ORDER IS LOAD-BEARING. "Safe to print" has TWO
+            // declared meanings in this app and this span owes both: {@see UntrustedText}
+            // makes bytes safe for a TERMINAL, {@see SecretScrubber} (card#8433) makes them
+            // safe to DISCLOSE — and a credential helper's stderr is the one foreign span
+            // whose whole subject is credentials. The scrub runs FIRST because it is a
+            // LEXICAL, positional rule over the real bytes: it must see the source text
+            // before the escape doubles backslashes, collapses whitespace runs and applies
+            // its 200-character display cap, or a redactor's run can be cut short and leave
+            // the tail it was about to redact standing.
+            // ⚠ IT IS NOT AN UNQUALIFIED GUARANTEE, and an earlier revision of this comment
+            // made one — it claimed no consumer "can now get it wrong, including one added
+            // tomorrow" while the only reduction applied was the terminal escape, which
+            // carries a credential through byte for byte. What holds is exactly the two
+            // rules' own bounds: this repo's code, checked in `GitHubTokenResolverTest`, with
+            // {@see SecretScrubber}'s declared limits (a secret in a URL PATH is not
+            // redacted) and {@see UntrustedText}'s (`\p{Mn}`/`\p{Me}`/`\p{Co}` pass) applying
+            // unchanged. `$problem` is composed prose, so both go round the foreign SPAN and
+            // not round the sentence — the bridge's own words must not consume the cap.
+            $err = UntrustedText::forOperator(SecretScrubber::text(trim($result->errorOutput())));
 
             return TokenResolution::problem("git-credential-coord get failed for {$repo} (exit {$result->exitCode()})".($err !== '' ? ": {$err}" : ''));
         }
@@ -132,7 +182,9 @@ final class GitHubTokenResolver
         // No password line. Non-empty stderr ⇒ a helper-side error (an unreadable
         // `*_file`) that must FAIL LOUD per the framework fail-loud-on-`*_file`
         // contract; empty stderr ⇒ genuinely unmapped → fall through to GH_TOKEN.
-        $err = trim($result->errorOutput());
+        // Same two reductions, same order, as the non-zero-exit arm above — one arm reduced
+        // and the other not is the omission shape the move to the producer exists to end.
+        $err = UntrustedText::forOperator(SecretScrubber::text(trim($result->errorOutput())));
         if ($err !== '') {
             return TokenResolution::problem("git-credential-coord could not resolve {$repo}: {$err}");
         }

@@ -29,7 +29,9 @@ use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
+use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
+use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
 use App\Bridge\Check\Checks\InstallConfigDirCheck;
 use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
@@ -65,7 +67,9 @@ use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\ConfigSeenLedger;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -180,6 +184,11 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // The idle nudge (DL-380). Silent unless this install turned the nudge on.
+        if (! $this->emitReport($runner->run(CheckSlot::IdleNudge, $ctx))) {
+            $ok = false;
+        }
+
         // The per-install endpoint URLs and the provider/adapter coverage leg — migrated
         // to InstallEndpointUrlsCheck and InstallProviderAdaptersCheck (DL-242 stage 6).
         if (! $this->emitReport($runner->run(CheckSlot::Providers, $ctx))) {
@@ -218,7 +227,7 @@ class CheckCommand extends BridgeCommand
                 try {
                     $cfg = AgentConfig::load($name, $configDir);
                 } catch (Throwable $e) {
-                    $this->emitUnattributed(Finding::fail("agent config {$name}: ".$e->getMessage()));
+                    $this->emitUnattributed(Finding::fail("agent config {$name}: ".RedactedErrorText::of($e)));
                     $ok = false;
                     // NULL, NOT AN EMPTY LIST (card#5698): the load is what would have told
                     // us which scopes this agent subscribes to, so nothing about its
@@ -473,7 +482,13 @@ class CheckCommand extends BridgeCommand
                         // `unvalidated` and not `warn` (DL-251): an envelope that cannot
                         // name its cause did not answer anything.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$e->getMessage()));
+                        // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and for the
+                        // envelope's OWN stated reason: the paragraph above says a check
+                        // throwing AFTER the client built lands here too, and those checks
+                        // read kanban through `->throw()` — so this arm can relay a
+                        // `RequestException` carrying a response-body summary. An envelope
+                        // that cannot name its cause cannot rule that cause out either.
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.UntrustedText::forOperator(RedactedErrorText::of($e))));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -498,7 +513,7 @@ class CheckCommand extends BridgeCommand
                 $runner
                     ->noteNotRun(CheckSlot::Writeback, $wbAborted)
                     ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
-                $this->emitUnattributed(Finding::fail('writeback.json: '.$e->getMessage()));
+                $this->emitUnattributed(Finding::fail('writeback.json: '.RedactedErrorText::of($e)));
                 $ok = false;
             }
         } else {
@@ -544,6 +559,12 @@ class CheckCommand extends BridgeCommand
         // NO DERIVATION HERE. Unlike the event-consumer plane above, nothing in this leg is
         // read by a second renderer: the JSON document and the operator report both render
         // its findings, and the NEXT STEPS block reads the scopes it publishes on the context.
+        //
+        // DL-382: THE SAME SLOT CARRIES THE PASSIVE HALF — each declared scope judged against its
+        // own delivery record. It needs no token and no network, which is the point: the hook-list
+        // read above is `COULD NOT LOOK` on every repo this install does not administer. It never
+        // fails the run (a silent record is an inference from absence), so this slot's exit-code
+        // behaviour is still the hook-list leg's alone.
         if (! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))) {
             $ok = false;
         }
@@ -619,7 +640,7 @@ class CheckCommand extends BridgeCommand
                 $ctx->boardToolsClient = WritebackClientFactory::make();
             } catch (Throwable $e) {
                 $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
-                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
+                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.RedactedErrorText::of($e).') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
             }
 
             if ($ctx->boardToolsClient !== null) {
@@ -868,6 +889,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)
             ->register(CheckSlot::Standup, new StandupPostureCheck)
+            ->register(CheckSlot::IdleNudge, new IdleNudgePostureCheck)
             ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
             ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
@@ -903,7 +925,7 @@ class CheckCommand extends BridgeCommand
                 new WritebackSourceCoverageCheck,
             )
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
-            ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck)
+            ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck, new GitHubDeliveryHistoryCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
             ->register(CheckSlot::BoardToolsLost, new BoardToolsLostCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
@@ -1001,11 +1023,29 @@ class CheckCommand extends BridgeCommand
      * contract is that one arm, so a new severity can never change what `bridge:check`
      * exits.
      *
-     * IT TAKES NO PREFIX. Stage 1 migrated every prefixing call site into a
-     * {@see Check}, and a check yields display-ready messages: a
-     * Finding has no scope field, and one check's two message shapes
-     * (`board_tools ssh: …` and `board_tools ssh probe: …`) cannot share a render-time
-     * prefix anyway.
+     * ⭐ THE ONE PREFIX IT TAKES is the severity marker (card#9251, operator decision
+     * 2026-09-15, Option 1: the plain-text console). Until now this method took NO
+     * prefix — stage 1 migrated every SCOPE prefix into a {@see Check}, and a Finding has
+     * no scope field to add one from — and severity was carried by colour alone: DL-393
+     * removed colour from every Artisan command, which left `fail`/`warn`/`ok` lines
+     * differing only in wording. `FAIL: `/`WARN: `/`UNVALIDATED: `/`OK: ` restores that
+     * signal in TEXT, ahead of the check's own (still unprefixed) message — the two
+     * prefixes answer different questions and neither could stand in for the other: a
+     * scope prefix names WHICH check spoke, the marker names WHAT IT CONCLUDED. The
+     * marker is a SEPARATE `match` from the channel one below, deliberately: colour and
+     * the marker are two independent renderings of the same severity, and folding them
+     * into one arm would make a future third rendering (say, an exit-summary word) look
+     * like it has to share the channel mapping's cases instead of adding its own.
+     * THE MARKER NEVER ENTERS THE JSON DOCUMENT — it is applied only inside the
+     * `! $this->json` branch below, and that is what `SeverityMarkerTest` checks: none of
+     * the four tokens appears in a `--format=json` capture, with `"message": "…"` witnesses
+     * beside the absences so an empty capture cannot pass for a clean one.
+     * ⚠ THAT IS NOT A CLAIM THAT THE DOCUMENT'S BYTES ARE PINNED, and nothing pins them.
+     * `CheckJsonContractTest` asserts the exact key sets, the schema and the counts, and
+     * says in its own docblock that it deliberately does NOT assert the `message` strings;
+     * and the document passes the same output choke every other write does, so a `message`
+     * can lose a raw DEL, C1 or `\p{Cf}` byte it carried raw — `docs/check-json-contract.md`
+     * §2 records that as a rewording, which the contract's own table licenses.
      *
      * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
      * check that never ran, and yellow would nag a documented-correct population
@@ -1026,8 +1066,6 @@ class CheckCommand extends BridgeCommand
      */
     private function emitFinding(Finding $finding): bool
     {
-        $message = $finding->message;
-
         // Counted HERE — the single chokepoint every probe finding flows through, so any
         // future probe emitting the severity is tallied without touching its call site.
         if ($finding->severity === Severity::Unvalidated) {
@@ -1035,11 +1073,26 @@ class CheckCommand extends BridgeCommand
         }
 
         if (! $this->json) {
+            // ⛔ NOTHING IS ESCAPED HERE, AND THAT IS THE FIX (card#9200, DL-366). An earlier
+            // cut of this change escaped untrusted spans at THIS boundary, on the premise
+            // that `findings[].message` is a write contract the JSON document must carry
+            // byte-identically. `docs/check-json-contract.md` §2 falsifies that premise in
+            // bold — `message` strings are NOT part of the contract — and the premise was
+            // load-bearing: escaping at a SINK forces each producer to declare which span of
+            // its own sentence is foreign, which makes the escape opt-in and an omission
+            // invisible. The escape now happens where the foreign value is produced or
+            // interpolated, so this renderer has nothing left to do about it.
+            $marker = match ($finding->severity) {
+                Severity::Fail => 'FAIL: ',
+                Severity::Warn => 'WARN: ',
+                Severity::Unvalidated => 'UNVALIDATED: ',
+                Severity::Ok => 'OK: ',
+            };
             match ($finding->severity) {
-                Severity::Fail => $this->error($message),
-                Severity::Warn => $this->warn($message),
-                Severity::Unvalidated => $this->line($message),
-                Severity::Ok => $this->info($message),
+                Severity::Fail => $this->error($marker.$finding->message),
+                Severity::Warn => $this->warn($marker.$finding->message),
+                Severity::Unvalidated => $this->line($marker.$finding->message),
+                Severity::Ok => $this->info($marker.$finding->message),
             };
         }
 
@@ -1123,13 +1176,14 @@ class CheckCommand extends BridgeCommand
 
     /**
      * The one sentence for one step — an exhaustive `match` over {@see NextStepState}, so a
-     * fifth state is a phpstan error here rather than an agent silently getting a command
+     * new state is a phpstan error here rather than an agent silently getting a command
      * with no explanation. What each state MEANS is the enum's docblock to say, not this
      * method's: the sentences render the definitions, they do not own them.
      */
     private function nextStepSentence(NextStep $step): string
     {
         $doc = "See {$step->doc}.";
+        $escapedScope = UntrustedText::forOperator((string) $step->scope);
 
         return match ($step->state) {
             // ⛔ THE OPT-OUT IS NAMED, and it is what keeps this from being a nag. This is
@@ -1152,11 +1206,27 @@ class CheckCommand extends BridgeCommand
             NextStepState::SeatSideUnreported => "the bridge half is wired and the CALLING SEAT's half is NOT VERIFIABLE FROM HERE — the bridge may not read the seat's own .mcp.json or keypair (DL-229, an account may only read its own files) — and this install has recorded no successful board-tools call for this agent. Wire the seat, then ask the seat to make ONE board_my_cards call and re-run `{$step->command}`. Do NOT clear this line with --probe-tools: that probe stamps the same ledger row from THIS box, so it would report the seat as reporting without the seat ever having called. {$doc}",
 
             // ⛔ THE ONLY ARM WHOSE FAULT IS A `fail` ABOVE IT, and the sentence says so
-            // rather than reading like the four advisories it sits with. It also says what
+            // rather than reading like the board-tools advisories it sits with. It also says what
             // this run DID — read the repo's hook list — because the whole cost of getting
             // this state wrong is an operator re-creating a webhook that was already there,
             // and the difference between that and this line is exactly which read happened.
             NextStepState::GithubWebhookMissing => "the github subscription {$step->scope} is declared in {$step->agent}.yml, and this run READ that repo's whole webhook list: NOTHING on it delivers to this install's receiver, so nothing upstream wakes {$step->agent} for that scope — its events arrive late through a periodic sweep, or not at all. That is the FAIL line above, not an advisory. No command on this box can fix it: bridge:provision manages the kanban provider only, and a github webhook lives in the repo's own settings — so someone with `admin:repo_hook` on {$step->scope} adds it by hand (payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$step->scope}, content type application/json, secret = this install's per-scope HMAC secret file, named on the FAIL line above), and then you run `{$step->command}` to confirm it took. {$doc}",
+
+            // ⛔ THE ARM THAT REFUSES TO PRESCRIBE, and the refusal is the instruction (card#9717).
+            // The same measured absence as the arm above, on a repo that carries OTHER hooks —
+            // which is what a repo already served by another install's bridge looks like from
+            // here, and is also what this install's own deleted hook looks like on a repo with
+            // other integrations. The remedies are opposite and doing the wrong one puts a
+            // second card-mover on one board, so the line asks and does not choose. ⚑ It does
+            // NOT restate the COUNT: that figure is on the FAIL line, once.
+            NextStepState::GithubWebhookOtherHooksOnly => "the github subscription {$escapedScope} is declared in {$step->agent}.yml, and this run READ that repo's whole webhook list: it carries webhooks and NONE of them delivers to this install's receiver, so nothing upstream wakes {$step->agent} for that scope. That is the FAIL line above, not an advisory. ⛔ DO NOT ADD A HOOK ON THE STRENGTH OF THIS LINE. A repo ALREADY SERVED BY ANOTHER bridge install reads exactly like this from here, and adding a second hook would point a second card-mover at one board — the two would race on every PR event. FIND OUT WHICH THIS IS FIRST: is {$escapedScope} served by another install? IF IT IS, the stale thing is this install's declaration — drop the github subscription for {$escapedScope} from {$step->agent}.yml. IF IT IS NOT, someone with `admin:repo_hook` on {$escapedScope} adds the hook by hand, from the payload URL and secret file named on the FAIL line above. Either way you then run `{$step->command}` to confirm. This run cannot tell the two apart and does not guess: it counts the repo's hooks and never reads out what they are. {$doc}",
+
+            // ⛔ THE ONE ARM WHOSE FAULT IS AN INFERENCE, and it says so twice over: a quiet repo
+            // produces it too, and a hook whose deliveries arrive and are dropped before any agent
+            // wakes never produces it — so neither this line nor its absence is a verdict on
+            // whether the agent is being woken. The scope is escaped at this interpolation, as the
+            // leg that published it escapes its own (`$escapedScope`, above the match).
+            NextStepState::GithubDeliverySilent => "the github subscription {$escapedScope} is declared in {$step->agent}.yml and this install has RECORDED NO RECENT DELIVERY for it — none at all, or none within the silence threshold derived from that scope's own gaps between deliveries; the WARN line above says which, and shows the derivation. That is an inference from SILENCE, not a measured fault: a genuinely quiet repo reads the same. And the leg witnesses the DELIVERY side only, so a hook whose deliveries arrive and are then dropped before any agent wakes reads healthy to it and gets no line here. Someone with `admin:repo_hook` on {$escapedScope} opens the repo's Settings then Webhooks, confirms a hook delivers to <BRIDGE_RECEIVER_BASE_URL>/github?b={$escapedScope}, and reads its Recent Deliveries; then run `{$step->command}`. {$doc}",
         };
     }
 

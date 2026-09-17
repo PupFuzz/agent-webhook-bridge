@@ -56,13 +56,17 @@ abstract class BridgeCommand extends Command
      * surface states the PROPERTY and points HERE — this run may ask only where a human is at
      * a terminal on both ends and has not said otherwise.
      *
-     * ⚠ `bridge:jobs install-tick` HAS a second copy already — same class, and its message
-     * says "no TTY" over an `isInteractive()` test (measured live: a piped `yes` installs a
-     * crontab line with no human present; a held pipe blocks). It is deliberately NOT
-     * migrated here: changing what an already-shipped command refuses is an acceptance
-     * change, and that is operator-gated — **card#9255**. ⚠ That migration is also the point
-     * at which the screen half's measurement seam starts to matter — `App\Bridge\Support\SystemTerminalProbe`
-     * owns why fd 1 and `$this->output` can diverge and what to do about it then.
+     * ⚠ `bridge:jobs install-tick` HAS a second copy — same class, guarded by an
+     * `isInteractive()` test alone (measured live: a piped `yes` installs a
+     * crontab line with no human present; a held pipe blocks). It is deliberately NOT on
+     * this predicate, and that is a DECISION, not pending work: moving it would change what
+     * an already-shipped command refuses, the operator was asked, and the operator DECLINED
+     * the migration (**card#9255**, 2026-09-13 — automating the crontab install is
+     * acceptable). So a piped confirmation to `install-tick` is ACCEPTED behaviour, and the
+     * held-pipe hang was accepted with it. ⚠ Should a later decision migrate it after all,
+     * that is the point at which the screen half's measurement seam starts to matter —
+     * `App\Bridge\Support\SystemTerminalProbe` owns why fd 1 and `$this->output` can diverge
+     * and what to do about it then.
      */
     protected function canPromptToConfirm(): bool
     {

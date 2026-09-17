@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Handlers\ChannelPushHandler;
+use App\Bridge\Handlers\GitHubPrCorrelationCommentHandler;
 use App\Bridge\Handlers\KanbanBlockReasonHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Handlers\KanbanCoordCardMoveHandler;
@@ -13,12 +14,14 @@ use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Handlers\LogIntentHandler;
 use App\Bridge\Handlers\RegistryAppendHandler;
 use App\Bridge\Handlers\SpawnDetachedHandler;
+use App\Bridge\Writeback\PrCorrelationComment;
 
 /**
- * Resolves a ReactionTarget's handler name to a Handler instance. Ships nine
- * always-on defaults (log_intent, registry_append, channel_push, kanban_move_card,
+ * Resolves a ReactionTarget's handler name to a Handler instance. Ships always-on
+ * defaults (log_intent, registry_append, channel_push, kanban_move_card,
  * kanban_promote_released, kanban_dependabot_card, kanban_block_reason,
- * kanban_coord_card, kanban_coord_card_move); the
+ * kanban_coord_card, kanban_coord_card_move, github_pr_correlation_comment — `known()`
+ * is the live set); the
  * highest-blast-radius spawn_detached is opt-in (DL-011)
  * — registered only when $spawnDetachedEnabled (wired from
  * config('bridge.spawn.enabled') by BridgeServiceProvider). Operators register
@@ -28,7 +31,7 @@ use App\Bridge\Handlers\SpawnDetachedHandler;
  *
  * The kanban writeback handlers (kanban_move_card DL-020, kanban_promote_released
  * DL-207, kanban_dependabot_card DL-024, kanban_block_reason DL-193, kanban_coord_card
- * DL-198, kanban_coord_card_move DL-200) are always-on
+ * DL-198, kanban_coord_card_move DL-200, and the github_pr_correlation_comment report DL-390) are always-on
  * because they are INERT without `writeback.json` + a writeback token (they no-op,
  * unlike spawn_detached which would execute), and the classifier only emits them
  * for configured repos/opt-ins.
@@ -66,6 +69,7 @@ final class HandlerRegistry
             'kanban_block_reason' => new KanbanBlockReasonHandler,
             'kanban_coord_card' => new KanbanCoordCardHandler,
             'kanban_coord_card_move' => new KanbanCoordCardMoveHandler,
+            PrCorrelationComment::HANDLER => new GitHubPrCorrelationCommentHandler,
         ];
         if ($spawnDetachedEnabled) {
             $this->handlers['spawn_detached'] = new SpawnDetachedHandler;
@@ -80,6 +84,16 @@ final class HandlerRegistry
     public function resolve(string $name): ?Handler
     {
         return $this->handlers[$name] ?? null;
+    }
+
+    /**
+     * The live-wake push handler, non-null by construction: the constructor always registers
+     * one and {@see register()} can only replace it, never remove it. A caller that needs
+     * THIS handler therefore owes no "not registered" branch — it would be dead code.
+     */
+    public function channelPush(): Handler
+    {
+        return $this->handlers[self::CHANNEL_PUSH];
     }
 
     /**

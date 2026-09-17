@@ -710,7 +710,9 @@ abort `bridge:check` on a misconfiguration it exists to report. Both routes are 
 because a single-route test passes against the narrower `try` — and one mutant proves it does.
 
 **The fixture set reaches only the healthy branch of both units, and the coverage table does not
-say so.** Every golden fixture prints `database: connected` and `install-suffix DSN check: ok`. The
+say so.** Every golden fixture prints `OK: database: connected` and
+`OK: install-suffix DSN check: ok` — the severity marker DL-393 Decision 8 added is part of the
+line, and no unprefixed form of either survives anywhere in the corpus. The
 crosstalk predicate nevertheless reads **`observed`**, and the reason is worth recording because it
 generalizes: the negated mutant enters the failure branch with a null diagnosis and prints an
 **empty** error line — `Illuminate\Console\Command::error()` takes an untyped parameter, so null
@@ -1106,7 +1108,8 @@ reports as a complete measurement — found while reading this stage's regen).
 **What migrated:** five checks — `install.config_dir` and `install.secret_dir` (the two directories
 the install is built on, each resolvable-then-secure), `install.inbox_config` (the surfacing
 layout/mode config), `install.endpoint_urls` (the receiver base URL and the kanban API base URL,
-under their two different floors) and `install.provider_adapters` (the B-15 provider ↔ adapter
+under their different floors — the receiver base gained a third, *does this compose a URL this
+app would route*, in card#9280 / DL-374) and `install.provider_adapters` (the B-15 provider ↔ adapter
 coverage leg) — into **three** new slots: `CheckSlot::Install`, `CheckSlot::Inbox` and
 `CheckSlot::Providers`.
 
@@ -1810,7 +1813,11 @@ corrupting one golden file's arithmetic and observing the named failure.
   drives each dispatch through a **decorated** `BufferedOutput`, where every channel carries its own
   ANSI attribute. It asserts the attribute is present/absent and that the channels are DISTINCT from
   each other — never the colour name — so an upstream scheme change moves a colour while a channel
-  collapsing into another still reds. The genuine residual that remains is narrow and is a fact about
+  collapsing into another still reds. **[Annotation 2026-09-15, DL-393 — additive: since the
+  console output choke, no Artisan run is decorated, `--ansi` included. The channels this
+  instrument tells apart are therefore byte-identical on an operator's terminal as well, so it
+  witnesses the severity→channel MAP, which no terminal rendering shows today. DL-393
+  Decision 7(b) records that as an operator-visible consequence.]** The genuine residual that remains is narrow and is a fact about
   the INSTALL, not about the instrument: no install shape reaches the `warn` arm of the inventory
   dispatch, because every conditional slot in `handle()` records a not-run reason by design, so
   `unexplainedNotRun()` is empty on every real run.

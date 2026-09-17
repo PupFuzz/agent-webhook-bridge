@@ -6,10 +6,9 @@ namespace App\Bridge\Writeback;
  * THE CAPS KANBAN'S OWN VALIDATOR PUTS ON THE FIELDS THE BRIDGE WRITES (card#8378) —
  * one owner for a set of numbers that live in another repo.
  *
- * ⚠ EVERY VALUE HERE IS A MIRROR OF `App\Support\TaskWriteRules` IN KANBAN-BOARD, the
- * single authority its create and update paths both validate against. The bridge cannot
- * import that ruleset, so these can only be right until kanban moves them — which is why
- * they are a DIAGNOSTIC and never the safety:
+ * ⚠ EVERY VALUE HERE IS A MIRROR OF A KANBAN-BOARD VALIDATION RULE — each constant names the
+ * rule it copies. The bridge cannot import those rules, so these can only be right until
+ * kanban moves them — which is why they are a DIAGNOSTIC and never the safety:
  *
  *  - The safety is kanban's 422, which fires whatever this file says.
  *  - The diagnostic is that a caller-fixable over-long value is named to the caller
@@ -25,9 +24,15 @@ namespace App\Bridge\Writeback;
  */
 final class KanbanFieldLimits
 {
-    /** `name => sometimes|string|max:255` (update path; create is `required` + the same cap). */
+    /** `App\Support\TaskWriteRules`: `name => sometimes|string|max:255` (update path; create is `required` + the same cap). */
     public const NAME_MAX = 255;
 
-    /** `tags.* => string|max:64` — the cap on ONE tag, not on the list. */
+    /** `App\Support\TaskWriteRules`: `tags.* => string|max:64` — the cap on ONE tag, not on the list. */
     public const TAG_MAX = 64;
+
+    /**
+     * `CommentsController::store`: `content => required|string|max:65535` — CHARACTERS (Laravel's
+     * `max` sizes a string with `mb_strlen`), over the whole comment body sent.
+     */
+    public const COMMENT_MAX = 65535;
 }

@@ -5,9 +5,12 @@ namespace Tests\Feature\Console;
 use App\Models\WritebackBoardDivergence;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\AssertsNoLiveControlByte;
+use Tests\Support\KanbanCardStub;
 use Tests\TestCase;
 
 /**
@@ -22,6 +25,7 @@ use Tests\TestCase;
  */
 class ReconcileCommandTest extends TestCase
 {
+    use AssertsNoLiveControlByte;
     use RefreshDatabase;
 
     private string $dir;
@@ -109,10 +113,12 @@ class ReconcileCommandTest extends TestCase
      * @param  list<array<string, mixed>>  $cards  board-8 cards
      * @param  array<int, array<string, mixed>>  $pulls  pr_number => github pr response (or ['__status'=>404])
      * @param  array<int, float>|null  $order  stage order for board 8 (defaults to ORDER)
+     * @param  KanbanCardStub|null  $cardEndpoint  `/tasks/{id}.json`; defaults to one serving $cards as the board read returned them
      */
-    private function fake(array $cards, array $pulls, ?array $order = null): void
+    private function fake(array $cards, array $pulls, ?array $order = null, ?KanbanCardStub $cardEndpoint = null): void
     {
         $order ??= self::ORDER;
+        $cardEndpoint ??= new KanbanCardStub(array_column(array_filter($cards, static fn (array $c): bool => is_int($c['id'] ?? null)), null, 'id'));
         $stages = [];
         foreach ($order as $id => $pos) {
             $stages[] = ['id' => $id, 'position' => $pos];
@@ -135,8 +141,7 @@ class ReconcileCommandTest extends TestCase
                 // Startup repo auth/scope probe (GET /repos/{owner}/{repo}) → OK.
                 return Http::response(['full_name' => 'owner/repo'], 200);
             },
-            '*tasks/*.json' => Http::response(['data' => ['id' => 1]]),   // PATCH move
-        ]);
+        ] + $cardEndpoint->stub());
     }
 
     private function prUrl(int $n): string
@@ -447,6 +452,154 @@ class ReconcileCommandTest extends TestCase
         $this->artisan('bridge:reconcile')
             ->expectsOutputToContain('token from token file')
             ->assertExitCode(1);
+    }
+
+    /**
+     * ⛔ A KANBAN ERROR BODY CANNOT MOVE THE OPERATOR'S CURSOR (card#9121, DL-366).
+     *
+     * `KanbanClient` reads through `->throw()`, so a non-2xx arrives as an
+     * `Illuminate\Http\Client\RequestException` whose constructor bakes the RESPONSE BODY
+     * SUMMARY into `getMessage()` — and this command relays that to `error()` with no
+     * `Finding` and no renderer anywhere in the path. Guzzle's `bodySummary` gate is
+     * `/[^\pL\pM\pN\pP\pS\pZ\n\r\t]/u`: it fails closed on an ESC, so this leg cannot
+     * be attacked with one — and it PASSES `\r`, which is all that is needed. The body below
+     * is the live shape: a carriage return followed by a line that says the opposite of the
+     * verdict, on the run an operator reads to decide whether to `--fix`. Rendered raw, the
+     * `\r` returns the cursor to column 0 and the forgery overwrites the real line.
+     *
+     * ⚠ ASSERTED ON A CENSUS OF LIVE CONTROL BYTES, with a presence witness beside it: the
+     * diagnostic must still REACH the operator (the whole point of relaying it), so an
+     * assertion that only checked for the absence of `\r` would be satisfied by a fix that
+     * dropped the body.
+     *
+     * ⛔ THE SECOND `\r` IS WHAT MEASURES THE PRODUCER, and it is MID-BODY on purpose. Since
+     * the output choke (DL-393) DELETES `\r` downstream, the leading one renders identically
+     * whether `UntrustedText::forOperator()` ran or not: measured, with the producer's escape
+     * removed and no `\t` in the body, every assertion here still PASSED. `forOperator()`
+     * COLLAPSES the run to a space exactly where the choke would delete it, so the escaped
+     * `divergences, nothing` and the unescaped `divergences,nothing` differ and the presence leg
+     * fails on the producer alone. The `\t` is a second, independent witness — the choke KEEPS
+     * `\t`, so an unescaped one reds the census leg. Both legs are watched red at the producer.
+     *
+     * ⛔ THE TWO DISCRIMINATING MUTATIONS OF THIS BODY, measured at R3 and recorded here so the
+     * next author cannot weaken it silently. With the producer's escape removed: deleting the
+     * MID-BODY `\r` must leave ONLY the census leg red (the `\t` still reaches the sink), and
+     * deleting the TRAILING `\t` must leave ONLY the presence leg red (the collapsed space still
+     * differs). No SINGLE byte of this payload makes the arm vacuous, and that property — not
+     * the particular bytes — is what an edit here has to preserve. A mutation that reds neither
+     * leg has removed a witness rather than a defect.
+     */
+    public function test_a_relayed_kanban_error_body_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        Http::fake([
+            '*preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
+            '*tasks/search.json*' => Http::response("\rboard 8: 0 divergences,\rnothing to do\t\n", 500),
+            'https://api.github.com/*' => Http::response(['full_name' => 'owner/repo'], 200),
+        ]);
+
+        $this->assertSame(1, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('read failed', $output);
+        // BOTH LEGS IN ONE CALL: the census over the live control class, and the presence
+        // witness that the relayed diagnostic still reaches the operator on ONE line. The
+        // census is deliberately NOT spelled again afterwards — the helper already ran it on
+        // this same buffer, and a second copy of it reads as a second, different assertion.
+        $this->assertForeignValueEscapedInto($output, "\rboard 8: 0 divergences,\rnothing to do\t");
+        $this->assertMatchesRegularExpression(
+            '/read failed — [^\n]*board 8: 0 divergences, nothing to do/',
+            $output,
+            'the relayed body must not be able to start a line of its own',
+        );
+    }
+
+    /**
+     * ⛔ A CARD'S OWN `pr_url` CAN CARRY THE SAME ATTACK, and no exception is involved
+     * (card#9121, DL-366 Decision 12).
+     *
+     * The sibling of `WritebackSourceCoverageCheck`'s card-field arm, found by auditing the
+     * SHAPE rather than the mechanism (canon #7): `ExternalReferenceNormalizer`'s URL parse
+     * is `([^/]+/[^/]+?)`, which admits every byte but `/`, and `canonicalizeSource()` then
+     * trims, lower-cases and cuts — reducing NO byte class. So the `owner/repo` this command
+     * prints for an OUT-OF-SCOPE card is bytes the card's author chose, relayed to the
+     * operator's terminal on the ordinary success path of a board read.
+     *
+     * ⚑ THE VALUE HERE IS `canonRepo` AND THE RULING IS ABOUT `canonRepo`. An earlier
+     * revision of this docblock ruled the ARM instead — *"past this point every later line
+     * prints a value from a closed set"* — and that was measured FALSE at the next review:
+     * the same `return` also hands back `prUrl`, the card's URL stored verbatim. Each value
+     * out of that parse now carries its own disposition, at the return and in
+     * `RawBoardRowReaderTest`; no sentence anywhere certifies a region of this file.
+     *
+     * ⚠ An ESC would be blocked upstream by nothing at all here — unlike the relayed
+     * exception bodies, which Guzzle's `bodySummary` gate fails closed on. Nothing filters
+     * this path, so the payload is the full erase-line.
+     */
+    public function test_an_out_of_scope_pr_url_repo_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => "https://github.com/evil/\x1b[2K\rALL CLEAR/pull/3"])], []);
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        // PRESENCE WITNESS — the operator still learns WHICH repo was out of scope.
+        $this->assertStringContainsString('is not in scope for this board', $output);
+        $this->assertStringContainsString('pr_url repo evil/\\x1B[2k all clear', $output);
+        $this->assertNoLiveControlByte($output);
+    }
+
+    /**
+     * ⛔ THE `pr_url` ITSELF, ON THE MATCHED ARM — the ordinary DRIFT line, not an error arm
+     * (card#9121, DL-366 Decision 12, round 5).
+     *
+     * ⭐ WHY THE PREVIOUS ROUND MISSED IT, recorded because the reasoning is the defect and
+     * not the line: `resolveTracked()` returns FIVE values from one parse of one foreign
+     * field, and round 4 ruled the ARM ("past this branch the value has been matched against
+     * this install's own mappings") instead of ruling each VALUE. That is true of
+     * `canonRepo`, which IS the matched key, and false of `prUrl` on the same return — it is
+     * `PrUrlRef::$raw`, whose own docblock says *the URL exactly as it was stored,
+     * unnormalized*. `PrUrlRef::parse` needs only a mapped repo and `#/pull/(\d+)#` matching
+     * SOMEWHERE in the string; everything after the number is attacker free text, nothing
+     * lower-cases it, and no `bodySummary` gate stands in front of it.
+     */
+    public function test_a_matched_pr_url_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        $this->fake(
+            [$this->card(5, 50, ['pr_url' => "https://github.com/owner/repo/pull/5\x1b[2K\rSummary: 0 forward drift, nothing to do"])],
+            [5 => $this->mergedToDevPr()],
+        );
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        // PRESENCE WITNESS — the evidence still reaches the operator, on the DRIFT line.
+        $this->assertStringContainsString('DRIFT     card 5 board 8: stage 50 → 52 (merged)', $output);
+        $this->assertStringContainsString('https://github.com/owner/repo/pull/5\x1B[2K Summary: 0 forward drift', $output);
+        $this->assertNoLiveControlByte($output);
+    }
+
+    /**
+     * ⛔ `dl_number` ON THE `DlOnly` ARM — the SAME FIELD behind the SAME `is_scalar` GATE
+     * that Decision 12 declares foreign in `WritebackSourceCoverageCheck`, twenty-three lines
+     * below the arm round 4 fixed, in the same `switch`.
+     *
+     * `TrackedCardRef::fromPayload()` stores it as `(string) $payload['dl_number']` and
+     * reduces nothing else about it. This is an ordinary skip line on a healthy run.
+     */
+    public function test_a_dl_only_cards_dl_number_cannot_move_the_operators_cursor(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['dl_number' => "42\x1b[2K\rSummary: 0 forward drift, nothing to do"])], []);
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile'));
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('no PR reference (pr_url/pr_number)', $output);
+        $this->assertStringContainsString('(DL 42\x1B[2K Summary: 0 forward drift, nothing to do)', $output);
+        $this->assertNoLiveControlByte($output);
     }
 
     public function test_no_writeback_config_fails(): void
@@ -810,6 +963,56 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    /**
+     * ⛔⭐ THE MEASURED card#9266 HARM, CLOSED, ON THE REAL SURFACE — a stranger's branch ref
+     * reaching ROOT's terminal on the ordinary success path of a healthy run, exit 0.
+     *
+     * The hostile ref is the one card#9266 measured GitHub ACCEPTING and returning
+     * byte-identical, so this is remotely reachable by anyone who can open a fork PR — not
+     * gated on local push rights. Both of the skip-line arms that name the ref are driven
+     * here (`RevertGrammar` matches the `revert-` ref, so this fixture takes the revert arm;
+     * the default arm is the sibling below).
+     *
+     * ⚑ DRIVEN THROUGH THE COMMAND, never through `ForeignText` directly: what is under test
+     * is that the PRODUCER hands back a type the command CANNOT interpolate, which is a fact
+     * about the two files together. `ForeignTextTest` owns the type's own properties.
+     *
+     * ⚠ ONE `expectsOutputToContain` PER RUN — the first matcher consumes the line, so the
+     * escaped-ref witness and the no-live-ESC census cannot both be matchers. The census is
+     * asserted on the buffer the run wrote.
+     */
+    public function test_a_hostile_head_ref_reaches_the_skip_line_escaped(): void
+    {
+        $this->writeWriteback();
+        $hostile = "revert-611-card-5-\u{202E}tegdiw\u{200B}\x1B[2J";
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'Revert "work (Closes card#5)"', 'head' => ['ref' => $hostile],
+        ]]);
+
+        // PRESENCE WITNESS: the ref is still on the line, in escaped form — the fix is not a
+        // drop, and an operator reading a skip line can still see which branch it was about.
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('\x{202E}tegdiw\x{200B}\x1B[2J')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⚑ THE NON-VACUITY CONTROL for the leg above, and it is a control over the FIXTURE rather
+     * than over the code: the hostile ref must actually carry the bytes the escape exists to
+     * remove, or the assertion above would pass against a ref that never had any.
+     */
+    public function test_the_hostile_ref_fixture_actually_carries_control_bytes(): void
+    {
+        $hostile = "revert-611-card-5-\u{202E}tegdiw\u{200B}\x1B[2J";
+
+        $this->assertStringContainsString("\x1B", $hostile);
+        $this->assertStringContainsString("\u{202E}", $hostile);
+        $this->assertStringContainsString("\u{200B}", $hostile);
+    }
+
     public function test_the_backstop_still_reconciles_the_reverted_original(): void
     {
         // ⛔ THE CONTROL, one variable away: the SAME title and the SAME branch without
@@ -881,5 +1084,61 @@ class ReconcileCommandTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
             && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_fix_into_a_terminal_stage_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
+    {
+        // The board read is the SCAN; a tag another writer adds after it must survive the clear,
+        // which it can only do if the clear's tag list comes from a read taken at the write.
+        $this->writeWriteback();
+        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
+        $this->fake([$scanned], [5 => $this->mergedToDevPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
+    }
+
+    public function test_fix_makes_no_tag_write_when_the_fresh_read_shows_no_owner_tag(): void
+    {
+        $this->writeWriteback();
+        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([5 => ['tags' => ['triaged']] + $scanned]);
+        $this->fake([$scanned], [5 => $this->mergedToDevPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 52]], $cards->patchesTo(5));
+    }
+
+    /**
+     * The terminal check's other side: a forward drift into `opened` is not terminal, so the
+     * applied move carries no clear. The PATCH is the presence witness that `--fix` applied the
+     * move; nothing may follow it, because the clear's first step is a read.
+     */
+    public function test_fix_into_a_non_terminal_stage_moves_an_owner_tagged_card_stage_only_with_no_fresh_read_or_tag_write(): void
+    {
+        $this->writeWriteback();
+        $scanned = $this->card(5, 46, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $movedAt = array_key_last(array_filter($cards->log, static fn (array $e): bool => $e['method'] === 'PATCH'));
+        $this->assertSame([], array_slice($cards->log, $movedAt + 1));
+        $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+    }
+
+    public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void
+    {
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['owner:kanban/kanban']])], [5 => $this->mergedToDevPr()]);
+
+        $this->artisan('bridge:reconcile')->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

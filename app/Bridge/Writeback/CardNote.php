@@ -41,7 +41,7 @@ final class CardNote
      * CLOSED with a `]` (see {@see marker}) rather than left open-ended, and that bracket is
      * load-bearing for {@see alreadyOn}: an open-ended marker ending in a `pr_url` is a
      * PREFIX of the marker for any PR whose number extends it (`…/pull/26` inside
-     * `…/pull/262`), so a substring match would read the note for PR 262 as already covering
+     * `…/pull/262`), so a prefix match would read the note for PR 262 as already covering
      * the drop of PR 26 and suppress it — the silence this class exists to remove, minted by
      * its own idempotency check.
      */
@@ -173,6 +173,11 @@ final class CardNote
      * Is this exact note already on the card? Reads the `comments` collection the full
      * `GET /tasks/{id}.json` aggregate already returns, so the check costs no extra read.
      *
+     * ⛔ A comment IS the note only when it STARTS with the marker — the marker is the note's
+     * first line. Anywhere else it is a QUOTE: seats comment through the same writeback user
+     * (`board_comment_card`), so a comment that merely mentions a marker must not suppress the
+     * note it names.
+     *
      * Degrades toward WRITING: a kanban whose task aggregate carries no `comments` key
      * yields a duplicate note rather than a suppressed one. That direction is deliberate
      * — a duplicated record is visible and correctable, a suppressed one is the silence
@@ -187,7 +192,7 @@ final class CardNote
     {
         foreach (is_array($card['comments'] ?? null) ? $card['comments'] : [] as $comment) {
             $content = is_array($comment) ? ($comment['content'] ?? null) : null;
-            if (is_string($content) && str_contains($content, $this->marker)) {
+            if (is_string($content) && str_starts_with($content, $this->marker)) {
                 return true;
             }
         }

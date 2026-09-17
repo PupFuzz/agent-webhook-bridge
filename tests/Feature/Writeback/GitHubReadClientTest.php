@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Writeback;
 
+use App\Bridge\Support\ForeignText;
 use App\Bridge\Writeback\GitHubReadClient;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
@@ -32,8 +33,15 @@ class GitHubReadClientTest extends TestCase
         // The two CLOSURE surfaces (card#7348 — DL-305 the title, DL-308 the head ref).
         // The reconciler must read the same two fields the event path reads off the
         // webhook body, and this is the only place that knows the GitHub response shape.
-        $this->assertSame('work, follows card#4811', $pr['title']);
-        $this->assertSame('card-4811-widget', $pr['head_ref']);
+        // ⛔ AND THEY LEAVE AS `ForeignText`, NOT AS `string` (card#9200): they are the two
+        // fields on this projection a STRANGER chooses, so an interpolation of either is a
+        // phpstan error and a runtime `Error` rather than a line on root's terminal.
+        // `ForeignTextTest` owns that pair of properties; asserted here is only that the
+        // door hands back the type, with the bytes intact for the matchers.
+        $this->assertInstanceOf(ForeignText::class, $pr['title']);
+        $this->assertInstanceOf(ForeignText::class, $pr['head_ref']);
+        $this->assertSame('work, follows card#4811', $pr['title']->rawForMatching());
+        $this->assertSame('card-4811-widget', $pr['head_ref']->rawForMatching());
         $this->assertSame('https://github.com/o/r/pull/7', $pr['html_url']);
         $this->assertSame('abc123def456', $pr['merge_commit_sha']);
 
@@ -61,9 +69,52 @@ class GitHubReadClientTest extends TestCase
         $this->assertSame('', $pr['merge_commit_sha']);
         // An absent head/title reads as '' — which names no card and carries no closing
         // form, so a malformed response withholds a move rather than authorizing one on a
-        // field nobody sent. The SAFE direction, asserted rather than assumed.
-        $this->assertSame('', $pr['head_ref']);
-        $this->assertSame('', $pr['title']);
+        // field nobody sent. The SAFE direction, asserted rather than assumed. Asked through
+        // `isEmpty()` rather than by unwrapping, because "did the answer carry a ref at all"
+        // is a question about the value and not about its bytes.
+        $this->assertTrue($pr['head_ref']->isEmpty());
+        $this->assertTrue($pr['title']->isEmpty());
+    }
+
+    public function test_issue_comment_prefix_read_matches_a_comment_that_starts_with_it_not_one_that_quotes_it(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response([
+            ['body' => 'quoting <!-- m --> in passing'],
+            ['body' => "<!-- m -->\nthe real one"],
+        ])]);
+
+        $this->assertTrue((new GitHubReadClient('ghp_x'))->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+
+        Http::assertSent(fn (Request $r) => $r->url() === 'https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=1'
+            && $r->hasHeader('Authorization', 'Bearer ghp_x'));
+    }
+
+    public function test_issue_comment_prefix_read_answers_false_only_on_an_exhausted_readable_list(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['https://api.github.com/*' => Http::response([['body' => 'quoting <!-- m --> in passing']])]);
+
+        $this->assertFalse((new GitHubReadClient('ghp_x'))->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+    }
+
+    public function test_issue_comment_prefix_read_is_unknown_at_the_page_bound_not_absent(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response(array_fill(0, 100, ['body' => 'unrelated']))]);
+
+        $this->assertNull((new GitHubReadClient('ghp_x'))->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+        Http::assertSentCount(10);
+    }
+
+    public function test_issue_comment_prefix_read_is_unknown_on_an_unreadable_body_or_entry(): void
+    {
+        Log::shouldReceive('warning')->twice()->withArgs(fn (string $m) => str_contains($m, 'comment-list read for o/r#7') && str_contains($m, 'UNKNOWN, not false'));
+        Http::fakeSequence('https://api.github.com/*')
+            ->push(['message' => 'a proxy answered'])
+            ->push([['user' => ['login' => 'x']]]);
+        $client = new GitHubReadClient('ghp_x');
+
+        $this->assertNull($client->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
+        $this->assertNull($client->hasIssueCommentStartingWith('o/r', 7, '<!-- m -->'));
     }
 
     public function test_compare_status_reads_status_and_builds_the_triple_dot_range(): void

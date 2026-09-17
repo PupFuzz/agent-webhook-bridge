@@ -8,6 +8,8 @@ use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\HumanAge;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
@@ -170,7 +172,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
             // failure rather than the seat's silence. An unmigrated install is the live
             // cause — `bridge:check` must not ABORT on it (CheckRunner deliberately does
             // not catch), and must not report a green or a red it did not measure.
-            yield Finding::unvalidated("board_tools: agent {$name}: could NOT read the client-half record — {$e->getMessage()}. This run says nothing about the seat's board-tools client half in either direction. If this install has not run `php artisan migrate` since the upgrade that added board_tools_client_calls, run it and re-run bridge:check.");
+            yield Finding::unvalidated("board_tools: agent {$name}: could NOT read the client-half record — ".RedactedErrorText::of($e).". This run says nothing about the seat's board-tools client half in either direction. If this install has not run `php artisan migrate` since the upgrade that added board_tools_client_calls, run it and re-run bridge:check.");
 
             return;
         }
@@ -192,12 +194,12 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         }
 
         // Carbon 3 returns a SIGNED float here, and both facts matter: the cast is what
-        // keeps `humanAge()` integral, and the floor at zero is for a stamp in the future —
+        // keeps `HumanAge::floored()` integral, and the floor at zero is for a stamp in the future —
         // a clock stepping backwards on this host, which would otherwise render as a
         // negative age on a green line.
         $age = (int) max(0, $record->lastSuccessAt->diffInSeconds(now()));
         if ($age > $ttl) {
-            yield Finding::unvalidated("board_tools: agent {$name}: client half UNREPORTED — the seat's last successful board-tools call was ".self::humanAge($age).' ago (over '.$record->transport.'), older than the '.self::humanAge($ttl)." freshness window, so this run says nothing about whether it still works. THIS IS NOT EVIDENCE THE SEAT IS UNWIRED: {$blind} {$remedy}");
+            yield Finding::unvalidated("board_tools: agent {$name}: client half UNREPORTED — the seat's last successful board-tools call was ".HumanAge::floored($age).' ago (over '.$record->transport.'), older than the '.HumanAge::floored($ttl)." freshness window, so this run says nothing about whether it still works. THIS IS NOT EVIDENCE THE SEAT IS UNWIRED: {$blind} {$remedy}");
 
             return;
         }
@@ -215,14 +217,14 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         [$stale, $versionClause] = $this->versionClause($record->clientVersion);
 
         if ($record->provenance === CallProvenance::Sshd) {
-            $sshd = ("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.").' '.$versionClause;
+            $sshd = ("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".HumanAge::floored($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.").' '.$versionClause;
 
             yield $stale ? Finding::warn($sshd) : Finding::ok($sshd);
 
             return;
         }
 
-        $reported = "board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$record->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it. ".$versionClause;
+        $reported = "board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".HumanAge::floored($age).' ago, over '.$record->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it. ".$versionClause;
 
         yield $stale ? Finding::warn($reported) : Finding::ok($reported);
     }
@@ -324,23 +326,5 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         $configured = (int) config('bridge.board_tools.client_half_ttl');
 
         return $configured > 0 ? $configured : 7 * 86400;
-    }
-
-    /**
-     * A duration an operator reads at a glance — `45s`, `12m`, `3h`, `9d`.
-     *
-     * FLOORED, NEVER ROUNDED, so the printed number is a lower bound on the real age and
-     * "3h" can never be read off something that happened four hours ago. The unit is the
-     * largest whole one, because the question this answers is "recent, or not really", and
-     * a seat that last called `9d` ago is not made clearer by 217 hours.
-     */
-    private static function humanAge(int $seconds): string
-    {
-        return match (true) {
-            $seconds < 60 => $seconds.'s',
-            $seconds < 3600 => intdiv($seconds, 60).'m',
-            $seconds < 86400 => intdiv($seconds, 3600).'h',
-            default => intdiv($seconds, 86400).'d',
-        };
     }
 }

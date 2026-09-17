@@ -13,6 +13,7 @@ use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\SystemChannelProbeEnvironment;
 use App\Bridge\Support\SystemTerminalProbe;
@@ -72,6 +73,7 @@ class BridgeServiceProvider extends ServiceProvider
         $this->app->singleton(JobHandlerRegistry::class, fn (): JobHandlerRegistry => new JobHandlerRegistry(
             JobHandlerRegistry::armedFromConfig(),
             $this->app->make(StandupGate::class),
+            $this->app->make(HandlerRegistry::class),
         ));
 
         $this->app->singleton(JobScheduler::class, fn (): JobScheduler => new JobScheduler($this->app->make(JobHandlerRegistry::class)));
@@ -148,7 +150,7 @@ class BridgeServiceProvider extends ServiceProvider
                     ]))]);
                 }
             } catch (\Throwable $e) {
-                Log::warning('bridge: writeback.json could not be loaded for echo-seeding; bridge:check will report it', ['error' => $e->getMessage()]);
+                Log::warning('bridge: writeback.json could not be loaded for echo-seeding; bridge:check will report it', ['error' => RedactedErrorText::of($e)]);
             }
 
             return new DispatchService(

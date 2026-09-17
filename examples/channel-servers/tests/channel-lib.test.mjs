@@ -161,25 +161,27 @@ test('relayBridgeResponse: a diagnostic never reaches a body that PARSED — the
 // deriveMeta — envelope parsing, best-effort (never throws)
 // ---------------------------------------------------------------------------
 
-test('deriveMeta extracts kind + target_id from a well-formed intent envelope', () => {
-  const body = JSON.stringify({ intent: { kind: 'card_updated', target_id: '4719' } });
-  assert.deepEqual(deriveMeta(body), { kind: 'card_updated', target_id: '4719' });
-});
-
+// The well-formed case is fed the bridge's real body in channel-event-contract.test.mjs;
+// the envelopes below are hand-built on purpose, to reach malformed and partial shapes the
+// bridge never sends.
 test('deriveMeta includes only the string-typed keys present', () => {
   assert.deepEqual(
-    deriveMeta(JSON.stringify({ intent: { kind: 'card_assigned' } })),
-    { kind: 'card_assigned' },
+    deriveMeta(JSON.stringify({ intent: { kind: 'new_card' } })),
+    { kind: 'new_card' },
   );
   assert.deepEqual(
-    deriveMeta(JSON.stringify({ intent: { target_id: 'abc' } })),
+    deriveMeta(JSON.stringify({ intent: { subject_id: 'abc' } })),
     { target_id: 'abc' },
   );
 });
 
-test('deriveMeta ignores non-string kind/target_id (type-guarded)', () => {
-  const body = JSON.stringify({ intent: { kind: 42, target_id: { nested: true } } });
+test('deriveMeta ignores non-string kind/subject_id (type-guarded)', () => {
+  const body = JSON.stringify({ intent: { kind: 42, subject_id: { nested: true } } });
   assert.deepEqual(deriveMeta(body), {});
+});
+
+test('deriveMeta does not read an intent.target_id field (DL-388: the attribute comes from subject_id only)', () => {
+  assert.deepEqual(deriveMeta(JSON.stringify({ intent: { kind: 'new_card', target_id: 'abc' } })), { kind: 'new_card' });
 });
 
 test('deriveMeta returns an empty object when there is no intent object', () => {

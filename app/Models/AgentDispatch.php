@@ -25,6 +25,8 @@ class AgentDispatch extends Model
 
     protected $casts = [
         'processed_at' => 'datetime',
+        // DB-written by DispatchService::stampPushAttempt(), never mass-assigned (DL-380).
+        'push_attempted_at' => 'datetime',
     ];
 
     /**

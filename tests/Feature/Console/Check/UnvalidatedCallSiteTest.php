@@ -215,6 +215,14 @@ class UnvalidatedCallSiteTest extends TestCase
         // defect one level up. The MISCONFIGURED and OK arms are postures this process reads
         // straight out of its own config, so neither is here.
         'app/Bridge/Check/Checks/StandupPostureCheck.php' => 1,
+        // card#9422 / DL-380 — THREE sites, all limb (a), a measurement that did not happen:
+        //   1. the `scheduled_jobs` table could not be READ, so whether anything runs the
+        //      nudge is unknown — the JobsPostureCheck shape.
+        //   2. the last-pass record exists and could not be READ.
+        //   3. there is no readable last-pass record at all. The leg's whole purpose is to
+        //      make an ABSENCE of nudges legible, and with no record the reason for that
+        //      absence was never measured; an `ok` there would be the silence it exists to end.
+        'app/Bridge/Check/Checks/IdleNudgePostureCheck.php' => 3,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
         // three incidental disclosures, so it is spelled out here where a maintainer will
@@ -267,7 +275,20 @@ class UnvalidatedCallSiteTest extends TestCase
         // measured config fault that must flip the exit code), the RETIRED `ok` (the row was
         // read and it is there), the `warn` above, and its silences.
         'app/Bridge/Check/Checks/BoardToolsLostCheck.php' => 2,
-        'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
+        // TWO legs, both limb (a) — a measurement that did not happen:
+        //   1. `channel.url` carries no explicit port, so there is nothing to connect to and
+        //      the liveness leg never ran (DL-251).
+        //   2. card#9121 / DL-366 — `XDG_RUNTIME_DIR` is unset, so the HTTP bind-FAILURE
+        //      marker leg does not run. It is a REFUSAL TO LOOK, not a measured absence: the
+        //      only path left is a predictable name in a world-writable directory, and this
+        //      command runs as the operator, routinely root. Reporting nothing there would be
+        //      indistinguishable from a run that looked and found no marker, which is exactly
+        //      the conflation this severity exists to prevent — and a `warn` would accuse the
+        //      install of a bind failure this run never established.
+        //   ⛔ The SOCKET marker leg has no site here and must not gain one: its directory
+        //      belongs to the agent account, so a marker found there IS attributable and the
+        //      leg answers its own question.
+        'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 2,
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.
         'app/Bridge/Check/Checks/ReconcileRepoTokensCheck.php' => 1,
@@ -322,6 +343,13 @@ class UnvalidatedCallSiteTest extends TestCase
         // moving the exit code. If a future edit ever moves that arm into this list, the leg
         // has stopped answering the question it exists to answer.
         'app/Bridge/Check/Checks/GitHubWebhookSubscriptionCheck.php' => 5,
+        // DL-382 — TWO legs, and neither is a silence this leg measured as abnormal: (1) the
+        // delivery record could not be READ, so the scopes after the throw were never judged
+        // (limb (a)); and (2) the record was read and is too short to DERIVE a silence threshold
+        // from, while the silence is still inside the floor — the comparison's comparand does not
+        // resolve (limb (c)). ⛔ THE SAME SHORT RECORD PAST THE FLOOR IS A `warn`, NOT A THIRD SITE
+        // HERE: the floor alone establishes that silence, and a derived threshold is never lower.
+        'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 2,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

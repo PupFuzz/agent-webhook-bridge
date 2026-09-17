@@ -27,9 +27,10 @@ use App\Bridge\Support\Severity;
  * `ask`/`confirm`/`choice` call anywhere in `app/`"* — a derivable census, and false: it
  * was falsified by `bridge:jobs install-tick` (card#9058) and again by `bridge:provision`'s
  * confirmed `identity_id` offer (card#9141). Both are MUTATING commands an operator runs by
- * hand, and both refuse rather than block where they cannot ask
+ * hand. `bridge:provision` refuses rather than blocks where it cannot ask
  * (`App\Console\Commands\Bridge\BridgeCommand::canPromptToConfirm()` owns what that
- * means — install-tick's own copy of that predicate is card#9255). The census is not re-synced here: a claim about
+ * means); `install-tick` keeps its own narrower `isInteractive()` guard by operator decision
+ * (card#9255), so a piped answer confirms it and a held-open stdin blocks it. The census is not re-synced here: a claim about
  * the whole of `app/` has no business in the docblock of one renderer, and what is
  * load-bearing for this block is the sentence above it.
  *
@@ -88,6 +89,15 @@ final class NextSteps
      * longer has.
      */
     public const WEBHOOK_DOC = 'docs/writeback.md § The repo webhook (one-time, in GitHub)';
+
+    /**
+     * The section that owns what to do about a declared github scope whose delivery record has gone quiet (DL-382).
+     *
+     * ITS OWN SECTION RATHER THAN {@see self::WEBHOOK_DOC}, because the reader arrives with a different question: not
+     * *how do I add the hook* but *is the hook there, and is this repo just quiet* — and that section is where the
+     * leg's delivery-side-only bound is stated for a reader who never sees the terminal.
+     */
+    public const DELIVERY_DOC = 'docs/writeback.md § A declared github scope that has gone quiet';
 
     /**
      * The command that acts on every bridge-side state — it is transport-aware, so one
@@ -174,7 +184,7 @@ final class NextSteps
      * rather than one per half (card#9150). Two matches would each be exhaustive over the
      * cases their own half can produce and would each need a dead arm for the other half's —
      * a state's command decided in a branch nothing reaches, which is where a wrong command
-     * hides. Here every arm is live, so a sixth state is a phpstan error at exactly one site
+     * hides. Here every arm is live, so a new state is a phpstan error at exactly one site
      * and has to be assigned deliberately.
      */
     private static function commandFor(NextStepState $state, string $agent): string
@@ -190,14 +200,22 @@ final class NextSteps
             // box can perform (`bridge:provision` skips every non-kanban provider by design),
             // so what is named is the re-ask.
             NextStepState::GithubWebhookMissing => 'php artisan bridge:check',
+            // The same re-ask, and for a second reason on top of that one: the action this
+            // state asks for is a QUESTION nobody on this box can answer (which install serves
+            // the repo), so there is no command that could be named even in principle.
+            NextStepState::GithubWebhookOtherHooksOnly => 'php artisan bridge:check',
+            // Same again: what answers a silent record is someone LOOKING at the repo's webhook settings, which no
+            // command on this box can do.
+            NextStepState::GithubDeliverySilent => 'php artisan bridge:check',
         };
     }
 
     /**
      * One entry per (agent, scope) whose github webhook this run READ THE REPO'S HOOK LIST FOR
-     * and did not find (card#9150).
+     * and did not find — in the state the leg ruled that absence to be (card#9150, card#9717) —
+     * then one per (agent, scope) whose delivery record went quiet (DL-382).
      *
-     * ⛔ ITS INPUT IS THE MEASURED-ABSENT SET AND NOTHING ELSE. {@see CheckContext::$githubWebhooksMissing}
+     * ⛔ ITS HOOK INPUT IS THE MEASURED-ABSENT SET AND NOTHING ELSE. {@see CheckContext::$githubWebhooksMissing}
      * is written only by the leg's `fail` arm, so an unmeasured scope cannot reach this block
      * — the same discipline the board-tools half draws between a MEASURED fault and a bridge
      * half this run could not read, applied to the one plane where the wrong call sends an
@@ -209,9 +227,10 @@ final class NextSteps
      * is the one line about the repo; these are the one line per seat it silenced.
      *
      * THEY COME LAST, after every board-tools entry, because the block is read top-down and
-     * the board-tools half is the one an install works through in order. Within this half the
-     * order is the leg's own reporting order (config order, then subscription order), which is
-     * the order the findings above printed in.
+     * the board-tools half is the one an install works through in order. Within this half every
+     * measured-absent hook precedes every silent record — the measured fault first — and within
+     * each state the order is the leg's own reporting order (config order, then subscription
+     * order), which is the order the findings above printed in.
      *
      * @return list<NextStep>
      */
@@ -220,12 +239,35 @@ final class NextSteps
         $steps = [];
         foreach ($ctx->githubWebhooksMissing as $missing) {
             foreach ($missing['agents'] as $agent) {
+                // ⛔ THE STATE IS READ, NOT DECIDED (card#9717). Which of the two measured-absent
+                // states this scope is in turns on a hook COUNT that only the leg saw, and the
+                // leg published its ruling with the entry — so the block cannot disagree with
+                // the `fail` line printed above it about which remedy the operator is owed.
                 $steps[] = new NextStep(
                     agent: $agent,
-                    state: NextStepState::GithubWebhookMissing,
-                    command: self::commandFor(NextStepState::GithubWebhookMissing, $agent),
+                    state: $missing['state'],
+                    command: self::commandFor($missing['state'], $agent),
                     doc: self::WEBHOOK_DOC,
                     scope: $missing['scope'],
+                );
+            }
+        }
+
+        // DL-382: a scope whose delivery record went quiet, AFTER every measured-absent hook — and never for a scope
+        // this run already read the hook list of and found the hook gone, since that is the cause and its entry
+        // already names the remedy.
+        $missingScopes = array_column($ctx->githubWebhooksMissing, 'scope');
+        foreach ($ctx->githubDeliverySilent as $silent) {
+            if (in_array($silent['scope'], $missingScopes, true)) {
+                continue;
+            }
+            foreach ($silent['agents'] as $agent) {
+                $steps[] = new NextStep(
+                    agent: $agent,
+                    state: NextStepState::GithubDeliverySilent,
+                    command: self::commandFor(NextStepState::GithubDeliverySilent, $agent),
+                    doc: self::DELIVERY_DOC,
+                    scope: $silent['scope'],
                 );
             }
         }

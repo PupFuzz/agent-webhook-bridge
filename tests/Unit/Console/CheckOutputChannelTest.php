@@ -168,9 +168,13 @@ class CheckOutputChannelTest extends TestCase
         // check that never ran, and yellow would nag a documented-correct population (a
         // multi-host install is TOLD to leave `channel.server_path` unset) with no action
         // available to silence it.
+        //
+        // `UNVALIDATED: ` prefixed, not bare, since DL-393 Decision 8: the severity marker
+        // is orthogonal to the CHANNEL this file measures — it carries no ANSI attribute of
+        // its own, which is the assertion below.
         $rendered = $this->rendered(Severity::Unvalidated);
 
-        $this->assertSame('the message', $rendered);
+        $this->assertSame('UNVALIDATED: the message', $rendered);
         $this->assertStringNotContainsString("\033[", $rendered);
     }
 

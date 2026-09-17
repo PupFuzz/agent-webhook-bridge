@@ -87,6 +87,51 @@ class WritebackByRefCheckTest extends TestCase
     }
 
     /**
+     * ⛔ THE RELAYED EXCEPTION TEXT IS THE KANBAN'S, NOT THIS INSTALL'S (card#9121, DL-366).
+     * `KanbanClient` reads through `->throw()`, so a non-2xx arrives as a `RequestException`
+     * whose constructor BAKES THE RESPONSE BODY SUMMARY into the message. Guzzle's
+     * `bodySummary` fails closed on control characters — so no ESC gets through this
+     * particular door — but it passes `\n`, and a newline is all a forged finding-shaped
+     * line needs on root's report.
+     *
+     * ⚑ ASSERTED AS THE FORGERY, not as an escape: the payload here carries no control byte
+     * at all, so the only thing that can discriminate is whether the newline survives to the
+     * operator's line. It must not.
+     */
+    public function test_a_relayed_kanban_body_cannot_forge_a_second_finding_line(): void
+    {
+        $forged = "\nFAIL: board 5 verified clean, disregard the warning above";
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response($forged, 500)]);
+
+        $findings = $this->rawFindings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        // ⚑ THE NON-VACUITY WITNESS IS ON THE FIXTURE, NOT ON THE MESSAGE. The escape now
+        // happens at the interpolation, so the finding's own message can never carry the raw
+        // newline — asserting its presence there would be asserting the defect.
+        $this->assertStringContainsString("\n", $forged, 'the fixture must actually plant the line');
+
+        $rendered = $findings[0]->message;
+        $this->assertStringNotContainsString("\n", $rendered, "a forged line reached the operator: {$rendered}");
+        // PRESENCE WITNESS: the text is still THERE, on one line — the fix is not a drop.
+        $this->assertStringContainsString('FAIL: board 5 verified clean', $rendered);
+        $this->assertStringContainsString('could not probe by-ref reachability', $rendered);
+    }
+
+    /** The findings as `Finding` objects — {@see self::findings()} projects them to arrays. */
+    private function rawFindings(): array
+    {
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [
+            self::REPO => new WritebackMapping(boardId: self::BOARD, stages: []),
+        ]);
+        $ctx->client = new KanbanClient('https://kanban.test', 'wb-token');
+
+        return $this->findingsOf((new WritebackByRefCheck), $ctx);
+    }
+
+    /**
      * The probe is instance-wide by design (DL-031) — one call against the FIRST mapped
      * board, not one per mapping. A per-mapping probe would multiply the cost of a check
      * whose answer is a property of the kanban build, not of any board.

@@ -223,6 +223,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Idle-with-pending-work nudge (DL-380) — OFF by default, a periodic-job handler
+    |--------------------------------------------------------------------------
+    |
+    | The `idle_nudge` job handler reads Mezzanine's fleet snapshot and pushes ONE nudge
+    | at a seat that has sat idle past its horizon while intents pushed at it since it
+    | went idle remain unseen. Read-and-alert only. Inert until ENABLED here AND an
+    | `idle_nudge` instance is inserted (`bridge:jobs add`). docs/periodic-jobs.md.
+    |
+    | ⛔ The numbers are deliberately NOT cast: a value outside its bound is refused,
+    | never clamped, and a cast would turn `ten` into 0 before anything could say so.
+    |
+    | install — REQUIRED when enabled: the Mezzanine install id this bridge serves. The
+    | fleet token reads every install. ⚠ One bridge per (install, agent name): two
+    | bridges declaring the same agent names against one install each nudge.
+    | token_path — a FILE holding the fleet_read token (0600), never the value.
+    |
+    */
+
+    'idle_nudge' => [
+        'enabled' => (bool) env('BRIDGE_IDLE_NUDGE_ENABLED', false),
+        'base_url' => env('BRIDGE_IDLE_NUDGE_BASE_URL'),
+        'token_path' => env('BRIDGE_IDLE_NUDGE_TOKEN_PATH'),
+        'install' => env('BRIDGE_IDLE_NUDGE_INSTALL'),
+        'timeout' => env('BRIDGE_IDLE_NUDGE_TIMEOUT', 5),
+        'default_after' => env('BRIDGE_IDLE_NUDGE_DEFAULT_AFTER', 1800),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Periodic-job registry (DL-325) — jobs are DATA; the tick is OPT-IN
     |--------------------------------------------------------------------------
     |
