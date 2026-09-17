@@ -20,7 +20,7 @@ use RecursiveIteratorIterator;
  * fixture — a `Class::member` quoted in its own comments became a finding the moment a vector
  * declared a class of that name, reporting a defect in the FIXTURE as one in the script. It
  * fired exactly once, on a comment, which is one time more than a hazard needs to fire. No
- * directory named `harness` is scanned by any of the three rules, so the copy is invisible to
+ * directory named `harness` is scanned by any of the script's rules, so the copy is invisible to
  * all of them; a vector that wants to exercise a path-based exemption writes that path itself,
  * where the intent is legible.
  *

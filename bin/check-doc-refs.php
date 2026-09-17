@@ -2,7 +2,7 @@
 <?php
 
 /**
- * Doc-sync guard. THREE INDEPENDENT RULES run here, each with its own docblock below, sharing
+ * Doc-sync guard. FOUR INDEPENDENT RULES run here, each with its own docblock below, sharing
  * one rationale: a doc or comment that names something untrue is worse than none, and none of
  * these defects is visible to phpstan, pint or the suite — a false comment is still valid PHP
  * that passes every assertion.
@@ -11,6 +11,8 @@
  *   2. line-number citations — a comment or doc cites an OFFSET into the migrating file (DL-242)
  *   3. coverage-membership claims — a check docblock names the generated gap list without
  *      saying what naming it does not buy (DL-243)
+ *   4. quoted console output — markdown quotes a `bridge:check` finding line that the golden
+ *      capture corpus does not print, or quotes one with its severity marker stripped (DL-401)
  *
  * Exit 0 = every rule clean; exit 1 = at least one finding, reported per rule with the file and
  * line it fired on. An exit code alone cannot say WHICH rule fired, so each block names itself.
@@ -1114,11 +1116,25 @@ $bareCiteSurface = '#^(app/Bridge/Check/|tests/Support/CheckGolden/|tests/Featur
 // script, and the test that drives it over them.
 $citeExcluded = '#^(CLAUDE_DECISIONS\.md|docs/CHANGELOG\.md|docs/reviews/|docs/check-golden-coverage\.|bin/check-doc-refs\.php$|tests/Feature/Workflows/DocRefCitationLintTest\.php$)#';
 
+/**
+ * The roots {@see scannedSources()} walks, as ONE spelling.
+ *
+ * Read by the scan AND by rule 4's remediation and success lines, which have to name the surface
+ * they read in order not to imply they read the repo. A second hand-typed copy of this list beside
+ * a message is the defect rules 2 and 3 already fixed in their own closing sentences.
+ *
+ * @return list<string>
+ */
+function scannedRoots(): array
+{
+    return ['app', 'tests', 'docs', 'bin'];
+}
+
 /** @return list<string> repo-relative *.php and *.md paths under the scanned roots */
 function scannedSources(string $root): array
 {
     $out = [];
-    foreach (['app', 'tests', 'docs', 'bin'] as $dir) {
+    foreach (scannedRoots() as $dir) {
         $base = $root.'/'.$dir;
         if (! is_dir($base)) {
             continue;
@@ -1414,6 +1430,280 @@ foreach (scannedSources($root) as $rel) {
 }
 
 /**
+ * FOURTH CHECK — `bridge:check` output quoted in markdown (DL-401).
+ *
+ * A doc that hand-copies console output holds a SECOND implementation of that output, and this
+ * repo has watched the same copy go stale THREE times (card#8374; card#9251 / DL-393, twice): a
+ * retention sample that contradicted a sentence twenty lines above it in the same file, and a plan
+ * doc asserting a form of two lines that no golden capture has ever printed. The defect is an
+ * ABSENT severity marker, so grep cannot find it — there is no inverted term to search for — and a
+ * dedicated doc-sync audit over that very change came back CLEAN and still missed one of them.
+ * Detection depended on somebody happening to look, which is the property that let one shape recur
+ * three times.
+ *
+ * THE ORACLE IS THE GOLDEN CORPUS, because it is the EXECUTABLE copy of what the command prints:
+ * the golden suite regenerates it from real runs, so a change to the output moves the corpus and
+ * reds every prose copy that did not move with it. A test asserting the docs against anything else
+ * would be a third copy of the same sentences.
+ *
+ * TWO DIRECTIONS, because the recurrences came in two shapes:
+ *   a. a quoted finding line the corpus does not print — drift in the message.
+ *   b. a quoted finding MESSAGE with its severity marker stripped — the shape of recurrence 2 and
+ *      3, and invisible to (a) BY CONSTRUCTION: a line carrying no marker is not a finding line, so
+ *      a rule keyed on the marker cannot see the defect that REMOVED it. Leg (b) reads every other
+ *      fenced or backticked span and reds when one is exactly the body of a corpus finding line.
+ *
+ * ⭐ THE ELISION IS MATCHED, NOT SKIPPED, AND THAT IS THE DESIGN. `CLAUDE_DEPLOYMENT.md` quotes the
+ * MariaDB withheld-share line with a literal `…` where the real clause runs to hundreds of
+ * characters, and says twenty lines below that the clause is quoted NOWHERE in this repo's prose —
+ * it is printed by `App\Bridge\Check\Checks\RetentionPostureCheck::payloadShare()` and read there.
+ * That DELETE treatment is the one remedy here that has never drifted, so a flat verbatim rule
+ * would red on the one correct line in the file and pressure a maintainer into re-adding the exact
+ * hand copy the repo deliberately removed. A wholesale SKIP of any line carrying `…` is the
+ * opposite failure and the worse one: a single ellipsis would silence this rule forever, and it
+ * would then certify whatever replaced the line. So `…` is read as a WILDCARD and the quote is
+ * matched WHOLE against ONE line of ONE capture — every surviving character must be present, in
+ * order, in a line some run actually printed. Segment-wise membership was rejected for the same
+ * reason one level down: segments gathered from different lines of different captures assemble a
+ * sentence no run ever printed.
+ *
+ * THE EVIDENCE FLOOR IS DERIVED FROM THE CORPUS, NOT TYPED HERE. An elided quote still has to carry
+ * enough text to be evidence — `OK: …` matches every `OK:` line the corpus holds — so what SURVIVES
+ * the elision must be at least as long as the shortest complete finding MESSAGE in the corpus
+ * itself ({@see sampleEvidenceFloor()}): a quote retaining less than the least informative real
+ * line is not a quote of anything. A number written here instead would be a quoted authority no
+ * later pass recomputes, which is this script's own defect one level up.
+ *
+ * WHAT IT DOES NOT READ, stated because the gap is the interesting half. Markdown only, and inside
+ * it only fenced blocks and backticked spans — the two places this repo quotes output. Prose
+ * outside them is deliberately not a subject: `bridge:check` output is discussed in sentences
+ * constantly and admitting them would red on every paraphrase. ⚠ So recurrence 3 is only HALF
+ * closed: its backticked quotes are covered here, and the SENTENCE around them — a claim about
+ * what every fixture prints — is read by nothing. Leg (b) is exact-match only, so a marker-stripped
+ * quote that is ALSO elided is outside both legs.
+ *
+ * FROZEN HISTORY IS EXCLUDED, on rule 2's precedent and for rule 2's reason: the decision log and
+ * the changelog record what was true at a version, and greening them would mean editing an
+ * append-only entry to suit a live rule. Not hypothetical — the decision log quotes a
+ * `WARN: Command cancelled.` that no capture has ever held.
+ *
+ * THIS SCRIPT IS NOT ITS OWN SUBJECT, unlike rule 1's member leg: the surface is `.md`, so the
+ * sample lines quoted in this very comment are invisible to it and the harness hazard that governs
+ * `harness/` does not arise here. The vectors live in `DocRefSampleLintTest`.
+ */
+
+/** The executable copy of what `bridge:check` prints: the capture corpus the golden suite writes. */
+$sampleOracleGlob = 'tests/Fixtures/check-golden/*.txt';
+
+/**
+ * A finding line: the severity marker the command prints ahead of a message, and a message.
+ *
+ * ONE SPELLING, USED THREE TIMES — to harvest the quotes, to derive the evidence floor from the
+ * corpus, and to split a finding line into marker and body for leg (b). The lookahead is what
+ * keeps a bare `OK: ` — severity VOCABULARY, which the docs quote constantly — out of the harvest.
+ */
+$samplePrefixPattern = '/^(OK|WARN|FAIL|UNVALIDATED): (?=\S)/';
+
+/** The character this repo's docs already use where a real clause is too long to quote. */
+$sampleElision = '…';
+
+/** Append-only history: it records what a version printed and is not editable to suit this rule. */
+$sampleExcluded = '#^(CLAUDE_DECISIONS\.md|docs/CHANGELOG\.md|docs/reviews/)#';
+
+/**
+ * Every place one markdown file quotes something: a whole line inside a fenced block, and each
+ * backticked span outside one.
+ *
+ * BOTH FORMS, because the form recurrence 3 used was the INLINE one — a rule reading fences alone
+ * would have watched that instance land.
+ *
+ * @return list<array{line: int, text: string}>
+ */
+function sampleQuotedSpans(string $body): array
+{
+    $out = [];
+    $inFence = false;
+    foreach (explode("\n", $body) as $i => $raw) {
+        if (str_starts_with(ltrim($raw), '```')) {
+            $inFence = ! $inFence;
+
+            continue;
+        }
+        if ($inFence) {
+            $out[] = ['line' => $i + 1, 'text' => trim($raw)];
+
+            continue;
+        }
+        preg_match_all('/`([^`\n]+)`/', $raw, $spans);
+        foreach ($spans[1] as $span) {
+            $out[] = ['line' => $i + 1, 'text' => trim($span)];
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Every line of every capture, as the oracle both legs read.
+ *
+ * @return list<string>
+ */
+function sampleOracleLines(string $root, string $glob): array
+{
+    $lines = [];
+    foreach (glob($root.'/'.$glob) ?: [] as $file) {
+        foreach (explode("\n", (string) file_get_contents($file)) as $line) {
+            $lines[] = $line;
+        }
+    }
+
+    return $lines;
+}
+
+/**
+ * The shortest complete finding MESSAGE the corpus holds — the least informative thing the command
+ * actually prints, and therefore the least an elided quote of it may retain.
+ *
+ * RE-DERIVED PER RUN over the tree being examined, so a corpus that gains a shorter line moves the
+ * floor with it and nothing here can go stale against it.
+ *
+ * @param  list<string>  $oracle
+ */
+function sampleEvidenceFloor(array $oracle, string $prefixPattern): int
+{
+    $floor = null;
+    foreach ($oracle as $line) {
+        if (preg_match($prefixPattern, $line) !== 1) {
+            continue;
+        }
+        $length = mb_strlen((string) preg_replace($prefixPattern, '', $line));
+        if ($floor === null || $length < $floor) {
+            $floor = $length;
+        }
+    }
+
+    return $floor ?? 0;
+}
+
+/**
+ * Does this quote appear in the corpus?
+ *
+ * WHOLE-LINE AND SINGLE-LINE, with `…` as the only wildcard: the quote claims that a run printed
+ * this line, so the surviving text has to sit in ONE line of one capture, in order.
+ *
+ * @param  list<string>  $oracle
+ */
+function sampleIsInCorpus(string $text, array $oracle, string $elision): bool
+{
+    if (! str_contains($text, $elision)) {
+        return in_array($text, $oracle, true);
+    }
+    // `$` would accept a trailing newline; `\z` is the end of the subject and nothing else.
+    $pattern = '/^'.implode('.*', array_map(
+        static fn (string $segment): string => preg_quote($segment, '/'),
+        explode($elision, $text)
+    )).'\z/';
+
+    foreach ($oracle as $line) {
+        if (preg_match($pattern, $line) === 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/** What an elided quote retains: its message, with the elisions taken out. */
+function sampleRetainedMessage(string $text, string $prefixPattern, string $elision): string
+{
+    return str_replace($elision, '', (string) preg_replace($prefixPattern, '', $text));
+}
+
+$sampleErrors = [];
+$sampleStats = ['md' => 0, 'quoting' => 0, 'quotes' => 0, 'elided' => 0, 'spans' => 0, 'frozen' => 0];
+$sampleCaptures = glob($root.'/'.$sampleOracleGlob) ?: [];
+$sampleOracle = sampleOracleLines($root, $sampleOracleGlob);
+$sampleFloor = sampleEvidenceFloor($sampleOracle, $samplePrefixPattern);
+$sampleBodies = [];
+foreach ($sampleOracle as $sampleLine) {
+    if (preg_match($samplePrefixPattern, $sampleLine) === 1) {
+        $sampleBodies[] = (string) preg_replace($samplePrefixPattern, '', $sampleLine);
+    }
+}
+
+foreach (scannedSources($root) as $rel) {
+    if (! str_ends_with($rel, '.md')) {
+        continue;
+    }
+    $spans = sampleQuotedSpans((string) file_get_contents($root.'/'.$rel));
+    if (preg_match($sampleExcluded, $rel) === 1) {
+        $sampleStats['frozen'] += count($spans);
+
+        continue;
+    }
+    $sampleStats['md']++;
+    $quoting = false;
+    foreach ($spans as $span) {
+        $text = $span['text'];
+        $at = sprintf('%s:%d', $rel, $span['line']);
+
+        // LEG (b) first: a marker-stripped body is not a finding line, so leg (a) never sees it.
+        if (preg_match($samplePrefixPattern, $text) !== 1) {
+            $sampleStats['spans']++;
+            if (in_array($text, $sampleBodies, true)) {
+                $sampleErrors[] = sprintf(
+                    '%s  quotes `%s` — that is a finding MESSAGE with its severity marker stripped; the command prints the marker as part of the line',
+                    $at,
+                    $text
+                );
+            }
+
+            continue;
+        }
+
+        $quoting = true;
+        $sampleStats['quotes']++;
+        $elided = str_contains($text, $sampleElision);
+        $sampleStats['elided'] += $elided ? 1 : 0;
+
+        if ($sampleCaptures === []) {
+            $sampleErrors[] = sprintf(
+                '%s  quotes `%s` — and there is NO corpus to read it against: %s matched no file. The quote is UNREAD, not clean',
+                $at,
+                $text,
+                $sampleOracleGlob
+            );
+
+            continue;
+        }
+        if ($elided) {
+            $retained = mb_strlen(sampleRetainedMessage($text, $samplePrefixPattern, $sampleElision));
+            if ($retained < $sampleFloor) {
+                $sampleErrors[] = sprintf(
+                    '%s  quotes `%s` — the elision leaves %d character(s) of message, under the %d the shortest finding line in the corpus carries. An elision that swallows the message is not evidence of anything',
+                    $at,
+                    $text,
+                    $retained,
+                    $sampleFloor
+                );
+
+                continue;
+            }
+        }
+        if (! sampleIsInCorpus($text, $sampleOracle, $sampleElision)) {
+            $sampleErrors[] = sprintf(
+                '%s  quotes `%s` — no single line in %s %s',
+                $at,
+                $text,
+                $sampleOracleGlob,
+                $elided ? 'matches it with `'.$sampleElision.'` read as a wildcard' : 'is that line'
+            );
+        }
+    }
+    $sampleStats['quoting'] += $quoting ? 1 : 0;
+}
+
+/**
  * What the member leg DECLINED to answer, on every run.
  *
  * Three populations `continue` in silence otherwise, and a closing line reading "all PHP
@@ -1464,7 +1754,7 @@ fwrite(STDOUT, sprintf(
     $census['depth_bail'],
 ));
 
-if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
+if ($errors !== [] || $citeErrors !== [] || $claimErrors !== [] || $sampleErrors !== []) {
     if ($errors !== []) {
         fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file, class or class member that does not exist):\n");
         foreach ($errors as $e) {
@@ -1485,6 +1775,30 @@ if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
             fwrite(STDERR, "  - {$e}\n");
         }
         fwrite(STDERR, "\ndocs/check-golden-coverage.md is generated from CheckCommand::handle() alone, so a\nmigrated check is absent from it BY CONSTRUCTION — and absence there is not protection.\nSay so in the same block: that absence from the file is not protection, that it does not\nspeak for the predicate in either direction, or that the leg was never a disclosed gap.\nSee DL-243.\n");
+    }
+    if ($sampleErrors !== []) {
+        fwrite(STDERR, "`bridge:check` output quoted in markdown (a hand copy of console output the golden corpus does not print):\n");
+        foreach ($sampleErrors as $e) {
+            fwrite(STDERR, "  - {$e}\n");
+        }
+        fwrite(STDERR, sprintf(
+            "\nThe population is every fenced line and backticked span in the markdown under %s and the root\n"
+            ."*.md, minus paths matching %s; a span matching %s is read as a quoted finding line, and any\n"
+            ."other span is read against the same corpus for a MESSAGE quoted without its marker. The\n"
+            ."oracle is %s — the golden suite writes it from real runs.\n\n"
+            ."⛔ Do NOT hand-re-sync the copy: that is the move that has gone stale three times\n"
+            ."(card#8374, card#9251). Either DELETE the quote and point at the check that prints it, or\n"
+            ."RE-COPY it from the capture file the corpus holds. Where the real clause is too long to\n"
+            ."quote, elide it with `%s`: the elision is matched as a WILDCARD against one capture line, so\n"
+            ."the surviving text still has to be real, and it must retain at least %d character(s) — the\n"
+            ."shortest finding message this corpus holds, re-derived by this run.\nSee DL-401.\n",
+            implode(', ', scannedRoots()),
+            $sampleExcluded,
+            $samplePrefixPattern,
+            $sampleOracleGlob,
+            $sampleElision,
+            $sampleFloor
+        ));
     }
     exit(1);
 }
@@ -1542,5 +1856,28 @@ fwrite(STDOUT, sprintf(
     $claimDocsInSurface === []
         ? 'no current-state CLAUDE_*.md is in its surface, so this run says nothing about prose claims there'
         : 'of the current-state docs it covers '.implode(', ', $claimDocsInSurface)
+));
+
+/**
+ * RULE 4'S LINE NAMES THE POPULATION IT MEASURED, in the same shape and for the same reason as the
+ * two above: this rule exists because a clean doc-sync audit was read as covering quotes it never
+ * opened. Every scope word is printed out of the constant the scan itself used, and every figure is
+ * this run's own count — so a widened surface, a moved exclusion or a corpus that gains a shorter
+ * line rewrites the sentence with no edit here.
+ */
+fwrite(STDOUT, sprintf(
+    "doc-refs: every `bridge:check` finding line quoted in markdown is one the corpus prints — %d quote(s) in %d of the %d markdown file(s) under %s and the root *.md, %d of them carrying the `%s` elision (matched as a WILDCARD against ONE capture line, retaining at least %d character(s), re-derived from the corpus by this run); the other %d fenced or backticked span(s) were read for a finding MESSAGE quoted with its marker stripped, against %d capture file(s) holding %d distinct finding line(s). It reads fenced blocks and backticked spans in MARKDOWN only: prose outside them, every non-markdown file, and the %d span(s) under %s are unread by it.\n",
+    $sampleStats['quotes'],
+    $sampleStats['quoting'],
+    $sampleStats['md'],
+    implode(', ', scannedRoots()),
+    $sampleStats['elided'],
+    $sampleElision,
+    $sampleFloor,
+    $sampleStats['spans'],
+    count($sampleCaptures),
+    count(array_unique($sampleBodies)),
+    $sampleStats['frozen'],
+    $sampleExcluded
 ));
 exit(0);
