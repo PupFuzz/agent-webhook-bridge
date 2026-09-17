@@ -132,6 +132,9 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Console/Commands/Bridge/JobsCommand.php::add#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ProvisionCommand.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ProvisionCommand.php::handle#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        // card#9528: the per-subscription api_base_url validation, which used to throw out of
+        // `handle()` and kill `--list` with a stack trace. It catches `ConfigException` only.
+        'Console/Commands/Bridge/ProvisionCommand.php::handle#3' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ProvisionCommand.php::receiverBaseRefusal#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ProvisionToolsCommand.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Console/Commands/Bridge/ReconcileCommand.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

@@ -93,9 +93,13 @@ final class InstallEndpointUrlsCheck implements Check
                 continue;
             }
             try {
+                // ⛔ THE `configDoor…` PAIR, WHICH IS WHAT MAKES THIS A DOOR (card#9528). This
+                // check exists to JUDGE a config value and quote it back, so it opts in to the
+                // userinfo-character refusal the runtime callers of the same validator do not
+                // take — `UrlValidator` owns why the two tiers exist.
                 $spec['secure']
-                    ? UrlValidator::secureHttpUrl($spec['url'], "bridge.{$field}")
-                    : UrlValidator::httpUrl($spec['url'], "bridge.{$field}");
+                    ? UrlValidator::configDoorSecureHttpUrl($spec['url'], "bridge.{$field}")
+                    : UrlValidator::configDoorHttpUrl($spec['url'], "bridge.{$field}");
                 if ($field === 'receiver_base_url') {
                     $receiverIsWellFormed = true;
                 }

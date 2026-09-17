@@ -181,6 +181,12 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('fail', $finding['severity']);
         $this->assertStringContainsString("github webhook: owner/repo has NO repo webhook delivering to this install's receiver", $finding['message']);
 
+        // ⚑ THIS FIXTURE REACHES THE OTHER-HOOKS ARM since card#9717 — its hook list carries
+        // one foreign hook — and the sentence above is the SPINE both arms share. Asserted so
+        // the fixture cannot be read as the unwired one, whose cause clause is different and
+        // whose remedy does not ask.
+        $this->assertStringContainsString('the repo carries 1 webhook(s)', $finding['message']);
+
         // The REMEDY is the payload of the line — a fail that names the fault and not the
         // cure sends the operator to `bridge:provision`, which cannot do it.
         $this->assertStringContainsString('bridge:provision CANNOT fix this', $finding['message']);
@@ -377,6 +383,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertStringContainsString('HTTP 403', $finding['message']);
         $this->assertStringContainsString('admin:repo_hook', $finding['message']);
         $this->assertStringContainsString('NOT evidence it is gone', $finding['message']);
+        $this->assertReportsNoHookCount($finding);
 
         // Both directions on the discrimination: the fail arm's own wording must be absent,
         // or this would pass against a renderer that printed both.
@@ -398,6 +405,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('unvalidated', $finding['severity']);
         $this->assertStringContainsString('no GitHub token resolved for this repo', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+        $this->assertReportsNoHookCount($finding);
     }
 
     public function test_a_connection_failure_is_unvalidated_and_not_an_absent_hook(): void
@@ -411,6 +419,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('unvalidated', $finding['severity']);
         $this->assertStringContainsString('the request to GitHub did not complete', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+        $this->assertReportsNoHookCount($finding);
     }
 
     /**
@@ -465,6 +474,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('unvalidated', $finding['severity']);
         $this->assertStringContainsString('could not enumerate', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+        $this->assertReportsNoHookCount($finding);
     }
 
     public function test_the_enumeration_follows_pages_before_it_will_call_a_hook_absent(): void
@@ -504,6 +514,10 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertSame('unvalidated', $finding['severity']);
         $this->assertStringContainsString('could not enumerate', $finding['message']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+        // ⚑ THE PAGE-BOUND ARM IS THE ONE A COUNT WOULD BE MOST TEMPTING ON — the walk really
+        // did see 1,100 hooks here — and it is exactly the arm where *hooks seen* is not the
+        // repo's hook count, because the list never ended.
+        $this->assertReportsNoHookCount($finding);
     }
 
     public function test_a_hook_entry_with_no_readable_url_is_unvalidated_and_never_an_absent_hook(): void
@@ -520,6 +534,7 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $finding = $this->onlyFinding($doc);
         $this->assertSame('unvalidated', $finding['severity']);
         $this->assertStringNotContainsString('has NO repo webhook', $finding['message']);
+        $this->assertReportsNoHookCount($finding);
     }
 
     public function test_a_matching_hook_still_wins_over_an_unreadable_sibling_entry(): void
@@ -586,8 +601,121 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $output = Artisan::output();
 
         $this->assertStringContainsString('has NO repo webhook', $output, 'the fixture must reach the leg for this control to mean anything');
+
+        // ⭐ AND SINCE card#9717 THE LEG REPORTS SOMETHING DERIVED FROM THAT VERY HOOK, which is
+        // what makes the two absence assertions below a measurement rather than a tautology: the
+        // count proves the foreign entry was ENUMERATED and its URL still did not travel. A
+        // presence witness is required here for the reason this class's docblock gives — an
+        // absence-only control certifies whatever replaces it, including a leg that stopped
+        // reading the list at all.
+        $this->assertStringContainsString('the repo carries 1 webhook(s)', $output);
+        $this->assertStringContainsString('already served by ANOTHER bridge install', $output);
+
         $this->assertStringNotContainsString(self::FOREIGN_RECEIVER, $output);
         $this->assertStringNotContainsString('someone-elses-bridge', $output);
+    }
+
+    public function test_a_repo_with_no_webhooks_at_all_is_named_unwired_and_told_to_add_one(): void
+    {
+        // THE HALF DL-368's LINE WAS ALWAYS RIGHT ABOUT. A repo carrying no webhooks at all is
+        // served by nobody, so *add it by hand* is the whole remedy and the line does not hedge
+        // — the ambiguity card#9717 closes does not exist on this shape.
+        $this->bootGithubInstall($this->hookPage([]));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(1, $exit);
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('fail', $finding['severity']);
+        $this->assertStringContainsString('the repo carries NO webhooks AT ALL', $finding['message']);
+        $this->assertStringContainsString("Add it by hand in the repo's Settings then Webhooks: payload URL", $finding['message']);
+
+        // ⛔ AND THE QUESTION THE OTHER ARM ASKS MUST BE ABSENT HERE. Asking whether another
+        // install serves a repo that carries no webhooks at all is a question with one possible
+        // answer, and printing it would spend the operator's attention on nothing.
+        $this->assertStringNotContainsString('already served by ANOTHER bridge install', $finding['message']);
+
+        $this->assertSame(['no_block', 'github_webhook_missing'], array_column($doc['next_steps'], 'state'));
+    }
+
+    public function test_a_repo_carrying_other_hooks_names_the_count_asks_which_install_owns_it_and_prescribes_neither(): void
+    {
+        // ⭐ THE CARD. A repo ALREADY SERVED BY ANOTHER INSTALL'S BRIDGE is indistinguishable
+        // from here from one whose own hook was deleted while other integrations kept theirs —
+        // and DL-368's line told the operator to ADD A HOOK on both. On the first that puts a
+        // SECOND card-mover on one board, racing on every PR event. The two remedies are
+        // opposite, so the line asks which situation this is and gives both answers.
+        $this->bootGithubInstall($this->hookPage([self::FOREIGN_RECEIVER]));
+
+        [$exit, $doc] = $this->runJson();
+
+        // ⛔ THE VERDICT DOES NOT MOVE WITH THE CAUSE. This install is deaf on that scope either
+        // way, and where the cause is a stale declaration the declaration is itself the fault.
+        $this->assertSame(1, $exit, 'the cause and the remedy change; the severity and the exit code do not');
+        $finding = $this->onlyFinding($doc);
+        $this->assertSame('fail', $finding['severity']);
+
+        // WHAT THE LEG MEASURED: how many, never which.
+        $this->assertStringContainsString('the repo carries 1 webhook(s)', $finding['message']);
+
+        // THE ASK, AND BOTH ANSWERS — neither of which the line picks.
+        $this->assertStringContainsString('is owner/repo already served by ANOTHER bridge install?', $finding['message']);
+        $this->assertStringContainsString('drop the github subscription for owner/repo', $finding['message']);
+        $this->assertStringContainsString("add it by hand in the repo's Settings then Webhooks", $finding['message']);
+        $this->assertStringContainsString('DOES NOT GUESS', $finding['message']);
+
+        // ⛔ AND THE UNCONDITIONAL PRESCRIPTION IS GONE FROM THIS ARM — the defect itself,
+        // asserted absent beside the presence witnesses above rather than on its own.
+        $this->assertStringNotContainsString('Settings then Webhooks: payload URL', $finding['message']);
+        $this->assertStringNotContainsString('carries NO webhooks AT ALL', $finding['message']);
+
+        $this->assertSame(['no_block', 'github_webhook_other_hooks_only'], array_column($doc['next_steps'], 'state'));
+        $this->assertSame(
+            ['agent' => 'gh-agent', 'scope' => self::SCOPE, 'state' => 'github_webhook_other_hooks_only', 'command' => 'php artisan bridge:check', 'doc' => NextSteps::WEBHOOK_DOC],
+            $doc['next_steps'][1],
+        );
+
+        // ⭐ A NEW `state` VALUE JOINS AN EXISTING ENTRY, which `docs/check-json-contract.md` §2
+        // rules is NOT a bump. Pinned here because that ruling is what this change spends.
+        $this->assertSame(1, $doc['schema'], 'a new next_steps state value does not bump the contract');
+    }
+
+    public function test_the_operator_block_tells_the_reader_not_to_add_a_hook_before_establishing_which_it_is(): void
+    {
+        // A LEG NOBODY READS IS THE SAME DEFECT AS NO LEG — and the whole point of the new state
+        // is the instruction it carries, which lives in the NEXT STEPS block rather than in the
+        // finding. ⚑ IT DOES NOT RESTATE THE COUNT: that figure is on the FAIL line, once.
+        $this->bootGithubInstall($this->hookPage([self::FOREIGN_RECEIVER]));
+
+        Artisan::call('bridge:check');
+        $lines = array_values(array_filter(
+            explode("\n", Artisan::output()),
+            static fn (string $line): bool => str_starts_with($line, 'next step '),
+        ));
+
+        $this->assertCount(2, $lines);
+        $this->assertStringStartsWith('next step 2/2 — gh-agent:', $lines[1]);
+        $this->assertStringContainsString('DO NOT ADD A HOOK ON THE STRENGTH OF THIS LINE', $lines[1]);
+        $this->assertStringContainsString('second card-mover', $lines[1]);
+        $this->assertStringContainsString('drop the github subscription', $lines[1]);
+        $this->assertStringContainsString('php artisan bridge:check', $lines[1]);
+        $this->assertStringContainsString(NextSteps::WEBHOOK_DOC, $lines[1]);
+    }
+
+    public function test_the_count_is_the_whole_list_and_not_the_page_it_stopped_on(): void
+    {
+        // ⛔ THE COUNT DECIDES WHICH OF TWO OPPOSITE REMEDIES AN OPERATOR IS GIVEN, so a walk
+        // that reported its LAST PAGE would be asserting a number the repo does not hold. The
+        // page size is 100, so 100 (full, walk continues) + 50 (short, list ends) is the shape
+        // that tells a per-page count from a whole-list one: a leg counting one page says 50.
+        $this->bootGithubInstall(Http::sequence()
+            ->push(array_fill(0, 100, ['config' => ['url' => self::FOREIGN_RECEIVER]]), 200)
+            ->push(array_fill(0, 50, ['config' => ['url' => self::FOREIGN_RECEIVER]]), 200));
+
+        [$exit, $doc] = $this->runJson();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('the repo carries 150 webhook(s)', $this->onlyFinding($doc)['message']);
     }
 
     public function test_a_missing_hook_gets_a_next_steps_entry_naming_the_scope_and_the_remedy(): void
@@ -732,6 +860,28 @@ class GitHubWebhookSubscriptionCheckTest extends TestCase
         $this->assertIsArray($decoded, 'bridge:check --format=json did not emit a JSON object');
 
         return [$exit, $decoded];
+    }
+
+    /**
+     * A finding from a read that did not ENUMERATE the repo's hook list reports NO COUNT
+     * (card#9717).
+     *
+     * ⛔ THE RULE IS STATED ONCE HERE AND CALLED FROM EVERY COULD-NOT-LOOK ARM, rather than
+     * spelled out six times, because it is one property of one boundary: the count is a
+     * property of an enumeration that RAN TO THE END, and every arm below stopped before one
+     * did. A count printed on any of them would be *hooks seen so far* wearing the name *hooks
+     * on the repo* — and it would arrive attached to the ambiguous remedy, which asks an
+     * operator to go and un-declare a working subscription.
+     *
+     * @param  array<string, mixed>  $finding
+     */
+    private function assertReportsNoHookCount(array $finding): void
+    {
+        $this->assertStringNotContainsString(
+            'the repo carries',
+            (string) $finding['message'],
+            'a read that never enumerated the hook list has no count to report, and both counted causes open with this clause',
+        );
     }
 
     /**

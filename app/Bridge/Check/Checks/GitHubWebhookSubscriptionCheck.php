@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\NextStepState;
 use App\Bridge\Check\Silence;
 use App\Bridge\Provision\GitHubWebhookProbe;
 use App\Bridge\Provision\GitHubWebhookProbeKind;
@@ -41,6 +42,21 @@ use Illuminate\Routing\Router;
  *   webhook is live* is a fact ONLY this read establishes, and the green line is the witness
  *   that the read happened at all — which is load-bearing precisely because the `fail`
  *   beside it rests on the same read.
+ *
+ * ⛔ THE MEASURED-ABSENT ARM NAMES TWO CAUSES AND PRESCRIBES NEITHER (card#9717). A hook list
+ * read to the end without ours on it is EITHER a repo with no webhooks at all — genuinely
+ * unwired, add one — OR a repo carrying webhooks that are not ours, which is what a repo
+ * ALREADY SERVED BY ANOTHER INSTALL'S BRIDGE looks like from here. Those take OPPOSITE
+ * remedies: on the second, adding the hook this line used to prescribe puts a SECOND card-mover
+ * on one board, and two movers race on every PR event. So the count decides which cause is
+ * named, and on the ambiguous one the remedy ASKS — *is this repo served by another install?* —
+ * rather than picking. ⛔ WHAT THE OTHER HOOKS ARE IS NEVER READ OUT OF THIS BOX: only how MANY
+ * of them there are crosses the client boundary, for the reason the next paragraph but two
+ * gives, so this leg cannot tell the two apart and says so instead of guessing.
+ *
+ * ⛔ THE SEVERITY DOES NOT MOVE WITH THE CAUSE. Both are `fail`. This install is deaf on that
+ * scope either way, and where the cause is a stale declaration that declaration is itself the
+ * fault; downgrading the ambiguous one to `warn` would weaken a check to make a failure quieter.
  *
  * ⛔ IT MATCHES BY RECEIVER URL, in the shared {@see ReceiverUrl} primitive — and NEVER by
  * event list or hook id. A hook's event list is the operator's to choose
@@ -188,7 +204,7 @@ final class GitHubWebhookSubscriptionCheck implements Check
                 // is the end of the list and why anything less answers `null`. The NEXT STEPS
                 // publication happens INSIDE this arm rather than beside the match, so there
                 // is one site keyed on the measured absence and not two that could disagree.
-                GitHubWebhookProbeKind::Absent => $this->reportMissing($ctx, $scope, $agents, $who, $result->source),
+                GitHubWebhookProbeKind::Absent => $this->reportMissing($ctx, $scope, $agents, $who, $result->source, $result->hookCount),
 
                 GitHubWebhookProbeKind::Unresolvable => Finding::unvalidated(
                     "github webhook: {$scope} — COULD NOT LOOK: no GitHub token resolved for this repo ({$result->problem}). This run did NOT check whether the repo's webhook is live, and that is NOT evidence it is gone. Enumerating a repo's webhooks needs a token with `admin:repo_hook` on {$scope}; place one (chmod 600) or map it in the coordination store, then re-run bridge:check."
@@ -218,6 +234,23 @@ final class GitHubWebhookSubscriptionCheck implements Check
     /**
      * Record a MEASURED-absent hook for the NEXT STEPS block and compose its `fail`.
      *
+     * ⛔ ONE SENTENCE WITH TWO CAUSES AND TWO REMEDIES, SPLIT ON THE REPO'S HOOK COUNT
+     * (card#9717) — and the class docblock owns why they are two and not one. The predicate is
+     * `> 0` and not a null test: an `Absent` result is by construction an enumeration that ran
+     * to the end, so the count is there; writing it this way asks the one question that decides
+     * the remedy instead of enumerating states, and a count that somehow did not arrive falls to
+     * the wording this leg shipped with rather than to a sentence with a hole in it.
+     *
+     * ⚑ THE SPINE, THE `bridge:provision CANNOT fix this` CLAUSE AND THE NORMALISATION NOTE ARE
+     * COMPOSED ONCE AND SHARED, not written twice. Both causes are the same measured absence and
+     * the note below is the guarded restatement of {@see ReceiverUrl::deliversTo()}'s rule — a
+     * second copy of it inside a branch would be a copy nothing reds on, which is the defect the
+     * note's own guard exists to prevent.
+     *
+     * ⚑ THE COUNT IS PRINTED HERE AND NOWHERE ELSE. The NEXT STEPS sentence for the same scope
+     * names the state's question, not the number: a figure restated on a second surface is a
+     * second thing to keep true.
+     *
      * ⛔ THIS MESSAGE RESTATES {@see ReceiverUrl::deliversTo()}'s RULE AND HAS TO, which is why
      * it is GUARDED rather than replaced by a pointer (canon #16): the reader is an operator
      * staring at a terminal, and they cannot follow a `{@see}`. Every copy that carried the FALSE
@@ -244,12 +277,31 @@ final class GitHubWebhookSubscriptionCheck implements Check
      * construction rather than by two call sites agreeing.
      *
      * @param  list<string>  $agents
+     * @param  ?int  $hookCount  how many webhooks the exhausted enumeration counted on the repo
      */
-    private function reportMissing(CheckContext $ctx, string $scope, array $agents, string $who, ?string $source): Finding
+    private function reportMissing(CheckContext $ctx, string $scope, array $agents, string $who, ?string $source, ?int $hookCount): Finding
     {
-        $ctx->githubWebhooksMissing[] = ['scope' => $scope, 'agents' => $agents];
+        $otherHooks = $hookCount > 0;
+        $ctx->githubWebhooksMissing[] = [
+            'scope' => $scope,
+            'agents' => $agents,
+            // ⛔ THE STATE IS DECIDED HERE, WHERE THE COUNT WAS READ, AND PUBLISHED — never
+            // re-derived by the block that renders it. Two sites splitting the same number are
+            // two sites that can disagree about which remedy an operator is given.
+            'state' => $otherHooks ? NextStepState::GithubWebhookOtherHooksOnly : NextStepState::GithubWebhookMissing,
+        ];
 
-        return Finding::fail("github webhook: {$scope} has NO repo webhook delivering to this install's receiver — this run READ the repo's whole hook list with the token from {$source} and none of its delivery URLs is <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}. Nothing upstream will wake this install for that scope ({$who}): events reach it late through a periodic sweep, or not at all. bridge:provision CANNOT fix this — it provisions the kanban provider only, and a github webhook lives in the repo's own settings. Add it by hand in the repo's Settings then Webhooks: payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}, content type application/json, secret = the per-scope HMAC secret file{$this->secretPathClause($ctx, $scope)} — then re-run bridge:check. See docs/writeback.md section The repo webhook. NOTE the match is on WHAT THIS RECEIVER WOULD ROUTE, not on the bytes: scheme and host are compared case-insensitively, an explicit :443 or :80 is dropped, trailing slashes on the path are ignored, the path is percent-decoded, and the query is compared as decoded parameters — so `?b=owner%2Frepo` and `?b=owner/repo` are the same hook, and so is a URL that ends in a #fragment. These are NOT the same hook, each because the receiver would refuse the delivery: a DOUBLE-encoded scope (%252F), which arrives as a literal % and is answered invalid_scope; a hook carrying any extra query parameter; and a hook whose URL puts a # BEFORE the ?, since a fragment is never transmitted and that delivery carries no scope at all.");
+        $secretFile = 'payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b='.$scope.', content type application/json, secret = the per-scope HMAC secret file'.$this->secretPathClause($ctx, $scope);
+
+        $cause = $otherHooks
+            ? "this run READ the repo's whole hook list with the token from {$source}: the repo carries {$hookCount} webhook(s) and NONE of them delivers to <BRIDGE_RECEIVER_BASE_URL>/github?b={$scope}"
+            : "this run READ the repo's whole hook list with the token from {$source} and the repo carries NO webhooks AT ALL";
+
+        $remedy = $otherHooks
+            ? "TWO SITUATIONS PRODUCE THIS LINE AND THEIR REMEDIES ARE OPPOSITE, so ANSWER THIS BEFORE YOU CHANGE ANYTHING: is {$scope} already served by ANOTHER bridge install? IF IT IS, the stale thing is THIS install's declaration and not the repo — adding a hook here would point a SECOND card-mover at one board, and the two would race on every PR event; drop the github subscription for {$scope} from the agent config(s) that declare it ({$who}), then re-run bridge:check. IF IT IS NOT, this install's own hook is gone and the repo's other hooks are somebody else's integrations: add it by hand in the repo's Settings then Webhooks — {$secretFile} — then re-run bridge:check. THIS RUN CANNOT ANSWER THAT QUESTION AND DOES NOT GUESS AT IT: a repo's hook list carries every OTHER install's receiver endpoint, so this leg counts what is on it and never reads out what — ask whoever administers {$scope}, or check this fleet's own install list."
+            : "Add it by hand in the repo's Settings then Webhooks: {$secretFile} — then re-run bridge:check.";
+
+        return Finding::fail("github webhook: {$scope} has NO repo webhook delivering to this install's receiver — {$cause}. Nothing upstream will wake this install for that scope ({$who}): events reach it late through a periodic sweep, or not at all. bridge:provision CANNOT fix this — it provisions the kanban provider only, and a github webhook lives in the repo's own settings. {$remedy} See docs/writeback.md section The repo webhook. NOTE the match is on WHAT THIS RECEIVER WOULD ROUTE, not on the bytes: scheme and host are compared case-insensitively, an explicit :443 or :80 is dropped, trailing slashes on the path are ignored, the path is percent-decoded, and the query is compared as decoded parameters — so `?b=owner%2Frepo` and `?b=owner/repo` are the same hook, and so is a URL that ends in a #fragment. These are NOT the same hook, each because the receiver would refuse the delivery: a DOUBLE-encoded scope (%252F), which arrives as a literal % and is answered invalid_scope; a hook carrying any extra query parameter; and a hook whose URL puts a # BEFORE the ?, since a fragment is never transmitted and that delivery carries no scope at all.");
     }
 
     /**
