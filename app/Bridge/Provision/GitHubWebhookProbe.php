@@ -70,7 +70,7 @@ final class GitHubWebhookProbe
         $client = new GitHubReadClient((string) $resolution->token);
 
         try {
-            $found = $client->hasRepoWebhookFor($repo, $receiverUrl);
+            $answer = $client->hasRepoWebhookFor($repo, $receiverUrl);
         } catch (RequestException $e) {
             $status = $e->response->status();
 
@@ -96,9 +96,13 @@ final class GitHubWebhookProbe
             return GitHubWebhookProbeResult::unreadable('the request to GitHub did not complete ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')', $source);
         }
 
-        return match ($found) {
+        return match ($answer->found) {
             true => GitHubWebhookProbeResult::present($source),
-            false => GitHubWebhookProbeResult::absent($source),
+            // ⚠ THE COUNT RIDES ONLY THIS ARM, and it is the client that decides so: it is
+            // populated exactly where the enumeration ran to the end, which is the same
+            // condition that earns `Absent`. Passing it here rather than re-deriving it keeps
+            // one answer about one read (card#9717).
+            false => GitHubWebhookProbeResult::absent($source, $answer->hookCount),
             // The client's third answer: a 200 that was not a hook list, or a pagination
             // bound reached. It owns why each of those is not an absence.
             null => GitHubWebhookProbeResult::unreadable("GitHub answered 200 but this run could not enumerate {$repo}'s webhooks from it", $source),

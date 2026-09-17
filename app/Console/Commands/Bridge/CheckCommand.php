@@ -1212,6 +1212,15 @@ class CheckCommand extends BridgeCommand
             // and the difference between that and this line is exactly which read happened.
             NextStepState::GithubWebhookMissing => "the github subscription {$step->scope} is declared in {$step->agent}.yml, and this run READ that repo's whole webhook list: NOTHING on it delivers to this install's receiver, so nothing upstream wakes {$step->agent} for that scope — its events arrive late through a periodic sweep, or not at all. That is the FAIL line above, not an advisory. No command on this box can fix it: bridge:provision manages the kanban provider only, and a github webhook lives in the repo's own settings — so someone with `admin:repo_hook` on {$step->scope} adds it by hand (payload URL <BRIDGE_RECEIVER_BASE_URL>/github?b={$step->scope}, content type application/json, secret = this install's per-scope HMAC secret file, named on the FAIL line above), and then you run `{$step->command}` to confirm it took. {$doc}",
 
+            // ⛔ THE ARM THAT REFUSES TO PRESCRIBE, and the refusal is the instruction (card#9717).
+            // The same measured absence as the arm above, on a repo that carries OTHER hooks —
+            // which is what a repo already served by another install's bridge looks like from
+            // here, and is also what this install's own deleted hook looks like on a repo with
+            // other integrations. The remedies are opposite and doing the wrong one puts a
+            // second card-mover on one board, so the line asks and does not choose. ⚑ It does
+            // NOT restate the COUNT: that figure is on the FAIL line, once.
+            NextStepState::GithubWebhookOtherHooksOnly => "the github subscription {$escapedScope} is declared in {$step->agent}.yml, and this run READ that repo's whole webhook list: it carries webhooks and NONE of them delivers to this install's receiver, so nothing upstream wakes {$step->agent} for that scope. That is the FAIL line above, not an advisory. ⛔ DO NOT ADD A HOOK ON THE STRENGTH OF THIS LINE. A repo ALREADY SERVED BY ANOTHER bridge install reads exactly like this from here, and adding a second hook would point a second card-mover at one board — the two would race on every PR event. FIND OUT WHICH THIS IS FIRST: is {$escapedScope} served by another install? IF IT IS, the stale thing is this install's declaration — drop the github subscription for {$escapedScope} from {$step->agent}.yml. IF IT IS NOT, someone with `admin:repo_hook` on {$escapedScope} adds the hook by hand, from the payload URL and secret file named on the FAIL line above. Either way you then run `{$step->command}` to confirm. This run cannot tell the two apart and does not guess: it counts the repo's hooks and never reads out what they are. {$doc}",
+
             // ⛔ THE ONE ARM WHOSE FAULT IS AN INFERENCE, and it says so twice over: a quiet repo
             // produces it too, and a hook whose deliveries arrive and are dropped before any agent
             // wakes never produces it — so neither this line nor its absence is a verdict on
