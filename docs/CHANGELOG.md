@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-09-16
+
 ### Added
 
 - **card#9656 (DL-401)** — **a `bridge:check` finding line quoted in the docs is now checked against the golden capture corpus, and CI refuses a copy the command does not print.** The operator docs hand-copy console output as sample blocks, and the same copy has gone stale three times; the defect is an ABSENT severity marker, so no grep finds it and a dedicated doc-sync audit over that very change came back clean having missed one of the three.
