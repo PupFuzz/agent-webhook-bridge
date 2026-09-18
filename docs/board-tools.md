@@ -159,10 +159,14 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
 }
 ```
 
-> **`source` and `pr_url` are on EVERY projected card (card#9837).** `source` is the card's
-> by-ref `owner/repo`, lower-cased — on a shared board, **the repo whose merge can move the
-> card** — or `null` when nothing on the card names one. `pr_number` alone cannot tell you
-> that. The bridge derives it with its mirror of kanban's own rule, in this order:
+> **`source` and `pr_url` are on EVERY projected card (card#9837).** `source` is the repo
+> qualifier kanban applies to this card's refs — an `owner/repo`, lower-cased, or `null` when
+> nothing on the card names one. On a **shared** board, a by-ref correlation (DL, PR number or
+> issue number) only matches events from this repo; a `card#` token is **not** filtered by it,
+> and on a 1:1 board no qualifier is applied at all. It is only meaningful when the card carries
+> a `dl_number`, `pr_number` or `issue_number` — kanban indexes no refs for a card without one,
+> so there is nothing for `source` to qualify. The bridge derives it with its mirror of kanban's
+> own rule, in this order:
 > `payload.repo` (only when it contains a `/`), then a GitHub `payload.pr_url`, `issue_url`,
 > `html_url`, then the card's top-level `external_link`. All of those come from the same
 > `tasks/search.json` rows the tool already reads, `external_link` included, so `source`

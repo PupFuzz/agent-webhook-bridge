@@ -1124,13 +1124,15 @@ final class BoardMyCardsTool implements Tool
      * plus, ONLY when the caller opted in (DL-245), description + description_truncated.
      * Nothing else leaves the bridge.
      *
-     * `source` (card#9837) is the card's by-ref `owner/repo` — the repo whose merge can move
-     * it on a shared board — derived by {@see ExternalReferenceNormalizer::sourceFor}, the
-     * bridge's mirror of kanban's own derivation, over the row's payload and its top-level
-     * `external_link`. `pr_url` is ONE input to it, not the answer: `payload.repo` outranks
-     * it, and `issue_url` / `html_url` / `external_link` stand in when it is absent. `pr_url`
-     * is also returned raw, as stored card text given the same treatment as `name`: a scalar
-     * is stringified, and anything else reads null, exactly as an absent key does.
+     * `source` (card#9837) is the repo qualifier kanban applies to this card's refs, derived
+     * by {@see ExternalReferenceNormalizer::sourceFor} (the bridge's mirror of kanban's own
+     * derivation, which owns the input order) over the row's payload and its top-level
+     * `external_link`. It matters only on a shared board, only to by-ref correlation, and
+     * only on a card carrying a `dl_number` / `pr_number` / `issue_number` — a `card#` token
+     * is not filtered by it; `docs/board-tools.md` § `board_my_cards` states the scope.
+     * `pr_url` is one input to it, not the answer, and is also returned raw, as stored card
+     * text given the same treatment as `name`: a scalar is stringified, and anything else
+     * reads null, exactly as an absent key does.
      *
      * ⭐ `assigned_user_id` IS THE RAW BOARD FIELD AND CARRIES NO NAME (card#9170). It is
      * what makes a claimed-but-unmoved card legible: a card whose column never moved is
