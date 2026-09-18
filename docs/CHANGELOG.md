@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **CI: every pull request's body is now linted against the coord framework's PR-body standard, REPORTING-ONLY.** New workflow `.github/workflows/pr-body-lint.yml` runs `pr-body-lint.py`, vendored from coord plugin `0.54.0` into `.github/pr-body-lint/` and pinned by sha256 in `PIN` there. Findings appear as warning annotations and in the job summary, and the job exits 0 on them (operator ruling 2026-09-18: reporting-only until blocking is decided on evidence). The job goes red only when the linter returned no verdict: its bytes do not match the pin, its selftest fails, the body cannot be read, or it crashes. `pr-body-lint` is not a required check, so no result from it changes what can merge. Nothing the receiver accepts or rejects moves.
+
 ## [0.86.0] - 2026-09-16
 
 ### Added
