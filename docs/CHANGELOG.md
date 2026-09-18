@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#9837** — **`board_my_cards` now returns each card's `source` (its by-ref `owner/repo`) and `pr_url`**, beside `pr_number`, on every projected card (own lane, shared lane, coord cards, `tag_cards`). `source` is the repo qualifier kanban applies to the card's refs: on a shared board a by-ref (DL / PR-number / issue-number) correlation only matches events from that repo, while a `card#` token is not filtered by it, and it means something only on a card carrying a `dl_number`, `pr_number` or `issue_number`. A seat with no kanban token could see the PR number but not which repo the card is attributed to.
+  - **`source`** is derived by the bridge's existing mirror of kanban's rule (`ExternalReferenceNormalizer::sourceFor`, over the payload's `repo` / GitHub URLs and the card's `external_link`, all on the rows the tool already reads — no extra request); `docs/board-tools.md` states the order. `null` when none yields a repo.
+  - **`pr_url`** is the stored `payload.pr_url` as a string, or `null`; a non-scalar stored value reads `null`, as an absent one does. It is one input to `source`, not the answer.
+  - **Additive:** no key renamed, removed or re-typed; the two new keys sit after `pr_number`.
+  - **No channel-server re-deploy needed.** The card shape is built in the bridge (`BoardMyCardsTool::projectCard`) and the channel server relays the result unchanged; `examples/channel-servers/` is untouched and its snapshot version does not move.
+
 ### Changed
 
 - **CI: every pull request's body is now linted against the coord framework's PR-body standard, REPORTING-ONLY.** New workflow `.github/workflows/pr-body-lint.yml` runs `pr-body-lint.py`, vendored from coord plugin `0.54.0` into `.github/pr-body-lint/` and pinned by sha256 in `PIN` there. Findings appear as warning annotations and in the job summary, and the job exits 0 on them (operator ruling 2026-09-18: reporting-only until blocking is decided on evidence). The job goes red only when the linter returned no verdict: its bytes do not match the pin, its selftest fails, the body cannot be read, or it crashes. `pr-body-lint` is not a required check, so no result from it changes what can merge. Nothing the receiver accepts or rejects moves.

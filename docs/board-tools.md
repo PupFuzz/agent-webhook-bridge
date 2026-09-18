@@ -119,7 +119,10 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
                     "assigned_user_id": 42,   // who holds it, or null — see below
-                    "dl_number": "DL-1", "pr_number": null, "updated_at": "...",
+                    "dl_number": "DL-1", "pr_number": null,
+                    "pr_url": null,           // the card's PR url, or null — see below
+                    "source": "owner/repo",   // the card's by-ref repo, or null — see below
+                    "updated_at": "...",
                     // the next two keys ONLY when include_description was passed:
                     "description": "...", "description_truncated": false } ],
     "In Review": [ /* ... */ ]
@@ -155,6 +158,23 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   }
 }
 ```
+
+> **`source` and `pr_url` are on EVERY projected card (card#9837).** `source` is the repo
+> qualifier kanban applies to this card's refs — an `owner/repo`, lower-cased, or `null` when
+> nothing on the card names one. On a **shared** board, a by-ref correlation (DL, PR number or
+> issue number) only matches events from this repo; a `card#` token is **not** filtered by it,
+> and on a 1:1 board no qualifier is applied at all. It is only meaningful when the card carries
+> a `dl_number`, `pr_number` or `issue_number` — kanban indexes no refs for a card without one,
+> so there is nothing for `source` to qualify. The bridge derives it with its mirror of kanban's
+> own rule, in this order:
+> `payload.repo` (only when it contains a `/`), then a GitHub `payload.pr_url`, `issue_url`,
+> `html_url`, then the card's top-level `external_link`. All of those come from the same
+> `tasks/search.json` rows the tool already reads, `external_link` included, so `source`
+> costs no extra request. `pr_url` is the stored `payload.pr_url` as a string, or `null`;
+> it is card text returned as stored, like `name`, and it is one input to `source`, not the
+> answer — a `payload.repo` outranks it. A `pr_url` ending in `/pull/0` is a
+> repo-attribution placeholder (what `bridge:check` tells an operator to stamp on a card
+> with no PR yet), not a pull request.
 
 > ⭐ **`assigned_user_id` is on EVERY projected card (DL-372), and it is the RAW board
 > field.** It is what makes a claimed-but-unmoved card legible: a card whose column never

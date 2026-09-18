@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Tools\BoardCallRefusal;
 use App\Bridge\Tools\BoardCorrectCardTool;
 use App\Bridge\Tools\BoardMyCardsTool;
@@ -1589,7 +1590,7 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertArrayNotHasKey('description', $card);
         $this->assertArrayNotHasKey('description_truncated', $card);
-        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'updated_at'], array_keys($card));
+        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at'], array_keys($card));
     }
 
     public function test_my_cards_include_description_false_is_the_default_shape(): void
@@ -4458,6 +4459,82 @@ class AgentToolsCallTest extends TestCase
             // from "this bridge does not report assignees".
             ->assertJsonPath('result.cards_by_stage.Backlog.1.assigned_user_id', null);
         $this->assertArrayHasKey('assigned_user_id', $res->json('result.cards_by_stage.Backlog.1'));
+    }
+
+    // ─── board_my_cards renders the PR url (card#9837) ────────────────────────
+
+    /**
+     * `payload.pr_url` is what kanban derives a card's by-ref `source` repo from, so it decides
+     * which repo's merge moves the card; `pr_number` alone cannot say which repo that is.
+     */
+    public function test_my_cards_renders_the_pr_url_on_every_card(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'attributed', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => ['pr_number' => 12, 'pr_url' => 'https://github.com/o/r/pull/12'],
+                    'updated_at' => '2026-07-20', 'board_id' => 10],
+                ['id' => 2, 'name' => 'unattributed', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => ['pr_number' => 12], 'updated_at' => '2026-07-20', 'board_id' => 10],
+                ['id' => 3, 'name' => 'malformed', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => ['pr_url' => ['not' => 'a url']], 'updated_at' => '2026-07-20', 'board_id' => 10],
+            ]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.cards_by_stage.Backlog.0.pr_url', 'https://github.com/o/r/pull/12')
+            // The card without one is the control: a projection that emitted the key only
+            // when set would pass the arm above, and "no pr_url" would be indistinguishable
+            // from "this bridge does not report pr_url".
+            ->assertJsonPath('result.cards_by_stage.Backlog.1.pr_url', null)
+            ->assertJsonPath('result.cards_by_stage.Backlog.2.pr_url', null);
+        $this->assertArrayHasKey('pr_url', $res->json('result.cards_by_stage.Backlog.1'));
+    }
+
+    /**
+     * `source` is the by-ref repo, and `pr_url` is only one input to it: the derivation is
+     * {@see ExternalReferenceNormalizer::sourceFor}'s, reused rather
+     * than re-derived, so each arm below pins one step of its preference order.
+     */
+    public function test_my_cards_renders_the_source_repo_on_every_card(): void
+    {
+        $row = fn (int $id, array $payload, ?string $externalLink = null): array => ['id' => $id, 'name' => "c{$id}",
+            'workflow_stage_id' => 50, 'swimlane_id' => 4, 'tags' => [], 'payload' => $payload,
+            'external_link' => $externalLink, 'updated_at' => '2026-07-20', 'board_id' => 10];
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                $row(1, ['pr_url' => 'https://github.com/O/R/pull/12']),
+                $row(2, ['repo' => 'Other/Repo', 'pr_url' => 'https://github.com/o/r/pull/12']),
+                $row(3, ['issue_url' => 'https://github.com/o/issues-only/issues/7']),
+                $row(4, [], 'https://github.com/o/linked/pull/3'),
+                $row(5, ['pr_number' => 12]),
+                $row(6, ['repo' => 'DEV', 'pr_url' => 'https://github.com/o/r/pull/12']),
+            ]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200);
+        $cards = [];
+        foreach ($res->json('result.cards_by_stage.Backlog') as $card) {
+            $this->assertArrayHasKey('source', $card, "card {$card['id']} carries the key even when it is null");
+            $cards[$card['id']] = $card['source'];
+        }
+
+        $this->assertSame([
+            1 => 'o/r',                // from pr_url, canonicalized
+            2 => 'other/repo',         // payload.repo outranks pr_url
+            3 => 'o/issues-only',      // issue_url when there is no pr_url
+            4 => 'o/linked',           // the row's top-level external_link, last
+            5 => null,                 // nothing names a repo: a pr_number alone cannot
+            6 => 'o/r',                // a repo with no '/' is an alias, not a source
+        ], $cards);
     }
 
     // ─── board_comment_card (DL-381) ──────────────────────────────────────────

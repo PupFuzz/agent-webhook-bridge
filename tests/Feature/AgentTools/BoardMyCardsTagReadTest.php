@@ -478,7 +478,7 @@ class BoardMyCardsTagReadTest extends TestCase
         $default = $this->through($door)['body']['result'];
         $this->assertSame(['board_id', 'board_observed', 'configured_board_id', 'swimlane_id', 'board_stages', 'cards_by_stage', 'cards_window'], array_keys($default));
         $this->assertSame(['board_id=10 swimlane_id=4'], self::sentSearches());
-        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'updated_at'], array_keys($default['cards_by_stage']['Backlog'][0]), 'the lane card gains no swimlane_id key');
+        $this->assertSame(['id', 'name', 'stage', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at'], array_keys($default['cards_by_stage']['Backlog'][0]), 'the lane card gains no swimlane_id key');
 
         $tagged = $this->through($door, ['tag' => 'lane:A'])['body']['result'];
         $this->assertArrayHasKey('tag_cards', $tagged);
