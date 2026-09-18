@@ -1,0 +1,68 @@
+# pr-body-lint.yml — runs the coord framework's PR-body linter on every pull request, REPORTING-ONLY.
+#
+# The standard is `skills/release-pr/SKILL.md § PR body` in the coord plugin; the program is the
+# one vendored, pinned, in `.github/pr-body-lint/` (`PIN` there names the version and the bytes).
+# Its own header lists the rules and what it does not judge; this file does not restate them.
+#
+# ⛔ IT CANNOT BLOCK A MERGE — operator ruling, 2026-09-18: reporting-only first, and whether it
+# ever blocks is decided later on the evidence of these runs. Two things hold that, and both are
+# needed:
+#   1. A FINDING NEVER FAILS THE JOB. `report.py` exits 0 on findings and publishes each one as a
+#      `::warning::` annotation and in the job summary.
+#   2. THE CONTEXT MUST NOT BE REQUIRED while this ruling stands. It lives in its OWN workflow file
+#      so no aggregating required job can `needs:` it. Whether `pr-body-lint` is required is a
+#      repository SETTING no comment can hold; read it live:
+#        gh api "repos/<owner>/<repo>/branches/<branch>/protection" --jq '.required_status_checks'
+#        gh api "repos/<owner>/<repo>/rules/branches/<branch>"
+# What DOES fail the job is the linter returning NO VERDICT: vendored bytes that do not match the
+# pin, its own selftest failing, a body it could not read, or a crash (`report.py`'s docstring
+# owns how a crash is told apart from findings). A red X here therefore means "not measured",
+# never "the body has findings" — and while point 2 holds it does not block either.
+#
+# TO MAKE IT BLOCKING LATER — a change to what CI accepts, so it needs its own decision: make the
+# findings arm of `report.py` exit 1 (or call `pr-body-lint.py` directly, as the framework's own
+# workflow template does), THEN add `pr-body-lint` to the required status checks.
+#
+# `edited` is in the trigger because the body is not part of the diff: a body edit fires `edited`,
+# never `synchronize`.
+
+name: PR body lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+env:
+  # UTF-8 stdio for every python process here, kept from the framework's template: a PR body
+  # routinely carries characters a runner's default codec may not encode.
+  PYTHONUTF8: "1"
+
+jobs:
+  pr-body-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: vendored linter matches its pin
+        working-directory: .github/pr-body-lint
+        run: |
+          set -euo pipefail
+          if ! awk '$1 == "sha256" { print $2 "  " $3 }' PIN | sha256sum --strict --check -; then
+            echo "::error title=pr-body-lint not measured::the files in .github/pr-body-lint/ do not match PIN; re-vendor them, never edit them in place"
+            exit 1
+          fi
+
+      - name: vendored linter passes its own selftest
+        working-directory: .github/pr-body-lint
+        run: python3 pr-body-lint.selftest.py
+
+      - name: lint this PR's body (reporting-only; exits 0 on findings)
+        # The body reaches the program through `env:`, never through the script text: interpolated
+        # into `run:`, `${{ github.event.pull_request.body }}` would be substituted into the shell
+        # source before bash runs, so a body could inject commands. As an env value it is data.
+        env:
+          COORD_PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/pr-body-lint/report.py --env COORD_PR_BODY --label "this PR's body"

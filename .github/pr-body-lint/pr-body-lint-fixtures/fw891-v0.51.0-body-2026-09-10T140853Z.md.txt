@@ -1,0 +1,54 @@
+FROM: pm
+
+**`dev → main` release PR — v0.51.0.** Bundles 17 commit(s) since origin/main.
+
+## Highlights
+
+- **card#9153's roundtable-replay wedge closes in full** (#880, #881, #888): the replay is now
+  bounded so it cannot wedge, and a read-vs-shown conflation and a full-page watermark jump are
+  fixed.
+- **New `coordination.config.json` key `identity_hook.enforce`** (#866, default `false`): when
+  `true`, the pre-commit identity hook refuses a per-command `git -c user.*` override that would
+  defeat the commit-identity audit.
+- **Sprint lanes:** a lane's `board` now accepts a LIST of board ids — membership is the union over
+  the boards (#887); a lane may declare an optional `label`, a short display token rendered as a
+  chip on the burn-down page, never an ordering (#877).
+- **New tooling:** `coord-hygiene` (#875) classifies worktrees/branches/caches by observable state
+  and removes only the merged-and-clean classes, report-only on real work; `coord-review` (#882) is
+  a self-hosted adversarial review the author cannot touch.
+- **`gh api --paginate` under-read fixed** (#884): GitHub began answering `/issues`/`/pulls` page 1
+  with a cursor-shaped `Link` that can return HTTP 200 with an empty array, silently truncating a
+  paginated kanban read; the walk now uses explicit `page=N`.
+
+## Bundled (generated — do not hand-edit)
+- release: bump to 0.51.0 + CHANGELOG entry
+- **#888** fix(hooks): a replay comment that invited the wedge back, three status messages bash was executing, and the third bound the doc never named (card#9153)
+- **#889** fix(card-token): publish the case flag inline so --explain's pattern matches the scan (card#7768)
+- **#875** feat(hygiene): card#9051 m1 — coord-hygiene classifies worktrees/branches/caches by observable state; removes only the merged-and-clean classes; real work report-only
+- **#872** fix(merge-gates): BEHIND refusal reads the base's live strict (both surfaces), fails closed when unreadable (card#9024)
+- **#887** feat(sprint): a lane's `board` accepts a LIST — membership is the union over the boards (card#9218)
+- **#886** fix(promote-cards-by-token): derive the api base a message prints from the parsed authority, so a base the parse cannot read leaks nothing (card#9194)
+- **#874** fix(changelog-guard): card#9060 — sync-guard leg 2 compares BYTES, and its control is a newline-only mutation
+- **#881** fix(hooks): READ is not SHOWN, the group-whole cut gets a test, the drain rate is recorded, and a full page stops jumping the watermark (card#9153)
+- **#884** fix(kanban): walk /issues and /pulls by explicit page=N — `gh api --paginate` stops at page 1 on a cursor Link (card#9167)
+- **#883** docs(agents): splice the turn-economy block into impl-reviewer.md, retiring its exemption (card#8877)
+- **#877** feat(sprint): the burn-down page as information design, and an optional lane `label` (card#9064)
+- **#882** feat(review): coord-review — a self-hosted adversarial review the author cannot touch (card#9047)
+- **#885** docs(pr-body): the PR-body standard is written for the software installer's point of view (card#9187)
+- **#880** fix(hooks): bound the roundtable replay so it cannot wedge; advance the watermark over what was consumed (card#9153)
+- **#866** feat(hooks): pre-commit identity hook — refuse a per-command git -c user.* override that defeats the commit-identity audit (card#8902)
+- **#862** feat(review): compute the mechanical review planes into one digest (card#8878)
+
+## Correlation gaps
+
+⚠ **NOTHING in `origin/main..HEAD` (17 commit(s)) correlates to a board card.** Both manifests are empty, so no card can be promoted from this release and no coverage was measured — a body with no manifest footer reads exactly like one whose range legitimately had nothing to say.
+
+⚠ **`ref_token_regex` is not declared in `.release-pr.json`.** The `shipped-refs` manifest is absent, so nothing here is correlated against a card's `payload.dl_number`. Declare it if your commit subjects carry that spelling — the two keys are two id spaces, so do not re-spell the other one as this one.
+
+⚠ **`card_token_regex` is not declared in `.release-pr.json`.** The `shipped-cards` manifest is absent, so nothing here is correlated against the card's own `id`. Declare it if your commit subjects carry that spelling — the two keys are two id spaces, so do not re-spell the other one as this one.
+
+Built: dispatched (coder ×1 / mechanic ×0)
+**Coordinated in:** card#9229 (board 13) · rt#283
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
