@@ -10,8 +10,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
-- **card#9837** — **`board_my_cards` now returns each card's `pr_url`** — the stored `payload.pr_url` as a string, or `null` when the card has none — beside `pr_number`, on every projected card (own lane, shared lane, coord cards, `tag_cards`). `pr_url` is the field kanban derives a card's by-ref `source` repo from, so it is what decides which repo's merge moves the card; a seat with no kanban token could see the PR number but not which repo it belongs to.
-  - **Additive:** no key renamed, removed or re-typed; the new key sits after `pr_number`. A non-scalar stored value reads `null`, as an absent one does.
+- **card#9837** — **`board_my_cards` now returns each card's `source` (its by-ref `owner/repo`) and `pr_url`**, beside `pr_number`, on every projected card (own lane, shared lane, coord cards, `tag_cards`). On a shared board `source` is the repo whose merge can move the card; a seat with no kanban token could see the PR number but not which repo the card is attributed to.
+  - **`source`** is derived by the bridge's existing mirror of kanban's rule (`ExternalReferenceNormalizer::sourceFor`): `payload.repo` when it contains a `/`, then a GitHub `pr_url`, `issue_url`, `html_url`, then the card's top-level `external_link` — all present on the rows the tool already reads, so no extra request. `null` when none yields a repo.
+  - **`pr_url`** is the stored `payload.pr_url` as a string, or `null`; a non-scalar stored value reads `null`, as an absent one does. It is one input to `source`, not the answer.
+  - **Additive:** no key renamed, removed or re-typed; the two new keys sit after `pr_number`.
   - **No channel-server re-deploy needed.** The card shape is built in the bridge (`BoardMyCardsTool::projectCard`) and the channel server relays the result unchanged; `examples/channel-servers/` is untouched and its snapshot version does not move.
 
 ### Changed

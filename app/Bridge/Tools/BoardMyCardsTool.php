@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Writeback\BoardRead;
 use App\Bridge\Writeback\BoardStructure;
 use App\Bridge\Writeback\KanbanClient;
@@ -46,8 +47,9 @@ use Illuminate\Support\Facades\Log;
  * to EVERY projected card, unconditionally — see {@see projectCard} for why it carries no
  * opt-in and no name — so the claim is retired rather than re-scoped: the ENVELOPE had
  * already grown the DL-302 board keys and card#8985's window blocks, and now the CARD has
- * grown a key too (and card#9837 added `pr_url` the same way). What holds is the weaker, true statement: every key this tool has ever
- * emitted is still emitted, with the same meaning.
+ * grown a key too (card#9837 later added `pr_url` and `source` the same way). What holds
+ * is the weaker, true statement: every key this tool has ever emitted is still emitted,
+ * with the same meaning.
  *
  * ⛔ THE DEFAULT RESPONSE IS CAPPED BY CARD COUNT (card#8985, DL-365). The
  * DL-245 warning above bounds ONE description; nothing bounded the number of
@@ -1118,14 +1120,17 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * Project a raw kanban card row to the tool's card shape (DL-217): id, name,
-     * stage, tags, assigned_user_id, dl_number, pr_number, pr_url, updated_at — plus, ONLY
-     * when the caller opted in (DL-245), description + description_truncated. Nothing else
-     * leaves the bridge.
+     * stage, tags, assigned_user_id, dl_number, pr_number, pr_url, source, updated_at —
+     * plus, ONLY when the caller opted in (DL-245), description + description_truncated.
+     * Nothing else leaves the bridge.
      *
-     * `pr_url` (card#9837) is the key kanban derives the card's by-ref `source` repo from, so
-     * it is what says WHICH repo's merge moves the card — `pr_number` alone cannot. It is
-     * stored card text and gets the same treatment as `name`: a scalar is stringified, and
-     * anything else reads null, exactly as an absent key does.
+     * `source` (card#9837) is the card's by-ref `owner/repo` — the repo whose merge can move
+     * it on a shared board — derived by {@see ExternalReferenceNormalizer::sourceFor}, the
+     * bridge's mirror of kanban's own derivation, over the row's payload and its top-level
+     * `external_link`. `pr_url` is ONE input to it, not the answer: `payload.repo` outranks
+     * it, and `issue_url` / `html_url` / `external_link` stand in when it is absent. `pr_url`
+     * is also returned raw, as stored card text given the same treatment as `name`: a scalar
+     * is stringified, and anything else reads null, exactly as an absent key does.
      *
      * ⭐ `assigned_user_id` IS THE RAW BOARD FIELD AND CARRIES NO NAME (card#9170). It is
      * what makes a claimed-but-unmoved card legible: a card whose column never moved is
@@ -1165,6 +1170,7 @@ final class BoardMyCardsTool implements Tool
             'dl_number' => is_scalar($payload['dl_number'] ?? null) ? $payload['dl_number'] : null,
             'pr_number' => is_scalar($payload['pr_number'] ?? null) ? $payload['pr_number'] : null,
             'pr_url' => is_scalar($payload['pr_url'] ?? null) ? (string) $payload['pr_url'] : null,
+            'source' => (new ExternalReferenceNormalizer)->sourceFor($payload, is_string($row['external_link'] ?? null) ? $row['external_link'] : null),
             'updated_at' => is_scalar($row['updated_at'] ?? null) ? (string) $row['updated_at'] : null,
         ];
 

@@ -121,6 +121,7 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
                     "assigned_user_id": 42,   // who holds it, or null — see below
                     "dl_number": "DL-1", "pr_number": null,
                     "pr_url": null,           // the card's PR url, or null — see below
+                    "source": "owner/repo",   // the card's by-ref repo, or null — see below
                     "updated_at": "...",
                     // the next two keys ONLY when include_description was passed:
                     "description": "...", "description_truncated": false } ],
@@ -158,10 +159,18 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
 }
 ```
 
-> **`pr_url` is on EVERY projected card (card#9837)** — the card's stored `payload.pr_url`
-> as a string, or `null` when it has none. It is the field kanban derives the card's by-ref
-> `source` repo from, so it says **which repo's merge moves the card**; `pr_number` alone
-> cannot. It is stored card text and is returned as stored, like `name`.
+> **`source` and `pr_url` are on EVERY projected card (card#9837).** `source` is the card's
+> by-ref `owner/repo`, lower-cased — on a shared board, **the repo whose merge can move the
+> card** — or `null` when nothing on the card names one. `pr_number` alone cannot tell you
+> that. The bridge derives it with its mirror of kanban's own rule, in this order:
+> `payload.repo` (only when it contains a `/`), then a GitHub `payload.pr_url`, `issue_url`,
+> `html_url`, then the card's top-level `external_link`. All of those come from the same
+> `tasks/search.json` rows the tool already reads, `external_link` included, so `source`
+> costs no extra request. `pr_url` is the stored `payload.pr_url` as a string, or `null`;
+> it is card text returned as stored, like `name`, and it is one input to `source`, not the
+> answer — a `payload.repo` outranks it. A `pr_url` ending in `/pull/0` is a
+> repo-attribution placeholder (what `bridge:check` tells an operator to stamp on a card
+> with no PR yet), not a pull request.
 
 > ⭐ **`assigned_user_id` is on EVERY projected card (DL-372), and it is the RAW board
 > field.** It is what makes a claimed-but-unmoved card legible: a card whose column never
