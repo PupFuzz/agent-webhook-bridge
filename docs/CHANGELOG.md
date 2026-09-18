@@ -8,6 +8,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#9837** — **`board_my_cards` now returns each card's `pr_url`** — the stored `payload.pr_url` as a string, or `null` when the card has none — beside `pr_number`, on every projected card (own lane, shared lane, coord cards, `tag_cards`). `pr_url` is the field kanban derives a card's by-ref `source` repo from, so it is what decides which repo's merge moves the card; a seat with no kanban token could see the PR number but not which repo it belongs to.
+  - **Additive:** no key renamed, removed or re-typed; the new key sits after `pr_number`. A non-scalar stored value reads `null`, as an absent one does.
+  - **No channel-server re-deploy needed.** The card shape is built in the bridge (`BoardMyCardsTool::projectCard`) and the channel server relays the result unchanged; `examples/channel-servers/` is untouched and its snapshot version does not move.
+
 ### Changed
 
 - **CI: every pull request's body is now linted against the coord framework's PR-body standard, REPORTING-ONLY.** New workflow `.github/workflows/pr-body-lint.yml` runs `pr-body-lint.py`, vendored from coord plugin `0.54.0` into `.github/pr-body-lint/` and pinned by sha256 in `PIN` there. Findings appear as warning annotations and in the job summary, and the job exits 0 on them (operator ruling 2026-09-18: reporting-only until blocking is decided on evidence). The job goes red only when the linter returned no verdict: its bytes do not match the pin, its selftest fails, the body cannot be read, or it crashes. `pr-body-lint` is not a required check, so no result from it changes what can merge. Nothing the receiver accepts or rejects moves.

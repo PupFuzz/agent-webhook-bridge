@@ -119,7 +119,9 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
                     "assigned_user_id": 42,   // who holds it, or null — see below
-                    "dl_number": "DL-1", "pr_number": null, "updated_at": "...",
+                    "dl_number": "DL-1", "pr_number": null,
+                    "pr_url": null,           // the card's PR url, or null — see below
+                    "updated_at": "...",
                     // the next two keys ONLY when include_description was passed:
                     "description": "...", "description_truncated": false } ],
     "In Review": [ /* ... */ ]
@@ -155,6 +157,11 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   }
 }
 ```
+
+> **`pr_url` is on EVERY projected card (card#9837)** — the card's stored `payload.pr_url`
+> as a string, or `null` when it has none. It is the field kanban derives the card's by-ref
+> `source` repo from, so it says **which repo's merge moves the card**; `pr_number` alone
+> cannot. It is stored card text and is returned as stored, like `name`.
 
 > ⭐ **`assigned_user_id` is on EVERY projected card (DL-372), and it is the RAW board
 > field.** It is what makes a claimed-but-unmoved card legible: a card whose column never

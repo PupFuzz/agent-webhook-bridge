@@ -46,7 +46,7 @@ use Illuminate\Support\Facades\Log;
  * to EVERY projected card, unconditionally — see {@see projectCard} for why it carries no
  * opt-in and no name — so the claim is retired rather than re-scoped: the ENVELOPE had
  * already grown the DL-302 board keys and card#8985's window blocks, and now the CARD has
- * grown a key too. What holds is the weaker, true statement: every key this tool has ever
+ * grown a key too (and card#9837 added `pr_url` the same way). What holds is the weaker, true statement: every key this tool has ever
  * emitted is still emitted, with the same meaning.
  *
  * ⛔ THE DEFAULT RESPONSE IS CAPPED BY CARD COUNT (card#8985, DL-365). The
@@ -1118,9 +1118,14 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * Project a raw kanban card row to the tool's card shape (DL-217): id, name,
-     * stage, tags, assigned_user_id, dl_number, pr_number, updated_at — plus, ONLY when
-     * the caller opted in (DL-245), description + description_truncated. Nothing else
+     * stage, tags, assigned_user_id, dl_number, pr_number, pr_url, updated_at — plus, ONLY
+     * when the caller opted in (DL-245), description + description_truncated. Nothing else
      * leaves the bridge.
+     *
+     * `pr_url` (card#9837) is the key kanban derives the card's by-ref `source` repo from, so
+     * it is what says WHICH repo's merge moves the card — `pr_number` alone cannot. It is
+     * stored card text and gets the same treatment as `name`: a scalar is stringified, and
+     * anything else reads null, exactly as an absent key does.
      *
      * ⭐ `assigned_user_id` IS THE RAW BOARD FIELD AND CARRIES NO NAME (card#9170). It is
      * what makes a claimed-but-unmoved card legible: a card whose column never moved is
@@ -1159,6 +1164,7 @@ final class BoardMyCardsTool implements Tool
             'assigned_user_id' => is_numeric($row['assigned_user_id'] ?? null) ? (int) $row['assigned_user_id'] : null,
             'dl_number' => is_scalar($payload['dl_number'] ?? null) ? $payload['dl_number'] : null,
             'pr_number' => is_scalar($payload['pr_number'] ?? null) ? $payload['pr_number'] : null,
+            'pr_url' => is_scalar($payload['pr_url'] ?? null) ? (string) $payload['pr_url'] : null,
             'updated_at' => is_scalar($row['updated_at'] ?? null) ? (string) $row['updated_at'] : null,
         ];
 
