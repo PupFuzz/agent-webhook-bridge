@@ -160,7 +160,8 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
 ```
 
 > **`source` and `pr_url` are on EVERY projected card (card#9837).** `source` is the repo
-> qualifier kanban applies to this card's refs — an `owner/repo`, lower-cased, or `null` when
+> qualifier kanban's own rule assigns to this card's refs — computed HERE, by the bridge's
+> mirror of that rule, because `tasks/search.json` does not return the stored value — an `owner/repo`, lower-cased, or `null` when
 > nothing on the card names one. On a **shared** board, a by-ref correlation (DL, PR number or
 > issue number) only matches events from this repo; a `card#` token is **not** filtered by it,
 > and on a 1:1 board no qualifier is applied at all. It is only meaningful when the card carries
