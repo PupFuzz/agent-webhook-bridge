@@ -1,0 +1,147 @@
+**`dev → main` release PR — v0.50.0.** Bundles 71 commit(s) since v0.49.0.
+
+**Built:** dispatched (coder ×3 / mechanic ×0)
+**Coordinated in:** card#9026 (board 13) · rt#283
+
+## Highlights
+
+### New tools and commands
+
+- `sprint-burndown` — a sprint is a config-declared set of lanes whose membership is a board query; one board read produces the HTML page, the `lanes.definitions` object the census consumes, and `--check` (#820).
+- `coord-build` — the coder's mechanical envelope (format, lint, test, commit) as one command pair (#855).
+- `coord-refuse` — a refusal marker keyed to the PR rather than to a head, so it binds at every head until a later `coord-approve` supersedes it (#849).
+- `token-spend.py` — a seat can measure its own token spend on demand, with a record-dedup control; deliberately not a hook and not per-turn (#856).
+- The kanban card ledger runs, is measured and reaches an install; `KanbanClient.fetch_board_status` is new and `fetch_board` is its fatal projection. Measured on Linux only — Windows is UNMEASURED (#653).
+- `coord-thread-read` can say WHAT was posted: a verbatim `body` field on every `--json` row plus a `--body` text flag (#826).
+- `changelog-tag-coverage.py --sync-guard` — nothing is lost from `[Unreleased]` across the post-release back-merge, and released sections are byte-compared against their tags (#843).
+- `dl-traceability` ships as an adoptable BLOCKING CI template, with an ASCII-class doc-exemption boundary (#699).
+
+### New guards and hooks
+
+- `upstream-currency-check` — a read-only SessionStart hook reporting a seat's stale upstream artifact as BEHIND / STAGED-NEWER / PROCESS-STALE, each with a remedy. Opt-in (#621).
+- A scratchpad-hygiene doctrine plus a janitor that removes working files of provably dead sessions. Opt-in (#618).
+- `card-token-lint` refuses a parseable `card-<n>` below the board's card-id floor — the coordination-issue-number slip a well-formed token used to hide (#840).
+- Every merge and approval wrapper warns before the merge when the bridge cannot corroborate a PR's card citation; advisory by default (`--strict-citation` off) (#831).
+- `session-end-skip-lint` gains another token class: a block claim is satisfied only by a recorded live-check command, and a status post owes net queue movement (#674).
+- A `§` pointer must land where the claim is OWNED — `[owns: <token>]` on the pointer, an `owns-` anchor on the owning paragraph, tagged on touch (#842).
+
+### Changed behavior
+
+- `coord-auto-merge` decides "is CI green?" from an ALLOW-list and refuses where it used to merge — see Upgrade warnings (#764).
+- `coord-post` validates the protocol before it posts and refuses bodies it used to send — see Upgrade warnings (#852).
+- `coord-task --body-file` derives the title's `to:` from the body's `TO:` line and refuses a disagreeing `--to`, or a body with no usable `TO:` (#830).
+- `clear-decision.sh --boundary-check` returns rc 1 with a named UNVERIFIABLE / INCOMPLETE verdict where an unreadable path gave rc 0 and "working tree clean" (#803).
+- `always-loaded-budget.py` withholds the demote prescription unless the recall gate reads `on`; verdicts, exit codes and byte figures are unchanged (#701).
+- One board-stage reader in `coord.kanban_common` replaces the drifting copies — see Upgrade warnings for the install-order constraint (#836).
+- PostToolUse and Stop hooks emit nothing on a pass; findings are unchanged (#851).
+- The SessionStart digest carries a hard byte ceiling and moves detail behind pointers; nothing over the ceiling is deleted — `[coord-digest-truncated]` names bytes kept/total/ceiling and the command that prints the rest (#861).
+- `handoff-check unpushed` classifies the branch population in one call, not one `git log` per branch; same output, same `excluded` semantics (#860).
+- `dependabot-watch` reports per-alert branch state — LIVE-ON-`main` / FIXED-ON-`dev`, and UNMEASURED by name; declare no `branch_model.lines` and nothing changes (#853).
+- Every `ci-verdict` carries `run_attempt`, so a re-run's green is recorded (#700), and the zero-runs clause beside a rollup verdict states what is true of the composition (#832).
+- One SessionStart document per hook process, so a seat that just took a version bump still gets its stale-canon nudge (#818).
+- `board-mover-check.py` recognises the bridge's reworded 403 and its sibling messages (#821).
+- `session-state-load` says so when the memory index is unresolvable; the notice is three-state instead of silent (#828).
+- Both inbox hooks interpolate one read+reply pointer primitive, with degraded-stub drift and the consumer floor guarded (#839).
+- `memory-pack-lint` reads the role's seeding rule rather than a headcount of the directory (#817), splits the dead-pointer report by class and makes the prescribed `--fix` true (#835).
+- `/coord:update` area 5's bucket glob excludes frontmatter-less files (#827); area 3 derives the wrapper set from `templates/bin/` and compares before copying (#819); a seat's hand-rolled `GH_TOKEN` profile line is migrated (#711).
+- `coord-approval-gap` no longer reads a card token as a PR number, and the unfollowable `/coord:update` instructions it was filed with are corrected (#754).
+- Git subprocess funnels scrub inherited `GIT_*` once per deploy island, so a hook in a linked worktree can no longer operate on the hook's repository instead of its target (#841); the kanban backlog-backup pair was the measured instance (#823).
+- `bin-deployset-check.py` reads the area-3 roles cell through one parser (#845), and `coordination-inbox-check.sh` becomes deterministically observable under test (#837).
+- The lane census places a dispatch that survived a `/clear`, and a staffed lane stops rendering WAIVED (#829).
+- `shell-substitution-guard` gains Windows coverage for the registration-gating hook selftests that had none (#651).
+
+### Docs, templates and orientation
+
+- The review-severity rubric replaces its "everything else" residual with tags each defined by a test (#631).
+- The `Built:` line gains a durable store, a write moment and a new value; the dispatching seat records the count at PR creation (#643).
+- A parallel-dispatch doctrine for pm — derive the map, dispatch from the map (#647) — hoisted to `docs/parallel-dispatch.md`, which all three seats read (#648).
+- Doc-retention parameters, the self-merge check set and the card-id provenance rule each move to one owner and the copies are deleted (#628, #834, #838); `pr-review-flow.md` owns the self-merge refusal set, with a derivation guard holding every restatement to the code (#675); the seat doc no longer promises that a title-or-branch token moves the card (#833).
+- Canon #18 opens with the product-anchored mint gate and § Triage doctrine points at it (#848); canon #16 takes derivation-not-the-figure to every written surface (#850).
+- Every shipped subagent def carries one turn-economy rule, owned once and drift-guarded (#854).
+- The `§` citation recogniser now sees `§ **bold**`, and the memory-pack restatements that were pinned to nothing are pinned (#825).
+- `terminal_columns` is documented in both of its spellings on every shipped example (#824).
+
+### This repo's own CI
+
+- Every push reaching `main` is recorded and classified as one labelled issue — before/after SHA, forced or not, the merged PR where there is one. It adds no branch protection and blocks nothing; merging this PR mints the first record, and `main-push:unexpected` is the label that wants a look (#822).
+- A red-capable guard for stale engine-state and pointer claims about the vendoring subsystem, plus the `_vendor/_registry.py` claims it corrected (#627).
+- 5 internal guard/selftest PRs; no shipped surface changes: #863, #857, #846, #844, #858.
+
+## Upgrade warnings
+
+- **`coord-auto-merge` refuses where it used to merge (#764).** A `stale`, null or unrecognised check conclusion, and an unreadable combined commit status, now stop the unattended merge; there is no escape hatch, and a refusal is a skip a human then merges. One pre-upgrade action: if your repo reports CI through legacy commit statuses, a `pending` status now refuses too — `gh api repos/<owner>/<repo>/commits/<a recent head>/status --jq '{state, total_count}'` answers whether that reaches you (`total_count: 0` ⇒ it does not).
+- **`coord-post` refuses, pre-post, bodies it used to send (#852).** `create`, `comment`, `close --body-file` and `edit --body-file` exit 5 with the exact fix and post nothing; `--cross` roundtable posts are out of scope. Do two things first: install `coord_protocol.py` **beside** `coord-post` (`/coord:update` area 3 copies it — check the file is there; without it every team post exits 4, fail-closed), and if your coordination repo sets `protocol.queue_field_adopted_at`, spell it with an explicit offset (`"2026-11-01T00:00:00Z"`, not `"2026-11-01T00:00:00"`). `edit` now also reads `gh api repos/<coordination repo>/issues/<n>` and refuses if that read fails, so its credential needs issue-read there.
+- **Refresh the installed `coord.kanban_common` package before the kanban tools run (#836).** `kanban-inbox-check.py`, `kanban-untriaged-check.py` and `kanban-writeback.py` import from it with no `except ImportError` and raise at load against a package predating this release — run `/coord:update` area 2 first. `kanban-backlog-backup` and `kanban-card-ledger` degrade to their stdlib-only sibling instead.
+
+## Bundled (generated — do not hand-edit)
+- release: v0.50.0 — CHANGELOG § Upgrade notes: #852's row added; #764's 'only UPDATING.md entry' claim corrected (byte-safe splice; released sections unchanged)
+- release: v0.50.0 — UPDATING.md entry for #852 (coord-post pre-post refusal) + release PR body regenerated
+- release: v0.50.0 re-cut — restore the released [0.45.1] CHANGELOG section byte-for-byte from tag v0.45.1
+- release: v0.50.0 re-cut from dev 69508cfe — CHANGELOG rows for the PRs merged since the 09-06 cut
+- **#858** fix(selftest): card#8899 — six rc captures discarded by a subshell left five live-hook guards unable to fail
+- **#853** feat(dependabot-watch): per-alert branch state — LIVE-ON-<release>/FIXED-ON-<integration>, UNMEASURED by name (card#8883)
+- **#856** feat(hooks): token-spend.py — the seat's own token measurement, with the record-dedup control (card#8879)
+- **#850** card#8884: a COUNT is a restatement — canon #16 takes derivation-not-the-figure to every written surface
+- **#861** feat(session-start): digest with a hard byte ceiling; detail moves behind pointers (card#8881)
+- **#852** feat(coord-post): validate the protocol pre-post from one rule source shared with the Action; skill shrinks to templates (card#8882)
+- **#863** ci(workflows): PR runs cancel their superseded predecessor on the one self-hosted runner; main/tag runs never do (card#8903)
+- **#857** fix(guards): card#8908 — unencoded-text-open exemptions move to inline annotations; the line-number key is gone
+- **#860** perf(handoff-check): `unpushed` classifies the branch population in ONE call, not one `git log` per branch (card#8715)
+- **#855** feat(coord-build): the coder's mechanical envelope as one command pair (card#8889)
+- **#854** docs(agents): every shipped subagent def carries one turn-economy rule, owned once and drift-guarded (card#8877)
+- **#851** fix(hooks): PostToolUse/Stop hooks emit nothing on a pass; findings unchanged (card#8880)
+- **#849** feat(approval-marker): a REFUSAL is about a PR, not a head — `coord-refuse` mints a PR-keyed refusal marker (card#8592)
+- **#848** card#8872: canon #18 opens with the product-anchored mint gate; § Triage doctrine points at it
+- release: v0.50.0 CHANGELOG — the range's UPDATING.md default-behavior change, and the opt-in half
+- release: v0.50.0 CHANGELOG — two upgrade notes the first pass omitted
+- release: bump to 0.50.0 + CHANGELOG entry
+- **#841** fix(hooks): git subprocess funnels scrub inherited GIT_* once per deploy island (card#8617)
+- **#842** feat(doc-crossref-drift): arm 5 — a tagged `§` pointer must land where the claim is OWNED, not merely where a heading exists (card#8780)
+- **#846** fix(selftests): a guard's needle is the PROPERTY, never a token that co-occurs with it (card#8782)
+- **#845** fix(selftests): one reader for the area-3 roles cell; memory-pack deploy-set restatements join §6 on a DERIVED needle; shell.txt entry made true (card#8832)
+- **#844** fix(selftests): clear-decision T16 hermetic — harness-level seat pin + recorder guard; a unit test no longer reads the PM seat's live handoff or calls the real gh (card#8783)
+- **#843** feat(release): a two-leg CHANGELOG sync guard over the post-release back-merge window + the VERSIONING template states it (card#8824)
+- **#839** fix(hooks): one read+reply pointer primitive both inbox hooks interpolate; degraded-stub drift + consumer floor guarded (card#8668)
+- **#840** feat(hooks): card-token-lint refuses a parseable card-<n> below the board's floor — the coordination-issue-number slip (card#8756)
+- **#828** fix(session-state-load): card#6906 — an unresolvable memory index now says so; the notice is three-state
+- **#838** docs(orientation): "Write card-<id>" says WHOSE id, and names the silent wrong-card move (card#8755)
+- **#837** fix(selftest): card#8679 — argv-secret see-it-fail control + sessionstart fan-out leg become deterministic observables
+- **#675** fix(self-merge): pr-review-flow.md OWNS the refusal set, and a derivation guard holds every restatement to the code (card#8642)
+- **#621** feat(hooks): upstream-currency-check — detect a seat running stale upstream artifacts (card#6564)
+- **#836** refactor(kanban): card#8604 — one board-stage reader in coord.kanban_common
+- **#835** fix(memory-pack-lint): card#8503 card#8504 card#8505 — split the dead-pointer report by class, make the prescribed --fix true, and sweep area 0 for vendored toolkit copies
+- **#648** docs(dispatch): hoist the parallel-dispatch doctrine to a role-agnostic doc all three seats read (card#6751)
+- **#618** feat(hooks): scratchpad-hygiene doctrine + dead-session janitor (card#7945, roundtable #264, authored by aimla-pm)
+- **#651** fix(ci): no Windows job ran the OTHER registration-gating hook selftests (card#6689)
+- **#803** fix(context-reset): one read_or_sentinel primitive for every git read in TERMs 1 and 5 — a failed read may not produce a pass (card#8634, supersedes #655)
+- **#824** docs(kanban): terminal_columns is DUAL-VOCABULARY — document both spellings (card#8623)
+- **#631** docs(review): four-tag review-severity vocabulary — ESOTERIC · MINOR w/ required disposition · HYGIENE (rt#257 §6 owed row)
+- **#822** feat(security): card#8541 — record and classify each push to `main` the runner sees, with its blind spots stated and their count guarded; prove the release-base refusal per tool
+- **#764** fix(merge): the unattended CI gate answers the merge-gate contract, not a second copy of it (card-6735)
+- **#826** feat(coord-thread-read): card#8501 — carry the body: `body` in every `--json` row + a `--body` text flag, so the sanctioned reader can say WHAT was posted, not only WHO
+- **#834** docs(coord-thread): card#8629 — delete the skill's second copy of the attempt-clause set
+- **#833** [TASK] card#8704 — second sweep: the seat doc no longer promises that a title-or-branch token moves the card
+- **#832** [TASK] card#8630 — the zero-runs attempt clause beside a rollup verdict states what is true of the composition
+- **#829** [TASK] card#8544, card#8698 — the lane census places a post-/clear dispatch, and a staffed lane stops rendering WAIVED
+- **#831** [TASK] card#8705 — warn before the merge when a PR's card citation cannot be corroborated by the bridge (advisory; --strict-citation off)
+- **#830** [TASK] card#8628 — coord-task --body-file: title to: derived from the body's TO:, --to disagreement refused
+- **#827** fix(update): card#8502 — area 5's bucket glob excludes frontmatter-less files, executably
+- **#699** feat(card-7143): dl-traceability as an adoptable BLOCKING template — its boundary is an ASCII class, not \b (the template is NET-NEW to dev; no gate in this repo ever ran the defect)
+- **#628** docs(card#5321): single-source sweep — retention params, dispatch-carries, reject_column (epic#5316 final workstream)
+- **#823** fix(kanban): card#8612 — scrub the GIT_ prefix from the backlog-backup template pair's git subprocesses, so a linked-worktree hook cannot re-init the real repo or stamp a false provenance sha
+- **#754** [TASK] two filed defects: a card id read as a PR number, and six unfollowable /coord:update instructions (card#7768, card#7766)
+- **#627** feat(card#5631): red-capable guard for stale engine-state/pointer claims
+- **#674** [card#6935] instrument agent THROUGHPUT — block claims owe a live-check command, status posts owe net queue movement, capture is never gated
+- **#701** fix(budget): the demote lever is withheld unless the recall gate reads ON (card#7176)
+- **#700** fix(ci-verdict): a re-run's green is unrecorded — surface run_attempt in every verdict (card#7115)
+- **#643** docs(coord-thread): Built: line durable-store rule — dispatching seat writes N at PR creation; no reconstruction; unattestable form (card#8669)
+- **#825** fix(doc-crossref): the CITE recogniser never saw `§ **bold**`, and two restatements were pinned to nothing (card#8629)
+- **#711** fix(update): migrate a seat's hand-rolled GH_TOKEN profile line (card-7495)
+- **#653** feat(kanban): the card ledger runs, is measured, and reaches an install (card#6750)
+- **#647** docs(pm): parallel dispatch — derive the map, dispatch from the map (card#6751)
+- **#820** feat(sprint): card#8493 sprint-burndown — config-declared lanes, board-query membership, one read → HTML + lanes JSON + --check
+- **#821** fix(area 8): card#8500 — the log vocabulary catches up with bridge #626, on the reworded 403 AND on the three siblings the drift leg cannot see
+- **#819** update(area 3): derive the wrapper set from templates/bin + compare-first (card#8450 card#8395 card#8455)
+- **#818** fix(hooks): card#8456 — one SessionStart document per hook process, so a post-bump seat still gets its stale-canon nudge (#1488)
+- **#817** fix(memory-pack-lint): card#7910 — the cross-bucket forward-ref call reads the role's seeding rule, not a headcount of the dir
+- sync: back-merge main → dev post v0.49.0 (card#8265)

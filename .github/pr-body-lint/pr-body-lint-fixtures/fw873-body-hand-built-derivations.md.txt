@@ -1,0 +1,174 @@
+**Coordinated in:** card#8935 (board 13) · rt#283
+**Built:** `coder` ×3 (round 1 build, fix pass 2, fix pass 3) · `coord:design-reviewer`/`coord:impl-reviewer` ×3 review rounds · pm verified the round-3 gates independently at `2ca81ab2` (ci-read.selftest `24/24` guards seen RED + `10 of 10` declaration sentences, rc 0, re-run by pm not relayed)
+
+## The loss, and the fix
+
+`continue-on-error` makes a FAILED step report `conclusion: success`; the job and the run roll up green over it. Every job-level instrument inherits that — **this plugin's own `ci-read`**, so `coord-build finish` reports measured-green over a workflow with a failed step, and **the plugin's own merge gate `ci-verdict.sh`**, which classifies on `conclusion` at job and check-run level, reads no `steps[]` anywhere, and therefore **merges** on the same green. And this repo's answer to the hazard was a **sentence**: `tests.yml:798` argued its `if: !cancelled()` steps were safe because *"no step in this job carries `continue-on-error`"* — true the day it was written, with nothing anywhere that would notice the day it stopped being true. A premise nobody checks is a comment, not a contract.
+
+**ONE item, two legs, and they are one because splitting them leaves each half wrong.** The declaration is only honest while the key is genuinely absent in-repo; the guard is only reachable for a *consuming* repo if something tells that repo it owes one. A note split off from the check drifts from it — which is the recommendation rt#283 `c-5567630085` made and the card accepted.
+
+**LEG 1 — a CHECK replaces the comment.** New `.githooks/workflow-continue-on-error-scan.selftest.py` reds when any workflow in the tree carries the key **at job or step level, at ANY value**. `false` is refused with `true`: the key is the re-mint seed, flipping it is a one-character diff that reads like configuration rather than like deleting a gate, and an expression value cannot be graded statically at all — the same position the shipped template guard already takes (it refuses the token, not a value). The walk is **whole-document over the parsed mapping and matches KEYS ONLY**, so job level, step level, a reusable-workflow call with no `steps:`, and any nesting the Actions schema grows next are covered by construction, and each finding is reported at its own path (`jobs.<id>`, `jobs.<id>.steps[<n>]`) with the step's `name:` as a handle.
+
+**The red line is written PER SITE CLASS**, because the two legal positions of this key do **not** share a failure mode and one sentence for both is false at one of them:
+
+| site | what actually happens | who is blind |
+|---|---|---|
+| `jobs.<id>.steps[<n>]` | the runner rewrites the failed step's result to `success` before the job result is merged, so the JOB concludes `success` | every JOB-level instrument: `ci-read`, `ci-verdict.sh` (which merges), branch protection, a reviewer reading the rollup |
+| `jobs.<id>` | the job genuinely fails — the key *"prevents a workflow RUN from failing when a JOB fails"* (GitHub workflow-syntax reference) | RUN-level readers only: `ci-verdict.sh`'s runs-API fallback, a human reading the run's checkmark. `ci-read` and branch protection see this one **RED** |
+| anything else | the walk is deliberately whole-document, so it can find the token at a position the schema does not document | named as unclassified; the refusal stands either way |
+
+⚠ **NOT measured at this end** (canon #7 NAME): no repo in reach carries the key at job level, so the job-level API shape rests on the published syntax reference, not on a payload I read.
+
+**The guard's own RED path is now executed by the suite.** r2 measured that zero of its assertions entered `_mechanism()` or the offender block — section 1 builds that block only when `offenders` is non-empty, which a green tree never is, so the entire failure path of a guard *about checks that cannot fail* was itself unexercised. The block is now a function, `_offender_line()`, and a new **§ 5** calls it with each site class the walk can produce.
+
+**What the table below evidences, stated at the width of the evidence.** G1–G5 drive **four** of § 5's non-owner rows red, and this round's G6–G8 drive **three more** (the two new pointer rows and the third owner row). The remaining rows are asserted and have **not** been seen to fail by this PR — r3 independently drove three of them red on its own isolated copy (the STEP-arm inversion, and the value-render/refusal deletion), which is the reviewer's measurement and is recorded as such, not folded into this table. Per this repo's own `card#8884`, the repair for a claim wider than its evidence is a **narrower claim**, not a bigger number.
+
+`plugins/coord/templates/traceability/dl-traceability.selftest.sh:136-143` is **untouched and is NOT a second copy**: it runs in the ADOPTER's tree over the one shipped file it ships beside, where this repo's `.githooks/` does not exist — a different population at the other end of the hop. Both are needed; the new guard's header says so and names it.
+
+`tests.yml:798` **keeps its sentence** — the `!cancelled()` argument still rests on that fact — and gains one sentence pointing at the guard by file name, so a reader can reach the CHECK from the claim.
+
+**LEG 2 — `ci-read`'s contract DECLARES the limitation, with a check that the declaration is true of its own code** (canon #7 DECLARE / CHECK / NAME WHAT YOU CANNOT VERIFY). The contract table's `CLEAN` row now says job level is a LIMIT and points at a new paragraph, **`WHAT CLEAN DOES NOT SEE`**, which states: CLEAN is a job-level verdict; a step under `continue-on-error` that failed leaves its job `success` and is invisible to it; **the plugin's own merge gate `ci-verdict.sh` inherits the identical blind spot and is the member of the class that ACTS on it**; **reading `steps[]` would NOT close it**; and what the consumer owes.
+
+On `ci-verdict.sh`, stated at its true width so the declaration does not overclaim: **that gate is not weaker than the platform** — GitHub's own required-status-checks pass the same head — so the defect is the **measured-green CLAIM**, not a hole unique to it. It is **tracked on `card#9022`** and deliberately not fixed here (its contract carries `ci-verdict.selftest.sh` arms 20a–20j and `coord-auto-merge.selftest.py` §4d cross-language pins that a contract edit would drag into this review). The card was minted after r1 and exists now, so the shipped sentence names it rather than saying "tracked separately" — a claim about the world that was not yet true at the reviewed head.
+
+**That claim now lives in ONE place, not four** (canon #16, r2's second minor). At the reviewed head the *"`ci-verdict.sh` shares this blind spot, tracked separately"* sentence existed on four surfaces with exactly one pinned, so the day `card#9022` lands three of them would assert a blind spot that no longer exists and nothing would red. Disposition, stated per copy:
+
+| surface | disposition | why |
+|---|---|---|
+| `ci-read`'s declaration | **OWNER** — carries the claim, **which gates**, its width, and the card number | pinned by `ci-read.selftest.py`'s `DECLARATION` sentences **4 and 5** |
+| the guard's module docstring | **DELETE-and-point** | its reader has the repo open and can follow a pointer. **r3:** it was still naming one of two gates; it now points at the owner for *which* |
+| `selftest-manifests/python.txt:46` | **DELETE-and-point** | same, and same r3 correction |
+| `_mechanism()`'s STEP arm | **GUARD** | a *program* prints this at an offending site, where no pointer can be followed — so it stays inline, names **both** gates, and § 5 reds if the owner's text moves (**G8**) or if this copy loses its pointer or card number (**G6/G7**) |
+
+## The third owed action — and the clause r2 was right to demand
+
+For a consumer that must live with a genuinely advisory probe, the declaration prescribes **publishing** that step's outcome into the payload with a MARKER step behind it. r1 caught that the first draft's condition (`if: failure()`, discriminated on `status`) could not fire; **r2 caught that the corrected marker fires into a field nothing in the chain the text named ever grades**, and that is this card's own defect a third time, now in the framing rather than the mechanism.
+
+I re-derived the finding at source rather than taking it: `measure()` enumerates runs → jobs and grades `j["status"]` / `j["conclusion"]`; `steps` appears in the whole program only as the two `--control` fixtures; and `ci-read.selftest.py`'s `graded-step-conclusions` mutation exists to RED if the job loop ever starts grading `steps[]`, so **not grading the marker is a pinned invariant of this tool, not a gap.** A consumer who followed the bullet, added the marker, and ran `ci-read` got **CLEAN / exit 0 over a failed step** and had every reason to think the debt was discharged. **The reviewer's own defeating reading — that "this reader's caller" meant a human hand-querying the jobs API — does not save it: the bullet's audience is a consumer automating a green/red decision, and `coord-build finish` `[G4]` relays this file's first line and nothing else.** The finding stands as written.
+
+Two framing sentences were the defect, and both are fixed. The bullet no longer presents itself as a third way of **discharging** the condition — it is named a **CONTAINMENT**, because a repo that keeps the key cannot satisfy "no workflow carries it" and the paragraph should not imply otherwise. And a new clause names the grader outright: **the marker's grader is the far end's own gate; `ci-read` prints CLEAN over that row by construction, and the `graded-step-conclusions` row pins that it always will.** The closing sentence went from *"the only way a failed step reaches a payload this reader can see"* to what the marker actually buys — **a row that CAN say the step failed**, the step's own row being already there saying `success` — plus *"reaching the payload is not the same as being graded."* **r3 narrowed it once more:** the intermediate wording claimed the marker was the **only** way the fact reaches the payload at all, and that absolute is not this paragraph's to make (a downstream marker JOB carries the same fact into the same payload). The absolute is dropped rather than replaced with a defended enumeration.
+
+`DECLARATION` grew 8 → 9 sentences in that round, and **9 → 10** in r3 (below); the r2 pin is the grader clause, for the same reason sentence 8 (the `failure()` refutation) is pinned: *"and you still do not get to trust CLEAN"* is the sentence an editor tidying a long paragraph drops first. **Driven red** as **D3** below.
+
+The mechanism half is unchanged from the reviewed head and re-confirmed by r2 at the vendor's own source:
+
+```yaml
+- id: probe
+  continue-on-error: true
+  run: ./the-advisory-thing
+- name: probe-failed marker
+  if: ${{ !cancelled() && steps.probe.outcome == 'failure' }}
+  run: echo "the advisory probe FAILED"
+```
+
+`if: failure()` cannot fire (`ApplyContinueOnError` rewrites the step result to `Succeeded` before `StepsRunner` merges it into the job, and `FailureFunction` reads job status); `status` cannot discriminate (published enum is `queued`/`in_progress`/`completed`, `skipped` is a **conclusion**); a bare comparison is rewritten to `success() && (…)` by `ConvertToIfCondition`, hence the `!cancelled() &&`; and the probe needs a real `id:` per `UpdateGlobalStepsContext`.
+
+`ci-read`'s **runtime contract is UNCHANGED** — same leading token, same exit codes, same first-line shape that `coord-build` `[G4]` parses and relays. The only behavioural delta is `--control` growing 30 → 32 rows.
+
+## Why leg 1 clears the guardrail-depth bar
+
+**On its shipped half, independently.** The guard's derived population is **19 workflows: 7 dogfood + 12 SHIPPED templates**. Those 12 files under `plugins/coord/templates/**/workflows/` are **first-order product** — the doctrine's § Guardrail depth cap says outright *"on a tooling repo the shipped tool IS the product"* — so a guard over them is second-order, which the doctrine admits. The reachable sequence is ordinary: a framework maintainer marks a step advisory in a shipped workflow template → every adopter who installs or updates gets a workflow whose failed step reads green in their tree, and their `ci-verdict.sh` merges over it. One PR, no inherited env var, no improvisation.
+
+The dogfood half rides free rather than on its own argument: the population is derived by content across the whole tree, and carving `.github/workflows/` out would mean writing a path exclusion — the listed-population defect the guard exists to avoid — i.e. **more** code, not less.
+
+## Population derivation (re-derived at the head, not recalled)
+
+`total=19 of POP=25` — 19 workflows **by content**, from 25 `.yml`/`.yaml` candidates in `git ls-files --cached --others --exclude-standard`, through the shared `_workflow_discovery.py` (three guards now, one answer to "is this a workflow?"). Never listed: a workflow added in a new directory joins the defect surface without joining a list.
+
+Every run additionally asserts a non-empty population, a non-empty population **in each half**, six named real-tree discovery anchors across all three prefixes, and two prose controls on real shipped files — because `0 findings` is also what a broken predicate prints.
+
+**No count of naive-grep hits is written into any durable surface**, and that is deliberate: `git grep -n continue-on-error` returns **9** lines at the base `7aba0b19` and **71** at this head. The load-bearing claim is the **property** — every occurrence in this tree is PROSE, none is a key — and that property is what the live controls re-measure every run.
+
+## r3 — the census that named one of two merge gates
+
+**MAJOR, taken in full.** The `WHAT CLEAN DOES NOT SEE` paragraph enumerates who inherits the blind spot, called `ci-verdict.sh` **"THE HIGHEST-STAKES INHERITOR"**, and asserts that it is **the one place that claim is written**. The plugin ships a **second, separately implemented merge gate** the census omitted. Every citation below was re-read at source rather than taken from the review:
+
+| | `ci-verdict.sh` (behind the 3 local self-merge wrappers) | `coord-auto-merge.yml` BOUNDARY 3 |
+|---|---|---|
+| what it reads | job + check-run `conclusion`; no `steps[]` | `commits/<sha>/check-runs`, projecting `[.status, .conclusion, .name]` (`:793-794`); **no `steps[]`, and no jobs endpoint at all** |
+| what it passes | its benign set | a `completed` row whose conclusion matches `^(success\|neutral\|skipped)$` (`:823`) |
+| what it then does | a wrapper merges, **agent present** | runs `gh pr merge --squash --delete-branch` **itself** (`:912`) |
+| approval marker | required | **also required** — BOUNDARY 2, `require_approval_marker` (`:739`) |
+| agent in the loop at merge time | yes | **no** — its own comment: *"the one merge path with no agent in the loop to notice"* (`:770-771`) |
+
+⚠ **One correction to the review's framing, which I did not write into the file.** r3 characterised the unattended path as outranking the wrappers because *"those additionally require an approval marker"*. That half is **false at source**: BOUNDARY 2 demands the same head-bound `FROM: <pm>` marker. The ranking still holds, but on the **other** axis only — nobody is standing in front of the green at the moment it merges — and that is what the shipped sentence says.
+
+**One claim the review called false is actually TRUE, and I kept it.** *"THIS PARAGRAPH IS THE ONE PLACE THAT CLAIM IS WRITTEN"* — `git grep continue-on-error` finds **nothing** in either `ci-verdict.sh` or `coord-auto-merge.yml`, so no gate's own file says it inherits this. What was defective was the **census**, not the ownership; correcting the census makes the sentence true *and* complete, and it is exactly why the omission mattered — there was no second surface to catch it.
+
+**The paragraph now also states what the census implies:** the class has **two members**, the two **cannot** share an implementation (that workflow's own BOUNDARY 3 records the cross-language ruling and calls `ci-verdict.sh` *"the other merge gate"*), so a steps-aware fix on one gate does not close `card#9022`. Pinned as **`DECLARATION` sentence 5**, driven red as **D4**.
+
+⚠ **For PM — `card#9022` needs the second site appended, and this PR does not claim it already has it.** The shipped sentence says *"tracked on card#9022, and THE CLASS HAS TWO MEMBERS"* — a claim about the **defect**, verified at source, not about the card's current text. Two things worth carrying into that card: `coord-auto-merge.selftest.py` §4's agreement pin is `_CORPUS` (`:746`), a list of **`(status, conclusion)` pairs only**, so it would stay **green** while a steps-aware fix on one side made the two gates diverge on step-carrying payloads; and the required seen-to-fail therefore has to cover **both** gates.
+
+**Sibling audit of the fix's own shape** (canon #7) — *an incomplete enumeration of who inherits the blind spot*. Population: every surface this change had written that names the inheritors. **Four**, all read: `ci-read`'s owner paragraph (fixed); the guard's **module docstring** and `selftest-manifests/python.txt:46` — both said *"its merge gate `ci-verdict.sh`"*, and both now **POINT at the owner for WHICH gates** rather than naming one of two, which is what their DELETE-and-point disposition required in the first place; and `_mechanism()`'s **STEP arm**, the one copy that cannot point, which now names **both** inline. `tests.yml` and `SKILL.md` were read and enumerate nobody — clean. The list comment above `DECLARATION` had the same defect one file over (entry 4 read as *the* gate) and is corrected with it.
+
+**The three minors from r3, all taken.**
+- **m1 — the declaration was not reachable from the tool's own runtime surfaces.** `--help` prints the argparse epilog, never the module docstring, so the token table's pointer was source-only. The limit is now one clause in the **epilog** *and* on the **CLEAN detail line** that every clean read prints, so a consumer who installs the binary and never opens it still meets it. Driven as **D5**: asserted on `--control`'s real CLEAN row, with a one-word-altered control that reds.
+- **m2 — the owed-actions header** read *"Three ways to owe it"*, which a skimmer takes as three **discharges** when bullet 3 is a containment. It now reads *"TWO WAYS TO DISCHARGE IT, AND ONE CONTAINMENT FOR THE REPO THAT CANNOT"*.
+- **m6 — the § 5 GUARD was one-directional.** It reds when the owner moves; nothing red if this file's paraphrase drifted away from an owner that stayed put. The cheap half is in: the STEP arm is asserted to still carry the **pointer phrase** and the **card number** (**G6**, **G7**), so a rewrite that tidies the pointer out leaves a reader at an offending site with a mechanism and no owner. An exact both-ways pin is still not available — the copy is a paraphrase on purpose — and this PR says so rather than implying the pin is symmetric.
+- **Appendix hygiene:** the orphan line break mid-sentence is gone (the paragraph was re-flowed whole), and *"into the payload **above**"* now names it — *"into the REST jobs payload"*.
+- **m5 — `Built:`** is left as the placeholder, per the dispatching seat's ruling. It is **not** a value I may guess.
+
+## Seen to fail
+
+Each on a `git init`-ed archive copy in a uniquely-named scratch dir (`mut-8935fix2-alpha`, `mut-8935fix2-beta` in r2; `mut-8935fix3-delta` in r3), **each copy's own control rc read BEFORE its mutants**, each child `</dev/null`, each plant restored and the copy re-verified byte-identical to its base commit. **D4, D5 and G6–G8 were driven against the FINAL text**, after the last edit, on a copy re-synced to it.
+
+| # | check | plant / mutation | red | green |
+|---|---|---|---|---|
+| P1 | workflow-continue-on-error-scan | `continue-on-error: true` on a STEP of a **SHIPPED** template (`coord-auto-merge.yml`) | rc 1, names `jobs.auto-merge.steps[0] (name: PLANT probe)`, prints the **STEP** mechanism | rc 0 |
+| P2 | same | at **JOB** level, value **`false`** (`card-token-lint.yml`) | rc 1, names `jobs.card-token-lint`, prints the **JOB** mechanism | rc 0 |
+| G1 | same, **§ 5 drift pin** | `ci-read`'s owner sentence reworded to *"was fixed under card#9022"* — i.e. what that card landing looks like | rc 1, names the missing owner sentence and lists the three copies to re-read | rc 0 |
+| G2 | same | the owner FILE `plugins/coord/templates/bin/ci-read` removed | rc 1, *"is GONE — this file's header and its manifest entry point THERE"* | rc 0 |
+| G3 | same, **§ 5 red path** | `_offender_line`'s handle made unconditional (the empty-`()` regression) | rc 1 on the no-empty-parenthetical row | rc 0 |
+| G4 | same | `_mechanism`'s STEP arm returned for every site | rc 1 on three rows: the JOB arm, the not-the-step-arm control, and the unclassified arm | rc 0 |
+| G5 | same | the unclassified third arm collapsed into the JOB arm | rc 1 on the unclassified row | rc 0 |
+| D1 | ci-read.selftest | the corrected condition "simplified" back to `if: ${{ failure() }}` | rc 1, that sentence named missing from the contract | rc 0 |
+| D3 | ci-read.selftest | **the new grader clause deleted** — r2's MAJOR, re-minted | rc 1, that sentence named missing | rc 0 |
+| D4 | ci-read.selftest | **the second gate and its ranking "tidied" out** — r3's MAJOR, re-minted | rc 1, `1 of 10 sentence(s) missing`, naming the `coord-auto-merge.yml` BOUNDARY 3 sentence; `0/24` mutations, so the two denominators stay separate | rc 0 |
+| D5 | ci-read `--control` | the new CLEAN detail line, asserted on the real CLEAN (`healthy`) row | shipped clause ⇒ `ok healthy CLEAN/0`, rc 0; **control** with one word altered ⇒ `FAIL healthy`, rc 9 | — |
+| G6 | workflow-continue-on-error-scan | the STEP arm's pointer phrase `WHAT CLEAN DOES NOT SEE` tidied out | rc 1, *"the STEP arm still POINTS at the owner paragraph by name"* | rc 0 |
+| G7 | same | the card number tidied out of the STEP arm | rc 1, *"and still carries the card, so the reader can reach the tracked class"* | rc 0 |
+| G8 | same, **§ 5 owner pin** | the OWNER drops the second gate — the guard-side half of D4 | rc 1 on the third `OWNED` row, naming the missing sentence | rc 0 |
+
+D1 and D3 are the load-bearing pair: each is the exact edit a later reader makes, and each would re-mint this card's defect one more time.
+
+## Gates
+
+At this head, each child `</dev/null`. POP is re-derived by glob inside the runner, never written down.
+
+| gate | rc | evidence |
+|---|---|---|
+| every `.githooks/*.selftest.py` | 0 | `POP=38 (re-derived by glob every run)` → `total=38 of POP=38  PASS=38  FAIL=0` |
+| the new guard, standalone | 0 | `total=62 of POP=62` assertion rows ok, 0 FAIL; `19 workflows derived from 25 YAML candidates, 7 dogfood, 12 shipped, 0 carrying` (48 at the r2-reviewed head; § 5 added 11, then r3 adds 3) |
+| `ci-read.selftest.py` | 0 | `baseline green, all 24 guards seen to RED when deleted, and all 10 sentence(s) of the declared continue-on-error limitation still in the contract` |
+| `selftest-manifest.py check --all` | 0 | python 113 / release 3 / shell 54, each discovered set == its manifest; `orphan check: all 238 … claimed` |
+| `shipped-path-reachability.selftest.py` | 0 | `631 shipped file(s) scanned, 66 unreachable citation(s), all declared` — the new `coord-auto-merge.yml` citation is shipped-to-shipped, so the registry is **unchanged**, and the count is asserted exact |
+| `tools/gen-vendored.py --check` | 0 | `11 group(s), 48 copy(ies) match their source`; `git diff --name-only` afterwards lists only the edited files |
+
+**No `tests.yml` step was added, and none is needed.** The python suite is discovered by the `*.selftest.py` glob and `selftest-manifests/python.txt` enforces set equality, so the manifest line IS the registration.
+
+## Doc sweep (canon #16)
+
+The r2 doc-sync result stands unchanged for the surfaces it cleared (`gh-wrapper/SKILL.md:186-192` as the one inline restatement of CLEAN's semantics; `coord-build` `[G4]` as a consumer that restates nothing; the other nine `ci-read`-naming surfaces already pointing at the owner). This round's doc work is the four-copy disposition table above.
+
+**Sibling audit for THIS round's shape** (canon #7) — *a prescription that tells a far end to PUBLISH a signal without naming who GRADES it*. Population: every such prescription on a surface a consumer reads — `plugins/coord/templates/bin/`, `plugins/coord/docs/`, `plugins/coord/skills/`. Three candidates, each read rather than grepped-and-dismissed: `handoff-check.py:36` (the grader is the human reading the tool's own stdout — clean); `BRIDGE-WRITEBACK.md:166` (*"say so where a reader will see it"* — vague, but it prescribes labelling your own artifact and no downstream instrument is claimed to grade it; **dropped**, not filed, per canon #18 — a miss changes no behaviour, correctness, security, or decision); and the bullet r2 found, which is fixed. The other two prescriptions in the same paragraph — the repo-wide sweep, and `dl-traceability.selftest.sh` — both terminate in a check the consumer *runs*, which is exactly what bullet 3 lacked and now says.
+
+## NOT verified, by name
+
+- **The corrected marker condition has not been EXERCISED on a real GitHub Actions run.** Unchanged from r2, which judged it acceptable: every link is read at the vendor's own source, the `skipped` half is measured live, and the artifact is a declaration a far end copies rather than a gate this repo runs. Exercising it needs a pushed branch and a real Actions run — an outward act outside this task.
+- **Job-level `continue-on-error` API shape.** No repo in reach carries the key at job level; the guard's job-level mechanism sentence rests on GitHub's published syntax reference, and says so in its own docstring.
+- **CI at this head** — re-derive it with `ci-read --repo PupFuzz/agent-board-framework --sha <the PR's full 40-character head sha> --gh "coord-gh framework"`; its output is a pass when the run set is non-empty, every run is terminal, every conclusion is `success`, and the read was at the full 40-character head. Whether the branch is on the remote: `git ls-remote origin <branch>`, a pass when it prints the head this body describes.
+- **`card#9022`'s CONTENT beyond its existence and subject.** I read the card live (board 13, minted 2026-09-08) and confirmed it is the `ci-verdict.sh` sibling this text names. I did not verify its column, owner, or that its scope covers the surfaces this PR points at it.
+- **Fleet-side reachability** stays canon #7's hop: whether any consuming repo carries `continue-on-error` today is not establishable from this tree.
+- **`dl-traceability.selftest.sh` was not executed** — an adopter-tree shell selftest; the claim about it is a claim about its source, which was read.
+- **`shellcheck`** — not run; no shell file changed.
+- **`coord-auto-merge.yml` BOUNDARY 3 was read, never EXECUTED.** Its blindness to `steps[]` is established by reading the block (no `.steps`, no `/jobs`, no `actions/runs` anywhere in the file) plus the same GitHub API fact the declaration already measures. No live Actions run exercised it, and none could from here.
+- **`card#9022`'s scope still names only `ci-verdict.sh`.** The second site is PM's to append; nothing in this PR patches the card, and the shipped sentence is written so it is true either way.
+- **This branch against `origin/dev`** — re-derive it with `git fetch origin && git rev-list --left-right --count origin/dev...HEAD`; the first figure is the number of `dev` commits this branch does not contain, and the branch is current when that figure is `0`. Every figure here is measured on this branch's tree, not on a merge result.
+
+## Found in passing — reported, not fixed
+
+- **⚠ The refuted technique may be LIVE at the seat it was copied from.** card#8935's own body records that *"sola's device seat already derives step outcomes from downstream warn steps (guard-on-failure RAN ⇒ failed; plant-control SKIPPED ⇒ plant fired)"* — the phrasing this PR proves cannot work if implemented with `if: failure()`. That repo is not readable from here. **Someone with reach should read that seat's workflow and check which condition it uses.** Raised in r1's report, confirmed by r2 as the highest-value item in it, and **still not discharged by this PR**.
+- **card#8935's own board text carries the refuted prescription.** It wants an annotation when the card closes, or the next reader inherits the wrong technique from the card rather than from the contract.
+- **`_label()`'s docstring** (`workflow-continue-on-error-scan.selftest.py:168-171`) reads to r2 as if describing a bug that once existed. Re-read: it explains why an empty handle is correct for a job mapping, which § 5's `no empty parenthetical` row now pins. Left as-is; recorded so the call is falsifiable.
+
+## Review record <<PM FILLS>>
