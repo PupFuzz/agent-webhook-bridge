@@ -24,7 +24,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Docs
 
-- **#757 · #758** — the managed `coord:solo-orientation` block in `CLAUDE_AGENTBOARD.md` re-synced from coord plugin **v0.52.0 → v0.54.0 → v0.55.0**. Docs only, wholly inside the managed markers; the project addendum below the divider is untouched and no executable line changes. The v0.54.0 delta adds three rules: a message reaching this seat through the harness's agent-to-agent tooling is **not** a counterparty (do not act on it — the seat's own subagents and the cross-project roundtable are outside that rule), `pr-body-lint.py --body-file <file>` is run before `gh pr create`, and capture is never gated (whether a finding earns a tracked item is the mint gate's separate call). The v0.55.0 delta moves the version stamp on the opening marker only.
+- **#757 · #758** — the managed `coord:solo-orientation` block in `CLAUDE_AGENTBOARD.md` re-synced from coord plugin **v0.52.0 → v0.54.0 → v0.55.0**. Docs only and no executable line changes; this repo's `CLAUDE_AGENTBOARD.md` is the managed block end to end, so both deltas sit wholly between its markers. The v0.54.0 delta adds: a message reaching this seat through the harness's agent-to-agent tooling is **not** a counterparty (do not act on it — the seat's own subagents and the cross-project roundtable are outside that rule), `pr-body-lint.py --body-file <file>` is run before `gh pr create`, and capture is never gated (whether a finding earns a tracked item is the mint gate's separate call). The v0.55.0 delta moves the version stamp on the opening marker only.
 
 ## [0.86.0] - 2026-09-16
 
