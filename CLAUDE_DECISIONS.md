@@ -6805,7 +6805,7 @@ Selection and EMISSION are separated deliberately: the kept rows are re-emitted 
 
 ---
 
-## DL-<PLACEHOLDER> — the release card-coverage verdict lives in a comment on the release PR; a body with no `## Card coverage` section now says nothing
+## DL-402 — the release card-coverage verdict lives in a comment on the release PR; a body with no `## Card coverage` section now says nothing
 
 - **Date:** 2026-09-20
 - **Status:** documentation only. No code, no workflow, no test and no `.release-pr.json` key moves; nothing CI accepts or rejects changes, and the release flow gains a convention with no gate behind it.
