@@ -6805,9 +6805,9 @@ Selection and EMISSION are separated deliberately: the kept rows are re-emitted 
 
 ---
 
-## DL-PLACEHOLDER — the writeback refuses a `program`-tagged PARENT card outright, withholding the correlation STAMP as well as the move (card#9929)
+## DL-403 — the writeback refuses a `program`-tagged PARENT card outright, withholding the correlation STAMP as well as the move (card#9929)
 
-> ⚠ **THE NUMBER IS NOT ALLOCATED YET.** `DL-PLACEHOLDER` is a deliberate stand-in: the dispatching seat claims the real number with `python3 bin/decision-log.py next` (DL-295 — never this file's max + 1) and rewrites this header, the `docs/CHANGELOG.md` entry and any citation of it before the PR opens. ⛔ `bin/decision-log.py check` does not see this entry at all — its header pattern requires digits — so the collision gate is GREEN over it and green here means *unread*, not *unique*.
+> ⚠ **THE NUMBER IS NOT ALLOCATED YET.** `DL-403` is a deliberate stand-in: the dispatching seat claims the real number with `python3 bin/decision-log.py next` (DL-295 — never this file's max + 1) and rewrites this header, the `docs/CHANGELOG.md` entry and any citation of it before the PR opens. ⛔ `bin/decision-log.py check` does not see this entry at all — its header pattern requires digits — so the collision gate is GREEN over it and green here means *unread*, not *unique*.
 
 - **Date:** 2026-09-20
 - **Context:** The correlation path (`GitHubPrCardMoveClassifier` → `KanbanMoveCardHandler`) resolves `payload.card_id` from a `card#NNNN` in author-controlled text and then drives that card's STAGE and its correlation REFS from one pull request. That is correct for a LEG card — one card, one deliverable, one PR. Pointed at a **parent** card, one naming several legs, it is wrong in the direction that does not self-correct: an `opened` moves the parent to In-Review on the first leg's PR, a `merged` takes it **terminal while the remaining legs are unbuilt**, and the `pr_number` / `pr_url` stamp binds the whole program to that one leg's PR — so every later leg's PR collides with a ref the parent already answers, and every consumer deriving the program's state reads a completion nobody performed. A card already terminal is not moved forward again by the legs that follow.
