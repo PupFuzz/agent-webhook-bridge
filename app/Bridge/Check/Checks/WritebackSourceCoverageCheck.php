@@ -16,9 +16,10 @@ use Throwable;
  * #3399: are this board's DL cards actually eligible to self-move? (DL-242 stage 3b)
  *
  * On a ref-mode writeback the by-ref lookup on a SHARED board filters by the event's repo
- * `source`, which the kanban derives from a card's `pr_url`. There a dl_number card with no
- * pr_url (source=null), or a pr_url whose owner/repo matches no repo mapped to that board,
- * is EXCLUDED by the lookup and silently never self-moves — indistinguishable from a
+ * `source`, which the kanban derives from the card's payload and `external_link` by the
+ * rule {@see ExternalReferenceNormalizer::sourceFor} mirrors (it owns the input order). There
+ * a dl_number card that yields no source (source=null), or one whose derived owner/repo
+ * matches no repo mapped to that board, is EXCLUDED by the lookup and silently never self-moves — indistinguishable from a
  * legitimate no-match in the dispatch ledger. That is the one writeback failure that stays
  * invisible even to an operator reading the ledger, which is why it is checked at config
  * time. Warn (never fail) so it is named + actionable (root cause closed by
