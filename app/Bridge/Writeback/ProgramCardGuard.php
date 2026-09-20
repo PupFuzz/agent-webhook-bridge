@@ -26,29 +26,49 @@ namespace App\Bridge\Writeback;
  * parent still has a leg's PR refs written onto it. This consult therefore sits UPSTREAM of
  * every stamp call site rather than beside the pin, where it would inherit exactly that.
  *
- * ⚑ THE TAG IS AN OPERATOR CONVENTION AND THIS CLASS IS ITS ONLY DECLARATION ON THIS SIDE OF
- * THE SEAM. The refusal is a cross-repo guarantee — the far end (the coordination framework's
- * `kanban-prs-sync.py` defer pre-pass) implements the same rule independently, and the two
- * share no runtime, so the only thing that keeps them agreeing is the SPELLING of
- * {@see TAG}. It is published for that reader in `docs/kanban-integration-contract.md`
- * § 3 (Load-bearing invariants), read out of this constant by
- * `Tests\Feature\Writeback\ProgramCardGuardTest` rather than restated there by hand. (Named,
- * not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and `app/` does not
- * import from `tests/` — the same note `PrCorrelationCommenter` carries.)
+ * ⚑ THE TAG IS AN OPERATOR CONVENTION AND THIS CLASS IS ITS ONLY DECLARATION ANYWHERE. The
+ * refusal was designed as a cross-repo guarantee, but ⛔ NO FAR END IMPLEMENTS IT TODAY:
+ * measured 2026-09-20 over every coordination-framework version published on the reference
+ * install (plugin cache 0.49.0–0.55.0, marketplace checkout `b6cb4ff` = v0.55.0), there is no
+ * `program`-tag rule anywhere in the plugin, and the `kanban-prs-sync.py` it ships defers on
+ * DL / card-id resolution and reads no tag at any version. (The instrument discriminates: the
+ * same search finds `no-automove` published there in four places.) So the spelling published
+ * in `docs/kanban-integration-contract.md` § 3 (Load-bearing invariants) is a REQUEST for a
+ * counterpart, not a description of one, and that row says so in those terms — read it as the
+ * declaration and this class as the only enforcement. The constant is read out of here by
+ * `Tests\Feature\Writeback\ProgramCardGuardTest` rather than restated there by hand, so the
+ * day a far end does implement it, the spelling it matches cannot have drifted from
+ * {@see TAG}. (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and
+ * `app/` does not import from `tests/` — the same note `PrCorrelationCommenter` carries.)
  * ⛔ WHAT THIS SIDE CANNOT VERIFY, stated rather than assumed: nothing here can establish that
- * the far end uses the same spelling, and nothing on either side establishes that a parent
- * card actually CARRIES the tag — an untagged parent is invisible to this guard and to the
- * far end alike, which is the residual card#9929 records and not something this check closes.
+ * a future far-end implementation uses the same spelling, and nothing on either side
+ * establishes that a parent card actually CARRIES the tag — an untagged parent is invisible to
+ * this guard, which is the residual card#9929 records and not something this check closes.
+ *
+ * ⛔ ONE CONSULT, AND THE REFUSAL IS NOT REPO-WIDE. `KanbanMoveCardHandler` — the GitHub-PR
+ * EVENT path — is the only caller. `bridge:reconcile --fix` (`ReconcileCommand`, which
+ * consults the pin and nothing else) and `KanbanPromoteReleasedHandler` move cards without
+ * asking this guard, so a parent already carrying a leg PR's `pr_number` can still be moved by
+ * the backstop, terminal stages included. That is this change's scope holding, not a safety
+ * claim; widening it is filed on card#9929.
  *
  * ⚑ EXACT MATCH, like `no-automove`'s: kanban stores tags verbatim (it normalizes neither case
  * nor whitespace), so `Program` and `program ` are not this tag and are not refused. The
  * predicate is the one written here; a second spelling would be a second rule.
  *
  * ⚑ A ROW CARRYING NO READABLE `tags` ANSWERS "NOT A PARENT" — degrading toward WRITING, the
- * same direction {@see PinGuard::isPinned} degrades in, and deliberately NOT detected a second
+ * same direction {@see PinGuard::isPinned} degrades in, and deliberately not detected a second
  * time here: this consult returns false on such a row, so the delivery goes on to reach
- * {@see PinGuard}'s own degraded-row detector on the very same card. A detector here would
- * emit a second line about one read.
+ * {@see PinGuard}'s own degraded-row detector. A detector here would emit a second line about
+ * one read.
+ * ⛔ THAT HAND-OFF COVERS ONE DEGRADATION SHAPE ONLY, and the rest are reported by NOTHING.
+ * `PinGuard::reportUnreadableRow()` fires only when `block_reason` AND `tags` are BOTH absent
+ * (its own docblock owns why). A row carrying `block_reason` but no `tags` key — or `tags`
+ * present as a non-list, which {@see PinGuard::tags} maps to `[]` — makes this predicate answer
+ * "not a parent" and reaches no detector at all, so the parent is moved and stamped silently.
+ * For the pin that shape is survivable, `block_reason` still being readable; here `tags` is the
+ * ONLY input, so the blind spot is total. Reporting the `tags`-unreadable shape this guard
+ * alone depends on is a separate call, filed on card#9929 and not taken here.
  */
 final class ProgramCardGuard
 {

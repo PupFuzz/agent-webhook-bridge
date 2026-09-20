@@ -14,19 +14,23 @@ use Tests\TestCase;
  * {@see KanbanMoveCardHandlerTest}, with a leg card as the control;
  * this class pins the two things that live here rather than there.
  *
- * ⛔ THE SECOND LEG IS A SEAM CHECK, NOT A DOC-TIDINESS ONE. This refusal is a guarantee that
- * has to hold ACROSS a repo boundary: the coordination framework's `kanban-prs-sync.py`
- * implements the same rule in its own runtime, and the two share nothing but the SPELLING of
- * the tag. That far end cannot read this repo's code, so the spelling is DECLARED where it can
- * — the `program` row of `docs/kanban-integration-contract.md` § 3 — and a declaration with no
- * check is a comment, not a contract: worse than silence, because the far end would then audit
- * its own half against a stated spelling that had drifted and get confidence instead of a
- * question. This leg is that check, and it reads the very artifact the far end reads.
+ * ⛔ THE SECOND LEG IS A SEAM CHECK, NOT A DOC-TIDINESS ONE. This refusal was designed as a
+ * guarantee holding ACROSS a repo boundary, and ⛔ NO FAR END IMPLEMENTS IT TODAY — the
+ * measurement behind that is {@see ProgramCardGuard}'s docblock and is deliberately not copied
+ * here. So the `program` row of `docs/kanban-integration-contract.md` § 3 declares a REQUEST
+ * for a counterpart, not a description of one — and a declaration with no check is a comment
+ * rather than a contract, which is worse than silence in BOTH directions: a spelling that had
+ * drifted would let a far-end maintainer audit their half and get confidence instead of a
+ * question, and so would a row that kept asserting a counterpart nobody built. This leg is
+ * that check, and it reads the very artifact the far end reads — the spelling AND the
+ * unmet-request statement, so neither can be edited back out silently.
  *
  * ⚠ WHAT IT CANNOT ESTABLISH, and the check's correct output is to say so by name rather than
- * to imply otherwise by passing: nothing here can see the far end's spelling, and nothing on
- * either side can establish that a parent card actually CARRIES the tag. Both remainders are
- * written into the contract row itself, where the far end reads them.
+ * to imply otherwise by passing: nothing here can see a future far-end implementation's
+ * spelling, and nothing on either side can establish that a parent card actually CARRIES the
+ * tag. Both remainders are written into the contract row itself, where the far end reads them.
+ * Nor can it see whether the far end has since implemented the rule — that stays a measurement
+ * somebody makes against the framework, recorded on the row with the version that lands it.
  */
 class ProgramCardGuardTest extends TestCase
 {
@@ -79,11 +83,20 @@ class ProgramCardGuardTest extends TestCase
             ->first(fn (string $line): bool => str_starts_with($line, '|') && str_contains($line, ProgramCardGuard::REASON));
 
         $this->assertNotNull($row, 'docs/kanban-integration-contract.md § 3 declares no row for '.ProgramCardGuard::REASON
-            .' — the far end implementing this same refusal has nothing to match its spelling against');
+            .' — the far end this rule is asking for has nothing to match its spelling against');
         $this->assertStringContainsString('`'.ProgramCardGuard::TAG.'`', $row);
         // The remainders the row must keep carrying: a check whose condition it cannot
         // establish locally owes the far end the NAME of what is unverified, not silence.
         $this->assertStringContainsString('EXACTLY', $row);
         $this->assertStringContainsString('neither end can check', $row);
+        // ⛔ AND THE TWO THINGS THAT WERE ASSERTED FALSELY BEFORE PR #762 R2, pinned here so
+        // they cannot be edited back out by a hand that finds the row's hedging untidy. (1) The
+        // row must not claim a far-end counterpart: none exists at any published framework
+        // version, and a row asserting one hands its reader confidence where it owes a
+        // question. (2) The refusal is the EVENT path's; the row must keep naming the mover
+        // that bypasses it, because a far end relying on "a program card is never moved by
+        // this bridge on a PR outcome" would be relying on something untrue.
+        $this->assertStringContainsString('no far-end counterpart exists today', strtolower($row));
+        $this->assertStringContainsString('bridge:reconcile --fix', $row);
     }
 }
