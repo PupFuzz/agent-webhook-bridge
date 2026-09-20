@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-09-19
+
 ### Added
 
 - **card#9837** — **`board_my_cards` now returns each card's `source` (its by-ref `owner/repo`) and `pr_url`**, beside `pr_number`, on every projected card (own lane, shared lane, coord cards, `tag_cards`). `source` is the repo qualifier kanban applies to the card's refs: on a shared board a by-ref (DL / PR-number / issue-number) correlation only matches events from that repo, while a `card#` token is not filtered by it, and it means something only on a card carrying a `dl_number`, `pr_number` or `issue_number`. A seat with no kanban token could see the PR number but not which repo the card is attributed to.
@@ -19,6 +21,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ### Changed
 
 - **CI: every pull request's body is now linted against the coord framework's PR-body standard, REPORTING-ONLY.** New workflow `.github/workflows/pr-body-lint.yml` runs `pr-body-lint.py`, vendored from coord plugin `0.54.0` into `.github/pr-body-lint/` and pinned by sha256 in `PIN` there. Findings appear as warning annotations and in the job summary, and the job exits 0 on them (operator ruling 2026-09-18: reporting-only until blocking is decided on evidence). The job goes red only when the linter returned no verdict: its bytes do not match the pin, its selftest fails, the body cannot be read, or it crashes. `pr-body-lint` is not a required check, so no result from it changes what can merge. Nothing the receiver accepts or rejects moves.
+
+### Docs
+
+- **#757 · #758** — the managed `coord:solo-orientation` block in `CLAUDE_AGENTBOARD.md` re-synced from coord plugin **v0.52.0 → v0.54.0 → v0.55.0**. Docs only and no executable line changes; this repo's `CLAUDE_AGENTBOARD.md` is the managed block end to end, so both deltas sit wholly between its markers. The v0.54.0 delta adds: a message reaching this seat through the harness's agent-to-agent tooling is **not** a counterparty (do not act on it — the seat's own subagents and the cross-project roundtable are outside that rule), `pr-body-lint.py --body-file <file>` is run before `gh pr create`, capture is never gated (whether a finding earns a tracked item is the mint gate's separate call), and a terminated builder's unpushed working tree is a separate question owned by `dispatching-briefs.md` § `Resuming a terminated builder`. That list is the substantive additions, not an exhaustive one — `git show d17614c -- CLAUDE_AGENTBOARD.md` is the delta. The v0.55.0 delta moves the version stamp on the opening marker only.
 
 ## [0.86.0] - 2026-09-16
 
