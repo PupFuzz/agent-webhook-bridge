@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Docs
+
+- **DL-402** — **`VERSIONING.md` § Release flow step 7 no longer tells a release author to read card coverage off the PR body.** It carried a four-row table mapping `## Card coverage` body states to verdicts, whose last row read *"No `## Card coverage` section at all | The check DID NOT RUN. Not a pass"*. agent-board-toolkit **DL-224** (card#9248) moved that verdict out of the body to a stderr line, `release-pr-body: card coverage: …`; the `release-pr-body` on `PATH` here is toolkit `0.35.1`, which carries the change, and this repo vendors no copy of the tool. Three of the four rows therefore described body states the generator can no longer produce, and the absence row told a reader to act on a state every release body is now in. Step 7 states that the old reading is dead, states what a stderr `card coverage:` line and its absence each mean, and gives the result a durable home: a comment on the release PR posted before the step 9 merge notification. ⛔ **It is a convention with no gate** — nothing reds when the comment is missing, which step 7 says outright; making it a gate would change what CI rejects and is not taken here. The released `## [0.75.0]` section stated the same reading in the present tense, so it carries a forward annotation naming DL-402 — appended at the site, with its merged wording left byte-identical, which is the treatment `CLAUDE_CONVENTIONS.md` § Derived figures prescribes for a record under a heading that dates it. Docs only: no code, no workflow, no test, no `.release-pr.json` key, and nothing the receiver accepts or rejects moves.
+
 ## [0.87.0] - 2026-09-19
 
 ### Added
@@ -1667,6 +1671,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   measure**, so a body with **no** such section means the check **did not run** — not that it passed
   — and the step now spells out the four states a body can carry plus the standing
   `promote-released-cards --dry-run`-before-merge discipline.
+  ⛔ **Annotated forward, DL-402: the reading stated immediately above is DEAD, and the wording is
+  left exactly as it merged.** agent-board-toolkit **DL-224** moved that verdict out of the body to a
+  stderr `card coverage:` line; the generator emits no `## Card coverage` section at all, so its
+  absence in a release body now distinguishes nothing and is not a signal to act on.
+  [`VERSIONING.md`](../VERSIONING.md) § Release flow step 7 owns the current reading.
   **[`CLAUDE_GOTCHAS.md`](../CLAUDE_GOTCHAS.md) gains G-021**, on deriving this repo's pre-PR gate
   set from `.github/workflows/` instead of a remembered list, with the four traps that make the
   derivation non-obvious: a `paths:` filter reaching further than its workflow's name suggests (the
