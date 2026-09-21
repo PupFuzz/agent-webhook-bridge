@@ -90,6 +90,37 @@ If the tools are advertised but the channel server is only half-configured
 force-on), a call returns a **structured refusal naming the missing config** — it
 never silently no-ops.
 
+⛔ **LISTED IS NOT CALLABLE: a harness may advertise a tool's NAME and hold its SCHEMA back
+until you ask for it.** Where it does, calling the tool straight off fails **inside your own
+seat** — neither the channel server nor this bridge ever sees the call — and **the message it
+hands you is about YOUR input**. The spelling this page gives for it,
+`InputValidationError: could not be parsed as JSON`, is attributed to a Claude Code harness's
+own instructions and is **not measured here: this project has not observed an unloaded-schema
+failure**, and roundtable #538 (below) was not one. **The remedy is to load the schema first and
+then call**, and your harness's own instructions own that mechanism — the ones that attribute
+that message name `ToolSearch` with the query `select:<tool name>`.
+
+⚠ **That same spelling also means exactly what it says — your JSON really was malformed — so do not
+read it as proof of an unloaded schema.** Measured on roundtable #538: a seat hit it repeatedly with
+its schema **already loaded 11 hours earlier**, and the payload genuinely was invalid (`"tags":
+security,documentation,...` — unquoted bare tokens). ⛔ **What misled that seat was not the sentence
+but the EXCERPT beneath it:** the error quoted the **first 200 of 1214 bytes** while the invalid byte
+sat near **1100**, so the excerpt was structurally incapable of showing the cause it was printed to
+explain. **If the excerpt looks fine, the failure may simply be outside it — check the tail of what
+you sent, and prefer the reported offset over the quoted head.**
+
+⭐ **The tell for an unloaded schema is that the failure does not vary with what you sent.**
+If a call with **no arguments at all** fails with the same complaint about your INPUT as a
+multi-kilobyte one does, neither was sent — and *my payload is malformed*, the reading the message invites, cannot explain the
+no-argument failure, so shrinking or simplifying the payload buys nothing there. **Until you
+have seen that, check your payload first:** it is what the message says, and the case measured
+above was exactly that.
+
+⚠ **This behaviour and that wording are the HARNESS's, not this bridge's, and nothing here
+can change either** — the bridge never saw the call, so no refusal of ours could have
+reached you. What this page can give you is the way to tell such a call apart from one the
+bridge answered: [§ Did the call reach the bridge?](#did-the-call-reach-the-bridge).
+
 ## `board_my_cards`
 
 **Arguments:**
@@ -993,6 +1024,68 @@ no write on a not-on-board refusal.
 | 422 | A caller-fixable bad request (an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
 | 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
+
+### Did the call reach the bridge?
+
+**Every row above describes an answer this door BUILT.** A call that failed in your own seat —
+a harness refusing a tool whose schema it has not loaded, or refusing arguments that are not
+valid JSON ([§ Discovering them](#discovering-them)) — reached no door, so none of those rows
+applies to it and no wording of ours was involved. Telling the two apart tells you **where** to
+look, not that what you sent was fine: a call that never arrived may never have arrived
+precisely because its payload was malformed.
+
+**It DID reach the bridge if the answer carries this door's own WORDING** — not merely its
+shape. Two sentences settle it on their own:
+
+```text
+board_create_card: unknown argument `body`. This tool accepts: `title`, `description`, `tags`, `idempotency_key`. Nothing was sent to the board — no card was read or written.
+board_create_card: `title` is required and must be a non-empty string
+```
+
+The parts to match are the `This tool accepts: … Nothing was sent to the board — no card was
+read or written.` tail and `` `title` is required and must be a non-empty string ``. **Both are
+COMPOSED HERE** — the first by the rule below, out of the tool's own declared argument set; the
+second is `board_create_card`'s — and neither is restated in the reference channel server.
+
+⛔ **The SHAPE proves nothing.** A message that names the tool and an argument it requires or
+does not declare is not this door's to own: the advertised `inputSchema` your seat loads
+carries the property list, `required` and `additionalProperties: false`, so a seat-side
+validator working from it has everything it needs to name `board_create_card` and a missing
+`title` or an undeclared key — and its complaint never left your seat. How any harness words
+such a rejection has not been measured here; a complaint that names the tool and an argument
+but carries neither sentence above does not, on that alone, show the call arrived.
+
+Either sentence is therefore proof that the call arrived, was matched to a tool, and was
+refused on its merits. ⚠ **It claims nothing about your seat's schema** — a caller holding no
+schema at all (raw input to the ssh door, a direct HTTP POST) is answered in the same words —
+and nothing about any OTHER call, earlier or later: the bridge can only report the calls it saw.
+
+**It did NOT reach the bridge if the answer is a complaint about your input in wording no
+door of ours composes** — the harness's `InputValidationError: could not be parsed as JSON` is
+one: neither door, the dispatcher behind them nor the reference channel server composes it.
+That is most conclusive when the call carried no arguments at all, because an ABSENT `title`
+is refused by this door with the same named sentence a blank one gets, so a no-argument
+`board_create_card` that arrives is answered in those words — unless an access or install
+refusal answers it first.
+
+A call can also fail **between** your seat and the bridge — in the channel server or on its
+transport leg. Those answers are neither of the above; see
+[§ What the CALLER sees when the leg itself fails (DL-312)](#what-the-caller-sees-when-the-leg-itself-fails-dl-312).
+
+⚠ **Do not run that test backwards.** Several genuine answers of ours name no tool either —
+among them the bearer refusals (deliberately non-discriminating, per the table above), the
+loopback-only gate, the doors' own refusals of a malformed request (`` `args` must be an
+object `` among them), the 503 install fault and the `upstream board error`. Each of those means the
+call arrived, and apart from the malformed-request refusals none is anything your arguments can
+fix. The full set is whatever the doors
+compose, and their source owns it: `AgentToolsController` and `LoopbackOnly` on the HTTP door,
+`bridge:tools-call` on the ssh door, and `BoardToolDispatcher` behind both.
+
+⚠ **What none of this can tell you is WHICH seat-side failure you hit** — an unloaded schema
+or a payload that really is malformed; [§ Discovering them](#discovering-them) owns telling
+those apart. **Nor can it tell you WHY a harness held a schema back, or make its message
+say so.** That message is not ours to change and we do not claim to have fixed it; recognising
+it is what this section offers.
 
 ### An argument the tool does not declare is refused, on every tool (DL-379)
 

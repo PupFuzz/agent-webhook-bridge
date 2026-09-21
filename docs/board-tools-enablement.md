@@ -98,6 +98,15 @@ It is **two steps, not one**, and the order matters: `examples/start-channel-ses
 **refuses** to start a second session while one is running this channel, which is the same
 constraint stated by the launcher rather than by the connector.
 
+⚠ **The restarted session LISTS the board tools; it does not follow that it can CALL one
+yet.** A harness may hand a seat a tool whose **schema is not loaded**, and the seat's first
+call then fails **inside the seat** — before the channel server is entered and before the
+bridge is reached — with a message about the caller's own input. ⛔ **That is not a bind
+failure and none of the three causes below applies to it.** The loading remedy, and the way to
+tell such a failure from a refusal the bridge actually built, are owned by
+[`docs/board-tools.md` § *Discovering them*](board-tools.md#discovering-them) and
+[§ *Did the call reach the bridge?*](board-tools.md#did-the-call-reach-the-bridge).
+
 ### The three causes of a bind failure, and their remedies
 
 When a connector refuses with `EADDRINUSE`, all it measured is *the address would not
