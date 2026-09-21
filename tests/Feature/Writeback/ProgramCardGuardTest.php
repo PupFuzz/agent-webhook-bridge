@@ -53,8 +53,9 @@ class ProgramCardGuardTest extends TestCase
             // caller may hand in a row it never read), and a bare in_array over a non-array
             // is a PHP 8.5 TypeError — so these assert the predicate ANSWERS rather than
             // throws. It answers "not a parent", degrading toward writing: the same direction
-            // PinGuard degrades in, and detected by PinGuard's own degraded-row detector,
-            // which this consult's false verdict lets the delivery go on to reach.
+            // PinGuard degrades in. Whether anything REPORTS that degraded read depends on the
+            // arm the delivery leaves through — ProgramCardGuard's docblock owns that bound,
+            // and this provider asserts the answer, not the reporting.
             'tags present-null' => [['tags' => null], false],
             'no tags key at all' => [['id' => 5], false],
             // ⚠ ACCEPTED, NOT DESIGNED, and recorded here so it is falsifiable rather than
@@ -89,14 +90,27 @@ class ProgramCardGuardTest extends TestCase
         // establish locally owes the far end the NAME of what is unverified, not silence.
         $this->assertStringContainsString('EXACTLY', $row);
         $this->assertStringContainsString('neither end can check', $row);
-        // ⛔ AND THE TWO THINGS THAT WERE ASSERTED FALSELY BEFORE PR #762 R2, pinned here so
-        // they cannot be edited back out by a hand that finds the row's hedging untidy. (1) The
-        // row must not claim a far-end counterpart: none exists at any published framework
-        // version, and a row asserting one hands its reader confidence where it owes a
-        // question. (2) The refusal is the EVENT path's; the row must keep naming the mover
-        // that bypasses it, because a far end relying on "a program card is never moved by
-        // this bridge on a PR outcome" would be relying on something untrue.
+        // ⛔ AND THE TWO THINGS THAT WERE ASSERTED FALSELY BEFORE PR #762, pinned here so they
+        // cannot be edited back out by a hand that finds the row's hedging untidy. (1) The row
+        // must not claim a far-end counterpart: none exists at any published framework version,
+        // and a row asserting one hands its reader confidence where it owes a question. (2) The
+        // refusal is the EVENT path's, and the row must keep saying so together with the NAME
+        // of the file where this repo keeps the list of writers that bypass it — because a far
+        // end relying on "a program card is never moved by this bridge on a PR outcome" would
+        // be relying on something untrue, and it cannot read that file from its own tree.
         $this->assertStringContainsString('no far-end counterpart exists today', strtolower($row));
-        $this->assertStringContainsString('bridge:reconcile --fix', $row);
+        $this->assertStringContainsString('EVENT-path', $row);
+        $this->assertStringContainsString('docs/writeback.md', $row);
+        // ⛔ A POINTER, NEVER A ROSTER OR A COUNT — this leg exists because the row carried
+        // "Two other bridge movers" while the other surfaces of the same change restated the
+        // roster differently (bridge card#10063). A number that describes that set is false the
+        // day the next writer lands, and re-syncing it is what mints the next disagreement,
+        // so the row may not carry one at all.
+        $this->assertDoesNotMatchRegularExpression(
+            '/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(other\s+|more\s+)?(bridge\s+)?(card\s+)?(movers|writers)\b/i',
+            $row,
+            'the seam row counts the writers that bypass this guard; it must point at the list in '
+            .'docs/writeback.md instead — a count on a cross-repo surface goes stale silently (card#10063)',
+        );
     }
 }

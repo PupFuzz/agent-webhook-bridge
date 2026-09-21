@@ -46,11 +46,14 @@ namespace App\Bridge\Writeback;
  * this guard, which is the residual card#9929 records and not something this check closes.
  *
  * ⛔ ONE CONSULT, AND THE REFUSAL IS NOT REPO-WIDE. `KanbanMoveCardHandler` — the GitHub-PR
- * EVENT path — is the only caller. `bridge:reconcile --fix` (`ReconcileCommand`, which
- * consults the pin and nothing else) and `KanbanPromoteReleasedHandler` move cards without
- * asking this guard, so a parent already carrying a leg PR's `pr_number` can still be moved by
- * the backstop, terminal stages included. That is this change's scope holding, not a safety
- * claim; widening it is filed on card#9929.
+ * EVENT path — is the only caller, which `grep -rn 'ProgramCardGuard::' app/` re-derives; every
+ * other card writer in this repo writes without asking this guard, so a parent already carrying
+ * a leg PR's `pr_number` can still be moved by one of them, terminal stages included. WHICH
+ * writers those are is not restated here — the population is the one `PinGuard`'s docblock owns
+ * the recipe for, and the operator-facing list is the writeback token's permission table in
+ * `docs/writeback.md`; a roster copied into a comment is true until the next writer lands
+ * (bridge card#10063). That is this change's scope holding, not a safety claim; widening it is
+ * filed on card#9929.
  *
  * ⚑ EXACT MATCH, like `no-automove`'s: kanban stores tags verbatim (it normalizes neither case
  * nor whitespace), so `Program` and `program ` are not this tag and are not refused. The
@@ -58,17 +61,24 @@ namespace App\Bridge\Writeback;
  *
  * ⚑ A ROW CARRYING NO READABLE `tags` ANSWERS "NOT A PARENT" — degrading toward WRITING, the
  * same direction {@see PinGuard::isPinned} degrades in, and deliberately not detected a second
- * time here: this consult returns false on such a row, so the delivery goes on to reach
- * {@see PinGuard}'s own degraded-row detector. A detector here would emit a second line about
- * one read.
- * ⛔ THAT HAND-OFF COVERS ONE DEGRADATION SHAPE ONLY, and the rest are reported by NOTHING.
+ * time here: a delivery that goes on to reach {@see PinGuard}'s own degraded-row detector is
+ * already reported there, and a detector here would emit a second line about one read.
+ * ⛔ WHICH IS NOT EVERY DELIVERY, AND THE OMISSION IS BOUNDED ON TWO DIMENSIONS, NOT ONE. The
+ * first is the PATH, and it is the one a row-shape argument cannot see. That detector runs
+ * inside the pin consult, so ONLY a delivery that reaches the pin consult reaches it — and in
+ * `KanbanMoveCardHandler` several arms return before it (the DL-270 uncorroborated arm, which
+ * writes a card NOTE, and the already-in-stage self-heal, which STAMPS) while the DL-194 unpark
+ * and DL-195 revive overrides skip the consult by their own predicate. On every one of those a
+ * degraded row is read through this guard and reported by NOTHING; the self-heal arm is the
+ * routine redelivery case, so it is not an exotic one.
+ * ⛔ The second is the ROW SHAPE, and it bites even on the arm that does reach the detector.
  * `PinGuard::reportUnreadableRow()` fires only when `block_reason` AND `tags` are BOTH absent
  * (its own docblock owns why). A row carrying `block_reason` but no `tags` key — or `tags`
  * present as a non-list, which {@see PinGuard::tags} maps to `[]` — makes this predicate answer
- * "not a parent" and reaches no detector at all, so the parent is moved and stamped silently.
- * For the pin that shape is survivable, `block_reason` still being readable; here `tags` is the
- * ONLY input, so the blind spot is total. Reporting the `tags`-unreadable shape this guard
- * alone depends on is a separate call, filed on card#9929 and not taken here.
+ * "not a parent" and reaches no detector at all. Either way the parent is moved and stamped
+ * silently. For the pin that shape is survivable, `block_reason` still being readable; here
+ * `tags` is the ONLY input, so the blind spot is total. Reporting the `tags`-unreadable shape
+ * this guard alone depends on is a separate call, filed on card#9929 and not taken here.
  */
 final class ProgramCardGuard
 {
