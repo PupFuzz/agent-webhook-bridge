@@ -110,9 +110,12 @@ explain. **If the excerpt looks fine, the failure may simply be outside it — c
 you sent, and prefer the reported offset over the quoted head.**
 
 ⭐ **The tell for an unloaded schema is that the failure does not vary with what you sent.**
-If a call with **no arguments at all** fails exactly as a multi-kilobyte one does, neither was
-sent — and *my payload is malformed*, the reading the message invites, cannot explain the
-no-argument failure, so shrinking or simplifying the payload buys nothing there. **Until you
+If a call with **no arguments at all** fails with the same complaint about your INPUT as a
+multi-kilobyte one does, neither was sent — and *my payload is malformed*, the reading the message invites, cannot explain the
+no-argument failure, so shrinking or simplifying the payload buys nothing there. (Some of this
+bridge's answers ARE identical whatever you send, because they are given before any argument's value is read —
+an access refusal, the 503 install fault, an upstream fault — and each of those means the call
+arrived: [§ Did the call reach the bridge?](#did-the-call-reach-the-bridge) lists them.) **Until you
 have seen that, check your payload first:** it is what the message says, and the case measured
 above was exactly that.
 
@@ -1075,7 +1078,7 @@ transport leg. Those answers are neither of the above; see
 ⚠ **Do not run that test backwards.** Several genuine answers of ours name no tool either —
 among them the bearer refusals (deliberately non-discriminating, per the table above), the
 loopback-only gate, the doors' own refusals of a malformed request (`` `args` must be an
-object `` among them), the install faults and the `upstream board error`. Each of those means the
+object `` among them), the 503 install fault and the `upstream board error`. Each of those means the
 call arrived, and apart from the malformed-request refusals none is anything your arguments can
 fix. The full set is whatever the doors
 compose, and their source owns it: `AgentToolsController` and `LoopbackOnly` on the HTTP door,
