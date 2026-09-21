@@ -99,7 +99,7 @@ schema first and then call**, and your harness's own instructions own that mecha
 produces that message names `ToolSearch` with the query `select:<tool name>`.
 
 ⚠ **That same spelling also means exactly what it says — your JSON really was malformed — so do not
-read it as proof of an unloaded schema.** Measured on roundtable #538: a seat hit it four times with
+read it as proof of an unloaded schema.** Measured on roundtable #538: a seat hit it repeatedly with
 its schema **already loaded 11 hours earlier**, and the payload genuinely was invalid (`"tags":
 security,documentation,...` — unquoted bare tokens). ⛔ **What misled that seat was not the sentence
 but the EXCERPT beneath it:** the error quoted the **first 200 of 1214 bytes** while the invalid byte
@@ -107,11 +107,12 @@ sat near **1100**, so the excerpt was structurally incapable of showing the caus
 explain. **If the excerpt looks fine, the failure may simply be outside it — check the tail of what
 you sent, and prefer the reported offset over the quoted head.**
 
-⭐ **The tell is that the failure does not vary with what you sent.** A call with **no
-arguments at all** fails exactly as a multi-kilobyte one does, because neither was sent — so
-the reading the message invites, *my payload is malformed*, is the one reading that cannot be
-right, and shrinking or simplifying it buys nothing. In the measured case it bought a ladder
-of retries, each smaller and plainer than the last, and no diagnosis.
+⭐ **The tell for an unloaded schema is that the failure does not vary with what you sent.**
+If a call with **no arguments at all** fails exactly as a multi-kilobyte one does, neither was
+sent — and *my payload is malformed*, the reading the message invites, cannot explain the
+no-argument failure, so shrinking or simplifying the payload buys nothing there. **Until you
+have seen that, check your payload first:** it is what the message says, and the case measured
+above was exactly that.
 
 ⚠ **This behaviour and that wording are the HARNESS's, not this bridge's, and nothing here
 can change either** — the bridge never saw the call, so no refusal of ours could have
@@ -1025,11 +1026,11 @@ no write on a not-on-board refusal.
 ### Did the call reach the bridge?
 
 **Every row above describes an answer this door BUILT.** A call that failed in your own seat —
-a harness refusing a tool whose schema it has not loaded ([§ Discovering them](#discovering-them))
-— reached no door, so none of those rows applies to it and no wording of ours was involved.
-Telling the two apart is worth doing **before** you change anything you sent, because a message
-about your own input reads as an instruction to edit your arguments, and editing them cannot fix
-a call that was never sent.
+a harness refusing a tool whose schema it has not loaded, or refusing arguments that are not
+valid JSON ([§ Discovering them](#discovering-them)) — reached no door, so none of those rows
+applies to it and no wording of ours was involved. Telling the two apart tells you **where** to
+look, not that what you sent was fine: a call that never arrived may never have arrived
+precisely because its payload was malformed.
 
 **It DID reach the bridge if the answer speaks in this door's own terms** — naming the tool and
 either the set of arguments that tool accepts or one it requires. Two sentences settle it on
@@ -1045,10 +1046,10 @@ declared argument set; the second is `board_create_card`'s. Neither is restated 
 reference channel server, so a rejection your seat's own schema layer makes is worded by that
 layer and does not read like them. Either one is therefore proof that the call arrived, was
 matched to a tool, and was refused on its merits. ⭐ **And each says something about your SEAT
-as well as about that call: the schema was loaded when you sent it** — which retrospectively
-explains an earlier failure about your own input on the same tool. ⚠ It claims nothing about a
-LATER call: what your harness does with a loaded schema over time is its business, and the
-bridge can only report the calls it saw.
+as well as about that call: the schema was loaded when you sent it.** ⚠ It claims nothing
+about any OTHER call, earlier or later: a schema loaded for this call says nothing about whether
+it was loaded for an earlier one, what your harness does with a loaded schema over time is its
+business, and the bridge can only report the calls it saw.
 
 **It did NOT reach the bridge if the answer is a bare parse or validation complaint about your
 own input that names no tool of this door and no argument set** — most conclusively when the
@@ -1056,12 +1057,16 @@ call carried no arguments at all, because an ABSENT `title` is refused by this d
 same named sentence a blank one gets, so a no-argument `board_create_card` that arrives is
 answered by name.
 
-⚠ **Do not run that test backwards.** Two genuine answers of ours name no tool either: a
-**401** (the bearer — deliberately non-discriminating, per the table above) and a **503**
-`agent config error`. Both mean the call arrived and the INSTALL is at fault, and neither is
-anything your arguments can fix.
+⚠ **Do not run that test backwards.** Several genuine answers of ours name no tool either —
+among them the bearer refusals (deliberately non-discriminating, per the table above), the
+loopback-only gate, the install faults and the `upstream board error`. Each of those means the
+call arrived, and none is anything your arguments can fix. The full set is whatever the doors
+compose, and their source owns it: `AgentToolsController` and `LoopbackOnly` on the HTTP door,
+`bridge:tools-call` on the ssh door, and `BoardToolDispatcher` behind both.
 
-⚠ **What none of this can tell you is WHY a harness held the schema back, or make its message
+⚠ **What none of this can tell you is WHICH seat-side failure you hit** — an unloaded schema
+or a payload that really is malformed; [§ Discovering them](#discovering-them) owns telling
+those apart. **Nor can it tell you WHY a harness held a schema back, or make its message
 say so.** That message is not ours to change and we do not claim to have fixed it; recognising
 it is what this section offers.
 
