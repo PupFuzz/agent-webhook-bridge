@@ -92,11 +92,13 @@ never silently no-ops.
 
 ⛔ **LISTED IS NOT CALLABLE: a harness may advertise a tool's NAME and hold its SCHEMA back
 until you ask for it.** Where it does, calling the tool straight off fails **inside your own
-seat** — before any argument is serialised, before the channel server is entered, and before
-this bridge is reached — and **the message it hands you is about YOUR input**. One spelling a Claude Code
-harness uses is `InputValidationError: could not be parsed as JSON`. **The remedy is to load the
-schema first and then call**, and your harness's own instructions own that mechanism — the one that
-produces that message names `ToolSearch` with the query `select:<tool name>`.
+seat** — neither the channel server nor this bridge ever sees the call — and **the message it
+hands you is about YOUR input**. The spelling this page gives for it,
+`InputValidationError: could not be parsed as JSON`, is attributed to a Claude Code harness's
+own instructions and is **not measured here: this project has not observed an unloaded-schema
+failure**, and roundtable #538 (below) was not one. **The remedy is to load the schema first and
+then call**, and your harness's own instructions own that mechanism — the ones that attribute
+that message name `ToolSearch` with the query `select:<tool name>`.
 
 ⚠ **That same spelling also means exactly what it says — your JSON really was malformed — so do not
 read it as proof of an unloaded schema.** Measured on roundtable #538: a seat hit it repeatedly with
@@ -1032,35 +1034,47 @@ applies to it and no wording of ours was involved. Telling the two apart tells y
 look, not that what you sent was fine: a call that never arrived may never have arrived
 precisely because its payload was malformed.
 
-**It DID reach the bridge if the answer speaks in this door's own terms** — naming the tool and
-either the set of arguments that tool accepts or one it requires. Two sentences settle it on
-their own:
+**It DID reach the bridge if the answer carries this door's own WORDING** — not merely its
+shape. Two sentences settle it on their own:
 
 ```text
 board_create_card: unknown argument `body`. This tool accepts: `title`, `description`, `tags`, `idempotency_key`. Nothing was sent to the board — no card was read or written.
 board_create_card: `title` is required and must be a non-empty string
 ```
 
-**Both sentences are COMPOSED HERE** — the first by the rule below, out of the tool's own
-declared argument set; the second is `board_create_card`'s. Neither is restated in the
-reference channel server, so a rejection your seat's own schema layer makes is worded by that
-layer and does not read like them. Either one is therefore proof that the call arrived, was
-matched to a tool, and was refused on its merits. ⭐ **And each says something about your SEAT
+The parts to match are the `This tool accepts: … Nothing was sent to the board — no card was
+read or written.` tail and `` `title` is required and must be a non-empty string ``. **Both are
+COMPOSED HERE** — the first by the rule below, out of the tool's own declared argument set; the
+second is `board_create_card`'s — and neither is restated in the reference channel server.
+
+⛔ **The SHAPE proves nothing.** A message that names the tool and an argument it requires or
+does not declare is not this door's to own: the advertised `inputSchema` your seat loads
+carries the property list, `required` and `additionalProperties: false`, so a seat-side
+validator working from it has everything it needs to name `board_create_card` and a missing
+`title` or an undeclared key — and its complaint never left your seat. How any harness words
+such a rejection has not been measured here; a complaint that names the tool and an argument
+but carries neither sentence above does not, on that alone, show the call arrived.
+
+Either sentence is therefore proof that the call arrived, was matched to a tool, and was
+refused on its merits. ⭐ **And each says something about your SEAT
 as well as about that call: the schema was loaded when you sent it.** ⚠ It claims nothing
 about any OTHER call, earlier or later: a schema loaded for this call says nothing about whether
 it was loaded for an earlier one, what your harness does with a loaded schema over time is its
 business, and the bridge can only report the calls it saw.
 
-**It did NOT reach the bridge if the answer is a bare parse or validation complaint about your
-own input that names no tool of this door and no argument set** — most conclusively when the
-call carried no arguments at all, because an ABSENT `title` is refused by this door with the
-same named sentence a blank one gets, so a no-argument `board_create_card` that arrives is
-answered by name.
+**It did NOT reach the bridge if the answer is a complaint about your input in wording no
+door of ours composes** — the harness's `InputValidationError: could not be parsed as JSON` is
+one: neither door, the dispatcher behind them nor the reference channel server composes it.
+That is most conclusive when the call carried no arguments at all, because an ABSENT `title`
+is refused by this door with the same named sentence a blank one gets, so a no-argument
+`board_create_card` that arrives is answered in those words.
 
 ⚠ **Do not run that test backwards.** Several genuine answers of ours name no tool either —
 among them the bearer refusals (deliberately non-discriminating, per the table above), the
-loopback-only gate, the install faults and the `upstream board error`. Each of those means the
-call arrived, and none is anything your arguments can fix. The full set is whatever the doors
+loopback-only gate, the doors' own refusals of a malformed request (`` `args` must be an
+object `` among them), the install faults and the `upstream board error`. Each of those means the
+call arrived, and apart from the malformed-request refusals none is anything your arguments can
+fix. The full set is whatever the doors
 compose, and their source owns it: `AgentToolsController` and `LoopbackOnly` on the HTTP door,
 `bridge:tools-call` on the ssh door, and `BoardToolDispatcher` behind both.
 
