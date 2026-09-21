@@ -93,11 +93,19 @@ never silently no-ops.
 ⛔ **LISTED IS NOT CALLABLE: a harness may advertise a tool's NAME and hold its SCHEMA back
 until you ask for it.** Where it does, calling the tool straight off fails **inside your own
 seat** — before any argument is serialised, before the channel server is entered, and before
-this bridge is reached — and **the message it hands you is about YOUR input**. One measured
-spelling is `InputValidationError: could not be parsed as JSON` (roundtable #538, a seat on a
-Claude Code harness). **The remedy is to load the schema first and then call**, and your
-harness's own instructions own that mechanism: the harness that produced the message above
-names `ToolSearch` with the query `select:<tool name>`.
+this bridge is reached — and **the message it hands you is about YOUR input**. One spelling a Claude Code
+harness uses is `InputValidationError: could not be parsed as JSON`. **The remedy is to load the
+schema first and then call**, and your harness's own instructions own that mechanism — the one that
+produces that message names `ToolSearch` with the query `select:<tool name>`.
+
+⚠ **That same spelling also means exactly what it says — your JSON really was malformed — so do not
+read it as proof of an unloaded schema.** Measured on roundtable #538: a seat hit it four times with
+its schema **already loaded 11 hours earlier**, and the payload genuinely was invalid (`"tags":
+security,documentation,...` — unquoted bare tokens). ⛔ **What misled that seat was not the sentence
+but the EXCERPT beneath it:** the error quoted the **first 200 of 1214 bytes** while the invalid byte
+sat near **1100**, so the excerpt was structurally incapable of showing the cause it was printed to
+explain. **If the excerpt looks fine, the failure may simply be outside it — check the tail of what
+you sent, and prefer the reported offset over the quoted head.**
 
 ⭐ **The tell is that the failure does not vary with what you sent.** A call with **no
 arguments at all** fails exactly as a multi-kilobyte one does, because neither was sent — so
