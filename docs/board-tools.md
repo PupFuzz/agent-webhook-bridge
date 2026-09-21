@@ -1056,18 +1056,21 @@ such a rejection has not been measured here; a complaint that names the tool and
 but carries neither sentence above does not, on that alone, show the call arrived.
 
 Either sentence is therefore proof that the call arrived, was matched to a tool, and was
-refused on its merits. ⭐ **And each says something about your SEAT
-as well as about that call: the schema was loaded when you sent it.** ⚠ It claims nothing
-about any OTHER call, earlier or later: a schema loaded for this call says nothing about whether
-it was loaded for an earlier one, what your harness does with a loaded schema over time is its
-business, and the bridge can only report the calls it saw.
+refused on its merits. ⚠ **It claims nothing about your seat's schema** — a caller holding no
+schema at all (raw input to the ssh door, a direct HTTP POST) is answered in the same words —
+and nothing about any OTHER call, earlier or later: the bridge can only report the calls it saw.
 
 **It did NOT reach the bridge if the answer is a complaint about your input in wording no
 door of ours composes** — the harness's `InputValidationError: could not be parsed as JSON` is
 one: neither door, the dispatcher behind them nor the reference channel server composes it.
 That is most conclusive when the call carried no arguments at all, because an ABSENT `title`
 is refused by this door with the same named sentence a blank one gets, so a no-argument
-`board_create_card` that arrives is answered in those words.
+`board_create_card` that arrives is answered in those words — unless an access or install
+refusal answers it first.
+
+A call can also fail **between** your seat and the bridge — in the channel server or on its
+transport leg. Those answers are neither of the above; see
+[§ What the CALLER sees when the leg itself fails (DL-312)](#what-the-caller-sees-when-the-leg-itself-fails-dl-312).
 
 ⚠ **Do not run that test backwards.** Several genuine answers of ours name no tool either —
 among them the bearer refusals (deliberately non-discriminating, per the table above), the
