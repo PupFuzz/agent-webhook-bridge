@@ -90,6 +90,26 @@ If the tools are advertised but the channel server is only half-configured
 force-on), a call returns a **structured refusal naming the missing config** — it
 never silently no-ops.
 
+⛔ **LISTED IS NOT CALLABLE: a harness may advertise a tool's NAME and hold its SCHEMA back
+until you ask for it.** Where it does, calling the tool straight off fails **inside your own
+seat** — before any argument is serialised, before the channel server is entered, and before
+this bridge is reached — and **the message it hands you is about YOUR input**. One measured
+spelling is `InputValidationError: could not be parsed as JSON` (roundtable #538, a seat on a
+Claude Code harness). **The remedy is to load the schema first and then call**, and your
+harness's own instructions own that mechanism: the harness that produced the message above
+names `ToolSearch` with the query `select:<tool name>`.
+
+⭐ **The tell is that the failure does not vary with what you sent.** A call with **no
+arguments at all** fails exactly as a multi-kilobyte one does, because neither was sent — so
+the reading the message invites, *my payload is malformed*, is the one reading that cannot be
+right, and shrinking or simplifying it buys nothing. In the measured case it bought a ladder
+of retries, each smaller and plainer than the last, and no diagnosis.
+
+⚠ **This behaviour and that wording are the HARNESS's, not this bridge's, and nothing here
+can change either** — the bridge never saw the call, so no refusal of ours could have
+reached you. What this page can give you is the way to tell such a call apart from one the
+bridge answered: [§ Did the call reach the bridge?](#did-the-call-reach-the-bridge).
+
 ## `board_my_cards`
 
 **Arguments:**
@@ -993,6 +1013,49 @@ no write on a not-on-board refusal.
 | 422 | A caller-fixable bad request (an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
 | 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
+
+### Did the call reach the bridge?
+
+**Every row above describes an answer this door BUILT.** A call that failed in your own seat —
+a harness refusing a tool whose schema it has not loaded ([§ Discovering them](#discovering-them))
+— reached no door, so none of those rows applies to it and no wording of ours was involved.
+Telling the two apart is worth doing **before** you change anything you sent, because a message
+about your own input reads as an instruction to edit your arguments, and editing them cannot fix
+a call that was never sent.
+
+**It DID reach the bridge if the answer speaks in this door's own terms** — naming the tool and
+either the set of arguments that tool accepts or one it requires. Two sentences settle it on
+their own:
+
+```text
+board_create_card: unknown argument `body`. This tool accepts: `title`, `description`, `tags`, `idempotency_key`. Nothing was sent to the board — no card was read or written.
+board_create_card: `title` is required and must be a non-empty string
+```
+
+**Both sentences are COMPOSED HERE** — the first by the rule below, out of the tool's own
+declared argument set; the second is `board_create_card`'s. Neither is restated in the
+reference channel server, so a rejection your seat's own schema layer makes is worded by that
+layer and does not read like them. Either one is therefore proof that the call arrived, was
+matched to a tool, and was refused on its merits. ⭐ **And each says something about your SEAT
+as well as about that call: the schema was loaded when you sent it** — which retrospectively
+explains an earlier failure about your own input on the same tool. ⚠ It claims nothing about a
+LATER call: what your harness does with a loaded schema over time is its business, and the
+bridge can only report the calls it saw.
+
+**It did NOT reach the bridge if the answer is a bare parse or validation complaint about your
+own input that names no tool of this door and no argument set** — most conclusively when the
+call carried no arguments at all, because an ABSENT `title` is refused by this door with the
+same named sentence a blank one gets, so a no-argument `board_create_card` that arrives is
+answered by name.
+
+⚠ **Do not run that test backwards.** Two genuine answers of ours name no tool either: a
+**401** (the bearer — deliberately non-discriminating, per the table above) and a **503**
+`agent config error`. Both mean the call arrived and the INSTALL is at fault, and neither is
+anything your arguments can fix.
+
+⚠ **What none of this can tell you is WHY a harness held the schema back, or make its message
+say so.** That message is not ours to change and we do not claim to have fixed it; recognising
+it is what this section offers.
 
 ### An argument the tool does not declare is refused, on every tool (DL-379)
 
