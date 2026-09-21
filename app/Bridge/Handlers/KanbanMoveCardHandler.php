@@ -16,6 +16,7 @@ use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
+use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -44,7 +45,10 @@ use Throwable;
  *    check before the card is read at all — card#8375), the card kanban handed back is NOT on
  *    the mapped board, the card is PINNED against
  *    auto-movement on an outcome that is not one of the two operator-ruled overrides
- *    (DL-178, card#8289 — see the consult in handle()), an uncorroborated title-only
+ *    (DL-178, card#8289 — see the consult in handle()), the card carries the `program` tag and
+ *    is therefore a PARENT naming several legs that no one pull request may speak for
+ *    (card#9929 — {@see ProgramCardGuard}, the one refusal here that withholds the STAMP as
+ *    well as the move), an uncorroborated title-only
  *    `card#` names a card that already tracks a different PR, or the subject carried
  *    an unreadable card-shaped token naming some other card — DL-287) → alert + log + NO-OP.
  *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
@@ -283,6 +287,23 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
             $this->comments->report($payload, MappedBoardGuard::REASON);
 
+            return;
+        }
+
+        // PARENT-CARD refusal (card#9929, rt#522 ask 3): the card carries the `program` tag,
+        // so it names SEVERAL LEGS rather than one deliverable and no single pull request's
+        // outcome may speak for it. Permanent refusal — alert + log + NO write of any kind.
+        //
+        // ⛔ PLACED UPSTREAM OF EVERY STAMP CALL SITE, and that is the point rather than a
+        // preference. The three `stampCorrelationRefs` sites below are reached from the
+        // already-in-stage self-heal, the PIN refusal, and the completed move — so the pin,
+        // which is the only thing an operator can put on a parent today, leaves the stamp half
+        // of this defect wide open by design (it governs the STAGE, not the refs; see the
+        // consult's own comment below). Consulting beside the pin would inherit exactly that.
+        // Placed after the two board guards, which are the security boundary and stay first,
+        // and before the DL-270 corroboration arm, which writes a card NOTE: on a parent the
+        // accurate report is "cite a leg", not "this card already tracks another PR".
+        if (ProgramCardGuard::refuses($this->alerts, $card, 'kanban_move_card', "{$outcome} move and correlation stamp", $cardId, $repo, $outcome, ['current_stage' => $card['workflow_stage_id'] ?? null])) {
             return;
         }
 
