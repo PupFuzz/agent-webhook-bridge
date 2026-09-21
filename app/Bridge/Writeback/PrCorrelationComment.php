@@ -196,8 +196,8 @@ final class PrCorrelationComment
     public function body(): string
     {
         [$headline, $why, $remedy] = $this->explain();
+        [$lookedOn, $pointedAt] = $this->boardsLookedOn();
         $card = $this->cardId === null ? 'none' : (string) $this->cardId;
-        $stage = $this->stageId === null ? '' : " The `{$this->outcome}` outcome moves a card to workflow stage {$this->stageId}.";
         $tokens = $this->tokens === []
             ? '  - none'
             : implode("\n", array_map(self::renderToken(...), $this->tokens));
@@ -208,12 +208,12 @@ final class PrCorrelationComment
             **{$headline}**
 
             - **Event:** `{$this->outcome}` on this pull request (#{$this->prNumber})
-            - **Board looked on:** board {$this->boardId}, the board this repository is mapped to.{$stage}
+            - {$lookedOn}
             - **Tokens read** (a card token in the head branch outranks one in the title; the title and branch name are not quoted here):
             {$tokens}
             - **Cause:** `{$this->cause}`. {$why}
 
-            **Remedy**, with `kbcard` pointed at board {$this->boardId} (`kbcard stages` maps a workflow stage id to the column name `--column` takes):
+            **Remedy**, with `kbcard` pointed at {$pointedAt} (`kbcard stages` maps a workflow stage id to the column name `--column` takes):
 
             ```
             {$remedy}
@@ -221,6 +221,43 @@ final class PrCorrelationComment
 
             <sub>Posted once per pull request and outcome by agent-webhook-bridge (DL-390).</sub>
             BODY;
+    }
+
+    /**
+     * The "looked on" line and the board the remedy points `kbcard` at — the two places the body
+     * names a board outside the cause sentence, so they say the SAME thing it does.
+     *
+     * A refusal across the declared set (card#9850 / DL-404) checked every declared board, and
+     * its cause sentence names them all; naming only the mapped board here would contradict it.
+     * The per-outcome stage clause is dropped on that cause and nowhere else: a stage id is
+     * meaningful only on its own board, and this card was established on none of them, so
+     * quoting the mapped board's would name a destination this refusal never had. Every other
+     * cause keeps the single-board text to the byte.
+     *
+     * @return array{0: string, 1: string} the looked-on line (without its list marker), the remedy's board
+     */
+    private function boardsLookedOn(): array
+    {
+        if ($this->cause === MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS) {
+            $checked = $this->checkedBoards();
+
+            return [
+                "**Boards looked on:** {$checked}, the boards this repository's mapping declares, in the order they were checked.",
+                "whichever of {$checked} holds the card this pull request finishes",
+            ];
+        }
+        $stage = $this->stageId === null ? '' : " The `{$this->outcome}` outcome moves a card to workflow stage {$this->stageId}.";
+
+        return [
+            "**Board looked on:** board {$this->boardId}, the board this repository is mapped to.{$stage}",
+            "board {$this->boardId}",
+        ];
+    }
+
+    /** The declared boards, in the order they were checked — one spelling for every line that names them. */
+    private function checkedBoards(): string
+    {
+        return implode(', ', array_map(static fn (int $id): string => "board {$id}", $this->declaredBoardIds));
     }
 
     /** @return array{0: string, 1: string, 2: string} headline, cause sentence, remedy commands */
@@ -264,8 +301,7 @@ final class PrCorrelationComment
                 // and this comment is published on a PULL REQUEST — the widest surface any
                 // writeback record reaches — so naming it would put a cross-install value on a
                 // durable public page (card#8375, and the card#9850 non-goal).
-                "{$card} is not a card on any board this install writes to for this repo (checked: "
-                    .implode(', ', array_map(static fn (int $id): string => "board {$id}", $this->declaredBoardIds))
+                "{$card} is not a card on any board this install writes to for this repo (checked: {$this->checkedBoards()}"
                     .'). It does not exist on any of them, or it is on a board this install does not write to. Nothing was read or written.',
                 $byHand,
             ],

@@ -12,6 +12,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -42,7 +43,10 @@ use Tests\TestCase;
  *     — the refusal, which is the half that makes the fix safe to ship: a miss across the
  *     declared set REFUSES rather than falling back to the repo's mapped board, because a
  *     silent write to the wrong board is worse than no write (it moves *a* card, just not the
- *     cited one).
+ *     cited one). That the refusal is TERMINAL — no write however the rest of the fixture would
+ *     answer — is pinned separately, by
+ *     {@see test_a_refusal_across_the_declared_set_sends_no_write_even_where_the_mapped_board_maps_the_outcome},
+ *     on a mapping whose mapped board does map the outcome.
  *
  * ⛔⛔ CELL 3 ALSO PINS A SECURITY BOUNDARY, and it is the one a future author will be tempted
  * to "improve". The refusal names the boards it CHECKED — a measurement — and never the board
@@ -421,6 +425,67 @@ class WritebackMultiBoardTest extends TestCase
         $this->assertSame(0, WritebackBoardDivergence::query()->count(),
             'a miss across the declared set establishes "not in this set" and NOTHING about where the card is, '
             .'so it must write no divergence row — that row asserts a relationship, and this refusal measured none');
+    }
+
+    /**
+     * ⛔ THE REFUSAL IS TERMINAL — asserted on a fixture where carrying on WOULD write. The leg
+     * above cannot show that: its mapped board maps no `merged` stage, so a fallback onto the
+     * mapped board returns at `stageFor('merged') === null` and its no-PATCH assertion has no
+     * way to fail. Here the mapped board DOES map `merged`, so every stage lookup a fallback or
+     * a report-then-carry-on would make answers with a real stage id.
+     *
+     * The card is on no declared board, and the unscoped read this refusal exists to prevent is
+     * stubbed to SUCCEED, in two shapes — because the post-read {@see MappedBoardGuard::refuses}
+     * compare is a second line behind this one, and a single fixture only exercises one of them:
+     *  - `undeclared board`: the read hands back the card on the board it is really on. A
+     *    fallback is caught by the post-read compare, so what reds is the unscoped READ itself
+     *    (and the alert reason, and the divergence row a read-then-refuse would mint).
+     *  - `mapped board, moved after the lookups`: the read hands back the card on the MAPPED
+     *    board (it moved between the board-scoped lookups and the read, or the read is not the
+     *    authority the lookups are). The post-read compare now PASSES, so the only thing standing
+     *    between the author-supplied id and a write is this refusal returning — and the
+     *    no-write assertion is the one that reds.
+     */
+    #[DataProvider('whereAnUnscopedReadWouldPlaceTheCard')]
+    public function test_a_refusal_across_the_declared_set_sends_no_write_even_where_the_mapped_board_maps_the_outcome(int $readBoard): void
+    {
+        $this->writeMapping([
+            'board_id' => self::COORD_BOARD,
+            'stages' => ['opened' => 20, 'merged' => 22],
+            'boards' => [(string) self::SPRINT_BOARD => [
+                'opened' => self::SPRINT_OPENED_STAGE, 'merged' => self::SPRINT_MERGED_STAGE,
+            ]],
+        ]);
+        Http::fake($this->alertStub() + [
+            '*/tasks/search.json?q=board_id%3D'.self::COORD_BOARD.'%20id%3D*' => Http::response(['data' => []]),
+            '*/tasks/search.json?q=board_id%3D'.self::SPRINT_BOARD.'%20id%3D*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 12]]),
+            '*/tasks/7756.json' => Http::response(['data' => [
+                'id' => 7756, 'board_id' => $readBoard, 'workflow_stage_id' => 20, 'block_reason' => null, 'tags' => [],
+            ]]),
+            '*/boards/*/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 20, 'position' => 1.0], ['id' => 22, 'position' => 2.0],
+            ]]]]]),
+        ]);
+
+        $this->handleMerge(7756);
+
+        Http::assertNotSent(fn (Request $r) => ! str_starts_with($r->url(), self::ALERT_URL)
+            && in_array($r->method(), ['PATCH', 'POST', 'PUT', 'DELETE'], true));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7756.json'));
+        $alerts = $this->alerts();
+        $this->assertCount(1, $alerts, 'a permanent refusal emits exactly one live signal');
+        $this->assertSame(MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS, $alerts[0]['reason']);
+        $this->assertSame(0, WritebackBoardDivergence::query()->count());
+    }
+
+    /** @return array<string, array{int}> */
+    public static function whereAnUnscopedReadWouldPlaceTheCard(): array
+    {
+        return [
+            'undeclared board' => [self::UNDECLARED_BOARD],
+            'mapped board, moved after the lookups' => [self::COORD_BOARD],
+        ];
     }
 
     /**

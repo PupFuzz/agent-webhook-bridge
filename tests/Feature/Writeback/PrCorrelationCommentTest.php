@@ -51,6 +51,15 @@ class PrCorrelationCommentTest extends TestCase
     /** @var array<int, array<string, mixed>> the cards a board-scoped lookup finds on board 8 */
     private array $onBoard = [];
 
+    /**
+     * Cards that EXIST, but on a board this install declares nowhere: a board-scoped lookup never
+     * answers them, while an UNSCOPED search of the id does — the read card#8375 forbids, stubbed
+     * to succeed so that a leak of the true board is observable rather than impossible.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private array $elsewhere = [];
+
     /** @var array<string, list<int>> DL → card ids the by-ref lookup answers */
     private array $dlCards = [];
 
@@ -165,6 +174,38 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertStringContainsString('board 8, board 13', $body);
         $this->assertStringNotContainsString('is not a card on board 8:', $body,
             'the single-board sentence claims the card is off ONE board; this refusal checked two and must say so');
+        // The two other lines that name a board say what the Cause line says, not the mapped board alone.
+        $this->assertStringContainsString('- **Boards looked on:** board 8, board 13, ', $body);
+        $this->assertStringNotContainsString('the board this repository is mapped to', $body);
+        $this->assertStringContainsString('with `kbcard` pointed at whichever of board 8, board 13 holds the card', $body);
+        $this->assertStringNotContainsString('workflow stage 52', $body,
+            'a stage id is meaningful only on its own board, and this card was established on none of them');
+    }
+
+    /**
+     * The NEGATIVE the leg above cannot carry: there, card 123 exists nowhere in the fixture, so
+     * a comment that named the board the card is really on had no board to name. Here card 123
+     * EXISTS, on board 9002, and both unscoped reads — the card GET and an id-only search — are
+     * stubbed to hand it over. Only the board-scoped lookups of the declared set miss. Anything
+     * that enriched the comment with where the card really is would therefore put `9002` on a
+     * public pull-request page, and this reds on it.
+     */
+    public function test_a_declared_set_refusal_comment_never_names_the_board_the_card_is_really_on(): void
+    {
+        $this->declareSecondBoard(13);
+        $this->elsewhere = [123 => ['id' => 123, 'board_id' => 9002]];
+        $this->cards = new KanbanCardStub([123 => $this->card(123, board: 9002)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_id_outside_declared_boards', $body);
+        $this->assertStringContainsString('board 8, board 13', $body);
+        $this->assertStringNotContainsString('9002', $body,
+            'the comment must NEVER name the board the card is really on: it was not measured, and learning it takes '
+            .'the unscoped read of an author-supplied id card#8375 exists to prevent — on the widest surface there is');
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/123.json'));
     }
 
     public function test_merged_onto_a_card_read_back_off_another_board_posts_one_comment_naming_the_cause(): void
@@ -927,6 +968,9 @@ class PrCorrelationCommentTest extends TestCase
                         : Http::response(['data' => [], 'meta' => ['total' => 0]]);
                 }
                 $row = $this->onBoard[(int) $m[1]] ?? null;
+                if ($row === null && preg_match('/(?<![a-z_])board_id=/', urldecode($request->url())) !== 1) {
+                    $row = $this->elsewhere[(int) $m[1]] ?? null;
+                }
 
                 return Http::response(['data' => $row === null ? [] : [$row], 'meta' => ['total' => $row === null ? 0 : 1]]);
             },
