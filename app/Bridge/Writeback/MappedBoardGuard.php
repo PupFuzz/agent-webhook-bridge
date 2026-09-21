@@ -164,16 +164,29 @@ final class MappedBoardGuard
      * $disposition names what happened to the write, and only {@see refuses} passes anything
      * but the default: a divergence seen anywhere else is one no gate stopped.
      *
+     * ⚑ `mapped_board` IS THE REPO'S CONFIGURED BOARD, ALWAYS — `board_id` in `writeback.json`,
+     * read off {@see WritebackMapping::$mappedBoardId} so that a mapping narrowed onto another
+     * declared board (card#9850 / DL-404) cannot change what the key means to a reader who
+     * already keys on it. A mapping that declares `boards` adds `declared_board`: the board
+     * the card was established on and the write was judged against, which is what
+     * {@see belongs} compared. It is present on EVERY record such a mapping emits — equal to
+     * `mapped_board` when the card is on the mapped board — and absent on a single-board
+     * mapping, whose records stay byte-identical. The ledger row does not carry it: the table
+     * has no such column (see {@see BoardDivergenceLedger::observe}).
+     *
      * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}, or a
      *                                      raw search row — a card the caller has in hand either way
-     * @return array{card_board: mixed, mapped_board: int}
+     * @return array{card_board: mixed, mapped_board: int, declared_board?: int}
      */
     public static function boardContext(
         array $card,
         WritebackMapping $mapping,
         string $disposition = BoardDivergenceLedger::DISPOSITION_RECORDED,
     ): array {
-        $context = ['card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId];
+        $context = ['card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->mappedBoardId];
+        if ($mapping->boards !== null) {
+            $context['declared_board'] = $mapping->boardId;
+        }
 
         if (! self::belongs($card, $mapping)) {
             BoardDivergenceLedger::observe($context, $card, $disposition);
@@ -286,8 +299,9 @@ final class MappedBoardGuard
      * is a LOOP where this held a scalar — {@see WritebackMapping::perDeclaredBoard()}, whose
      * first element is the mapped board and whose remainder is the operator's optional
      * `boards` list — and $mapping is NARROWED IN PLACE onto whichever declared board the card
-     * was established on, so the caller's stage map, board-order read and post-read compare
-     * all speak about the board actually written to. A single-board mapping yields one
+     * was established on, so the caller's stage map, `started` promote-from / unpark sets,
+     * board-order read and post-read compare all speak about the board actually written to
+     * (records still name the repo's configured board as `mapped_board` — see boardContext()). A single-board mapping yields one
      * candidate, the same object, and every request this makes is the one it made before.
      *
      * ⛔ WHY IT IS A DECLARED SET AND NOT "ASK THE CARD". `card#NNNN` is parsed out of

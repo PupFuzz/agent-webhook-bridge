@@ -12,6 +12,7 @@ use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -748,6 +749,45 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertCount(1, $messages);
         $this->assertStringContainsString('is ORPHANED', $messages[0]);
         $this->assertStringNotContainsString('SPELLING SPLIT', $messages[0]);
+    }
+
+    /**
+     * card#9850 / DL-404 (r1): the DL-160 both-halves rule holds PER DECLARED BOARD. An added
+     * board's `started` move promotes only from that board's OWN set, so an added board with
+     * exactly one half is inert exactly as the mapped board would be — and is named by its own
+     * `boards.<id>` keys. The mapped board carries both halves, so its own line stays silent:
+     * the finding is about board 13, and only board 13.
+     *
+     * @param  array<string, mixed>  $added
+     */
+    #[DataProvider('addedBoardHalves')]
+    public function test_the_dl160_both_halves_rule_holds_on_each_added_declared_board(array $added, string $expected): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => [
+            'board_id' => self::BOARD,
+            'stages' => ['started' => 51, 'merged' => 52],
+            'started_from_stages' => [50],
+            'boards' => ['13' => $added],
+        ]]]));
+
+        $warnings = $this->warnings($this->findings(WritebackConfig::load($this->dir)->mappingFor(self::REPO)));
+
+        $this->assertSame([$expected], array_column($warnings, 'message'));
+    }
+
+    /** @return array<string, array{0: array<string, mixed>, 1: string}> */
+    public static function addedBoardHalves(): array
+    {
+        return [
+            'started without a promote-from set' => [
+                ['started' => 95, 'merged' => 97],
+                'writeback: mapping for owner/repo sets boards.13.started but not boards.13.started_from_stages — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until boards.13.started_from_stages is set',
+            ],
+            'a promote-from set without started' => [
+                ['merged' => 97, 'started_from_stages' => [94]],
+                'writeback: mapping for owner/repo sets boards.13.started_from_stages but not boards.13.started — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until boards.13.started is set',
+            ],
+        ];
     }
 
     private function mapping(): WritebackMapping

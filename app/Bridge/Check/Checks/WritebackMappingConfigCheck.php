@@ -124,13 +124,21 @@ final class WritebackMappingConfigCheck implements Check
             // BOTH `stages.started` AND `started_from_stages`. With exactly one set the
             // move is silently INERT (the `stages.started`-only half is refused for lack
             // of a promote-from set; the `started_from_stages`-only half has no `started`
-            // outcome to fire).
-            $hasStartedStage = $mapping->stageFor('started') !== null;
-            $hasStartedFrom = $mapping->startedFromStages !== null && $mapping->startedFromStages !== [];
-            if ($hasStartedStage !== $hasStartedFrom) {
-                $present = $hasStartedStage ? 'stages.started' : 'started_from_stages';
-                $missing = $hasStartedStage ? 'started_from_stages' : 'stages.started';
-                yield Finding::warn("writeback: mapping for {$repo} sets {$present} but not {$missing} — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until {$missing} is set");
+            // outcome to fire). Asked of EVERY declared board (card#9850 / DL-404): an added
+            // board's `started` move promotes only from that board's OWN set, so it is inert
+            // on exactly the same terms, and is named by its own `boards.<id>` keys. The
+            // mapped board is the first element and keeps its keys and message unchanged.
+            foreach ($mapping->perDeclaredBoard() as $declared) {
+                $keys = $declared->isOnAdditionalDeclaredBoard()
+                    ? ['stage' => "boards.{$declared->boardId}.started", 'from' => "boards.{$declared->boardId}.started_from_stages"]
+                    : ['stage' => 'stages.started', 'from' => 'started_from_stages'];
+                $hasStartedStage = $declared->stageFor('started') !== null;
+                $hasStartedFrom = $declared->startedFromStages !== null && $declared->startedFromStages !== [];
+                if ($hasStartedStage !== $hasStartedFrom) {
+                    $present = $hasStartedStage ? $keys['stage'] : $keys['from'];
+                    $missing = $hasStartedStage ? $keys['from'] : $keys['stage'];
+                    yield Finding::warn("writeback: mapping for {$repo} sets {$present} but not {$missing} — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until {$missing} is set");
+                }
             }
             // DL-195: Won't-Do-revival needs BOTH stages.opened (the revive-to target)
             // AND stages.closed_unmerged (the abandon stage the revival is scoped from).

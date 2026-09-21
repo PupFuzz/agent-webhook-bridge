@@ -245,8 +245,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // board: the repo mapping supplies the STAGE SEMANTICS and the CARD supplies the
         // BOARD. The guard asks each board the mapping declares, in order, with the same
         // board-scoped lookup, and NARROWS $mapping IN PLACE onto the one the card was
-        // established on — so `$mapping->stageFor()`, `$mapping->boardId` and the board-order
-        // read below all speak about the board actually written to. On a mapping with one
+        // established on — so `$mapping->stageFor()`, `$mapping->boardId`, the `started`
+        // promote-from / unpark sets and the board-order read below all speak about the board
+        // actually written to. On a mapping with one
         // declared board (every mapping written before that key existed) it narrows onto the
         // same object and issues the same single request.
         $refusal = '';

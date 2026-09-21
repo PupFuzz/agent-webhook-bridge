@@ -5,6 +5,7 @@ namespace Tests\Feature\Writeback;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class WritebackConfigTest extends TestCase
@@ -1270,5 +1271,63 @@ class WritebackConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->expectExceptionMessage('boards must be a non-empty object');
         WritebackConfig::load($this->dir);
+    }
+
+    /**
+     * r1 of card#9850: each declared board's `started` source sets are its OWN, narrowed by
+     * `perDeclaredBoard()` exactly like its stage map. A board that names none gets null —
+     * the DL-160 fail-closed default — never the mapped board's sets, whose ids are stages of
+     * the mapped board and of no other (stage ids are a global auto-increment). And every
+     * narrowed copy still knows the repo's configured board, which is what records key
+     * `mapped_board` on.
+     */
+    public function test_each_declared_board_carries_its_own_started_sets_and_never_inherits_the_mapped_boards(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'owner/coord' => [
+                'board_id' => 2,
+                'stages' => ['started' => 31],
+                'started_from_stages' => [30],
+                'unpark_from_stages' => [29],
+                'boards' => [
+                    '13' => ['started' => 95, 'started_from_stages' => [94], 'unpark_from_stages' => [93]],
+                    '3' => ['merged' => 22],
+                ],
+            ],
+        ]]));
+
+        $narrowed = WritebackConfig::load($this->dir)->mappingFor('owner/coord')->perDeclaredBoard();
+
+        $this->assertSame([[30], [94], null], array_map(fn ($m) => $m->startedFromStages, $narrowed));
+        $this->assertSame([[29], [93], null], array_map(fn ($m) => $m->unparkFromStages, $narrowed));
+        $this->assertSame([2, 2, 2], array_map(fn ($m) => $m->mappedBoardId, $narrowed));
+        $this->assertSame([2, 13, 3], array_map(fn ($m) => $m->boardId, $narrowed));
+    }
+
+    /**
+     * A declared board's sets fail closed on exactly the rules the top-level keys do — one
+     * primitive parses both — and an entry carrying sets but no outcome is still an entry
+     * with no stage map.
+     */
+    #[DataProvider('badDeclaredBoardSets')]
+    public function test_a_declared_boards_started_sets_fail_closed_on_the_top_level_rules(string $entry, string $message): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":'.$entry.'}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage($message);
+        WritebackConfig::load($this->dir);
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public static function badDeclaredBoardSets(): array
+    {
+        return [
+            'not a list' => ['{"started":95,"started_from_stages":{"a":94}}', 'mapping for owner/repo boards board 13 started_from_stages must be a list of workflow_stage_ids'],
+            'empty' => ['{"started":95,"unpark_from_stages":[]}', 'mapping for owner/repo boards board 13 unpark_from_stages must be non-empty (an empty list silently disables auto-unpark; omit the key to disable instead)'],
+            'non-numeric' => ['{"started":95,"started_from_stages":["backlog"]}', 'mapping for owner/repo boards board 13 started_from_stages must contain only numeric workflow_stage_ids'],
+            'overlap' => ['{"started":95,"started_from_stages":[94],"unpark_from_stages":[94]}', 'mapping for owner/repo boards board 13 stage id(s) 94 appear in BOTH started_from_stages and unpark_from_stages'],
+            'sets but no outcome' => ['{"started_from_stages":[94]}', 'mapping for owner/repo boards board 13 needs a non-empty stages object'],
+        ];
     }
 }

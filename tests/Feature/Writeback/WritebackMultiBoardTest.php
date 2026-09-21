@@ -73,6 +73,18 @@ class WritebackMultiBoardTest extends TestCase
     /** That board's OWN `opened` stage id — where the card sits before the merge. */
     private const SPRINT_OPENED_STAGE = 96;
 
+    /** That board's OWN `started` (In Progress) stage id. */
+    private const SPRINT_STARTED_STAGE = 95;
+
+    /** That board's OWN backlog stage — the stage a `started` move may promote a card FROM. */
+    private const SPRINT_BACKLOG_STAGE = 94;
+
+    /** That board's OWN parked stage — the stage a `started` move may UNPARK a pinned card from. */
+    private const SPRINT_PARKED_STAGE = 93;
+
+    /** The MAPPED board's own backlog stage: a promote-from id that means nothing on board 13. */
+    private const COORD_BACKLOG_STAGE = 30;
+
     /** The card the branch cites. It lives on {@see SPRINT_BOARD}. */
     private const CITED_CARD = 9451;
 
@@ -145,9 +157,14 @@ class WritebackMultiBoardTest extends TestCase
 
     private function handleMerge(int $cardId = self::CITED_CARD): void
     {
+        $this->handleOutcome('merged', $cardId);
+    }
+
+    private function handleOutcome(string $outcome, int $cardId = self::CITED_CARD): void
+    {
         (new KanbanMoveCardHandler)->handle(
             ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
-                'card_id' => $cardId, 'repo' => 'owner/coord-repo', 'outcome' => 'merged',
+                'card_id' => $cardId, 'repo' => 'owner/coord-repo', 'outcome' => $outcome,
             ]),
             AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
         );
@@ -542,5 +559,153 @@ class WritebackMultiBoardTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && $r->data() === ['workflow_stage_id' => self::SPRINT_MERGED_STAGE]);
         $this->assertSame([], $this->alerts(), 'a board that could not be asked is not a refusal when another board answered');
+    }
+
+    // ------------------------------------------------------------------------------------
+    // CELL 4 — the `started` move: a declared board promotes from ITS OWN sets (r1 MAJOR).
+    // ------------------------------------------------------------------------------------
+
+    /**
+     * The cited card sits on board 13 in board 13's backlog stage, and board 13 names that
+     * stage in ITS OWN `started_from_stages`, so a branch-create `started` moves it to board
+     * 13's own In Progress id. The mapped board's promote-from set (30) is a board-2 stage id;
+     * stage ids are a global auto-increment, so no board-13 card is ever in it — which is why
+     * narrowing the stage map alone left `boards.<id>.started` loadable and permanently inert.
+     */
+    public function test_a_started_move_onto_a_declared_board_promotes_from_that_boards_own_set(): void
+    {
+        $this->writeMapping([
+            'board_id' => self::COORD_BOARD,
+            'stages' => ['started' => 31],
+            'started_from_stages' => [self::COORD_BACKLOG_STAGE],
+            'boards' => [(string) self::SPRINT_BOARD => [
+                'started' => self::SPRINT_STARTED_STAGE,
+                'opened' => self::SPRINT_OPENED_STAGE,
+                'started_from_stages' => [self::SPRINT_BACKLOG_STAGE],
+            ]],
+        ]);
+        $this->fakeSprintCardAt(self::SPRINT_BACKLOG_STAGE);
+
+        $this->handleOutcome('started');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/'.self::CITED_CARD.'.json')
+            && $r->data() === ['workflow_stage_id' => self::SPRINT_STARTED_STAGE]);
+        $this->assertSame([self::COORD_BOARD, self::SPRINT_BOARD], $this->scopedLookupBoards());
+    }
+
+    /**
+     * The same move under a PINNED card in board 13's own `unpark_from_stages`: the DL-194
+     * override applies on the board the card is on, from that board's own set, and alerts.
+     */
+    public function test_an_unpark_stage_on_a_declared_board_promotes_a_pinned_card_from_that_boards_own_set(): void
+    {
+        $this->writeMapping([
+            'board_id' => self::COORD_BOARD,
+            'stages' => ['started' => 31],
+            'started_from_stages' => [self::COORD_BACKLOG_STAGE],
+            'boards' => [(string) self::SPRINT_BOARD => [
+                'started' => self::SPRINT_STARTED_STAGE,
+                'started_from_stages' => [self::SPRINT_BACKLOG_STAGE],
+                'unpark_from_stages' => [self::SPRINT_PARKED_STAGE],
+            ]],
+        ]);
+        $this->fakeSprintCardAt(self::SPRINT_PARKED_STAGE, blockReason: 'waiting on the vendor');
+
+        $this->handleOutcome('started');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => self::SPRINT_STARTED_STAGE]);
+        $this->assertSame(['auto_unparked'], array_column($this->alerts(), 'reason'),
+            'the override of a human hold is compensated by the unpark alert on this board exactly as on the mapped one');
+    }
+
+    /**
+     * ⛔ THE CARRY-FORWARD ITSELF, pinned from the other side. The operator's only workaround
+     * before per-board sets existed was to put board-13 ids into the TOP-LEVEL list — and that
+     * list is the mapped board's, which `bridge:check` validates against board 2. A declared
+     * board that names no promote-from set of its own must therefore refuse a `started` move
+     * (the DL-160 fail-closed default), never borrow the mapped board's set, however the ids
+     * in it happen to line up.
+     *
+     * @param  array<string, list<int>>  $topLevel  the mapped board's set that must not leak
+     */
+    #[DataProvider('mappedBoardSets')]
+    public function test_the_mapped_boards_sets_never_authorize_a_started_move_on_another_board(array $topLevel, ?string $blockReason): void
+    {
+        Log::spy();
+        $this->writeMapping([
+            'board_id' => self::COORD_BOARD,
+            'stages' => ['started' => 31],
+            ...$topLevel,
+            'boards' => [(string) self::SPRINT_BOARD => ['started' => self::SPRINT_STARTED_STAGE]],
+        ]);
+        $this->fakeSprintCardAt(self::SPRINT_BACKLOG_STAGE, $blockReason);
+
+        $this->handleOutcome('started');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH'
+            && array_key_exists('workflow_stage_id', $r->data()));
+        $this->assertSame([self::COORD_BOARD, self::SPRINT_BOARD], $this->scopedLookupBoards(),
+            'WITNESS: the card was established on board 13, so the no-move is the promote-from decision and not an earlier refusal');
+    }
+
+    /** @return array<string, array{0: array<string, list<int>>, 1: ?string}> */
+    public static function mappedBoardSets(): array
+    {
+        return [
+            'started_from_stages' => [['started_from_stages' => [self::COORD_BACKLOG_STAGE, self::SPRINT_BACKLOG_STAGE]], null],
+            'unpark_from_stages (pinned card)' => [['started_from_stages' => [self::COORD_BACKLOG_STAGE], 'unpark_from_stages' => [self::SPRINT_BACKLOG_STAGE]], 'waiting on the vendor'],
+        ];
+    }
+
+    /**
+     * minor 1 (r1): narrowing must not change what `mapped_board` MEANS. It is the repo's
+     * configured board — the value `writeback.json` says and ledger readers key on — and the
+     * board the write resolved onto is a SEPARATE key, `declared_board`.
+     */
+    public function test_a_move_on_a_declared_board_logs_the_mapped_board_and_the_declared_board_apart(): void
+    {
+        Log::spy();
+        $this->writeMultiBoardMapping();
+        $this->fakeSprintCardAt(self::SPRINT_OPENED_STAGE);
+
+        $this->handleMerge();
+
+        $moved = null;
+        Log::shouldHaveReceived('info')->withArgs(function (string $msg, array $ctx) use (&$moved): bool {
+            if ($msg !== 'kanban_move_card: moved') {
+                return false;
+            }
+            $moved = $ctx;
+
+            return true;
+        })->once();
+        $this->assertSame(
+            ['card_board' => self::SPRINT_BOARD, 'mapped_board' => self::COORD_BOARD, 'declared_board' => self::SPRINT_BOARD],
+            array_intersect_key($moved ?? [], array_flip(['card_board', 'mapped_board', 'declared_board'])),
+            '`mapped_board` stays the repo\'s configured board; the board the write resolved onto is `declared_board`',
+        );
+    }
+
+    /** The cited card on board 13, at $stage, established there by the board-scoped lookup. */
+    private function fakeSprintCardAt(int $stage, ?string $blockReason = null): void
+    {
+        Http::fake($this->alertStub() + [
+            '*/tasks/search.json?q=board_id%3D'.self::COORD_BOARD.'%20id%3D'.self::CITED_CARD.'*' => Http::response(['data' => []]),
+            '*/tasks/search.json?q=board_id%3D'.self::SPRINT_BOARD.'%20id%3D'.self::CITED_CARD.'*' => Http::response(['data' => [
+                ['id' => self::CITED_CARD, 'board_id' => self::SPRINT_BOARD],
+            ]]),
+            '*/tasks/'.self::CITED_CARD.'.json' => Http::response(['data' => [
+                'id' => self::CITED_CARD, 'board_id' => self::SPRINT_BOARD,
+                'workflow_stage_id' => $stage, 'block_reason' => $blockReason, 'tags' => [],
+            ]]),
+            '*/boards/'.self::SPRINT_BOARD.'/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [
+                    ['id' => self::SPRINT_OPENED_STAGE, 'position' => 3.0],
+                    ['id' => self::SPRINT_MERGED_STAGE, 'position' => 4.0],
+                ]],
+            ]]]),
+        ]);
     }
 }
