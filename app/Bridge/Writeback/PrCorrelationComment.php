@@ -97,8 +97,15 @@ final class PrCorrelationComment
         private readonly string $cause,
         private readonly ?int $cardId,
         private readonly int $boardId,
-        /** @var list<int> every board this repo's mapping declares, mapped board first (card#9850) */
+        /**
+         * @var list<int> every board this repo's mapping declares, mapped board first (card#9850).
+         *                Read only for the declared-set refusal, which is decided BEFORE any narrowing;
+         *                on a mapping narrowed onto an additional board (a later cause) it is not that
+         *                list — {@see WritebackMapping::perDeclaredBoard()} carries `boards` forward
+         */
         private readonly array $declaredBoardIds,
+        /** $boardId is an ADDITIONAL declared board the card resolved on, not the repo's mapped board (card#9850) */
+        private readonly bool $onAdditionalDeclaredBoard,
         private readonly ?int $stageId,
         private readonly array $tokens,
         private readonly array $droppedRefs,
@@ -150,6 +157,10 @@ final class PrCorrelationComment
      * {@see CAUSES}, or no evidence (a payload built by anything but the classifier's merge/close arms,
      * which is what keeps `bridge:reconcile` and every other caller of the move handler silent here).
      *
+     * $mapping is the one the refusal was decided against — for a cause decided after the card
+     * resolved on a declared board, the mapping NARROWED onto that board, so the board and stage
+     * id this comment names are the ones the card's own board uses (card#9850 / DL-404).
+     *
      * @param  array<string, mixed>  $payload
      * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped
      */
@@ -178,6 +189,7 @@ final class PrCorrelationComment
             is_int($cardId) || (is_string($cardId) && ctype_digit($cardId)) ? (int) $cardId : null,
             $mapping->boardId,
             $mapping->declaredBoardIds(),
+            $mapping->isOnAdditionalDeclaredBoard(),
             $mapping->stageFor($outcome),
             self::renderableTokens($evidence['tokens'] ?? null),
             is_array($dropped) ? array_values(array_intersect(self::REF_KEYS, $dropped)) : [],
@@ -231,8 +243,11 @@ final class PrCorrelationComment
      * its cause sentence names them all; naming only the mapped board here would contradict it.
      * The per-outcome stage clause is dropped on that cause and nowhere else: a stage id is
      * meaningful only on its own board, and this card was established on none of them, so
-     * quoting the mapped board's would name a destination this refusal never had. Every other
-     * cause keeps the single-board text to the byte.
+     * quoting the mapped board's would name a destination this refusal never had.
+     *
+     * A cause decided after the card resolved on an ADDITIONAL declared board names that board
+     * and its own stage, and does not call it "the board this repository is mapped to" — it is
+     * not. Every other cause keeps the single-board text to the byte.
      *
      * @return array{0: string, 1: string} the looked-on line (without its list marker), the remedy's board
      */
@@ -247,9 +262,10 @@ final class PrCorrelationComment
             ];
         }
         $stage = $this->stageId === null ? '' : " The `{$this->outcome}` outcome moves a card to workflow stage {$this->stageId}.";
+        $which = $this->onAdditionalDeclaredBoard ? 'the declared board this card was found on' : 'the board this repository is mapped to';
 
         return [
-            "**Board looked on:** board {$this->boardId}, the board this repository is mapped to.{$stage}",
+            "**Board looked on:** board {$this->boardId}, {$which}.{$stage}",
             "board {$this->boardId}",
         ];
     }

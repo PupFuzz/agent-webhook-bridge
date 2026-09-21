@@ -64,11 +64,46 @@ final class PrCorrelationCommenter
     public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver) {}
 
     /**
+     * Report a cause decided against $mapping — the mapping the caller actually wrote (or refused)
+     * against, NOT one re-derived from the repo here.
+     *
+     * ⛔ THE MAPPING IS THE CALLER'S TO PASS (card#9850 / DL-404). The move handler NARROWS its
+     * mapping onto the declared board the card was established on, so every cause it decides
+     * after that point is about THAT board and its stage map. Re-reading the repo's mapping here
+     * would hand the comment the repo's mapped board and that board's stage id instead — a wrong
+     * board and a stage id meaningless on the card's own board, on a public pull-request page.
+     * Before the narrowing the caller's mapping IS the repo mapping, so a cause decided there
+     * renders exactly as it always did.
+     *
      * @param  array<string, mixed>  $payload  the target payload, carrying the classifier's evidence
      * @param  string  $cause  a refusal reason or a classifier cause; anything {@see PrCorrelationComment::isCause()} rejects posts nothing
      * @param  array<string, mixed>  $refusalContext
      */
-    public function report(array $payload, string $cause, array $refusalContext = []): void
+    public function report(array $payload, string $cause, WritebackMapping $mapping, array $refusalContext = []): void
+    {
+        if (! PrCorrelationComment::isCause($cause) || ! isset($payload[PrCorrelationComment::EVIDENCE_KEY])) {
+            return;
+        }
+
+        try {
+            $comment = PrCorrelationComment::fromPayload($payload, $cause, $mapping, $refusalContext);
+            if ($comment === null) {
+                return;
+            }
+            $this->post($comment, $cause);
+        } catch (Throwable $e) {
+            $this->unexpected($payload, $cause, $e);
+        }
+    }
+
+    /**
+     * Report a cause decided before any card was resolved — the classifier's, where no board has
+     * been chosen and the repo's own mapping is the only one there is. Loads it, and posts
+     * nothing for a repo this install does not map.
+     *
+     * @param  array<string, mixed>  $payload  the target payload, carrying the classifier's evidence
+     */
+    public function reportForRepo(array $payload, string $cause): void
     {
         if (! PrCorrelationComment::isCause($cause) || ! isset($payload[PrCorrelationComment::EVIDENCE_KEY])) {
             return;
@@ -77,16 +112,22 @@ final class PrCorrelationCommenter
         try {
             $repo = $payload['repo'] ?? null;
             $mapping = is_string($repo) ? WritebackConfig::loadDefault()?->mappingFor($repo) : null;
-            $comment = $mapping === null ? null : PrCorrelationComment::fromPayload($payload, $cause, $mapping, $refusalContext);
-            if ($comment === null) {
-                return;
-            }
-            $this->post($comment, $cause);
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
-                'repo' => $payload['repo'] ?? null, 'cause' => $cause, 'reason' => 'unexpected', 'error' => RedactedErrorText::of($e),
-            ]);
+            $this->unexpected($payload, $cause, $e);
+
+            return;
         }
+        if ($mapping !== null) {
+            $this->report($payload, $cause, $mapping);
+        }
+    }
+
+    /** @param  array<string, mixed>  $payload */
+    private function unexpected(array $payload, string $cause, Throwable $e): void
+    {
+        Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
+            'repo' => $payload['repo'] ?? null, 'cause' => $cause, 'reason' => 'unexpected', 'error' => RedactedErrorText::of($e),
+        ]);
     }
 
     private function post(PrCorrelationComment $comment, string $cause): void

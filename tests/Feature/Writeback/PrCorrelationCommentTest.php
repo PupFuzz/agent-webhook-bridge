@@ -68,6 +68,9 @@ class PrCorrelationCommentTest extends TestCase
     /** Whether the mapped board itself reads back — the guard's control between a foreign id and an install fault. */
     private bool $boardReadsBack = true;
 
+    /** @var array<string, mixed> further peer stubs a leg needs, e.g. a second declared board's stage order */
+    private array $extraStubs = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -206,6 +209,90 @@ class PrCorrelationCommentTest extends TestCase
             'the comment must NEVER name the board the card is really on: it was not measured, and learning it takes '
             .'the unscoped read of an author-supplied id card#8375 exists to prevent — on the widest surface there is');
         Http::assertNotSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/123.json'));
+    }
+
+    /**
+     * ⛔ A CAUSE DECIDED AFTER THE CARD RESOLVED ON ANOTHER DECLARED BOARD NAMES THAT BOARD
+     * (card#9850 / DL-404). The move handler narrows its mapping onto the board the card was
+     * established on — board 13 here — and every later refusal is about THAT board: its stage
+     * map, its card. A comment rebuilt from the repo's un-narrowed mapping instead names board 8
+     * and board 8's stage id on a public pull-request page, for a card board 8 does not hold.
+     * One leg per cause reachable after the narrowing; the causes decided before it
+     * (`card_token_near_miss`, the declared-set refusal) have no narrowed board to name.
+     */
+    public function test_an_uncorroborated_title_token_on_a_card_resolved_on_another_declared_board_names_that_board(): void
+    {
+        $this->declareSecondBoard(13);
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 13]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5, board: 13, stage: 96, pr: 900)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: a thing (closes card#5)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_token_uncorroborated', $body);
+        $this->assertStringContainsString('- **Board looked on:** board 13, the declared board this card was found on. The `merged` outcome moves a card to workflow stage 97.', $body);
+        $this->assertStringContainsString('with `kbcard` pointed at board 13 (', $body);
+        $this->assertStringNotContainsString('board 8', $body, 'the card is on board 13; board 8 is only where the lookup started');
+        $this->assertStringNotContainsString('workflow stage 52', $body, 'board 8\'s stage id means nothing on board 13');
+        $this->assertStringNotContainsString('the board this repository is mapped to', $body);
+    }
+
+    public function test_a_card_read_back_off_the_declared_board_it_resolved_on_is_compared_against_that_board(): void
+    {
+        $this->declareSecondBoard(13);
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 13]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5, board: 9)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_not_on_mapped_board', $body);
+        $this->assertStringContainsString('card#5 is on a different board than board 13, so it was not moved.', $body);
+        $this->assertStringContainsString('workflow stage 97', $body);
+        $this->assertStringNotContainsString('board 8', $body);
+        $this->assertStringNotContainsString('workflow stage 52', $body);
+        $this->assertStringNotContainsString('board 9', $body);   // the board the row came back on is never disclosed
+    }
+
+    public function test_an_unstamped_ref_on_a_close_of_a_card_resolved_on_another_declared_board_names_that_boards_stage(): void
+    {
+        $this->declareSecondBoard(13, ['merged' => 97, 'closed_unmerged' => 95]);
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 13]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5, board: 13, stage: 96, pr: 739)]);
+        $this->extraStubs = PreloadStub::stub(13, [95 => 1, 96 => 2, 97 => 3]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
+        $this->assertStringContainsString('this close may have moved card#5 to workflow stage 95 ', $body,
+            'the stage the close really moved the card to is board 13\'s, and the remedy that puts it back depends on it');
+        $this->assertStringContainsString('- **Board looked on:** board 13, ', $body);
+        $this->assertStringNotContainsString('workflow stage 49', $body);
+        $this->assertStringNotContainsString('board 8', $body);
+        $this->assertSame([['workflow_stage_id' => 95]], array_slice($this->cards->patchesTo(5), 0, 1));   // control: the decline landed on board 13's stage
+    }
+
+    /**
+     * The mapped board is a declared board like any other, and a card resolved on IT keeps the
+     * single-board text: it IS the board this repository is mapped to.
+     */
+    public function test_a_card_resolved_on_the_mapped_board_of_a_multi_board_mapping_keeps_the_mapped_board_text(): void
+    {
+        $this->declareSecondBoard(13);
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 900)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: a thing (closes card#5)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_token_uncorroborated', $body);
+        $this->assertStringContainsString('- **Board looked on:** board 8, the board this repository is mapped to. The `merged` outcome moves a card to workflow stage 52.', $body);
+        $this->assertStringNotContainsString('board 13', $body);
     }
 
     public function test_merged_onto_a_card_read_back_off_another_board_posts_one_comment_naming_the_cause(): void
@@ -935,14 +1022,15 @@ class PrCorrelationCommentTest extends TestCase
      * The mapped board and its stage map are untouched — `boards` is additive — so every other
      * leg in this class keeps the fixture it was written against.
      */
-    private function declareSecondBoard(int $boardId): void
+    /** @param  array<string, int>  $stages  that board's OWN stage map */
+    private function declareSecondBoard(int $boardId, array $stages = ['merged' => 97]): void
     {
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
             'mappings' => [self::REPO => [
                 'board_id' => 8,
                 'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
-                'boards' => [(string) $boardId => ['merged' => 97]],
+                'boards' => [(string) $boardId => $stages],
             ]],
         ]));
     }
@@ -968,13 +1056,19 @@ class PrCorrelationCommentTest extends TestCase
                         : Http::response(['data' => [], 'meta' => ['total' => 0]]);
                 }
                 $row = $this->onBoard[(int) $m[1]] ?? null;
-                if ($row === null && preg_match('/(?<![a-z_])board_id=/', urldecode($request->url())) !== 1) {
+                $scoped = preg_match('/(?<![a-z_])board_id=(\d+)/', urldecode($request->url()), $b) === 1;
+                if ($scoped && $row !== null && ($row['board_id'] ?? null) !== (int) $b[1]) {
+                    // A board-scoped lookup answers only the rows on the board it names, so a card
+                    // on another declared board is found by THAT board's lookup and no other.
+                    $row = null;
+                }
+                if ($row === null && ! $scoped) {
                     $row = $this->elsewhere[(int) $m[1]] ?? null;
                 }
 
                 return Http::response(['data' => $row === null ? [] : [$row], 'meta' => ['total' => $row === null ? 0 : 1]]);
             },
             '*/tasks/*/comments.json' => Http::response(['data' => ['id' => 1]]),
-        ] + $cards->stub() + PreloadStub::stub(8, [49 => 1, 50 => 2, 52 => 3, 53 => 4]));
+        ] + $cards->stub() + PreloadStub::stub(8, [49 => 1, 50 => 2, 52 => 3, 53 => 4]) + $this->extraStubs);
     }
 }

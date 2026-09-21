@@ -228,6 +228,20 @@ final class WritebackMapping
     }
 
     /**
+     * Is this mapping narrowed onto one of the ADDITIONAL declared boards — a board `boards`
+     * lists — rather than on the repo's mapped board (card#9850 / DL-404)?
+     *
+     * Decidable from the mapping alone because {@see perDeclaredBoard()} carries `boards` forward
+     * into every narrowed copy, and the config loader refuses a `boards` entry that re-declares
+     * `board_id`: so `boardId` is a key of `boards` exactly when this is such a copy. False on
+     * every un-narrowed mapping, and on the mapped board's own entry of the narrowed list.
+     */
+    public function isOnAdditionalDeclaredBoard(): bool
+    {
+        return isset($this->boards[$this->boardId]);
+    }
+
+    /**
      * Does ANY declared board map this outcome to a stage?
      *
      * Asked BEFORE the card-move path builds a client or issues a request, so a repo whose

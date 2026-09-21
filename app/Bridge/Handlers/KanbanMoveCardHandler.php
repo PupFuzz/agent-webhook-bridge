@@ -220,7 +220,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 ['card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
                 $repo, $outcome, $cardId, 'card_token_near_miss',
             );
-            $this->comments->report($payload, 'card_token_near_miss');
+            $this->comments->report($payload, 'card_token_near_miss', $mapping);
 
             return;
         }
@@ -253,7 +253,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome, $refusal)) {
             // Only the foreign-id verdict is the PR's to hear about; the commenter drops the
             // install-fault reasons this guard can also refuse under.
-            $this->comments->report($payload, $refusal);
+            $this->comments->report($payload, $refusal, $mapping);
 
             return;
         }
@@ -325,7 +325,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // request earlier, and it is the only arm that records the (card board, mapped
         // board) divergence. Its refused set on this path is expected to be EMPTY.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
-            $this->comments->report($payload, MappedBoardGuard::REASON);
+            $this->comments->report($payload, MappedBoardGuard::REASON, $mapping);
 
             return;
         }
@@ -381,7 +381,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'card_token_uncorroborated');
+            $this->comments->report($payload, 'card_token_uncorroborated', $mapping);
 
             return;
         }
@@ -697,7 +697,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             );
             $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
             $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $mapping, $cardId, $client, $repo, $outcome);
-            $this->comments->report($payload, 'correlation_ref_not_stamped', ['dropped' => array_keys($dropped)]);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, ['dropped' => array_keys($dropped)]);
         }
 
         if ($refs === []) {
