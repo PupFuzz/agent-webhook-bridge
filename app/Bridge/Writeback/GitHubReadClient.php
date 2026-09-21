@@ -375,6 +375,59 @@ final class GitHubReadClient
     }
 
     /**
+     * The repo's recently-MERGED pull requests, most recently updated first — the evidence
+     * half of the multi-board exposure audit (card#9850 / DL-404): which cards does this
+     * repo's own merged work actually cite?
+     *
+     * ⚑ A SAMPLE, AND IT SAYS SO. GitHub has no "list merged" filter, so this asks for closed
+     * pull requests sorted by update time and keeps the ones carrying a `merged_at` — ONE
+     * page, $limit rows, never paginated. It is therefore a WINDOW on the repo's history and
+     * never its census: the caller must state the window, and MUST NOT read an empty result
+     * as "this repo cites no cards". Sorted by `updated` rather than `created` because a
+     * stale-but-recently-touched PR is more likely to reflect the citation grammar in force
+     * today than an old one that has not moved.
+     *
+     * ⛔ THE UNREADABLE-200 CASE IS NOT SILENTLY EMPTY. A body this projection cannot read is
+     * reported the way every other read here reports one and yields no rows — which is why
+     * the caller treats "no rows" as UNMEASURED rather than as a clean bill.
+     *
+     * Throws RequestException on any non-2xx; the caller decides whether that is a skip or a
+     * failure, exactly as with {@see getPull}.
+     *
+     * @return list<array{number: int, title: ForeignText, head_ref: ForeignText}>
+     */
+    public function recentlyMergedPullRequests(string $repo, int $limit): array
+    {
+        $body = $this->http()->get(self::API_BASE."/repos/{$repo}/pulls", [
+            'state' => 'closed', 'sort' => 'updated', 'direction' => 'desc', 'per_page' => $limit,
+        ])->throw()->json();
+
+        if (! is_array($body) || ! array_is_list($body)) {
+            self::warnUnreadableBody(
+                "the closed-pull-request list for {$repo} returned a 200 whose body is not a list of pull requests, so this repo's merged history is UNMEASURED, not empty",
+                ['repo' => $repo, 'read' => 'list-pulls'],
+            );
+
+            return [];
+        }
+
+        $merged = [];
+        foreach ($body as $pr) {
+            if (! is_array($pr) || ! is_numeric($pr['number'] ?? null) || ($pr['merged_at'] ?? null) === null) {
+                continue;
+            }
+            $head = is_array($pr['head'] ?? null) ? ($pr['head']['ref'] ?? '') : '';
+            $merged[] = [
+                'number' => (int) $pr['number'],
+                'title' => ForeignText::of(is_string($pr['title'] ?? null) ? $pr['title'] : ''),
+                'head_ref' => ForeignText::of(is_string($head) ? $head : ''),
+            ];
+        }
+
+        return $merged;
+    }
+
+    /**
      * The CAUSE clause both unreadable-200 lines in this client end with. It is a const and not
      * a repeated literal because it is the only part of those lines that is the SAME fact —
      * what an unreadable body means and what to look at — while each read's consequence

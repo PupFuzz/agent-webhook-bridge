@@ -48,6 +48,13 @@ php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (rep
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
+php artisan bridge:writeback-exposure    # is THIS install exposed to the one-repo-one-board writeback defect
+                                         # (card#9850 / DL-404)? Reads each mapping's repo's recently merged PRs,
+                                         # probes every cited card#  against that mapping's OWN declared boards
+                                         # (board-scoped, never an unscoped read of an author-supplied id), and
+                                         # states its population: `N mappings reachable on this box, N evaluated,
+                                         # N exposed, N unreachable. Fleet-wide: not derivable.` Non-zero exit
+                                         # whenever anything was unreachable — docs/writeback.md § boards
 php artisan bridge:standup --dry-run     # PM standup digest (DL-306): print what the bridge can derive, push nothing
 php artisan bridge:jobs                  # periodic-job registry (DL-325): the whole periodic population + why each entry
                                          # is periodic. --json for a hook; --assert-tick reds a DECLARED-but-dead tick

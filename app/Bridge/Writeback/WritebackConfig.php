@@ -43,7 +43,12 @@ use App\Bridge\Support\PathHelper;
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false,                   // optional (DL-193) — mirror PR draft state to block_reason
- *         "promote_on_release": false               // optional (DL-207) — on a release merge to main, promote Shipped cards now on main to Released (needs stages.merged + stages.merged_to_main)
+ *         "promote_on_release": false,              // optional (DL-207) — on a release merge to main, promote Shipped cards now on main to Released (needs stages.merged + stages.merged_to_main)
+ *         "boards": {                               // optional (card#9850 / DL-404) — the OTHER boards this repo's PRs cite cards on,
+ *           "13": {"opened": 96, "merged": 97}      //   each with its OWN stage map (stage ids are per-board arbitrary integers). The
+ *         }                                         //   card-move path resolves the destination board FROM THE CARD, by asking
+ *                                                   //   board_id and then each of these with the board-scoped lookup; a card on none
+ *                                                   //   of them is REFUSED, never written to board_id. Absent ⇒ one declared board
  *       }
  *     }
  *   }
@@ -448,7 +453,57 @@ final class WritebackConfig
                 }
                 $issuePopulation = $m['issue_population'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds);
+            // Opt-in MULTI-BOARD resolution (card#9850 / DL-404). A coordination repo's pull
+            // requests cite cards on SEVERAL boards, and one repo → one `board_id` cannot
+            // express the right destination: the move went to the mapped board (or nowhere)
+            // and the sprint card the branch cited never moved. This key names the OTHER
+            // boards this repo's PRs may cite, each with its own stage map, and the card-move
+            // path resolves the destination from the CARD by asking each declared board in
+            // turn with the SAME board-scoped lookup card#8375 already uses.
+            //
+            // ADDITIVE, never a replacement: `board_id` + `stages` keep their exact meaning
+            // and stay the FIRST declared board, so every mapping written before this key
+            // existed loads and behaves identically. Fail-closed on every partial shape (the
+            // DL-160/198/286 precedent) — a mis-typed board or an empty stage map here would
+            // silently never match, and "silently never matches" is the defect being fixed.
+            $boards = null;
+            if (array_key_exists('boards', $m) && $m['boards'] !== null) {
+                $rawBoards = $m['boards'];
+                // `array_is_list` also rejects the EMPTY object `{}` (which decodes to `[]`):
+                // an empty map disables the multi-board path while looking configured, the
+                // same fail-quiet shape `coord_card_lane_stage_ids` is strict about.
+                if (! is_array($rawBoards) || $rawBoards === [] || array_is_list($rawBoards)) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} boards must be a non-empty object keyed by board id, each value an object of outcome => workflow_stage_id — omit the key to keep this repo on its single mapped board");
+                }
+                $boards = [];
+                foreach ($rawBoards as $otherBoard => $otherStages) {
+                    if (! is_numeric($otherBoard) || (int) $otherBoard <= 0) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} boards has a non-numeric board key '".(is_string($otherBoard) ? $otherBoard : gettype($otherBoard))."' — each key is a kanban board id");
+                    }
+                    // The mapped board is ALREADY declared (it is `board_id`, and it is probed
+                    // first), so re-declaring it here gives one board two stage maps that
+                    // nothing reconciles. Fail closed and make the operator say which they
+                    // meant — the DL-293 duplicate-key precedent.
+                    if ((int) $otherBoard === (int) $m['board_id']) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} boards re-declares board_id ".(int) $m['board_id'].' — the mapped board is already the first declared board and `stages` is its stage map; list only the OTHER boards this repo cites cards on');
+                    }
+                    if (! is_array($otherStages) || $otherStages === []) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} boards board {$otherBoard} needs a non-empty stages object — stage ids are per-board arbitrary integers, so a declared board with no stage map of its own is a destination no move could ever be written to");
+                    }
+                    $parsed = [];
+                    foreach ($otherStages as $outcome => $stageId) {
+                        if (! in_array($outcome, self::OUTCOMES, true)) {
+                            throw new ConfigException("writeback.json: mapping for {$repo} boards board {$otherBoard} has an unknown stage outcome '".(is_string($outcome) ? $outcome : gettype($outcome))."' (allowed: ".implode(', ', self::OUTCOMES).')');
+                        }
+                        if (! is_numeric($stageId)) {
+                            throw new ConfigException("writeback.json: mapping for {$repo} boards board {$otherBoard} stage '{$outcome}' must be a numeric workflow_stage_id");
+                        }
+                        $parsed[$outcome] = (int) $stageId;
+                    }
+                    $boards[(int) $otherBoard] = $parsed;
+                }
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds, $boards);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

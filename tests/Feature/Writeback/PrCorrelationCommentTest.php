@@ -141,6 +141,32 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertStringContainsString('board 8', $body);
     }
 
+    /**
+     * The MULTI-BOARD sibling of the leg above (card#9850 / DL-404): a mapping that declares
+     * more than one board, and a cited card on none of them.
+     *
+     * ⛔ THE COMMENT NAMES WHAT WAS CHECKED AND NEVER WHERE THE CARD IS, and this is the
+     * widest surface any writeback record reaches — a public pull-request page — so the
+     * negative below is the load-bearing assertion. The declared boards are this install's own
+     * config and are what the author (or the operator) needs; the board the card actually
+     * lives on was not measured, and learning it would take the unscoped read of an
+     * author-supplied id card#8375 exists to prevent.
+     */
+    public function test_merged_naming_a_card_on_none_of_several_declared_boards_names_the_set_it_checked(): void
+    {
+        $this->declareSecondBoard(13);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_id_outside_declared_boards', $body);
+        $this->assertStringContainsString('card#123', $body);
+        $this->assertStringContainsString('board 8, board 13', $body);
+        $this->assertStringNotContainsString('is not a card on board 8:', $body,
+            'the single-board sentence claims the card is off ONE board; this refusal checked two and must say so');
+    }
+
     public function test_merged_onto_a_card_read_back_off_another_board_posts_one_comment_naming_the_cause(): void
     {
         $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
@@ -861,6 +887,23 @@ class PrCorrelationCommentTest extends TestCase
             eventType: 'pull_request.'.$payload['action'],
             actorId: '555',
         ), $payload);
+    }
+
+    /**
+     * Re-write this install's mapping with an additional declared board (card#9850 / DL-404).
+     * The mapped board and its stage map are untouched — `boards` is additive — so every other
+     * leg in this class keeps the fixture it was written against.
+     */
+    private function declareSecondBoard(int $boardId): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => [self::REPO => [
+                'board_id' => 8,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+                'boards' => [(string) $boardId => ['merged' => 97]],
+            ]],
+        ]));
     }
 
     private function fakePeers(): void

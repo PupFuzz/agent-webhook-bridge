@@ -832,6 +832,52 @@ On a board that splits **Shipped-to-dev** (`stages.merged`) from **Released-to-m
 - **Fires on any merge to `main`.** A hotfix or dependabot PR merged directly to `main` also triggers a scan; it is idempotent and only promotes cards genuinely on main, so this is safe (anything landing work on main releases it).
 - **NOT closure-gated (DL-305), deliberately.** The scan asks whether a card **already at `stages.merged`** has its commit on `main`; it does not re-decide the transition that put it there. Since DL-305 (widened DL-308) that transition needs closure evidence, so the sweep's INPUT is gated at the source — which is where the completion claim is actually made. ⚠ The one thing this does not do is re-examine cards that reached Shipped **before** you upgraded: they stay eligible, exactly as they are today. If your board holds a large Shipped backlog accumulated under the old behaviour, audit it before enabling `promote_on_release` — the gate protects what arrives from now on, not what is already there.
 
+## Optional: a repo whose PRs cite cards on SEVERAL boards (`boards`, card#9850 / DL-404)
+
+A mapping names one `board_id`, and for a repo whose own cards live on that board that is the whole story. **A coordination repo is not that repo.** Its `[TASK]` pull requests cite cards on the SPRINT boards — the boards the work is tracked on — while its mapping names the coordination board. One repo → one `board_id` cannot express the right destination, so the merge wrote to the mapped board or (where the mapping carries no `stages` at all) wrote nothing, and ⛔ **the sprint card the branch cited was never touched.** The board then reports as unfinished work that is merged and shipped, and the sprint burn-down is derived from that board.
+
+⇒ **The repo mapping supplies the STAGE SEMANTICS; the CARD supplies the BOARD.** Declare the other boards this repo's PRs cite, each with its own stage map:
+
+```jsonc
+{
+  "mappings": {
+    "your-org/your-coordination-repo": {
+      "board_id": 2,                            // still the repo's mapped board — coord cards, reconcile,
+      "create_coord_cards": true,               //   promote-on-release and bridge:check all read THIS one
+      "coord_card_stage_id": 21,
+      "boards": {                               // …and the OTHER boards this repo's PRs cite cards on
+        "3":  { "opened": 21, "merged": 22, "merged_to_main": 23 },
+        "13": { "opened": 96, "merged": 97, "merged_to_main": 93 }
+      }
+    }
+  }
+}
+```
+
+- **ADDITIVE, and an absent key is byte-identical.** `board_id` and `stages` keep their exact meaning and `board_id` stays the FIRST board probed, so a mapping written before this key existed loads, resolves and writes exactly as it did — same single lookup, same stage id, same messages. There is no migration and nothing to change on a repo whose cards are on its own board.
+- **Each declared board carries its OWN stage map, and that is not redundancy.** Stage ids are **per-board arbitrary integers** — board 3's stage 22 has no relationship to board 13's stage 22 — so a single flat `stages` map applied to a dynamically-chosen board would write a confident, meaningless number. A declared board need not map every outcome; an outcome it does not map is a logged no-op on that board, not a fall-back to another board's stage.
+- **How the board is chosen: N bounded, operator-declared, BOARD-SCOPED lookups.** On a `card#` move the bridge asks each declared board, in order, `GET /tasks/search.json?q=board_id=<declared> id=<card>` — the same board-scoped lookup the tenant check already used (card#8375) — and the first board that answers a row naming that card ON that board is the destination. Cost on the happy path is one request per board tried, and a card on the mapped board still costs exactly one. The archived side of each board is probed only after every live side has missed.
+- ⛔ **It is a DECLARED set, never "ask the card which board it is on".** `card#NNNN` is parsed out of author-controlled text against a kanban id space that is **GLOBAL across every board on the instance**, so reading the card's own record to learn its board is precisely the unscoped cross-tenant read card#8375 exists to prevent. The set is closed; adding a board is an operator edit.
+- ⛔⛔ **A card on NONE of the declared boards is REFUSED — there is no fall-back to `board_id`.** A silent write to the wrong board is worse than no write: it moves *a* card, just not the cited one. The refusal is loud (`Log::warning` + an `alert_channel` signal) under `card_id_outside_declared_boards`, or `declared_board_unreadable_to_this_token` when a declared board did not read back and "not in the set" was therefore never established.
+- ⛔ **The refusal names the boards it CHECKED and never the board the card is really on.** What it checked is a measurement and is what you need — a repo citing a board your `boards` list is missing is exactly what that list tells you. Where the card really is was **not measured**, and the only way to learn it is the unscoped read above; a value that reaches a log has already crossed that boundary onto a durable surface. **Do not "improve" the message by adding a diagnostic read** — the code says so at the site, with this reason.
+- **No `writeback_board_divergences` row on this refusal.** A divergence row asserts a RELATIONSHIP — *this card is on that board instead of this one* — and a miss across the declared set establishes only *not in the declared set*. Writing one would put a claim in the ledger wider than its evidence. The refusal is the record. (Same argument the existing half-a-pair case already makes.)
+- ⚠ **Only the card-move and draft-overlay arms read it.** Every other leg — coord-card create/move, dependabot cards, `promote_on_release`, `bridge:reconcile`, the standup, `bridge:check`, the board tools — reads `board_id` and is unchanged. `boards` answers *where does this repo's cited CARD live*, not *which board is this repo's*.
+- **Fail-closed at load,** like every other stage key: an empty `boards` object, a declared board with an empty stage map, a non-numeric board key, an unknown outcome, a non-numeric stage id, or a `boards` entry that **re-declares `board_id`** (one board with two stage maps and nothing reconciling them) all refuse the whole file.
+
+### Is THIS install exposed? — `php artisan bridge:writeback-exposure`
+
+The defect is in the SCHEMA, so any install whose coordination repo tracks cards on more than one board has it — and **which installs those are is not derivable from any one seat**: a `writeback.json` lives on its own machine and there is no cross-install read path. So the answer is a command each operator runs against their own config:
+
+```bash
+php artisan bridge:writeback-exposure            # --pull-sample=N widens the window (default 50)
+```
+
+It reads each mapping's repo's most recently merged pull requests, collects every `card#` token in their titles and head refs, and probes each cited card **against that mapping's own declared boards** with the same board-scoped lookup the runtime uses. A card that resolves on none of them is exposure. It closes with its population, its evaluated count and its limits — e.g. `4 mappings reachable on this box, 4 evaluated, 1 exposed, 0 unreachable. Fleet-wide: not derivable.`
+
+- **`unreachable` is never folded into clean** — no github token for the repo, a refused read, a board this writeback token cannot see. Exit code is non-zero whenever any mapping is unreachable, so a caller reading only the exit code cannot mistake an incomplete measurement for a clean one.
+- **The pull-request read is a SAMPLE, not a census.** `not exposed` means *cites no off-board card in that window*; widen `--pull-sample` before reading it as a clean bill.
+- ⛔ **It establishes exposure without ever learning — or printing — the board an off-set card is really on,** for the same reason the runtime refusal does not. The off-set card **ids** are printed (they came out of your own repo's PR titles and they are what makes the finding actionable); no board they resolve on ever is.
+
 ## Optional: a loud alert on a permanent move-failure (FR-4)
 
 By default a **permanent** move-failure (a refused/un-actionable move — see *Failure behaviour* below) is **logged + no-op**: a durable record in the log, but no live signal. Add a top-level **`alert_channel`** to `writeback.json` to ALSO emit a loud per-event signal to a local channel when that happens — log = durable record, push = live wake. Opt-in; absent ⇒ log-only (unchanged).
@@ -893,6 +939,8 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 | **the card id does not resolve on the mapped board AND the mapped board reads back EMPTY** (card#8375 — check the token's board membership; an unreadable board and an empty one are one answer here) | `mapped_board_unreadable_to_this_token` | ✅ (`card_id` **withheld**) |
 | **the board-scoped lookup answered a row that is NOT this card** (card#8375 — a broken/unfiltered read, never a tenant verdict) | `board_scope_lookup_unfiltered` | ✅ (`card_id` **withheld**) |
 | **the board-scoped lookup was itself refused by kanban (4xx)** (card#8375 — the query named our own board, so the foreign-id cause is excluded) | `boardscope_403_token_scope` · `boardscope_404_no_such_card` · `boardscope_4xx` | ✅ (`card_id` **withheld**) |
+| **the card id is on NONE of the boards this mapping DECLARES, and every one of them reads back** (card#9850 — the `boards` key; the refusal names the declared set it checked and never the board the card is really on) | `card_id_outside_declared_boards` | ✅ (`card_id` **withheld**) |
+| **the card id is on none of the declared boards AND at least one of them did not read back** (card#9850 — "not in the set" was never established; check the writeback token's membership of every declared board) | `declared_board_unreadable_to_this_token` | ✅ (`card_id` **withheld**) |
 | `getCard` refused by kanban — **404** | `getcard_404_no_such_card` | ✅ (`card_id` **withheld**) |
 | `getCard` refused by kanban — **403** (⚠ **NARROWED at card#8375** — the scoped check above has already found this id on the mapped board, so a foreign card id is EXCLUDED and the slug names the one cause left. The `kanban_block_reason` overlay narrows the same way since card#8415, so `getcard_403_foreign_card_id_or_token_scope` is now emitted by no shipped arm) | `getcard_403_token_scope` | ✅ (`card_id` **withheld**) |
 | `getCard` refused by kanban — any other 4xx | `getcard_4xx` | ✅ (`card_id` **withheld**) |
@@ -1051,6 +1099,7 @@ When a PR **merges** (`merged` / `merged_to_main`) or is **closed unmerged** and
 | `token_unreadable` | classifier | no card was selected — no token parsed, or only a DL no card carries — and a card- or DL-shaped spelling that does not parse is present — no move | `patch --pr` and `move` by hand; the comment lists the accepted spellings |
 | `card_token_near_miss` | move handler | the DL-287 refusal | `patch --pr` and `move` by hand |
 | `card_id_outside_mapped_board` | move handler | the card id is not on the mapped board, and the mapped board itself reads back | `patch --pr` and `move` by hand |
+| `card_id_outside_declared_boards` | move handler | the mapping declares several boards (`boards`, card#9850) and the card id is on none of them — either the card is not this install's, or this repo cites a board the mapping's `boards` list is missing | add the board to `boards`, or `patch --pr` and `move` by hand |
 | `card_not_on_mapped_board` | move handler | the card read back is on another board (whose id is not shown) | `patch --pr` and `move` by hand |
 | `card_token_uncorroborated` | move handler | the DL-270 refusal: a title-only token, on a card that already tracks another PR (not shown) | `kbcard move` only if this PR does finish the card |
 | `correlation_ref_not_stamped` | move handler | the card already carries a different `pr_number` / `pr_url` / `dl_number` (named by key only); the move itself is decided separately and may have landed | on a merge: `kbcard show`, then `kbcard patch --task N --pr <n>` only if this PR should be the one; on a close: see *superseded* below |

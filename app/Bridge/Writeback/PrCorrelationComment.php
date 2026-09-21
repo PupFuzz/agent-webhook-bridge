@@ -69,6 +69,12 @@ final class PrCorrelationComment
         self::TOKEN_UNREADABLE,
         'card_token_near_miss',
         MappedBoardGuard::REASON_ID_OUTSIDE_MAPPED_BOARD,
+        // The multi-board sibling of the line above (card#9850 / DL-404). It is a member for
+        // the same reason: the pull request cited a card this install does not write to, which
+        // is something its author can see and fix. Its unreadable-board sibling
+        // (`declared_board_unreadable_to_this_token`) is deliberately absent, exactly as
+        // `mapped_board_unreadable_to_this_token` is — that one is about the INSTALL.
+        MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS,
         MappedBoardGuard::REASON,
         'card_token_uncorroborated',
         'correlation_ref_not_stamped',
@@ -91,6 +97,8 @@ final class PrCorrelationComment
         private readonly string $cause,
         private readonly ?int $cardId,
         private readonly int $boardId,
+        /** @var list<int> every board this repo's mapping declares, mapped board first (card#9850) */
+        private readonly array $declaredBoardIds,
         private readonly ?int $stageId,
         private readonly array $tokens,
         private readonly array $droppedRefs,
@@ -169,6 +177,7 @@ final class PrCorrelationComment
             $cause,
             is_int($cardId) || (is_string($cardId) && ctype_digit($cardId)) ? (int) $cardId : null,
             $mapping->boardId,
+            $mapping->declaredBoardIds(),
             $mapping->stageFor($outcome),
             self::renderableTokens($evidence['tokens'] ?? null),
             is_array($dropped) ? array_values(array_intersect(self::REF_KEYS, $dropped)) : [],
@@ -246,6 +255,18 @@ final class PrCorrelationComment
             MappedBoardGuard::REASON_ID_OUTSIDE_MAPPED_BOARD => [
                 $notMoved,
                 "{$card} is not a card on {$board}: it does not exist there, or it is on a board this install does not write to. Nothing was read or written.",
+                $byHand,
+            ],
+            MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS => [
+                $notMoved,
+                // ⛔ It says WHICH boards were checked and never where the card is. The boards
+                // are this install's own config; where the card actually lives was not measured,
+                // and this comment is published on a PULL REQUEST — the widest surface any
+                // writeback record reaches — so naming it would put a cross-install value on a
+                // durable public page (card#8375, and the card#9850 non-goal).
+                "{$card} is not a card on any board this install writes to for this repo (checked: "
+                    .implode(', ', array_map(static fn (int $id): string => "board {$id}", $this->declaredBoardIds))
+                    .'). It does not exist on any of them, or it is on a board this install does not write to. Nothing was read or written.',
                 $byHand,
             ],
             MappedBoardGuard::REASON => [

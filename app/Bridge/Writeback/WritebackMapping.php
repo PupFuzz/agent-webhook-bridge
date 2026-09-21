@@ -141,6 +141,22 @@ final class WritebackMapping
      *                                   is chosen PER ISSUE (prefixed→tag, non-prefixed→by-ref), never per
      *                                   mapping, so a prefixed issue always shares the tag key with the
      *                                   reconcile. Governs only the coord-card create/move families.
+     * @param  ?array<int, array<string, int>>  $boards  opt-in (card#9850 / DL-404): the ADDITIONAL
+     *                                                   boards this repo's pull requests may cite cards
+     *                                                   on, each with its OWN stage map. $boardId above
+     *                                                   still names the repo's mapped board and $stages
+     *                                                   is still that board's stage map; this key adds
+     *                                                   the others, so {@see declaredBoardIds} is
+     *                                                   $boardId followed by these — the operator's
+     *                                                   CLOSED set, and the only boards the card-move
+     *                                                   writeback will ever resolve a `card#` token
+     *                                                   onto. null ⇒ exactly one declared board
+     *                                                   (byte-identical to every mapping written before
+     *                                                   this key existed). Stage ids are per-board
+     *                                                   arbitrary integers — board 3's stage 22 has no
+     *                                                   relationship to board 13's stage 22 — which is
+     *                                                   why a per-board stage map is required rather
+     *                                                   than a bare list of board ids.
      */
     public function __construct(
         public readonly int $boardId,
@@ -161,12 +177,75 @@ final class WritebackMapping
         public readonly bool $promoteOnRelease = false,
         public readonly string $issuePopulation = self::POPULATION_PREFIXED,
         public readonly ?array $coordCardLaneStageIds = null,
+        public readonly ?array $boards = null,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */
     public function stageFor(string $outcome): ?int
     {
         return $this->stages[$outcome] ?? null;
+    }
+
+    /**
+     * THE BOARDS THIS MAPPING DECLARES, in probe order: the repo's mapped board first, then
+     * each board `boards` adds (card#9850 / DL-404). One element on every mapping written
+     * before that key existed.
+     *
+     * ⛔ This is a CLOSED set and it is the whole point. A `card#NNNN` token is parsed out of
+     * author-controlled text against a kanban id space that is GLOBAL across the instance, so
+     * "ask the card which board it is on" is an UNSCOPED read of an author-supplied id — the
+     * exact thing {@see MappedBoardGuard::refusesCardIdOutsideMappedBoard} exists to prevent
+     * (card#8375). Resolution is therefore N bounded, operator-declared, BOARD-SCOPED lookups
+     * over this list, and a card in none of them is REFUSED rather than resolved some other way.
+     *
+     * @return list<int>
+     */
+    public function declaredBoardIds(): array
+    {
+        return [$this->boardId, ...array_keys($this->boards ?? [])];
+    }
+
+    /**
+     * This mapping once per declared board, each narrowed onto that board and carrying THAT
+     * board's stage map — the loop where the card-move path used to hold a scalar.
+     *
+     * A single-board mapping yields `[$this]`, the same object, so the resolution loop runs
+     * exactly one iteration against exactly the values it read before this key existed.
+     *
+     * @return list<self>
+     */
+    public function perDeclaredBoard(): array
+    {
+        $narrowed = [$this];
+        foreach ($this->boards ?? [] as $boardId => $stages) {
+            // `clone($this, [...])` carries every other field forward by construction, so a
+            // field added to this class later cannot be silently dropped here the way a
+            // re-spelled 19-argument constructor call would drop it.
+            $narrowed[] = clone ($this, ['boardId' => $boardId, 'stages' => $stages]);
+        }
+
+        return $narrowed;
+    }
+
+    /**
+     * Does ANY declared board map this outcome to a stage?
+     *
+     * Asked BEFORE the card-move path builds a client or issues a request, so a repo whose
+     * mapping has no stage for an outcome still no-ops with no I/O — which is what keeps an
+     * existing single-board mapping byte-identical (there the question is exactly
+     * `stageFor($outcome) !== null`). It is the cheap necessary condition, never the
+     * sufficient one: WHICH stage a move writes is only knowable once the board the card is
+     * actually on has been established.
+     */
+    public function anyDeclaredBoardMaps(string $outcome): bool
+    {
+        foreach ($this->perDeclaredBoard() as $candidate) {
+            if ($candidate->stageFor($outcome) !== null) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

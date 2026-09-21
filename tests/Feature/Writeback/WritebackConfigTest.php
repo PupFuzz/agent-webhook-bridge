@@ -1147,4 +1147,128 @@ class WritebackConfigTest extends TestCase
         $this->assertNull($cfg->configuredRepoFor('pupfuzz/not-mapped'));
         $this->assertSame(['PupFuzz/agent-webhook-bridge'], array_keys($cfg->mappings));
     }
+
+    // --- card#9850 / DL-404: the optional `boards` key. ---------------------------------
+    //
+    // ⭐ THE COMPATIBILITY CELL IS THE FIRST ONE AND IT IS NOT DECORATION. The ruling's
+    // non-negotiable is that a mapping written before this key existed loads and behaves
+    // byte-identically, so the guarantee is asserted as a PROPERTY of the loaded mapping —
+    // one declared board, `perDeclaredBoard()` yielding the same object — rather than left
+    // to be inferred from the absence of a red elsewhere.
+
+    public function test_a_mapping_with_no_boards_key_declares_exactly_its_mapped_board(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('owner/repo');
+        $this->assertNull($mapping->boards);
+        $this->assertSame([8], $mapping->declaredBoardIds());
+        $this->assertSame([$mapping], $mapping->perDeclaredBoard(),
+            'a single-board mapping must yield ITSELF — the resolution loop then runs against exactly '
+            .'the values it read before this key existed, rather than against a copy that could drift');
+        $this->assertTrue($mapping->anyDeclaredBoardMaps('merged'));
+        $this->assertFalse($mapping->anyDeclaredBoardMaps('opened'));
+    }
+
+    public function test_boards_is_additive_and_each_declared_board_carries_its_own_stage_map(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'owner/coord' => [
+                'board_id' => 2,
+                'stages' => ['merged' => 22],
+                'boards' => ['13' => ['opened' => 96, 'merged' => 97], '3' => ['merged' => 22]],
+            ],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('owner/coord');
+        $this->assertSame([2, 13, 3], $mapping->declaredBoardIds(),
+            'the mapped board stays FIRST — that is what keeps the happy path of a repo whose cards '
+            .'are on its own board at one request, and it is why `boards` is additive rather than a replacement');
+        $narrowed = $mapping->perDeclaredBoard();
+        $this->assertSame([2, 13, 3], array_map(fn ($m) => $m->boardId, $narrowed));
+        $this->assertSame([22, 97, 22], array_map(fn ($m) => $m->stageFor('merged'), $narrowed),
+            'stage ids are per-board arbitrary integers, so each declared board answers from ITS OWN map — '
+            .'board 3 and board 2 both using 22 is a coincidence a shared map would have made look like a rule');
+        $this->assertNull($narrowed[2]->stageFor('opened'));
+        $this->assertTrue($mapping->anyDeclaredBoardMaps('opened'), 'one declared board mapping it is enough for the cheap pre-check');
+        // Every other field survives the narrowing — the guarantee `clone($this, …)` buys over
+        // a re-spelled constructor call, which would silently drop a field added later.
+        $this->assertSame($mapping->createCoordCards, $narrowed[1]->createCoordCards);
+        $this->assertSame($mapping->issuePopulation, $narrowed[1]->issuePopulation);
+    }
+
+    public function test_boards_re_declaring_the_mapped_board_fails_closed(): void
+    {
+        // One board with two stage maps and nothing reconciling them: the operator must say
+        // which they meant (the DL-293 duplicate-key precedent).
+        $this->write(json_encode(['mappings' => [
+            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'boards' => ['8' => ['merged' => 99]]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('re-declares board_id 8');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_an_empty_boards_object_fails_closed(): void
+    {
+        // Configured scenery: it disables the multi-board path while looking configured — the
+        // same fail-quiet shape `started_from_stages` and `coord_card_lane_stage_ids` reject.
+        $this->write(json_encode(['mappings' => [
+            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'boards' => new \stdClass],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('boards must be a non-empty object');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_declared_board_with_an_empty_stage_map_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":{}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('needs a non-empty stages object');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_an_unknown_outcome_on_a_declared_board_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":{"shipped":97}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("unknown stage outcome 'shipped'");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_non_numeric_stage_id_on_a_declared_board_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":{"merged":"ninety-seven"}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("board 13 stage 'merged' must be a numeric workflow_stage_id");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_non_numeric_board_key_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"sprint":{"merged":97}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("non-numeric board key 'sprint'");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_list_shaped_boards_value_fails_closed(): void
+    {
+        // `[{"merged":97}]` reads as board 0 — a board id no kanban instance has — so it is
+        // caught at the shape rather than loading a mapping that could never resolve.
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":[{"merged":97}]}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('boards must be a non-empty object');
+        WritebackConfig::load($this->dir);
+    }
 }

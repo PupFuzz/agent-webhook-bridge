@@ -222,4 +222,61 @@ class GitHubReadClientTest extends TestCase
         $this->expectException(RequestException::class);
         (new GitHubReadClient('ghp_x'))->getPull('o/r', 999);
     }
+
+    // --- card#9850 / DL-404: the merged-pull-request sample the exposure audit reads. ---
+
+    /**
+     * The sample keeps ONLY the pull requests that actually merged, and hands back the two
+     * surfaces a card citation can live on. A closed-unmerged PR carries a card token just as
+     * often as a merged one and says nothing about work that shipped, so including it would
+     * report exposure for a repo whose merged history cites nothing off-board.
+     */
+    public function test_recently_merged_pull_requests_keeps_only_merged_rows_and_both_citation_surfaces(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response([
+            ['number' => 11, 'merged_at' => '2026-09-03T00:00:00Z', 'title' => 'feat (closes card#900)', 'head' => ['ref' => 'feat/card-900-x']],
+            ['number' => 12, 'merged_at' => null, 'title' => 'abandoned (card#901)', 'head' => ['ref' => 'feat/card-901-y']],
+            ['number' => 13, 'merged_at' => '2026-09-02T00:00:00Z', 'title' => 'chore', 'head' => ['ref' => 'chore/z']],
+        ])]);
+
+        $pulls = (new GitHubReadClient('ghp_x'))->recentlyMergedPullRequests('o/r', 50);
+
+        $this->assertSame([11, 13], array_column($pulls, 'number'));
+        $this->assertSame('feat (closes card#900)', $pulls[0]['title']->rawForMatching());
+        $this->assertSame('feat/card-900-x', $pulls[0]['head_ref']->rawForMatching());
+        $this->assertInstanceOf(ForeignText::class, $pulls[0]['title'],
+            'the title and head ref are chosen by a STRANGER, so they leave as ForeignText like every other '
+            .'author-controlled projection on this client (card#9200)');
+        Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/repos/o/r/pulls?')
+            && str_contains($r->url(), 'state=closed')
+            && str_contains($r->url(), 'per_page=50')
+            && $r->hasHeader('Authorization', 'Bearer ghp_x'));
+    }
+
+    /**
+     * ⛔ AN UNREADABLE 200 IS NOT AN EMPTY REPO. A body that is not a list of pull requests
+     * yields no rows AND says so, because the consumer's whole question is "does this repo
+     * cite cards off its declared boards?" — and a silent empty there reads as "no, it does
+     * not", which is a clean bill issued over a read that failed.
+     */
+    public function test_an_unreadable_list_body_reports_rather_than_answering_an_empty_history(): void
+    {
+        Log::spy();
+        Http::fake(['https://api.github.com/*' => Http::response(['message' => 'something else entirely'])]);
+
+        $this->assertSame([], (new GitHubReadClient('ghp_x'))->recentlyMergedPullRequests('o/r', 50));
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(
+            fn (string $msg) => str_contains($msg, 'is not a list of pull requests')
+                && str_contains($msg, 'UNMEASURED, not empty'),
+        );
+    }
+
+    public function test_recently_merged_pull_requests_throws_on_404(): void
+    {
+        Http::fake(['https://api.github.com/*' => Http::response(['message' => 'Not Found'], 404)]);
+
+        $this->expectException(RequestException::class);
+        (new GitHubReadClient('ghp_x'))->recentlyMergedPullRequests('o/r', 50);
+    }
 }

@@ -97,6 +97,23 @@ final class MappedBoardGuard
     public const REASON_SCOPE_LOOKUP_UNFILTERED = 'board_scope_lookup_unfiltered';
 
     /**
+     * The card id does not resolve on ANY of the boards this mapping declares (card#9850 /
+     * DL-404), and every one of them reads back — so the declared set was fully checked and
+     * this id is in none of it. The multi-board sibling of {@see REASON_ID_OUTSIDE_MAPPED_BOARD},
+     * kept apart because the operator's next question differs: that one asks whether the id
+     * belongs to this install at all, this one also asks whether the mapping's `boards` list
+     * is missing a board this repo genuinely cites.
+     */
+    public const REASON_ID_OUTSIDE_DECLARED_BOARDS = 'card_id_outside_declared_boards';
+
+    /**
+     * The card id resolved on none of the declared boards AND at least one of them did not
+     * read back — so the set was not fully checked and "in none of it" was never established.
+     * The multi-board sibling of {@see REASON_MAPPED_BOARD_UNREADABLE} (card#9850 / DL-404).
+     */
+    public const REASON_DECLARED_BOARD_UNREADABLE = 'declared_board_unreadable_to_this_token';
+
+    /**
      * Whether $card is on the repo's mapped board. A numeric `board_id` naming the
      * mapped board belongs to it whatever its JSON type; anything else does not.
      *
@@ -262,6 +279,47 @@ final class MappedBoardGuard
      * this install's — the definition of the case that rule exists for — so the id stays in
      * the `Log::warning` context (the local operator's surface) and never reaches the channel.
      *
+     * ⭐ N DECLARED BOARDS, NOT ONE — AND THE CARD DECIDES WHICH (card#9850 / DL-404). A
+     * coordination repo's pull requests cite cards on SEVERAL boards, so one repo → one
+     * `board_id` could not express the right destination: the move went to the mapped board
+     * or nowhere, and the sprint card the branch cited was never touched. The generalisation
+     * is a LOOP where this held a scalar — {@see WritebackMapping::perDeclaredBoard()}, whose
+     * first element is the mapped board and whose remainder is the operator's optional
+     * `boards` list — and $mapping is NARROWED IN PLACE onto whichever declared board the card
+     * was established on, so the caller's stage map, board-order read and post-read compare
+     * all speak about the board actually written to. A single-board mapping yields one
+     * candidate, the same object, and every request this makes is the one it made before.
+     *
+     * ⛔ WHY IT IS A DECLARED SET AND NOT "ASK THE CARD". `card#NNNN` is parsed out of
+     * author-controlled text against an id space that is GLOBAL across the instance, so
+     * resolving the board from the card's own record means an UNSCOPED `GET /tasks/{id}` of an
+     * author-supplied id — the very read the rest of this class exists to prevent. N bounded,
+     * operator-declared, board-scoped lookups keep the boundary in the code.
+     *
+     * ⛔⛔ AND ON A MISS ACROSS ALL N, THE REFUSAL NAMES WHAT IT CHECKED AND NEVER WHERE THE
+     * CARD ACTUALLY IS. Do NOT add a final unscoped diagnostic read to enrich the refusal with
+     * "here is the board it is actually on" — and the reason is not that it merely risks
+     * reopening card#8375: LOGGING IS THE LEAK. The test is never *which read did I make*, it
+     * is *can a cross-install value reach an output stream, a log, a transcript or an argv* —
+     * and a diagnostic read whose result is "only logged" has already crossed that boundary,
+     * onto a durable surface. The boards this checked are a MEASUREMENT and are named; the
+     * board the card is really on was never measured and could only be learned by that read,
+     * so it is a guess or a violation and appears nowhere.
+     *
+     * ⚑ AND NO DIVERGENCE ROW ON AN N-BOARD MISS, carrying forward the precedent the
+     * half-a-pair note below states for the single-board case. A `writeback_board_divergences`
+     * row ASSERTS A RELATIONSHIP — *this card is on that board instead of this one*. A miss
+     * across the declared set establishes only *not in the declared set*, so a row for it
+     * would put a claim in the ledger wider than its evidence, where a later reader takes it
+     * as ground. The refusal IS the record.
+     *
+     * @param  WritebackMapping  $mapping  IN: the repo's mapping. OUT, and ONLY when this returns
+     *                                     false: that mapping narrowed onto the declared board the card
+     *                                     was established on. By reference rather than as a returned
+     *                                     value so a caller cannot use the guard and then keep reading
+     *                                     the un-narrowed mapping — the "guard whose result is dropped
+     *                                     on the floor" shape `GetCardTenantCheckCoverageTest` exists
+     *                                     to catch. Untouched on every refusal path.
      * @param  string  $reason  OUT: the reason code this refusal alerted under, set only when this returns
      *                          true — for a caller that reports the refusal somewhere the alert does not
      *                          reach (DL-390's PR comment), which must tell a foreign id from an install fault
@@ -269,38 +327,38 @@ final class MappedBoardGuard
     public static function refusesCardIdOutsideMappedBoard(
         WritebackAlertNotifier $alerts,
         KanbanClient $client,
-        WritebackMapping $mapping,
+        WritebackMapping &$mapping,
         string $arm,
         int $cardId,
         string $repo,
         string $outcome,
         string &$reason = '',
     ): bool {
-        $answeredNoMatchingRow = false;
+        $declared = $mapping->perDeclaredBoard();
+        $boardIds = $mapping->declaredBoardIds();
+        $multi = count($boardIds) > 1;
 
-        try {
-            foreach ([false, true] as $archivedOnly) {
-                foreach ($client->cardRowsOnBoard($mapping->boardId, $cardId, $archivedOnly) as $row) {
-                    if (self::namesCard($row, $cardId) && self::belongs($row, $mapping)) {
-                        return false;   // established on the mapped board — the caller may read it
-                    }
-                    // A row came back that is not this card on this board: whatever the query
-                    // asked, the ANSWER is not narrowed, so no verdict can be read out of it.
-                    $answeredNoMatchingRow = true;
-                }
-            }
-        } catch (RequestException $e) {
-            if (! RefusalContext::isPermanent($e)) {
-                throw $e;   // transient → 5xx → redelivery retries once it is fixed
-            }
+        ['on' => $on, 'unfiltered' => $answeredNoMatchingRow, 'refused' => $lookupRefused]
+            = self::locateOnDeclaredBoards($client, $declared, $cardId);
 
+        if ($on !== null) {
+            $mapping = $on;   // narrowed onto the board the card is ON
+
+            return false;   // established on a declared board — the caller may read it
+        }
+
+        if ($lookupRefused !== null && ! $answeredNoMatchingRow) {
             // A 4xx on a BOARD-SCOPED read says nothing about whose card the id is — the query
-            // named this install's own board — so the foreign-id hypothesis is excluded here
-            // and the slug says the token's scope instead.
-            $reason = RefusalContext::readReason('boardscope', $e, foreignIdExcluded: true);
+            // named a board this install declares — so the foreign-id hypothesis is excluded
+            // here and the slug says the token's scope instead.
+            $reason = RefusalContext::readReason('boardscope', $lookupRefused, foreignIdExcluded: true);
             $alerts->warnAndNotifyCardIdWithheld(
-                $arm.': REFUSED — the board-scoped lookup that establishes whether this card id is on the mapped board was itself refused by kanban (4xx), so membership could not be established and nothing was read unscoped (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel',
-                ['card_id' => $cardId, 'repo' => $repo, 'mapped_board' => $mapping->boardId] + RefusalContext::from($e),
+                $arm.': REFUSED — '.($multi
+                    ? 'a board-scoped lookup that establishes whether this card id is on one of the boards this mapping declares ('.implode(', ', $boardIds).') was itself refused by kanban (4xx), so membership could not be established across the declared set and nothing was read unscoped (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel'
+                    : 'the board-scoped lookup that establishes whether this card id is on the mapped board was itself refused by kanban (4xx), so membership could not be established and nothing was read unscoped (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel'),
+                ['card_id' => $cardId, 'repo' => $repo, 'mapped_board' => $mapping->boardId]
+                    + ($multi ? ['declared_boards' => $boardIds] : [])
+                    + RefusalContext::from($lookupRefused),
                 $repo, $outcome, $reason,
             );
 
@@ -309,25 +367,107 @@ final class MappedBoardGuard
 
         $reason = match (true) {
             $answeredNoMatchingRow => self::REASON_SCOPE_LOOKUP_UNFILTERED,
-            self::mappedBoardReadsBack($client, $mapping) => self::REASON_ID_OUTSIDE_MAPPED_BOARD,
-            default => self::REASON_MAPPED_BOARD_UNREADABLE,
+            ! self::everyDeclaredBoardReadsBack($client, $declared) => $multi ? self::REASON_DECLARED_BOARD_UNREADABLE : self::REASON_MAPPED_BOARD_UNREADABLE,
+            default => $multi ? self::REASON_ID_OUTSIDE_DECLARED_BOARDS : self::REASON_ID_OUTSIDE_MAPPED_BOARD,
         };
 
-        // Spelled as a local rather than inline, because these three are the operator's whole
-        // diagnosis and an external checker classifies these rows by their literal phrases.
+        // Spelled as a local rather than inline, because these are the operator's whole
+        // diagnosis and an external checker classifies these rows by their literal phrases —
+        // which is also why the single-board sentences below are unchanged to the byte rather
+        // than generalised into one template that would have moved all of them at once.
         $message = $arm.': '.match ($reason) {
             self::REASON_SCOPE_LOOKUP_UNFILTERED => 'REFUSED — the board-scoped card lookup answered a row that does NOT name this card on the mapped board (a different card, or this card on a different board), so kanban narrowed on neither term and this answer establishes no board membership either way. Treat it as a broken read, NOT as a foreign card id: the search drops a filter it does not recognise and still answers 200. Nothing was read unscoped and nothing was written; the card id is in this log line only, never in the alert channel',
             self::REASON_ID_OUTSIDE_MAPPED_BOARD => 'REFUSED — the card id is not on the mapped board. It was refused by the BOARD-SCOPED lookup, so the card was never read: kanban card ids are GLOBAL across every board on the instance and `card#NNNN` is parsed out of author-controlled text, so an id naming another install\'s card reaches this handler intact. The mapped board itself reads back, which is what rules out this token having lost it. Nothing was written; the card id is in this log line only, never in the alert channel',
-            default => 'REFUSED — the card id is not on the mapped board AND the mapped board itself did not read back to this writeback token — it answered empty, or the probe of it failed — so board membership could not be established in either direction. Check the writeback token user\'s membership of the mapped board before reading this as a foreign card id; an unreadable board and a genuinely empty one are the same answer here. Nothing was read unscoped and nothing was written; the card id is in this log line only, never in the alert channel',
+            self::REASON_MAPPED_BOARD_UNREADABLE => 'REFUSED — the card id is not on the mapped board AND the mapped board itself did not read back to this writeback token — it answered empty, or the probe of it failed — so board membership could not be established in either direction. Check the writeback token user\'s membership of the mapped board before reading this as a foreign card id; an unreadable board and a genuinely empty one are the same answer here. Nothing was read unscoped and nothing was written; the card id is in this log line only, never in the alert channel',
+            self::REASON_ID_OUTSIDE_DECLARED_BOARDS => 'REFUSED — the card id is on NONE of the '.count($boardIds).' boards this mapping declares (checked, in this order: '.implode(', ', $boardIds).'), and every one of them read back, so the declared set was fully checked. Each was asked with a BOARD-SCOPED lookup and the card was never read, so THIS LINE DOES NOT AND MUST NOT SAY WHICH BOARD THE CARD IS ACTUALLY ON — that was not measured, and the only way to learn it is the unscoped read of an author-supplied id this check exists to prevent (card#8375). Either the card is not this install\'s, or this repo cites a board the mapping\'s `boards` list is missing — add it there. Nothing was written; the card id is in this log line only, never in the alert channel',
+            default => 'REFUSED — the card id is on none of the '.count($boardIds).' boards this mapping declares (checked, in this order: '.implode(', ', $boardIds).') AND at least one of them did not read back to this writeback token — it answered empty, or the probe of it failed — so "not in the declared set" was never established. Check the writeback token user\'s membership of every declared board before reading this as a foreign card id; an unreadable board and a genuinely empty one are the same answer here. Nothing was read unscoped and nothing was written; the card id is in this log line only, never in the alert channel',
         };
 
         $alerts->warnAndNotifyCardIdWithheld(
             $message,
-            ['card_id' => $cardId, 'repo' => $repo, 'mapped_board' => $mapping->boardId],
+            ['card_id' => $cardId, 'repo' => $repo, 'mapped_board' => $mapping->boardId]
+                + ($multi ? ['declared_boards' => $boardIds] : []),
             $repo, $outcome, $reason,
         );
 
         return true;
+    }
+
+    /**
+     * WHICH OF THE DECLARED BOARDS, IF ANY, DOES THIS CARD ID RESOLVE ON — the pure lookup,
+     * with no verdict, no message and no alert (card#9850 / DL-404).
+     *
+     * ⭐ IT IS PUBLIC BECAUSE IT HAS A SECOND CALLER AND MUST NOT HAVE A SECOND COPY.
+     * `bridge:writeback-exposure` asks exactly this question — of card ids read out of an
+     * install's own merged pull requests — and a second spelling of it would be a second
+     * spelling of the archive rule (DL-296), of the read-the-verdict-off-the-ROWS rule
+     * (DL-298) and of the row predicate itself. The two callers differ only in what they DO
+     * with the three outcomes: {@see refusesCardIdOutsideMappedBoard} turns them into a
+     * refusal and a report; the command turns them into `exposed` / `unreachable`.
+     *
+     * The ARCHIVE switch is the OUTER loop, so the happy path is one request per declared
+     * board and the archived probe still runs only after every live side has missed (kanban's
+     * search excludes archived rows unless `?archived` is passed and offers no both-sides
+     * mode, DL-296). With one declared board that is live-then-archived — exactly the
+     * sequence this issued before the loop existed.
+     *
+     * ⛔ A TRANSIENT failure PROPAGATES, and that is deliberate on both callers: the handler
+     * wants the 5xx that makes kanban redeliver, and the command wants to report the mapping
+     * as unmeasured rather than as clean. Only a PERMANENT (4xx) refusal is captured — and a
+     * board that could not be ASKED has not answered "no", so the loop keeps going: a positive
+     * establishment on another declared board is a measurement that stands on its own, and
+     * black-holing every card because one board's membership lapsed would be the widest
+     * possible reading of a 4xx.
+     *
+     * @param  list<WritebackMapping>  $declared  the mapping once per declared board, in probe order
+     * @return array{on: ?WritebackMapping, unfiltered: bool, refused: ?RequestException}
+     *                                                                                    `on` — the declared board the card was established on,
+     *                                                                                    null when none was; `unfiltered` — some board answered a
+     *                                                                                    row that is NOT this card on that board, so kanban
+     *                                                                                    narrowed on neither term and no verdict may be read out
+     *                                                                                    of the answer at all; `refused` — the first PERMANENT
+     *                                                                                    refusal of a declared board's lookup, meaning the set
+     *                                                                                    was not fully asked
+     */
+    public static function locateOnDeclaredBoards(KanbanClient $client, array $declared, int $cardId): array
+    {
+        $answeredNoMatchingRow = false;
+        /** @var ?RequestException the first PERMANENT refusal of a declared board's lookup */
+        $lookupRefused = null;
+        /** @var array<int, true> declared boards whose lookup kanban refused, keyed by board id */
+        $unaskable = [];
+
+        foreach ([false, true] as $archivedOnly) {
+            foreach ($declared as $candidate) {
+                if (isset($unaskable[$candidate->boardId])) {
+                    // A 4xx is about this token's access to THIS BOARD, not about the archive
+                    // switch, so a board that could not be asked once is not asked again. It is
+                    // also what keeps a single-board mapping's request count at one.
+                    continue;
+                }
+                try {
+                    $rows = $client->cardRowsOnBoard($candidate->boardId, $cardId, $archivedOnly);
+                } catch (RequestException $e) {
+                    if (! RefusalContext::isPermanent($e)) {
+                        throw $e;
+                    }
+                    $unaskable[$candidate->boardId] = true;
+                    $lookupRefused ??= $e;
+
+                    continue;
+                }
+                foreach ($rows as $row) {
+                    if (self::namesCard($row, $cardId) && self::belongs($row, $candidate)) {
+                        return ['on' => $candidate, 'unfiltered' => $answeredNoMatchingRow, 'refused' => $lookupRefused];
+                    }
+                    // A row came back that is not this card on this board: whatever the query
+                    // asked, the ANSWER is not narrowed, so no verdict can be read out of it.
+                    $answeredNoMatchingRow = true;
+                }
+            }
+        }
+
+        return ['on' => null, 'unfiltered' => $answeredNoMatchingRow, 'refused' => $lookupRefused];
     }
 
     /**
@@ -343,22 +483,35 @@ final class MappedBoardGuard
     }
 
     /**
-     * The CONTROL behind the two "not on the mapped board" verdicts: does the mapped board
-     * itself read back to this token at all? Without it, a token that had lost the board
-     * would report every card id as foreign — a wrong-but-specific accusation (canon #10)
-     * pointing the operator at the PR author instead of at their own credential.
+     * The CONTROL behind the "not in the declared set" verdicts: does EVERY declared board
+     * read back to this token at all? Without it, a token that had lost a board would report
+     * every card id as foreign — a wrong-but-specific accusation (canon #10) pointing the
+     * operator at the PR author instead of at their own credential.
+     *
+     * ALL of them, not any (card#9850 / DL-404): the claim the strong verdict makes is that
+     * the declared SET was checked and the id was in none of it, and one board this token
+     * cannot see leaves that claim unearned. With one declared board this is exactly the
+     * single `visibility` probe it has always been.
      *
      * Diagnostic only, so it never changes WHETHER the move is refused — only which reason it
      * is refused under. A failure therefore reaches the weaker verdict rather than propagating:
      * throwing here would turn a permanent refusal into a 5xx redelivery storm, which is the
      * anti-pattern every arm in this file exists to avoid.
+     *
+     * @param  list<WritebackMapping>  $declared  the mapping once per declared board
      */
-    private static function mappedBoardReadsBack(KanbanClient $client, WritebackMapping $mapping): bool
+    private static function everyDeclaredBoardReadsBack(KanbanClient $client, array $declared): bool
     {
-        try {
-            return $client->visibility($mapping->boardId)['total'] > 0;
-        } catch (Throwable) {
-            return false;
+        foreach ($declared as $candidate) {
+            try {
+                if ($client->visibility($candidate->boardId)['total'] <= 0) {
+                    return false;
+                }
+            } catch (Throwable) {
+                return false;
+            }
         }
+
+        return true;
     }
 }
