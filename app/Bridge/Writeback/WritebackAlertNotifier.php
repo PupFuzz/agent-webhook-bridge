@@ -74,11 +74,13 @@ final class WritebackAlertNotifier
      * ⛔ This is NOT the arm for "the id is null": pass `notify`/`warnAndNotify` a null
      * $cardId for that. This one asserts an id EXISTED and was withheld.
      *
+     * $catalogId: as {@see warnAndNotify}.
+     *
      * @param  array<string, mixed>  $logContext  carries `card_id` — the operator's copy
      */
-    public function warnAndNotifyCardIdWithheld(string $message, array $logContext, string $repo, string $outcome, string $reason): void
+    public function warnAndNotifyCardIdWithheld(string $catalogId, string $message, array $logContext, string $repo, string $outcome, string $reason): void
     {
-        Log::warning($message, $logContext);
+        Log::warning($message, ['catalog_id' => $catalogId] + $logContext);
         $this->emitMoveFailed($repo, $outcome, $reason, null, null, withheld: true);
     }
 
@@ -112,11 +114,16 @@ final class WritebackAlertNotifier
      * per-call-site opt-in was the omission that left 11 of 12 refusal arms live-silent
      * (card#5312 / DL-274).
      *
+     * $catalogId is the arm's entry in `docs/board-mover-catalog.json`, written into the LOG
+     * context as `catalog_id` so a log reader classifies the row by lookup rather than by its
+     * prose. It is not $reason: that is the ALERT's dedup key, shared across arms and handlers
+     * and varying with the response status, so it cannot name one arm.
+     *
      * @param  array<string, mixed>  $logContext
      */
-    public function warnAndNotify(string $message, array $logContext, string $repo, string $outcome, ?int $cardId, string $reason, ?int $issueNumber = null): void
+    public function warnAndNotify(string $catalogId, string $message, array $logContext, string $repo, string $outcome, ?int $cardId, string $reason, ?int $issueNumber = null): void
     {
-        Log::warning($message, $logContext);
+        Log::warning($message, ['catalog_id' => $catalogId] + $logContext);
         $this->notify($repo, $outcome, $cardId, $reason, $issueNumber);
     }
 
@@ -202,7 +209,7 @@ final class WritebackAlertNotifier
             // Context is drawn from $body (present on BOTH the notify and notifyUnpark
             // paths), never from a caller's locals — the unpark path has no
             // $outcome/$reason locals to reference.
-            Log::warning('writeback alert push failed', $body + ['error' => RedactedErrorText::of($e)]);
+            Log::warning('writeback alert push failed', ['catalog_id' => 'alert_notifier.push_failed'] + $body + ['error' => RedactedErrorText::of($e)]);
         }
     }
 
@@ -240,6 +247,7 @@ final class WritebackAlertNotifier
         $dir = BridgePaths::stateDir().'/writeback-alerts';
         if (! is_dir($dir) && ! @mkdir($dir, 0700, true) && ! is_dir($dir)) {
             Log::warning('writeback alert dedup-dir could not be created — skipping push to avoid a per-event storm', [
+                'catalog_id' => 'alert_notifier.dedup_dir_unavailable',
                 'dir' => $dir, 'error' => error_get_last()['message'] ?? 'unknown',
             ]);
 
@@ -262,6 +270,7 @@ final class WritebackAlertNotifier
         }
 
         Log::warning('writeback alert dedup-marker could not be created — skipping push to avoid a per-event storm', [
+            'catalog_id' => 'alert_notifier.dedup_marker_unavailable',
             'path' => $path,
             'error' => error_get_last()['message'] ?? 'unknown',
         ]);

@@ -878,7 +878,7 @@ Three bounds, all deliberate. (1) **`card_board` is the card's RAW value, not no
 
 `tests/Feature/Writeback/WritebackSuccessBoardRecordTest.php` re-derives the write population every run on **all three** of its axes — the file glob (`app/Bridge/Handlers/Kanban*Handler.php`, `app/Bridge/Writeback/*.php` **and**, since DL-301, `app/Console/Commands/Bridge/*.php`), the write VERBS (every `KanbanClient` method that REACHES a mutating verb — one whose body issues `->patch(` / `->post(` / `->delete(` itself, **or** one that calls another method of the class that does, followed to a fixed point; `writeMethodsOf()`'s docblock owns the rule and why the transitive leg is load-bearing — the narrow verbs delegate to one shared `patchCard` primitive and issue no verb of their own), and the RECEIVERS (`->verb(` on any receiver except the handler's own `$this->`) — and reds on a kanban write in that population that is not accounted for, on any caller that renders the pair by hand instead of calling the primitive, and on a `CardCollapse::toSurvivor()` call in that population that does not pass its mapping.
 
-Every signalling arm emits its durable `Log::warning` **first** and then the additive push, through a paired primitive — `WritebackAlertNotifier::warnAndNotify`, or its withheld-id twin `warnAndNotifyCardIdWithheld` (DL-314), which differs only in that the push carries no `card_id`. An arm cannot log a refusal without alerting on it. Before DL-274 the notifier was opt-in *per call site* and 11 of the 12 permanent-refusal arms had simply never opted in.
+Every signalling arm emits its durable `Log::warning` **first** and then the additive push, through a paired primitive — `WritebackAlertNotifier::warnAndNotify`, or its withheld-id twin `warnAndNotifyCardIdWithheld` (DL-314), which differs only in that the push carries no `card_id`. An arm cannot log a refusal without alerting on it. Before DL-274 the notifier was opt-in *per call site* and 11 of the 12 permanent-refusal arms had simply never opted in. Both helpers take the arm's catalog id as their first argument and write it into the log line's context as `catalog_id` (DL-404, § *The board-mover catalog* below). The push is unchanged and carries `reason`, not the id.
 
 **`kanban_move_card`** (`outcome` = the PR outcome that drove the event):
 
@@ -1094,6 +1094,29 @@ A writeback that "has no agent in the loop" can fail in two ways that **don't** 
   - `scan` (fallback): walks `/tasks/search.json` page by page (200/page) and digit-matches `payload.dl_number`/`pr_number` client-side. O(board size); a hard `MAX_PAGES`(50) ceiling bounds a runaway upstream, and a board beyond ~10,000 live cards would miss correlations past it (warned by `bridge:check`). Works against any kanban.
   - `ref`: one indexed `GET /boards/{b}/tasks/by-ref.json` per key (kanban DL-147/148) — server-canonicalized, O(1), no paging/ceiling. **Requires the kanban instance to expose `by-ref` AND its `task_external_references` to be backfilled** (`php artisan kanban:backfill-external-references`). Flip an install to `ref` only after confirming both (`bridge:check`).
 - **One PR/DL can track multiple cards (kanban DL-148).** `by-ref` returns a collection and the scan returns all matches, so the writeback moves **every** correlated card (e.g. two FRs bundled in one PR). Each is a separate move target keyed by card id.
+
+## The board-mover catalog — `catalog_id` on every writeback log row (card#10155, DL-404)
+
+Every log row the writeback writes carries a **`catalog_id`** in its log context, and every id is an entry in [`docs/board-mover-catalog.json`](board-mover-catalog.json). A log reader classifies a row by looking its id up instead of matching its prose, so rewording a message no longer breaks the reader. The coordination framework's board-mover check is the reader this was built for. It used to classify these rows against a list of message fragments kept by hand in another repo, and that list drifted every time a message here changed.
+
+- **The message text did not change.** The id is only added to the log context, and no message moved by a byte. Matchers that anchor on a message keep matching.
+- **Which rows carry it: every row, at every level.** That covers every `Log::…` call and every paired log+alert call in the board-mover code, including the success rows (`moved`, `stamped`, `created`). It is not limited to warnings, because the difference between a warning and a refusal cannot be read from the source at `Log::info`: `refusing to re-lane` and `moved` sit at the same level. "The board-mover code" means the `App\Bridge\Writeback` classes, the handlers implementing `DurableReaction`, and the classifiers implementing `EmitsWritebackReactions`. `tests/Support/BoardMoverCatalogCheck.php` derives that set from the tree and is the authority on it. A new writeback handler joins by implementing the interface. Three things are outside the set:
+  - the dispatcher and the receiver;
+  - the board-tools door (`app/Bridge/Tools/`), which writes cards when a seat asks, answers with its own refusal contract, and is not the mover;
+  - `bridge:reconcile`'s own `bridge_reconcile: moved` row. The rows the reconciler writes through a shared guard (the mapped-board refusal, the owner-tag clear) do carry ids. Its other decisions print to the console, not to the log.
+- **An entry holds `id`, `kind`, `surface`, `site`, `since`, and `retired_since` once retired.**
+  - `kind` is one of the classes declared in the file's own `kinds` block.
+  - `surface` is `log`, plus `alert_channel` when the row is written by the paired log+alert helper and so comes with a `writeback_move_failed` alert (§ *Optional: a loud alert on a permanent move-failure* above). That alert carries the arm's `reason`, not its `catalog_id`. The auto-unpark and revive rows are paired by hand with alerts of their own type, and their surface stays `log`.
+  - `site` is the `Class::method` holding the call, never a line number. A guard shared by several handlers (`MappedBoardGuard`, `PinGuard`, `ProgramCardGuard`, `OwnerTag`) logs under each handler's message prefix but has one id per call.
+  - `since` is the release that first shipped the id.
+- **`catalog_id` is not `reason`, and the two must not be merged.** The alert's `reason` is a dedup key: it varies with the HTTP status, and several arms share one value (`writeback_not_configured` is sent from every handler), so it cannot name one arm. Some log contexts also carry a `reason` key, and there it is a sub-cause *within* the arm, for example the stage-order fail-open's `stage_order_empty` / `stage_not_on_board`.
+- **Changing the catalog.** A new log call gets a new id and an entry. Rewording a message keeps its id, which is the point of having one. When a call is removed, its entry gets `retired_since` and stays in the file, because rows already on disk still carry the id. An id is never reused.
+- **The check** is `tests/Feature/Writeback/BoardMoverCatalogTest.php`. It fails when a site has no literal `catalog_id`, when a site uses an id the catalog does not list or has retired, when a live entry is emitted nowhere or from a different `site`, when an id is declared twice or emitted from two call sites, and when `surface` disagrees with how the site emits.
+- **What the check cannot verify.**
+  - Whether a `kind` is the right class for its row. That is a reviewer's call.
+  - Whether `since` names the release that actually shipped the id. The test checks only that it looks like a version.
+  - Whether a retired entry was deleted: nothing fails when one is.
+  - Whether any far-end reader handles an id correctly. This repo contains no such reader.
 
 ## Reconciliation — `bridge:reconcile` (DL-183)
 

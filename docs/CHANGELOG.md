@@ -18,6 +18,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **No channel-server re-deploy, deliberately.** The reference snapshot's tool description is still true (it names the window keys it lists, and already says to narrow with `stage` or raise `limit` — the new key is additive to it) and is **not** edited: any change to the snapshot bumps its version, which `bridge:check` then reports as out of date for every seat — the fleet-wide upgrade this change exists to make unnecessary. `examples/channel-servers/` is untouched.
   - **Docs correction found by the sibling audit:** `docs/board-tools.md`'s `tag_read_incomplete` row told the caller to *"Narrow with `stage`"*. That does not recover it — `stage` filters the tag rows after they are read, so a narrowed call hits the same page ceiling — and the row now says no argument does.
 
+- **card#10155 (DL-404): every writeback log row now carries a `catalog_id` in its log context, and every id is listed in the new `docs/board-mover-catalog.json`.** A log reader can classify a row by looking up its id instead of matching its prose, so rewording a message no longer breaks the reader. The coordination framework's board-mover check has drifted twice this way.
+  - **Message text is byte-identical.** The id is added to the context only. No log level, alert body, alert `reason`, dedup key or refusal decision moves.
+  - **Every level, not only warnings.** That includes success rows such as `kanban_move_card: moved` and `stamped correlation refs`, across the `App\Bridge\Writeback` classes, the durable writeback handlers and the writeback classifiers. `docs/writeback.md` § *The board-mover catalog* owns the contract and says what the check cannot verify.
+  - **`catalog_id` is a new key and is not `reason`.** Existing `reason` keys in log contexts and alert bodies are unchanged.
+  - ⚠ **A log consumer that compares a row's whole context for equality will see one more key.** One that reads individual keys sees no difference.
+  - **CI:** `tests/Feature/Writeback/BoardMoverCatalogTest.php` fails when a log site has no id, uses an id the catalog does not list, or when a catalog entry names a site that no longer emits it (unless retired), or an id is declared twice.
+  - **For custom code calling `WritebackAlertNotifier::warnAndNotify` / `warnAndNotifyCardIdWithheld`:** both now take the catalog id as a new FIRST argument, so a caller written against the old signature fails with a `TypeError`.
+
 ### Changed
 
 - ⚠ **card#9929 (DL-403) — CHANGES WHAT THE WRITEBACK REFUSES: a card tagged `program` is a PARENT naming several legs, and the bridge now writes NOTHING for it — not the stage, not a correlation ref.** Operator-gated and approved before implementation.

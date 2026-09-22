@@ -84,6 +84,7 @@ final class PrCorrelationCommenter
             $this->post($comment, $cause);
         } catch (Throwable $e) {
             Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
+                'catalog_id' => 'pr_correlation_comment.unexpected_failure',
                 'repo' => $payload['repo'] ?? null, 'cause' => $cause, 'reason' => 'unexpected', 'error' => RedactedErrorText::of($e),
             ]);
         }
@@ -101,7 +102,7 @@ final class PrCorrelationCommenter
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {
-            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token'] + $context + [
                 'reason' => 'token_unresolved', 'problem' => $resolution->problem,
             ]);
 
@@ -112,27 +113,27 @@ final class PrCorrelationCommenter
         try {
             $present = (new GitHubReadClient($token, self::TIMEOUT_SECONDS))->hasIssueCommentStartingWith($comment->repo, $comment->prNumber, $marker);
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_http_error'] + $context + [
                 'reason' => 'dedupe_read_refused', 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_failed'] + $context + [
                 'reason' => 'dedupe_read_failed', 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         }
         if ($present === null) {
-            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_incomplete'] + $context + [
                 'reason' => 'dedupe_read_incomplete',
             ]);
 
             return;
         }
         if ($present) {
-            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', $context);
+            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', ['catalog_id' => 'pr_correlation_comment.already_posted'] + $context);
 
             return;
         }
@@ -140,18 +141,18 @@ final class PrCorrelationCommenter
         try {
             (new GitHubWriteClient($token, self::TIMEOUT_SECONDS))->createIssueComment($comment->repo, $comment->prNumber, $comment->body());
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried, and the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_http_error'] + $context + [
                 'reason' => 'post_refused', 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried, and the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_failed'] + $context + [
                 'reason' => 'post_failed', 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         }
-        Log::info('pr_correlation_comment: posted', $context);
+        Log::info('pr_correlation_comment: posted', ['catalog_id' => 'pr_correlation_comment.posted'] + $context);
     }
 }

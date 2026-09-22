@@ -89,6 +89,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // to the empty repo rather than suppressing the signal — the same shape the
             // move handler's payload arms use.
             $this->alerts->warnAndNotify(
+                'promote_released.repo_invalid',
                 'kanban_promote_released: payload.repo is missing or not a string; ignoring',
                 ['payload' => $target->payload],
                 '', 'promote_on_release', null, 'promote_repo_invalid',
@@ -102,6 +103,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // Degrades to log-only (docs/writeback.md, *Branch-#3 degradation*); the call
             // is kept so this arm cannot drift out of the paired primitive.
             $this->alerts->warnAndNotify(
+                'promote_released.writeback_not_configured',
                 'kanban_promote_released: writeback is not configured (no writeback.json); ignoring',
                 ['repo' => $repo],
                 $repo, 'promote_on_release', null, 'writeback_not_configured',
@@ -111,7 +113,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         }
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null || ! $mapping->promoteOnRelease) {
-            Log::info('kanban_promote_released: repo not configured for promote_on_release; ignoring', ['repo' => $repo]);
+            Log::info('kanban_promote_released: repo not configured for promote_on_release; ignoring', ['catalog_id' => 'promote_released.repo_not_mapped', 'repo' => $repo]);
 
             return;
         }
@@ -125,12 +127,12 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // stage value as numeric — so no config that reaches here can leave either null.
             // An alert on a branch that cannot fire is a decoration, and it could never be
             // seen to fail (canon #9). Recorded in docs/writeback.md's *Still log-only*.
-            Log::warning('kanban_promote_released: mapping is missing the Shipped and/or Released stage; ignoring', ['repo' => $repo]);
+            Log::warning('kanban_promote_released: mapping is missing the Shipped and/or Released stage; ignoring', ['catalog_id' => 'promote_released.stages_missing', 'repo' => $repo]);
 
             return;
         }
         if ($shipped === $released) {
-            Log::info('kanban_promote_released: Shipped and Released map to the same stage — nothing to promote', ['repo' => $repo]);
+            Log::info('kanban_promote_released: Shipped and Released map to the same stage — nothing to promote', ['catalog_id' => 'promote_released.stages_identical', 'repo' => $repo]);
 
             return;
         }
@@ -152,6 +154,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         $resolution = (new GitHubTokenResolver)->resolveFor($configuredRepo);
         if (! $resolution->ok()) {
             $this->alerts->warnAndNotify(
+                'promote_released.no_github_token',
                 'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (place <secret_dir>/github/token, or set providers.github.token_path)',
                 ['repo' => $repo, 'reason' => $resolution->problem],
                 $repo, 'promote_on_release', null, 'promote_no_github_token',
@@ -170,6 +173,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // partial view (recent Shipped candidates are on the early pages), but make the
             // incompleteness LOUD — this leg has no reconcile backstop.
             $this->alerts->warnAndNotify(
+                'promote_released.board_truncated',
                 'kanban_promote_released: board read hit the page ceiling — cards beyond it are invisible to this scan and will not be promoted (they do not self-heal on the next release)',
                 ['repo' => $repo, 'board' => $mapping->boardId],
                 $repo, 'promote_on_release', null, 'promote_board_truncated',
@@ -218,6 +222,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
         if (count($candidates) > self::MAX_CANDIDATES) {
             $this->alerts->warnAndNotify(
+                'promote_released.candidate_cap',
                 'kanban_promote_released: Shipped candidate count exceeds the per-event cap — processing the cap; the remainder promote on the next release event',
                 ['repo' => $repo, 'count' => count($candidates), 'cap' => self::MAX_CANDIDATES],
                 $repo, 'promote_on_release', null, 'promote_candidate_cap',
@@ -232,6 +237,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
         }
         Log::info('kanban_promote_released: scan complete', [
+            'catalog_id' => 'promote_released.scan_complete',
             'repo' => $repo, 'board' => $mapping->boardId, 'candidates' => count($candidates), 'promoted' => $promoted,
         ]);
     }
@@ -272,6 +278,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
                 // repo this token cannot see, so a named 403/404 split here would be
                 // wrong-but-specific. The status + body are in the log context.
                 $this->alerts->warnAndNotify(
+                    'promote_released.getpull_4xx',
                     'kanban_promote_released: getPull refused (4xx) — skipping card (see `body`)',
                     ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, 'promote_getpull_4xx',
@@ -306,6 +313,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
+                    'promote_released.compare_4xx',
                     'kanban_promote_released: compareStatus refused (4xx) — skipping card (see `body`)',
                     ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, 'promote_compare_4xx',
@@ -337,6 +345,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
                 // 2026-07-21 that silently no-op'd a promote for 15 days). This leg has no
                 // reconcile backstop, so its failure paths must be loud (card#5312/DL-274).
                 $this->alerts->warnAndNotify(
+                    'promote_released.move_4xx',
                     'kanban_promote_released: kanban refused the move (4xx) — skipping card (see `body`)',
                     ['card_id' => $cardId, 'stage' => $released] + RefusalContext::from($e),
                     $repo, 'promote_on_release', $cardId, RefusalContext::writeReason('promote_movecard', $e),
@@ -347,7 +356,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             throw $e;
         }
         OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release');
-        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
+        Log::info('kanban_promote_released: promoted Shipped→Released', ['catalog_id' => 'promote_released.promoted', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;
     }
@@ -375,6 +384,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
     private function skipUnverifiable(string $repo, int $cardId, int $prNumber, string $reason): void
     {
         $this->alerts->warnAndNotify(
+            'promote_released.release_state_unreadable',
             'kanban_promote_released: GitHub answered, but the answer does not say whether this card is released — skipping card (see `reason`)',
             ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'reason' => $reason],
             $repo, 'promote_on_release', $cardId, $reason,

@@ -76,6 +76,7 @@ final class OwnerTag
         $tags = CardTags::readable($card);
         if ($tags === null) {
             $alerts->warnAndNotify(
+                'owner_tag.tags_unreadable',
                 "{$arm}: the card moved, but its tag list is not readable in full, so its owner: tag was NOT cleared — writing a list built from what could be read would delete tags nobody saw",
                 $context,
                 $repo, $outcome, $cardId, self::REASON_TAGS_UNREADABLE, $issueNumber,
@@ -97,7 +98,7 @@ final class OwnerTag
             return;
         }
 
-        Log::info("{$arm}: cleared the card's owner: tag after its terminal move", $context
+        Log::info("{$arm}: cleared the card's owner: tag after its terminal move", ['catalog_id' => 'owner_tag.cleared'] + $context
             + ['removed' => array_values(array_diff($tags, $kept))]
             + MappedBoardGuard::boardContext($card, $mapping));
     }
@@ -130,6 +131,7 @@ final class OwnerTag
         }
 
         $alerts->warnAndNotify(
+            'owner_tag.clear_failed',
             "{$arm}: the card moved, but the {$step} that clears its owner: tag failed, so the claim stays on the card — the move stands and the clear is not retried (see `body` / `error`)",
             $context + $detail,
             $repo, $outcome, $cardId, $reason, $issueNumber,

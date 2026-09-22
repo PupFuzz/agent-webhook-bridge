@@ -773,9 +773,9 @@ final class KanbanClient
     {
         $read = $this->readBoard($boardId);
         if ($read->cards === []) {
-            Log::warning('writeback correlation: board read returned 0 cards — every card-move correlation will silently no-op until this is resolved; if the board is not genuinely empty, verify the writeback token user\'s board membership and that board_id/instance are correct', ['board_id' => $boardId]);
+            Log::warning('writeback correlation: board read returned 0 cards — every card-move correlation will silently no-op until this is resolved; if the board is not genuinely empty, verify the writeback token user\'s board membership and that board_id/instance are correct', ['catalog_id' => 'kanban_client.correlation_board_empty', 'board_id' => $boardId]);
         } elseif ($read->truncated) {
-            Log::warning('writeback correlation: board read hit the '.self::MAX_PAGES.'-page safety ceiling ('.(self::MAX_PAGES * self::SEARCH_LIMIT).' cards) — any cards beyond it are invisible to correlation', ['board_id' => $boardId, 'ceiling' => self::MAX_PAGES * self::SEARCH_LIMIT]);
+            Log::warning('writeback correlation: board read hit the '.self::MAX_PAGES.'-page safety ceiling ('.(self::MAX_PAGES * self::SEARCH_LIMIT).' cards) — any cards beyond it are invisible to correlation', ['catalog_id' => 'kanban_client.correlation_page_ceiling', 'board_id' => $boardId, 'ceiling' => self::MAX_PAGES * self::SEARCH_LIMIT]);
         }
 
         return $read->cards;
@@ -1113,7 +1113,7 @@ final class KanbanClient
     /** The DL-026 degraded-read line both correlation projections share — one message, one owner. */
     private static function warnUnreadableCollection(string $read, int $boardId): void
     {
-        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; ".self::UNREADABLE_BODY_CAUSE, ['board_id' => $boardId, 'read' => $read]);
+        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'kanban_client.card_collection_unreadable', 'board_id' => $boardId, 'read' => $read]);
     }
 
     /**
@@ -1132,7 +1132,7 @@ final class KanbanClient
      */
     private static function warnUnreadableStages(int $boardId): void
     {
-        Log::warning("writeback stage read: board {$boardId}'s preload read returned a 200 whose body carried no workflows collection — every stage answer this client gives for the board (order, name, id) is EMPTY, and empty is indistinguishable from a board with no stages, so each caller degrades as though it had one; ".self::UNREADABLE_BODY_CAUSE, ['board_id' => $boardId, 'read' => 'board-preload-stages']);
+        Log::warning("writeback stage read: board {$boardId}'s preload read returned a 200 whose body carried no workflows collection — every stage answer this client gives for the board (order, name, id) is EMPTY, and empty is indistinguishable from a board with no stages, so each caller degrades as though it had one; ".self::UNREADABLE_BODY_CAUSE, ['catalog_id' => 'kanban_client.stage_collection_unreadable', 'board_id' => $boardId, 'read' => 'board-preload-stages']);
     }
 
     /**

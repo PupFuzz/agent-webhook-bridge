@@ -195,6 +195,7 @@ final class PinGuard
         }
 
         $alerts->warnAndNotify(
+            'pin_guard.pinned',
             "{$arm}: {$write} refused — card is pinned (block_reason/no-automove)",
             ['card_id' => $cardId, 'repo' => $repo] + $logContext,
             $repo, $outcome, $cardId, self::REASON, $issueNumber,
@@ -344,6 +345,7 @@ final class PinGuard
             .'dropped them, or a caller handed in a row it never read) and every pin-guarded '
             .'write reached through this row is unguarded until it is fixed',
             [
+                'catalog_id' => 'pin_guard.row_unreadable',
                 'card_id' => is_numeric($card['id'] ?? null) ? (int) $card['id'] : null,
                 'reason' => self::UNREADABLE_ROW_REASON,
             ],
