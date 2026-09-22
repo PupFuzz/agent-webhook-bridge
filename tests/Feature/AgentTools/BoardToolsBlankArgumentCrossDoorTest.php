@@ -651,6 +651,12 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      * carry. The first is rt#538's shape: a `tool` key that IS present, in a body that was
      * cut off — the HTTP door used to answer it "request must carry a non-empty `tool`".
      *
+     * ⚑ THIS PROVIDER IS THE CONTROL SET FOR EVERY ARM OF `ToolCallBody::jsonType()`.
+     * An arm with no row here is a refusal the operator-facing enumeration names and nothing
+     * exercises — which is what `true` / `false` were until card#10106's review measured it.
+     * Add an arm there, add its row here; `true` and `false` are separate rows because they
+     * are separate inputs, not because they produce separate words.
+     *
      * @return array<string, array{0: string, 1: string}>
      */
     public static function unparseableBodies(): array
@@ -663,6 +669,8 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             'a JSON array' => ['[{"tool":"board_my_cards"}]', 'request body is a JSON array, not an object'],
             'a JSON string' => ['"board_my_cards"', 'request body is a JSON string, not an object'],
             'a JSON number' => ['42', 'request body is a JSON number, not an object'],
+            'JSON true' => ['true', 'request body is a JSON boolean, not an object'],
+            'JSON false' => ['false', 'request body is a JSON boolean, not an object'],
             'JSON null' => ['null', 'request body is a JSON null, not an object'],
         ];
     }
