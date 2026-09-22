@@ -254,9 +254,13 @@ class ReconcileCommandTest extends TestCase
      * placeholder on purpose: it IS repo-qualified, names no pull request, and so falls
      * through to the same ambiguity (`TrackedCardRef::fromPayload()`). A remedy reading
      * "a repo-qualified pr_url" is satisfied by exactly the value on this card.
+     *
+     * `docs/writeback.md` quotes this line verbatim with the numbers elided (`…`), and nothing
+     * else holds the quote to the code, so the same literal is asserted against both.
      */
     public function test_a_bare_pr_number_on_a_shared_board_is_skipped_with_a_remedy_naming_a_real_pr(): void
     {
+        $remedy = "on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped";
         $stages = ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49];
         $this->writeWriteback([
             'owner/repo' => ['board_id' => 8, 'stages' => $stages],
@@ -265,10 +269,16 @@ class ReconcileCommandTest extends TestCase
         $this->fake([$this->card(5, 50, ['pr_number' => 5, 'pr_url' => $this->prUrl(0)])], [5 => $this->mergedToDevPr()]);
 
         $this->artisan('bridge:reconcile')
-            ->expectsOutputToContain("card 5: bare pr_number 5 on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped")
+            ->expectsOutputToContain("card 5: bare pr_number 5 {$remedy}")
             ->assertExitCode(0);
 
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/'));
+
+        $this->assertStringContainsString(
+            "bare pr_number … {$remedy}",
+            File::get(base_path('docs/writeback.md')),
+            'bridge:reconcile\'s shared-board skip line changed: update its verbatim quote in docs/writeback.md § Optional: a repo whose PRs cite cards on SEVERAL boards.',
+        );
     }
 
     /**
