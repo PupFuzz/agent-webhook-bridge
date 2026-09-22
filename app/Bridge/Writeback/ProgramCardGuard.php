@@ -130,6 +130,7 @@ final class ProgramCardGuard
         }
 
         $alerts->warnAndNotify(
+            'program_card_guard.parent_card',
             "{$arm}: {$write} REFUSED — card {$cardId} carries the `".self::TAG.'` tag, so it is a PARENT naming several legs '
             .'and not one deliverable; one pull request cannot speak for it. Nothing was written: not the stage, not a '
             .'correlation ref. The pull request should cite the LEG card it finishes instead, and the parent should be '

@@ -594,6 +594,13 @@ everything outside it. ⛔ **That bound was measured, not hypothetical** — the
 handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern was invisible to it
 exactly as the `app/Bridge/Tools/` compare was.
 
+Another minuted narrowing, which reads through PhpParser rather than `SourceScan`:
+`BoardMoverCatalogTest` (DL-405). It walks `SourceScan::appFiles()` and keeps a class by what the class
+DECLARES (its namespace, or the writeback interface it implements), never by its file name. It reads
+the kept files with PhpParser, because what it checks is a key inside a call's ARGUMENT (a
+`catalog_id` in a context array, possibly on the far side of a `+`). That is a parse question, and a
+token predicate cannot answer it. `tests/Support/BoardMoverCatalogCheck.php`'s docblock owns the scope.
+
 **When the answer for a site is "yes, and that is fine", DISPOSITION it — do not narrow the
 population to exclude it.** A disposition list entry names the SUBJECT the site reads and why it
 is not the thing being policed; a narrowed population reports clean over a question nobody asked.

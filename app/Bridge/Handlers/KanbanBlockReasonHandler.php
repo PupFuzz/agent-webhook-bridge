@@ -80,6 +80,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             // next branch) so the signal still names a repo where it can.
             $repoRaw = $target->payload['repo'] ?? null;
             $this->alerts->warnAndNotify(
+                'block_reason.target_id_not_card_id',
                 'kanban_block_reason: target_id is not a card id; ignoring',
                 ['target_id' => $cardIdRaw],
                 is_string($repoRaw) ? $repoRaw : '', self::ALERT_OUTCOME, null, 'target_id_not_card_id',
@@ -96,6 +97,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             // Malformed payload = a deterministic classifier bug → permanent: alert + log
             // + no-op, never a durable throw (which would 5xx-storm an identically-failing event).
             $this->alerts->warnAndNotify(
+                'block_reason.repo_or_action_invalid',
                 'kanban_block_reason: payload.repo must be a non-empty string and payload.action must be set|clear; ignoring',
                 ['card_id' => $cardId, 'payload' => $payload],
                 is_string($repo) ? $repo : '', self::ALERT_OUTCOME, $cardId, 'repo_or_action_invalid',
@@ -109,6 +111,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             // Degrades to log-only (docs/writeback.md, *Branch-#3 degradation*); the call
             // is kept so this arm cannot drift out of the paired primitive.
             $this->alerts->warnAndNotify(
+                'block_reason.writeback_not_configured',
                 'kanban_block_reason: writeback is not configured (no writeback.json); ignoring',
                 ['card_id' => $cardId, 'repo' => $repo],
                 $repo, self::ALERT_OUTCOME, $cardId, 'writeback_not_configured',
@@ -119,7 +122,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null || ! $mapping->draftOverlay) {
             // Unmapped or opt-out: permanent refusal — log + no-op (never 5xx-retry a config gap).
-            Log::info('kanban_block_reason: repo not mapped or draft_overlay off; ignoring', ['card_id' => $cardId, 'repo' => $repo]);
+            Log::info('kanban_block_reason: repo not mapped or draft_overlay off; ignoring', ['catalog_id' => 'block_reason.repo_not_mapped', 'card_id' => $cardId, 'repo' => $repo]);
 
             return;
         }
@@ -172,6 +175,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
                 // `readReason()` owns for both, and a second copy of that arm's prose here is
                 // what would let the two drift.
                 $this->alerts->warnAndNotifyCardIdWithheld(
+                    'block_reason.getcard_4xx',
                     'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave); the board-scoped check above read this card id back off the mapped board moments earlier, so a foreign install\'s card id is EXCLUDED here and what `body`\'s status leaves is this token\'s own access to this card (403) or a card that went away between the two reads (404); the card id is in this log line only, never in the alert channel',
                     ['card_id' => $cardId] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
@@ -211,6 +215,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // clear the marker (and release the DL-178 pin) that another PR's draft set.
         if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['pr_number'] ?? null)) {
             $this->alerts->warnAndNotify(
+                'block_reason.card_token_uncorroborated',
                 'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
                 [
                     'card_id' => $cardId, 'repo' => $repo,
@@ -231,7 +236,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             // (PinGuard's trim semantics — a whitespace-only value is not a human pin).
             // A human reason, or our marker already present, is left (idempotent no-op).
             if ($current !== null && trim($current) !== '') {
-                Log::info('kanban_block_reason: set skipped — card already has a block_reason (add-if-missing)', ['card_id' => $cardId, 'repo' => $repo]);
+                Log::info('kanban_block_reason: set skipped — card already has a block_reason (add-if-missing)', ['catalog_id' => 'block_reason.set_skipped_already_set', 'card_id' => $cardId, 'repo' => $repo]);
 
                 return;
             }
@@ -240,7 +245,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             // clear-if-ours: null block_reason only when it is EXACTLY our marker; a
             // human-set reason is preserved.
             if ($current !== self::MARKER) {
-                Log::info('kanban_block_reason: clear skipped — block_reason is not the draft marker (clear-if-ours)', ['card_id' => $cardId, 'repo' => $repo]);
+                Log::info('kanban_block_reason: clear skipped — block_reason is not the draft marker (clear-if-ours)', ['catalog_id' => 'block_reason.clear_skipped_not_ours', 'card_id' => $cardId, 'repo' => $repo]);
 
                 return;
             }
@@ -252,6 +257,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
+                    'block_reason.write_4xx',
                     'kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
                     ['card_id' => $cardId] + RefusalContext::from($e),
                     $repo, self::ALERT_OUTCOME, $cardId, RefusalContext::writeReason('blockreason', $e),
@@ -264,6 +270,6 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // Both boards, from the guard's own rendering (card#7212): the old single `board`
         // key was the config's INTENDED board, which is emitted whether or not the card
         // written to was on it.
-        Log::info('kanban_block_reason: '.$action, ['card_id' => $cardId, 'repo' => $repo] + MappedBoardGuard::boardContext($card, $mapping));
+        Log::info('kanban_block_reason: '.$action, ['catalog_id' => 'block_reason.written', 'card_id' => $cardId, 'repo' => $repo] + MappedBoardGuard::boardContext($card, $mapping));
     }
 }

@@ -127,9 +127,9 @@ final class CardCollapse
                 continue;
             }
             if ($client->archiveCard($id)) {
-                Log::info("{$subsystem}: archived duplicate card sharing the same correlation key", $ctx);
+                Log::info("{$subsystem}: archived duplicate card sharing the same correlation key", ['catalog_id' => 'card_collapse.duplicate_archived'] + $ctx);
             } else {
-                Log::error("{$subsystem}: duplicate archive returned 200 but the card is not archived (archived_at null); NOT retrying", $ctx);
+                Log::error("{$subsystem}: duplicate archive returned 200 but the card is not archived (archived_at null); NOT retrying", ['catalog_id' => 'card_collapse.archive_not_applied'] + $ctx);
             }
         }
 

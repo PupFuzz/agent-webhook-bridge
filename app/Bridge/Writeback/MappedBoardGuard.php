@@ -236,6 +236,7 @@ final class MappedBoardGuard
         }
 
         $alerts->warnAndNotify(
+            'mapped_board_guard.card_not_on_mapped_board',
             $arm.': REFUSED — card is not on the mapped board',
             ['card_id' => $cardId, 'repo' => $repo]
                 + self::boardContext($card, $mapping, BoardDivergenceLedger::DISPOSITION_REFUSED)
@@ -370,6 +371,7 @@ final class MappedBoardGuard
             // here and the slug says the token's scope instead.
             $reason = RefusalContext::readReason('boardscope', $lookupRefused, foreignIdExcluded: true);
             $alerts->warnAndNotifyCardIdWithheld(
+                'mapped_board_guard.board_scope_lookup_4xx',
                 $arm.': REFUSED — '.($multi
                     ? 'a board-scoped lookup that establishes whether this card id is on one of the boards this mapping declares ('.implode(', ', $boardIds).') was itself refused by kanban (4xx), so membership could not be established across the declared set and nothing was read unscoped (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel'
                     : 'the board-scoped lookup that establishes whether this card id is on the mapped board was itself refused by kanban (4xx), so membership could not be established and nothing was read unscoped (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel'),
@@ -401,6 +403,7 @@ final class MappedBoardGuard
         };
 
         $alerts->warnAndNotifyCardIdWithheld(
+            'mapped_board_guard.card_id_not_established',
             $message,
             ['card_id' => $cardId, 'repo' => $repo, 'mapped_board' => $mapping->boardId]
                 + ($multi ? ['declared_boards' => $boardIds] : []),
