@@ -1194,6 +1194,7 @@ class WritebackConfigTest extends TestCase
 
         $mapping = WritebackConfig::load($this->dir)->mappingFor('owner/repo');
         $this->assertNull($mapping->boards);
+        $this->assertFalse($mapping->declaresAdditionalBoards());
         $this->assertSame([8], $mapping->declaredBoardIds());
         $this->assertSame([$mapping], $mapping->perDeclaredBoard(),
             'a single-board mapping must yield ITSELF — the resolution loop then runs against exactly '
@@ -1218,6 +1219,8 @@ class WritebackConfigTest extends TestCase
             .'are on its own board at one request, and it is why `boards` is additive rather than a replacement');
         $narrowed = $mapping->perDeclaredBoard();
         $this->assertSame([2, 13, 3], array_map(fn ($m) => $m->boardId, $narrowed));
+        $this->assertSame([true, true, true], array_map(fn ($m) => $m->declaresAdditionalBoards(), $narrowed),
+            'every narrowed copy still declares `boards`, which is what makes `declared_board` present on each of its records');
         $this->assertSame([22, 97, 22], array_map(fn ($m) => $m->stageFor('merged'), $narrowed),
             'stage ids are per-board arbitrary integers, so each declared board answers from ITS OWN map — '
             .'board 3 and board 2 both using 22 is a coincidence a shared map would have made look like a rule');

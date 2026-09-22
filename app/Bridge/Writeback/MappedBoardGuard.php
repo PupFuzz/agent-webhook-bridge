@@ -184,7 +184,7 @@ final class MappedBoardGuard
         string $disposition = BoardDivergenceLedger::DISPOSITION_RECORDED,
     ): array {
         $context = ['card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->mappedBoardId];
-        if ($mapping->boards !== null) {
+        if ($mapping->declaresAdditionalBoards()) {
             $context['declared_board'] = $mapping->boardId;
         }
 

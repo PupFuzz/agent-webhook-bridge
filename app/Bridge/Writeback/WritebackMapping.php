@@ -222,6 +222,18 @@ final class WritebackMapping
     }
 
     /**
+     * Does this mapping set `boards` at all (card#9850 / DL-404)? True on every copy
+     * {@see perDeclaredBoard()} yields for such a mapping — `boards` is carried forward into
+     * each — and false on a mapping written without the key, whose records must stay
+     * byte-identical. A named accessor so that the reader of the property is found by the
+     * same grep as every other declared-board method, never a bare `->boards` read.
+     */
+    public function declaresAdditionalBoards(): bool
+    {
+        return $this->boards !== null;
+    }
+
+    /**
      * This mapping once per declared board, each narrowed onto that board and carrying THAT
      * board's stage map and `started` source sets — the loop where the card-move path used to
      * hold a scalar.
