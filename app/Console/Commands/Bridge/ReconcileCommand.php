@@ -528,7 +528,7 @@ class ReconcileCommand extends BridgeCommand
                 return [$repo, $mapping, $canon, $ref->prNumber, null];
 
             case TrackedRefKind::Ambiguous:
-                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} on shared board — ambiguous repo (needs a repo-qualified pr_url); skipped");
+                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped");
                 $this->skipped++;
 
                 return $none;

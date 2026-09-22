@@ -249,6 +249,29 @@ class ReconcileCommandTest extends TestCase
     }
 
     /**
+     * card#9850: a bare `pr_number` on a SHARED board names no repo, so the card is skipped —
+     * and the skip line's remedy must be one that works. The fixture carries the `.../pull/0`
+     * placeholder on purpose: it IS repo-qualified, names no pull request, and so falls
+     * through to the same ambiguity (`TrackedCardRef::fromPayload()`). A remedy reading
+     * "a repo-qualified pr_url" is satisfied by exactly the value on this card.
+     */
+    public function test_a_bare_pr_number_on_a_shared_board_is_skipped_with_a_remedy_naming_a_real_pr(): void
+    {
+        $stages = ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49];
+        $this->writeWriteback([
+            'owner/repo' => ['board_id' => 8, 'stages' => $stages],
+            'owner/other' => ['board_id' => 8, 'stages' => $stages],
+        ]);
+        $this->fake([$this->card(5, 50, ['pr_number' => 5, 'pr_url' => $this->prUrl(0)])], [5 => $this->mergedToDevPr()]);
+
+        $this->artisan('bridge:reconcile')
+            ->expectsOutputToContain("card 5: bare pr_number 5 on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped")
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/'));
+    }
+
+    /**
      * DL-309, on the real surface: a `pr_number` that names no single integer must not
      * reach GitHub at all. Before the fix the float `1.5` truncated to PR 1 — a real,
      * unrelated pull request — and this card drifted forward on its state, while the
