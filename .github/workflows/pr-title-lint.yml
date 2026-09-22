@@ -3,10 +3,12 @@ name: PR title correlation-key lint
 # TWO REQUIREMENTS, one per half of the writeback contract, and they are different
 # propositions — which is the whole reason the second one exists:
 #
-#   CORRELATION — a PR whose head branch NAMES a card id MUST carry a card token or
-#   a `DL-<number>` token in its title. That token is the ONLY key the card-movement
-#   writeback has to correlate a merged PR back to its tracking card; without it the
-#   card silently never moves.
+#   CORRELATION — a PR whose head branch NAMES a card id MUST carry that card's
+#   token in its title, AND that card must be the one the writeback SELECTS (the
+#   head ref's card token when it has one, else the title's LEFTMOST — card#10031).
+#   On a bare-id branch (`<type>/<id>-slug`) the title token is the only key that
+#   names the card; a title citing another card first would move THAT card. A bare
+#   `DL-<number>` does not satisfy this: a DL is bound to no one card (card#10031).
 #
 #   CLOSURE (card#8294) — a PR that CORRELATES a card must also CLAIM that merging
 #   it finishes that card, on one of the two routes DL-305/DL-308 accept. Correlation
@@ -45,8 +47,10 @@ name: PR title correlation-key lint
 # — the same silent->loud conversion as the release drift-gate.
 #
 # SCOPE / LIMITS (cannot be solved here — do not try):
-#   - Token-presence lint only: it cannot verify the id resolves to a real card,
-#     or to the RIGHT card.
+#   - It reads the event payload only, so it cannot verify the id resolves to a
+#     real, open card on the board. What it does pin is that the card token the
+#     writeback will SELECT names the card this branch names — the selection
+#     rule is tied to the classifier in PrTitleLintTest, not restated by hand.
 #   - A cross-board work item (a board-12 card implemented via a kanban/bridge PR,
 #     e.g. #3765 itself) passes this lint but still will not auto-move —
 #     correlation is deliberately board-scoped 1:1 per repo (DL-174). This checks
@@ -186,7 +190,7 @@ jobs:
             echo "::warning::This PR's title or branch looks like it names a DL, but the token does not match the correlation grammar, so it correlates to nothing: no card will move on this token and no dl_number will be stamped from it. Accepted: DL-<number> — the hyphen is required and there is no glued form. Common misses: DL_239 / DL.239 / DL:239 / DL#239 / DL #239 (underscore, dot, colon, hash, space are not separators), the glued DL239, the plural in any spelling (DLs-239, DLs239, ... — the token is singular), and non-ASCII digits (the grammar is ASCII 0-9 only, DL-231)."
           fi
 
-      - name: Require card#/DL token for card-id branches
+      - name: Require the branch's card token for card-id branches
         # Explicit bash: the script uses pipefail + [[ =~ ]], and a self-hosted
         # runner without bash on PATH would otherwise silently fall back to sh.
         shell: bash
@@ -252,44 +256,104 @@ jobs:
           # Set by the `=~` above — the `!` negates the TEST, not the capture.
           card_id="${BASH_REMATCH[3]}"
 
-          # Accept a genuine "card-<exact-id>"/"card#<exact-id>"/glued
-          # "card<exact-id>" (the separator is optional since DL-233 — the lint must
-          # accept everything the classifier correlates, or it reds a title that
-          # would have moved the card — an INTENT, not an invariant: this step has
-          # measured exceptions in both directions, pinned in PrTitleLintTest and
-          # tracked as card#5300, because repairing either changes what this gate
-          # accepts) or "DL-<1-4
-          # digits>" token, bounded on BOTH sides so a coincidental substring does
-          # not satisfy the check: the leading (^|[^0-9a-z_]) mirrors the
-          # classifier's \b (underscore is a word char there — a title the lint
-          # passes must also correlate), rejecting tails like "IDL-2"/
-          # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
-          # longer id like "card#37700". Inputs are pre-folded, so the lowercase
-          # class is the whole alphabet.
+          # TWO CONJUNCTS, and a green needs both (card#10031).
           #
-          # The DL arm enumerates its digits instead of writing the range [0-9]
-          # because a bracket RANGE inside bash's [[ =~ ]] is resolved by
-          # COLLATION, not by codepoint: under en_US.UTF-8 (measured; C and
-          # C.UTF-8 disagree) [0-9] admits U+0663 and friends, so the gate
-          # greened "DL-<ARABIC-INDIC THREE>" — a token the classifier's ASCII
-          # \d correlates to nothing, which is the silent no-op this gate exists
-          # to stop, and a breach of DL-231's fleet-wide ASCII-digits-only
-          # clause. An enumerated set depends on no locale data at all, where
-          # [[:digit:]] would trade one piece of locale data for another. The
-          # ranges that REMAIN below are negated ([^0-9], [^0-9a-z_]) and the
-          # branch-shape test, where collation reds instead of greening;
-          # narrowing those would make this gate more permissive, so they are
-          # measured and pinned in PrTitleLintTest under card#5300, not fixed
-          # here.
-          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0123456789]{1,4}([^0-9]|$) ]]; then
-            echo "OK: title carries a correlation token for card $card_id."
+          # PRESENCE — the title carries "card-<exact-id>"/"card#<exact-id>"/glued
+          # "card<exact-id>", bounded on BOTH sides so a coincidental substring
+          # does not satisfy it: the leading (^|[^0-9a-z_]) mirrors the
+          # classifier's \b (underscore is a word char there), rejecting tails
+          # like "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
+          # longer id like "card#37700". Inputs are pre-folded, so the lowercase
+          # class is the whole alphabet. The lint means to accept what the
+          # classifier correlates — an INTENT, not an invariant: this conjunct has
+          # a measured false red (a leading-zero id), pinned in PrTitleLintTest
+          # and tracked as card#5300, because repairing it changes what this gate
+          # accepts. The remaining negated ranges ([^0-9], [^0-9a-z_]) and the
+          # branch-shape test are collation-sensitive in the RED direction and
+          # are pinned there under card#5300 too.
+          #
+          # SELECTION — the card the writeback will actually pick is this
+          # branch's. Presence alone is not that: the classifier takes ONE card
+          # token, the head ref's when the ref carries one and otherwise the
+          # title's LEFTMOST (`GitHubPrCardMoveClassifier::cardTokenResolution()`
+          # over `CardTokenGrammar::parse()`), so a title that cites another card
+          # to the LEFT of its own passes presence and moves the other card.
+          # `token` below is the grammar's regex, and the head-then-title order is
+          # the classifier's; PrTitleLintTest ties the first to CardTokenGrammar by
+          # answer set and the second to the classifier's own move target, so
+          # neither is kept in lockstep by discipline. Its digits are enumerated,
+          # not the range [0-9], for DL-272's reason: bash's [[ =~ ]] resolves a
+          # range by COLLATION, and under en_US.UTF-8 [0-9] admits U+0663.
+          #
+          # A bare "DL-<number>" is NOT a correlation token for this branch's card
+          # and no longer satisfies this gate (card#10031, the bridge half of
+          # kanban-board card#10021). It matched the DL SHAPE, while the writeback
+          # resolves a DL's VALUE against the board's `payload.dl_number`, and a DL
+          # is bound to no one card — so a title whose only token was a DL greened here and the merge
+          # moved whichever card that DL resolved to. Resolving the DL here instead
+          # is the wrong authority (the board owns DL -> card; this job has no
+          # checkout and no board credential), and a DL beside the right card
+          # token is still fine: on a disagreement the classifier's DL-218 rule
+          # takes the card token. The DL pattern survives only in the diagnostic
+          # below, with its digits enumerated for the same collation reason.
+          token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
+          selected=''
+          selected_from=''
+          if [[ "$branch_lc" =~ $token ]]; then
+            selected=$((10#${BASH_REMATCH[3]}${BASH_REMATCH[4]}))
+            selected_from='the head branch'
+          elif [[ "$title_lc" =~ $token ]]; then
+            selected=$((10#${BASH_REMATCH[3]}${BASH_REMATCH[4]}))
+            selected_from='the title'
+          fi
+
+          # One line, printed on every enforced run, green or red: it is what
+          # PrTitleLintTest compares against the classifier's own move target.
+          if [ -n "$selected" ]; then
+            echo "The writeback selects card $selected from $selected_from."
+          else
+            echo "The writeback selects no card: neither the head branch nor the title carries a card token it parses."
+          fi
+
+          present=0
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]]; then
+            present=1
+          fi
+
+          # The branch id as a NUMBER, for the same leading-zero folding the
+          # grammar's (int) cast does — and empty when the id is not ASCII digits.
+          # This step pins no locale (the negated ranges above are collation-
+          # sensitive by design, card#5300), so under a UTF-8 collation the branch
+          # predicate's [0-9] can capture a Unicode digit; `$((10#٣))` would then
+          # abort the step under `set -e` and replace an actionable refusal with a
+          # bash error. Empty simply fails the compare, and the missing-token
+          # message is printed instead.
+          card_id_n=''
+          if [[ "$card_id" =~ ^[0123456789]+$ ]]; then
+            card_id_n=$((10#$card_id))
+          fi
+
+          if [ "$present" = 1 ] && [ -n "$card_id_n" ] && [ "$selected" = "$card_id_n" ]; then
+            echo "OK: title carries card $card_id, and it is the card the writeback selects."
             exit 0
           fi
 
-          echo "::error::PR title is missing a card-movement correlation token."
-          echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' (nor 'card#$card_id') nor a 'DL-<number>' token."
-          echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
-          echo "Fix: add 'card-$card_id' or the relevant 'DL-<number>' to the PR title, then re-save (the 'edited' event re-runs this check)."
+          echo "::error::PR title does not correlate this branch's card."
+          if [ "$present" = 1 ] && [ -z "$selected" ]; then
+            echo "Branch '$BRANCH' targets card $card_id and the title names it, but not in a spelling the writeback parses, so it selects no card at all (a glued 'card<id>' needs at least two digits)."
+            echo "Fix: write it as 'card#$card_id', then re-save (the 'edited' event re-runs this check)."
+          elif [ "$present" = 1 ]; then
+            echo "Branch '$BRANCH' targets card $card_id and the title carries its token, but the writeback selects card $selected from $selected_from: it reads the head branch's card token when there is one, otherwise the title's LEFTMOST card token."
+            echo "Merging this PR moves card $selected, and card $card_id never moves."
+            echo "Fix: make 'card#$card_id' the first card token in the title (cite the other card after it, or not at all), then re-save (the 'edited' event re-runs this check)."
+          else
+            echo "Branch '$BRANCH' targets card $card_id, but the title carries no 'card#$card_id' (or 'card-$card_id') token."
+            echo "Without it the writeback cannot correlate this PR to card $card_id, and the card silently never moves."
+            if [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0123456789]+ ]]; then
+              echo "The title's 'DL-<number>' is NOT a substitute: a DL is not bound to one card, so the writeback can resolve it to a DIFFERENT card and move that one while card $card_id never moves (card#10031). Keep the DL if it is relevant; it just cannot stand in for 'card#$card_id'."
+            fi
+            echo "Fix: add 'card#$card_id' to the PR title, then re-save (the 'edited' event re-runs this check)."
+          fi
           exit 1
 
       - name: Require a closure claim on a card-correlating PR
@@ -400,13 +464,23 @@ jobs:
             exit 0
           fi
 
-          # WHICH card this PR correlates, read the way the classifier reads it:
-          # CardTokenGrammar::parse() is LEFTMOST-ONLY, so the first token in the
-          # TITLE is the one that selects. Keyed on the title and not on the branch
-          # shape deliberately — the branch-shape predicate belongs to the step above
-          # and a second copy of it here is the restatement this file keeps paying for;
-          # and it is the title that catches the `card-sign-kbcard` spelling, where the
-          # branch names no id at all yet the title still correlates a card.
+          # WHICH card this PR correlates: the title's LEFTMOST card token
+          # (CardTokenGrammar::parse() is leftmost-only). That is the classifier's
+          # selection ONLY when the head ref carries no card token of its own — when
+          # it does, the classifier selects the HEAD's token and treats a
+          # disagreeing title token as a foreign citation (card#5287). This step does
+          # not model that precedence, so on a `card`-stem branch whose title cites
+          # another card FIRST it names the cited card and reds a merge the
+          # writeback would close structurally: a false red, loud and one retitle
+          # away. Pinned in PrTitleLintTest rather than repaired here, because
+          # repairing it changes what this gate accepts (card#10031). The require
+          # step above DOES model the precedence. The two steps name different
+          # cards exactly when the head ref carries a card token and the title's
+          # leftmost token names another card.
+          # Keyed on the title rather than the branch shape because the
+          # branch-shape predicate belongs to the step above, and because it is the
+          # title that catches the `card-sign-kbcard` spelling, where the branch
+          # names no id at all yet the title still correlates a card.
           #
           # A title with no card token correlates nothing, so no merge can withhold a
           # move: docs chores, dependabot bumps and every tokenless PR pass here

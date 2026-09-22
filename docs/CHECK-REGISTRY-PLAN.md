@@ -2811,7 +2811,12 @@ the work distinguishes those.
   cannot call the PHP authority without adding both; extending the answer-set guard was the
   correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard gate); one
   row — the locale-dependent Unicode-digit false green — was approved and fixed under DL-272, the
-  rest are still pinned.
+  rest are still pinned. **Superseded in part by card#10031:** the DL arm is no longer an accept
+  arm at all (a DL is bound to no one card), so the `DL-12345` false red is gone with it; and the
+  gate leg now also requires that the card the classifier SELECTS is the branch's, which reds the
+  glued `card4` title too, since it selects no card. What stays pinned under card#5300 is the
+  leading-zero false red and the collation-sensitive negated classes — `PrTitleLintTest` holds the
+  current list.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
   site to migrate and another chance to re-mint the same card. **LIFTED: Stage 8 has landed.** A
   new leg is now added as a registered `Check`, and `CheckCommandRegistrationTest`'s pinned id list
