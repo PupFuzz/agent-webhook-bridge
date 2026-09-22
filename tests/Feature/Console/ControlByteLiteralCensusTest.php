@@ -30,6 +30,8 @@ class ControlByteLiteralCensusTest extends TestCase
         'Bridge/Validation/SocketPath.php::isValid#1' => ['\x00', 'a str_contains() refusal test on a socket path'],
         'Bridge/Writeback/PrCorrelationCommenter.php::post#1' => ['\x00', 'a delimiter inside the in-memory $attempted dedupe key'],
         'Bridge/Writeback/PrCorrelationCommenter.php::post#2' => ['\x00', 'a delimiter inside the in-memory $attempted dedupe key'],
+        'Bridge/Writeback/ProtocolInvalidLabeler.php::label#1' => ['\x00', 'a delimiter inside the in-memory $attempted dedupe key'],
+        'Bridge/Writeback/ProtocolInvalidLabeler.php::label#2' => ['\x00', 'a delimiter inside the in-memory $attempted dedupe key'],
         'Bridge/Writeback/WritebackAlertNotifier.php::emitMoveFailed#1' => ['\x00', 'a delimiter inside the dedupe key emit() hands to claimSignature(), which hashes it'],
         'Bridge/Writeback/WritebackAlertNotifier.php::emitMoveFailed#2' => ['\x00', 'a delimiter inside the dedupe key emit() hands to claimSignature(), which hashes it'],
         'Http/Middleware/LoopbackOnly.php::isLoopback#1' => ['\x7f', 'a byte compare against a packed IPv4-mapped address'],
