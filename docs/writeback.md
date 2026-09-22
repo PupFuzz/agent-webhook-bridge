@@ -1,6 +1,6 @@
 # GitHub-PR → kanban card-move writeback (FR #2016)
 
-The bridge can keep a kanban card in sync with its PR's lifecycle **deterministically, with no agent in the loop** — a GitHub `pull_request` webhook moves the card to a stage, and a branch-create `push` promotes the card to In Progress (DL-160). This is the bridge's only *event-driven* writeback. The bridge is no longer purely one-way: the two-way board tools (DL-217, [`docs/board-tools.md`](board-tools.md)) add an agent-initiated request/response surface (`board_my_cards` / `board_create_card` / `board_correct_card`) over the channel — but that is a distinct, loopback-gated ingress with its own audit trail, not this GitHub-event writeback. Design + rationale: `CLAUDE_DECISIONS.md` DL-009 (the seam) → DL-018/019/020/021 (the implementation) → DL-160 (the branch-create → In-Progress trigger).
+The bridge can keep a kanban card in sync with its PR's lifecycle **deterministically, with no agent in the loop** — a GitHub `pull_request` webhook moves the card to a stage, and a branch-create `push` promotes the card to In Progress (DL-160). Every writeback in this doc is *event-driven*: the card moves and creates, and the bridge's two GitHub writes — the DL-390 correlation comment and the DL-408 `protocol:invalid` label (both below). The bridge is no longer purely one-way: the two-way board tools (DL-217, [`docs/board-tools.md`](board-tools.md)) add an agent-initiated request/response surface (`board_my_cards` / `board_create_card` / `board_correct_card`) over the channel — but that is a distinct, loopback-gated ingress with its own audit trail, not this GitHub-event writeback. Design + rationale: `CLAUDE_DECISIONS.md` DL-009 (the seam) → DL-018/019/020/021 (the implementation) → DL-160 (the branch-create → In-Progress trigger).
 
 ## How it works
 
@@ -1135,6 +1135,40 @@ When a PR **merges** (`merged` / `merged_to_main`) or is **closed unmerged** and
 | `unexpected` | anything outside those steps |
 
 Within one delivery each PR and outcome is attempted once, whatever the result, so a bundled DL's cards and several subscribed agents repeat neither the requests nor the warning. The next event for the same PR and outcome tries again and logs again. `bridge:check` does **not** test the token for write permission. A comment that did post logs `pr_correlation_comment: posted`.
+
+## An unattributable coordination comment is labelled `protocol:invalid` (card#10218, DL-408)
+
+**Opt-in per install and per repo, off by default.** List the repos in `BRIDGE_PROTOCOL_INVALID_LABEL_REPOS` (comma-separated `owner/name`, matched case-insensitively; [`config-schema.md`](config-schema.md)). With it empty, nothing is written and classification is unchanged. It is an outward write onto repos this install may only be receiving events from, so each install names the repos itself. It needs no `writeback.json`.
+
+**When it fires.** A comment is **created** on an issue or pull request in a listed repo, an agent classifies the event with `CoordinationClassifier`'s `coord-message` family, and that classification cannot say who wrote the comment. That is the attribution state the Intent already reports as `payload.actor_attribution: unresolved`: there is no `scope_author_map` entry for the repo, no body `FROM:` line, and the registry did not name the sender (a shared account, or one no agent declares). The bridge then adds `protocol:invalid` to the enclosing issue or pull request with one `POST /repos/{repo}/issues/{n}/labels`, body `{"labels":["protocol:invalid"]}`. The labels already on the thread are kept.
+
+**What it asserts, and what it does not.** The label says *"the bridge could not attribute this comment"*. It checks no protocol rule: `to:` labels, headings and the rest stay with the coordination framework's own checks, which remain the arbiter. It does not fire on:
+
+- an edited or deleted comment, even on an install whose `coord_extra_actions` surfaces those actions;
+- an `issues` or `pull_request` event, even an opened one with no attribution;
+- a comment the classifier can attribute (a `FROM:` line, a `scope_author_map` entry, or a sender the registry names);
+- a repo not in the list, or a repo where no agent runs the `coord-message` family;
+- a subject the agent's `drop_title_all_of` declares noise;
+- the bridge's own DL-390 correlation comment, recognised by the marker it starts with.
+
+It **does** fire whether or not any agent is addressed. A thread whose `to:` labels name nobody is the case the label exists for. **It does not remove the label**, ever: a later attributed post does not repair the earlier one, and a removal would erase a label a human or the arbiter set.
+
+**Once per event, not once per agent.** Every subscribed agent classifies the event and emits the same target, and the handler writes once per comment within a delivery, whatever the result. A redelivery or `bridge:replay` tries again.
+
+**Routing is unchanged.** The same intents are staged and the same pushes go out whether the write succeeds, fails, or is off. One thing does move in the dispatch ledger. An agent the comment is not addressed to used to record `dropped` (`classifier emitted no reactions`); on a listed repo its row now carries the label as a reaction and records `delivered`. So does an agent whose echo or `treat_as_signal` gate strips the event, with reason `echo: agent surface suppressed` (DL-203). `bridge:standup`'s per-seat `last_delivery_at` counts those rows. `coord-card-create` already emits a machine-only target the same way, whether or not the agent is addressed.
+
+**⚠ The token needs WRITE, and it is the placed file only.** The write uses `GitHubTokenResolver::resolveFromFile()`, the same rule as the correlation comment above: never the credential store or `GH_TOKEN`, so a `bridge:replay` from a shell writes as the receiver or not at all. GitHub's REST reference for *Add labels to an issue* requires a fine-grained token with **Issues** or **Pull requests** set to **write** ([GitHub REST: labels](https://docs.github.com/en/rest/issues/labels)). `bridge:check` does **not** test for it. The first real call on each install proves it. When the label is not applied, nothing is retried, nothing throws, routing is unchanged, and one `Log::warning` whose message starts `protocol_invalid_label: NOT applied` names the step in `reason`:
+
+| `reason` | What it means |
+| --- | --- |
+| `add_refused` (with `status`) | GitHub answered with an HTTP error (any 4xx or 5xx); a `403` is a token without write |
+| `add_failed` | the request did not complete (a transport failure included) |
+| `token_unresolved` | no GitHub token file resolves |
+| `repo_not_enabled` | a target named a repo that is not in the list. The shipped classifier never emits one; a custom classifier can |
+| `payload_invalid` | a target did not name a repo and an issue number |
+| `unexpected` | anything outside those steps. Worded *"NOT applied, or not confirmed"*, because it can also fire after the request landed |
+
+A label that was applied logs `protocol_invalid_label: applied`. Every row carries a `catalog_id` (§ *The board-mover catalog* below). Adding the label emits an `issues.labeled` event. That cannot re-trigger the write, which fires only on a created comment, so it does not loop.
 
 ## Failure behaviour (what retries vs not)
 
