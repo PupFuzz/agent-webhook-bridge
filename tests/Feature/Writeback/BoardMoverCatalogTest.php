@@ -231,13 +231,40 @@ class BoardMoverCatalogTest extends TestCase
             "Log::info('x', ['catalog_id' => 'h.bad']);",
             [['kind' => 'nope', 'since' => 'next', 'pattern' => 'x'] + self::entry('h.bad')],
         );
+
+        // An entry the checker cannot key is skipped whole, so each of these prints its one line.
+        $this->assertFindings(['ENTRY_SCHEMA: entries[0] is not an object'], '', ['h.bare']);
+        $this->assertFindings(['ENTRY_SCHEMA: entries[0] has no well-formed `id`'], '', [['id' => 'NoDot'] + self::entry('x')]);
+        $this->assertFindings(['ENTRY_SCHEMA: entries[0] has no well-formed `id`'], '', [array_diff_key(self::entry('x'), ['id' => 0])]);
+
+        $surfaceLine = 'ENTRY_SCHEMA: `h.surface` `surface` must be a list containing `log` and otherwise only `alert_channel`';
+        foreach ([
+            'not a list' => ['log', "Log::info('x', ['catalog_id' => 'h.surface']);"],
+            'no log' => [['alert_channel'], "\$this->alerts->warnAndNotify('h.surface', 'x', []);"],
+            'a foreign surface' => [['log', 'email'], "Log::info('x', ['catalog_id' => 'h.surface']);"],
+            'a repeated surface' => [['log', 'log'], "Log::info('x', ['catalog_id' => 'h.surface']);"],
+        ] as $case => [$surface, $body]) {
+            $this->assertFindings([$surfaceLine], $body, [['surface' => $surface] + self::entry('h.surface')], $case);
+        }
+
+        // Retired, so the malformed `site` is not also compared against an emitting site.
+        $this->assertFindings(
+            ['ENTRY_SCHEMA: `h.site` `site` must be `Class::method`'],
+            '',
+            [['site' => 'handle', 'retired_since' => '0.90.0'] + self::entry('h.site')],
+        );
+        $this->assertFindings(
+            ['ENTRY_SCHEMA: `h.retired` `retired_since` must be a release version X.Y.Z'],
+            '',
+            [['retired_since' => 'soon'] + self::entry('h.retired')],
+        );
     }
 
     /**
      * @param  list<string>  $expected
-     * @param  list<array<string, mixed>>  $entries
+     * @param  list<mixed>  $entries
      */
-    private function assertFindings(array $expected, string $body, array $entries): void
+    private function assertFindings(array $expected, string $body, array $entries, string $message = ''): void
     {
         $source = "<?php\nnamespace Fixture\\In;\n\nuse Illuminate\\Support\\Facades\\Log;\n\nfinal class Handler\n{\n    public function handle(): void\n    {\n        {$body}\n    }\n}\n";
         $sites = BoardMoverCatalogCheck::sitesIn($source, 'Fixture.php', self::fixturePopulation(...), self::FIXTURE_NOTIFIER, self::FIXTURE_NOTIFIER_METHODS);
@@ -251,7 +278,7 @@ class BoardMoverCatalogTest extends TestCase
         ];
         $findings = BoardMoverCatalogCheck::findings($sites, $catalog);
 
-        $this->assertSame($expected, $findings);
+        $this->assertSame($expected, $findings, $message);
     }
 
     /** @return array<string, mixed> */
