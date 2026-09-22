@@ -6897,7 +6897,7 @@ Selection and EMISSION are separated deliberately: the kept rows are re-emitted 
   5. A log call outside the derived population (the dispatcher, the receiver, `bridge:reconcile`) carries no id and is not a board-mover row under this definition.
 - **Consequences.** `app/Bridge/{Writeback,Handlers,Classifiers}`: one context key per log call and a first argument per helper call, with message text untouched. New `docs/board-mover-catalog.json`, `tests/Support/BoardMoverCatalogCheck.php`, `tests/Feature/Writeback/BoardMoverCatalogTest.php`; `docs/writeback.md` gains the section; `docs/CHANGELOG.md` `[Unreleased]`. The framework half (rt#430, aimla-pm) reads the catalog from a tagged bridge release and is not in this repo.
 
-## DL-TBD — ONE parse of a board-tools request body for both doors; a body that is not a JSON object is refused FOR THE BODY, never as a missing `tool` (card#10106)
+## DL-410 — ONE parse of a board-tools request body for both doors; a body that is not a JSON object is refused FOR THE BODY, never as a missing `tool` (card#10106)
 
 - **Date:** 2026-09-22
 - **Status:** implemented (card#10106). ⚠ **Operator-gated:** it changes the error text both doors return for a body that is not a JSON object, and it narrows what the HTTP door accepts (a body without a JSON `Content-Type` is refused). Status codes and ssh exit codes are unchanged for every body that was refused before.
