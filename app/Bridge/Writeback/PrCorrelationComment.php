@@ -69,6 +69,12 @@ final class PrCorrelationComment
         self::TOKEN_UNREADABLE,
         'card_token_near_miss',
         MappedBoardGuard::REASON_ID_OUTSIDE_MAPPED_BOARD,
+        // The multi-board sibling of the line above (card#9850 / DL-404). It is a member for
+        // the same reason: the pull request cited a card this install does not write to, which
+        // is something its author can see and fix. Its unreadable-board sibling
+        // (`declared_board_unreadable_to_this_token`) is deliberately absent, exactly as
+        // `mapped_board_unreadable_to_this_token` is — that one is about the INSTALL.
+        MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS,
         MappedBoardGuard::REASON,
         'card_token_uncorroborated',
         'correlation_ref_not_stamped',
@@ -91,6 +97,15 @@ final class PrCorrelationComment
         private readonly string $cause,
         private readonly ?int $cardId,
         private readonly int $boardId,
+        /**
+         * @var list<int> every board this repo's mapping declares, mapped board first (card#9850).
+         *                Read only for the declared-set refusal, which is decided BEFORE any narrowing;
+         *                on a mapping narrowed onto an additional board (a later cause) it is not that
+         *                list — {@see WritebackMapping::perDeclaredBoard()} carries `boards` forward
+         */
+        private readonly array $declaredBoardIds,
+        /** $boardId is an ADDITIONAL declared board the card resolved on, not the repo's mapped board (card#9850) */
+        private readonly bool $onAdditionalDeclaredBoard,
         private readonly ?int $stageId,
         private readonly array $tokens,
         private readonly array $droppedRefs,
@@ -142,6 +157,10 @@ final class PrCorrelationComment
      * {@see CAUSES}, or no evidence (a payload built by anything but the classifier's merge/close arms,
      * which is what keeps `bridge:reconcile` and every other caller of the move handler silent here).
      *
+     * $mapping is the one the refusal was decided against — for a cause decided after the card
+     * resolved on a declared board, the mapping NARROWED onto that board, so the board and stage
+     * id this comment names are the ones the card's own board uses (card#9850 / DL-404).
+     *
      * @param  array<string, mixed>  $payload
      * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped
      */
@@ -169,6 +188,8 @@ final class PrCorrelationComment
             $cause,
             is_int($cardId) || (is_string($cardId) && ctype_digit($cardId)) ? (int) $cardId : null,
             $mapping->boardId,
+            $mapping->declaredBoardIds(),
+            $mapping->isOnAdditionalDeclaredBoard(),
             $mapping->stageFor($outcome),
             self::renderableTokens($evidence['tokens'] ?? null),
             is_array($dropped) ? array_values(array_intersect(self::REF_KEYS, $dropped)) : [],
@@ -187,8 +208,8 @@ final class PrCorrelationComment
     public function body(): string
     {
         [$headline, $why, $remedy] = $this->explain();
+        [$lookedOn, $pointedAt] = $this->boardsLookedOn();
         $card = $this->cardId === null ? 'none' : (string) $this->cardId;
-        $stage = $this->stageId === null ? '' : " The `{$this->outcome}` outcome moves a card to workflow stage {$this->stageId}.";
         $tokens = $this->tokens === []
             ? '  - none'
             : implode("\n", array_map(self::renderToken(...), $this->tokens));
@@ -199,12 +220,12 @@ final class PrCorrelationComment
             **{$headline}**
 
             - **Event:** `{$this->outcome}` on this pull request (#{$this->prNumber})
-            - **Board looked on:** board {$this->boardId}, the board this repository is mapped to.{$stage}
+            - {$lookedOn}
             - **Tokens read** (a card token in the head branch outranks one in the title; the title and branch name are not quoted here):
             {$tokens}
             - **Cause:** `{$this->cause}`. {$why}
 
-            **Remedy**, with `kbcard` pointed at board {$this->boardId} (`kbcard stages` maps a workflow stage id to the column name `--column` takes):
+            **Remedy**, with `kbcard` pointed at {$pointedAt} (`kbcard stages` maps a workflow stage id to the column name `--column` takes):
 
             ```
             {$remedy}
@@ -212,6 +233,47 @@ final class PrCorrelationComment
 
             <sub>Posted once per pull request and outcome by agent-webhook-bridge (DL-390).</sub>
             BODY;
+    }
+
+    /**
+     * The "looked on" line and the board the remedy points `kbcard` at — the two places the body
+     * names a board outside the cause sentence, so they say the SAME thing it does.
+     *
+     * A refusal across the declared set (card#9850 / DL-404) checked every declared board, and
+     * its cause sentence names them all; naming only the mapped board here would contradict it.
+     * The per-outcome stage clause is dropped on that cause and nowhere else: a stage id is
+     * meaningful only on its own board, and this card was established on none of them, so
+     * quoting the mapped board's would name a destination this refusal never had.
+     *
+     * A cause decided after the card resolved on an ADDITIONAL declared board names that board
+     * and its own stage, and does not call it "the board this repository is mapped to" — it is
+     * not. Every other cause keeps the single-board text to the byte.
+     *
+     * @return array{0: string, 1: string} the looked-on line (without its list marker), the remedy's board
+     */
+    private function boardsLookedOn(): array
+    {
+        if ($this->cause === MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS) {
+            $checked = $this->checkedBoards();
+
+            return [
+                "**Boards looked on:** {$checked}, the boards this repository's mapping declares, in the order they were checked.",
+                "whichever of {$checked} holds the card this pull request finishes",
+            ];
+        }
+        $stage = $this->stageId === null ? '' : " The `{$this->outcome}` outcome moves a card to workflow stage {$this->stageId}.";
+        $which = $this->onAdditionalDeclaredBoard ? 'the declared board this card was found on' : 'the board this repository is mapped to';
+
+        return [
+            "**Board looked on:** board {$this->boardId}, {$which}.{$stage}",
+            "board {$this->boardId}",
+        ];
+    }
+
+    /** The declared boards, in the order they were checked — one spelling for every line that names them. */
+    private function checkedBoards(): string
+    {
+        return implode(', ', array_map(static fn (int $id): string => "board {$id}", $this->declaredBoardIds));
     }
 
     /** @return array{0: string, 1: string, 2: string} headline, cause sentence, remedy commands */
@@ -246,6 +308,17 @@ final class PrCorrelationComment
             MappedBoardGuard::REASON_ID_OUTSIDE_MAPPED_BOARD => [
                 $notMoved,
                 "{$card} is not a card on {$board}: it does not exist there, or it is on a board this install does not write to. Nothing was read or written.",
+                $byHand,
+            ],
+            MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS => [
+                $notMoved,
+                // ⛔ It says WHICH boards were checked and never where the card is. The boards
+                // are this install's own config; where the card actually lives was not measured,
+                // and this comment is published on a PULL REQUEST — the widest surface any
+                // writeback record reaches — so naming it would put a cross-install value on a
+                // durable public page (card#8375, and the card#9850 non-goal).
+                "{$card} is not a card on any board this install writes to for this repo (checked: {$this->checkedBoards()}"
+                    .'). It does not exist on any of them, or it is on a board this install does not write to. Nothing was read or written.',
                 $byHand,
             ],
             MappedBoardGuard::REASON => [

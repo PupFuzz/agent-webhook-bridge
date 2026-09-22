@@ -144,6 +144,8 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         'Bridge/Writeback/WritebackConfig.php::load#1' => 'CONFIG, not a card: `writeback.json`\'s mapping must declare a numeric board — this is the OTHER side of the compare, the value `$mapping->boardId` later carries',
         'Bridge/Writeback/WritebackConfig.php::load#2' => 'CONFIG: the `is_numeric` half of that parse-time validation',
         'Bridge/Writeback/WritebackConfig.php::load#3' => 'CONFIG: the cast that builds `WritebackMapping::$boardId`',
+        'Bridge/Writeback/WritebackConfig.php::load#4' => 'CONFIG, still not a card (card#9850 / DL-404): the optional `boards` key may not RE-DECLARE the mapped board, so this compares two values out of the same config object — one board with two stage maps and nothing reconciling them is the DL-293 duplicate-key shape, and it fails the config closed at load rather than picking one silently',
+        'Bridge/Writeback/WritebackConfig.php::load#5' => 'CONFIG: the second half of that same parse-time compare, rendered into its message so the operator can find the line in their own file',
         'Bridge/Writeback/CoordConfigTerminals.php::terminalNamesForBoardId#1' => 'CONFIG: selects the `kanban.boards[]` entry describing a board id — a config block lookup, not a card membership decision',
         'Bridge/Writeback/CoordConfigTerminals.php::terminalNamesForBoardId#2' => 'CONFIG: the compare that picks that block',
         'Bridge/Writeback/CoordConfigTerminals.php::issuePopulationsForBoardId#1' => 'CONFIG: the same block selection for the issue-population axis',

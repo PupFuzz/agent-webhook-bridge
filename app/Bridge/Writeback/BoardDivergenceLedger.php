@@ -85,13 +85,20 @@ final class BoardDivergenceLedger
      * miss and race the insert; the loser's unique-key violation lands in the catch below,
      * which costs one sighting off a counter and never the row itself.
      *
-     * @param  array{card_board: mixed, mapped_board: int}  $boardContext  as rendered by {@see MappedBoardGuard::boardContext()}
+     * ⚑ The row persists `card_board` and `mapped_board` only. A multi-board mapping's
+     * context also carries `declared_board` (card#9850 / DL-404), and the table has no column
+     * for it, so it reaches the error log below and not the row — named here rather than left
+     * to the model's fillable list to drop silently.
+     *
+     * @param  array{card_board: mixed, mapped_board: int, declared_board?: int}  $boardContext  as rendered by {@see MappedBoardGuard::boardContext()}
      * @param  array<string, mixed>  $card  the card the pair was read from, for its id only
      */
     public static function observe(array $boardContext, array $card, string $disposition): void
     {
         try {
-            $row = new WritebackBoardDivergence($boardContext + [
+            $columns = $boardContext;
+            unset($columns['declared_board']);
+            $row = new WritebackBoardDivergence($columns + [
                 'disposition' => $disposition,
                 'card_id' => is_numeric($card['id'] ?? null) ? (int) $card['id'] : null,
                 'site' => self::callSite(),

@@ -16,6 +16,7 @@ use App\Bridge\Writeback\PinGuard;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class GitHubPrCardMoveClassifierTest extends TestCase
@@ -545,6 +546,52 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $this->assertCount(1, $result->targets);
         Http::assertSent(fn ($r) => str_contains(urldecode($r->url()), 'source=owner/repo'));
+    }
+
+    /**
+     * ⛔ A BOARD ANOTHER MAPPING DECLARES IN `boards` IS SHARED (card#9850 r3). Repo A's own
+     * board is 8; repo B's own board is 5 and B declares 8 in `boards`, so B's PRs narrow onto
+     * board 8 and stamp their DL/PR refs onto B's cards there. Counting only `board_id`, board
+     * 8 read as A's alone, so A's DL lookup went out UNQUALIFIED and matched B's card on a
+     * colliding DL number — A's PR moving B's card, the DL-027 collision DL-167 exists to
+     * prevent. The fake answers exactly as kanban's `source` dimension does: B's card for an
+     * unqualified (or B-qualified) lookup, nothing for an A-qualified one.
+     *
+     * One case per correlation site in the classifier — the PR move, the branch-create push
+     * and the draft overlay — because each asks `boardIsShared()` on its own line.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    #[DataProvider('correlationSurfaces')]
+    public function test_a_board_another_mapping_declares_in_boards_is_shared_so_a_colliding_dl_does_not_resolve_to_its_card(string $eventType, array $payload): void
+    {
+        $this->useRefCorrelation([
+            'owner/a' => ['board_id' => 8, 'stages' => ['started' => 51, 'opened' => 50], 'started_from_stages' => [49], 'draft_overlay' => true],
+            'owner/b' => ['board_id' => 5, 'stages' => ['opened' => 60], 'boards' => ['8' => ['opened' => 50]]],
+        ]);
+        $bsCard = 7;
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => fn ($r) => Http::response(['data' => str_contains(urldecode($r->url()), 'source=owner/a')
+            ? []
+            : [['id' => $bsCard]]])]);
+
+        $result = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            $eventType, $payload + ['repository' => ['full_name' => 'owner/a']], new Actor('999'), 'github', 'owner/a', $this->agent,
+        ));
+
+        $this->assertSame([], array_values(array_filter($result->targets, fn ($t) => $t->targetId === (string) $bsCard)),
+            "repo A's DL-9 must not resolve to repo B's card on the board B declares");
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/boards/8/tasks/by-ref.json')
+            && str_contains(urldecode($r->url()), 'source=owner/a'));
+    }
+
+    /** @return array<string, array{0: string, 1: array<string, mixed>}> */
+    public static function correlationSurfaces(): array
+    {
+        return [
+            'pull request move' => ['pull_request.opened', ['pull_request' => ['title' => 'Fix DL-9 thing', 'head' => ['ref' => 'f']]]],
+            'branch-create push' => ['push', ['created' => true, 'ref' => 'refs/heads/feat/DL-9-thing']],
+            'draft overlay' => ['pull_request.converted_to_draft', ['pull_request' => ['title' => 'DL-9 wip', 'head' => ['ref' => 'f']]]],
+        ];
     }
 
     public function test_card_token_in_title_correlates_by_native_id_without_a_kanban_read(): void

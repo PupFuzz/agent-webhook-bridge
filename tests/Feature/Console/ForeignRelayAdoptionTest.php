@@ -173,6 +173,23 @@ class ForeignRelayAdoptionTest extends TestCase
             'relays' => 1, 'escaped' => 0,
             'ruling' => '✔ NOT FOREIGN ×1 — a config fault on this install\'s own files.',
         ],
+        'Bridge/WritebackExposureCommand.php' => [
+            'relays' => 4, 'escaped' => 2,
+            'ruling' => '⛔ FOREIGN ×2 (card#9850 / DL-404) — the multi-board exposure audit reads a repo\'s '
+                .'merged pull requests from GITHUB and probes each cited card against KANBAN, so a '
+                .'`RequestException` from either carries a far-end response body. Both are redacted and then '
+                .'escaped AT THE INTERPOLATION, which is what the `escaped => 2` accounts for: one on the '
+                .'pull-request read that makes a mapping `unreachable`, one on a per-card board-scoped lookup '
+                .'that could not be placed. '
+                .'✔ NOT FOREIGN ×2 — a `writeback.json` parse fault, and the writeback client factory\'s own '
+                .'token-file diagnosis, both composed by this app from this install\'s own files (the same two '
+                .'`CheckCommand` rules not-foreign above). '
+                .'⚑ AND NOTHING ELSE FOREIGN REACHES THIS COMMAND\'S STDOUT, which is why there is no third '
+                .'escape: a pull request\'s TITLE and HEAD REF are read — the surfaces a stranger chooses — but '
+                .'only into `CardTokenGrammar::parseAll()`, which answers INTEGER card ids. The report is built '
+                .'from those integers and from counts, never from the text they were parsed out of '
+                .'(`ForeignTextTest::RAW_USES` rules the same two reads from the other direction).',
+        ],
     ];
 
     public function test_every_relayed_exception_message_in_a_command_has_a_ruling(): void

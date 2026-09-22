@@ -43,7 +43,14 @@ use App\Bridge\Support\PathHelper;
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false,                   // optional (DL-193) — mirror PR draft state to block_reason
- *         "promote_on_release": false               // optional (DL-207) — on a release merge to main, promote Shipped cards now on main to Released (needs stages.merged + stages.merged_to_main)
+ *         "promote_on_release": false,              // optional (DL-207) — on a release merge to main, promote Shipped cards now on main to Released (needs stages.merged + stages.merged_to_main)
+ *         "boards": {                               // optional (card#9850 / DL-404) — the OTHER boards this repo's PRs cite cards on,
+ *           "13": {"opened": 96, "merged": 97,      //   each with its OWN stage map (stage ids are per-board arbitrary integers). The
+ *                  "started": 95,                   //   card-move path resolves the destination board FROM THE CARD, by asking
+ *                  "started_from_stages": [94],     //   board_id and then each of these with the board-scoped lookup; a card on none
+ *                  "unpark_from_stages": [93]}      //   of them is REFUSED, never written to board_id. Absent ⇒ one declared board.
+ *         }                                         //   The two optional lists are THAT board's own DL-160 / DL-194 sets, parsed by
+ *                                                   //   the same rules as the top-level keys; the top-level sets never apply here
  *       }
  *     }
  *   }
@@ -167,61 +174,13 @@ final class WritebackConfig
                 }
                 $stages[$outcome] = (int) $stageId;
             }
-            // Optional promote-from guard for the `started` outcome (DL-160): the
-            // list of workflow_stage_ids the branch-create `started` move is
-            // allowed to promote a card FROM (the board's Backlog/Prioritized
-            // stages). The handler refuses to advance a card whose current stage
-            // isn't in this list, so re-creating/force-pushing an old branch can't
-            // drag an already-In-Review/Shipped/Released card backward. Strict like
-            // board_id/stages — a present non-list, or a non-numeric element,
-            // THROWS (fail-closed) rather than silently disabling the guard.
-            // Absent ⇒ null ⇒ a `started` move is refused (the guard can't know
-            // what's safe to promote from), logged by the handler.
-            $startedFromStages = null;
-            if (array_key_exists('started_from_stages', $m) && $m['started_from_stages'] !== null) {
-                if (! is_array($m['started_from_stages']) || ! array_is_list($m['started_from_stages'])) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} started_from_stages must be a list of workflow_stage_ids");
-                }
-                if ($m['started_from_stages'] === []) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} started_from_stages must be non-empty (an empty list silently disables the `started` move; omit the key to disable instead)");
-                }
-                $startedFromStages = [];
-                foreach ($m['started_from_stages'] as $sid) {
-                    if (! is_numeric($sid)) {
-                        throw new ConfigException("writeback.json: mapping for {$repo} started_from_stages must contain only numeric workflow_stage_ids");
-                    }
-                    $startedFromStages[] = (int) $sid;
-                }
-            }
-            // Optional auto-unpark set for the `started` outcome (DL-194): the stage
-            // ids a branch-create `started` move promotes a card FROM even when the
-            // card is PINNED (the DL-178 reversal, scoped to these stages). Parsed
-            // strictly like started_from_stages — a present non-list, an empty list,
-            // or a non-numeric element THROWS (fail-closed), never silently disables.
-            $unparkFromStages = null;
-            if (array_key_exists('unpark_from_stages', $m) && $m['unpark_from_stages'] !== null) {
-                if (! is_array($m['unpark_from_stages']) || ! array_is_list($m['unpark_from_stages'])) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} unpark_from_stages must be a list of workflow_stage_ids");
-                }
-                if ($m['unpark_from_stages'] === []) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} unpark_from_stages must be non-empty (an empty list silently disables auto-unpark; omit the key to disable instead)");
-                }
-                $unparkFromStages = [];
-                foreach ($m['unpark_from_stages'] as $sid) {
-                    if (! is_numeric($sid)) {
-                        throw new ConfigException("writeback.json: mapping for {$repo} unpark_from_stages must contain only numeric workflow_stage_ids");
-                    }
-                    $unparkFromStages[] = (int) $sid;
-                }
-            }
-            // A stage cannot be both refuse-if-pinned (started_from_stages) and
-            // move-if-pinned (unpark_from_stages) — fail-closed on any overlap (DL-194).
-            if ($startedFromStages !== null && $unparkFromStages !== null) {
-                $overlap = array_values(array_intersect($startedFromStages, $unparkFromStages));
-                if ($overlap !== []) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} stage id(s) ".implode(', ', $overlap).' appear in BOTH started_from_stages and unpark_from_stages — a stage cannot be both refuse-if-pinned (started_from_stages) and move-if-pinned (unpark_from_stages)');
-                }
-            }
+            // Optional promote-from guard for the `started` outcome (DL-160) and its
+            // auto-unpark set (DL-194): the handler refuses to advance a card whose current
+            // stage is in neither, so re-creating/force-pushing an old branch can't drag an
+            // already-In-Review/Shipped/Released card backward. Parsed — strictly, and
+            // disjointness enforced — by ONE primitive shared with each `boards` entry
+            // below (card#9850 / DL-404); its docblock owns the rules.
+            [$startedFromStages, $unparkFromStages] = self::promoteFromSets($m, "mapping for {$repo}");
             // Optional install-specific hold-marker tags (DL-194) that WIDEN the unpark
             // alert set (catch a hold convention PinGuard doesn't recognize). Absent ⇒
             // [] (the fail-safe alerts on every non-benign unpark). An empty list is a
@@ -448,7 +407,76 @@ final class WritebackConfig
                 }
                 $issuePopulation = $m['issue_population'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds);
+            // Opt-in MULTI-BOARD resolution (card#9850 / DL-404). A coordination repo's pull
+            // requests cite cards on SEVERAL boards, and one repo → one `board_id` cannot
+            // express the right destination: the move went to the mapped board (or nowhere)
+            // and the sprint card the branch cited never moved. This key names the OTHER
+            // boards this repo's PRs may cite, each with its own stage map, and the card-move
+            // path resolves the destination from the CARD by asking each declared board in
+            // turn with the SAME board-scoped lookup card#8375 already uses.
+            //
+            // ADDITIVE, never a replacement: `board_id` + `stages` keep their exact meaning
+            // and stay the FIRST declared board, so every mapping written before this key
+            // existed loads and behaves identically, except the reconcile skip line
+            // docs/writeback.md § Optional: a repo whose PRs cite cards on SEVERAL boards names. Fail-closed on every partial shape (the
+            // DL-160/198/286 precedent) — a mis-typed board or an empty stage map here would
+            // silently never match, and "silently never matches" is the defect being fixed.
+            $boards = null;
+            if (array_key_exists('boards', $m) && $m['boards'] !== null) {
+                $rawBoards = $m['boards'];
+                // `array_is_list` also rejects the EMPTY object `{}` (which decodes to `[]`):
+                // an empty map disables the multi-board path while looking configured, the
+                // same fail-quiet shape `coord_card_lane_stage_ids` is strict about.
+                if (! is_array($rawBoards) || $rawBoards === [] || array_is_list($rawBoards)) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} boards must be a non-empty object keyed by board id, each value an object of outcome => workflow_stage_id (plus that board's own optional started_from_stages / unpark_from_stages lists) — omit the key to keep this repo on its single mapped board");
+                }
+                $boards = [];
+                foreach ($rawBoards as $otherBoard => $otherStages) {
+                    if (! is_numeric($otherBoard) || (int) $otherBoard <= 0) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} boards has a non-numeric board key '".(is_string($otherBoard) ? $otherBoard : gettype($otherBoard))."' — each key is a kanban board id");
+                    }
+                    // The mapped board is ALREADY declared (it is `board_id`, and it is probed
+                    // first), so re-declaring it here gives one board two stage maps that
+                    // nothing reconciles. Fail closed and make the operator say which they
+                    // meant — the DL-293 duplicate-key precedent.
+                    if ((int) $otherBoard === (int) $m['board_id']) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} boards re-declares board_id ".(int) $m['board_id'].' — the mapped board is already the first declared board and `stages` is its stage map; list only the OTHER boards this repo cites cards on');
+                    }
+                    $noStageMap = "writeback.json: mapping for {$repo} boards board {$otherBoard} needs a non-empty stages object — stage ids are per-board arbitrary integers, so a declared board with no stage map of its own is a destination no move could ever be written to";
+                    if (! is_array($otherStages)) {
+                        throw new ConfigException($noStageMap);
+                    }
+                    // The board's OWN promote-from / unpark sets (r1 of card#9850). They are
+                    // stage ids, and stage ids are a GLOBAL auto-increment — so the mapped
+                    // board's sets can never contain a stage of this board, and a `started`
+                    // move onto it is authorized only by a set naming THIS board's stages.
+                    // Absent ⇒ null ⇒ this board refuses `started` (the DL-160 fail-closed
+                    // default), never inherits the mapped board's set.
+                    [$boardStartedFrom, $boardUnparkFrom] = self::promoteFromSets($otherStages, "mapping for {$repo} boards board {$otherBoard}");
+                    unset($otherStages['started_from_stages'], $otherStages['unpark_from_stages']);
+                    // Checked AFTER the two lists are lifted out, so an entry carrying a
+                    // promote-from set and no outcome is refused like an empty one.
+                    if ($otherStages === []) {
+                        throw new ConfigException($noStageMap);
+                    }
+                    $parsed = [];
+                    foreach ($otherStages as $outcome => $stageId) {
+                        if (! in_array($outcome, self::OUTCOMES, true)) {
+                            throw new ConfigException("writeback.json: mapping for {$repo} boards board {$otherBoard} has an unknown stage outcome '".(is_string($outcome) ? $outcome : gettype($outcome))."' (allowed: ".implode(', ', self::OUTCOMES).')');
+                        }
+                        if (! is_numeric($stageId)) {
+                            throw new ConfigException("writeback.json: mapping for {$repo} boards board {$otherBoard} stage '{$outcome}' must be a numeric workflow_stage_id");
+                        }
+                        $parsed[$outcome] = (int) $stageId;
+                    }
+                    $boards[(int) $otherBoard] = [
+                        'stages' => $parsed,
+                        'started_from_stages' => $boardStartedFrom,
+                        'unpark_from_stages' => $boardUnparkFrom,
+                    ];
+                }
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds, $boards);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));
@@ -467,6 +495,60 @@ final class WritebackConfig
         $configDir = (string) config('bridge.config_dir');
 
         return $configDir !== '' ? self::load($configDir) : null;
+    }
+
+    /**
+     * The `started` move's two source sets — `started_from_stages` (DL-160) and
+     * `unpark_from_stages` (DL-194) — parsed out of $m, which is a repo mapping or one of its
+     * `boards` entries (card#9850 / DL-404): the ONE primitive for both, so a declared board's
+     * sets fail closed on exactly the rules the mapped board's do. $where is the message
+     * subject (`mapping for owner/repo` / `mapping for owner/repo boards board 13`).
+     *
+     * `started_from_stages`: the workflow_stage_ids a branch-create `started` move may promote
+     * a card FROM (the board's Backlog/Prioritized stages). `unpark_from_stages`: the ids it
+     * promotes a card from even when the card is PINNED (the DL-178 reversal, scoped to these
+     * stages). Each is strict — a present non-list, an empty list, or a non-numeric element
+     * THROWS rather than silently disabling the guard — and absent ⇒ null (no promote-from set
+     * ⇒ the handler refuses `started`; no unpark set ⇒ DL-178 byte-identical). A stage cannot
+     * be both refuse-if-pinned and move-if-pinned, so any overlap throws too.
+     *
+     * @param  array<array-key, mixed>  $m
+     * @return array{0: ?list<int>, 1: ?list<int>}
+     */
+    private static function promoteFromSets(array $m, string $where): array
+    {
+        $sets = [];
+        foreach ([
+            'started_from_stages' => 'an empty list silently disables the `started` move',
+            'unpark_from_stages' => 'an empty list silently disables auto-unpark',
+        ] as $key => $emptyMeans) {
+            $sets[$key] = null;
+            if (! array_key_exists($key, $m) || $m[$key] === null) {
+                continue;
+            }
+            if (! is_array($m[$key]) || ! array_is_list($m[$key])) {
+                throw new ConfigException("writeback.json: {$where} {$key} must be a list of workflow_stage_ids");
+            }
+            if ($m[$key] === []) {
+                throw new ConfigException("writeback.json: {$where} {$key} must be non-empty ({$emptyMeans}; omit the key to disable instead)");
+            }
+            $ids = [];
+            foreach ($m[$key] as $sid) {
+                if (! is_numeric($sid)) {
+                    throw new ConfigException("writeback.json: {$where} {$key} must contain only numeric workflow_stage_ids");
+                }
+                $ids[] = (int) $sid;
+            }
+            $sets[$key] = $ids;
+        }
+        if ($sets['started_from_stages'] !== null && $sets['unpark_from_stages'] !== null) {
+            $overlap = array_values(array_intersect($sets['started_from_stages'], $sets['unpark_from_stages']));
+            if ($overlap !== []) {
+                throw new ConfigException("writeback.json: {$where} stage id(s) ".implode(', ', $overlap).' appear in BOTH started_from_stages and unpark_from_stages — a stage cannot be both refuse-if-pinned (started_from_stages) and move-if-pinned (unpark_from_stages)');
+            }
+        }
+
+        return [$sets['started_from_stages'], $sets['unpark_from_stages']];
     }
 
     /**
@@ -545,17 +627,25 @@ final class WritebackConfig
     }
 
     /**
-     * Whether more than one repo mapping targets the given board. Repo-qualified
-     * correlation (DL-167) exists to disambiguate DL/PR-number collisions across
-     * repos SHARING a board; on a 1:1 board the qualifier protects nothing and a
-     * strict kanban `source` filter would exclude cards whose derived refs carry
-     * no source (every operator-stamped `dl_number`/`pr_number` card — DL-174).
+     * Whether more than one repo mapping targets the given board — by `board_id` or by
+     * `boards` (see below). Repo-qualified correlation (DL-167) exists to disambiguate
+     * DL/PR-number collisions across repos SHARING a board; on a 1:1 board the qualifier
+     * protects nothing and a strict kanban `source` filter would exclude cards whose
+     * derived refs carry no source (every operator-stamped `dl_number`/`pr_number` card —
+     * DL-174).
+     *
+     * ⛔ A mapping counts against every board it DECLARES, not only its `board_id`
+     * (card#9850 r3): a repo whose `boards` names this board narrows its PRs onto it and
+     * stamps its DL/PR refs onto cards here, so a colliding DL number is exactly as
+     * ambiguous as between two repos mapped to it. Counting `board_id` alone let another
+     * repo's unqualified lookup resolve that repo's card. A mapping with no `boards` declares
+     * `[board_id]`, so every single-board install counts exactly as before.
      */
     public function boardIsShared(int $boardId): bool
     {
         $n = 0;
         foreach ($this->mappings as $mapping) {
-            if ($mapping->boardId === $boardId && ++$n > 1) {
+            if (in_array($boardId, $mapping->declaredBoardIds(), true) && ++$n > 1) {
                 return true;
             }
         }
@@ -581,13 +671,17 @@ final class WritebackConfig
      * know which tags on a card are somebody ELSE'S control and must survive a wholesale
      * tag replace.
      *
+     * A mapping contributes its tags to every board it DECLARES (card#9850 r3), exactly as
+     * {@see boardIsShared} counts it: a repo whose `boards` names this board writes to cards
+     * here, so its hold convention protects them here too. The set is the union.
+     *
      * @return list<string>
      */
     public function holdMarkerTagsForBoard(int $boardId): array
     {
         $tags = [];
         foreach ($this->mappings as $mapping) {
-            if ($mapping->boardId !== $boardId) {
+            if (! in_array($boardId, $mapping->declaredBoardIds(), true)) {
                 continue;
             }
             foreach ($mapping->holdMarkerTags as $tag) {

@@ -31,7 +31,7 @@ final class GitHubPrCorrelationCommentHandler implements DurableReaction, Handle
     {
         $cause = $target->payload['cause'] ?? null;
         if (is_string($cause)) {
-            $this->commenter->report($target->payload, $cause);
+            $this->commenter->reportForRepo($target->payload, $cause);
         }
     }
 }

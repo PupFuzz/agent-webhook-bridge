@@ -36,7 +36,18 @@ use Throwable;
  * The classifier (correlation) supplies WHICH card + the repo + the
  * GitHub-controlled outcome in the payload; the BOARD + STAGE come exclusively
  * from operator config (`writeback.json`), keyed on the outcome — the webhook
- * body can't choose a board or stage (DL-009). Two failure modes, treated
+ * body can't choose a board or stage (DL-009).
+ *
+ * ⭐ Since card#9850 / DL-404 the BOARD is chosen from among the boards that config
+ * DECLARES, by asking which of them the card is on. A coordination repo's pull requests
+ * cite cards on several boards, so a mapping's single `board_id` could not name the right
+ * destination and the sprint card a branch cited was never moved; the mapping now supplies
+ * the declared SET and the per-board stage semantics, and the card supplies which member of
+ * that set. It is still config that decides — the set is closed, the lookups are
+ * board-scoped, and a card in none of them is REFUSED rather than written to a fallback
+ * board. A mapping declaring one board behaves exactly as it did.
+ *
+ * Two failure modes, treated
  * differently:
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
@@ -186,8 +197,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // own — it reuses the `opened` (In-Review) stage. Resolve it explicitly so
         // stageFor('reopened')===null doesn't no-op the revival at the guard below.
         $stageOutcome = $outcome === 'reopened' ? 'opened' : $outcome;
-        $stageId = $mapping->stageFor($stageOutcome);
-        if ($stageId === null) {
+        // The CHEAP necessary condition, asked before a client exists so a repo that maps no
+        // stage for this outcome still no-ops with no request and no token resolution — which
+        // is what it has always done. On a single-board mapping this IS `stageFor() !== null`;
+        // on a multi-board one (card#9850 / DL-404) it asks the same question of the union,
+        // because WHICH stage this move writes is not knowable until the board the card is
+        // actually on has been established below. The sufficient condition is re-asked there.
+        if (! $mapping->anyDeclaredBoardMaps($stageOutcome)) {
             Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['catalog_id' => 'move_card.no_stage_mapped', 'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
 
             return;
@@ -208,7 +224,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 ['card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
                 $repo, $outcome, $cardId, 'card_token_near_miss',
             );
-            $this->comments->report($payload, 'card_token_near_miss');
+            $this->comments->report($payload, 'card_token_near_miss', $mapping);
 
             return;
         }
@@ -227,11 +243,37 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // decides whether we may WRITE the row we got, and only that one can record the
         // (card board, mapped board) divergence pair — a refusal here never learns the
         // card's board, which is the point of refusing before the read.
+        //
+        // ⭐ AND IT IS ALSO WHERE THE DESTINATION BOARD IS DECIDED (card#9850 / DL-404). A
+        // coordination repo's PRs cite cards on SEVERAL boards, so the repo cannot supply the
+        // board: the repo mapping supplies the STAGE SEMANTICS and the CARD supplies the
+        // BOARD. The guard asks each board the mapping declares, in order, with the same
+        // board-scoped lookup, and NARROWS $mapping IN PLACE onto the one the card was
+        // established on — so `$mapping->stageFor()`, `$mapping->boardId`, the `started`
+        // promote-from / unpark sets and the board-order read below all speak about the board
+        // actually written to. On a mapping with one
+        // declared board (every mapping written before that key existed) it narrows onto the
+        // same object and issues the same single request.
         $refusal = '';
         if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome, $refusal)) {
             // Only the foreign-id verdict is the PR's to hear about; the commenter drops the
             // install-fault reasons this guard can also refuse under.
-            $this->comments->report($payload, $refusal);
+            $this->comments->report($payload, $refusal, $mapping);
+
+            return;
+        }
+
+        // The SUFFICIENT condition, now that the board is known: a declared board need not map
+        // every outcome (a board whose cards this repo only ever ships, say), and a stage id is
+        // meaningful only on its own board — so the stage comes from the RESOLVED board's map
+        // and nowhere else. Unreachable on a single-board mapping, where the check above
+        // already answered for the one board there is.
+        $stageId = $mapping->stageFor($stageOutcome);
+        if ($stageId === null) {
+            Log::info('kanban_move_card: no stage mapped for this outcome on the declared board the card is on; ignoring', [
+                'catalog_id' => 'move_card.no_stage_mapped_on_card_board',
+                'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId, 'board' => $mapping->boardId,
+            ]);
 
             return;
         }
@@ -290,7 +332,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // request earlier, and it is the only arm that records the (card board, mapped
         // board) divergence. Its refused set on this path is expected to be EMPTY.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
-            $this->comments->report($payload, MappedBoardGuard::REASON);
+            $this->comments->report($payload, MappedBoardGuard::REASON, $mapping);
 
             return;
         }
@@ -347,7 +389,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'card_token_uncorroborated');
+            $this->comments->report($payload, 'card_token_uncorroborated', $mapping);
 
             return;
         }
@@ -669,7 +711,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             );
             $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
             $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $mapping, $cardId, $client, $repo, $outcome);
-            $this->comments->report($payload, 'correlation_ref_not_stamped', ['dropped' => array_keys($dropped)]);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, ['dropped' => array_keys($dropped)]);
         }
 
         if ($refs === []) {

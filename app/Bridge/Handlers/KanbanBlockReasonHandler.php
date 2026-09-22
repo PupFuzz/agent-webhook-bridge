@@ -141,6 +141,13 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // which stays: this one decides whether we may READ the card, that one decides whether
         // we may WRITE the row we got, and only that one can record the (card board, mapped
         // board) divergence pair.
+        //
+        // ⚑ $mapping IS NARROWED IN PLACE by this call (card#9850 / DL-404): where the mapping
+        // declares more than one board, the guard establishes which of them the card is on and
+        // rewrites $mapping onto it, so the post-read compare below asks about that board. This
+        // arm writes a FIELD and reads no stage, so the narrowing costs it nothing and is what
+        // keeps it from refusing a card the guard just established — one rule, both arms, and
+        // no second copy of the resolution here.
         if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_block_reason', $cardId, $repo, self::ALERT_OUTCOME)) {
             return;
         }

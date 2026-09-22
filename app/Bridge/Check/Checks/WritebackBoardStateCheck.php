@@ -227,36 +227,24 @@ final class WritebackBoardStateCheck implements Check
                 foreach ($mapping->coordCardLaneStageIds ?? [] as $laneStageId) {
                     $targets[] = $laneStageId;
                 }
-                // The read stays UNCONDITIONAL even when there is nothing to compare:
-                // moving it inside the guard below would change this check's HTTP
-                // behaviour, which is a different change from the message correction.
-                $boardStageIds = array_keys($client->boardStageOrder($mapping->boardId));
-                if ($targets === []) {
-                    // NOTHING IS MAPPED, so there is no question to answer and no finding
-                    // to make. `stages` is optional (`WritebackConfig`: `$m['stages'] ?? []`)
-                    // and so is every other target source, so a mapping can legitimately
-                    // target no stage at all — a by-ref-correlation-only mapping does. Both
-                    // of the arms below would then say something false about it: the
-                    // `unvalidated` claims the ids "could NOT be checked" when there were
-                    // none, and the `ok` claims "all mapped stage ids exist" on an empty
-                    // set. Silence is the honest answer for a vacuous question; it is limb 1
-                    // of the rule, not limb 2.
-                } elseif ($boardStageIds === []) {
-                    // DL-251 §2b: this leg used to fall silent here. `boardStageOrder()`
-                    // documents the empty read as EXPECTED (the caller treats can't-order
-                    // as fail-open), and not-false-warning was right — but silence made
-                    // "every mapped stage id exists" and "the comparand never resolved"
-                    // the same output, which is green-because-never-looked at the one leg
-                    // whose whole job is to catch a silent 422. The comparison could not be
-                    // made, so it is UNVALIDATED, not a warn about the config: nothing here
-                    // is evidence the ids are wrong.
-                    yield Finding::unvalidated("writeback: could NOT check the mapped stage ids for {$repo} — board {$mapping->boardId} returned no workflow stages, so there was nothing to compare them against; a typo'd id would look exactly like this. Verify board_id + the token's membership and re-run.");
-                } else {
-                    $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
-                    if ($unknownStages !== []) {
-                        yield Finding::warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$mapping->boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");
-                    } else {
-                        yield Finding::ok("writeback: all mapped stage ids exist on board {$mapping->boardId} ({$repo})");
+                yield from $this->stageIdsExistOn((string) $repo, $mapping->boardId, $targets, $client);
+                // card#9850 / DL-404: every ADDED declared board carries its own stage map and
+                // its own `started` source sets, and every one of those ids is a stage of THAT
+                // board — so each is compared to that board's own stages, never to the mapped
+                // board's (stage ids are a global auto-increment: board 2's list can hold no
+                // board-13 stage). The coord-card ids above are the mapped board's alone and
+                // are not re-checked here. None of this runs on a single-board mapping, whose
+                // requests and findings are unchanged. Each board in its OWN try, so a board
+                // that cannot be read is reported by its own id and loses nothing yielded above.
+                foreach (array_slice($mapping->perDeclaredBoard(), 1) as $declared) {
+                    try {
+                        yield from $this->stageIdsExistOn((string) $repo, $declared->boardId, [
+                            ...array_values($declared->stages),
+                            ...$declared->startedFromStages ?? [],
+                            ...$declared->unparkFromStages ?? [],
+                        ], $client);
+                    } catch (Throwable $e) {
+                        yield Finding::unvalidated("writeback: could not read board {$declared->boardId} ({$repo}) with the writeback token — ".UntrustedText::forOperator(RedactedErrorText::of($e)));
                     }
                 }
                 // DL-200: the cross-config compare — the MANDATORY preflight that
@@ -280,6 +268,52 @@ final class WritebackBoardStateCheck implements Check
                 }
             } catch (Throwable $e) {
                 yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".UntrustedText::forOperator(RedactedErrorText::of($e)));
+            }
+        }
+    }
+
+    /**
+     * #2652's stage-existence leg for ONE board: every id in $targets must be a workflow stage
+     * of $boardId, or the move 422s (the forward outcomes) or the `started` / no-regression
+     * guard silently never matches. Asked of the mapped board and, since card#9850 / DL-404,
+     * of each added declared board with that board's own ids. A throw propagates to the
+     * caller's catch, which names the board it was reading.
+     *
+     * @param  list<int>  $targets
+     * @return iterable<Finding>
+     */
+    private function stageIdsExistOn(string $repo, int $boardId, array $targets, KanbanClient $client): iterable
+    {
+        // The read stays UNCONDITIONAL even when there is nothing to compare:
+        // moving it inside the guard below would change this check's HTTP
+        // behaviour, which is a different change from the message correction.
+        $boardStageIds = array_keys($client->boardStageOrder($boardId));
+        if ($targets === []) {
+            // NOTHING IS MAPPED, so there is no question to answer and no finding
+            // to make. `stages` is optional (`WritebackConfig`: `$m['stages'] ?? []`)
+            // and so is every other target source, so a mapping can legitimately
+            // target no stage at all — a by-ref-correlation-only mapping does. Both
+            // of the arms below would then say something false about it: the
+            // `unvalidated` claims the ids "could NOT be checked" when there were
+            // none, and the `ok` claims "all mapped stage ids exist" on an empty
+            // set. Silence is the honest answer for a vacuous question; it is limb 1
+            // of the rule, not limb 2.
+        } elseif ($boardStageIds === []) {
+            // DL-251 §2b: this leg used to fall silent here. `boardStageOrder()`
+            // documents the empty read as EXPECTED (the caller treats can't-order
+            // as fail-open), and not-false-warning was right — but silence made
+            // "every mapped stage id exists" and "the comparand never resolved"
+            // the same output, which is green-because-never-looked at the one leg
+            // whose whole job is to catch a silent 422. The comparison could not be
+            // made, so it is UNVALIDATED, not a warn about the config: nothing here
+            // is evidence the ids are wrong.
+            yield Finding::unvalidated("writeback: could NOT check the mapped stage ids for {$repo} — board {$boardId} returned no workflow stages, so there was nothing to compare them against; a typo'd id would look exactly like this. Verify board_id + the token's membership and re-run.");
+        } else {
+            $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
+            if ($unknownStages !== []) {
+                yield Finding::warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");
+            } else {
+                yield Finding::ok("writeback: all mapped stage ids exist on board {$boardId} ({$repo})");
             }
         }
     }

@@ -595,7 +595,7 @@ handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern 
 exactly as the `app/Bridge/Tools/` compare was.
 
 Another minuted narrowing, which reads through PhpParser rather than `SourceScan`:
-`BoardMoverCatalogTest` (DL-404). It walks `SourceScan::appFiles()` and keeps a class by what the class
+`BoardMoverCatalogTest` (DL-405). It walks `SourceScan::appFiles()` and keeps a class by what the class
 DECLARES (its namespace, or the writeback interface it implements), never by its file name. It reads
 the kept files with PhpParser, because what it checks is a key inside a call's ARGUMENT (a
 `catalog_id` in a context array, possibly on the far side of a `+`). That is a parse question, and a
