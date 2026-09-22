@@ -90,6 +90,10 @@ use Illuminate\Support\Facades\Log;
  * while having just hidden the argument it needs — leaving a caller to enumerate the
  * board by provoking a refusal.
  *
+ * ⭐ AND A TRUNCATED WINDOW NAMES ITS OWN REMEDY (card#10150): `remedy`, present only when
+ * `truncated` is true, says in the body which argument gets the rest — because the tool
+ * schema that advertises `stage` and `limit` does not reach every caller. See {@see remedy}.
+ *
  * ⭐ A PERMANENT 4xx FROM THE BOARD IS A NAMED REFUSAL, NOT THE RETRYABLE 502 (card#8486)
  * — see {@see readRefusal}. Every read this tool makes is covered, on both the own/shared
  * and the coord leg. ⛔ It is also the only tool whose refusals span BOTH {@see BoardReadRoute}
@@ -136,6 +140,15 @@ final class BoardMyCardsTool implements Tool
      * constant exists to fix wearing a smaller number.
      */
     public const DEFAULT_MAX_CARDS = 52;
+
+    /**
+     * How a caller reads one column instead of a whole capped list — ONE spelling, shared by the
+     * `limit` refusal and every truncated window `stage` reaches ({@see remedy}).
+     */
+    private const NARROW_WITH_STAGE = 'narrow with `stage`';
+
+    /** How a caller lets more of a capped list through — shared by every truncated window's remedy. */
+    private const RAISE_LIMIT = 'raise `limit` (the response grows in proportion)';
 
     /** The board's preload read carried no swimlane collection, so there is no lane list to count against. */
     public const UNMEASURED_SWIMLANES_UNREADABLE = 'board_swimlanes_unreadable';
@@ -406,7 +419,7 @@ final class BoardMyCardsTool implements Tool
      * says so, and both counts are `tag_read_incomplete` with no count request sent: a count is checked
      * against these rows, and rows short of the population can agree with it by luck.
      *
-     * @return array{tag: string, include_terminal: bool, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
+     * @return array{tag: string, include_terminal: bool, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
      */
     private function tagBlock(KanbanClient $client, BoardStructure $structure, BoardRead $read, string $tag, bool $includeTerminal, ?int $stageFilter, int $limit, ?int $descriptionCap, int $boardId, int $swimlaneId, string $agentName): array
     {
@@ -643,7 +656,7 @@ final class BoardMyCardsTool implements Tool
         }
         $limit = $args['limit'];
         if (! is_int($limit) || $limit < 1) {
-            throw new ToolRefusalException('board_my_cards: `limit` must be an integer of at least 1 when provided — it is the number of CARDS each list is cut to (default '.self::DEFAULT_MAX_CARDS.'). Raising it raises the response size in proportion; narrow with `stage` instead where you can.');
+            throw new ToolRefusalException('board_my_cards: `limit` must be an integer of at least 1 when provided — it is the number of CARDS each list is cut to (default '.self::DEFAULT_MAX_CARDS.'). Raising it raises the response size in proportion; '.self::NARROW_WITH_STAGE.' instead where you can.');
         }
 
         return $limit;
@@ -833,11 +846,14 @@ final class BoardMyCardsTool implements Tool
      * and a key that could never be non-null is a claim the block does not support.
      *
      * @param  list<array<string, mixed>>  $rows
-     * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int}}
+     * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string}}
      */
     private function filteredWindow(array $rows, int $limit, ?int $stageFilter): array
     {
         [$cards, $window] = $this->cardWindow($rows, $limit);
+        $remedy = $stageFilter === null
+            ? self::NARROW_WITH_STAGE.' (one column: an id or name from `board_stages`) or '.self::RAISE_LIMIT
+            : self::RAISE_LIMIT.' — this list is already narrowed to one column by `stage`';
 
         return [$cards, [
             'total' => $window['total'],
@@ -845,7 +861,32 @@ final class BoardMyCardsTool implements Tool
             'limit' => $window['limit'],
             'truncated' => $window['truncated'],
             'stage_filter' => $stageFilter,
+            ...$this->remedy($window['truncated'], $remedy),
         ]];
+    }
+
+    /**
+     * The `remedy` key a window block is spread with: what a caller does to see more of a
+     * TRUNCATED list, as a sentence IN THE RESPONSE BODY (card#10150). Absent from an untruncated
+     * window — a list that was not cut has nothing to remedy, and an uncut window stays exactly
+     * what this tool returned before the key existed.
+     *
+     * ⛔ THE TOOL SCHEMA IS NOT ENOUGH, AND THAT IS WHY THIS EXISTS: `stage` and `limit` are
+     * advertised by the CHANNEL SERVER's tool description, a separately-versioned snapshot per
+     * seat whose version this bridge cannot see. A seat on a snapshot older than those arguments
+     * is still capped here — the cap is enforced bridge-side for every caller — and was told
+     * `truncated: true` with nothing to do about it, although the arguments work from it (the
+     * channel server forwards args verbatim). A response body reaches every caller at every
+     * version.
+     *
+     * `$how` is built from {@see NARROW_WITH_STAGE} / {@see RAISE_LIMIT}, and the `limit` refusal
+     * reads the first of them, so the two surfaces cannot name different escapes.
+     *
+     * @return array{remedy?: string}
+     */
+    private function remedy(bool $truncated, string $how): array
+    {
+        return $truncated ? ['remedy' => 'this list was cut to the newest `limit` of `total` cards; to see more, '.$how] : [];
     }
 
     /**
@@ -1057,7 +1098,7 @@ final class BoardMyCardsTool implements Tool
      * board — and this block carries its own window so its truncation is legible on its
      * own terms.
      *
-     * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>, coord_cards_window: array{total: int, returned: int, limit: int, truncated: bool}}
+     * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>, coord_cards_window: array{total: int, returned: int, limit: int, truncated: bool, remedy?: string}}
      */
     private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit): array
     {
@@ -1091,6 +1132,9 @@ final class BoardMyCardsTool implements Tool
         // in different literals and a change can narrow one alone.
         [$observedBoard, $boardObserved] = $this->observedBoard($rows, $coordBoardId, $agentName, 'coord');
         [$coordCards, $coordWindow] = $this->cardWindow($rows, $limit);
+        // ⛔ NOT the product-board remedy: `stage` never reaches this block (see above), so
+        // naming it here would send a caller to an argument that cannot narrow these cards.
+        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours')];
 
         return [
             'coord_board_id' => $observedBoard,

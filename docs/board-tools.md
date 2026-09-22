@@ -163,25 +163,27 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
     "returned": 52,          // how many you were given
     "limit": 52,             // the cap in effect for this call
     "truncated": true,       // true ⇒ there is more behind this list
-    "stage_filter": null     // the numeric stage id this list was narrowed to, or null
+    "stage_filter": null,    // the numeric stage id this list was narrowed to, or null
+    "remedy": "…"            // ONLY when truncated is true: a sentence naming the argument
+                             // that gets the rest — see § The default is capped
   },
   "shared_swimlane": {                                     // when configured
     "swimlane_id": 9, "cards_by_stage": { /* ... */ },
-    "cards_window": { /* same five keys, for the shared lane's OWN population */ }
+    "cards_window": { /* the same keys, for the shared lane's OWN population */ }
   },
   // the coord block, all five keys together, when the coord leg is configured:
   "coord_board_id": 12,             // the board the coord ROWS are on (null when none was read)
   "coord_board_observed": true,
   "configured_coord_board_id": 12,
   "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ],
-  "coord_cards_window": { /* total / returned / limit / truncated — NO stage_filter */ },
+  "coord_cards_window": { /* total / returned / limit / truncated (+ remedy when truncated) — NO stage_filter */ },
   // ONLY when `tag` was passed:
   "tag_cards": {
     "tag": "lane:A",
     "include_terminal": false,
     "excluded_terminal_stage_ids": [53],   // the lane_type `done` columns left out ([] when none)
     "cards": [ { /* the card shape above */ "swimlane_id": null } ],  // null ⇒ in NO lane
-    "cards_window": { /* the same five keys, over this block's population, plus: */ "total_is_lower_bound": false },
+    "cards_window": { /* the same keys, over this block's population, plus: */ "total_is_lower_bound": false },
     "other_swimlanes": 2,            // cards in a lane other than yours, or null …
     "other_swimlanes_unmeasured": null,   // … and then WHY, by name
     "no_swimlane": 3,                // cards in no lane, or null …
@@ -259,6 +261,16 @@ for, and the old response gave no hint it was oversized or partial.
   **before** the cut — that is what makes `truncated` worth reading. ⛔ **Never treat a
   `truncated: true` list as the whole board**, exactly as you must never treat a truncated
   description as the whole scope.
+- **A truncated window names its own remedy — `remedy`, present only when `truncated` is
+  `true` (card#10150).** It is a sentence naming the argument that gets the rest, so a caller
+  whose channel-server tool schema predates `stage` and `limit` can still act on a capped read
+  the same turn: those arguments are accepted from any snapshot (the channel server forwards
+  arguments verbatim), and only the tool description that advertises them is per-seat and
+  versioned. What it names depends on the list: your own lane, the shared lane and `tag_cards`
+  name `stage` and `limit`; a list already narrowed by `stage` names `limit` alone;
+  `coord_cards_window` names `limit` alone, because `stage` does not reach the coordination
+  board. An untruncated window carries **no** `remedy` key — not a null one. ⚠ The sentence is
+  for a reader; branch on `truncated`, never on the wording.
 - **Narrow with `stage` before you raise `limit`.** `stage` answers about one column, and
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller
@@ -337,7 +349,7 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
   | `server_total_absent` | the count response carried no `meta.total`. |
   | `disagrees_with_rows` | kanban's count and the lane fields on the rows this call read do not agree. |
   | `board_swimlanes_unreadable` | (`other_swimlanes` only) the board structure read carried no lane list to count against. |
-  | `tag_read_incomplete` | the tag read stopped at the page ceiling, so its rows are not the whole population and no count over them could be checked. No count search was sent. Narrow with `stage`. |
+  | `tag_read_incomplete` | the tag read stopped at the page ceiling, so its rows are not the whole population and no count over them could be checked. No count search was sent. ⚠ **No argument recovers it:** `stage` narrows the tag rows *after* they are read, so a narrowed call hits the same ceiling — a tag carried by that many live cards is an operator question, not a caller one. |
 
   Before the laneless count, the bridge sends your board one bare-word search and reads only
   whether kanban says it ran as free text: that is what makes kanban's silence on the count
