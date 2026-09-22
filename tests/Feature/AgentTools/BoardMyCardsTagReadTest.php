@@ -405,8 +405,24 @@ class BoardMyCardsTagReadTest extends TestCase
         $block = $this->tagCards(['tag' => 'lane:A']);
 
         $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $block['cards']);
-        $this->assertSame(['total' => 60, 'returned' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'truncated' => true, 'stage_filter' => null, 'total_is_lower_bound' => false], $block['cards_window']);
+        $this->assertSame(['total' => 60, 'returned' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS, 'truncated' => true, 'stage_filter' => null, 'remedy' => $block['cards_window']['remedy'] ?? null, 'total_is_lower_bound' => false], $block['cards_window']);
         $this->assertSame(60, $block['no_swimlane'], 'the counts are over the population, not the cut');
+    }
+
+    public function test_a_truncated_tag_window_names_stage_and_limit_as_its_remedy(): void
+    {
+        // card#10150: `stage` narrows this block's population too, so its remedy is the lane's.
+        $rows = [];
+        for ($id = 1000; $id < 1060; $id++) {
+            $rows[] = self::taggedRow($id, 50, null);
+        }
+        $this->fakeTaggedBoard([], $rows);
+
+        $window = $this->tagCards(['tag' => 'lane:A'])['cards_window'];
+
+        $this->assertTrue($window['truncated']);
+        $this->assertStringContainsString('`stage`', $window['remedy'] ?? '');
+        $this->assertStringContainsString('`limit`', $window['remedy'] ?? '');
     }
 
     /**
