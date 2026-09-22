@@ -167,7 +167,12 @@ class UnvalidatedCallSiteTest extends TestCase
         // The FOURTH member of that slice — the fail-closed `issue_number` leg — is NOT
         // here and must not be: it stays `fail`, because an unverifiable board could
         // silently double-card. Only its message stopped over-claiming.
-        'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 10,
+        // PLUS (card#9850 / DL-404, r1 of #770) the per-ADDED-declared-board catch around
+        // the stage-existence leg: an added board's preload read THREW, so whether its stage
+        // ids exist was never measured — limb (a), the same shape as the per-mapping catch,
+        // and its own site only so the finding names the board that could not be read
+        // rather than the mapped board.
+        'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 11,
         'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 7,
         // Board / cache / channel reads that did not complete (DL-251 (a)). The THIRD site on
         // the source-coverage leg is card#5701 / DL-258 and is a different limb from its two

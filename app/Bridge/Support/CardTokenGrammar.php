@@ -100,6 +100,30 @@ final class CardTokenGrammar
     }
 
     /**
+     * EVERY card id this text names, first-seen order, deduped — the set form of
+     * {@see self::parse()}, which answers only the leftmost token (card#9850 / DL-404).
+     *
+     * A POSITION-BLIND WIDENING, NEVER A SECOND ACCEPT-SET: it matches the same
+     * {@see self::PATTERN} and can only ever return ids `parse()` would return for some
+     * substring, so no spelling correlates through this door that does not correlate
+     * through that one. Nothing on the WRITE path calls it — the writeback correlates one
+     * card per event by design — and it exists for the exposure audit
+     * (`bridge:writeback-exposure`), which must ask about every card a pull request cites
+     * rather than only the first, or a repo citing several boards could report clean on the
+     * strength of its leftmost token.
+     *
+     * @return list<int>
+     */
+    public static function parseAll(string $text): array
+    {
+        if (preg_match_all(self::PATTERN, $text, $m) === false) {
+            return [];
+        }
+
+        return array_values(array_unique(array_map(intval(...), $m[1])));
+    }
+
+    /**
      * The card id this text STARTS with — the token flush at offset 0 — or null.
      *
      * WHO ASKS, AND WHY IT LIVES HERE. {@see ClosureGrammar} matches a closing verb and

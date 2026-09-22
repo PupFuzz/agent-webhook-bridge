@@ -251,7 +251,7 @@ class ReconcileCommand extends BridgeCommand
             $order = [];
         }
 
-        // A physically shared board (>1 repo mapped to it in the FULL config, even
+        // A physically shared board (>1 repo mapping or declaring it in the FULL config, even
         // if --repo filtered to one) can't attribute a bare pr_number to a repo.
         $isShared = $writeback->boardIsShared($boardId);
         // canonical owner/repo → mapping, for pr_url attribution on this board.
@@ -528,7 +528,7 @@ class ReconcileCommand extends BridgeCommand
                 return [$repo, $mapping, $canon, $ref->prNumber, null];
 
             case TrackedRefKind::Ambiguous:
-                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} on shared board — ambiguous repo (needs a repo-qualified pr_url); skipped");
+                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped");
                 $this->skipped++;
 
                 return $none;

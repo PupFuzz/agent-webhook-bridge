@@ -157,4 +157,37 @@ class CardTokenGrammarTest extends TestCase
         $this->assertNotEmpty(CardTokenGrammar::accepted(), 'a sentence with no accepted example teaches nothing');
         $this->assertNotEmpty(CardTokenGrammar::rejected(), 'the near-misses are the half operators get wrong');
     }
+
+    // --- card#9850 / DL-404: parseAll, the set form. ------------------------------------
+
+    /**
+     * ⭐ `parseAll` IS A POSITION WIDENING, NEVER A SECOND ACCEPT-SET, and that is asserted as
+     * a PROPERTY over this class's own vector corpus rather than by a handful of examples:
+     * every vector `parse()` accepts is in `parseAll`'s answer for that vector, and every
+     * vector it rejects yields nothing. A second accept-set is exactly how one grammar comes
+     * to correlate two different populations, so the widening has to be provably inert on the
+     * boundary it did not mean to move.
+     */
+    public function test_parse_all_accepts_exactly_what_parse_accepts_over_the_whole_corpus(): void
+    {
+        foreach (CardTokenGrammar::VECTORS as $vector) {
+            $one = CardTokenGrammar::parse($vector);
+            $this->assertSame(
+                $one === null ? [] : [$one],
+                CardTokenGrammar::parseAll($vector),
+                "'{$vector}' must land on the same side of the accept-set for both entry points"
+            );
+        }
+    }
+
+    /**
+     * The reason it exists: a subject citing TWO cards. `parse()` answers the leftmost token,
+     * so an exposure audit built on it would clear a repo on the strength of whichever
+     * citation happened to come first — the blindness that audit is for.
+     */
+    public function test_parse_all_answers_every_token_in_the_subject_deduped_in_first_seen_order(): void
+    {
+        $this->assertSame([222, 111], CardTokenGrammar::parseAll('chore: card#222 supersedes card-111 and card#222 again'));
+        $this->assertSame([], CardTokenGrammar::parseAll('no tokens here at all'));
+    }
 }
