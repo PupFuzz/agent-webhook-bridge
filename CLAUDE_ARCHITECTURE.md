@@ -138,6 +138,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | File | Role |
 |---|---|
 | `app/Bridge/Tools/{Tool,BoardToolsRegistry}.php` + the tool classes that registry's constructor lists | The tool contract — including each tool's declared argument keys — the name→instance registry (its constructor is the shipped set, deliberately not restated here), and the tools |
+| `app/Bridge/Tools/ToolCallBody.php` | The ONE parse of a board-tools request body, BOTH front doors (card#10106): the decoded object, or a refusal naming what is wrong with the bytes — so a body that never parsed is not answered as a missing `tool` |
 | `app/Bridge/Tools/{BoardToolDispatcher,DispatchOutcome}.php` | The shared post-agent-resolution machinery BOTH front doors single-source (tool/args-shape validation → writeback client → the one refusal for an argument key the tool does not declare → invoke → exception→status), returning a transport-neutral outcome |
 | `app/Http/Controllers/AgentTools/AgentToolsController.php` + `app/Bridge/Tools/BoardToolAgentResolver.php` | **HTTP front door**: loopback-gated `POST /agent-tools/call`; resolves the agent by bearer (ssh agents excluded from the index), then dispatches |
 | `app/Console/Commands/Bridge/ToolsCallCommand.php` (`bridge:tools-call`) + `app/Bridge/Tools/ToolsCallStdio.php` | **SSH front door** (card 4952): identity from the pinned `--agent`, `{tool,args}` from STDIN, one JSON envelope to raw STDOUT; same dispatcher |

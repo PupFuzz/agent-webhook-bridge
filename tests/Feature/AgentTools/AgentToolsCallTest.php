@@ -5001,6 +5001,50 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    // ─── the Content-Type this door reads its body by (card#10106) ─────────────
+
+    /**
+     * Without a JSON Content-Type, Laravel's `input()` reads form fields and the query string
+     * instead of the body — so a body whose `tool` is present was answered "request must
+     * carry a non-empty `tool`", and a form-encoded `tool=` reached a tool with no JSON body
+     * at all. Both are refused for the Content-Type, by name. HTTP-only by construction: the
+     * ssh door has no Content-Type to get wrong.
+     *
+     * The third element is the form fields PHP's SAPI would have parsed out of the body: the
+     * test kernel does not parse a raw body into them, so without it the form row would
+     * model a call that never reaches `input()` — and pass for the wrong reason (measured:
+     * with it, the pre-card#10106 door answered this row 200).
+     *
+     * @return array<string, array{0: string, 1: string, 2: array<string, string>}>
+     */
+    public static function nonJsonContentTypes(): array
+    {
+        return [
+            'a JSON body labelled text/plain' => ['text/plain', '{"tool":"board_my_cards","args":{}}', []],
+            'a form-encoded call' => ['application/x-www-form-urlencoded', 'tool=board_my_cards', ['tool' => 'board_my_cards']],
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $formFields
+     */
+    #[DataProvider('nonJsonContentTypes')]
+    public function test_a_body_not_labelled_json_is_refused_for_its_content_type(string $contentType, string $body, array $formFields): void
+    {
+        CallingSeatSeal::forANewServingProcess();
+        $this->fakeEmptyWindow();
+
+        $this->call('POST', '/agent-tools/call', $formFields, [], [], [
+            'CONTENT_TYPE' => $contentType,
+            'HTTP_ACCEPT' => 'application/json',
+            'REMOTE_ADDR' => '127.0.0.1',
+            'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
+        ], $body)
+            ->assertStatus(422)
+            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}']);
+        Http::assertNothingSent();
+    }
+
     // ─── undeclared argument keys: one refusal, in the dispatcher ─────────────
 
     /**

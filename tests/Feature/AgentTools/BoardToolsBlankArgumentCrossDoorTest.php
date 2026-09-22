@@ -97,6 +97,17 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      */
     private function throughHttpDoor(array $call): array
     {
+        return $this->rawThroughHttpDoor((string) json_encode($call));
+    }
+
+    /**
+     * The same door fed the caller's literal bytes — the request-body layer, where the two
+     * doors each parse for themselves (card#10106).
+     *
+     * @return array{ok: bool, status: int, body: array<string, mixed>, requests: list<array<string, mixed>>}
+     */
+    private function rawThroughHttpDoor(string $rawBody): array
+    {
         // Every test in this class drives BOTH doors, which in production is two processes —
         // and the seat seal is per-process (card#9170).
         CallingSeatSeal::forANewServingProcess();
@@ -109,12 +120,12 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             'HTTP_ACCEPT' => 'application/json',
             'REMOTE_ADDR' => '127.0.0.1',
             'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
-        ], (string) json_encode($call));
+        ], $rawBody);
 
         /** @var array<string, mixed> $body */
         $body = json_decode((string) $response->getContent(), true);
 
-        return ['ok' => $response->status() === 200, 'body' => $body, 'requests' => $this->requestsSince($before)];
+        return ['ok' => $response->status() === 200, 'status' => $response->status(), 'body' => $body, 'requests' => $this->requestsSince($before)];
     }
 
     /**
@@ -126,19 +137,27 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      */
     private function throughSshDoor(array $call): array
     {
+        return $this->rawThroughSshDoor((string) json_encode($call));
+    }
+
+    /**
+     * @return array{ok: bool, exit: int, body: array<string, mixed>, requests: list<array<string, mixed>>}
+     */
+    private function rawThroughSshDoor(string $stdin): array
+    {
         CallingSeatSeal::forANewServingProcess();
 
         $this->writeAgent('ssh');
         $before = Http::recorded()->count();
 
-        $fake = new FakeToolsCallStdio((string) json_encode($call));
+        $fake = new FakeToolsCallStdio($stdin);
         $this->app->instance(ToolsCallStdio::class, $fake);
         $exit = $this->artisan('bridge:tools-call', ['--agent' => $this->agent])->run();
 
         /** @var array<string, mixed> $body */
         $body = json_decode($fake->capturedOut(), true);
 
-        return ['ok' => $exit === 0, 'body' => $body, 'requests' => $this->requestsSince($before)];
+        return ['ok' => $exit === 0, 'exit' => $exit, 'body' => $body, 'requests' => $this->requestsSince($before)];
     }
 
     /**
@@ -623,5 +642,82 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertTrue($ssh['ok'], 'ssh door: '.json_encode($ssh['body']));
         $this->assertSame(['needs-review', 'created-by:me'], $this->writesIn($http['requests'])[0]['body']['tags']);
         $this->assertSame(['needs-review', 'created-by:me'], $this->writesIn($ssh['requests'])[0]['body']['tags']);
+    }
+
+    // ─── the request body itself (card#10106) ────────────────────────────────
+
+    /**
+     * Bodies that never parse as the request object, each with the phrase the refusal must
+     * carry. The first is rt#538's shape: a `tool` key that IS present, in a body that was
+     * cut off — the HTTP door used to answer it "request must carry a non-empty `tool`".
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function unparseableBodies(): array
+    {
+        return [
+            'truncated after a present `tool`' => ['{"tool":"board_create_card","args":{', 'request body is not valid JSON (Syntax error)'],
+            'malformed UTF-8 inside a present `tool`' => ["{\"tool\":\"board_my_cards\",\"args\":{\"tag\":\"\xC3\x28\"}}", 'request body is not valid JSON (Malformed UTF-8'],
+            'empty' => ['', 'request body is empty'],
+            'whitespace only' => [" \n\t ", 'request body is empty'],
+            'a JSON array' => ['[{"tool":"board_my_cards"}]', 'request body is a JSON array, not an object'],
+            'a JSON string' => ['"board_my_cards"', 'request body is a JSON string, not an object'],
+            'a JSON number' => ['42', 'request body is a JSON number, not an object'],
+            'JSON null' => ['null', 'request body is a JSON null, not an object'],
+        ];
+    }
+
+    /**
+     * ⚑ RED-WHEN-REVERTED: put `$request->input('tool')` back in front of the shared parse
+     * and the HTTP leg answers "request must carry a non-empty `tool`" for every row, which
+     * both the `assertSame` on the envelopes and the phrase assertion catch.
+     */
+    #[DataProvider('unparseableBodies')]
+    public function test_a_body_that_does_not_parse_is_refused_in_the_same_words_on_both_doors(string $raw, string $phrase): void
+    {
+        Http::fake();
+
+        $http = $this->rawThroughHttpDoor($raw);
+        $ssh = $this->rawThroughSshDoor($raw);
+
+        $this->assertSame($http['body'], $ssh['body'], 'the two doors must answer the same unparseable body identically');
+        $this->assertSame(422, $http['status']);
+        $this->assertSame(1, $ssh['exit']);
+        $error = (string) $http['body']['error'];
+        $this->assertStringStartsWith($phrase, $error);
+        $this->assertStringEndsWith('expected a JSON object {tool, args?, client_version?}', $error);
+        $this->assertStringNotContainsString('`tool`', $error, 'a body that never parsed must not be blamed on a field');
+        $this->assertSame([], $http['requests']);
+        $this->assertSame([], $ssh['requests']);
+    }
+
+    /**
+     * The CONTROL: a body that does parse but genuinely lacks a usable `tool` still gets the
+     * `tool` refusal, on both doors, in the one place that owns it (the dispatcher).
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function parsedBodiesWithoutATool(): array
+    {
+        return [
+            'an empty object' => ['{}'],
+            'args but no tool' => ['{"args":{}}'],
+            'a non-string tool' => ['{"tool":5}'],
+            'an empty tool' => ['{"tool":""}'],
+        ];
+    }
+
+    #[DataProvider('parsedBodiesWithoutATool')]
+    public function test_a_parsed_body_without_a_tool_is_refused_for_the_tool_on_both_doors(string $raw): void
+    {
+        Http::fake();
+
+        $http = $this->rawThroughHttpDoor($raw);
+        $ssh = $this->rawThroughSshDoor($raw);
+
+        $this->assertSame($http['body'], $ssh['body']);
+        $this->assertSame(422, $http['status']);
+        $this->assertSame(1, $ssh['exit']);
+        $this->assertSame('request must carry a non-empty `tool`', $http['body']['error']);
     }
 }
