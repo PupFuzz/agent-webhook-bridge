@@ -208,7 +208,9 @@ class WritebackExposureCommand extends BridgeCommand
             if ($located['refused'] !== null || $located['unfiltered']) {
                 // A board that could not be asked, or an answer that establishes nothing, is
                 // NOT evidence the card is off the declared set — reading it that way would
-                // manufacture exposure out of an install fault.
+                // manufacture exposure out of an install fault. The two are never both set:
+                // locateOnDeclaredBoards() ranks a refusal over a wrong-row answer, the same
+                // cause the runtime refusal names for this card.
                 $unresolved[] = "card#{$cardId} (".($located['unfiltered']
                     ? 'the board-scoped lookup answered a row that does not name this card on that board, so it narrowed on neither term'
                     : 'a declared board refused the lookup').')';

@@ -362,9 +362,8 @@ final class MappedBoardGuard
         }
 
         // A 4xx from ANY declared board's lookup takes precedence over a wrong-row answer from
-        // any other, exactly as the single-board lookup's 4xx always did (it ended the lookup
-        // before a verdict was read). Pinned on both shapes: WritebackTenantScopeTest and
-        // WritebackMultiBoardTest, `test_a_4xx_…_wrong_row_answer…`.
+        // any other — ranked in locateOnDeclaredBoards(), which never returns both causes, so
+        // this branch and the one below cannot both apply and their order is not a ranking.
         if ($lookupRefused !== null) {
             // A 4xx on a BOARD-SCOPED read says nothing about whose card the id is — the query
             // named a board this install declares — so the foreign-id hypothesis is excluded
@@ -423,6 +422,17 @@ final class MappedBoardGuard
      * with the three outcomes: {@see refusesCardIdOutsideMappedBoard} turns them into a
      * refusal and a report; the command turns them into `exposed` / `unreachable`.
      *
+     * ⛔ THE TWO MISS CAUSES ARE RANKED HERE, ONCE, AND NEVER BOTH SET. A miss can have seen a
+     * 4xx on one declared board AND a wrong-row answer on another (or on the same board's other
+     * archive side). The 4xx governs — as the single-board lookup's 4xx always did, because it
+     * ended that lookup before any verdict was read — so `unfiltered` is true only when nothing
+     * was refused. Both callers used to receive both raw flags and rank them for themselves; the
+     * guard ranked 4xx first and the exposure command ranked the wrong row first, so one card
+     * got two causes and two remedies (card#9850, #770 r6). Returning at most one cause makes a
+     * divergent ranking unwritable rather than merely untested. Pinned on the guard by
+     * `WritebackTenantScopeTest` / `WritebackMultiBoardTest` `test_a_4xx_…_wrong_row_answer…`
+     * and on the command by `WritebackExposureCommandTest::test_a_card_whose_lookup_was_both_refused_…`.
+     *
      * The ARCHIVE switch is the OUTER loop, so the happy path is one request per declared
      * board and the archived probe still runs only after every live side has missed (kanban's
      * search excludes archived rows unless `?archived` is passed and offers no both-sides
@@ -440,12 +450,14 @@ final class MappedBoardGuard
      * @param  list<WritebackMapping>  $declared  the mapping once per declared board, in probe order
      * @return array{on: ?WritebackMapping, unfiltered: bool, refused: ?RequestException}
      *                                                                                    `on` — the declared board the card was established on,
-     *                                                                                    null when none was; `unfiltered` — some board answered a
+     *                                                                                    null when none was; `refused` — the first PERMANENT
+     *                                                                                    refusal of a declared board's lookup, meaning the set
+     *                                                                                    was not fully asked; `unfiltered` — some board answered a
      *                                                                                    row that is NOT this card on that board, so kanban
      *                                                                                    narrowed on neither term and no verdict may be read out
-     *                                                                                    of the answer at all; `refused` — the first PERMANENT
-     *                                                                                    refusal of a declared board's lookup, meaning the set
-     *                                                                                    was not fully asked
+     *                                                                                    of the answer at all, and NOTHING was refused (a refusal
+     *                                                                                    outranks it — see above). Both are false/null when `on`
+     *                                                                                    is set: a cause is a property of a miss
      */
     public static function locateOnDeclaredBoards(KanbanClient $client, array $declared, int $cardId): array
     {
@@ -476,7 +488,7 @@ final class MappedBoardGuard
                 }
                 foreach ($rows as $row) {
                     if (self::namesCard($row, $cardId) && self::belongs($row, $candidate)) {
-                        return ['on' => $candidate, 'unfiltered' => $answeredNoMatchingRow, 'refused' => $lookupRefused];
+                        return ['on' => $candidate, 'unfiltered' => false, 'refused' => null];
                     }
                     // A row came back that is not this card on this board: whatever the query
                     // asked, the ANSWER is not narrowed, so no verdict can be read out of it.
@@ -485,7 +497,9 @@ final class MappedBoardGuard
             }
         }
 
-        return ['on' => null, 'unfiltered' => $answeredNoMatchingRow, 'refused' => $lookupRefused];
+        // The ranking, and its only spelling: a refusal governs, so a wrong-row answer is
+        // reported only when no declared board refused the lookup.
+        return ['on' => null, 'unfiltered' => $lookupRefused === null && $answeredNoMatchingRow, 'refused' => $lookupRefused];
     }
 
     /**

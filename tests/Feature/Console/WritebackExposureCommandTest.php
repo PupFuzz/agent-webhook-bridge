@@ -209,6 +209,43 @@ class WritebackExposureCommandTest extends TestCase
     }
 
     /**
+     * ONE CARD, TWO CAUSES, ONE ANSWER — the same one the runtime refusal gives (card#9850, r6).
+     * Board 2 answers a row that is not this card (a wrong-row answer) and board 13 refuses the
+     * lookup (403). The runtime guard reports that card under the token-scope reason, because a
+     * 4xx outranks a wrong-row answer; this command must name the SAME cause, or an operator
+     * reading both surfaces is sent to two different remedies for one card (fix the token's
+     * board membership vs. treat the search as a broken read). The ranking is decided once, in
+     * `MappedBoardGuard::locateOnDeclaredBoards()`, so this reds if either caller re-ranks.
+     */
+    public function test_a_card_whose_lookup_was_both_refused_and_answered_a_wrong_row_is_reported_as_refused(): void
+    {
+        $this->writeMapping([
+            'board_id' => self::COORD_BOARD, 'stages' => ['merged' => 22],
+            'boards' => [(string) self::SPRINT_BOARD => ['merged' => 97]],
+        ]);
+        Http::fake($this->githubAnswers([[
+            'number' => 727, 'merged_at' => '2026-09-03T00:00:00Z',
+            'title' => '[TASK] something (closes card#'.self::CITED_CARD.')',
+            'head' => ['ref' => 'fix/card-'.self::CITED_CARD.'-slug'],
+        ]]) + [
+            '*/tasks/search.json?q=board_id%3D'.self::COORD_BOARD.'*' => Http::response(['data' => [
+                ['id' => 41, 'board_id' => self::COORD_BOARD],
+            ]]),
+            '*/tasks/search.json?q=board_id%3D'.self::SPRINT_BOARD.'*' => Http::response(['message' => 'forbidden'], 403),
+        ]);
+
+        $output = $this->runExposure(expectedExit: 1);
+
+        $this->assertStringContainsString('card#'.self::CITED_CARD.' (a declared board refused the lookup)', $output,
+            'a 4xx outranks a wrong-row answer, exactly as the runtime refusal ranks them (boardscope_403_token_scope)');
+        $this->assertStringNotContainsString('narrowed on neither term', $output);
+        $this->assertStringContainsString(
+            '1 mappings reachable on this box, 0 evaluated, 0 exposed, 1 unreachable. Fleet-wide: not derivable.',
+            $output,
+        );
+    }
+
+    /**
      * An install with the writeback OFF has no population, and that is reported as such rather
      * than as "0 exposed" — which would be a clean bill over a measurement nobody made. The
      * distinction is the whole difference between a zero and an empty.
