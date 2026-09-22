@@ -156,7 +156,9 @@ final class WritebackMapping
      *                                                                                                                                   writeback will ever resolve a `card#` token
      *                                                                                                                                   onto. null ⇒ exactly one declared board
      *                                                                                                                                   (byte-identical to every mapping written before
-     *                                                                                                                                   this key existed). Stage ids are per-board
+     *                                                                                                                                   this key existed, except the two changes
+     *                                                                                                                                   docs/writeback.md § Optional: a repo whose PRs
+     *                                                                                                                                   cite cards on SEVERAL boards names). Stage ids are per-board
      *                                                                                                                                   arbitrary integers — board 3's stage 22 has no
      *                                                                                                                                   relationship to board 13's stage 22 — which is
      *                                                                                                                                   why a per-board stage map is required rather

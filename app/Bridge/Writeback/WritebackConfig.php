@@ -417,7 +417,8 @@ final class WritebackConfig
             //
             // ADDITIVE, never a replacement: `board_id` + `stages` keep their exact meaning
             // and stay the FIRST declared board, so every mapping written before this key
-            // existed loads and behaves identically. Fail-closed on every partial shape (the
+            // existed loads and behaves identically, except the two changes docs/writeback.md
+            // § Optional: a repo whose PRs cite cards on SEVERAL boards names. Fail-closed on every partial shape (the
             // DL-160/198/286 precedent) — a mis-typed board or an empty stage map here would
             // silently never match, and "silently never matches" is the defect being fixed.
             $boards = null;

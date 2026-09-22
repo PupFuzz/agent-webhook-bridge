@@ -32,7 +32,9 @@ use Tests\TestCase;
  *  1. {@see test_a_cited_card_on_another_board_is_silently_ignored_under_a_single_board_mapping}
  *     — the PRE-FIX SHAPE, measured rather than asserted, on a mapping written exactly as every
  *     mapping was written before the `boards` key existed. It is also the compatibility cell:
- *     the ruling's non-negotiable is that such a mapping behaves EXACTLY as it does today, and
+ *     the ruling's non-negotiable is that such a mapping behaves EXACTLY as it does today (less
+ *     the two stated changes docs/writeback.md § Optional: a repo whose PRs cite cards on
+ *     SEVERAL boards names, neither on this input), and
  *     "exactly as today" here means the silent no-op — so this leg pins the defect and the
  *     compatibility guarantee with one measurement.
  *  2. {@see test_the_declared_board_the_card_is_on_supplies_the_stage_and_the_move_lands} — the
@@ -219,7 +221,9 @@ class WritebackMultiBoardTest extends TestCase
      * this went unnoticed for as long as it did.
      *
      * ⚑ This leg is ALSO the compatibility cell required by the ruling: a mapping carrying no
-     * `boards` key must behave EXACTLY as it does today, and today's behaviour on this input is
+     * `boards` key must behave EXACTLY as it does today (less the two stated changes
+     * docs/writeback.md § Optional: a repo whose PRs cite cards on SEVERAL boards names, neither
+     * on this input), and today's behaviour on this input is
      * precisely this silent return. It reds if the multi-board path ever starts running on a
      * mapping that did not opt in.
      */

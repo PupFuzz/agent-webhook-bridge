@@ -1182,7 +1182,9 @@ class WritebackConfigTest extends TestCase
     //
     // ⭐ THE COMPATIBILITY CELL IS THE FIRST ONE AND IT IS NOT DECORATION. The ruling's
     // non-negotiable is that a mapping written before this key existed loads and behaves
-    // byte-identically, so the guarantee is asserted as a PROPERTY of the loaded mapping —
+    // byte-identically (less the two stated changes docs/writeback.md § Optional: a repo
+    // whose PRs cite cards on SEVERAL boards names), so the guarantee is asserted as a
+    // PROPERTY of the loaded mapping —
     // one declared board, `perDeclaredBoard()` yielding the same object — rather than left
     // to be inferred from the absence of a red elsewhere.
 
