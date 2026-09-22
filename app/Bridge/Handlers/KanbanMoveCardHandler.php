@@ -45,7 +45,7 @@ use Throwable;
  * the declared SET and the per-board stage semantics, and the card supplies which member of
  * that set. It is still config that decides — the set is closed, the lookups are
  * board-scoped, and a card in none of them is REFUSED rather than written to a fallback
- * board. A mapping declaring one board behaves exactly as it did, except the two changes `docs/writeback.md` § Optional: a repo whose PRs cite cards on SEVERAL boards names.
+ * board. A mapping declaring one board behaves exactly as it did.
  *
  * Two failure modes, treated
  * differently:

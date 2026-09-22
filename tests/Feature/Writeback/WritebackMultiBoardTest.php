@@ -32,9 +32,9 @@ use Tests\TestCase;
  *  1. {@see test_a_cited_card_on_another_board_is_silently_ignored_under_a_single_board_mapping}
  *     — the PRE-FIX SHAPE, measured rather than asserted, on a mapping written exactly as every
  *     mapping was written before the `boards` key existed. It is also the compatibility cell:
- *     the ruling's non-negotiable is that such a mapping behaves EXACTLY as it does today (less
- *     the two stated changes docs/writeback.md § Optional: a repo whose PRs cite cards on
- *     SEVERAL boards names, neither on this input), and
+ *     the ruling's non-negotiable is that such a mapping behaves EXACTLY as it does today
+ *     (except the reconcile skip line docs/writeback.md § Optional: a repo whose PRs cite cards
+ *     on SEVERAL boards names, not reached on this input), and
  *     "exactly as today" here means the silent no-op — so this leg pins the defect and the
  *     compatibility guarantee with one measurement.
  *  2. {@see test_the_declared_board_the_card_is_on_supplies_the_stage_and_the_move_lands} — the
@@ -221,9 +221,9 @@ class WritebackMultiBoardTest extends TestCase
      * this went unnoticed for as long as it did.
      *
      * ⚑ This leg is ALSO the compatibility cell required by the ruling: a mapping carrying no
-     * `boards` key must behave EXACTLY as it does today (less the two stated changes
-     * docs/writeback.md § Optional: a repo whose PRs cite cards on SEVERAL boards names, neither
-     * on this input), and today's behaviour on this input is
+     * `boards` key must behave EXACTLY as it does today (except the reconcile skip line
+     * docs/writeback.md § Optional: a repo whose PRs cite cards on SEVERAL boards names, not
+     * reached on this input), and today's behaviour on this input is
      * precisely this silent return. It reds if the multi-board path ever starts running on a
      * mapping that did not opt in.
      */
@@ -379,6 +379,34 @@ class WritebackMultiBoardTest extends TestCase
     // ------------------------------------------------------------------------------------
     // CELL 3 — the refusal, and the two things it must never do.
     // ------------------------------------------------------------------------------------
+
+    /**
+     * card#9850 / DL-404: a 4xx from ANY declared board's lookup outranks a wrong-row answer
+     * from another, as the single-board guard's 4xx always outranked one. Board A answers a row
+     * that is not this card; board B refuses its lookup. Every probe the loop owes still runs —
+     * B's refusal is only observed if the loop keeps going after A's broken answer — and the
+     * refusal is reported under the token-scope reason, not as a broken read.
+     */
+    public function test_a_4xx_on_one_declared_board_outranks_a_wrong_row_answer_on_another(): void
+    {
+        $this->writeMultiBoardMapping();
+        Http::fake($this->alertStub() + [
+            '*/tasks/search.json?q=board_id%3D'.self::COORD_BOARD.'%20id%3D*archived=1' => Http::response(['data' => []]),
+            '*/tasks/search.json?q=board_id%3D'.self::COORD_BOARD.'%20id%3D*' => Http::response(['data' => [['id' => 41, 'board_id' => self::COORD_BOARD]]]),
+            '*/tasks/search.json?q=board_id%3D'.self::SPRINT_BOARD.'%20id%3D*' => Http::response(['message' => 'forbidden'], 403),
+            '*/tasks/7756.json' => Http::response(['data' => [
+                'id' => 7756, 'board_id' => self::UNDECLARED_BOARD, 'workflow_stage_id' => 41,
+            ]]),
+        ]);
+
+        $this->handleMerge(7756);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7756.json'));
+        $this->assertSame([self::COORD_BOARD, self::SPRINT_BOARD, self::COORD_BOARD], $this->scopedLookupBoards(),
+            'both boards are asked live after A\'s wrong row, and only the board that was not refused is asked archived');
+        $this->assertSame('boardscope_403_token_scope', $this->alerts()[0]['reason']);
+    }
 
     /**
      * ⛔ A MISS ACROSS THE DECLARED SET REFUSES — it never falls back to the repo's mapped

@@ -302,11 +302,7 @@ final class MappedBoardGuard
      * was established on, so the caller's stage map, `started` promote-from / unpark sets,
      * board-order read and post-read compare all speak about the board actually written to
      * (records still name the repo's configured board as `mapped_board` — see boardContext()). A single-board mapping yields one
-     * candidate, the same object, and every request this makes is the one it made before. ONE
-     * VERDICT MOVED with it, on every install: a live row that does not name the card followed
-     * by a 4xx on the archived probe now refuses as `board_scope_lookup_unfiltered`, where the
-     * 4xx used to win (see the precedence below, and `docs/writeback.md` § Optional: a repo
-     * whose PRs cite cards on SEVERAL boards).
+     * candidate, the same object, and every request this makes is the one it made before.
      *
      * ⛔ WHY IT IS A DECLARED SET AND NOT "ASK THE CARD". `card#NNNN` is parsed out of
      * author-controlled text against an id space that is GLOBAL across the instance, so
@@ -365,11 +361,11 @@ final class MappedBoardGuard
             return false;   // established on a declared board — the caller may read it
         }
 
-        // ⚑ An unfiltered answer OUTRANKS a 4xx here, on every install: before card#9850 the
-        // archived probe's 4xx refused as `boardscope_<status>_…` even after the live probe had
-        // answered a non-matching row. A stated exception to the no-`boards` byte-identity
-        // claim (`docs/writeback.md` § Optional: a repo whose PRs cite cards on SEVERAL boards).
-        if ($lookupRefused !== null && ! $answeredNoMatchingRow) {
+        // A 4xx from ANY declared board's lookup takes precedence over a wrong-row answer from
+        // any other, exactly as the single-board lookup's 4xx always did (it ended the lookup
+        // before a verdict was read). Pinned on both shapes: WritebackTenantScopeTest and
+        // WritebackMultiBoardTest, `test_a_4xx_…_wrong_row_answer…`.
+        if ($lookupRefused !== null) {
             // A 4xx on a BOARD-SCOPED read says nothing about whose card the id is — the query
             // named a board this install declares — so the foreign-id hypothesis is excluded
             // here and the slug says the token's scope instead.

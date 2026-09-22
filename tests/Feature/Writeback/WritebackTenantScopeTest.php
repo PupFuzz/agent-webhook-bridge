@@ -320,6 +320,28 @@ class WritebackTenantScopeTest extends TestCase
     }
 
     /**
+     * card#9850 / DL-404: the precedence between the two ways a scope lookup establishes
+     * nothing. The live probe answers a row that is NOT this card (a broken read), and the
+     * archived probe after it is refused with a 4xx. Before card#9850 the 4xx won — the
+     * archived probe's refusal ended the lookup under the token-scope reason — and the
+     * multi-board generalisation must not move that verdict on an install that did not opt in.
+     */
+    public function test_a_4xx_after_a_wrong_row_answer_still_refuses_under_the_token_scope_reason(): void
+    {
+        Http::fake($this->alertStub() + [
+            '*/tasks/search.json*archived=1' => Http::response(['message' => 'forbidden'], 403),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 41, 'board_id' => self::BOARD]]]),
+        ] + $this->foreignCardIsReadable());
+
+        $this->handle();
+
+        Http::assertNotSent(fn (Request $r) => self::isUnscopedCardRead($r));
+        $this->assertSame(2, collect(Http::recorded())->filter(fn ($pair) => self::isScopeLookup($pair[0]))->count(),
+            'the live probe and then the archived probe, exactly as before');
+        $this->assertSame('boardscope_403_token_scope', $this->alerts()[0]['reason']);
+    }
+
+    /**
      * A PERMANENT (4xx) failure of the check is a refusal, not a retry — a 5xx on a body that
      * fails identically every time is the DL-020 storm. Its slug names the token's scope and
      * NOT a foreign card id: the query named this install's own board, so its rejection says
