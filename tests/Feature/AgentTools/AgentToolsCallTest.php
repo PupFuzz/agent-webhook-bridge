@@ -2870,6 +2870,36 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
+     * card#9850 r3: a mapping that DECLARES this board in `boards` writes to cards here, so its
+     * hold convention is this board's too. `o/coord` is mapped to board 999 and declares board
+     * 10; its `coord-hold` must survive the wholesale replace exactly as `o/mine`'s `gate` does.
+     * `o/other` is the control — it neither maps nor declares board 10.
+     */
+    public function test_correct_preserves_the_hold_tags_of_a_mapping_that_declares_this_board_in_boards(): void
+    {
+        $this->writeWriteback((string) json_encode(['mappings' => [
+            'o/mine' => ['board_id' => 10, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['gate']],
+            'o/coord' => ['board_id' => 999, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['coord-hold'],
+                'boards' => ['10' => ['merged' => 52]]],
+            'o/other' => ['board_id' => 998, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['other-hold']],
+        ]]));
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'gate', 'coord-hold', 'other-hold'],
+        ])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(200);
+        $this->assertSame(
+            ['tags' => ['fresh-caller-tag', 'created-by:me', 'gate', 'coord-hold']],
+            $this->sentPatchBody(),
+            'a hold declared by a mapping that writes to this board through `boards` is this board\'s convention too'
+        );
+    }
+
+    /**
      * ⛔ AN UNKNOWN HOLD VOCABULARY IS NOT AN EMPTY ONE. A `writeback.json` the bridge
      * cannot parse means it cannot say which tags this install treats as a hold — and a
      * wholesale replace under that uncertainty is precisely the silent deletion the

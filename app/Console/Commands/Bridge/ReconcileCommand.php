@@ -251,7 +251,7 @@ class ReconcileCommand extends BridgeCommand
             $order = [];
         }
 
-        // A physically shared board (>1 repo mapped to it in the FULL config, even
+        // A physically shared board (>1 repo mapping or declaring it in the FULL config, even
         // if --repo filtered to one) can't attribute a bare pr_number to a repo.
         $isShared = $writeback->boardIsShared($boardId);
         // canonical owner/repo → mapping, for pr_url attribution on this board.

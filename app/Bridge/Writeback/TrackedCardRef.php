@@ -19,7 +19,8 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  *      `.../pull/0` placeholder (the source-only qualifier `kbcard --pr-url` stamps) is
  *      NOT a real PR: it falls through to `pr_number`.
  *   2. bare `pr_number` — needs the repo. Unambiguous only on a 1:1 board
- *      ({@see TrackedRefKind::PrNumber}); on a board SHARED by >1 repo mapping the number
+ *      ({@see TrackedRefKind::PrNumber}); on a board SHARED by >1 repo mapping (by `board_id`
+ *      or `boards` — {@see WritebackConfig::boardIsShared}) the number
  *      can't be attributed to a repo ({@see TrackedRefKind::Ambiguous}).
  *   3. `dl_number` with no PR reference ({@see TrackedRefKind::DlOnly}) — DL→PR resolution
  *      is out of the writeback's PR-driven scope (a documented boundary of BOTH consumers).
@@ -41,7 +42,7 @@ final class TrackedCardRef
 
     /**
      * @param  array<string, mixed>  $payload  the card's payload
-     * @param  bool  $isShared  whether the card's board is mapped by >1 repo (WritebackConfig::boardIsShared)
+     * @param  bool  $isShared  whether the card's board is mapped or declared by >1 repo (WritebackConfig::boardIsShared)
      */
     public static function fromPayload(array $payload, bool $isShared, ExternalReferenceNormalizer $refs): self
     {

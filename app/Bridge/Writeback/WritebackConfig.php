@@ -626,17 +626,25 @@ final class WritebackConfig
     }
 
     /**
-     * Whether more than one repo mapping targets the given board. Repo-qualified
-     * correlation (DL-167) exists to disambiguate DL/PR-number collisions across
-     * repos SHARING a board; on a 1:1 board the qualifier protects nothing and a
-     * strict kanban `source` filter would exclude cards whose derived refs carry
-     * no source (every operator-stamped `dl_number`/`pr_number` card — DL-174).
+     * Whether more than one repo mapping targets the given board — by `board_id` or by
+     * `boards` (see below). Repo-qualified correlation (DL-167) exists to disambiguate
+     * DL/PR-number collisions across repos SHARING a board; on a 1:1 board the qualifier
+     * protects nothing and a strict kanban `source` filter would exclude cards whose
+     * derived refs carry no source (every operator-stamped `dl_number`/`pr_number` card —
+     * DL-174).
+     *
+     * ⛔ A mapping counts against every board it DECLARES, not only its `board_id`
+     * (card#9850 r3): a repo whose `boards` names this board narrows its PRs onto it and
+     * stamps its DL/PR refs onto cards here, so a colliding DL number is exactly as
+     * ambiguous as between two repos mapped to it. Counting `board_id` alone let another
+     * repo's unqualified lookup resolve that repo's card. A mapping with no `boards` declares
+     * `[board_id]`, so every single-board install counts exactly as before.
      */
     public function boardIsShared(int $boardId): bool
     {
         $n = 0;
         foreach ($this->mappings as $mapping) {
-            if ($mapping->boardId === $boardId && ++$n > 1) {
+            if (in_array($boardId, $mapping->declaredBoardIds(), true) && ++$n > 1) {
                 return true;
             }
         }
@@ -662,13 +670,17 @@ final class WritebackConfig
      * know which tags on a card are somebody ELSE'S control and must survive a wholesale
      * tag replace.
      *
+     * A mapping contributes its tags to every board it DECLARES (card#9850 r3), exactly as
+     * {@see boardIsShared} counts it: a repo whose `boards` names this board writes to cards
+     * here, so its hold convention protects them here too. The set is the union.
+     *
      * @return list<string>
      */
     public function holdMarkerTagsForBoard(int $boardId): array
     {
         $tags = [];
         foreach ($this->mappings as $mapping) {
-            if ($mapping->boardId !== $boardId) {
+            if (! in_array($boardId, $mapping->declaredBoardIds(), true)) {
                 continue;
             }
             foreach ($mapping->holdMarkerTags as $tag) {

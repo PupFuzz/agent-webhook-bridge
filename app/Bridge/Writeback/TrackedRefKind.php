@@ -13,7 +13,7 @@ enum TrackedRefKind
     case PrUrl;
     /** Bare `pr_number` on a 1:1 board: prNumber is set (repo is the sole board mapping). */
     case PrNumber;
-    /** Bare `pr_number` on a board shared by >1 repo: not attributable to a repo. */
+    /** Bare `pr_number` on a board shared by >1 repo (`WritebackConfig::boardIsShared`): not attributable to a repo. */
     case Ambiguous;
     /** A `dl_number` with no PR reference: out of the writeback's PR-driven scope. */
     case DlOnly;

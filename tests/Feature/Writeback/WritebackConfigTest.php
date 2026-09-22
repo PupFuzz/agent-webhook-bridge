@@ -513,6 +513,35 @@ class WritebackConfigTest extends TestCase
         $this->assertFalse($cfg->boardIsShared(999));
     }
 
+    /**
+     * card#9850 r3: a board a mapping DECLARES in `boards` is a board that mapping writes to —
+     * its PRs narrow onto it and stamp their DL/PR refs onto cards there — so it counts toward
+     * both board-keyed reads exactly as `board_id` does. Only `octo/web` names board 8 as its
+     * `board_id`; `octo/coord` declares it. Board 5 is `octo/coord`'s alone (nobody declares
+     * it), and board 12 is untouched by `boards`, which is the single-board control.
+     */
+    public function test_a_board_declared_in_boards_counts_toward_sharing_and_hold_tags(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 1,
+            'mappings' => [
+                'octo/web' => ['board_id' => 8, 'stages' => ['opened' => 50], 'hold_marker_tags' => ['web-hold']],
+                'octo/coord' => ['board_id' => 5, 'stages' => ['opened' => 60], 'hold_marker_tags' => ['coord-hold', 'web-hold'],
+                    'boards' => ['8' => ['opened' => 50]]],
+                'octo/cli' => ['board_id' => 12, 'stages' => ['opened' => 87], 'hold_marker_tags' => ['cli-hold']],
+            ],
+        ]));
+        $cfg = WritebackConfig::load($this->dir);
+
+        $this->assertTrue($cfg->boardIsShared(8), 'octo/coord declares board 8, so a colliding DL there is ambiguous');
+        $this->assertFalse($cfg->boardIsShared(5));
+        $this->assertFalse($cfg->boardIsShared(12));
+        $this->assertSame(['web-hold', 'coord-hold'], $cfg->holdMarkerTagsForBoard(8),
+            'octo/coord\'s hold convention protects its cards on the board it declares — the union, deduped, first-seen order');
+        $this->assertSame(['coord-hold', 'web-hold'], $cfg->holdMarkerTagsForBoard(5));
+        $this->assertSame(['cli-hold'], $cfg->holdMarkerTagsForBoard(12));
+    }
+
     // ---- DL-198: create_coord_cards + coord_card_stage_id ----
 
     public function test_absent_create_coord_cards_defaults_false_byte_identical(): void
