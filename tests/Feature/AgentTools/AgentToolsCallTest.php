@@ -2026,46 +2026,6 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('`limit`', $window['remedy'] ?? '');
     }
 
-    /**
-     * ⛔ `stage` DOES NOT REACH THE COORD BLOCK — those cards are on another board, whose column
-     * ids are unrelated to the caller's — so its remedy must not send the caller there: the
-     * narrowed call would answer the product window and leave this one exactly as cut.
-     */
-    public function test_a_truncated_coord_window_names_limit_and_never_tells_the_caller_to_narrow_with_stage(): void
-    {
-        $this->writeAgent('me', $this->token, [
-            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
-        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
-        Http::fake([
-            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
-                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
-            ]]]),
-            '*/boards/12/preload.json' => Http::response(['data' => ['workflows' => [
-                ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
-            ]]]),
-            '*/tasks/search.json*' => function ($request) {
-                $coord = str_contains(urldecode($request->url()), 'tags:"repo:me"');
-                $rows = [];
-                for ($id = 1; $id <= ($coord ? 10 : 2); $id++) {
-                    $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => $coord ? 70 : 50,
-                        'swimlane_id' => 4, 'tags' => $coord ? ['repo:me'] : [], 'payload' => [],
-                        'updated_at' => '2026-07-20', 'board_id' => $coord ? 12 : 10];
-                }
-
-                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
-            },
-        ]);
-
-        $result = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 4]])
-            ->assertStatus(200)->json('result');
-
-        $this->assertTrue($result['coord_cards_window']['truncated']);
-        $this->assertStringContainsString('`limit`', $result['coord_cards_window']['remedy'] ?? '');
-        $this->assertStringNotContainsString('narrow with `stage`', $result['coord_cards_window']['remedy'] ?? '');
-        // The own lane (2 cards under a limit of 4) was not cut, so it carries none.
-        $this->assertArrayNotHasKey('remedy', $result['cards_window']);
-    }
-
     public function test_an_untruncated_coord_window_carries_no_remedy_key(): void
     {
         $this->fakeCoordLeg(['board_id' => 12]);
@@ -2417,9 +2377,14 @@ class AgentToolsCallTest extends TestCase
         // ...and the coord cards are untouched by it, capped on their own count only.
         $this->assertCount(4, $result['coord_cards']);
         $this->assertSame(
-            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true],
+            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'remedy' => $result['coord_cards_window']['remedy'] ?? null],
             $result['coord_cards_window']
         );
+        // card#10150 — its remedy is `limit` alone. `stage` is the one argument this call already
+        // sent and it did not reach these cards, so a remedy naming it would send the caller back
+        // to an argument that leaves this window exactly as cut.
+        $this->assertStringContainsString('`limit`', $result['coord_cards_window']['remedy'] ?? '');
+        $this->assertStringNotContainsString('narrow with `stage`', $result['coord_cards_window']['remedy'] ?? '');
     }
 
     // ─── board_correct_card: ownership scoping + the refusal table (card#8378) ─
