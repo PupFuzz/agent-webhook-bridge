@@ -1761,6 +1761,7 @@ class AgentToolsCallTest extends TestCase
             'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS,
             'truncated' => true,
             'stage_filter' => null,
+            'remedy' => $result['cards_window']['remedy'] ?? null,
         ], $result['cards_window']);
     }
 
@@ -1947,6 +1948,105 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame(500, $result['cards_window']['limit']);
     }
 
+    // ─── board_my_cards: a truncated window names its own remedy (card#10150) ──────
+
+    /**
+     * ⭐ THE CALLER THIS IS FOR HAS NO SCHEMA SAYING `stage` OR `limit` EXIST: a seat whose
+     * channel-server snapshot predates those arguments is capped by the bridge all the same,
+     * and the arguments work from it — only the sentence naming them never reached it. The
+     * response body is the one surface every caller reads, so the window names the arguments
+     * itself, by their wire names, and names where a column id comes from.
+     */
+    public function test_a_truncated_lane_window_names_stage_and_limit_as_its_remedy(): void
+    {
+        $this->fakeLaneOf(500);
+
+        $window = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result.cards_window');
+
+        $this->assertTrue($window['truncated']);
+        $this->assertIsString($window['remedy'] ?? null, 'a truncated window must say how to get the rest');
+        $this->assertStringContainsString('`stage`', $window['remedy']);
+        $this->assertStringContainsString('`board_stages`', $window['remedy'], 'the remedy names where the column id it asks for is listed');
+        $this->assertStringContainsString('`limit`', $window['remedy']);
+    }
+
+    public function test_an_untruncated_window_carries_no_remedy_key_at_all(): void
+    {
+        // The additive half: a list that was not cut is the shape it always was — no key,
+        // not a null one. Paired with the presence witness above, so this cannot pass by the
+        // key having been dropped everywhere.
+        $this->fakeLaneOf(3);
+
+        $window = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result.cards_window');
+
+        $this->assertFalse($window['truncated']);
+        $this->assertArrayNotHasKey('remedy', $window);
+    }
+
+    public function test_a_stage_narrowed_window_names_limit_and_not_stage_as_its_remedy(): void
+    {
+        // Already one column: sending the caller back to `stage` would be advice it has
+        // already taken. What is left is `limit`.
+        $this->fakeLaneOf(500);
+
+        $window = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 50, 'limit' => 4]])
+            ->assertStatus(200)->json('result.cards_window');
+
+        $this->assertTrue($window['truncated']);
+        $this->assertStringContainsString('`limit`', $window['remedy'] ?? '');
+        $this->assertStringNotContainsString('narrow with `stage`', $window['remedy'] ?? '');
+    }
+
+    public function test_a_truncated_shared_lane_window_names_its_remedy_too(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  shared_swimlane_id: 9\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $lane = str_contains(urldecode($request->url()), 'swimlane_id=9') ? 9 : 4;
+                $rows = [];
+                for ($id = 1; $id <= 3; $id++) {
+                    $rows[] = ['id' => $lane * 100 + $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => $lane,
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10];
+                }
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            },
+        ]);
+
+        $window = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 2]])
+            ->assertStatus(200)->json('result.shared_swimlane.cards_window');
+
+        $this->assertTrue($window['truncated']);
+        $this->assertStringContainsString('`stage`', $window['remedy'] ?? '');
+        $this->assertStringContainsString('`limit`', $window['remedy'] ?? '');
+    }
+
+    public function test_an_untruncated_coord_window_carries_no_remedy_key(): void
+    {
+        $this->fakeCoordLeg(['board_id' => 12]);
+
+        $window = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result.coord_cards_window');
+
+        $this->assertFalse($window['truncated']);
+        $this->assertArrayNotHasKey('remedy', $window);
+    }
+
+    public function test_the_limit_refusal_still_names_stage_as_the_narrower_escape(): void
+    {
+        // The refusal and the windows read one constant for the `stage` escape; this pins that
+        // the refusal's wording did not move when it was hoisted.
+        Http::fake();
+
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 0]])->assertStatus(422);
+
+        $this->assertStringEndsWith('Raising it raises the response size in proportion; narrow with `stage` instead where you can.', (string) $res->json('error'));
+    }
+
     /** @return array<string, array{0: mixed}> */
     public static function unusableLimits(): array
     {
@@ -2012,6 +2112,7 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertSame([
             'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
+            'remedy' => $result['cards_window']['remedy'] ?? null,
         ], $result['cards_window']);
         $this->assertSame([497, 498, 499, 500], array_column($result['cards_by_stage']['Backlog'], 'id'));
     }
@@ -2276,9 +2377,14 @@ class AgentToolsCallTest extends TestCase
         // ...and the coord cards are untouched by it, capped on their own count only.
         $this->assertCount(4, $result['coord_cards']);
         $this->assertSame(
-            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true],
+            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'remedy' => $result['coord_cards_window']['remedy'] ?? null],
             $result['coord_cards_window']
         );
+        // card#10150 — its remedy is `limit` alone. `stage` is the one argument this call already
+        // sent and it did not reach these cards, so a remedy naming it would send the caller back
+        // to an argument that leaves this window exactly as cut.
+        $this->assertStringContainsString('`limit`', $result['coord_cards_window']['remedy'] ?? '');
+        $this->assertStringNotContainsString('narrow with `stage`', $result['coord_cards_window']['remedy'] ?? '');
     }
 
     // ─── board_correct_card: ownership scoping + the refusal table (card#8378) ─

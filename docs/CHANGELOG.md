@@ -8,6 +8,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#10150 — a truncated `board_my_cards` window now says, in the response body, how to get the rest.** Every card-list window block (`cards_window` for your own lane, the shared lane and `tag_cards`, and `coord_cards_window`) gains a `remedy` sentence **when, and only when, `truncated` is `true`**.
+  - **Why the body and not the schema.** The cap is enforced by the bridge for every caller, but the arguments that escape it — `stage` and `limit` — are advertised only by the channel server's tool description, a per-seat snapshot whose version the bridge cannot see. Seats on a snapshot older than those arguments (reported on rt#500: three seats, one duplicate card) were capped, told `truncated: true`, and offered nothing — although the arguments work from any snapshot, because the channel server forwards arguments verbatim. A response body reaches every caller at every version.
+  - **What each window names.** Own lane, shared lane and `tag_cards`: `stage` (pointing at `board_stages` for the column id) and `limit`. A list already narrowed by `stage`: `limit` alone. `coord_cards_window`: `limit` alone — `stage` does not reach the coordination board, and the sentence says so rather than sending a caller to an argument that cannot narrow it.
+  - ⭐ **Additive.** An untruncated window is byte-identical to before (no `remedy` key, not a null one), and no existing key is renamed, removed or re-typed. The `limit` refusal's text is unchanged; its `stage` phrase and the windows' now read one constant, so the two cannot name different escapes.
+  - ⚠ **Branch on `truncated`, never on the wording.** `remedy` is a sentence for a reader, not a contract.
+  - **No channel-server re-deploy, deliberately.** The reference snapshot's tool description is still true (it names the window keys it lists, and already says to narrow with `stage` or raise `limit` — the new key is additive to it) and is **not** edited: any change to the snapshot bumps its version, which `bridge:check` then reports as out of date for every seat — the fleet-wide upgrade this change exists to make unnecessary. `examples/channel-servers/` is untouched.
+  - **Docs correction found by the sibling audit:** `docs/board-tools.md`'s `tag_read_incomplete` row told the caller to *"Narrow with `stage`"*. That does not recover it — `stage` filters the tag rows after they are read, so a narrowed call hits the same page ceiling — and the row now says no argument does.
+
 ### Changed
 
 - ⚠ **card#9929 (DL-403) — CHANGES WHAT THE WRITEBACK REFUSES: a card tagged `program` is a PARENT naming several legs, and the bridge now writes NOTHING for it — not the stage, not a correlation ref.** Operator-gated and approved before implementation.
