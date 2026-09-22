@@ -7,6 +7,8 @@ use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use Illuminate\Support\Facades\Log;
 use ReflectionClass;
+use ReflectionMethod;
+use ReflectionParameter;
 use Tests\Support\BoardMoverCatalogCheck;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
@@ -24,6 +26,9 @@ class BoardMoverCatalogTest extends TestCase
 {
     private const FIXTURE_NOTIFIER = 'Fixture\In\Notifier';
 
+    /** The fixture helper's `$reason` is its fourth parameter. */
+    private const FIXTURE_NOTIFIER_METHODS = ['warnAndNotify' => 3];
+
     public function test_every_board_mover_log_site_carries_an_id_the_catalog_declares_and_back(): void
     {
         $sites = BoardMoverCatalogCheck::treeSites();
@@ -38,7 +43,7 @@ class BoardMoverCatalogTest extends TestCase
     {
         $files = array_map(SourceScan::relativeToApp(...), BoardMoverCatalogCheck::populationFiles());
 
-        // Presence witnesses for each of the three membership routes, and one absence.
+        // A presence witness for each membership route, and an absence.
         $this->assertContains('Bridge/Handlers/KanbanMoveCardHandler.php', $files, 'a DurableReaction handler');
         $this->assertContains('Bridge/Classifiers/GitHubPrCardMoveClassifier.php', $files, 'an EmitsWritebackReactions classifier');
         $this->assertContains('Bridge/Writeback/WritebackAlertNotifier.php', $files, 'the Writeback namespace');
@@ -49,8 +54,15 @@ class BoardMoverCatalogTest extends TestCase
         );
         $this->assertTrue(BoardMoverCatalogCheck::inPopulation(KanbanMoveCardHandler::class));
 
+        // Each helper's `$reason` position comes from its own signature, never from a hand-typed index.
+        $methods = BoardMoverCatalogCheck::notifierMethods();
         foreach (['warnAndNotify', 'warnAndNotifyCardIdWithheld'] as $helper) {
-            $this->assertContains($helper, BoardMoverCatalogCheck::notifierMethods());
+            $position = array_search('reason', array_map(
+                fn (ReflectionParameter $p) => $p->getName(),
+                (new ReflectionMethod(WritebackAlertNotifier::class, $helper))->getParameters(),
+            ), true);
+            $this->assertIsInt($position);
+            $this->assertSame($position, $methods[$helper] ?? null, $helper);
         }
     }
 
@@ -99,13 +111,17 @@ class BoardMoverCatalogTest extends TestCase
                 $this->alerts->warnAndNotify('h.paired', 'refused', ['card_id' => 1]);
                 $this->alerts->warnAndNotify($id, 'refused', []);
                 $this->alerts->warnAndNotify('h.twice', 'refused', ['catalog_id' => 'h.twice']);
+                $this->alerts?->warnAndNotify('h.nullsafe', 'refused', []);
+                $this->alerts->warnAndNotify('h.unconfigured', 'refused', [], 'writeback_not_configured');
+                $this->alerts->warnAndNotify('h.named', 'refused', [], reason: 'writeback_not_configured');
+                $this->alerts->warnAndNotify('h.computed_reason', 'refused', [], $reason);
                 array_map(fn ($c) => Log::info('in a closure', ['catalog_id' => 'h.closure']), []);
             }
         }
         PHP;
         $source .= "\nnamespace Fixture\\Out;\nfinal class Elsewhere { public function f(): void { \\Illuminate\\Support\\Facades\\Log::warning('outside', []); } }\n";
 
-        $sites = BoardMoverCatalogCheck::sitesIn($source, 'Fixture.php', self::fixturePopulation(...), self::FIXTURE_NOTIFIER, ['warnAndNotify']);
+        $sites = BoardMoverCatalogCheck::sitesIn($source, 'Fixture.php', self::fixturePopulation(...), self::FIXTURE_NOTIFIER, self::FIXTURE_NOTIFIER_METHODS);
 
         $this->assertSame([
             ['Notifier::selfReport', 'log', 'n.push_failed', null],
@@ -117,6 +133,10 @@ class BoardMoverCatalogTest extends TestCase
             ['Handler::handle', 'alert_channel', 'h.paired', null],
             ['Handler::handle', 'alert_channel', null, 'the first argument to the notifier is not a string-literal catalog id'],
             ['Handler::handle', 'alert_channel', null, 'the log context also carries `catalog_id` — the helper adds it; declare it once'],
+            ['Handler::handle', 'alert_channel', 'h.nullsafe', null],
+            ['Handler::handle', 'unconfigured', 'h.unconfigured', null],
+            ['Handler::handle', 'unconfigured', 'h.named', null],
+            ['Handler::handle', 'alert_channel', 'h.computed_reason', null],
             ['Handler::handle', 'log', 'h.closure', null],
         ], array_map(fn (array $s) => [$s['site'], $s['via'], $s['id'], $s['problem']], $sites));
     }
@@ -187,6 +207,17 @@ class BoardMoverCatalogTest extends TestCase
             [self::entry('h.paired')],
         );
         $this->assertFindings(
+            ['SURFACE_MISMATCH: `h.unconfigured` is emitted through the paired helper on the no-`writeback.json` arm, where no `alert_channel` can load (docs/writeback.md § Branch-#3 degradation), so its surface must not include `alert_channel`'],
+            "\$this->alerts->warnAndNotify('h.unconfigured', 'x', [], 'writeback_not_configured');",
+            [['surface' => ['log', 'alert_channel']] + self::entry('h.unconfigured')],
+        );
+        $this->assertFindings([], "\$this->alerts->warnAndNotify('h.unconfigured', 'x', [], 'writeback_not_configured');", [self::entry('h.unconfigured')]);
+        $this->assertFindings(
+            ['ID_NOT_IN_CATALOG: `h.nullsafe` at Handler::handle (Fixture.php:10) is not a catalog entry'],
+            "\$this->alerts?->warnAndNotify('h.nullsafe', 'x', []);",
+            [],
+        );
+        $this->assertFindings(
             ['SURFACE_MISMATCH: `h.plain` is a plain log call, so its surface must not include `alert_channel`'],
             "Log::info('x', ['catalog_id' => 'h.plain']);",
             [['surface' => ['log', 'alert_channel']] + self::entry('h.plain')],
@@ -209,7 +240,7 @@ class BoardMoverCatalogTest extends TestCase
     private function assertFindings(array $expected, string $body, array $entries): void
     {
         $source = "<?php\nnamespace Fixture\\In;\n\nuse Illuminate\\Support\\Facades\\Log;\n\nfinal class Handler\n{\n    public function handle(): void\n    {\n        {$body}\n    }\n}\n";
-        $sites = BoardMoverCatalogCheck::sitesIn($source, 'Fixture.php', self::fixturePopulation(...), self::FIXTURE_NOTIFIER, ['warnAndNotify']);
+        $sites = BoardMoverCatalogCheck::sitesIn($source, 'Fixture.php', self::fixturePopulation(...), self::FIXTURE_NOTIFIER, self::FIXTURE_NOTIFIER_METHODS);
         // A retired anchor keeps a no-entry fixture from tripping CATALOG_EMPTY; retired and emitted
         // nowhere, it produces no finding of its own.
         $catalog = [

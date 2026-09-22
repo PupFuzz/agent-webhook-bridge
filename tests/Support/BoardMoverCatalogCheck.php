@@ -13,6 +13,7 @@ use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\ParserFactory;
 use ReflectionClass;
 use ReflectionMethod;
+use ReflectionParameter;
 
 /**
  * The CHECK half of the board-mover catalog (`docs/board-mover-catalog.json`): every log row the
@@ -29,8 +30,20 @@ use ReflectionMethod;
  *
  * A SITE is every `Log::<level>(…)` call in such a class, at every level, plus every call to a
  * {@see WritebackAlertNotifier} method that takes a `$catalogId` (the paired log+alert helpers,
- * found by reflection, so a new helper joins the same way). The helpers' own `Log::warning` is the
- * mechanism, not a site: it logs the id its caller passed.
+ * found by reflection, so a new helper joins the same way), spelled `->` or `?->`. The helpers' own
+ * `Log::warning` is the mechanism, not a site: it logs the id its caller passed.
+ *
+ * ⛔ A ROW WRITTEN ANY OTHER WAY IS NOT SEEN, AND NOTHING REDS ON IT: the `logger()` helper, a
+ * logger instance held in a variable or property (injected, or resolved from the container), or a
+ * helper reached through a variable method name. Such a row carries no id and the check stays
+ * green. `docs/writeback.md` § *What the check cannot verify* publishes the same bound to the
+ * catalog's readers.
+ *
+ * A helper call whose `$reason` is the literal {@see self::UNCONFIGURED_REASON} is the
+ * no-`writeback.json` arm. The notifier loads its `alert_channel` from that same missing file, so the
+ * alert cannot fire there (`docs/writeback.md` § *Branch-#3 degradation*), and its entry must not
+ * declare `alert_channel`. The check knows the arm by that `reason` literal only; an arm that
+ * cannot reach a channel for any other reason is not detected.
  *
  * ⛔ EVERY LEVEL, NOT ONLY WARNINGS, AND THAT IS WHAT MAKES THE POPULATION DERIVABLE. "A warning or
  * a refusal" cannot be decided from source at `Log::info`: a refusal written at info level
@@ -47,6 +60,12 @@ final class BoardMoverCatalogCheck
     public const SURFACE_LOG = 'log';
 
     public const SURFACE_ALERT = 'alert_channel';
+
+    /** How a helper call on the no-`writeback.json` arm emits: through the helper, to the log only. */
+    public const VIA_UNCONFIGURED = 'unconfigured';
+
+    /** The helper `$reason` every handler's no-`writeback.json` arm sends. */
+    public const UNCONFIGURED_REASON = 'writeback_not_configured';
 
     /** `<owner>.<slug>` — lower snake case, dotted once or more. */
     private const ID_PATTERN = '/\A[a-z][a-z0-9_]*(\.[a-z0-9_]+)+\z/';
@@ -91,21 +110,22 @@ final class BoardMoverCatalogCheck
 
     /**
      * The notifier methods a caller hands a catalog id to — every public method of
-     * {@see WritebackAlertNotifier} with a `$catalogId` parameter.
+     * {@see WritebackAlertNotifier} with a `$catalogId` parameter — each mapped to the position of
+     * its `$reason` parameter, or null when it has none.
      *
-     * @return list<string>
+     * @return array<string, ?int>
      */
     public static function notifierMethods(): array
     {
         $methods = [];
         foreach ((new ReflectionClass(WritebackAlertNotifier::class))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
-            foreach ($method->getParameters() as $parameter) {
-                if ($parameter->getName() === 'catalogId') {
-                    $methods[] = $method->getName();
-                }
+            $names = array_map(fn (ReflectionParameter $p) => $p->getName(), $method->getParameters());
+            if (in_array('catalogId', $names, true)) {
+                $reason = array_search('reason', $names, true);
+                $methods[$method->getName()] = is_int($reason) ? $reason : null;
             }
         }
-        sort($methods);
+        ksort($methods);
 
         return $methods;
     }
@@ -137,7 +157,7 @@ final class BoardMoverCatalogCheck
      * `problem` naming why there is none.
      *
      * @param  callable(string): bool  $inPopulation
-     * @param  list<string>  $notifierMethods
+     * @param  array<string, ?int>  $notifierMethods  helper name => position of its `$reason` parameter
      * @return list<array{site: string, where: string, via: string, id: ?string, problem: ?string}>
      */
     public static function sitesIn(string $source, string $file, callable $inPopulation, string $notifierClass, array $notifierMethods): array
@@ -155,9 +175,9 @@ final class BoardMoverCatalogCheck
             }
             foreach ($class->getMethods() as $method) {
                 $site = $class->name?->toString().'::'.$method->name->toString();
-                $isHelper = $fqcn === $notifierClass && in_array($method->name->toString(), $notifierMethods, true);
+                $isHelper = $fqcn === $notifierClass && array_key_exists($method->name->toString(), $notifierMethods);
 
-                foreach ($finder->find($method->stmts ?? [], fn (Node $n) => $n instanceof Expr\StaticCall || $n instanceof Expr\MethodCall) as $call) {
+                foreach ($finder->find($method->stmts ?? [], fn (Node $n) => $n instanceof Expr\StaticCall || $n instanceof Expr\MethodCall || $n instanceof Expr\NullsafeMethodCall) as $call) {
                     $where = $file.':'.$call->getStartLine();
                     if ($call instanceof Expr\StaticCall && self::isLogCall($call)) {
                         if ($isHelper) {
@@ -168,10 +188,11 @@ final class BoardMoverCatalogCheck
 
                         continue;
                     }
-                    if ($call instanceof Expr\MethodCall && $call->name instanceof Node\Identifier
-                        && in_array($call->name->toString(), $notifierMethods, true)) {
+                    if (($call instanceof Expr\MethodCall || $call instanceof Expr\NullsafeMethodCall) && $call->name instanceof Node\Identifier
+                        && array_key_exists($call->name->toString(), $notifierMethods)) {
                         [$id, $problem] = self::notifierCallId($call);
-                        $sites[] = ['site' => $site, 'where' => $where, 'via' => self::SURFACE_ALERT, 'id' => $id, 'problem' => $problem];
+                        $via = self::isUnconfiguredArm($call, $notifierMethods[$call->name->toString()]) ? self::VIA_UNCONFIGURED : self::SURFACE_ALERT;
+                        $sites[] = ['site' => $site, 'where' => $where, 'via' => $via, 'id' => $id, 'problem' => $problem];
                     }
                 }
             }
@@ -269,12 +290,14 @@ final class BoardMoverCatalogCheck
                 $declared = is_string($entry['site'] ?? null) ? $entry['site'] : '?';
                 $out[] = "ENTRY_SITE_MISMATCH: `{$id}` declares {$declared} but is emitted at {$use['site']} ({$use['where']})";
             }
-            $surface = is_array($entry['surface'] ?? null) ? $entry['surface'] : [];
-            $wantAlert = $use['via'] === self::SURFACE_ALERT;
-            if (in_array(self::SURFACE_ALERT, $surface, true) !== $wantAlert) {
-                $out[] = "SURFACE_MISMATCH: `{$id}` ".($wantAlert
-                    ? 'is emitted through the paired log+alert helper, so its surface must include `alert_channel`'
-                    : 'is a plain log call, so its surface must not include `alert_channel`');
+            $declaresAlert = in_array(self::SURFACE_ALERT, is_array($entry['surface'] ?? null) ? $entry['surface'] : [], true);
+            $mismatch = match ($use['via']) {
+                self::SURFACE_ALERT => $declaresAlert ? null : 'is emitted through the paired log+alert helper, so its surface must include `alert_channel`',
+                self::SURFACE_LOG => $declaresAlert ? 'is a plain log call, so its surface must not include `alert_channel`' : null,
+                self::VIA_UNCONFIGURED => $declaresAlert ? 'is emitted through the paired helper on the no-`writeback.json` arm, where no `alert_channel` can load (docs/writeback.md § Branch-#3 degradation), so its surface must not include `alert_channel`' : null,
+            };
+            if ($mismatch !== null) {
+                $out[] = "SURFACE_MISMATCH: `{$id}` {$mismatch}";
             }
         }
 
@@ -345,7 +368,7 @@ final class BoardMoverCatalogCheck
     /**
      * @return array{0: ?string, 1: ?string}
      */
-    private static function notifierCallId(Expr\MethodCall $call): array
+    private static function notifierCallId(Expr\MethodCall|Expr\NullsafeMethodCall $call): array
     {
         $args = $call->getArgs();
         $first = $args[0] ?? null;
@@ -358,6 +381,25 @@ final class BoardMoverCatalogCheck
         }
 
         return [$first->value->value, null];
+    }
+
+    /** Whether the helper call's `$reason` — named, or at its declared position — is the no-`writeback.json` literal. */
+    private static function isUnconfiguredArm(Expr\MethodCall|Expr\NullsafeMethodCall $call, ?int $reasonPosition): bool
+    {
+        if ($reasonPosition === null) {
+            return false;
+        }
+        $args = $call->getArgs();
+        $reason = null;
+        foreach ($args as $arg) {
+            if ($arg->name?->toString() === 'reason') {
+                $reason = $arg;
+            }
+        }
+        $positional = $args[$reasonPosition] ?? null;
+        $reason ??= $positional?->name === null ? $positional : null;
+
+        return $reason !== null && $reason->value instanceof Node\Scalar\String_ && $reason->value->value === self::UNCONFIGURED_REASON;
     }
 
     /** The value under the context key in a literal array, or in either operand of a `+` union. */
