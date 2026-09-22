@@ -201,6 +201,12 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
 > a `dl_number`, `pr_number` or `issue_number` — kanban indexes no refs for a card without one,
 > so there is nothing for `source` to qualify. The bridge derives it with its mirror of kanban's
 > own rule, in this order:
+> ⚠ **THAT MIRROR IS THE BRIDGE'S COPY OF A RULE KANBAN OWNS, and what holds the two together is
+> published rather than assumed (card#9936):** [`external-reference-parity-corpus.json`](external-reference-parity-corpus.json)
+> pins what the copy answers, a test runs it against the copy on every build, and the seam row in
+> [`kanban-integration-contract.md`](kanban-integration-contract.md) § 3 carries the bound — **no
+> check in the bridge reds when kanban changes its own class**, so `source` is the bridge's
+> computation of kanban's rule and never the server's stored answer.
 > `payload.repo` (only when it contains a `/`), then a GitHub `payload.pr_url`, `issue_url`,
 > `html_url`, then the card's top-level `external_link`. All of those come from the same
 > `tasks/search.json` rows the tool already reads, `external_link` included, so `source`

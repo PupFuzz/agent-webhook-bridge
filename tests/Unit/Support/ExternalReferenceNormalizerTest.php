@@ -3,182 +3,205 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\ExternalReferenceNormalizer;
-use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
+use ReflectionMethod;
 
 /**
- * Parity tests for the vendored normalizer (mirror of kanban-board's
- * App\Services\ExternalReferenceNormalizer). These pin the canonical forms the
- * kanban server uses so the bridge's client-side correlation/derivation agrees
- * with the server's by-ref canonicalization.
+ * THE CHECK BEHIND THE BRIDGE'S MIRROR OF KANBAN'S NORMALIZATION RULE (card#9936).
+ *
+ * `App\Bridge\Support\ExternalReferenceNormalizer` is a VENDORED copy of kanban-board's
+ * `App\Services\ExternalReferenceNormalizer`. The bridge is a separate repo and runtime and
+ * cannot import that class, so it mirrors it — and every consumer of the mirror's answers is
+ * relying on a rule the bridge does not own. `board_my_cards` is the sharpest case: its
+ * `source` field is computed HERE, not read from the server (`tasks/search.json` does not
+ * return the stored qualifier at all), so a seat on a shared board reads `source: owner/a`,
+ * concludes a merge in `a` will move its card, and is wrong if the mirror has drifted.
+ *
+ * ⛔ WHY THE DOCBLOCK WAS NOT ENOUGH, which is the whole of this card. The lockstep obligation
+ * used to live only in a "KEEP IN SYNC" note in the mirrored file — a DECLARE with no CHECK, on
+ * a surface no consuming seat and no kanban maintainer can read. That is worse than silence: an
+ * auditor at either end reads the note, believes the copies are held together, and gets
+ * CONFIDENCE where they should have got a question. These two authorities have already drifted
+ * in production (kanban DL-251 / bridge DL-309) and nothing reported it.
+ *
+ * POPULATION, and it is DERIVED rather than listed here: every PUBLIC METHOD this class
+ * declares and every CONSTANT it carries, read off the class by reflection on every run. The
+ * DECLARATION is [`docs/external-reference-parity-corpus.json`](../../../docs/external-reference-parity-corpus.json)
+ * — a published artifact rather than a fixture in this file, because the far end has to be able
+ * to READ it and run it, and a check that reads a local restatement of what was published can
+ * only certify the restatement. This class reads the very file a kanban maintainer downloads.
+ *
+ * ⭐ IT FAILS IN BOTH DIRECTIONS, which is the point. `declared ⇒ real` is half a check: it
+ * passes forever on a mirror that grew a member nobody published a vector for.
+ *  - **declared ⇒ real:** every vector's expectation is asserted against this class.
+ *  - **real ⇒ declared:** a public method with no vectors, or a constant the corpus does not
+ *    pin — or a corpus key naming a member this class no longer has — reds.
+ *
+ * ⛔ WHAT A GREEN RUN DOES NOT SAY, named here rather than left to be assumed, and named again
+ * in the corpus itself where the far end reads it:
+ *  - **It says NOTHING about kanban's class.** This repo's CI has no checkout of, and no
+ *    credential for, kanban-board; nothing here reds when the authority changes. The corpus's
+ *    `last_measured` block is a dated hand measurement of the two ends, and it goes stale
+ *    silently. Naming that is the result, not a gap in this class.
+ *  - **It does not reach the members the bridge does not mirror** (the corpus's `not_mirrored`),
+ *    and a change to one of those that changed the meaning of a mirrored member is invisible at
+ *    both ends.
  */
 class ExternalReferenceNormalizerTest extends TestCase
 {
-    private function n(): ExternalReferenceNormalizer
-    {
-        return new ExternalReferenceNormalizer;
-    }
+    private const CORPUS = 'docs/external-reference-parity-corpus.json';
 
-    public function test_numeric_ref_canonicalization_collapses_prefix_and_leading_zeros(): void
+    public function test_every_published_vector_holds_against_the_mirror(): void
     {
-        $n = $this->n();
-        // DL-28 vs DL-028 vs 28 vs #28 all canonicalize to "28".
-        $this->assertSame('28', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 'DL-28'));
-        $this->assertSame('28', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 'DL-028'));
-        $this->assertSame('28', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, '28'));
-        $this->assertSame('28', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, '#28'));
-        $this->assertSame('28', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 28));
-    }
+        $vectors = self::corpus()['vectors'];
 
-    public function test_github_pr_ref_strips_non_digits_so_hash_85_equals_85(): void
-    {
-        $n = $this->n();
-        // "hash-85" / "#85" / "85" all canonicalize to "85".
-        $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 'hash-85'));
-        $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, '#85'));
-        $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, '85'));
-        $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 85));
+        // ⚠ THE PRESENCE WITNESS. An empty corpus satisfies every loop below, so without this
+        // the check goes green the moment the file stops being readable or parseable — which
+        // reports where the reader stopped rather than the state of the mirror.
+        $this->assertNotSame([], $vectors, self::CORPUS.' carries no vectors at all — the corpus, not the mirror, is what changed.');
+
+        $disagreements = [];
+        $run = 0;
+        foreach ($vectors as $method => $cases) {
+            $this->assertNotSame([], $cases, "the `{$method}` entry of ".self::CORPUS.' is empty, so it certifies nothing.');
+            foreach ($cases as $i => $case) {
+                $run++;
+                $said = self::disagreement($method, $case['args'], $case['expect']);
+                if ($said !== null) {
+                    $disagreements[] = "{$method}#{$i}: {$said}";
+                }
+            }
+        }
+
+        $this->assertSame([], $disagreements, "the bridge's mirror does not answer as ".self::CORPUS." says it does. That file is PUBLISHED — kanban-board's maintainers are told to run it against their own class — so a disagreement here means the bridge is telling the far end something false about itself. Re-mirror from the kanban authority, or correct the corpus and re-measure. Ran {$run} vectors.");
     }
 
     /**
-     * The parity cases the kanban authority added in ITS DL-251 and this mirror had not
-     * carried: a correlation value that is not a single decorated integer names no
-     * identifier, so it derives NO ref rather than the concatenation of its digit runs —
-     * which is a real, DIFFERENT pull request or decision.
+     * The REVERSE arm: the corpus is held against the mirror's own surface, so a member that
+     * grows here without a published vector reds instead of riding along uncovered.
      */
-    #[DataProvider('severalDigitRunCases')]
-    public function test_a_value_carrying_several_digit_runs_names_no_single_identifier(string $in): void
+    public function test_the_corpus_covers_exactly_the_mirror_public_surface(): void
     {
-        // Concatenating the runs is what minted a plausible-but-wrong ref: the date below
-        // derived "20260823" here while the server derived nothing for the same card.
-        $this->assertNull($this->n()->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $in));
-    }
+        $corpus = self::corpus();
 
-    /** @return array<string, array{string}> */
-    public static function severalDigitRunCases(): array
-    {
-        return [
-            'decimal' => ['1.5'],
-            'two counts in prose' => ['PR 12 of 34'],
-            'version then number' => ['v1.2 #85'],
-            'iso date' => ['2026-08-23'],
-            'range' => ['12-34'],
-        ];
-    }
-
-    public function test_a_non_integer_number_derives_no_ref_rather_than_a_different_real_one(): void
-    {
-        $this->assertNull(
-            $this->n()->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 1.5),
-            'a non-integer value names no pull request, so it must derive no ref rather than PR #1'
-        );
-    }
-
-    public function test_one_stored_value_derives_one_ref_regardless_of_json_type(): void
-    {
-        // What a card correlates to must be a property of the VALUE, not of the JSON type
-        // it arrived as. The float half of this is reachable in the bridge as of DL-309:
-        // TrackedCardRef reads `pr_number` straight off a decoded card payload, where a
-        // number-typed field arrives as a PHP float.
-        $n = $this->n();
         $this->assertSame(
-            $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, '1.5'),
-            $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 1.5),
+            self::publicMethods(),
+            self::sorted(array_keys($corpus['vectors'])),
+            'the published corpus does not cover exactly the public methods of '.ExternalReferenceNormalizer::class.'. A NEW public method on the mirror is a new piece of kanban rule the bridge has copied, and a copy nobody published a vector for is a copy nothing holds against the authority. Add its vectors to '.self::CORPUS.' (and re-measure against kanban), or delete a corpus entry whose method is gone.',
+        );
+
+        $this->assertSame(
+            self::sorted(self::classConstants()),
+            self::sorted($corpus['constants']),
+            'the published corpus does not pin exactly the constants of '.ExternalReferenceNormalizer::class.'. These are what the mirrored methods are parametrised by — a system slug, the URL key preference order, the ref cap — so an unpinned one is a rule the far end cannot check its own copy against.',
         );
     }
 
-    public function test_an_integral_float_still_derives_its_integer_ref(): void
+    /**
+     * ⚠ THE CONTROL FOR THE COMPARATOR ITSELF. Every assertion above is built on
+     * {@see disagreement} answering null, so a comparator that answered null unconditionally
+     * would make the whole class green and vacuous. This feeds it one expectation known to be
+     * wrong and one known to be right, off the SAME call.
+     */
+    public function test_the_comparator_tells_agreement_from_disagreement(): void
     {
-        // Control, kept deliberately: the refusal is scoped to the non-integral case, not
-        // to floats generally.
-        $n = $this->n();
-        $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 85.0));
-        $this->assertSame('1', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 1.0));
+        $this->assertNull(self::disagreement('canonicalizeSource', ['Octo/Web'], 'octo/web'));
+
+        $said = self::disagreement('canonicalizeSource', ['Octo/Web'], 'Octo/Web');
+        $this->assertIsString($said);
+        $this->assertStringContainsString('octo/web', $said, 'a disagreement must report what the mirror actually answered, or a red run says only that something is wrong.');
+
+        // A type difference is a disagreement: `null` and `''` are different answers about
+        // whether a card is qualified, and a comparator using == would call them equal.
+        $this->assertIsString(self::disagreement('canonicalizeSource', ['   '], ''));
     }
 
-    public function test_a_non_numeric_system_keeps_its_value_verbatim_and_is_not_truncated(): void
+    /**
+     * The corpus is also the DECLARATION the far end reads, so the legs that make it one are
+     * asserted present. A published artifact that quietly lost the paragraph naming what the
+     * bridge cannot verify would read as a complete contract.
+     */
+    public function test_the_corpus_declares_its_authority_and_names_what_this_repo_cannot_check(): void
     {
-        // The float branch sits BEFORE the system branch, so an unknown system's verbatim
-        // contract survives a numeric value instead of truncating it.
-        $n = $this->n();
-        $this->assertSame('1.5', $n->canonicalize('jira', 1.5));
-        $this->assertSame('PROJ-123', $n->canonicalize('jira', 'PROJ-123'));
+        $corpus = self::corpus();
+
+        foreach (['repo', 'class', 'path', 'relationship'] as $key) {
+            $this->assertNotEmpty($corpus['authority'][$key] ?? null, "the corpus does not say which class it mirrors ({$key}) — the far end cannot act on a contract that does not name them.");
+        }
+
+        $this->assertNotEmpty($corpus['how_the_far_end_runs_this'] ?? null);
+        $this->assertNotSame([], $corpus['not_checked_by_this_repo'] ?? [], 'the corpus must NAME what this end cannot establish. Nothing here reds when kanban changes its own class, and a contract that does not say so hands the far end confidence instead of a question (canon #7).');
+
+        foreach (['date', 'authority_ref', 'authority_commit', 'method', 'result'] as $key) {
+            $this->assertNotEmpty($corpus['last_measured'][$key] ?? null, "the corpus's cross-repo measurement is missing `{$key}`. An undated, unattributed agreement claim is the thing this card exists to remove.");
+        }
     }
 
-    public function test_a_float_too_large_to_be_an_integer_identifier_derives_no_ref(): void
+    /** The mirror's answer for one vector, or null when it agrees. */
+    private static function disagreement(string $method, array $args, mixed $expect): ?string
     {
-        $n = $this->n();
-        $this->assertNull($n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 1.0e20));
-        $this->assertSame('1000000000000000', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 1.0e15));
+        $got = (new ExternalReferenceNormalizer)->{$method}(...$args);
+        if ($got === $expect) {
+            return null;
+        }
+
+        return 'args='.self::readable($args).' expected '.self::readable($expect).', mirror answered '.self::readable($got);
     }
 
-    public function test_all_zero_numeric_ref_canonicalizes_to_single_zero(): void
+    private static function readable(mixed $value): string
     {
-        $n = $this->n();
-        $this->assertSame('0', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 'DL-000'));
-        $this->assertSame('0', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, '0'));
+        return (string) json_encode($value, JSON_UNESCAPED_SLASHES);
     }
 
-    public function test_numeric_ref_with_no_digits_is_null(): void
+    /** @return array<string, mixed> */
+    private static function corpus(): array
     {
-        $n = $this->n();
-        $this->assertNull($n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 'no-digits'));
-        $this->assertNull($n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, ''));
+        $path = dirname(__DIR__, 3).'/'.self::CORPUS;
+        $raw = file_get_contents($path);
+        self::assertIsString($raw, self::CORPUS.' is unreadable.');
+
+        $doc = json_decode($raw, true);
+        self::assertIsArray($doc, self::CORPUS.' is not parseable JSON — it is a PUBLISHED artifact, so a consumer at the far end reads exactly this file.');
+
+        return $doc;
     }
 
-    public function test_unknown_system_is_stored_verbatim_trimmed_and_capped(): void
+    /** @return list<string> */
+    private static function publicMethods(): array
     {
-        $n = $this->n();
-        $this->assertSame('Free-Form_Ref', $n->canonicalize('jira', '  Free-Form_Ref  '));
-        $this->assertNull($n->canonicalize('jira', '   '));
-        $this->assertSame(255, mb_strlen((string) $n->canonicalize('jira', str_repeat('x', 300))));
+        $names = [];
+        foreach ((new ReflectionClass(ExternalReferenceNormalizer::class))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
+            if ($method->getDeclaringClass()->getName() === ExternalReferenceNormalizer::class) {
+                $names[] = $method->getName();
+            }
+        }
+
+        return self::sorted($names);
     }
 
-    public function test_canonicalize_source_trims_lowercases_and_caps(): void
+    /** @return array<string, mixed> */
+    private static function classConstants(): array
     {
-        $n = $this->n();
-        $this->assertSame('octo/web', $n->canonicalizeSource('  Octo/Web  '));
-        $this->assertSame('octo/web', $n->canonicalizeSource('OCTO/WEB'));
-        $this->assertNull($n->canonicalizeSource('   '));
-        $this->assertSame(255, mb_strlen((string) $n->canonicalizeSource(str_repeat('a', 300))));
+        return (new ReflectionClass(ExternalReferenceNormalizer::class))->getConstants();
     }
 
-    public function test_repo_from_github_url_parses_all_path_kinds_case_insensitively(): void
+    /**
+     * @template T of array
+     *
+     * @param  T  $values
+     * @return T
+     */
+    private static function sorted(array $values): array
     {
-        $n = $this->n();
-        $this->assertSame('octo/web', $n->repoFromGitHubUrl('https://github.com/Octo/Web/pull/12'));
-        $this->assertSame('octo/web', $n->repoFromGitHubUrl('https://github.com/Octo/Web/issues/5'));
-        $this->assertSame('octo/web', $n->repoFromGitHubUrl('https://github.com/Octo/Web/commit/abc123'));
-        $this->assertSame('octo/web', $n->repoFromGitHubUrl('https://github.com/Octo/Web/tree/main'));
-        $this->assertSame('octo/web', $n->repoFromGitHubUrl('https://github.com/Octo/Web/blob/main/README.md'));
-        // `.git` suffix is stripped (non-greedy capture).
-        $this->assertSame('octo/web', $n->repoFromGitHubUrl('https://github.com/Octo/Web.git/pull/12'));
-        // Not a parseable repo URL.
-        $this->assertNull($n->repoFromGitHubUrl('https://github.com/Octo/Web'));
-        $this->assertNull($n->repoFromGitHubUrl('https://example.com/foo/bar/pull/1'));
-    }
+        if (array_is_list($values)) {
+            sort($values);
 
-    public function test_source_for_prefers_explicit_repo_then_url_keys_then_external_link(): void
-    {
-        $n = $this->n();
-        // 1. explicit payload.repo (with separator) wins.
-        $this->assertSame('octo/web', $n->sourceFor(['repo' => 'Octo/Web', 'pr_url' => 'https://github.com/Other/Repo/pull/1']));
-        // a short adapter alias (no separator) does NOT win — falls through to URL keys.
-        $this->assertSame('other/repo', $n->sourceFor(['repo' => 'DEV', 'pr_url' => 'https://github.com/Other/Repo/pull/1']));
-        // 2. URL keys in preference order (pr_url > issue_url > html_url).
-        $this->assertSame('a/b', $n->sourceFor(['issue_url' => 'https://github.com/A/B/issues/3', 'html_url' => 'https://github.com/C/D/pull/4']));
-        // 3. top-level external_link fallback.
-        $this->assertSame('e/f', $n->sourceFor([], 'https://github.com/E/F/pull/9'));
-        // none → null.
-        $this->assertNull($n->sourceFor([], null));
-        $this->assertNull($n->sourceFor(['repo' => 'DEV'], null));
-    }
+            return $values;
+        }
 
-    public function test_system_for_payload_key_maps_the_closed_set(): void
-    {
-        $n = $this->n();
-        $this->assertSame(ExternalReferenceNormalizer::SYSTEM_DL, $n->systemForPayloadKey('dl_number'));
-        $this->assertSame(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $n->systemForPayloadKey('pr_number'));
-        $this->assertNull($n->systemForPayloadKey('unrelated_key'));
+        ksort($values);
+
+        return $values;
     }
 }

@@ -11,9 +11,20 @@ namespace App\Bridge\Support;
  * `bridge:check` source-coverage) agree on the same keys.
  *
  * **KEEP IN SYNC** with the kanban source of truth. This is a deliberate, faithful
- * mirror (the bridge is a separate runtime/repo and cannot import the kanban class)
- * so a future drift is caught by a 1:1 diff against the upstream file. Do not
- * "improve" it locally — change the kanban authority, then re-mirror here.
+ * mirror (the bridge is a separate runtime/repo and cannot import the kanban class).
+ * Do not "improve" it locally — change the kanban authority, then re-mirror here.
+ *
+ * ⛔ **THIS NOTE IS NOT THE CHECK, AND IT USED TO CLAIM IT WAS** (card#9936). It said drift
+ * would be "caught by a 1:1 diff against the upstream file", and nothing anywhere performed
+ * that diff — a declaration with no check, on a surface no consuming seat and no kanban
+ * maintainer can read. The check is `tests/Unit/Support/ExternalReferenceNormalizerTest`,
+ * over `docs/external-reference-parity-corpus.json`: a PUBLISHED behavioural corpus that
+ * pins what this mirror answers and what its constants are, run against this class on every
+ * test run, reding in both directions — a vector this class fails, and a public member or a
+ * constant no vector covers. ⚠ **What it cannot do is read kanban's class**: this repo's CI
+ * has no checkout of and no credential for that repo, so a far-end change reds nothing here.
+ * That bound is named in the corpus and in `docs/kanban-integration-contract.md` § 3, where
+ * the far end reads it, and it is why a member added here must be published there too.
  *
  * **Mirrored through kanban DL-251** (bridge DL-309 — a drift that had already SHIPPED
  * on both sides is what that pair is: for a while the two authorities answered a
