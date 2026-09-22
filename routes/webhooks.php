@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Webhook\WebhookController;
 use App\Http\Middleware\EnvelopeSizeLimit;
+use App\Http\Middleware\RecordWebhookOutcome;
 use App\Http\Middleware\VerifyHmacSignature;
 use Illuminate\Support\Facades\Route;
 
@@ -11,6 +12,9 @@ use Illuminate\Support\Facades\Route;
 // 400 from VerifyHmacSignature (preserving the receiver's status contract),
 // not a 404 from route matching.
 //
+// RecordWebhookOutcome is FIRST so its terminate() sees every final status on this route,
+// the gates' own 5xx included — and only this route's (card#10158).
+//
 // URL: POST /webhooks/<provider>?b=<scope_id>
 Route::post('/webhooks/{provider}', [WebhookController::class, 'receive'])
-    ->middleware([EnvelopeSizeLimit::class, VerifyHmacSignature::class]);
+    ->middleware([RecordWebhookOutcome::class, EnvelopeSizeLimit::class, VerifyHmacSignature::class]);

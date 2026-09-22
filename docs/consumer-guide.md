@@ -110,7 +110,15 @@ source of truth, as the model above says.
 
 ### A. `bridge:inbox` (the fallback pull — Claude Code hooks)
 
-Reads `inbox.jsonl`, deduplicates on the stable per-line `id` field (NOT a wall-clock cursor), and prints only unseen intents. **Silent when there is nothing new.**
+Reads `inbox.jsonl`, deduplicates on the stable per-line `id` field (NOT a wall-clock cursor), and prints only unseen intents. **Silent when there is nothing new** and no webhook 5xx to report.
+
+**Webhook delivery health (DL-409).** Above the intents, under `## Kanban bridge — webhook delivery health`, it prints the receiver's own record of failing deliveries. It reads files only, so it works while the bridge's database is down:
+
+- **While every webhook request is ending in 5xx:** `WARNING: N consecutive webhook 5xx since T (last: HTTP S at L)`, on every call until a delivery succeeds. Nothing marks it seen.
+- **After the next 2xx:** the outage window and count, and the remedy: `php artisan bridge:reconcile`, then `--fix`. The line names what reconcile cannot recover (a card carrying only a `dl_number`; a merge with no closing reference to its card). Each consumer (each seen cursor: the shared one, or one per `--agent`) is shown it **once**, and only within `App\Bridge\Support\WebhookOutageRecord::NOTICE_WINDOW_SECONDS` of the recovery. It is marked shown under the same rule as intents: not on `--no-cursor-advance`, and not on a hook event whose output reaches no model.
+- **If the record exists but this user cannot read it**, a line says delivery health is unknown, and the intents still print.
+
+A 4xx (a refused request) neither counts nor ends a run, and neither does a `ping`. Seats that share one seen cursor (no `--agent`) share one showing of the recovery, as they already share intents.
 
 ```bash
 php artisan bridge:inbox

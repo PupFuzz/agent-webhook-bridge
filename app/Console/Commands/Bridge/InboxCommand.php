@@ -2,7 +2,9 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\WebhookOutageRecord;
 
 /**
  * Surface unseen inbox intents to the agent's context. Dedups on the stable
@@ -11,6 +13,11 @@ use App\Bridge\Support\BridgePaths;
  * arrives on stdin with a hook_event_name that supports additionalContext), the
  * markdown is wrapped in the hookSpecificOutput envelope; otherwise it
  * prints plain markdown. Silent when there's nothing new.
+ *
+ * It also carries the receiver's webhook 5xx record ({@see WebhookOutageRecord}) — a run in
+ * progress on every invocation, a finished one once per consumer — because this is the one
+ * hook every seat already mounts and it reads only files, so it still runs while the database
+ * the outage took down is unreachable (card#10158).
  */
 class InboxCommand extends BridgeCommand
 {
@@ -43,13 +50,18 @@ class InboxCommand extends BridgeCommand
         // disagree about one inbox.
         $unseen = BridgePaths::unseenInboxLines($agent);
 
-        if ($unseen === []) {
+        // The seen-cursor's own file name IS the consumer identity, so "once per consumer"
+        // for a recovery means exactly what "seen" means for this consumer's intents.
+        $consumer = basename($seenPath);
+        [$health, $noticeId] = $this->deliveryHealth($consumer);
+
+        if ($unseen === [] && $health === []) {
             return self::SUCCESS;   // silent-when-empty discipline
         }
 
         $format = (string) $this->option('hook-format');
         $hookEvent = $this->readHookEvent();
-        $this->output->writeln($this->buildOutput($unseen, $format, $hookEvent));
+        $this->output->writeln($this->buildOutput($unseen, $format, $hookEvent, $health));
 
         // Only advance the seen cursor when the output can actually reach a
         // consumer. On a hook event WITHOUT additionalContext (Stop,
@@ -60,8 +72,14 @@ class InboxCommand extends BridgeCommand
         // peek that never marks seen.
         $reachesConsumer = $hookEvent === null || in_array($hookEvent, self::ADDITIONAL_CONTEXT_EVENTS, true);
         if ($reachesConsumer && ! $this->option('no-cursor-advance')) {
+            if ($noticeId !== null) {
+                WebhookOutageRecord::markNoticeSeen($consumer, $noticeId);
+            }
+            if ($unseen === []) {
+                return self::SUCCESS;
+            }
             $newIds = array_map(fn (array $line) => (string) $line['id'], $unseen);
-            // Merge onto the cursor read UNDER the lock, not $seen from line 41 — a
+            // Merge onto the cursor read UNDER the lock, not an earlier read — a
             // prune sweep between that read and here must not be clobbered (card #4630).
             BridgePaths::updateSeenLocked(
                 $seenPath,
@@ -88,11 +106,61 @@ class InboxCommand extends BridgeCommand
     }
 
     /**
-     * @param  list<array<string, mixed>>  $lines
+     * The webhook 5xx lines for this consumer, and the id of the recovery notice among them
+     * (null when none is shown) so the caller can mark it seen under the cursor's own rule.
+     *
+     * An unreadable record is SAID, not read as healthy and not allowed to abort the inbox:
+     * the intents below it are still deliverable.
+     *
+     * @return array{0: list<string>, 1: string|null}
      */
-    public function buildOutput(array $lines, string $format, ?string $hookEvent): string
+    private function deliveryHealth(string $consumer): array
     {
-        $markdown = $this->renderMarkdown($lines);
+        try {
+            $record = WebhookOutageRecord::read();
+        } catch (UnreadableFileException) {
+            return [['- **WARNING: webhook delivery health is UNKNOWN** — `'.WebhookOutageRecord::path().'` exists but this user cannot read it.'], null];
+        }
+
+        $lines = [];
+        $failing = $record['failing'] ?? null;
+        if ($failing !== null) {
+            $lines[] = sprintf(
+                '- **WARNING: %d consecutive webhook 5xx since %s** (last: HTTP %d at %s). Webhook events are not being processed, so whatever the upstream does not redeliver is lost for this window. Run `php artisan bridge:check` (it tests database connectivity and the webhook secrets); an uncaught exception\'s detail is in the bridge\'s Laravel log.',
+                $failing['count'], $failing['since'], $failing['last_status'], $failing['last_at'],
+            );
+        }
+
+        $recovered = $record['recovered'] ?? null;
+        if ($recovered === null || ! WebhookOutageRecord::noticeIsCurrent($recovered)) {
+            return [$lines, null];
+        }
+        $noticeId = WebhookOutageRecord::noticeId($recovered);
+        if (WebhookOutageRecord::noticeSeenBy($consumer, $noticeId)) {
+            return [$lines, null];
+        }
+
+        $lines[] = sprintf(
+            '- **Webhook deliveries recovered at %s after %d consecutive 5xx** (%s to %s, last HTTP %d). Events delivered in that window were not processed. '
+            .'Run `php artisan bridge:reconcile` (report only), then `php artisan bridge:reconcile --fix`, to move cards forward from their live PR state. '
+            .'It does NOT recover everything: it reconciles only cards whose payload names their PR, so a card carrying only a `dl_number` is skipped, and so is a merge with no closing reference to its card. Check those by hand. '
+            .'This notice is shown once.',
+            $recovered['recovered_at'], $recovered['count'], $recovered['since'], $recovered['last_failure_at'], $recovered['last_status'],
+        );
+
+        return [$lines, $noticeId];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $lines
+     * @param  list<string>  $health  webhook 5xx lines, rendered above the intents
+     */
+    public function buildOutput(array $lines, string $format, ?string $hookEvent, array $health = []): string
+    {
+        $markdown = implode("\n\n", array_filter([
+            $health === [] ? '' : implode("\n", ['## Kanban bridge — webhook delivery health', ...$health]),
+            $lines === [] ? '' : $this->renderMarkdown($lines),
+        ]));
 
         $wrap = match ($format) {
             'plain' => false,

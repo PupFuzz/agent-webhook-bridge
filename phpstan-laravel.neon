@@ -38,4 +38,8 @@ parameters:
         # app/Http and app/Console remains unanalysed.
         - app/Http/Middleware/VerifyHmacSignature.php
         - app/Console/Commands/Bridge/SignCommand.php
+        # card#10158 / DL-409: runs on EVERY webhook request after the response and must
+        # never throw (Http\Kernel::terminate() calls it before the terminating callbacks,
+        # with no catch of its own), so it is analysed like the receiver's other middleware.
+        - app/Http/Middleware/RecordWebhookOutcome.php
     tmpDir: .phpstan-cache-laravel
