@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Workflows;
 
+use App\Bridge\Support\CardTokenGrammar;
+use App\Bridge\Support\DlTokenGrammar;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Yaml\Yaml;
 use Tests\TestCase;
@@ -351,14 +353,24 @@ class ChangelogGateTest extends TestCase
     }
 
     /**
+     * `$declaredEnv` is applied AFTER `$env` and therefore WINS — that is the order
+     * Actions composes a job's `env:` block in, on top of the runner's environment. It
+     * is a second parameter rather than an `array_merge` because the two answer
+     * different questions: `$env` is the ambient runner (what {@see runStep} measures
+     * the SCRIPT under), `$declaredEnv` is what the workflow pins. A harness that
+     * always applied the pin could not see what the pin is for.
+     *
      * @param  array<string,string>  $env
+     * @param  array<string,string>  $declaredEnv
      * @return array{0:int,1:string} [exit code, combined output]
      */
-    private function runStep(string $script, string $dir, array $env): array
+    private function runStep(string $script, string $dir, array $env, array $declaredEnv = []): array
     {
         $assignments = '';
-        foreach ($env as $k => $v) {
-            $assignments .= $k.'='.escapeshellarg($v).' ';
+        foreach ([$env, $declaredEnv] as $block) {
+            foreach ($block as $k => $v) {
+                $assignments .= $k.'='.escapeshellarg($v).' ';
+            }
         }
         $cmd = 'cd '.escapeshellarg($dir).' && env '.$assignments.'bash -c '.escapeshellarg($script).' 2>&1';
 
@@ -367,6 +379,55 @@ class ChangelogGateTest extends TestCase
         exec($cmd, $out, $rc);
 
         return [$rc, implode("\n", $out)];
+    }
+
+    /**
+     * The `env:` a step of `jobs.changelog-gate` actually runs under: the JOB's block
+     * composed with the step's own, the step's winning. Entries carrying a `${{ }}`
+     * expression are dropped — this harness cannot resolve one, and passing the literal
+     * through would be worse than omitting it.
+     *
+     * @param  array<string,mixed>  $step
+     * @return array<string,string>
+     */
+    private function declaredEnvOf(array $step): array
+    {
+        $job = Yaml::parseFile(base_path('.github/workflows/changelog-gate.yml'))['jobs']['changelog-gate'];
+
+        return array_filter(
+            array_map('strval', array_merge($job['env'] ?? [], $step['env'] ?? [])),
+            fn (string $v) => ! str_contains($v, '${{'),
+        );
+    }
+
+    /** @return list<array<string,mixed>> every step of the gate's one job, derived. */
+    private function gateSteps(): array
+    {
+        return array_values(Yaml::parseFile(base_path('.github/workflows/changelog-gate.yml'))['jobs']['changelog-gate']['steps']);
+    }
+
+    /**
+     * One step of the gate's job, by name prefix.
+     *
+     * @return array<string,mixed>
+     */
+    private function gateStep(string $namePrefix): array
+    {
+        foreach ($this->gateSteps() as $step) {
+            if (str_starts_with((string) ($step['name'] ?? ''), $namePrefix)) {
+                return $step;
+            }
+        }
+        $this->fail("no step named like '{$namePrefix}' in changelog-gate.yml");
+    }
+
+    /** @return list<string> the locales installed on this box, as `locale -a` names them. */
+    private static function availableLocales(): array
+    {
+        $out = [];
+        exec('locale -a 2>/dev/null', $out);
+
+        return array_values(array_map('trim', $out));
     }
 
     private function changelog(string $unreleasedBody, string ...$released): string
@@ -494,6 +555,40 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             ['HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
+        );
+    }
+
+    /**
+     * {@see runFeatureStep} with the three knobs the collation and DL-arm legs need and
+     * no other leg wants: the AMBIENT locale, the DECLARED `env:` (empty = the SCRIPT's
+     * own answer, which is what a "is this still collation-sensitive" question asks),
+     * and a MUTATED script in place of the shipped one.
+     *
+     * @param  array<string,string>  $base
+     * @param  array<string,string>  $head
+     * @param  array<string,string>  $declaredEnv
+     * @return array{0:int,1:string}
+     */
+    private function runFeatureStepUnder(
+        array $base,
+        array $head,
+        string $title,
+        string $branch,
+        ?string $locale = null,
+        array $declaredEnv = [],
+        ?string $script = null,
+    ): array {
+        $repo = $this->makeRepo($base, $head);
+        $env = ['HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch];
+        if ($locale !== null) {
+            $env['LC_ALL'] = $locale;
+        }
+
+        return $this->runStep(
+            $script ?? $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            $env,
+            $declaredEnv,
         );
     }
 
@@ -1171,6 +1266,209 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString('names this PR\'s dl token 276', $out);
+    }
+
+    /**
+     * THE COLLATION PIN — this gate's verdict must not depend on which runner it lands
+     * on (card#10031 review round 9, the sibling `pr-title-lint.yml` audit's missing
+     * member).
+     *
+     * ⛔ THE REASONING THAT LEFT THIS FILE UNPINNED WAS FALSE, and it was false HERE
+     * in the same words it was false there: card#5300 audited these negated classes and
+     * left them on the ground that a NEGATED class can only RED a title the authority
+     * correlates — annoying, never silent. It cannot. The leading `(^|[^0-9a-z_])`
+     * decides WHICH token this step classifies, and the `[Unreleased]` search pattern is
+     * BUILT FROM that token: swallow the boundary and the step searches for a DIFFERENT
+     * card, so the false direction is a GREEN on a changelog that never names the card
+     * the merge correlates.
+     *
+     * The fixture is the same one that measures the sibling, deliberately: one title,
+     * two gates, one defect. `é` collates inside `a-z` under `en_US.UTF-8`, so it stops
+     * being a boundary, the leading FOREIGN `écard-1234` is skipped, and the branch's
+     * own `card#9996` is classified instead.
+     *
+     * Three things are measured and kept distinct: the SCRIPT is still
+     * collation-sensitive (the ranges were pinned, not narrowed); the STEP is not (the
+     * same rows through the composed `env:`); and the pin is what makes the difference
+     * (the mutation, pin stripped and nothing else changed).
+     */
+    public function test_the_collation_pin_is_what_stops_the_runners_locale_deciding_a_verdict(): void
+    {
+        if (! in_array('en_US.utf8', self::availableLocales(), true)) {
+            $this->markTestIncomplete('no en_US.UTF-8 on this box — the collation half of this leg was NOT measured');
+        }
+
+        $title = 'docs: port '."\u{e9}".'card-1234 guidance (card#9996)';
+        $branch = 'fix/9996-slug';
+
+        // THE AUTHORITY, asserted rather than assumed: "false green" is a claim about
+        // BOTH engines. The writeback selects 1234, so a changelog naming only 9996
+        // documents a card this merge does not move.
+        $this->assertSame(1234, CardTokenGrammar::parse($title),
+            'the authority selects the FOREIGN leftmost token — that is what makes the en_US answer a false green');
+
+        $base = ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'];
+        $head = ['docs/CHANGELOG.md' => $this->changelog("- old\n- ported the guidance (card#9996)"), 'app/X.php' => 'b'];
+
+        // THE SCRIPT, both locales. C.UTF-8 agrees with the authority and REDS; the
+        // collation locale classifies the branch's own card and GREENS.
+        [$cRc, $cOut] = $this->runFeatureStepUnder($base, $head, $title, $branch, 'C.UTF-8');
+        $this->assertSame(1, $cRc, "under C.UTF-8 the step must classify card 1234 and red:\n".$cOut);
+        $this->assertStringContainsString('does not name card 1234', $cOut);
+
+        [$enRc, $enOut] = $this->runFeatureStepUnder($base, $head, $title, $branch, 'en_US.UTF-8');
+        $this->assertSame(0, $enRc, "the SCRIPT is expected to be collation-sensitive — the ranges were pinned, not narrowed:\n".$enOut);
+        $this->assertStringContainsString("names this PR's card token 9996", $enOut,
+            'and to green by classifying the WRONG card, which is the whole defect');
+
+        // THE SHIPPED ANSWER: the same script under the same ambient locales with the
+        // declared `env:` applied. The pin decides, so both give the C.UTF-8 answer.
+        $declared = $this->declaredEnvOf($this->gateStep(self::FEATURE_STEP));
+        $this->assertSame('C.UTF-8', $declared['LC_ALL'] ?? null,
+            'the pin must be a C-family collation, or it pins the defect in place');
+        foreach (['C.UTF-8', 'en_US.UTF-8'] as $ambient) {
+            $this->assertSame(1, $this->runFeatureStepUnder($base, $head, $title, $branch, $ambient, $declared)[0],
+                "under ambient {$ambient} the STEP must answer what C.UTF-8 answers — the pin is the whole point");
+        }
+
+        // ⛔ THE MUTATION, which is what makes the two rows above evidence about the PIN
+        // rather than about this box. The declared env is taken from the workflow and
+        // ONLY the pin removed. A pin nothing can falsify is a decoration.
+        $unpinned = $declared;
+        unset($unpinned['LC_ALL']);
+        $this->assertSame(0, $this->runFeatureStepUnder($base, $head, $title, $branch, 'en_US.UTF-8', $unpinned)[0],
+            "with the pin gone the runner's locale decides again — this is what the pin is holding shut");
+
+        // EVERY STEP OF THE JOB, derived rather than the one with rows above: a step
+        // added later inherits the pin, and one declaring its own `LC_ALL` takes it
+        // away again. Both are caught here rather than by a reviewer noticing.
+        $steps = $this->gateSteps();
+        $this->assertNotEmpty($steps);
+        foreach ($steps as $i => $step) {
+            $this->assertSame('C.UTF-8', $this->declaredEnvOf($step)['LC_ALL'] ?? null,
+                "step {$i} ('".((string) ($step['name'] ?? $step['uses'] ?? '?'))."') does not run under the C.UTF-8 pin — its bracket ranges are the runner's to resolve");
+        }
+
+        // ⛔ THE CONTROL FOR THE SECOND DIRECTION, which the loop CANNOT supply: no step
+        // here overrides the pin, so the loop passes identically whether the
+        // composition reads a step's own `env:` or ignores it — a composition that
+        // silently dropped the step block would be reported as health.
+        $override = $this->declaredEnvOf(['name' => 'synthetic', 'env' => ['LC_ALL' => 'en_US.UTF-8']]);
+        $this->assertSame('en_US.UTF-8', $override['LC_ALL'] ?? null,
+            "a step's own LC_ALL must WIN over the job's — that is the order Actions composes them in");
+        $this->assertSame('C.UTF-8', $this->declaredEnvOf(['name' => 'synthetic'])['LC_ALL'] ?? null,
+            'and a step declaring no env: must inherit the job pin, or the override row could pass on an empty job block');
+
+        // ⛔ AND THE DEAD REASONING IS GONE FROM THE FILE, not merely overtaken by the
+        // pin. The comment that stood three lines above this gate's DL arm asserted the
+        // retired card#5300 ground in as many words, and survived the round that edited
+        // that very arm; leaving one copy standing is what lets the next author
+        // re-derive the retired conclusion.
+        // ⚠ The subject is UNWRAPPED first, and that is the load-bearing half. A YAML
+        // comment's line breaks are arbitrary, and the retired sentence was split
+        // across three of them — a predicate read against the raw bytes matches
+        // nothing and reports health. Both the subject and the control go through the
+        // same unwrap, so the control measures what the assertion measures.
+        $unwrap = fn (string $s): string => (string) preg_replace('/\n\s*#\s?/', ' ', $s);
+        $dead = '/negated class(es)?.{0,200}?red[s]? instead of green/is';
+        $this->assertMatchesRegularExpression($dead,
+            $unwrap("          # The negated classes\n          # below are ranges on purpose — there, collation reds instead of\n          # greening.\n"),
+            'control: the predicate must catch the retired sentence AS THE FILE WRAPPED IT, or it reports health over every wrapping');
+        $this->assertDoesNotMatchRegularExpression($dead,
+            $unwrap((string) file_get_contents(base_path('.github/workflows/changelog-gate.yml'))),
+            'this workflow still claims a negated class can only RED — measured false on the fixture above');
+    }
+
+    /**
+     * THE DL ARM'S DIGIT BOUND, TIED TO `DlTokenGrammar` AND MEASURED IN BOTH
+     * DIRECTIONS (card#10031) — the one accept-set move in that card with no watched
+     * mutation until review round 9 found the premise behind it FALSE.
+     *
+     * ⛔ `{1,4}` → `+` IS NOT A NARROWING, and that was the premise the change shipped
+     * on. The trailing `([^0-9]|$)` cannot bound a run LONGER than the quantifier, so
+     * `{1,4}` failed to match a >4-digit DL AT ITS OWN POSITION and matched a LATER one
+     * instead. The arm therefore did not get stricter — the SELECTION MOVED, and one
+     * direction of the move is a GREEN: a PR whose `[Unreleased]` named `DL-12345` but
+     * not `DL-99` was RED under the old bound and is GREEN under the new one.
+     *
+     * ✅ WHY THE GREEN IS THE RIGHT ANSWER AND NOT A REGRESSION: the row is decided
+     * against `DlTokenGrammar::parse()`, the authority every DL consumer in this repo
+     * resolves through, which returns `DL-12345` for that title. The old verdict
+     * demanded a changelog entry for a token the authority does not select. The
+     * authority is ASSERTED here rather than assumed, so a grammar change that moved
+     * leftmost-first semantics reds this leg instead of silently re-diverging the copy.
+     *
+     * ⚠ THE COPY IS THE POINT. This step re-implements a grammar that lives in PHP,
+     * because the job's steps cannot call it. Nothing tied the two until this leg; the
+     * `changelog-gate` half of card#5300's divergence was hand-made agreement.
+     */
+    public function test_the_dl_arms_digit_bound_agrees_with_the_authority_in_both_directions(): void
+    {
+        $twoDls = 'fix(x): a thing (dl-12345 and also dl-99)';
+        $longOnly = 'fix(x): a thing (dl-12345)';
+
+        // THE AUTHORITY, asserted first: leftmost wins, and the long token IS leftmost.
+        $this->assertSame('DL-12345', DlTokenGrammar::parse($twoDls));
+        $this->assertSame('DL-12345', DlTokenGrammar::parse($longOnly));
+
+        // The three fixtures differ only in which DL the `[Unreleased]` section names.
+        $base = ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'];
+        $names12345 = ['docs/CHANGELOG.md' => $this->changelog("- old\n- the long one (DL-12345)"), 'app/X.php' => 'b'];
+        $names99 = ['docs/CHANGELOG.md' => $this->changelog("- old\n- the short one (DL-99)"), 'app/X.php' => 'b'];
+        $namesNeither = ['docs/CHANGELOG.md' => $this->changelog("- old\n- something else entirely"), 'app/X.php' => 'b'];
+
+        // [title, head files, the SHIPPED `+` rc, the OLD `{1,4}` rc]
+        $rows = [
+            // ⛔ THE GREEN DIRECTION. The shipped arm selects the token the authority
+            // selects and greens; the old bound skipped it, selected dl/99, and red.
+            ['the entry names the authority\'s token', $twoDls, $names12345, 0, 1],
+            // ⛔ AND ITS MIRROR, which is the red direction of the same move.
+            ['the entry names the token only the OLD bound selected', $twoDls, $names99, 1, 0],
+            // THE STRICTER DIRECTION, the one the change was dispatched for: with no
+            // second DL there is nothing later to fall back to, so the old bound
+            // classified NOTHING and the tokenless disposition let a moved section
+            // stand. Note what that is NOT: it is a WEAKER check, not a skipped one.
+            ['no correlated entry at all', $longOnly, $namesNeither, 1, 0],
+        ];
+
+        $old = $this->dlArmBoundedToFourDigits();
+
+        foreach ($rows as [$why, $title, $head, $shippedRc, $oldRc]) {
+            [$rc, $out] = $this->runFeatureStepUnder($base, $head, $title, 'fix/1234-x');
+            $this->assertSame($shippedRc, $rc, "{$why}: the shipped arm's verdict:\n".$out);
+
+            [$mutRc, $mutOut] = $this->runFeatureStepUnder($base, $head, $title, 'fix/1234-x', null, [], $old);
+            $this->assertSame($oldRc, $mutRc,
+                "{$why}: the `{1,4}` bound must answer DIFFERENTLY here — if it does not, this leg is not measuring "
+                ."the bound and the accept-set move is unguarded again:\n".$mutOut);
+        }
+
+        // The shipped arm names the authority's token in its own output, so the green
+        // above is attributable to SELECTION and not to a pattern that matched anything.
+        $this->assertStringContainsString("names this PR's dl token 12345",
+            $this->runFeatureStepUnder($base, $names12345, $twoDls, 'fix/1234-x')[1]);
+        $this->assertStringContainsString('does not name dl 99',
+            $this->runFeatureStepUnder($base, $namesNeither, $twoDls, 'fix/1234-x', null, [], $old)[1],
+            'the old bound must be seen SELECTING 99 — otherwise the rows above could differ for some other reason');
+    }
+
+    /**
+     * The feature step with its DL arm reverted to the `{1,4}` bound this PR replaced —
+     * the control for {@see test_the_dl_arms_digit_bound_agrees_with_the_authority_in_both_directions()}.
+     *
+     * Derived on the ARM rather than needled on a whole line, and the `+` is asserted
+     * present first: a future edit that respells the quantifier reds here by name
+     * instead of leaving a control that silently mutates nothing.
+     */
+    private function dlArmBoundedToFourDigits(): string
+    {
+        $script = $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP);
+        $mutated = preg_replace('/dl-\(\$D\+\)/', 'dl-($D{1,4})', $script, 1, $applied);
+        $this->assertSame(1, $applied,
+            "the feature step's DL arm no longer spells its digits `\$D+` — this control measures nothing, "
+            .'and whatever replaced it needs its own both-directions leg');
+
+        return (string) $mutated;
     }
 
     public function test_the_remediation_line_spells_a_dl_token_the_way_the_repo_writes_it(): void

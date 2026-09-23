@@ -434,7 +434,7 @@ jobs:
             exit 0
           fi
 
-          # FOUR FAULTS, FOUR MESSAGES, because the ACTION differs at each: "add the
+          # ONE MESSAGE SET PER FAULT, because the ACTION differs at each: "add the
           # token" is useless to an author whose token is already there; "make it
           # first" is useless when the HEAD REF is what selects, since no retitling can
           # move it; and neither applies when the merge would already move the right

@@ -67,6 +67,23 @@ permissions:
 jobs:
   changelog-gate:
     runs-on: ubuntu-latest
+    env:
+      # THE COLLATION IS PINNED FOR THE WHOLE JOB, not inherited from the runner
+      # (card#10031). WHY a bracket range is the runner's to resolve, and why the pin
+      # is declared on the JOB rather than on the step that raised it, is owned by
+      # `pr-title-lint.yml`'s identical block and by DL-411 — not restated here.
+      # WHAT IS SPECIFIC TO THIS GATE: the feature step below classifies the PR's
+      # correlation token with `(^|[^0-9a-z_])`, and the token it picks is what the
+      # `[Unreleased]` search pattern is BUILT FROM. Measured on
+      # `docs: port écard-1234 guidance (card#9996)`: under C.UTF-8 the step classifies
+      # card 1234 and REDS a changelog that never names it; under en_US.UTF-8 the
+      # swallowed `é` stops being a boundary, the step classifies card 9996 instead and
+      # GREENS the same changelog. So the false direction here is a GREEN, not the red
+      # card#5300 assumed a negated class could only produce. ChangelogGateTest derives
+      # EVERY step of this job and asserts each composes to this pin, drives the step
+      # with teeth through the env Actions composes, and mutates the pin away to show
+      # that green come back.
+      LC_ALL: C.UTF-8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -662,8 +679,14 @@ jobs:
           # [[ =~ ]] a bracket RANGE is resolved by COLLATION, and under an
           # ordinary en_US.UTF-8 runner [0-9] admits non-ASCII digits that the
           # card grammar correlates to nothing (DL-272). The negated classes
-          # below are ranges on purpose — there, collation reds instead of
-          # greening.
+          # below are STILL ranges, and they are collation-sensitive too — what
+          # decides them is the job's `LC_ALL` pin, not their spelling. ⛔ Do not
+          # restore the reasoning that used to stand here (card#5300: "a negated
+          # class only ever REDS, so leave it"). It is FALSE of this block and was
+          # measured false on this gate's own fixture: the class decides which token
+          # the `[Unreleased]` pattern is BUILT FROM, so swallowing a boundary makes
+          # the step search for a DIFFERENT card and GREEN a changelog that never
+          # names the correlated one. The job's `env:` block owns the measurement.
           D='[0123456789]'
           title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
 
@@ -674,6 +697,16 @@ jobs:
           elif [[ "$title_lc" =~ (^|[^0-9a-z_])card($D$D+)([^0-9]|$) ]]; then
             # The glued form takes 2+ digits (DL-233); `card4` names no card.
             kind=card; id="${BASH_REMATCH[2]}"
+          # `$D+`, NOT `$D{1,4}` (card#10031). The bound was NOT a narrowing: because
+          # the trailing `([^0-9]|$)` cannot bound a run longer than the quantifier,
+          # `{1,4}` SKIPPED a >4-digit DL at its own position and matched a LATER one,
+          # so the arm did not get stricter — the SELECTION MOVED. Measured:
+          # `fix dl-12345 and also dl-99` classified dl/99 under `{1,4}` and classifies
+          # dl/12345 under `+`, which is the token `DlTokenGrammar::parse()` — the
+          # authority every DL consumer here resolves through — returns for that
+          # string. The arm now agrees with it; it did not before. Both directions of
+          # the move are disclosed in DL-411 and in docs/CHANGELOG.md, and
+          # ChangelogGateTest drives that fixture against the authority.
           elif [[ "$title_lc" =~ (^|[^0-9a-z_])dl-($D+)([^0-9]|$) ]]; then
             kind=dl; id="${BASH_REMATCH[2]}"
           fi

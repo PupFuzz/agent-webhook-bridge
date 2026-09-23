@@ -7000,12 +7000,28 @@ diagnostic on the failure path.
   that kept the four-digit bound (*repairing it changes what the gate accepts*) retired with the
   accept arm it was written for. The two collation FALSE REDS on the card arm close as a side effect
   of the `LC_ALL` pin below. The leading-zero FALSE RED survives, still pinned, still gated.
-  ⚠ **A COPY OF THE DL TOKEN IN ANOTHER WORKFLOW moves with that bound, UN-TIED:** `changelog-gate.yml`
-  spelled the same `{1,4}`, where a longer DL left `kind` empty and the gate silently SKIPPED — the
-  permissive direction — so it now matches the authority's `+`. Nothing re-measures that copy
-  against `DlTokenGrammar` (`ChangelogGateTest` does not reference it), so the agreement is
-  hand-made, not tied; one owner across both workflows is the honest close and is NAMED here, not
-  taken.
+  ⚠ **A COPY OF THE DL TOKEN IN ANOTHER WORKFLOW moves with that bound, and the move is NOT
+  MONOTONE — BOTH DIRECTIONS, because the premise that it was a strict narrowing is FALSIFIED.**
+  `changelog-gate.yml`'s correlation arm spelled the same `{1,4}` and now spells `+`. The bound did
+  not make the arm stricter; it moved WHICH DL the arm SELECTS, because the trailing `([^0-9]|$)`
+  cannot bound a run longer than the quantifier, so `{1,4}` skipped a >4-digit DL at its own
+  position and matched a LATER one. Measured through the real extracted step:
+  - `fix a thing dl-12345` — `{1,4}` classified NOTHING, `+` classifies `dl/12345`. **STRICTER**: a
+    title whose only DL runs past four digits used to fall through to the TOKENLESS DISPOSITION and
+    is now held to naming `DL-12345` in `[Unreleased]`.
+  - `fix dl-12345 and also dl-99` — `{1,4}` classified `dl/99`, `+` classifies `dl/12345`.
+    **SELECTION MOVES, and one direction is a GREEN**: a PR whose `[Unreleased]` names `DL-12345`
+    but not `DL-99` was RED and is now GREEN; the same PR naming `DL-99` but not `DL-12345` was
+    GREEN and is now RED.
+  The greening direction is taken deliberately: `DlTokenGrammar::parse()` — the authority every DL
+  consumer in this repo resolves through — returns `DL-12345` for that string, so the arm's old
+  verdict demanded an entry for a token the authority does not select. ⚠ **The CORRECTION to the
+  old behaviour's name:** an empty `kind` never SKIPPED the gate. It fell back to the weaker
+  section-moved check, which still requires the `[Unreleased]` section to have CHANGED — a weaker
+  check, not no check. ✅ **The copy is TIED now, not hand-made:** `ChangelogGateTest` drives that
+  fixture through the real extracted step against `DlTokenGrammar::parse()` and mutates the arm back
+  to `{1,4}` to watch the selection move, so the agreement is re-measured rather than remembered.
+  One owner across both workflows is still the honest close and is NAMED here, not taken.
 - ⚠ **THE JOB PINS ITS COLLATION (`jobs.lint-title.env: LC_ALL: C.UTF-8`), and that is an accept-set
   change on TWO steps.** bash resolves a bracket RANGE by collation, and this card's `token=` made one
   of them decide SELECTION. Measured: `TITLE='docs: port écard-1234 guidance (card#9996)'` on
@@ -7030,7 +7046,29 @@ diagnostic on the failure path.
   a C-family runner accepted moves** — GitHub's `ubuntu-latest` is one, so the residual bites one
   `runs-on` edit away — and the job's answers stop depending on which runner it lands on (DL-272
   records this job giving a host-dependent answer once already).
-- **The refusal has FOUR arms because the ACTION differs at each, and three of them used to inherit
+  ⛔ **THE SIBLING AUDIT INITIALLY STOPPED ONE WORKFLOW SHORT, and the same pin is owed to
+  `changelog-gate.yml` (`jobs.changelog-gate.env: LC_ALL: C.UTF-8`).** The population is re-derivable
+  rather than recalled: `grep -l '\[\^0-9a-z_\]' .github/workflows/*` names every workflow carrying a
+  boundary of this class. ⚠ **That predicate is the BOUNDARY class, not the collation class.** Widened
+  to any bash bracket RANGE in a workflow regex — `grep -lE '\[\^?[^]]*[0-9a-zA-Z]-[0-9a-zA-Z][^]]*\]'
+  .github/workflows/*` — it also names `auto-tag-version.yml`, whose `^[0-9]+\.[0-9]+\.[0-9]+$` VERSION
+  validator ACCEPTS `0.7٣.0` under `en_US.UTF-8` and rejects it under `C.UTF-8` (measured). That is
+  the same permissive direction, on a surface nothing author-controlled reaches — the VERSION file is
+  repo content — so it is recorded here and deliberately NOT fixed in this card; a reader taking the
+  narrower grep as the collation population would miss it. That gate's feature step classifies the PR's correlation token with the
+  same `(^|[^0-9a-z_])`, and the token it picks is what the `[Unreleased]` search pattern is BUILT
+  FROM — so the false direction there is a GREEN as well. Measured on the same fixture,
+  `docs: port écard-1234 guidance (card#9996)`: `C.UTF-8` classifies `kind=card id=1234` (what
+  `CardTokenGrammar::parse()` selects) and reds a changelog naming only 9996; `en_US.UTF-8`
+  classifies `kind=card id=9996`, builds its pattern for 9996 and GREENS it. ⚠ **The card#5300
+  reasoning was left standing IN THAT FILE** — three lines above this card's only edit to it, a
+  comment still said the negated classes there "red instead of greening" — three lines above the DL
+  arm, which was the only line of that file this card had touched. That sentence is deleted: it is
+  the identical dead reasoning this entry retires above, and leaving one copy standing is what lets
+  the next author re-derive the retired conclusion. `ChangelogGateTest` asserts every step of that
+  job composes to the pin, drives the step with teeth through the composed env, and strips the pin to
+  watch the false green return.
+- **The refusal carries ONE MESSAGE SET PER FAULT because the ACTION differs at each, and some used to inherit
   another arm's advice.** A `card`-stem branch was told its card "silently never moves" while the
   step's own selection line said otherwise; a present-but-unparseable token (`card4`) was told to
   make it FIRST when the token IS first and the spelling is the fault; a HEAD-REF selection was told

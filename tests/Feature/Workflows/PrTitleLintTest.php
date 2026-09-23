@@ -1799,6 +1799,70 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
+     * THE `-n "$card_id_n"` CONJUNCT'S FALSE GREEN, OBSERVED AT THE VERDICT (card#10031
+     * review round 9) — the conjunct was true, reproducible and measured by NOTHING.
+     *
+     * ⛔ WHY THE EXISTING COVERAGE IS NOT THIS. Every other leg that reds on this
+     * conjunct's removal does so through {@see presenceOnlyRequireStep()} /
+     * {@see mutatedRequireStep()}, whose `str_replace` needle happens to SPAN the
+     * conjunct. That reds because a NEEDLE stopped matching, not because a false green
+     * was seen: the next author to reshape that line — card#5300's leading-zero repair
+     * is named as future work ON IT — updates the needles, every leg stays green, and
+     * the guard leaves with nothing red. This one observes the VERDICT.
+     *
+     * THE FIXTURE. The branch predicate keeps `[0-9]` as a collation-sensitive RANGE by
+     * ratification (card#5300), so under `en_US.UTF-8` a Unicode-digit branch reads as a
+     * card branch and `card_id` is `٣`. The selection scan ENUMERATES its digits, so it
+     * parses no token and `selected` is empty; the normalisation guard leaves
+     * `card_id_n` empty for the same reason; and `[ "" = "" ]` is TRUE. Without the
+     * conjunct the step therefore announces `OK: title carries card#٣ AND that is the
+     * card the writeback selects` directly beneath `selects no card from either surface`.
+     *
+     * The mutation is the CONTROL and is derived rather than needled: only the `-n`
+     * clause is removed, and the selection compare is asserted to SURVIVE it, so a
+     * future edit that deletes the whole accept-check reds here instead of passing as
+     * a successful control.
+     */
+    public function test_the_empty_id_conjunct_is_what_reds_a_unicode_digit_branch_at_the_verdict(): void
+    {
+        if (! in_array('en_US.utf8', self::availableLocales(), true)) {
+            $this->markTestIncomplete('no en_US.UTF-8 on this box — this leg measures nothing without it');
+        }
+
+        $title = 'fix: a thing (card#'."\u{0663}".')';
+        $branch = 'fix/'."\u{0663}".'-slug';
+
+        // The authority is ASSERTED, not assumed: the writeback selects NOTHING here,
+        // which is what makes a green a certification of a merge that moves no card.
+        $this->assertNull(CardTokenGrammar::parse($title), 'the grammar must parse no token, or this is not the shape');
+        $this->assertNull($this->classifierSelects($title, $branch), 'and the real classifier must emit no move target');
+
+        // C.UTF-8 cannot reach the state at all — the branch predicate skips. Asserted
+        // so the en_US row below is attributable to the COLLATION and not to the title.
+        $this->assertSame(0, $this->runRequireStep($title, $branch, 'C.UTF-8'),
+            'under C.UTF-8 the branch carries no card id and the step skips before any of this');
+
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, $title, $branch, 'en_US.UTF-8');
+        $this->assertSame(1, $rc, "under en_US.UTF-8 the step must REFUSE — it is being asked to certify a merge that moves nothing:\n".$out);
+        $this->assertStringContainsString('selects no card from either surface', $out);
+        $this->assertStringNotContainsString('AND that is the card the writeback selects', $out,
+            'the step claimed the writeback selects the branch\'s card while its own selection line said otherwise');
+
+        // ⛔ THE CONTROL — the same script with ONLY the `-n` clause removed. It must
+        // GREEN, or the assertions above are about something other than this conjunct.
+        $script = preg_replace('/ && \[ -n "\$card_id_n" \]/', '', $this->stepScript(self::REQUIRE_STEP), 1, $applied);
+        $this->assertSame(1, $applied,
+            'the `-n "$card_id_n"` conjunct is gone or reshaped — this control measures nothing, and its absence is the defect');
+        $this->assertStringContainsString('[ "$selected" = "$card_id_n" ]', (string) $script,
+            'the mutation removed more than the `-n` clause — a control that also drops the selection compare greens for the wrong reason');
+
+        [$mutRc, $mutOut] = $this->runScriptText((string) $script, $title, $branch, 'en_US.UTF-8');
+        $this->assertSame(0, $mutRc, 'the conjunct-stripped script must GREEN this fixture — otherwise the shipped red is not attributable to it');
+        $this->assertStringContainsString('AND that is the card the writeback selects', $mutOut,
+            'and it must green with the false claim, which is the sentence the conjunct exists to prevent');
+    }
+
+    /**
      * THE PROSE TIE, at the only strength available across the language boundary:
      * no PHP function can render into a YAML string, so what is tied is that the
      * step's operator-facing text never RESTATES the digit grammar. `DL-NNNN` —
@@ -2673,6 +2737,12 @@ class PrTitleLintTest extends TestCase
      * over one domain, against one answer — an INLINE matcher (the require step's
      * presence conjunct) is outside the scan and is pinned separately.
      *
+     * ⚠ `_scanned_` is IN THE NAME, and load-bearing. A test name is a restatement
+     * surface, and this one previously asserted a universal — *every* card-token
+     * regex — that the predicate below cannot reach: it collects single-quoted
+     * `good=`/`token=` assignments, so the inline matcher is outside it BY
+     * CONSTRUCTION and no amount of green here says anything about that matcher.
+     *
      * ⛔ THE POPULATION IS DERIVED, NOT ENUMERATED (card#10031). The enumerated version
      * of this leg named the warn step's `good=` and the closure step's `token=`, and
      * was true when it was written; the require step's own `token=` then landed as a
@@ -2685,7 +2755,7 @@ class PrTitleLintTest extends TestCase
      * assignments NAMED `good` and `token`, and the DL stem has its own authority and
      * its own tie. {@see cardTokenRegexAssignments()} owns the predicate.
      */
-    public function test_every_card_token_regex_in_this_workflow_answers_identically(): void
+    public function test_every_scanned_card_token_regex_in_this_workflow_answers_identically(): void
     {
         $found = $this->cardTokenRegexAssignments();
 
