@@ -233,9 +233,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         checkout on another host. `next` is what covers those; this is the
         backstop for when `next` was bypassed.
       * The UNNUMBERED assertion below refuses a placeholder this change ADDS,
-        not every placeholder in the file: one already on the base snapshot is
-        reported and allowed through, because refusing it would red every
-        innocent PR cut after it landed rather than the change that wrote it.
+        not every placeholder in the file: one whose header line is IDENTICAL
+        (after `strip()`, which is what the budget is keyed on) to one on the
+        base snapshot is reported and allowed through, because refusing it would
+        red every innocent PR cut after it landed rather than the change that
+        wrote it — so a change that EDITS an inherited placeholder's own wording
+        is adding one by this predicate, and is refused.
     """
     head_headers, head_skipped, head_unnumbered = _scan(args.head, "head")
 
