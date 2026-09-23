@@ -7102,14 +7102,36 @@ diagnostic on the failure path.
   there** — a complete audit of either repo can come back clean while the seam is audited by
   neither. This end DECLARES it on a surface the other's reader reaches (this repo's workflow header
   names kanban) and owns the CHECK against the real authority. ⛔ **THE FAR END'S HALF IS A
-  DEPENDENCY, NOT AN OUTCOME OF THIS CHANGE.** The kanban declaration is `PupFuzz/kanban-board`
-  **PR #721 — OPEN and CONFLICTING as of 2026-09-23**, with no check ever run on it. Measured at
-  the authority that day: that repo's `.github/workflows/pr-title-lint.yml` is byte-identical on
-  `main` and `dev`, names neither this grammar nor this classifier (its only mention of this repo is
-  the pre-existing DL-174 board-scope note), is pinned to no table of this grammar's answers, and
-  still carries `DL-[0-9]{1,4}` as an ACCEPT arm of its own. So until #721 merges, canon #7's
-  DECLARE leg is discharged at ONE end and kanban card#10062 is the only far-end surface that
-  declares the seam. **Changing either side is a
-  TWO-REPO change.** The honest close is ONE implementation both
+  DEPENDENCY, NOT AN OUTCOME OF THIS CHANGE.**
+
+  ⚠ **WHAT FOLLOWS IS A DATED OBSERVATION OF ANOTHER REPO PLUS A NAMED PENDING CHANGE, and it is
+  written that way on purpose.** The far end is not this repo's to assert: an undated present-tense
+  sentence about it goes false on somebody else's merge, silently, in a log nothing re-reads. So each
+  clause below carries WHEN it was read and WHAT would falsify it. **The pending change is
+  `PupFuzz/kanban-board` PR #721** (`fix/card-10021-pr-title-dl-binding`), and a merge cannot be
+  verified before it happens — so nothing here describes its post-merge state as true.
+
+  **READ 2026-09-23 at the authority**, `kanban-board` `dev` = `009822da`, `main` = `a524ef6d`,
+  #721 head = `5df010c5` (OPEN, `CONFLICTING`/`DIRTY`, base `dev`, 6 commits ahead, **zero workflow
+  runs ever** — a conflicting PR gets no merge ref, so its `pull_request` jobs have nothing to check
+  out). ⚠ **The #721 clauses are already TRUE OF THAT PUSHED HEAD** — its
+  `.github/workflows/pr-title-lint.yml` change (`+127/-28`) is committed, not pending — so what is
+  outstanding is the MERGE, not the authoring.
+
+  | clause, as read on `dev` 2026-09-23 | #721 at `5df010c5` |
+  | --- | --- |
+  | `pr-title-lint.yml` is **byte-identical on `main` and `dev`** (`cmp` clean, 8059 bytes each) | **would falsify on `dev`**; `main` holds until kanban cuts a release |
+  | it **names neither this grammar nor this classifier** (0 occurrences of each; its only mention of this repo is the pre-existing DL-174 board-scope note) | **would falsify** — names `CardTokenGrammar` ×3 and `GitHubPrCardMoveClassifier` ×1, in prose |
+  | it **carries `DL-[0-9]{1,4}` as an ACCEPT arm** (`dev` line 128 `\|\|`-joins it to the `card#` check) | **would falsify** — the same regex sits below the accept-check's `exit 0`, on the failure path, as a pure diagnostic: the identical move this card made here |
+  | it is **pinned to no table of this grammar's answers** | ✅ **SURVIVES** — #721 names the authorities in prose and transcribes no answer table, so nothing there still reds when this grammar moves |
+  | **kanban card#10062 is the only far-end surface that declares the seam** | **would falsify** — that workflow's header becomes a second declaring surface |
+  | canon #7's **DECLARE leg is discharged at ONE end** | **would falsify** — it would be discharged at both |
+
+  ⭐ **AND THE SEAM ITSELF STAYS OPEN, which is why that list is a rewrite and not a retraction.**
+  #721 pins PRESENCE and **explicitly refuses to pin SELECTION**, filing that as kanban card#10062
+  and saying so in its own header and in its pass message; this gate pins selection. So the two ends
+  would still enforce different propositions, the surviving row above is the reason neither end reds
+  when the other moves, and this entry's conclusion is untouched and in fact re-confirmed:
+  **changing either side is a TWO-REPO change.** The honest close is ONE implementation both
   repos consume — a toolkit-hosted lint generated from, or checked against, this grammar. Neither
   repo can mint that alone, so it is named and routed rather than built as a third copy.
