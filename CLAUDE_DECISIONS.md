@@ -7104,34 +7104,44 @@ diagnostic on the failure path.
   names kanban) and owns the CHECK against the real authority. ⛔ **THE FAR END'S HALF IS A
   DEPENDENCY, NOT AN OUTCOME OF THIS CHANGE.**
 
-  ⚠ **WHAT FOLLOWS IS A DATED OBSERVATION OF ANOTHER REPO PLUS A NAMED PENDING CHANGE, and it is
+  ⚠ **WHAT FOLLOWS IS TWO DATED OBSERVATIONS OF ANOTHER REPO AND THE EVENT BETWEEN THEM, and it is
   written that way on purpose.** The far end is not this repo's to assert: an undated present-tense
-  sentence about it goes false on somebody else's merge, silently, in a log nothing re-reads. So each
-  clause below carries WHEN it was read and WHAT would falsify it. **The pending change is
-  `PupFuzz/kanban-board` PR #721** (`fix/card-10021-pr-title-dl-binding`), and a merge cannot be
-  verified before it happens — so nothing here describes its post-merge state as true.
+  sentence about it goes false on somebody else's merge, silently, in a log nothing re-reads. The
+  BEFORE reading is kept rather than overwritten — it is the honest record of what was true when this
+  card was built, and deleting it would leave a sentence that looks as though it had always said
+  this. **Both readings fall on the same DATE, so they are distinguished by TIME.**
 
-  **READ 2026-09-23 at the authority**, `kanban-board` `dev` = `009822da`, `main` = `a524ef6d`,
-  #721 head = `5df010c5` (OPEN, `CONFLICTING`/`DIRTY`, base `dev`, 6 commits ahead, **zero workflow
-  runs ever** — a conflicting PR gets no merge ref, so its `pull_request` jobs have nothing to check
-  out). ⚠ **The #721 clauses are already TRUE OF THAT PUSHED HEAD** — its
-  `.github/workflows/pr-title-lint.yml` change (`+127/-28`) is committed, not pending — so what is
-  outstanding is the MERGE, not the authoring.
+  **BEFORE — read 2026-09-23 ≈18:24–18:30Z**: `kanban-board` `dev` = `009822da`, `main` = `a524ef6d`,
+  `PupFuzz/kanban-board` PR #721 (`fix/card-10021-pr-title-dl-binding`) head = `5df010c5`, OPEN,
+  `CONFLICTING`/`DIRTY`, **zero workflow runs ever** — a conflicting PR gets no merge ref, so its
+  `pull_request` jobs had nothing to check out.
 
-  | clause, as read on `dev` 2026-09-23 | #721 at `5df010c5` |
-  | --- | --- |
-  | `pr-title-lint.yml` is **byte-identical on `main` and `dev`** (`cmp` clean, 8059 bytes each) | **would falsify on `dev`**; `main` holds until kanban cuts a release |
-  | it **names neither this grammar nor this classifier** (0 occurrences of each; its only mention of this repo is the pre-existing DL-174 board-scope note) | **would falsify** — names `CardTokenGrammar` ×3 and `GitHubPrCardMoveClassifier` ×1, in prose |
-  | it **carries `DL-[0-9]{1,4}` as an ACCEPT arm** (`dev` line 128 `\|\|`-joins it to the `card#` check) | **would falsify** — the same regex sits below the accept-check's `exit 0`, on the failure path, as a pure diagnostic: the identical move this card made here |
-  | it is **pinned to no table of this grammar's answers** | ✅ **SURVIVES** — #721 names the authorities in prose and transcribes no answer table, so nothing there still reds when this grammar moves |
-  | **kanban card#10062 is the only far-end surface that declares the seam** | **would falsify** — that workflow's header becomes a second declaring surface |
-  | canon #7's **DECLARE leg is discharged at ONE end** | **would falsify** — it would be discharged at both |
+  **THE EVENT — #721 MERGED to `dev` at 2026-09-23T18:50:07Z, merge commit `9cc631f5`.** Its head had
+  moved `5df010c5` → **`2cf1749f`** first, which is what the BEFORE pin exists to expose; that final
+  head went `MERGEABLE`/`CLEAN` and ran **7 workflows, all `completed`/`success`** — its first runs
+  ever. ⚠ **The delta between the head this entry first read and the head that landed is ONE prose
+  correction**, not new mechanism: the ACCEPT-SET narrowing comment's population was re-measured over
+  the full history (715 merged + 4 open PRs) after a `gh pr list` page cap had been mistaken for the
+  whole corpus — the same page-cap class this entry's own blast-radius bullet warns about.
 
-  ⭐ **AND THE SEAM ITSELF STAYS OPEN, which is why that list is a rewrite and not a retraction.**
-  #721 pins PRESENCE and **explicitly refuses to pin SELECTION**, filing that as kanban card#10062
-  and saying so in its own header and in its pass message; this gate pins selection. So the two ends
-  would still enforce different propositions, the surviving row above is the reason neither end reds
-  when the other moves, and this entry's conclusion is untouched and in fact re-confirmed:
+  **AFTER — re-read 2026-09-23 ≈18:50–18:52Z at `dev` = `9cc631f5`, `main` = `a524ef6d` (UNMOVED).**
+  Every row below was re-measured against `origin/dev` itself, not inferred from the merge:
+
+  | clause | BEFORE (`dev` `009822da`) | AFTER (`dev` `9cc631f5`) |
+  | --- | --- | --- |
+  | `pr-title-lint.yml` **byte-identical on `main` and `dev`** | true — `cmp` clean, 8059 bytes each | **FALSE OF `dev`** (16357 bytes), ✅ **still TRUE OF `main`**, which is byte-identical to the BEFORE `dev` and holds until kanban cuts a release |
+  | it **names neither this grammar nor this classifier** | true — 0 of each; only bridge mention was the DL-174 board-scope note | **FALSE OF `dev`** — `CardTokenGrammar` ×3 + `GitHubPrCardMoveClassifier` ×1 = 4 occurrences; ✅ **still TRUE OF `main`** (0) |
+  | it **carries `DL-[0-9]{1,4}` as an ACCEPT arm** | true — `dev` line 128 `\|\|`-joined it to the `card#` check | **FALSE OF `dev`** — line 235, below the accept-check's `exit 0` at 228, a pure failure-path diagnostic: the identical move this card made here; ✅ **still TRUE OF `main`** |
+  | it is **pinned to no table of this grammar's answers** | true | ✅ **SURVIVES, re-verified against what LANDED** — the authorities are named in prose and no answer table is transcribed, so nothing there reds when this grammar moves |
+  | **kanban card#10062 is the only far-end surface declaring the seam** | true | **FALSE** — that workflow's header is a second declaring surface now (its SCOPE / LIMITS block and its pass message both name card#10062) |
+  | canon #7's **DECLARE leg is discharged at ONE end** | true | **FALSE** — discharged at BOTH ends |
+  | #721 **OPEN, `CONFLICTING`, no check ever run** | true | **FALSE** — MERGED as `9cc631f5`; final head `2cf1749f`, 7/7 runs `success` |
+
+  ⭐ **AND THE SEAM ITSELF IS STILL OPEN — re-confirmed by the EVENT rather than predicted.** Measured
+  on `dev` at `9cc631f5`: that gate still pins **PRESENCE** and still **explicitly refuses to pin
+  SELECTION**, filing it as kanban card#10062 in its header, at its accept-check and in its own pass
+  message; this gate pins selection. The two ends enforce different propositions, the surviving row
+  is the reason neither end reds when the other moves, and this entry's conclusion is untouched:
   **changing either side is a TWO-REPO change.** The honest close is ONE implementation both
   repos consume — a toolkit-hosted lint generated from, or checked against, this grammar. Neither
   repo can mint that alone, so it is named and routed rather than built as a third copy.

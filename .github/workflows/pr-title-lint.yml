@@ -64,10 +64,12 @@ name: PR title correlation-key lint
 #     `PrTitleLintTest` drives this step's selection against what the REAL classifier
 #     emits as its move target, so the order and the grammar cannot drift.
 #   - ⚠ THE SIBLING COPY IN `kanban-board` CANNOT BE TIED THAT WAY. That repo's CI
-#     has no bridge checkout and no `CardTokenGrammar` to compare against, so a
-#     change HERE reds nothing THERE, and a change to `CardTokenGrammar` or to the
-#     resolution order is a TWO-REPO change. ⛔ THE FAR END'S HALF OF THE
-#     DECLARATION IS A DEPENDENCY, NOT A DONE THING — and WHAT that end ships,
+#     has no bridge checkout, and though its workflow now NAMES `CardTokenGrammar`
+#     in prose it holds no copy of it and no table of its answers — so there is
+#     nothing there to compare against, a change HERE reds nothing THERE, and a
+#     change to `CardTokenGrammar` or to the resolution order is a TWO-REPO change.
+#     ⛔ THE FAR END'S DECLARATION HAS LANDED; THE TIE HAS NOT. Its half is no
+#     longer outstanding — and WHAT that end ships,
 #     WHICH pull request carries its half and WHAT names the seam from that side
 #     are DATED facts this comment deliberately does not restate: the cross-repo
 #     seam bullet of DL-411 in `CLAUDE_DECISIONS.md` owns them, and it is where to

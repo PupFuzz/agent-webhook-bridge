@@ -2840,10 +2840,13 @@ the work distinguishes those.
   ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
   `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no
   check in either repo can hold against this authority. This repo owns the CHECK (its
-  `PrTitleLintTest` drives the real classifier); ⛔ the kanban end's declaration is NOT SHIPPED, and
-  WHAT that end ships, WHICH pull request carries its half and WHAT names the seam from that side
-  are DATED facts this doc does not restate — the cross-repo seam bullet of **DL-411** in
-  `CLAUDE_DECISIONS.md` owns them, and is where to read them. Closing the seam means one shared
+  `PrTitleLintTest` drives the real classifier); ⛔ **the kanban end's declaration HAS SHIPPED on
+  that repo's integration branch and the seam is STILL OPEN**, because a declaration at both ends is
+  not a TIE at either — neither repo's CI can execute the other's authority, so a change to
+  `CardTokenGrammar` or to the resolution order still reds nothing there. WHICH branch carries it,
+  WHEN it landed, WHAT that end ships and WHAT still differs are DATED facts this doc does not
+  restate — the cross-repo seam bullet of **DL-411** in `CLAUDE_DECISIONS.md` owns them, and is
+  where to read them. Closing the seam means one shared
   implementation both repos consume — out of this program's scope and not mintable by either repo
   alone.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
