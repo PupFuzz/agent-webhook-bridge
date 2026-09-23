@@ -349,7 +349,19 @@ jobs:
           # The branch id normalised the way the grammar normalises an id it parses, so
           # a leading-zero branch (`fix/0123-slug`) compares equal to card 123 instead
           # of minting a new false red.
-          card_id_n=$((10#$card_id))
+          #
+          # GUARDED, and the guard is load-bearing rather than defensive: this step pins
+          # no locale, and the branch predicate above keeps `[0-9]` as a RANGE on purpose
+          # (card#5300 — collation reds there instead of greening), so under a UTF-8
+          # collation `card_id` really can capture a Unicode digit. `$((10#٣))` is not a
+          # falsy 0, it is a bash ARITHMETIC SYNTAX ERROR, which under `set -e` aborts
+          # the step and replaces an actionable refusal with a runner stack trace.
+          # Leaving it empty simply fails the compare below, so the author gets the
+          # missing-token message instead.
+          card_id_n=''
+          if [[ "$card_id" =~ ^[0123456789]+$ ]]; then
+            card_id_n=$((10#$card_id))
+          fi
 
           # PRINTED ON EVERY RUN, pass or fail — the selection is the whole subject of
           # this step and an author cannot act on a verdict that does not say which
@@ -360,7 +372,13 @@ jobs:
             echo "The writeback selects no card from either surface."
           fi
 
-          if [ "$present" = 1 ] && [ "$selected" = "$card_id_n" ]; then
+          # `-n "$card_id_n"` is the OTHER half of the Unicode guard above and is not
+          # redundant: with a non-ASCII branch id BOTH sides of the compare are the
+          # empty string (the selection scan's digits are enumerated, so it parses no
+          # Unicode-digit token either), and `[ "" = "" ]` is TRUE — a title carrying
+          # the same Unicode-digit token would GREEN on a card the writeback selects
+          # nothing for. Empty is "no id", never "an id that matched".
+          if [ "$present" = 1 ] && [ -n "$card_id_n" ] && [ "$selected" = "$card_id_n" ]; then
             echo "OK: title carries card#$card_id AND that is the card the writeback selects."
             exit 0
           fi

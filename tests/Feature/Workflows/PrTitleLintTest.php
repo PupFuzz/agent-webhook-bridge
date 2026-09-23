@@ -392,7 +392,7 @@ class PrTitleLintTest extends TestCase
     private function presenceOnlyRequireStep(): string
     {
         $script = str_replace(
-            'if [ "$present" = 1 ] && [ "$selected" = "$card_id_n" ]; then',
+            'if [ "$present" = 1 ] && [ -n "$card_id_n" ] && [ "$selected" = "$card_id_n" ]; then',
             'if [ "$present" = 1 ]; then',
             $this->stepScript(self::REQUIRE_STEP), $applied);
         $this->assertSame(1, $applied,
@@ -1207,6 +1207,50 @@ class PrTitleLintTest extends TestCase
         // correct title.
         $this->assertSame(0, $this->runRequireStep('docs: gate header (card#8286) porting card#1234 guidance', $branch),
             'with the branch\'s own token leftmost the same two cards must PASS — the conjunct is about ORDER, not about citing a second card');
+    }
+
+    /**
+     * THE CARD'S HEADLINE CASE AT THE VERDICT (card#10031) — a title whose ONLY
+     * correlation token is a `DL-<number>` belonging to some other, already-merged
+     * card. The agreement loops below hold the DL pattern's ANSWER SET to the
+     * grammar and the diagnostic's TEXT to the failure path; neither of them asserts
+     * the thing the card is actually about, which is that such a title no longer
+     * GREENS. A behaviour change nothing exercises at the verdict is a decoration.
+     */
+    public function test_a_dl_token_is_not_a_correlation_token_for_this_branchs_card(): void
+    {
+        // RED — the exact shape the card names: a foreign DL, no card token at all.
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, 'refactor: one declaration for the stage attribute set (DL-273)', 'feat/9996-stage-attrs');
+        $this->assertSame(1, $rc, 'a title whose ONLY token is a DL greened the gate: '.$out);
+        $this->assertStringContainsString("neither 'card-9996' nor 'card#9996'", $out,
+            'the refusal must name the token to add');
+        $this->assertStringContainsString(self::DL_DIAGNOSTIC, $out,
+            'a title that carries a DL and reds anyway must be told WHY the DL did not count');
+
+        // GREEN — the presence witness. Without it the red above is consistent with a
+        // step that reds everything, which is not a gate.
+        $this->assertSame(0, $this->runRequireStep('refactor: one declaration for the stage attribute set (card#9996)', 'feat/9996-stage-attrs'),
+            'the same branch with card#9996 in the title must GREEN');
+
+        // GREEN — a FOREIGN DL co-present with the correct card token still passes. The
+        // change removes the DL as a SUBSTITUTE, and takes nothing away from a title
+        // that cites one beside its own card.
+        $this->assertSame(0, $this->runRequireStep('fix: one origin per v3 GET query parameter (card#6469) (DL-258)', 'fix/6469-body-origin'),
+            'a foreign DL beside the correct card token must still GREEN');
+
+        // CONTROL — the diagnostic is SILENT on a title carrying no DL. Without this the
+        // assertion above cannot attribute the sentence to the DL rather than to the red.
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, 'fix a thing', 'fix/6469-body-origin');
+        $this->assertSame(1, $rc);
+        $this->assertStringNotContainsString(self::DL_DIAGNOSTIC, $out,
+            'control: the DL diagnostic must be silent on a title that carries no DL, or it is not attributable');
+
+        // THE DISCLOSED PRICE, asserted rather than left to be discovered: on a
+        // `card`-stem branch the head ref alone would have correlated the card, so this
+        // red is a FALSE one. It is the cost the accept-set change is bought with and
+        // it belongs in a test, not only in a changelog sentence.
+        $this->assertSame(1, $this->runRequireStep('refactor: a thing (DL-273)', 'card-9996-stage-attrs'),
+            'the disclosed price: a DL-only title on a card-stem branch reds too');
     }
 
     /**
@@ -2318,6 +2362,49 @@ class PrTitleLintTest extends TestCase
             $this->assertMatchesRegularExpression('/\bcard '.$id.'\b/', $out,
                 "'{$title}': the step must name the id CardTokenGrammar selects");
         }
+    }
+
+    /**
+     * ⚠ A PINNED FALSE RED THIS CHANGE DOES NOT CLOSE, asserted rather than left in
+     * prose (card#10031). The require step above now models the writeback's SELECTION
+     * — head ref first, then the title's leftmost token — and the closure step still
+     * does not: it reads the TITLE's leftmost card only. So on a `card`-stem branch
+     * whose title cites another card BEFORE its own, the two steps disagree about
+     * which card the PR is even about, and CI reds a merge the writeback would close
+     * STRUCTURALLY off the head ref.
+     *
+     * ⛔ The whole-step tie above cannot see this: it derives BOTH sides from
+     * `CardTokenGrammar::parse($title)`, so it compares the closure step against a
+     * runtime predicate asked about the same leftmost id and they agree by
+     * construction. This leg asks the REAL classifier instead, which is the only
+     * surface where the head-ref precedence exists at all.
+     *
+     * Pinned, NOT repaired: teaching the closure step head precedence changes what
+     * that step accepts, which is a separate gate decision from this card's.
+     */
+    public function test_the_closure_step_reads_the_title_where_the_classifier_reads_the_head(): void
+    {
+        $this->bootClassifierMapping();
+        $title = 'docs: port card#1234 guidance (card#9996)';
+        $branch = 'card-9996-stage-attrs';
+
+        // The premise, asserted rather than assumed: the runtime really does select the
+        // head ref's card and really would close it.
+        $this->assertSame(9996, $this->classifierSelects($title, $branch),
+            'the classifier selects the head ref\'s card');
+        $this->assertTrue(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, 9996, $title),
+            'and the merge closes it structurally');
+
+        // The divergence: CI reds it anyway, naming the title's leftmost card.
+        [$rc, $out] = $this->runStep(self::CLOSURE_STEP, $title, $branch);
+        $this->assertSame(1, $rc, 'the pinned FALSE RED moved — the closure step now agrees with the classifier, so this pin is stale');
+        $this->assertStringContainsString('correlates card 1234', $out,
+            'the step names the title\'s leftmost card, which is the whole divergence');
+
+        // CONTROL — with the branch's own card leftmost the two sides agree again, so
+        // the red above is attributable to ORDER and not to the fixture generally.
+        [$rc] = $this->runStep(self::CLOSURE_STEP, 'docs: port the guidance (card#9996) from card#1234', $branch);
+        $this->assertSame(0, $rc, 'control: with the branch\'s card leftmost the two sides agree again');
     }
 
     /**
