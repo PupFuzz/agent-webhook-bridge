@@ -588,8 +588,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             return [];   // no issue to label
         }
         // LAST, deliberately: with the opt-in unset `enabledFor()` above already returned, so an
-        // install that has not asked for the label reads no agent config here and classifies
-        // byte-identically to a bridge without DL-408.
+        // install that has not asked for the label reads no agent config here. What that does and
+        // does not establish about byte-identity with a pre-DL-408 build is bounded in DL-408 2a.
         if ($this->installExempts($ctx, $subject['title'])) {
             return [];
         }
