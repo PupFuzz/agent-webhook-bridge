@@ -4,6 +4,7 @@ namespace App\Bridge\Dispatch;
 
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\SubscriptionRegistry;
 
 /**
  * Everything a {@see Classifier} needs to classify one
@@ -24,6 +25,15 @@ use App\Bridge\Support\AgentConfig;
  *   `agent->agentName` / identity. Classifier instances are shared + cached per
  *   class (see ClassifierResolver), so per-event state lives HERE, never on the
  *   classifier instance.
+ * - subscriptions: THE DELIVERY'S registry, the one the dispatcher already
+ *   walked to decide who is served. A classifier needing an INSTALL-level fact
+ *   (DL-408's `installExempts()` is the first) must read it through this rather
+ *   than build its own: the registry memoizes per instance, so building one per
+ *   serving agent re-globs the config dir and re-parses every agent YAML once
+ *   per agent — N agents on a scope, N² parses per event, on the FPM request
+ *   path. Null when the classifier was invoked outside the dispatch loop (every
+ *   direct-construction test site); a reader must then build its own and gets
+ *   exactly the answer it gets today, at that cost.
  */
 final class ClassifyContext
 {
@@ -37,5 +47,6 @@ final class ClassifyContext
         public readonly string $provider,
         public readonly string $scopeId,
         public readonly AgentConfig $agent,
+        public readonly ?SubscriptionRegistry $subscriptions = null,
     ) {}
 }

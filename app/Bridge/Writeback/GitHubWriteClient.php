@@ -12,8 +12,9 @@ namespace App\Bridge\Writeback;
  * refusal means.
  *
  * ⚑ PERMISSIONS (docs.github.com, "Permissions required for fine-grained personal access tokens"):
- * creating an issue or pull-request comment needs Issues OR Pull requests WRITE. A read-only token
- * gets a 403 here, and nowhere earlier.
+ * creating an issue or pull-request comment needs Issues OR Pull requests WRITE. Adding labels to an
+ * issue or pull request needs the same, per GitHub's REST reference for "Add labels to an issue"
+ * (read 2026-09-22). A read-only token gets a 403 here, and nowhere earlier.
  */
 final class GitHubWriteClient
 {
@@ -24,6 +25,19 @@ final class GitHubWriteClient
     {
         GitHubApi::request($this->token, $this->timeoutSeconds)
             ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/comments", ['body' => $body])
+            ->throw();
+    }
+
+    /**
+     * Adds $labels to issue or pull request $number. ADDITIVE: GitHub adds them "to the issue's
+     * existing labels" (its REST reference); replacing the set is a different endpoint.
+     *
+     * @param  list<string>  $labels
+     */
+    public function addLabels(string $repo, int $number, array $labels): void
+    {
+        GitHubApi::request($this->token, $this->timeoutSeconds)
+            ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/labels", ['labels' => $labels])
             ->throw();
     }
 }

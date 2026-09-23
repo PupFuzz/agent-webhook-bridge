@@ -21,6 +21,7 @@
     "config_gap": "The write proceeded, but the install's config lacked something the event asked for.",
     "observability_fault": "A record or signal about a write could not be made; the write decision itself is unaffected.",
     "reported": "A refusal report reached the pull request, or was already there.",
+    "labeled": "A label was added to a GitHub issue or pull request.",
     "pass_summary": "A summary of one pass over several cards."
   },
   "entries": [
@@ -145,6 +146,13 @@
     {"id":"pr_correlation_comment.posted","kind":"reported","surface":["log"],"site":"PrCorrelationCommenter::post","since":"0.88.0"},
     {"id":"pr_correlation_comment.unexpected_failure","kind":"observability_fault","surface":["log"],"site":"PrCorrelationCommenter::unexpected","since":"0.88.0"},
     {"id":"program_card_guard.parent_card","kind":"declined","surface":["log","alert_channel"],"site":"ProgramCardGuard::refuses","since":"0.88.0"},
+    {"id":"protocol_invalid_label.add_failed","kind":"upstream_refused","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
+    {"id":"protocol_invalid_label.add_http_error","kind":"upstream_refused","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
+    {"id":"protocol_invalid_label.applied","kind":"labeled","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
+    {"id":"protocol_invalid_label.no_token","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
+    {"id":"protocol_invalid_label.payload_invalid","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
+    {"id":"protocol_invalid_label.repo_not_enabled","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
+    {"id":"protocol_invalid_label.unexpected_failure","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabeler::apply","since":"0.88.0"},
     {"id":"promote_released.board_truncated","kind":"partial_read","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.88.0"},
     {"id":"promote_released.candidate_cap","kind":"partial_read","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.88.0"},
     {"id":"promote_released.compare_4xx","kind":"upstream_refused","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::promoteIfReleased","since":"0.88.0"},

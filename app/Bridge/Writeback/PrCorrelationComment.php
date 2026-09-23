@@ -44,6 +44,9 @@ final class PrCorrelationComment
     /** The payload key carrying the classifier's evidence to either handler. */
     public const EVIDENCE_KEY = 'pr_correlation';
 
+    /** What every outcome's {@see marker()} starts with. */
+    public const MARKER_PREFIX = '<!-- agent-webhook-bridge:pr-correlation ';
+
     /** The outcomes that comment: a merge or a close. `opened` / `reopened` / `started` never do. */
     public const OUTCOMES = [PrOutcome::INTEGRATION_MERGE, PrOutcome::RELEASE_MERGE, 'closed_unmerged'];
 
@@ -202,7 +205,18 @@ final class PrCorrelationComment
     /** The comment's first line and its dedupe key: one per pull request and outcome. */
     public function marker(): string
     {
-        return "<!-- agent-webhook-bridge:pr-correlation outcome={$this->outcome} -->";
+        return self::MARKER_PREFIX."outcome={$this->outcome} -->";
+    }
+
+    /**
+     * Whether $body is one of these comments: it starts with the marker every outcome's marker
+     * starts with, which is the same starts-with test the dedupe reads the pull request with. This
+     * is the only comment the bridge posts to GitHub, so it is how the bridge knows its own post
+     * when that post comes back to it as an `issue_comment` event.
+     */
+    public static function isBridgePost(string $body): bool
+    {
+        return str_starts_with($body, self::MARKER_PREFIX);
     }
 
     public function body(): string
