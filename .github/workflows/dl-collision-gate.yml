@@ -152,6 +152,15 @@ jobs:
               echo "the entry, its CHANGELOG line, its commit messages and the PR title together."
               exit 1
               ;;
+            7)
+              echo "::error::this PR adds a DL entry whose header carries no number (named above)."
+              echo "A placeholder is invisible to both assertions above — they read '## DL-NNN' — so"
+              echo "two PRs can each write one and the log lands with two entries claiming a"
+              echo "non-identifier (card#9936)."
+              echo "Fix: allocate a fresh number with 'python3 bin/decision-log.py next' and renumber"
+              echo "the entry, its CHANGELOG line, its commit messages and the PR title together."
+              exit 1
+              ;;
             *)
               echo "::error::bin/decision-log.py exited $rc — unexpected; treat as a gate failure."
               echo "An unreadable decision log must not be reported as a clean one."

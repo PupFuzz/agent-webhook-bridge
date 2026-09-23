@@ -221,6 +221,26 @@ class DlCollisionGateTest extends TestCase
         $this->assertStringContainsString('uses one DL number twice', $out);
     }
 
+    /**
+     * The step's `7)` arm. A `## DL-TBD` matches neither assertion's grammar, so
+     * before card#9936 this input reached the gate and the gate printed OK —
+     * measured on this repo's own PR #778, whose head carried one.
+     */
+    public function test_a_placeholder_heading_this_pr_adds_is_refused(): void
+    {
+        $repo = $this->makeRepos(
+            $this->log(293),
+            $this->log(293)."## DL-TBD — a draft entry\n",
+        );
+
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('## DL-TBD — a draft entry', $out);
+        $this->assertStringContainsString('carries no number', $out);
+        $this->assertStringContainsString('bin/decision-log.py next', $out);
+    }
+
     public function test_the_refusal_tells_the_author_how_to_allocate_a_fresh_number(): void
     {
         // A guard's remediation string is a doc surface: it is the only place
