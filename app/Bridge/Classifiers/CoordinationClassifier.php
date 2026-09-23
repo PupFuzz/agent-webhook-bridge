@@ -12,6 +12,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
+use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CoordLaneStages;
 use App\Bridge\Writeback\PrCorrelationComment;
@@ -548,19 +549,31 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * The `protocol:invalid` label target (card#10218 / DL-408): one, for a COMMENT whose attribution
      * is `unresolved`, on a repo `bridge.protocol_invalid_label.repos` lists; otherwise none.
      *
-     * ⛔ THE TRIGGER IS THE ATTRIBUTION STATE {@see coordMessageFamily()} ALREADY COMPUTED, never a
-     * second reading of the comment. `unresolved` on a comment means: the action wrote the body
-     * ({@see AUTHORING_ACTIONS} — `created`, so an `edited` or `deleted` comment is never this state),
-     * and neither `scope_author_map`, the body `FROM:` line nor the registry named who wrote it. No
-     * protocol rule is checked: the label asserts "could not attribute" and nothing else.
+     * ⛔ THE DECISION IS THE INSTALL'S, NOT THE SERVING AGENT'S, and that is what makes the label
+     * honest. Every subscribed agent classifies the event independently, the write is repo-global,
+     * and the label is never removed (DL-408 decision 4) — so a predicate keyed on the serving
+     * agent's own config is an OR across agents: one agent that cannot attribute would label a
+     * comment another agent attributes fine, permanently, in the very queue the seats sweep. So the
+     * two per-agent inputs are read over EVERY agent subscribed to this scope ({@see installExempts}),
+     * which makes this a function of the EVENT and the INSTALL only: every agent computes the same
+     * answer, and `bridge:replay --agent x` computes it too.
      *
-     * The bridge's OWN comment — the DL-390 correlation report, the only thing it posts to GitHub —
-     * carries no `FROM:` line and would otherwise be labelled wherever a writeback repo is also a
-     * coordination scope; it is recognised by the marker it starts with.
+     * The serving agent's `$attributionState` is the cheap half, and it is necessary but not
+     * sufficient: `unresolved` on a comment means the action wrote the body ({@see AUTHORING_ACTIONS}
+     * — `created`, so an `edited` or `deleted` comment is never this state) and this agent named
+     * nobody. Of the three attribution inputs two are install-level already (the body `FROM:` line
+     * and the registry, built from every agent YAML); only `scope_author_map` is per-agent, so it is
+     * the one attribution leg {@see installExempts} re-reads. No protocol rule is checked anywhere:
+     * the label asserts "the install could not attribute this" and nothing else.
+     *
+     * The bridge's OWN comment — the DL-390 correlation report, the only COMMENT it posts to GitHub
+     * (its other GitHub write adds a label, which carries no body to attribute) — has no `FROM:`
+     * line and would otherwise be labelled wherever a writeback repo is also a coordination scope;
+     * it is recognised by the marker it starts with.
      *
      * Every subscribed agent emits this same target for the same comment; the labeler writes once.
      *
-     * @param  array{kind:string,number:int|string,body:string,comment_id?:int|string|null}  $subject
+     * @param  array{kind:string,number:int|string,title:string,body:string,comment_id?:int|string|null}  $subject
      * @return list<ReactionTarget>
      */
     private function protocolInvalidLabelTargets(ClassifyContext $ctx, array $subject, string $attributionState): array
@@ -574,12 +587,55 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if (! is_int($subject['number']) || $subject['number'] < 1) {
             return [];   // no issue to label
         }
+        // LAST, deliberately: with the opt-in unset `enabledFor()` above already returned, so an
+        // install that has not asked for the label reads no agent config here and classifies
+        // byte-identically to a bridge without DL-408.
+        if ($this->installExempts($ctx, $subject['title'])) {
+            return [];
+        }
 
         return [ReactionTarget::make(
             ProtocolInvalidLabeler::HANDLER,
             $ctx->scopeId.'#'.$subject['number'],
             payload: ['repo' => $ctx->scopeId, 'number' => $subject['number'], 'comment_id' => $subject['comment_id'] ?? null],
         )];
+    }
+
+    /**
+     * Does ANY agent subscribed to this scope declare something that exempts this subject from the
+     * `protocol:invalid` label (card#10218 / DL-408)? The two per-agent declarations the label's
+     * contract states at install level:
+     *
+     *   - `scope_author_map[<scope>]` — "one agent does everything on this repo". An agent that
+     *     declares it ATTRIBUTES every comment here, so the install can attribute this one, whoever
+     *     is serving. ({@see attribute} applies the serving agent's own entry; this sees the rest.)
+     *   - `drop_title_all_of` — "a subject with this title is not a coordination message". The
+     *     declaring agent drops the event before the label is considered; an agent that does not
+     *     declare it must not label what the install already called noise.
+     *
+     * Read from the agents' own YAMLs through the SAME registry the dispatcher subscribes from, so
+     * the population is every agent SUBSCRIBED to this scope — the set `DispatchService` serves,
+     * including on a `bridge:replay --agent <one>`, which serves one agent and must not thereby
+     * change what the label MEANS. Deliberately NOT narrowed to "agents running this classifier":
+     * a declaration is read from an agent's config whatever classifier it names, which needs no
+     * classifier-class introspection and errs toward NOT writing a permanent label.
+     * Every one of those files parsed moments ago, at the top of this same delivery
+     * (that read is what found the agents being served, and a malformed config fails the delivery
+     * closed before any classify runs), so this is a re-read of known-good configs; a config
+     * rewritten malformed mid-delivery would throw here and be treated as any classify throw is —
+     * recorded against this agent's dispatch, acked 200, replayable — never a new failure class.
+     */
+    private function installExempts(ClassifyContext $ctx, string $title): bool
+    {
+        $agents = (new SubscriptionRegistry((string) config('bridge.config_dir')))->subscribedTo($ctx->provider, $ctx->scopeId);
+        foreach ($agents as $agent) {
+            if ($this->scopeAuthor($agent->classifierConfig, $ctx->scopeId) !== null
+                || $this->titleMatchesDropGroup($title, $agent->classifierConfig)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // =====================================================================
@@ -1585,7 +1641,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             return ['actor' => null, 'thread_author' => $threadAuthor];
         }
 
-        $mapped = $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
+        $mapped = $this->scopeAuthor($cfg, $scopeId);
 
         $actorEvidence = null;
         if ($actorAuthoredSubject) {
@@ -1596,6 +1652,17 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             'actor' => $this->named($actor, $mapped ?? $actorEvidence),
             'thread_author' => $threadAuthor,
         ];
+    }
+
+    /**
+     * The agent a `scope_author_map` entry declares as the sole author on `$scopeId`, or null. The
+     * map's keys are lowercased at parse ({@see ClassifierConfig}), so the lookup lowercases too —
+     * in ONE place, because two readers apply it now: this classifier's own attribution and the
+     * install-level read {@see installExempts} makes over every subscribed agent's map.
+     */
+    private function scopeAuthor(ClassifierConfig $cfg, string $scopeId): ?string
+    {
+        return $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
     }
 
     /**

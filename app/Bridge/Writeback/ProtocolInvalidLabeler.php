@@ -28,7 +28,11 @@ use Throwable;
  * this class re-checks the list before writing, because a target is classifier-emitted and a custom
  * classifier can emit one for any repo.
  *
- * ⛔ NOTHING HERE THROWS, RETRIES OR ALERTS, and routing never waits on it. The label is a report
+ * ⛔ NOTHING HERE THROWS, RETRIES OR ALERTS, and no routing OUTCOME depends on it — not what is
+ * staged, not what is pushed, not the status the receiver answers. Routing does WAIT on it: the
+ * handler is a `DurableReaction`, and the dispatcher runs durable handlers before best-effort ones,
+ * so the agent's wake follows this POST by up to {@see TIMEOUT_SECONDS} (the latency sentence on
+ * that constant is where that cost is stated). The label is a report
  * about an event whose routing is already decided, so a failure to write it must not become a 5xx
  * (a redelivery storm) and must not change what the agents receive. Every way it can fail is ONE
  * `Log::warning` whose message starts `protocol_invalid_label: NOT applied` and whose `reason` names
@@ -54,17 +58,17 @@ final class ProtocolInvalidLabeler
     public const TIMEOUT_SECONDS = 4;
 
     /**
-     * Every comment this instance has already attempted, WHATEVER came of it. The instance lives as
-     * long as the handler singleton that owns it: one delivery in the receiver, one `bridge:replay`
-     * run. The classifier runs once per subscribed agent, so each of them emits the same target for
-     * the same comment; this is what makes that ONE write per event instead of one per agent. The
-     * next event tries again.
-     *
-     * @var array<string, true>
+     * Every comment this instance has already attempted, WHATEVER came of it — {@see OncePerKey}
+     * owns that rule and its lifetime. Here the key is what makes ONE write per EVENT instead of one
+     * per agent: the classifier runs once per subscribed agent and each of them emits the same
+     * target for the same comment.
      */
-    private array $attempted = [];
+    private OncePerKey $attempted;
 
-    public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver) {}
+    public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver)
+    {
+        $this->attempted = new OncePerKey;
+    }
 
     /** Whether this install writes the label on $repo. Case-insensitive: GitHub's repo names are. */
     public static function enabledFor(string $repo): bool
@@ -121,11 +125,9 @@ final class ProtocolInvalidLabeler
             return;
         }
 
-        $key = $repo."\x00".$number."\x00".(is_scalar($context['comment_id']) ? (string) $context['comment_id'] : '');
-        if (isset($this->attempted[$key])) {
+        if (! $this->attempted->claim($repo, $number, is_scalar($context['comment_id']) ? (string) $context['comment_id'] : null)) {
             return;
         }
-        $this->attempted[$key] = true;
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {

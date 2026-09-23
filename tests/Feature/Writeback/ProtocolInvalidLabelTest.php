@@ -259,6 +259,36 @@ class ProtocolInvalidLabelTest extends TestCase
         $this->assertSame([], $this->github);
     }
 
+    public function test_a_scope_author_map_on_any_one_agent_keeps_the_comment_unlabelled(): void
+    {
+        // THE PREDICATE IS THE INSTALL'S, NOT THE SERVING AGENT'S. alpha maps this repo's sole
+        // author and gamma does not, so gamma cannot attribute a comment the install can — and
+        // the label is repo-global and never removed, so gamma emitting it writes a permanent
+        // "could not attribute" onto a thread that IS attributable.
+        $this->coordAgent('alpha', extra: "  config:\n    scope_author_map:\n      acme/coord: beta\n", inClassifier: true);
+        $this->coordAgent('gamma');
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->comment('created', 'no from line here'));
+
+        $this->assertSame([], $this->github);
+    }
+
+    public function test_a_drop_title_group_on_any_one_agent_keeps_the_comment_unlabelled(): void
+    {
+        // The same shape on the other per-agent input: a subject the install declares is not a
+        // coordination message at all. alpha drops it before the label is ever considered; gamma,
+        // which does not declare the group, must not label what alpha's install-level declaration
+        // already said is noise.
+        $this->coordAgent('alpha', extra: "  config:\n    drop_title_all_of:\n      - ['[query]', 'a thread']\n", inClassifier: true);
+        $this->coordAgent('gamma');
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->comment('created', 'no from line here'));
+
+        $this->assertSame([], $this->github);
+    }
+
     public function test_a_comment_whose_sender_the_registry_names_is_not_labelled(): void
     {
         // A distinct, non-shared account the registry resolves to an agent: attributed, FROM: or not.
