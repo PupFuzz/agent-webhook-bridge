@@ -2812,8 +2812,11 @@ the work distinguishes those.
   - the glued-`card4` FALSE GREEN and the four-digit-DL FALSE RED both closed under **card#10031**,
     and neither was *repaired* — the card arm now SELECTS with the same grammar shape that rejects
     `card4`, so there is nothing left to disagree with, and the DL arm stopped being an accept arm
-    at all, so its bound can no longer red anything (its residue is a diagnostic sentence that does
-    not appear, pinned as such);
+    at all, so its bound can no longer red anything (its residue — a diagnostic sentence that did
+    not appear — closed with it, the pattern now being the authority's own shape);
+  - the card arm's two **collation FALSE REDS** closed with the step's `env: LC_ALL: C.UTF-8` pin,
+    which card#10031 added on finding that the same collation GREENS a foreign leftmost token once
+    a negated class decides SELECTION — the ranges are unchanged, the runner no longer chooses;
   - the **leading-zero FALSE RED** is the one still pinned and still gated.
   ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
   `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no

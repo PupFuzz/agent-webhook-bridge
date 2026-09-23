@@ -36,7 +36,7 @@ use Tests\TestCase;
  *    docblock; the tests were a hand-written snapshot that stayed green when the
  *    grammar moved, which is exactly how the near-miss WARN string spent two
  *    releases naming a narrower accept-set than the code enforced.
- *  - PINNED (the require step's card arm and its four-digit-bounded DL arm — the
+ *  - PINNED (the require step's card arm and its DL diagnostic — the
  *    spellings are not quoted here, because a quoted pattern is the restatement
  *    this file exists to catch, and two copies of it had already gone stale by
  *    DL-272). It DISAGREES with the grammars on MEASURED shapes and is deliberately
@@ -95,14 +95,21 @@ class PrTitleLintTest extends TestCase
     private const REQUIRE_STEP_DIVERGENCES = [];
 
     /**
-     * The same idea for the DL half (card#5308), split by SHAPE because the two
-     * disagreements fail in opposite directions and one of them is conditional on
-     * the runner. Each list is driven by its own pin below as well as by the
-     * agreement test, so a stale exemption reds instead of silently excusing.
+     * The same idea for the DL half (card#5308): the vectors on which the step's DL
+     * DIAGNOSTIC is known to disagree with {@see DlTokenGrammar} and is pinned rather
+     * than fixed. Driven by the agreement loop below, which asserts each entry still
+     * diverges, so a stale exemption reds instead of silently excusing a vector.
      *
-     * FALSE RED: the gate's four-digit bound reds a DL the classifier parses.
+     * ⛔ EMPTY SINCE card#10031's second round, and that is a RESULT. `DL-12345` sat
+     * here because the step bounded its DL at four digits, so a 5-digit DL got no
+     * sentence explaining why it did not satisfy the gate. The pattern is the
+     * authority's shape now — `+` digits and no trailing boundary, which closes the
+     * collation-suppressed row beside it as well: a diagnostic's bound REDS NOTHING,
+     * so widening it costs no gate change and the justification that kept it
+     * ("repairing it changes what the gate accepts") retired with the accept arm it
+     * was written for.
      */
-    private const REQUIRE_STEP_DL_FALSE_RED = ['DL-12345'];
+    private const REQUIRE_STEP_DL_MISSING_DIAGNOSTIC = [];
 
     /**
      * FIXED (card#5300, user-approved): the DL arm's digit class was the RANGE
@@ -207,18 +214,41 @@ class PrTitleLintTest extends TestCase
         ['dependabot/6822-bump-slug', 'skip:exempt', 'automation carries no card'],
     ];
 
-    /** Extract one step's `run:` script from the workflow by name prefix. */
-    private function stepScript(string $namePrefix): string
+    /** One whole step of the workflow, by name prefix. */
+    private function step(string $namePrefix): array
     {
         $wf = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'));
         foreach ($wf['jobs']['lint-title']['steps'] as $step) {
             if (str_starts_with((string) ($step['name'] ?? ''), $namePrefix)) {
                 $this->assertSame('bash', $step['shell'] ?? null, 'the step must pin bash');
 
-                return (string) $step['run'];
+                return $step;
             }
         }
         $this->fail("no step named like '{$namePrefix}' in pr-title-lint.yml");
+    }
+
+    /** Extract one step's `run:` script from the workflow by name prefix. */
+    private function stepScript(string $namePrefix): string
+    {
+        return (string) $this->step($namePrefix)['run'];
+    }
+
+    /**
+     * A step's declared `env:` LITERALS — what GitHub Actions exports into the step's
+     * shell on top of whatever the runner's own environment holds. The `${{ … }}`
+     * entries are this gate's INPUTS (title, head ref) and are supplied by
+     * {@see runScriptText()} instead, so filtering them out is not a convenience: an
+     * unexpanded expression exported as a literal would silently become the title.
+     *
+     * @return array<string,string>
+     */
+    private function stepDeclaredEnv(string $namePrefix): array
+    {
+        return array_filter(
+            array_map('strval', $this->step($namePrefix)['env'] ?? []),
+            fn (string $v) => ! str_contains($v, '${{'),
+        );
     }
 
     /**
@@ -235,6 +265,42 @@ class PrTitleLintTest extends TestCase
         }
 
         return $m[1];
+    }
+
+    /**
+     * EVERY card-token regex assignment in the workflow, derived — every `good='…'` /
+     * `token='…'` in every step's `run:` script, in file order.
+     *
+     * The predicate is the ASSIGNED NAME, so a copy added to a new step joins without
+     * anyone remembering to add it: the failure this replaces was a leg that named two
+     * of them while a third shipped tied to nothing.
+     *
+     * @return list<array{step:string,name:string,regex:string}>
+     */
+    private function cardTokenRegexAssignments(): array
+    {
+        $wf = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'));
+        $found = [];
+        foreach ($wf['jobs']['lint-title']['steps'] as $step) {
+            $found = array_merge($found,
+                $this->cardTokenRegexesIn((string) ($step['name'] ?? ''), (string) ($step['run'] ?? '')));
+        }
+        $this->assertNotEmpty($found, 'no card-token regex found anywhere in the workflow — the scan is broken, not the workflow');
+
+        return $found;
+    }
+
+    /**
+     * The scan itself, over one script's text — separate so a synthetic script can
+     * prove it discriminates.
+     *
+     * @return list<array{step:string,name:string,regex:string}>
+     */
+    private function cardTokenRegexesIn(string $step, string $script): array
+    {
+        preg_match_all("/^\s*(good|token)='([^']*)'\s*$/m", $script, $m, PREG_SET_ORDER);
+
+        return array_map(fn (array $hit) => ['step' => $step, 'name' => $hit[1], 'regex' => $hit[2]], $m);
     }
 
     /**
@@ -323,13 +389,17 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * Run a step with a given title/branch; return [exit code, combined output].
-     * `$locale` pins `LC_ALL` for the run — needed because bash resolves a `[0-9]`
-     * bracket expression by COLLATION, so the require step's answer on a
-     * Unicode-digit token depends on the runner's locale (card#5308; pinned in the
-     * characterization below). Null inherits the ambient locale, which is what every
-     * other leg wants: measured across `C`, `C.UTF-8` and `en_US.UTF-8`, they return
-     * identical answers, so only the legs that pass a locale are sensitive to it.
+     * Run a step's SCRIPT with a given title/branch; return [exit code, combined
+     * output]. `$locale` pins `LC_ALL` for the run — needed because bash resolves a
+     * `[0-9]` bracket expression by COLLATION, so the script's answer on a
+     * Unicode-digit token depends on the ambient locale (card#5308; characterized
+     * below). Null inherits, which is what every other leg wants: measured across `C`,
+     * `C.UTF-8` and `en_US.UTF-8`, they return identical answers, so only the legs
+     * that pass a locale are sensitive to it.
+     *
+     * ⚠ The step's declared `env:` is NOT applied here, so the require step's `LC_ALL`
+     * pin does not bind — `$locale` is the collation in force. {@see runStepAsCi()} is
+     * the surface that answers what CI does.
      */
     private function runStep(string $namePrefix, string $title, string $branch, ?string $locale = null, string $base = 'dev'): array
     {
@@ -343,7 +413,7 @@ class PrTitleLintTest extends TestCase
      *
      * @return array{0:int,1:string}
      */
-    private function runScriptText(string $script, string $title, string $branch, ?string $locale = null, string $base = 'dev'): array
+    private function runScriptText(string $script, string $title, string $branch, ?string $locale = null, string $base = 'dev', array $declaredEnv = []): array
     {
         // No `.sh` suffix: appending one would name a DIFFERENT path than tempnam()
         // created, leaking the original empty file on every one of the ~150 runs a
@@ -360,10 +430,33 @@ class PrTitleLintTest extends TestCase
             // is the INTEGRATION base — the one every dev-targeted PR carries, and the
             // one under which the structural route is live.
             .' BASE='.escapeshellarg($base)
+            // LAST WINS in bash's `VAR=v cmd` prefix, which is the ORDER Actions
+            // applies a step's `env:` in: after the runner's own environment. So a
+            // declared entry overrides the ambient `$locale` here exactly as the
+            // step's `LC_ALL` pin overrides the runner's locale there.
+            .array_reduce(array_keys($declaredEnv),
+                fn (string $c, string $k) => $c.' '.$k.'='.escapeshellarg($declaredEnv[$k]), '')
             .' bash '.escapeshellarg($tmp).' 2>&1', $out, $rc);
         @unlink($tmp);
 
         return [$rc, implode("\n", $out)];
+    }
+
+    /**
+     * THE STEP AS CI RUNS IT — the `run:` script under the step's own declared `env:`,
+     * applied on top of `$ambientLocale`. {@see runStep()} deliberately does NOT apply
+     * that env: it measures the SCRIPT, which is what the collation characterizations
+     * need, and a harness that always applied the pin could not see what the pin is
+     * for. Both surfaces exist because the two questions are different — "is this
+     * bracket range still collation-sensitive" and "can the runner's locale decide a
+     * verdict" — and only the second is what ships.
+     *
+     * @return array{0:int,1:string}
+     */
+    private function runStepAsCi(string $namePrefix, string $title, string $branch, string $ambientLocale, ?string $script = null): array
+    {
+        return $this->runScriptText($script ?? $this->stepScript($namePrefix), $title, $branch,
+            $ambientLocale, 'dev', $this->stepDeclaredEnv($namePrefix));
     }
 
     private function runWarnStep(string $title, string $branch = 'f'): string
@@ -1024,8 +1117,10 @@ class PrTitleLintTest extends TestCase
      * The require step is a THIRD implementation of the token (`card[-#]?<id>`,
      * bounded on both sides) and it is the one with teeth — it reds the PR. Where it
      * agrees with the grammar, that agreement is asserted per vector: the gate must
-     * pass exactly the titles that will actually move the card. The one vector it
-     * disagrees on is exempted by name and pinned below.
+     * pass exactly the titles that will actually move the card. Any vector it
+     * disagrees on is exempted by name in {@see self::REQUIRE_STEP_DIVERGENCES} and
+     * pinned below — a list card#10031 emptied, and the loop below is what holds it
+     * empty.
      */
     public function test_the_require_step_and_the_authority_agree_on_every_vector_but_the_pinned_ones(): void
     {
@@ -1254,6 +1349,101 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
+     * THE SELECTION LINE NAMES THE TOKEN IT READ, AT ANY LENGTH (card#10031, round 2).
+     * The id used to be folded through `$((10#…))`, which WRAPS at 2^63 — so a
+     * 20-digit token made the step announce a card neither engine ever selects, while
+     * the grammar's own `(int)` saturates instead. The verdict never moved, which is
+     * why this is asserted on the MESSAGE; the control is the arithmetic the step no
+     * longer does, because "it prints the digits" is only interesting if the
+     * alternative printed something else.
+     */
+    public function test_the_selection_line_names_the_token_it_read_at_any_length(): void
+    {
+        $long = str_repeat('9', 20);
+        $wrapped = trim((string) shell_exec('bash -c '.escapeshellarg("echo \$((10#{$long}))")));
+        $this->assertNotSame($long, $wrapped, 'the control: bash arithmetic really does wrap these digits');
+
+        $out = $this->runStep(self::REQUIRE_STEP, "fix a thing card#{$long}", "fix/{$long}-slug")[1];
+        $this->assertStringContainsString("The writeback selects card {$long} from", $out);
+        $this->assertStringNotContainsString($wrapped, $out,
+            'the step must not name a card that exists in neither engine');
+    }
+
+    /**
+     * ⛔ EVERY FAILURE ARM STATES ONLY WHAT IS TRUE OF ITS OWN FAULT, AND GIVES ADVICE
+     * THAT CAN BE FOLLOWED (card#10031, round 2). A red gate an author cannot act on
+     * is the defect this step's split messages exist to close, and three of the four
+     * arms had inherited a sentence from another:
+     *
+     *  - a `card`-stem branch was told its card "silently never moves" three lines
+     *    after the step printed that the head ref selects it — refuted by the step's
+     *    own output. Row 2 is REAL historical input (#702);
+     *  - a title whose token is present but unparseable (`card4`) was told to make it
+     *    the FIRST card token, when the token IS first and the spelling is the fault;
+     *  - a HEAD-REF selection was told to retitle, which cannot change a head-ref
+     *    selection at all, so the author loops on a red gate.
+     *
+     * Every row asserts the sentence its arm owes AND the absence of the one it must
+     * not inherit — an arm asserted only by presence passes just as well when a fourth
+     * sentence is printed beside it.
+     */
+    public function test_each_failure_arm_states_only_what_is_true_of_its_own_fault(): void
+    {
+        $this->bootClassifierMapping();
+
+        // ARM 1 — nothing selects this card. The sentences the OTHER arms must not
+        // carry are owed HERE, so their absence elsewhere is attributable.
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, 'refactor: a thing (DL-273)', 'feat/9996-stage-attrs');
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString('silently never moves', $out);
+        $this->assertStringContainsString(self::DL_DIAGNOSTIC, $out);
+
+        // ARM 2 — the head ref ALREADY correlates the card (#702, merged). Both
+        // sentences above are FALSE here: the merge does move card 9121.
+        $title = 'fix(check): escape foreign text at its producer, and make a value the bridge still matches on unprintable by type (closes card#9200, DL-366)';
+        $branch = 'fix/card-9121-marker-trust';
+        $this->assertSame(9121, $this->classifierSelects($title, $branch),
+            'the premise: the writeback really does move this branch\'s card off the head ref');
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, $title, $branch);
+        $this->assertSame(1, $rc, 'the gate still requires the title to carry the token — this leg is about the MESSAGE');
+        $this->assertStringContainsString('the merge does move it', $out);
+        $this->assertStringNotContainsString('silently never moves', $out,
+            'refuted by the selection line the step printed three lines earlier');
+        $this->assertStringNotContainsString(self::DL_DIAGNOSTIC, $out,
+            'the DL sentence says the writeback may move a DIFFERENT card — it will not, it moves this one');
+
+        // ARM 3 — present, and nothing selects: the spelling is the fault, not the
+        // ORDER, so "make it first" is advice about a property the title already has.
+        $this->assertNull(CardTokenGrammar::parse('fix a thing card4'),
+            'the premise: a single-digit glued token parses to nothing');
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, 'fix a thing card4', 'fix/4-slug');
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString("Fix: write it as 'card#4'", $out);
+        $this->assertStringNotContainsString('FIRST card token', $out,
+            'the token IS first — the spelling is the fault, and this is the arm the reconciliation dropped');
+
+        // ARM 4 — the selection is the HEAD REF's. No retitling can clear it, so the
+        // remedy is the branch name.
+        $title = 'fix a thing (card#9996)';
+        $branch = 'fix/9996-slug-card-1234';
+        $this->assertSame(1234, $this->classifierSelects($title, $branch),
+            'the premise: a second token in the ref outranks the title');
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, $title, $branch);
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString('rename the branch', $out);
+        $this->assertStringNotContainsString('FIRST card token', $out,
+            'retitling cannot clear a head-ref selection — an author following this loops on a red gate');
+
+        // ARM 4b — the same fault with the selection coming from the TITLE, which is
+        // what makes the branch-rename advice above attributable to the SURFACE and
+        // not merely to this step redding.
+        [$rc, $out] = $this->runStep(self::REQUIRE_STEP, 'docs: port card#1234 guidance (card#9996)', 'fix/9996-slug');
+        $this->assertSame(1, $rc);
+        $this->assertStringContainsString('FIRST card token', $out);
+        $this->assertStringNotContainsString('rename the branch', $out);
+    }
+
+    /**
      * ⛔ NO DL TOKEN SATISFIES THIS GATE ANY MORE (card#10031) — the first thing this
      * leg asserts, because it is the whole behaviour change and an agreement loop
      * alone would not state it. A DL matched the DL SHAPE while the writeback resolves
@@ -1277,11 +1467,10 @@ class PrTitleLintTest extends TestCase
         }
 
         // THE DIAGNOSTIC's answer set, tied to the authority exactly as the accept arm's
-        // was. The pinned vectors are the ones whose MESSAGE diverges — a four-digit
-        // bound the authority does not have, so a 5-digit DL gets no diagnostic. That is
-        // now a missing sentence rather than a false red.
+        // was. The exemption list is EMPTY since the bound was widened to `+`, so this
+        // loop now covers every vector including the 5-digit one.
         foreach (DlTokenGrammar::VECTORS as $vector) {
-            if (in_array($vector, self::REQUIRE_STEP_DL_FALSE_RED, true)) {
+            if (in_array($vector, self::REQUIRE_STEP_DL_MISSING_DIAGNOSTIC, true)) {
                 continue;
             }
             $title = "fix a thing {$vector}";
@@ -1292,18 +1481,25 @@ class PrTitleLintTest extends TestCase
             );
         }
 
-        // The pinned divergence, asserted rather than assumed — and asserted as what it
-        // now IS: the grammar parses it, the gate reds it like every other DL, and the
-        // only thing missing is the sentence that would have explained why.
-        foreach (self::REQUIRE_STEP_DL_FALSE_RED as $vector) {
+        // THE EXEMPTION LIST IS ITSELF DRIVEN, so an empty one is a measured result and
+        // not a check that stopped asking: every named exemption must still diverge, or
+        // it is stale and belongs in the loop above.
+        foreach (self::REQUIRE_STEP_DL_MISSING_DIAGNOSTIC as $vector) {
             $this->assertNotNull(DlTokenGrammar::parse($vector), "'{$vector}' must still be a shape the grammar parses");
             $this->assertStringNotContainsString(self::DL_DIAGNOSTIC,
                 $this->runStep(self::REQUIRE_STEP, "fix a thing {$vector}", 'fix/999-slug')[1],
-                "'{$vector}' must still fall outside the diagnostic's four-digit bound — the pinned divergence, message-only since card#10031");
+                "'{$vector}' is exempted as a divergence but the step DOES name it now — drop the exemption");
         }
+
+        // THE CLOSURE, asserted at the vector that was pinned: a DL wider than the old
+        // four-digit bound now gets its sentence. Without this the empty list above is
+        // consistent with a loop that stopped reaching the shape.
+        $this->assertStringContainsString(self::DL_DIAGNOSTIC,
+            $this->runStep(self::REQUIRE_STEP, 'fix a thing DL-12345', 'fix/999-slug')[1],
+            'the widened bound is what closed the pinned divergence — 5 digits get the diagnostic');
         $this->assertStringContainsString(self::DL_DIAGNOSTIC,
             $this->runStep(self::REQUIRE_STEP, 'fix a thing DL-1234', 'fix/999-slug')[1],
-            'control: 4 digits DO get the diagnostic, so the {1,4} bound is the cause');
+            'control: and 4 digits still do, so the widening added a case rather than moving one');
     }
 
     /**
@@ -1336,7 +1532,7 @@ class PrTitleLintTest extends TestCase
         // The mutation: the shipped enumeration reverted to the pre-fix range. Its
         // application is asserted, so this control can never silently become a
         // second run of the unmutated script.
-        $reverted = str_replace('dl-[0123456789]{1,4}', 'dl-[0-9]{1,4}', $script, $applied);
+        $reverted = str_replace('dl-[0123456789]+', 'dl-[0-9]+', $script, $applied);
         $this->assertSame(1, $applied,
             'the DL pattern no longer spells its digits as an enumerated set — the collation fix this leg guards is gone or renamed');
 
@@ -1375,68 +1571,90 @@ class PrTitleLintTest extends TestCase
             // engine. GNU grep's `[0-9]` is ASCII in every locale measured, so the
             // near-miss leg never had the defect — which is what identified bash's
             // engine as the cause rather than the bracket expression.
-            $this->assertFalse($this->grepMatches('(^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$)', $title),
+            $this->assertFalse($this->grepMatches('(^|[^0-9a-z_])dl-[0-9]+', $title),
                 'control: the same bracket range under grep -E does NOT match — the divergence was bash\'s engine');
         }
     }
 
     /**
-     * THE SIBLINGS THE FIX ABOVE DELIBERATELY DID NOT TOUCH (canon #7, measured
-     * during card#5300's build, appended to that card).
+     * THE SIBLINGS THE DL FIX ABOVE DELIBERATELY DID NOT TOUCH (canon #7, measured
+     * during card#5300's build, appended to that card) — and the reason they are no
+     * longer a shipped divergence.
      *
-     * The require step's REMAINING bracket expressions are locale-collation
-     * sensitive too, but they are all NEGATED classes or the branch-shape test,
-     * where a collation-wide range REDS a title the authority correlates instead of
-     * greening one it does not. Narrowing them would make this gate MORE PERMISSIVE
-     * — a hard gate the user has not answered — so they are measured here and left
-     * alone. Every row is a FALSE RED: annoying, never silent.
+     * The require step's REMAINING bracket expressions are locale-collation sensitive
+     * too. card#5300 left them on the reasoning that a NEGATED class only ever REDS a
+     * title the authority correlates, which is annoying and never silent, while
+     * narrowing them would make the gate MORE permissive. ⛔ THAT REASONING DIED WITH
+     * card#10031's `token=`: the leading class now decides SELECTION, and there the
+     * same collation GREENS a title whose leftmost token is a FOREIGN card — the exact
+     * hijack this step exists to red. Row 3 is that false green, and it is why the
+     * step's `env:` pins `LC_ALL` instead of leaving the runner to decide.
      *
-     * These are characterizations. A RED here means the divergence moved, and the
-     * pin is what to revisit first — not the gate.
+     * So this leg measures two different things and says which is which: the SCRIPT is
+     * still collation-sensitive (rows, both locales, pin bypassed — the ranges were
+     * not narrowed), and the STEP is not (the same rows through {@see runStepAsCi()},
+     * which applies the declared `env:` as Actions does). The mutation at the end —
+     * the pin stripped, everything else identical — is what makes the second half
+     * attributable to the pin rather than to a box that happens to answer alike.
      */
-    public function test_the_require_steps_negated_classes_are_still_collation_sensitive_pending_a_gate(): void
+    public function test_the_collation_pin_is_what_stops_the_runners_locale_deciding_a_verdict(): void
     {
         if (! in_array('en_US.utf8', self::availableLocales(), true)) {
             $this->markTestIncomplete('no en_US.UTF-8 on this box — the collation half of these rows was NOT measured');
         }
 
-        // Each row: [title, branch, what the authority answers]. The authority is
-        // ASSERTED, not assumed, because "false red" is a claim about both engines.
+        // The authority is ASSERTED, not assumed, on every row: "false red" and "false
+        // green" are both claims about BOTH engines, not about this one.
         $this->assertSame(4, CardTokenGrammar::parse('card-4'."\u{0663}"));
-        $this->assertSame('DL-1234', DlTokenGrammar::parse('fix dl-1234'."\u{0663}"));
         $this->assertSame(44, CardTokenGrammar::parse("\u{e9}".'card-44'));
+        $this->assertSame(1234, CardTokenGrammar::parse('docs: port '."\u{e9}".'card-1234 guidance (card#9996)'),
+            'the authority selects the FOREIGN leftmost token — that is what row 3 says the gate must red');
 
+        // [title, branch, the SCRIPT's rc under C.UTF-8, and under en_US.UTF-8]
         $rows = [
             // trailing ([^0-9]|$), card arm — a Unicode digit after the id is not a
             // boundary under a collation locale, so the token stops being bounded.
-            ['card-4'."\u{0663}", 'fix/4-slug'],
+            ['card-4'."\u{0663}", 'fix/4-slug', 0, 1],
             // leading (^|[^0-9a-z_]) — here the collation-wide range is `a-z`, not
             // the digits, which is why narrowing the digit class did not move it.
-            ["\u{e9}".'card-44', 'fix/44-slug'],
+            ["\u{e9}".'card-44', 'fix/44-slug', 0, 1],
+            // ⛔ THE FALSE GREEN, and the row every earlier one structurally could not
+            // be: each of those carries the branch's OWN card, so presence and
+            // selection agree whatever the collation does. Here the swallowed letter
+            // hides a FOREIGN leftmost token, the selection scan skips to the branch's
+            // own, and the gate certifies a merge that moves card 1234.
+            ['docs: port '."\u{e9}".'card-1234 guidance (card#9996)', 'fix/9996-slug', 1, 0],
         ];
-        foreach ($rows as [$title, $branch]) {
-            $this->assertSame(0, $this->runRequireStep($title, $branch, 'C.UTF-8'),
-                "'{$title}' passes the gate under C.UTF-8, agreeing with the authority");
-            $this->assertSame(1, $this->runRequireStep($title, $branch, 'en_US.UTF-8'),
-                "'{$title}' is the pinned locale-dependent FALSE RED under en_US.UTF-8");
+
+        foreach ($rows as [$title, $branch, $cRc, $enRc]) {
+            $this->assertSame($cRc, $this->runRequireStep($title, $branch, 'C.UTF-8'),
+                "'{$title}': the script's C.UTF-8 answer, which is the one that agrees with the authority");
+            $this->assertSame($enRc, $this->runRequireStep($title, $branch, 'en_US.UTF-8'),
+                "'{$title}': the script is still collation-sensitive — the ranges were pinned, not narrowed");
+
+            // THE SHIPPED ANSWER: the same script under the same ambient locale, with
+            // the step's declared env applied. The pin decides, so both locales give
+            // the C.UTF-8 answer.
+            foreach (['C.UTF-8', 'en_US.UTF-8'] as $ambient) {
+                $this->assertSame($cRc, $this->runStepAsCi(self::REQUIRE_STEP, $title, $branch, $ambient)[0],
+                    "'{$title}': under ambient {$ambient} the STEP must answer what C.UTF-8 answers — the pin is the whole point");
+            }
         }
 
-        // ⚠ THE DL ROW MOVED RATHER THAN CLOSING — kept, because the divergence is
-        // still there and only its CONSEQUENCE changed. `fix dl-1234<U+0663>` sat in
-        // the loop above while the DL was an ACCEPT arm: the trailing boundary stopped
-        // bounding under a collation locale and the gate redded a DL the authority
-        // parses. Since card#10031 no DL decides the verdict, so the same collation
-        // behaviour now suppresses the DIAGNOSTIC instead — a sentence the author does
-        // not get, rather than a red they did not deserve. Asserting it at the old
-        // level would be vacuous (every DL reds now, in every locale), which is exactly
-        // how a pin quietly stops measuring its subject.
+        // ⛔ THE DL ROW CLOSED rather than moving a third time. It was pinned here
+        // because the diagnostic's TRAILING boundary stopped bounding under a collation
+        // locale, so the author lost the sentence explaining why their DL did not
+        // count. The pattern is the authority's shape now — no trailing boundary at all
+        // — so the sentence appears in every locale. Measured at SCRIPT level, where
+        // the pin is not the thing doing the work.
         $dlTitle = 'fix dl-1234'."\u{0663}";
-        $this->assertStringContainsString(self::DL_DIAGNOSTIC,
-            $this->runStep(self::REQUIRE_STEP, $dlTitle, 'fix/999-slug', 'C.UTF-8')[1],
-            "'{$dlTitle}' is named to the author under C.UTF-8, agreeing with the authority");
-        $this->assertStringNotContainsString(self::DL_DIAGNOSTIC,
-            $this->runStep(self::REQUIRE_STEP, $dlTitle, 'fix/999-slug', 'en_US.UTF-8')[1],
-            "'{$dlTitle}' is the pinned locale-dependent MISSING DIAGNOSTIC under en_US.UTF-8");
+        $this->assertSame('DL-1234', DlTokenGrammar::parse($dlTitle),
+            'the authority parses it — that is what made the missing sentence a divergence');
+        foreach (['C.UTF-8', 'en_US.UTF-8'] as $locale) {
+            $this->assertStringContainsString(self::DL_DIAGNOSTIC,
+                $this->runStep(self::REQUIRE_STEP, $dlTitle, 'fix/999-slug', $locale)[1],
+                "'{$dlTitle}' must be named to the author under {$locale} — the collation-suppressed diagnostic is closed, not pinned");
+        }
 
         // The branch-shape test is the fourth site and differs in KIND: it decides
         // whether the step enforces at all, so under a collation locale a
@@ -1447,10 +1665,28 @@ class PrTitleLintTest extends TestCase
         // every locale and make the gate more permissive (card#5300, still pinned).
         // The regex is not quoted here: a copy of it is the restatement this file
         // exists to catch, and it would have gone stale on exactly that widening.
-        $this->assertSame(0, $this->runRequireStep('a title with no token at all', 'fix/'."\u{0663}".'-slug', 'C.UTF-8'),
+        $unicodeBranch = 'fix/'."\u{0663}".'-slug';
+        $this->assertSame(0, $this->runRequireStep('a title with no token at all', $unicodeBranch, 'C.UTF-8'),
             'under C.UTF-8 the branch carries no card id and the step skips');
-        $this->assertSame(1, $this->runRequireStep('a title with no token at all', 'fix/'."\u{0663}".'-slug', 'en_US.UTF-8'),
-            'under en_US.UTF-8 the same branch reads as a card branch and is enforced — the step\'s SCOPE is locale-dependent');
+        $this->assertSame(1, $this->runRequireStep('a title with no token at all', $unicodeBranch, 'en_US.UTF-8'),
+            'under en_US.UTF-8 the same branch reads as a card branch and is enforced — the SCRIPT\'s scope is locale-dependent');
+        $this->assertSame(0, $this->runStepAsCi(self::REQUIRE_STEP, 'a title with no token at all', $unicodeBranch, 'en_US.UTF-8')[0],
+            'and the STEP\'s scope is not — the pin decides this site too');
+
+        // ⛔ THE MUTATION, which is what makes every `runStepAsCi` row above evidence
+        // about the PIN rather than about this box. The declared env is taken from the
+        // workflow and the pin removed from it; nothing else changes. A pin nothing can
+        // falsify is a decoration, and the FALSE GREEN is the row it must come back on.
+        $env = $this->stepDeclaredEnv(self::REQUIRE_STEP);
+        $this->assertArrayHasKey('LC_ALL', $env, 'the require step declares no LC_ALL — the collation is the runner\'s again');
+        $this->assertSame('C.UTF-8', $env['LC_ALL'], 'the pin must be a C-family collation, or it pins the defect in place');
+        unset($env['LC_ALL']);
+
+        foreach ($rows as [$title, $branch, , $enRc]) {
+            $this->assertSame($enRc,
+                $this->runScriptText($this->stepScript(self::REQUIRE_STEP), $title, $branch, 'en_US.UTF-8', 'dev', $env)[0],
+                "'{$title}': with the pin gone the runner's locale decides again — this is what the pin is holding shut");
+        }
     }
 
     /**
@@ -2324,20 +2560,60 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * The two card-token regexes THIS FILE now carries — the warn step's `good=` and
-     * the closure step's `token=` — compared to each other over the separator domain.
-     * Each is independently tied to {@see CardTokenGrammar} above, which already makes
-     * a silent divergence impossible; this states the property directly, so a reader
-     * asking "are there two accept-sets in this workflow?" gets an assertion rather
-     * than an argument from two other tests.
+     * EVERY card-token regex in this workflow, over one domain, against one answer.
+     *
+     * ⛔ THE POPULATION IS DERIVED, NOT ENUMERATED (card#10031). The enumerated version
+     * of this leg named the warn step's `good=` and the closure step's `token=`, and
+     * was true when it was written; the require step's own `token=` then landed as a
+     * THIRD copy and joined no tie at all, under a docblock saying there were two and
+     * a workflow comment saying every one was held. Adding a third named call would
+     * re-mint that at four. So the scan re-derives the set from the step scripts on
+     * every run and a fourth copy joins by construction.
+     *
+     * `good_dl=` is not a member and is not excluded by name: the scan collects the
+     * assignments NAMED `good` and `token`, and the DL stem has its own authority and
+     * its own tie. {@see cardTokenRegexAssignments()} owns the predicate.
      */
-    public function test_the_two_card_token_regexes_in_this_workflow_answer_identically(): void
+    public function test_every_card_token_regex_in_this_workflow_answers_identically(): void
     {
-        $vectors = array_merge(CardTokenGrammar::VECTORS, self::singleCharacterSeparatorVectors());
+        $found = $this->cardTokenRegexAssignments();
+
+        // The derivation has to be capable of MISSING one, or "they all agree" is a
+        // statement about an empty set. Two conditions, both re-derived: more than one
+        // step contributes (a one-member set compares a regex with itself), and the
+        // scanner sees a planted assignment the workflow does not contain.
+        $this->assertGreaterThan(1, count(array_unique(array_column($found, 'step'))),
+            'the card-token regexes all live in ONE step — this tie is comparing a regex against itself');
         $this->assertSame(
-            $this->grepMatchesAll($this->stepRegex('Warn on a card or DL token', 'good'), $vectors),
-            $this->grepMatchesAll($this->stepRegex(self::CLOSURE_STEP, 'token'), $vectors),
-            'this workflow holds two card-token regexes that answer differently');
+            [['step' => 'synthetic', 'name' => 'good', 'regex' => 'A'], ['step' => 'synthetic', 'name' => 'token', 'regex' => 'B']],
+            $this->cardTokenRegexesIn('synthetic', "  good='A'\n  good_dl='X'\n  # token='commented'\n  token='B'\n  looks='Y'\n"),
+            'control: the scan must collect both names, and neither the DL stem nor a commented-out line');
+
+        $vectors = array_merge(CardTokenGrammar::VECTORS, self::singleCharacterSeparatorVectors());
+        $answers = [];
+        foreach ($found as $assignment) {
+            $where = "{$assignment['step']} `{$assignment['name']}=`";
+            $answers[$where] = $this->grepMatchesAll($assignment['regex'], $vectors);
+
+            // AND TO THE AUTHORITY, not only to each other: N copies agreeing on a
+            // wrong answer set is still N copies of a wrong gate. Three renderings,
+            // because the lint's leading boundary is `(^|[^0-9a-z_])` where the
+            // grammar's is `\b` — they must agree at the start of the subject, in
+            // prose, and inside a branch ref.
+            foreach (['%s', 'fix a thing %s', 'feat/%s-slug'] as $shape) {
+                $accepts = [];
+                foreach (CardTokenGrammar::VECTORS as $vector) {
+                    if ($this->grepMatches($assignment['regex'], sprintf($shape, $vector))) {
+                        $accepts[] = $vector;
+                    }
+                }
+                $this->assertSame(CardTokenGrammar::accepted(), $accepts,
+                    "{$where} rendered as '{$shape}': accepts a different set than the grammar does");
+            }
+        }
+
+        $this->assertCount(1, array_unique(array_map('serialize', $answers)),
+            'this workflow holds card-token regexes that answer differently: '.implode(', ', array_keys($answers)));
     }
 
     /**

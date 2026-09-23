@@ -2644,6 +2644,8 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 - **Proven failable, not merely green.** With the fix reverted in the real file, two legs red: the mutation assertion (`0 !== 1`) and — because this box's ambient locale IS `en_US.UTF-8` — the DL agreement loop, on `DL-<U+0663>`. That second red is why the vector left the exemption list rather than being re-exempted: it now rides the same loop as every other vector. Restored, `PrTitleLintTest` 18/18, 316 assertions.
 - **Consequences:** `.github/workflows/pr-title-lint.yml` (one regex + the comment stating why an enumeration and why the remaining ranges stay), `tests/Feature/Workflows/PrTitleLintTest.php`. **This DOES change what a CI gate accepts — strictly narrowing, on the approved row only: a title whose only DL token spells its digits in non-ASCII now reds where it used to pass. No migration, no `.env`, no token-scope change, and no change to what the receiver or either board-tools door accepts.**
 
+*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] The direction claim above — that this step's REMAINING bracket expressions are negated classes "where a collation-wide range REDS a title the authority correlates instead of greening one it does not" — is **FALSIFIED for the leading class**. card#10031 gave the step a `token=` selection scan, and there `(^|[^0-9a-z_])` decides which card is SELECTED: under `en_US.UTF-8` a swallowed non-ASCII letter stops being a boundary, the scan skips a FOREIGN leftmost token and the gate GREENS the hijack. The ranges are still not narrowed — the step now pins `LC_ALL: C.UTF-8` in its `env:`, which also closes the three rows measured above.*
+
 ## DL-273 — A DL-token near-miss stops being silent, and the probe that finds one becomes a shared primitive rather than a second grammar inside a second grammar
 
 **Date:** 2026-08-05
@@ -6958,21 +6960,58 @@ diagnostic on the failure path.
   Attributed per conjunct by re-running an INTERMEDIATE predicate that removes only the DL accept arm
   — **31 to the DL-arm removal, 0 to the selection conjunct** — against a control (a synthetic hijack
   title whose own card is present but not leftmost) on which the same harness reports 1, so the
-  selection zero is a measurement rather than a silent instrument. Every one of the 31 is a title
-  whose only correlation token was a DL. ⚠ **Re-derive rather than quoting these figures:** take
-  `gh pr list --state merged --json number,title,headRefName`, extract the step from the workflow,
-  and run it over each title/head-ref pair under both predicates. The population moves every time a
-  PR merges — an earlier run of this same harness, one day and one merge before, reported 752 and the
-  same 31.
+  selection zero is a measurement rather than a silent instrument. **29 of the 31 carry no card
+  token in the title at all; 2 carry a FOREIGN one** — #304's `card-4485` against branch card 75 (a
+  live historical hijack: the writeback would have selected 4485) and #702's `card#9200` against
+  branch card 9121. ⚠ **16 of the 31 are on branches whose head ref ALREADY correlated the card
+  correctly** — those reds are the PRICE of requiring the title to restate what the ref says, not
+  instances of the defect; the same 16 are re-derivable through the shipped step alone, by counting
+  the refusals that print *"that IS the card the writeback selects"*. ⚠ **Re-derive rather than
+  quoting these figures:** take `gh pr list --state merged --json number,title,headRefName`, extract
+  the step from the workflow, and run it over each title/head-ref pair under both predicates. The
+  population moves every time a PR merges — an earlier run of this same harness, one day and one
+  merge before, reported 752 and the same 31.
+- ⚖ **THE `card`-STEM CASE WAS CONSIDERED AND DELIBERATELY NOT EXEMPTED (operator ruling,
+  2026-09-23).** 16 of the 31 above are PRs whose head ref already named the card, so an exemption
+  for that shape would have removed most of the cost this change carries. It is declined: a title
+  naming the card it finishes is a READABILITY property of the merge record, independent of what the
+  writeback happens to select from, and the price is one token in a title. What made the friction
+  read as a defect was the refusal MESSAGE, which told such an author the card "silently never
+  moves" three lines after the same step printed that the head ref selects it; that arm now states
+  what is true of its own fault and the sentence is gone.
 - **The selection rule is TIED to the authority, not trusted.** `PrTitleLintTest` drives the REAL
   classifier on a `pull_request.opened` event and compares its move target to the step's printed
   selection, over rows asserted to exercise BOTH limbs of the resolution order. The reverse arm
   re-creates the pre-fix step from the shipped script and shows the same two-token fixture GREEN
   under it — measured both ways: removing the conjunct reds the verdict legs; flipping the
   classifier's own precedence reds the tie.
-- **Two of card#5300's three pinned divergences close, neither by repair.** `card4`'s FALSE GREEN
-  closes by construction; the 5-digit-DL FALSE RED closes by removal, leaving a missing diagnostic
-  sentence pinned in its place. The leading-zero FALSE RED survives, still pinned, still gated.
+- **Four of card#5300's pinned divergences close, none by repairing what the gate ACCEPTS.**
+  `card4`'s FALSE GREEN closes by construction. The 5-digit-DL FALSE RED closes by removal (the DL
+  is a diagnostic now) and its residue — a missing SENTENCE — closes with it, along with the
+  collation-suppressed one beside it: the diagnostic's pattern is the authority's shape now, `+`
+  digits and no trailing boundary, and **a diagnostic's bound reds nothing**, so the justification
+  that kept the four-digit bound (*repairing it changes what the gate accepts*) retired with the
+  accept arm it was written for. The two collation FALSE REDS on the card arm close as a side effect
+  of the `LC_ALL` pin below. The leading-zero FALSE RED survives, still pinned, still gated.
+- ⚠ **THE STEP PINS ITS COLLATION (`env: LC_ALL: C.UTF-8`), and that is an accept-set change of its
+  own.** bash resolves a bracket RANGE by collation, and this card's `token=` made one of them decide
+  SELECTION. Measured: `TITLE='docs: port écard-1234 guidance (card#9996)'` on `fix/9996-slug` reds
+  under `C.UTF-8` and **GREENS under `en_US.UTF-8`** — the swallowed `é` stops being a boundary, the
+  scan skips the FOREIGN leftmost token, and the gate certifies the exact hijack this card exists to
+  red. card#5300 had audited those ranges and left them on the reasoning that a NEGATED class only
+  ever REDS; that reasoning died with the selection conjunct, on the same line it was written about.
+  The fix is one pin on the step rather than N narrowed ranges (narrowing them makes the gate MORE
+  permissive, which card#5300 gates), and it is watched fail: with the pin stripped from the
+  workflow's own `env:`, the false green comes back under an ambient `en_US.UTF-8`. **Nothing a
+  C-family runner accepted moves** — GitHub's `ubuntu-latest` is one — and the step's answers stop
+  depending on which runner it lands on (DL-272 records this step giving a host-dependent answer
+  once already).
+- **The refusal has FOUR arms because the ACTION differs at each, and three of them used to inherit
+  another arm's advice.** A `card`-stem branch was told its card "silently never moves" while the
+  step's own selection line said otherwise; a present-but-unparseable token (`card4`) was told to
+  make it FIRST when the token IS first and the spelling is the fault; a HEAD-REF selection was told
+  to retitle, which cannot move a head-ref selection at all. Each arm is driven in `PrTitleLintTest`
+  by both the sentence it owes and the absence of the one it must not inherit.
 - ⚠ **BOUNDS — the CLOSURE step is NOT brought along, and the gap widens in readability terms.** This
   card teaches the REQUIRE step the writeback's resolution order (head ref, then the title's leftmost
   token); the closure step still reads the TITLE's leftmost card only. So on a `card`-stem branch
@@ -6985,9 +7024,12 @@ diagnostic on the failure path.
   of its own and not this card's.
 - ⚠ **A NON-ASCII branch id is guarded at BOTH halves, and each half was watched fail.** The branch
   predicate keeps `[0-9]` as a collation-sensitive RANGE by ratification (card#5300), so `card_id`
-  can capture a Unicode digit. `$((10#٣))` is a bash ARITHMETIC SYNTAX ERROR, not a falsy 0, so an
-  unguarded normalisation aborts the step under `set -e`/`set -u` and replaces the refusal with a
-  runner stack trace (measured: `card_id_n: unbound variable`). Guarding the assignment alone then
+  can capture a Unicode digit where the pin above is absent. `$((10#٣))` is a bash ARITHMETIC SYNTAX
+  ERROR, not a falsy 0, so an unguarded normalisation aborted the step under `set -e`/`set -u` and
+  replaced the refusal with a runner stack trace (measured: `card_id_n: unbound variable`) — that
+  route is gone, because the id is now normalised by STRIPPING leading zeros rather than by
+  arithmetic (`$((10#…))` also WRAPS at 2^63 where the grammar's `(int)` saturates, so a 20-digit
+  token made the step name a card neither engine ever selects). Guarding the assignment alone then
   makes BOTH sides of the selection compare the empty string, and `[ "" = "" ]` is TRUE — a measured
   FALSE GREEN whose own output reads *"OK: title carries card#٣ AND that is the card the writeback
   selects"* directly beneath *"selects no card from either surface"*. The accept-check therefore

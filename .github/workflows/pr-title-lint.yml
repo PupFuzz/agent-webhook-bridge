@@ -40,8 +40,9 @@ name: PR title correlation-key lint
 # an unbounded `\d+`. The digit-count spelling is gone for the same reason. Where the
 # require step below genuinely DISAGREES with an authority it is PINNED rather than
 # repaired by default — repairing one changes what a CI gate accepts, which is a hard
-# gate (card#5300); one row has been approved and fixed (DL-272), the rest are still
-# pinned and the card is still open for them. The disagreements are
+# gate (card#5300); one row was approved and fixed (DL-272) and the rest have closed
+# as side effects rather than repairs (card#10031), the card staying open for what
+# is still pinned. The disagreements are
 # enumerated in PrTitleLintTest, never here: a count in this header is the same kind
 # of copy nothing holds, and it was already wrong once (the audit that wrote this
 # paragraph found a further divergence the same day).
@@ -214,6 +215,16 @@ jobs:
         # runner without bash on PATH would otherwise silently fall back to sh.
         shell: bash
         env:
+          # THE COLLATION IS PINNED, not inherited from the runner (card#10031). bash
+          # resolves a bracket RANGE by collation, and `token=` below made one of them
+          # decide SELECTION: under en_US.UTF-8 the leading `[^0-9a-z_]` stops seeing a
+          # non-ASCII letter as a boundary, so `écard-1234 … (card#9996)` on a 9996
+          # branch GREENS — the exact hijack this step exists to red — while C.UTF-8
+          # reds it. One pin here beats narrowing N ranges (which would make the gate
+          # more permissive, card#5300), and DL-272 already records this step giving a
+          # host-dependent answer. Mutated in PrTitleLintTest: with the pin gone the
+          # false green comes back.
+          LC_ALL: C.UTF-8
           TITLE: ${{ github.event.pull_request.title }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
@@ -254,10 +265,11 @@ jobs:
           # skip it replaced.
           #
           # `[0-9]` stays a RANGE here where the token arms below enumerate their
-          # digits. This site is collation-sensitive in the FALSE-RED direction (a
-          # Unicode-digit branch gets enforced against, never silently skipped), so
-          # enumerating it would make the gate MORE permissive — a hard gate,
-          # measured and pinned in PrTitleLintTest under card#5300, not fixed here.
+          # digits: enumerating it would SKIP a Unicode-digit branch instead of
+          # enforcing against it, which makes the gate MORE permissive — a hard gate,
+          # measured in PrTitleLintTest under card#5300, not fixed here. What the
+          # runner's locale decides is no longer this: the step's `env:` pins the
+          # collation (card#10031), so the range resolves to ASCII wherever it runs.
           #
           # DISCLOSED, not overlooked: with both optionals empty the accepted shape
           # is a bare leading `<digits>-`, so a date- or version-named branch
@@ -333,16 +345,30 @@ jobs:
           # leftmost `card-1234` hijacks a title whose own token is `card#9996`. A
           # selection scan narrowed to the presence spelling would not see it.
           token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
+
+          # Leading zeros fold, as the grammar's own (int) cast folds them. Stripped
+          # rather than folded through `$((10#…))`: bash arithmetic WRAPS at 2^63 where
+          # the grammar's (int) saturates, so a 20-digit token made this step name a
+          # card neither engine ever selects (`card#99999999999999999999` printed
+          # "selects card 7766279631452241919"). Stripping is exact at any length.
+          fold_id() {
+            local d="$1"
+            while [ "${d:0:1}" = 0 ] && [ "${#d}" -gt 1 ]; do d="${d:1}"; done
+            printf '%s' "$d"
+          }
+
           if [[ "$branch_lc" =~ $token ]]; then
-            # Exactly one arm captured; leading zeros fold, as the grammar's own
-            # (int) cast folds them.
-            selected=$((10#${BASH_REMATCH[3]}${BASH_REMATCH[4]}))
+            # Exactly one arm captured.
+            selected=$(fold_id "${BASH_REMATCH[3]}${BASH_REMATCH[4]}")
+            selected_surface=head
             selected_from="the head ref, which outranks the title"
           elif [[ "$title_lc" =~ $token ]]; then
-            selected=$((10#${BASH_REMATCH[3]}${BASH_REMATCH[4]}))
+            selected=$(fold_id "${BASH_REMATCH[3]}${BASH_REMATCH[4]}")
+            selected_surface=title
             selected_from="the title's LEFTMOST card token"
           else
             selected=""
+            selected_surface=none
             selected_from=""
           fi
 
@@ -350,17 +376,16 @@ jobs:
           # a leading-zero branch (`fix/0123-slug`) compares equal to card 123 instead
           # of minting a new false red.
           #
-          # GUARDED, and the guard is load-bearing rather than defensive: this step pins
-          # no locale, and the branch predicate above keeps `[0-9]` as a RANGE on purpose
-          # (card#5300 — collation reds there instead of greening), so under a UTF-8
-          # collation `card_id` really can capture a Unicode digit. `$((10#٣))` is not a
-          # falsy 0, it is a bash ARITHMETIC SYNTAX ERROR, which under `set -e` aborts
-          # the step and replaces an actionable refusal with a runner stack trace.
-          # Leaving it empty simply fails the compare below, so the author gets the
-          # missing-token message instead.
+          # GUARDED, and the guard is load-bearing rather than defensive: the branch
+          # predicate above keeps `[0-9]` as a RANGE on purpose (card#5300), so a
+          # collation that admits a Unicode digit makes `card_id` one. It is left EMPTY
+          # rather than carried into the compare, and the `-n` test below is the other
+          # half of that: empty is "no id", never "an id that matched". The step's
+          # `env:` pin is what keeps a runner from reaching this state at all; the two
+          # are independent, and this one is what holds if the pin is ever dropped.
           card_id_n=''
           if [[ "$card_id" =~ ^[0123456789]+$ ]]; then
-            card_id_n=$((10#$card_id))
+            card_id_n=$(fold_id "$card_id")
           fi
 
           # PRINTED ON EVERY RUN, pass or fail — the selection is the whole subject of
@@ -383,38 +408,57 @@ jobs:
             exit 0
           fi
 
-          # Two different faults, two different messages. Collapsing them was the
-          # defect: "add the token" is useless advice to an author whose token is
-          # already there and simply not first.
+          # FOUR FAULTS, FOUR MESSAGES, because the ACTION differs at each: "add the
+          # token" is useless to an author whose token is already there; "make it
+          # first" is useless when the HEAD REF is what selects, since no retitling can
+          # move it; and neither applies when the merge would already move the right
+          # card. Collapsing any of them prints advice that does not apply, which is
+          # what an author then loops on against a red gate.
           if [ "$present" != 1 ]; then
-            echo "::error::PR title is missing a card-movement correlation token."
-            echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' nor 'card#$card_id'."
-            echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
-            echo "Fix: add 'card-$card_id' to the PR title, then re-save (the 'edited' event re-runs this check)."
+            if [ -n "$card_id_n" ] && [ "$selected" = "$card_id_n" ]; then
+              echo "::error::PR title does not name card $card_id, which is the card this merge moves."
+              # SOMETHING ALREADY SELECTS THIS CARD — a `card`-stem head ref, or a
+              # title spelling the presence check does not accept (`card#0123`). The
+              # "silently never moves" sentence and the DL one below are both FALSE
+              # here, refuted by the selection line this step just printed. Only the
+              # requirement itself is left to state.
+              echo "Branch '$BRANCH' targets card $card_id, and that IS the card the writeback selects — the merge does move it."
+              echo "This gate requires the title to carry 'card-$card_id' or 'card#$card_id' as well."
+              echo "Fix: add 'card-$card_id' to the PR title, then re-save (the 'edited' event re-runs this check)."
+            else
+              echo "::error::PR title is missing a card-movement correlation token."
+              echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' nor 'card#$card_id'."
+              echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
+              # THE DL DIAGNOSTIC — no longer an accept arm (card#10031), and it is on
+              # THIS arm because a title carrying only a DL is the single most likely
+              # way to arrive at this exact failure. Digits are ENUMERATED rather than
+              # written [0-9] because a bracket RANGE inside bash's [[ =~ ]] is
+              # resolved by COLLATION, not by codepoint: under en_US.UTF-8 (measured; C
+              # and C.UTF-8 disagree) [0-9] admits U+0663 and friends, so this message
+              # appeared on one runner and not another. The shape is the authority's —
+              # `+` digits and NO trailing boundary — which closes both of card#5300's
+              # DL pins: the four-digit bound withheld the sentence from a 5-digit DL,
+              # and the trailing `([^0-9]|$)` stopped bounding under a collation locale
+              # and withheld it from `dl-1234<U+0663>`. A diagnostic's bound REDS
+              # NOTHING, so neither cost a change to what this gate accepts.
+              if [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0123456789]+ ]]; then
+                echo "The title's 'DL-<number>' token is NOT a substitute and no longer satisfies this gate: a DL number is bound to no one card, so the writeback can resolve it to a DIFFERENT card and move that one while card $card_id never moves (card#10031). Keep the DL if it is relevant — it just cannot stand in for 'card#$card_id'."
+              fi
+              echo "Fix: add 'card-$card_id' to the PR title, then re-save (the 'edited' event re-runs this check)."
+            fi
+          elif [ -z "$selected" ]; then
+            echo "::error::PR title carries card#$card_id, but the writeback parses no card token at all."
+            echo "Branch '$BRANCH' targets card $card_id and the title names it, but not in a spelling the writeback parses (a glued 'card<id>' needs at least two digits), so merging this PR moves nothing."
+            echo "Fix: write it as 'card#$card_id', then re-save (the 'edited' event re-runs this check)."
           else
             echo "::error::PR title carries card#$card_id, but that is NOT the card the writeback would move."
-            if [ -n "$selected" ]; then
-              echo "It selects card $selected from $selected_from — so merging this PR moves card $selected, and card $card_id never moves."
-            else
-              echo "It selects NO card from either surface, so merging this PR moves nothing."
-            fi
+            echo "It selects card $selected from $selected_from — so merging this PR moves card $selected, and card $card_id never moves."
             echo "Presence is not selection: this gate used to check only that 'card#$card_id' appeared SOMEWHERE in the title, while the writeback takes the head ref's token first and otherwise the title's LEFTMOST one (card#10031)."
-            echo "Fix: make 'card#$card_id' the FIRST card token in the title — move any card you are citing descriptively after it, or drop it."
-          fi
-
-          # THE DL DIAGNOSTIC — no longer an accept arm (card#10031), and it is here
-          # because a title carrying only a DL is the single most likely way to arrive at this
-          # failure. Digits are ENUMERATED rather than written [0-9] because a bracket
-          # RANGE inside bash's [[ =~ ]] is resolved by COLLATION, not by codepoint:
-          # under en_US.UTF-8 (measured; C and C.UTF-8 disagree) [0-9] admits U+0663
-          # and friends, so this message appeared on one runner and not another — a
-          # second host-dependent answer, which is what the pin removes. The ranges
-          # that REMAIN in this step are negated ([^0-9], [^0-9a-z_]) and the
-          # branch-shape test, where collation reds instead of greening; narrowing
-          # those would make this gate more permissive, so they are measured and pinned
-          # in PrTitleLintTest under card#5300, not fixed here.
-          if [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0123456789]{1,4}([^0-9]|$) ]]; then
-            echo "The title's 'DL-<number>' token is NOT a substitute and no longer satisfies this gate: a DL number is bound to no one card, so the writeback can resolve it to a DIFFERENT card and move that one while card $card_id never moves (card#10031). Keep the DL if it is relevant — it just cannot stand in for 'card#$card_id'."
+            if [ "$selected_surface" = head ]; then
+              echo "Fix: rename the branch so the card token IN IT names card $card_id — the head ref outranks the title, so no retitling can clear this."
+            else
+              echo "Fix: make 'card#$card_id' the FIRST card token in the title — move any card you are citing descriptively after it, or drop it."
+            fi
           fi
           exit 1
 
@@ -539,9 +583,9 @@ jobs:
           # untouched.
           #
           # NOT kept in lockstep with CardTokenGrammar by discipline — PrTitleLintTest
-          # extracts this line, compares its ANSWER SET against that grammar's, and
-          # separately against the warn step's `good=`, so this file cannot hold two
-          # card-token regexes that disagree.
+          # SCANS every step for `good=` / `token=` and drives each one against that
+          # grammar and against the others, so this file cannot hold card-token regexes
+          # that disagree, however many it grows.
           token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
           if [[ ! "$title_lc" =~ $token ]]; then
             echo "Title names no card — nothing correlates, so no merge can withhold a move. Skipping."
