@@ -867,6 +867,8 @@
 
 *[Annotation, 2026-08-18 (card#6822, DL-289) — ADDITIVE, nothing above removed.] The accept-set named in this entry's Context and Decision, `^[a-z-]+/[0-9]+-` / `<type>/<card-id>-slug`, is CORRECTED by DL-289 and is no longer what the gate matches. The RULE this entry established is unchanged and re-confirmed; only the set of branch spellings it reaches moved, after the house style drifted to the `card`-prefixed spellings and the gate ran green over the difference. This entry stays frozen as written.*
 
+*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] Two claims above are FALSIFIED. (1) **`DL-NNNN` is no longer a satisfying token** — this entry's title, Context and Decision all name it as one, and DL-411 removed it from the accept-check because the writeback resolves a DL's VALUE against `payload.dl_number`, where a DL is bound to no one card; it survives only as a diagnostic on the failure path. (2) The Consequences' *"it cannot verify the id resolves to a real card or the RIGHT card"* is now HALF true: with no checkout and no board credential the gate still cannot say the id names a real, open card, but it does now pin the RIGHT-card half — it re-computes the writeback's SELECTION (`cardTokenResolution()`: head ref first, else the title's leftmost token) and requires the selected card to be the branch's. That sentence is the one the workflow header's SCOPE / LIMITS block was corrected from in the same change. The rule this entry established — a card-id branch's PR title must carry the writeback's correlation key — is unchanged and re-confirmed. This entry stays frozen as written.*
+
 **Consequences:** `.github/workflows/pr-title-lint.yml` (new), `CLAUDE.md` rule 5 workflow enumeration. No app code, no receiver/schema/config change. Converts the silent "card never moves" into a loud red check; merge-blocking comes from the all-workflows-green dev-PR merge rule (rule 5) — deliberately NOT a required status check (consistent with the drift-gate posture). **Documented limits (unsolvable here):** token-presence lint only — it cannot verify the id resolves to a real card or the RIGHT card; a cross-board work item (a board-12 card shipped via a kanban/bridge PR, e.g. #3765) passes the lint but still won't auto-move, because correlation is deliberately board-scoped 1:1 per repo (DL-174). The lint checks the convention, not end-to-end movement.
 
 ## DL-183 — `bridge:reconcile` — board-vs-GitHub drift reconciler (closes RC-B; eventually-consistent card movement)
@@ -2644,7 +2646,7 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 - **Proven failable, not merely green.** With the fix reverted in the real file, two legs red: the mutation assertion (`0 !== 1`) and — because this box's ambient locale IS `en_US.UTF-8` — the DL agreement loop, on `DL-<U+0663>`. That second red is why the vector left the exemption list rather than being re-exempted: it now rides the same loop as every other vector. Restored, `PrTitleLintTest` 18/18, 316 assertions.
 - **Consequences:** `.github/workflows/pr-title-lint.yml` (one regex + the comment stating why an enumeration and why the remaining ranges stay), `tests/Feature/Workflows/PrTitleLintTest.php`. **This DOES change what a CI gate accepts — strictly narrowing, on the approved row only: a title whose only DL token spells its digits in non-ASCII now reds where it used to pass. No migration, no `.env`, no token-scope change, and no change to what the receiver or either board-tools door accepts.**
 
-*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] The direction claim above — that this step's REMAINING bracket expressions are negated classes "where a collation-wide range REDS a title the authority correlates instead of greening one it does not" — is **FALSIFIED for the leading class**. card#10031 gave the step a `token=` selection scan, and there `(^|[^0-9a-z_])` decides which card is SELECTED: under `en_US.UTF-8` a swallowed non-ASCII letter stops being a boundary, the scan skips a FOREIGN leftmost token and the gate GREENS the hijack. The ranges are still not narrowed — the step now pins `LC_ALL: C.UTF-8` in its `env:`, which also closes the three rows measured above.*
+*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] The direction claim above — that this step's REMAINING bracket expressions are negated classes "where a collation-wide range REDS a title the authority correlates instead of greening one it does not" — is **FALSIFIED for the leading class**. card#10031 gave the step a `token=` selection scan, and there `(^|[^0-9a-z_])` decides which card is SELECTED: under `en_US.UTF-8` a swallowed non-ASCII letter stops being a boundary, the scan skips a FOREIGN leftmost token and the gate GREENS the hijack. The ranges are still not narrowed — the JOB now pins `LC_ALL: C.UTF-8` in `jobs.lint-title.env`, which every step inherits and which also closes the three rows measured above.*
 
 ## DL-273 — A DL-token near-miss stops being silent, and the probe that finds one becomes a shared primitive rather than a second grammar inside a second grammar
 
@@ -6967,7 +6969,10 @@ diagnostic on the failure path.
   correctly** — those reds are the PRICE of requiring the title to restate what the ref says, not
   instances of the defect; the same 16 are re-derivable through the shipped step alone, by counting
   the refusals that print *"that IS the card the writeback selects"*. ⚠ **Re-derive rather than
-  quoting these figures:** take `gh pr list --state merged --json number,title,headRefName`, extract
+  quoting these figures:** take `gh pr list --state merged --limit 2000 --json
+  number,title,headRefName` — the flag is load-bearing: `gh pr list` defaults to 30 rows, so the
+  recipe without it silently measures one page instead of the corpus and reports a change count of
+  ZERO against the figures above (DL-289's window note is this class one instrument along) — extract
   the step from the workflow, and run it over each title/head-ref pair under both predicates. The
   population moves every time a PR merges — an earlier run of this same harness, one day and one
   merge before, reported 752 and the same 31.
@@ -7009,9 +7014,14 @@ diagnostic on the failure path.
   someone adds would need a fourth.
   Watched fail in both directions and on both steps: with the pin gone from the job, each case greens
   again under an ambient `en_US.UTF-8`; with a step overriding the pin, the leg reds on that step.
-  **Nothing a C-family runner accepted moves** — GitHub's `ubuntu-latest` is one — and the job's
-  answers stop depending on which runner it lands on (DL-272 records this job giving a
-  host-dependent answer once already).
+  ⚠ **A THIRD site moves and it moves PERMISSIVE**: the require step's branch-shape predicate keeps
+  `[0-9]` as a RANGE (card#5300, still pinned), so the pin makes it resolve ASCII everywhere and the
+  step SKIPS a Unicode-digit branch (`fix/٣-slug`, measured: rc 0 pinned, rc 1 under an unpinned
+  `en_US.UTF-8`) that a non-C-family runner would have enforced against — the direction the step's
+  own comment says it refuses to take when narrowing the range, reached by the pin instead. **Nothing
+  a C-family runner accepted moves** — GitHub's `ubuntu-latest` is one, so the residual bites one
+  `runs-on` edit away — and the job's answers stop depending on which runner it lands on (DL-272
+  records this job giving a host-dependent answer once already).
 - **The refusal has FOUR arms because the ACTION differs at each, and three of them used to inherit
   another arm's advice.** A `card`-stem branch was told its card "silently never moves" while the
   step's own selection line said otherwise; a present-but-unparseable token (`card4`) was told to

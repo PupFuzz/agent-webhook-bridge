@@ -249,10 +249,27 @@ class PrTitleLintTest extends TestCase
      */
     private function stepDeclaredEnv(string $namePrefix): array
     {
+        return $this->declaredEnvOf($this->step($namePrefix));
+    }
+
+    /**
+     * The composition itself, over one PARSED step — split out so a SYNTHETIC step can
+     * prove it discriminates, in the shape {@see cardTokenRegexesIn()} already uses.
+     * The claim {@see stepDeclaredEnv()} makes is two-directional (a step inherits the
+     * job's pin; a step declaring its own `LC_ALL` takes it away again) and the
+     * workflow contains no step of the second kind, so the second direction is not
+     * observable through the name-keyed entry point at all: every real step would
+     * report the pin whether or not this function read the step's block.
+     *
+     * @param  array<string,mixed>  $step
+     * @return array<string,string>
+     */
+    private function declaredEnvOf(array $step): array
+    {
         $job = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'))['jobs']['lint-title'];
 
         return array_filter(
-            array_map('strval', array_merge($job['env'] ?? [], $this->step($namePrefix)['env'] ?? [])),
+            array_map('strval', array_merge($job['env'] ?? [], $step['env'] ?? [])),
             fn (string $v) => ! str_contains($v, '${{'),
         );
     }
@@ -403,9 +420,10 @@ class PrTitleLintTest extends TestCase
      * `C.UTF-8` and `en_US.UTF-8`, they return identical answers, so only the legs
      * that pass a locale are sensitive to it.
      *
-     * ⚠ The step's declared `env:` is NOT applied here, so the require step's `LC_ALL`
-     * pin does not bind — `$locale` is the collation in force. {@see runStepAsCi()} is
-     * the surface that answers what CI does.
+     * ⚠ The declared `env:` — the JOB's block composed with the step's own — is NOT
+     * applied here, so the job's `LC_ALL` pin does not bind and `$locale` is the
+     * collation in force. {@see runStepAsCi()} is the surface that answers what CI
+     * does.
      */
     private function runStep(string $namePrefix, string $title, string $branch, ?string $locale = null, string $base = 'dev'): array
     {
@@ -1594,7 +1612,7 @@ class PrTitleLintTest extends TestCase
      * card#10031's `token=`: the leading class now decides SELECTION, and there the
      * same collation GREENS a title whose leftmost token is a FOREIGN card — the exact
      * hijack this step exists to red. Row 3 is that false green, and it is why the
-     * step's `env:` pins `LC_ALL` instead of leaving the runner to decide.
+     * JOB's `env:` pins `LC_ALL` instead of leaving the runner to decide.
      *
      * ⛔ AND IT IS NOT ONE STEP'S DEFECT. The sibling audit found the CLOSURE step
      * answering `OK: the title carries a closing form naming card 9996` about a title
@@ -1674,6 +1692,25 @@ class PrTitleLintTest extends TestCase
             $this->assertSame('C.UTF-8', $this->stepDeclaredEnv($name)['LC_ALL'] ?? null,
                 "'{$name}' does not run under the C.UTF-8 pin — its bracket ranges are the runner's to resolve");
         }
+
+        // ⛔ THE CONTROL FOR THE SECOND DIRECTION, which the loop above CANNOT supply.
+        // Every step in the workflow inherits the pin and none overrides it, so the
+        // loop passes identically whether the composition reads the step's own `env:`
+        // or ignores it: a composition that silently dropped the step block would be
+        // reported as health. The synthetic step is the only way to see that half, and
+        // this is the assertion the loop would make about such a step if one shipped.
+        $override = $this->declaredEnvOf(['name' => 'synthetic', 'env' => ['LC_ALL' => 'en_US.UTF-8']]);
+        $this->assertSame('en_US.UTF-8', $override['LC_ALL'] ?? null,
+            "a step's own LC_ALL must WIN over the job's — that is the order Actions composes them in, "
+            .'and a leg that could not see it would certify a step that takes the pin away');
+        $this->assertNotSame('C.UTF-8', $override['LC_ALL'] ?? null,
+            'and it must differ from the pin the loop above demands, or that loop reds nothing on such a step');
+
+        // The other half of the same control: a synthetic step with NO `env:` must
+        // still come back pinned, so the assertion above is attributable to the
+        // override and not to the job block having gone missing.
+        $this->assertSame('C.UTF-8', $this->declaredEnvOf(['name' => 'synthetic'])['LC_ALL'] ?? null,
+            'a step declaring no env: must inherit the job pin — without this the override row could pass on an empty job block');
 
         // ⛔ THE DL ROW CLOSED rather than moving a third time. It was pinned here
         // because the diagnostic's TRAILING boundary stopped bounding under a collation

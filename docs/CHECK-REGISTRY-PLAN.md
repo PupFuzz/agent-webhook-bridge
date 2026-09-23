@@ -2807,7 +2807,8 @@ the work distinguishes those.
   are re-measured every run rather than remembered.** That workflow has **no checkout and no PHP
   setup**, so it cannot call the PHP authority without adding both; extending the answer-set guard
   was the correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard
-  gate). ⚠ **Of the rows this bullet used to enumerate, ONE remains — re-read it before citing it:**
+  gate). ⚠ **Most of the rows this bullet used to enumerate have closed — re-read each before
+  citing it; the ones that have not are the rows below marked *still pinned*:**
   - the locale-dependent Unicode-digit false green was approved and fixed under **DL-272**;
   - the glued-`card4` FALSE GREEN and the four-digit-DL FALSE RED both closed under **card#10031**,
     and neither was *repaired* — the card arm now SELECTS with the same grammar shape that rejects
@@ -2819,7 +2820,12 @@ the work distinguishes those.
     leftmost token once a negated class decides SELECTION — and that the CLOSURE step had the same
     defect, which is why the pin is on the job. The ranges are unchanged; the runner no longer
     chooses;
-  - the **leading-zero FALSE RED** is the one still pinned and still gated.
+  - the **leading-zero FALSE RED** is still pinned and still gated;
+  - the **branch-shape `[0-9]` RANGE** is still pinned and still gated — enumerating it would SKIP a
+    Unicode-digit branch instead of enforcing against it, which widens the gate. ⚠ card#10031's pin
+    reaches that outcome by the other route: the range now resolves ASCII on every runner, so the
+    step skips `fix/٣-slug` where an unpinned `en_US.UTF-8` runner enforced against it. Nothing a
+    C-family runner accepted moves, and `runs-on: ubuntu-latest` is unchanged.
   ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
   `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no
   check in either repo can hold against this authority. This repo owns the CHECK (its

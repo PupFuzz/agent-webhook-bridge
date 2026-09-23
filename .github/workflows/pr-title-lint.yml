@@ -351,6 +351,17 @@ jobs:
           # interchangeable: the writeback selects over every spelling it parses, so a
           # leftmost `card-1234` hijacks a title whose own token is `card#9996`. A
           # selection scan narrowed to the presence spelling would not see it.
+          #
+          # ⚠ THE CONSOLIDATION IS NAMED AND DECLINED (canon #7), not overlooked: this
+          # assignment and the closure step's are BYTE-IDENTICAL, and the obvious fix —
+          # hoist one `token=` to the job's `env:` — is REFUSED because it would blind
+          # the check that makes the duplication safe. `PrTitleLintTest` derives the
+          # copies by scanning every step's `run:` script for `token=`/`good=` and
+          # drives each against `CardTokenGrammar`; a copy in `env:` is not in any
+          # `run:` script, so hoisting would delete the tie rather than the drift. Each
+          # copy is driven against the grammar's answer set independently, so a
+          # divergence between them REDS — which is the property the hoist was for.
+          # Revisit only with a scan that reads both.
           token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
 
           # Leading zeros fold, as the grammar's own (int) cast folds them. Stripped
@@ -592,7 +603,10 @@ jobs:
           # NOT kept in lockstep with CardTokenGrammar by discipline — PrTitleLintTest
           # SCANS every step for `good=` / `token=` and drives each one against that
           # grammar and against the others, so this file cannot hold card-token regexes
-          # that disagree, however many it grows.
+          # that disagree, however many it grows. ⚠ Byte-identical to the require
+          # step's copy, and DELIBERATELY not hoisted to `env:` — the reason is at that
+          # copy: the scan that ties them reads `run:` scripts, so a hoist removes the
+          # tie, not the duplication.
           token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
           if [[ ! "$title_lc" =~ $token ]]; then
             echo "Title names no card — nothing correlates, so no merge can withhold a move. Skipping."
