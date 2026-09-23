@@ -110,7 +110,17 @@ source of truth, as the model above says.
 
 ### A. `bridge:inbox` (the fallback pull — Claude Code hooks)
 
-Reads `inbox.jsonl`, deduplicates on the stable per-line `id` field (NOT a wall-clock cursor), and prints only unseen intents. **Silent when there is nothing new.**
+Reads `inbox.jsonl`, deduplicates on the stable per-line `id` field (NOT a wall-clock cursor), and prints only unseen intents. **Silent when there is nothing new** and no webhook 5xx to report.
+
+**Webhook delivery health (DL-409).** Above the intents, under `## Kanban bridge — webhook delivery health`, it prints the receiver's own record of failing deliveries. It reads files only, so it works while the bridge's database is down:
+
+- **While every webhook request is ending in 5xx:** `WARNING: N consecutive webhook 5xx since T (last: HTTP S at L)`, until a delivery succeeds. A consumer is re-shown one run at most once per `App\Bridge\Support\WebhookOutageRecord::WARNING_REPEAT_SECONDS` — always on `SessionStart` and on a run you start yourself, never throttled there. The floor exists because `PreToolUse`/`PostToolUse` fire once per tool call and an outage lasts days: unthrottled, the block would be in every tool call's context for the length of the outage.
+- **After the next 2xx:** the outage window and count, and the remedy: `php artisan bridge:reconcile`, then `--fix`. The line names what reconcile cannot recover (a card carrying only a `dl_number`; a merge with no closing reference to its card). Each consumer (each seen cursor: the shared one, or one per `--agent`) is shown it **once**, and only within `App\Bridge\Support\WebhookOutageRecord::NOTICE_WINDOW_SECONDS` of the recovery. It is marked shown under the same rule as intents: not on `--no-cursor-advance`, and not on a hook event whose output reaches no model.
+- **If the record exists but this user cannot read it**, a line says delivery health is unknown, and the intents still print.
+
+A 4xx (a refused request) neither counts nor ends a run, and neither does a `ping`. Seats that share one seen cursor (no `--agent`) share one showing of the recovery, as they already share intents.
+
+⚠ **What it records is a 5xx the ROUTING PIPELINE answered, so no warning is not evidence of no outage.** The recorder is a middleware on the webhook route, and Laravel binds no route — and therefore runs no route middleware — for a request answered before routing. **Maintenance mode** (`php artisan down`, answered ahead of the router) and a **bootstrap / service-provider / config failure** (a broken config cache, a provider throwing after a deploy) both answer 5xx from the app's own address and record nothing; so, further out, do PHP-FPM, the vhost or TLS being down, and a PHP fatal. For those, read the upstream's own recent-deliveries list.
 
 ```bash
 php artisan bridge:inbox
@@ -121,7 +131,7 @@ php artisan bridge:inbox --hook-format=plain
 **Flags:**
 
 - `--hook-format={auto|claude-code|plain}` (default `auto`):
-  - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
+  - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown. ⚑ **It reads stdin only where there is something to decide with it**: with nothing unseen and no webhook 5xx record — a healthy install, which is what nearly every run finds — the command returns before touching stdin, so a mount whose stdin writer stays open (a wrapper, a supervisor, a cron line with an inherited pipe) is never held waiting for an EOF that is not coming.
   - `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
   - `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
   - ⚠ **Whichever format, the output passes the console output choke (DL-393).** In plain markdown, C0 controls other than newline and tab, DEL, C1 and Unicode format characters (`\p{Cf}`, including a zero-width joiner inside an emoji sequence) are removed from an intent's text on the way out. The hook envelope's JSON already escapes every C0 and non-ASCII character, so a raw DEL is the only thing the choke can remove from it. `inbox.jsonl` itself is never changed.
