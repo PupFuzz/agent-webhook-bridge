@@ -26,13 +26,13 @@ use Tests\TestCase;
  * the count was refused for the same reason. So the population is DERIVED here, every run,
  * and the row is held against whatever the derivation returns.
  *
- * POPULATION: every `->moveCard(` / `->createCard(` / `->archiveCard(` call in every `*.php`
+ * POPULATION: every call to one of the {@see ROSTERS} primitives in every `*.php`
  * under `app/`, asked of PHP's own tokenizer through {@see SourceScan::sitesInApp} so that a
  * docblock mention, a `{@see}` and the declaration itself are excluded by CONSTRUCTION rather
  * than by a regex the next spelling walks past. Sites are keyed `<path under app/>::<function>#<n>`
  * and reduced to the CLASS, because the roster names classes and not call sites.
  *
- * ⭐ AND THE THREE PRIMITIVES ARE THEMSELVES HELD, not asserted. That those three are the whole
+ * ⭐ AND THE PRIMITIVES ARE THEMSELVES HELD, not asserted. That they are the whole
  * of the card LIFECYCLE surface {@see KanbanClient} exposes is a CLAIM, and an unchecked claim
  * about a population is the defect this class exists to remove — one level up. It was measured
  * live: a fourth lifecycle method on the client, with a live caller in `app/`, reddened nothing
@@ -54,10 +54,11 @@ use Tests\TestCase;
  *    reaches it.
  *
  * ⛔ STATED BOUNDS — WHAT A GREEN RUN SAYS. It says the set of classes calling each lifecycle
- * primitive is exactly the set of classes that row names. It does NOT say the prose beside
+ * primitive is exactly the set of classes that row names, and that both surfaces publishing
+ * WHICH primitives are held name exactly {@see ROSTERS}' keys. It does NOT say the prose beside
  * each name describes that class correctly, and it does not reach a mover in another repo.
  *  - **The house spelling is load-bearing and is a convention, not a property this can
- *    enforce:** every writer in one of these three rows is named by its CLASS in backticks.
+ *    enforce:** every writer in one of these rows is named by its CLASS in backticks.
  *    A class-shaped backticked token added to one of these rows for some other purpose reds
  *    this class — loudly, with an obvious remedy (put the aside outside the row), which is the
  *    direction a census instrument must fail in.
@@ -109,8 +110,8 @@ class CardWriteRosterCoverageTest extends TestCase
      * Every public method {@see KanbanClient} declares, against what this roster does with it.
      *
      * ⛔ THIS IS WHAT KEEPS {@see ROSTERS} FROM BEING THE VERY DEFECT THIS CLASS EXISTS TO
-     * REMOVE. Deriving the CALL SITES of three primitives is only half a derivation: the
-     * three are themselves a hand-written claim about which primitives write a card, so a
+     * REMOVE. Deriving the CALL SITES of the rostered primitives is only half a derivation:
+     * they are themselves a hand-written claim about which primitives write a card, so a
      * FOURTH card-lifecycle method added to the client — with live callers in `app/` — was
      * invisible to the census, to the roster rows and to this class, and everything stayed
      * green. A roster that cannot go short at the call site, but can go short at the
@@ -179,9 +180,9 @@ class CardWriteRosterCoverageTest extends TestCase
             $declared,
             $actual,
             KanbanClient::class.' has a public method this roster does not dispose of. '
-            .'A new CARD-LIFECYCLE primitive is a new way to write a card, and the three rostered here are a CLAIM about that surface, not a derivation of it — '
+            .'A new CARD-LIFECYCLE primitive is a new way to write a card, and the ones rostered here are a CLAIM about that surface, not a derivation of it — '
             .'so an undispositioned method is exactly how this roster goes short without any row in '.self::ROSTER_DOC.' being wrong. '
-            .'Dispose of it: give it one of the roster permissions (and add it to ROSTERS, and name its callers in that row), or `task.update` / `comment.create` / `read` with the owner named in the class docblock.',
+            .'Dispose of it: give it one of the roster permissions (and add it to ROSTERS, and name its callers in that row), or one of '.implode(' / ', self::UNROSTERED).' with the owner named in the class docblock.',
         );
 
         $rostered = self::ROSTERS;
@@ -199,7 +200,8 @@ class CardWriteRosterCoverageTest extends TestCase
             .'Compared as MAPS, in both directions: every method this roster names must carry that same permission in CLIENT_SURFACE, and every method CLIENT_SURFACE disposes of into anything but '.implode(' / ', self::UNROSTERED).' must be rostered here. '
             .'A method on the LEFT and not the right is a roster row nothing holds any more — deleting it from ROSTERS silently stops '.self::ROSTER_DOC.'\'s row for it being checked at all. '
             .'A method on the RIGHT and not the left is a FOURTH way to write a card that is dispositioned but unrostered — the shape that was measured green before card#10063. '
-            .'Add it to ROSTERS and name its callers in the matching row of '.self::ROSTER_DOC.', or dispose of it as something that is not a card write.',
+            .'Add it to ROSTERS and name its callers in the matching row of '.self::ROSTER_DOC.', or dispose of it as something that is not a card write — '
+            .'which for a primitive the published clauses NAME reds the reach check in this class until both of them drop it too, because until then a reader is still being told it is held.',
         );
     }
 
@@ -223,6 +225,70 @@ class CardWriteRosterCoverageTest extends TestCase
                 .'Name the new writer by its CLASS in backticks, or delete a name whose class is gone.',
             );
         }
+    }
+
+    /**
+     * ⭐ THE PUBLISHED REACH IS HELD TOO — the level above the roster and above the client.
+     * {@see ROSTERS} is derived at its CALL SITES and held against the client's own SURFACE, but
+     * the sentence telling a reader WHICH primitives are held is prose, on two LIVE surfaces, and
+     * it was bound to nothing. Measured, not argued: dropping one primitive from ROSTERS and
+     * re-dispositioning it as `read` in {@see CLIENT_SURFACE} is TWO LINES, passes every other
+     * test in this directory, and leaves both documents telling their readers that a permission
+     * is held which nothing holds any more — while the roster row for it stops being checked at
+     * all. The remediation offered by the assertion above ("dispose of it as something that is
+     * not a card write") is that very edit, which is why this is a check and not a convention.
+     *
+     * ⛔ SET EQUALITY, BOTH DIRECTIONS, and neither half is enough alone. A primitive dropped
+     * from ROSTERS reds because the docs still name it; a primitive NAMED in a doc but absent
+     * from ROSTERS reds too, because a document that names a fourth is publishing a guarantee
+     * nothing derives.
+     *
+     * ⛔ The cross-repo one is canon #7's *worse than silence*: the far end cannot read this
+     * tree, so it audits its own join against a stated contract and gets confidence where it is
+     * owed a question. And the doc's job is to scope a least-privilege API token — a roster that
+     * goes short is how an operator grants a scope believing the list complete.
+     */
+    public function test_both_published_clauses_name_exactly_the_primitives_this_roster_holds(): void
+    {
+        $held = array_keys(self::ROSTERS);
+        sort($held);
+
+        foreach (self::reachClauses() as $doc => $anchor) {
+            $this->assertSame(
+                $held,
+                self::primitivesNamedIn((string) file_get_contents(base_path($doc)), $anchor),
+                $doc.' publishes a different set of card-write primitives from the one ROSTERS holds, so one of them is lying to its reader. '
+                .'Compared as SETS, in both directions: a primitive this roster no longer holds is still being published as held (and its row in '.self::ROSTER_DOC.' is no longer checked at all), '
+                .'or the clause names one this roster does not hold, which is a guarantee nothing here derives. '
+                .'Both clauses are load-bearing — '.self::ROSTER_DOC.' scopes the least-privilege token an operator grants, and '.self::CONTRACT_DOC.' is read by a far end that cannot read this tree at all. '
+                .'Fix the one that is wrong; do not re-sync a count.',
+            );
+        }
+    }
+
+    /**
+     * The reach reader's control, over BOTH spellings the two docs use — the call-site form the
+     * roster doc writes and the bare method name the contract row writes — on a fixture whose
+     * answer is known: the run ENDS at the first thing that is not a backticked primitive, so a
+     * later method named in the same sentence is not a member.
+     */
+    public function test_the_reach_reader_reads_one_run_and_stops_at_its_end(): void
+    {
+        $this->assertSame(
+            ['archiveCard', 'createCard', 'moveCard'],
+            self::primitivesNamedIn(
+                'and `Whatever` derives the `->moveCard(` / `->createCard(` / `->archiveCard(` sites from the whole of `app/`, unlike the `->patchCard(` census',
+                'derives the ',
+            ),
+        );
+
+        $this->assertSame(
+            ['archiveCard', 'createCard', 'moveCard'],
+            self::primitivesNamedIn(
+                "reds when a class calls `Whatever`'s `moveCard` / `createCard` / `archiveCard` and is absent from the list, unlike `patchCard`",
+                "calls `Whatever`'s ",
+            ),
+        );
     }
 
     /**
@@ -309,6 +375,60 @@ class CardWriteRosterCoverageTest extends TestCase
     private static function siteAt(array $tokens, int $index, int $scopeStart): ?string
     {
         return SourceScan::methodCallAt($tokens, $index, array_keys(self::ROSTERS));
+    }
+
+    /**
+     * The LIVE surfaces that publish WHICH primitives this roster holds, each keyed by the doc
+     * and valued by the text that immediately precedes its run of backticked primitive names.
+     *
+     * ⛔ THE ANCHOR IS COMPOSED FROM A SYMBOL rather than spelled out: renaming this class or
+     * {@see KanbanClient} reds the lookup in {@see primitivesNamedIn}, where a hand-written
+     * anchor would quietly match nothing and leave the clause unread — a reach check that has
+     * ceased to read anything, reporting green.
+     *
+     * @return array<string, string>
+     */
+    private static function reachClauses(): array
+    {
+        return [
+            self::ROSTER_DOC => '`'.class_basename(self::class).'` derives the ',
+            self::CONTRACT_DOC => 'calls `'.class_basename(KanbanClient::class)."`'s ",
+        ];
+    }
+
+    /**
+     * The primitive names of the ONE clause in $text that follows $anchor: the run of backticked
+     * method tokens joined by ` / `, in either spelling the docs use (`->name(` at a call site,
+     * `name` in prose), ended by the first token that is not one. Sorted, deduplicated.
+     *
+     * ⛔ A RUN, NOT A SCAN OF THE LINE. Both clauses sit in prose that names other methods —
+     * `->patchCard(` is in the same sentence of one and the same table row of the other — so a
+     * reader that swept the line would hold this roster against a population the sentence is not
+     * about. The anchor is asserted PRESENT and UNIQUE for the same reason: an anchor that
+     * matched nothing, or matched a second clause, would report on where the reader stopped.
+     *
+     * @return list<string>
+     */
+    private static function primitivesNamedIn(string $text, string $anchor): array
+    {
+        $at = strpos($text, $anchor);
+        Assert::assertIsInt($at, "no clause anchored on \"{$anchor}\" — the sentence publishing which primitives are held has moved or been reworded, so nothing is reading it any more.");
+        $tail = substr($text, $at + strlen($anchor));
+        Assert::assertStringNotContainsString($anchor, $tail, "a SECOND clause is anchored on \"{$anchor}\" — one of them is unread, which is how two published rosters come to disagree.");
+
+        $names = [];
+        while (preg_match('/^`(?:->)?([A-Za-z][A-Za-z0-9]*)\(?`( \/ )?/', $tail, $match) === 1) {
+            $names[] = $match[1];
+            $tail = substr($tail, strlen($match[0]));
+            if (! isset($match[2])) {
+                break;
+            }
+        }
+
+        $names = array_values(array_unique($names));
+        sort($names);
+
+        return $names;
     }
 
     /** The one table row whose permission cell is $permission. */

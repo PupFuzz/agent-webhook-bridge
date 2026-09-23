@@ -237,16 +237,16 @@ final class SourceScan
      * the half no two censuses share.
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
-     * @param  list<string>|string  $names
+     * @param  list<string>  $names
      */
-    public static function methodCallAt(array $tokens, int $index, array|string $names): ?string
+    public static function methodCallAt(array $tokens, int $index, array $names): ?string
     {
         if (($tokens[$index][0] ?? null) !== T_STRING) {
             return null;
         }
 
         $name = $tokens[$index][1];
-        if (! in_array($name, (array) $names, true)) {
+        if (! in_array($name, $names, true)) {
             return null;
         }
 
