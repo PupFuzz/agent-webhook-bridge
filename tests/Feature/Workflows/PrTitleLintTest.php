@@ -1292,8 +1292,12 @@ class PrTitleLintTest extends TestCase
             // Coverage of both limbs is not enough to measure their ORDER: a corpus
             // whose every head-ref row carried an agreeing title would satisfy the
             // assertion below while a classifier that read the title FIRST still
-            // passed. So the disagreement the order decides is asserted to exist.
-            $orderIsObservable = $orderIsObservable || CardTokenGrammar::parse($title) !== $expected;
+            // passed. So the row the order DECIDES is asserted to exist — a title
+            // carrying a token of its own that the classifier did not select. A title
+            // parsing to NOTHING is not that row: the flip returns the head's card
+            // through the title limb too, and the tie stays green under it.
+            $titleToken = CardTokenGrammar::parse($title);
+            $orderIsObservable = $orderIsObservable || ($titleToken !== null && $titleToken !== $expected);
             $this->assertNotNull($expected,
                 "'{$title}' on '{$head}' must correlate at runtime, or this row measures nothing");
 
@@ -1305,7 +1309,7 @@ class PrTitleLintTest extends TestCase
         $this->assertSame(['head' => true, 'title' => true], $surfaces,
             'the corpus must exercise BOTH limbs of cardTokenResolution() — a title-only corpus leaves head-ref precedence untested');
         $this->assertTrue($orderIsObservable,
-            'no row has the title\'s own leftmost token disagree with what the classifier selects — the corpus covers both limbs but measures nothing about their ORDER');
+            'no row carries a title token of its own that the classifier did NOT select — the corpus covers both limbs but measures nothing about their ORDER');
 
         // The both-null arm: nothing correlates, and the step must say so rather than
         // print a card id it invented.
