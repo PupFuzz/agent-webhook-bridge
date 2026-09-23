@@ -232,7 +232,9 @@ final class SourceScan
      *
      * The call-site half of a census predicate: it lives beside {@see sites}, the visitor that
      * reads its return, so that a census answering "which classes call X" spells the
-     * recognition once. It has ONE caller today.
+     * recognition once. No other census has migrated onto it yet — `CLAUDE_TESTING.md`
+     * § *The un-migrated remainder* carries the re-derivation of the ones still carrying
+     * their own copy of the triple, and says that migrating them is owed.
      * ⚠ It answers WHETHER the token is such a call and nothing else: what the call means —
      * the argument it writes, the guard that precedes it — stays with the caller, which is
      * the half no two censuses share.

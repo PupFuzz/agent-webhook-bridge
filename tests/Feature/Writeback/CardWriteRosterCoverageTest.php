@@ -55,8 +55,8 @@ use Tests\TestCase;
  *
  * ⛔ STATED BOUNDS — WHAT A GREEN RUN SAYS. It says the set of classes calling each lifecycle
  * primitive is exactly the set of classes that row names, and that each of the clauses
- * {@see publishedClauses} lists names exactly the side of {@see ROSTERS} it speaks for — both
- * surfaces' primitives against its KEYS, the roster doc's row enumeration against its VALUES.
+ * {@see publishedClauses} lists names exactly the side of {@see ROSTERS} it speaks for — the
+ * primitive clauses' names against its KEYS, the roster doc's row enumeration against its VALUES.
  * It does NOT say the prose beside each name describes that class correctly, and it does not
  * reach a mover in another repo.
  *  - **A FURTHER clause publishing this roster, in this or any other doc, is outside this
@@ -71,8 +71,12 @@ use Tests\TestCase;
  *  - **A row naming the right classes with the wrong prose is green here.** A reviewer reads
  *    the prose; this reads the roster.
  *  - **`tests/` is not in the population.** A test double is not a writeback.
- *  - **It reaches {@see KanbanClient}.** A card written through some other client class is
- *    outside both the primitive surface and the call-site census.
+ *  - **The PRIMITIVE surface reaches {@see KanbanClient}; the call-site census does not stop
+ *    there.** The predicate matches the method NAME on any receiver, so a `->moveCard(` call on
+ *    some other client class IS in the census and reds the row that does not name its class. What
+ *    is outside: a card written through a lifecycle method {@see KanbanClient} does not declare,
+ *    and — the complementary gap — a call to one of these names not SPELLED `->name(` at all, a
+ *    dynamic dispatch or a `call_user_func`, which no census here sees.
  *  - **A `task.move` written as `->patchCard($id, ['workflow_stage_id' => $s])` from outside
  *    the client is outside this census** — the predicate matches the method NAME, and kanban
  *    authorizes a PATCH whose SOLE key is `workflow_stage_id` as `task.move`. Not live at the
@@ -264,7 +268,34 @@ class CardWriteRosterCoverageTest extends TestCase
      */
     public function test_every_published_clause_names_exactly_what_this_roster_holds(): void
     {
-        foreach (self::publishedClauses() as $clause) {
+        $published = self::publishedClauses();
+
+        // ⚠ THE PRESENCE WITNESS FIRST, exactly as one method up. The loop below executes ZERO
+        // assertions on an empty list, and narrowing the universal onto {@see publishedClauses}
+        // made that list the POPULATION — so the list itself is now the artifact that can go
+        // silently short, and the trigger is ordinary: an anchor assertion fires on a doc
+        // reword, and the cheapest green is to delete the row that fired.
+        // ⛔ SETS, never a count: what must not be lost is that BOTH documents are still read
+        // and that both sides of {@see ROSTERS} — its keys and its values — are still published
+        // by something. ⚠ It does not witness the roster doc's PRIMITIVES clause alone: dropping
+        // that one leaves the contract clause publishing the keys and the row clause naming the
+        // doc, and binding it would mean writing the clause list down a second time.
+        $this->assertSame(
+            [
+                'documents read' => self::asSet([self::ROSTER_DOC, self::CONTRACT_DOC]),
+                'sides of ROSTERS published' => self::asSet(array_merge(array_keys(self::ROSTERS), array_values(self::ROSTERS))),
+            ],
+            [
+                'documents read' => self::asSet(array_column($published, 'doc')),
+                'sides of ROSTERS published' => self::asSet(array_merge(...array_column($published, 'held'))),
+            ],
+            'the published-reach check has lost part of its own population: this test asserts NOTHING about a clause '
+            .'publishedClauses() does not list, so a row deleted from it leaves a published sentence that nothing reads any more — green, and silently. '
+            .'If the row was dropped because its anchor stopped matching, the DOC was reworded and the anchor is the fix, not the row; '
+            .'if a document genuinely stopped publishing this roster, drop its const here and say so in the class docblock, where the bound on what a green run means is written.',
+        );
+
+        foreach ($published as $clause) {
             $this->assertSame(
                 self::asSet($clause['held']),
                 self::namesInClause((string) file_get_contents(base_path($clause['doc'])), $clause['anchor']),
