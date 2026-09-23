@@ -54,9 +54,11 @@ use Tests\TestCase;
  *    reaches it.
  *
  * ⛔ STATED BOUNDS — WHAT A GREEN RUN SAYS. It says the set of classes calling each lifecycle
- * primitive is exactly the set of classes that row names, and that both surfaces publishing
- * WHICH primitives are held name exactly {@see ROSTERS}' keys. It does NOT say the prose beside
- * each name describes that class correctly, and it does not reach a mover in another repo.
+ * primitive is exactly the set of classes that row names, and that every LIVE clause publishing
+ * what this roster holds names exactly the side of {@see ROSTERS} it speaks for — both surfaces'
+ * primitives against its KEYS, the roster doc's row enumeration against its VALUES. It does NOT
+ * say the prose beside each name describes that class correctly, and it does not reach a mover
+ * in another repo.
  *  - **The house spelling is load-bearing and is a convention, not a property this can
  *    enforce:** every writer in one of these rows is named by its CLASS in backticks.
  *    A class-shaped backticked token added to one of these rows for some other purpose reds
@@ -243,40 +245,48 @@ class CardWriteRosterCoverageTest extends TestCase
      * from ROSTERS reds too, because a document that names a fourth is publishing a guarantee
      * nothing derives.
      *
+     * ⛔ AND BOTH SIDES OF THE MAP, because the KEYS alone leave a hole a field over: re-map an
+     * existing primitive to a different permission and the keys do not move, so a check over
+     * them passes, while the roster doc's enumeration of WHICH ROWS are held becomes false and
+     * the row it named stops being checked by anything. Measured green at three lines before
+     * this clause was bound. The doc's enumeration is kept rather than replaced by a pointer:
+     * it is what tells an operator which rows "LIFECYCLE" means, so binding it is the
+     * treatment and deleting it would cost the reader something real.
+     *
      * ⛔ The cross-repo one is canon #7's *worse than silence*: the far end cannot read this
      * tree, so it audits its own join against a stated contract and gets confidence where it is
      * owed a question. And the doc's job is to scope a least-privilege API token — a roster that
      * goes short is how an operator grants a scope believing the list complete.
      */
-    public function test_both_published_clauses_name_exactly_the_primitives_this_roster_holds(): void
+    public function test_every_published_clause_names_exactly_what_this_roster_holds(): void
     {
-        $held = array_keys(self::ROSTERS);
-        sort($held);
-
-        foreach (self::reachClauses() as $doc => $anchor) {
+        foreach (self::publishedClauses() as $clause) {
             $this->assertSame(
-                $held,
-                self::primitivesNamedIn((string) file_get_contents(base_path($doc)), $anchor),
-                $doc.' publishes a different set of card-write primitives from the one ROSTERS holds, so one of them is lying to its reader. '
-                .'Compared as SETS, in both directions: a primitive this roster no longer holds is still being published as held (and its row in '.self::ROSTER_DOC.' is no longer checked at all), '
+                self::asSet($clause['held']),
+                self::namesInClause((string) file_get_contents(base_path($clause['doc'])), $clause['anchor']),
+                $clause['doc'].' publishes a different set of '.$clause['subject'].' from the one ROSTERS holds, so one of them is lying to its reader '
+                .'(the clause anchored on "'.$clause['anchor'].'"). '
+                .'Compared as SETS, in both directions: something this roster no longer holds is still being published as held — and if it is a permission, its row in '.self::ROSTER_DOC.' is no longer checked at all — '
                 .'or the clause names one this roster does not hold, which is a guarantee nothing here derives. '
-                .'Both clauses are load-bearing — '.self::ROSTER_DOC.' scopes the least-privilege token an operator grants, and '.self::CONTRACT_DOC.' is read by a far end that cannot read this tree at all. '
+                .'Every clause here is load-bearing — '.self::ROSTER_DOC.' scopes the least-privilege token an operator grants, and '.self::CONTRACT_DOC.' is read by a far end that cannot read this tree at all. '
                 .'Fix the one that is wrong; do not re-sync a count.',
             );
         }
     }
 
     /**
-     * The reach reader's control, over BOTH spellings the two docs use — the call-site form the
-     * roster doc writes and the bare method name the contract row writes — on a fixture whose
-     * answer is known: the run ENDS at the first thing that is not a backticked primitive, so a
-     * later method named in the same sentence is not a member.
+     * The clause reader's control, over EVERY spelling the three clauses use — the call-site
+     * form, the bare method name, and the dotted permission — on fixtures whose answer is
+     * known. Each ends the run somewhere different: at a word (` sites from`), at a consumed
+     * ` and ` followed by prose, and at a word after ` and `. In all three the token written
+     * past that end (`->patchCard(` / `patchCard` / `task.update`) is NOT a member, which is
+     * the property that makes the reader an instrument rather than a line scan.
      */
-    public function test_the_reach_reader_reads_one_run_and_stops_at_its_end(): void
+    public function test_the_clause_reader_reads_one_run_and_stops_at_its_end(): void
     {
         $this->assertSame(
             ['archiveCard', 'createCard', 'moveCard'],
-            self::primitivesNamedIn(
+            self::namesInClause(
                 'and `Whatever` derives the `->moveCard(` / `->createCard(` / `->archiveCard(` sites from the whole of `app/`, unlike the `->patchCard(` census',
                 'derives the ',
             ),
@@ -284,9 +294,17 @@ class CardWriteRosterCoverageTest extends TestCase
 
         $this->assertSame(
             ['archiveCard', 'createCard', 'moveCard'],
-            self::primitivesNamedIn(
+            self::namesInClause(
                 "reds when a class calls `Whatever`'s `moveCard` / `createCard` / `archiveCard` and is absent from the list, unlike `patchCard`",
                 "calls `Whatever`'s ",
+            ),
+        );
+
+        $this->assertSame(
+            ['task.archive', 'task.create', 'task.move'],
+            self::namesInClause(
+                'Every writer in the `task.move`, `task.create` and `task.archive` rows is named by its CLASS in backticks, unlike `task.update`',
+                'Every writer in the ',
             ),
         );
     }
@@ -378,38 +396,89 @@ class CardWriteRosterCoverageTest extends TestCase
     }
 
     /**
-     * The LIVE surfaces that publish WHICH primitives this roster holds, each keyed by the doc
-     * and valued by the text that immediately precedes its run of backticked primitive names.
+     * Every LIVE clause publishing part of what this roster holds: the doc, the text that
+     * immediately precedes its run of backticked names, what that run is a set OF, and the
+     * side of {@see ROSTERS} it must equal.
      *
-     * ⛔ THE ANCHOR IS COMPOSED FROM A SYMBOL rather than spelled out: renaming this class or
-     * {@see KanbanClient} reds the lookup in {@see primitivesNamedIn}, where a hand-written
-     * anchor would quietly match nothing and leave the clause unread — a reach check that has
-     * ceased to read anything, reporting green.
+     * ⛔ THE ANCHOR IS COMPOSED FROM A SYMBOL wherever one names the clause: renaming this
+     * class or {@see KanbanClient} reds the lookup in {@see namesInClause}, where a
+     * hand-written anchor would quietly match nothing and leave the clause unread — a check
+     * that has ceased to read anything, reporting green. The third has no symbol to compose
+     * from and is the one hand-written anchor here; presence and uniqueness are asserted for
+     * it exactly as for the others, so a reword reds rather than silencing it.
      *
-     * @return array<string, string>
+     * ⛔ THE THIRD CLAUSE IS THE VALUES, and it is a distinct hole from the other two. Both
+     * key clauses pass a re-map of an existing primitive to a different permission
+     * (`'archiveCard' => 'task.delete'`) — ROSTERS' KEYS do not move — and a doc that has
+     * grown the new row satisfies {@see rosterRow} too, leaving the enumeration of which rows
+     * are held false with the suite green. Measured at three lines before this clause existed.
+     *
+     * @return list<array{doc: string, anchor: string, subject: string, held: list<string>}>
      */
-    private static function reachClauses(): array
+    private static function publishedClauses(): array
     {
         return [
-            self::ROSTER_DOC => '`'.class_basename(self::class).'` derives the ',
-            self::CONTRACT_DOC => 'calls `'.class_basename(KanbanClient::class)."`'s ",
+            [
+                'doc' => self::ROSTER_DOC,
+                'anchor' => '`'.class_basename(self::class).'` derives the ',
+                'subject' => 'card-write PRIMITIVES',
+                'held' => array_keys(self::ROSTERS),
+            ],
+            [
+                'doc' => self::CONTRACT_DOC,
+                'anchor' => 'calls `'.class_basename(KanbanClient::class)."`'s ",
+                'subject' => 'card-write PRIMITIVES',
+                'held' => array_keys(self::ROSTERS),
+            ],
+            [
+                'doc' => self::ROSTER_DOC,
+                'anchor' => 'Every writer in the ',
+                'subject' => 'PERMISSION rows',
+                'held' => array_values(self::ROSTERS),
+            ],
         ];
     }
 
     /**
-     * The primitive names of the ONE clause in $text that follows $anchor: the run of backticked
-     * method tokens joined by ` / `, in either spelling the docs use (`->name(` at a call site,
-     * `name` in prose), ended by the first token that is not one. Sorted, deduplicated.
+     * $values as a SET — deduplicated and sorted, the shape {@see namesInClause} returns.
      *
-     * ⛔ A RUN, NOT A SCAN OF THE LINE. Both clauses sit in prose that names other methods —
-     * `->patchCard(` is in the same sentence of one and the same table row of the other — so a
-     * reader that swept the line would hold this roster against a population the sentence is not
-     * about. The anchor is asserted PRESENT and UNIQUE for the same reason: an anchor that
-     * matched nothing, or matched a second clause, would report on where the reader stopped.
+     * Deduplication is not cosmetic on the PERMISSION side: two primitives rostered into one
+     * permission are ONE row, and a document naming that row once is right.
+     *
+     * @param  list<string>  $values
+     * @return list<string>
+     */
+    private static function asSet(array $values): array
+    {
+        $set = array_values(array_unique($values));
+        sort($set);
+
+        return $set;
+    }
+
+    /**
+     * The names of the ONE clause in $text that follows $anchor: the run of backticked tokens
+     * joined by ` / `, `, ` or ` and `, in every spelling the docs use (`->name(` at a call
+     * site, `name` in prose, `task.name` for a permission), ended by the first token that is
+     * not one. Sorted, deduplicated.
+     *
+     * ⛔ A RUN, NOT A SCAN OF THE LINE. Every clause sits in prose that names other methods or
+     * permissions — `->patchCard(` is in the same sentence as one and the same table row as
+     * another, `task.update` a few words past the third — so a reader that swept the line would
+     * hold this roster against a population the sentence is not about. The anchor is asserted
+     * PRESENT and UNIQUE for the same reason: an anchor that matched nothing, or matched a
+     * second clause, would report on where the reader stopped.
+     *
+     * ⚠ THE SEPARATOR SET IS WIDER THAN ANY ONE CLAUSE NEEDS, and the direction that costs in
+     * is the safe one. A backticked token written immediately after one of them JOINS the run
+     * — so prose gaining `` `x` and `y` `` at the end of a clause reds with a set one too big,
+     * loudly, rather than passing with one too small. Consuming a separator that is not
+     * followed by a backticked token (`and is absent from the list`) simply ends the run, which
+     * is why the contract clause's trailing ` and ` is harmless.
      *
      * @return list<string>
      */
-    private static function primitivesNamedIn(string $text, string $anchor): array
+    private static function namesInClause(string $text, string $anchor): array
     {
         $at = strpos($text, $anchor);
         Assert::assertIsInt($at, "no clause anchored on \"{$anchor}\" — the sentence publishing which primitives are held has moved or been reworded, so nothing is reading it any more.");
@@ -417,7 +486,7 @@ class CardWriteRosterCoverageTest extends TestCase
         Assert::assertStringNotContainsString($anchor, $tail, "a SECOND clause is anchored on \"{$anchor}\" — one of them is unread, which is how two published rosters come to disagree.");
 
         $names = [];
-        while (preg_match('/^`(?:->)?([A-Za-z][A-Za-z0-9]*)\(?`( \/ )?/', $tail, $match) === 1) {
+        while (preg_match('/^`(?:->)?([A-Za-z][A-Za-z0-9.]*)\(?`( \/ |, | and )?/', $tail, $match) === 1) {
             $names[] = $match[1];
             $tail = substr($tail, strlen($match[0]));
             if (! isset($match[2])) {
@@ -425,10 +494,7 @@ class CardWriteRosterCoverageTest extends TestCase
             }
         }
 
-        $names = array_values(array_unique($names));
-        sort($names);
-
-        return $names;
+        return self::asSet($names);
     }
 
     /** The one table row whose permission cell is $permission. */
