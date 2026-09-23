@@ -5,6 +5,7 @@ namespace App\Bridge\Support;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Handlers\GitHubPrCorrelationCommentHandler;
+use App\Bridge\Handlers\GitHubProtocolInvalidLabelHandler;
 use App\Bridge\Handlers\KanbanBlockReasonHandler;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Handlers\KanbanCoordCardMoveHandler;
@@ -15,12 +16,14 @@ use App\Bridge\Handlers\LogIntentHandler;
 use App\Bridge\Handlers\RegistryAppendHandler;
 use App\Bridge\Handlers\SpawnDetachedHandler;
 use App\Bridge\Writeback\PrCorrelationComment;
+use App\Bridge\Writeback\ProtocolInvalidLabeler;
 
 /**
  * Resolves a ReactionTarget's handler name to a Handler instance. Ships always-on
  * defaults (log_intent, registry_append, channel_push, kanban_move_card,
  * kanban_promote_released, kanban_dependabot_card, kanban_block_reason,
- * kanban_coord_card, kanban_coord_card_move, github_pr_correlation_comment — `known()`
+ * kanban_coord_card, kanban_coord_card_move, github_pr_correlation_comment,
+ * github_protocol_invalid_label — `known()`
  * is the live set); the
  * highest-blast-radius spawn_detached is opt-in (DL-011)
  * — registered only when $spawnDetachedEnabled (wired from
@@ -34,7 +37,9 @@ use App\Bridge\Writeback\PrCorrelationComment;
  * DL-198, kanban_coord_card_move DL-200, and the github_pr_correlation_comment report DL-390) are always-on
  * because they are INERT without `writeback.json` + a writeback token (they no-op,
  * unlike spawn_detached which would execute), and the classifier only emits them
- * for configured repos/opt-ins.
+ * for configured repos/opt-ins. github_protocol_invalid_label (DL-408) is always-on for
+ * the same reason with its own inert state: it writes nothing for a repo absent from
+ * `bridge.protocol_invalid_label.repos`, which is empty by default.
  */
 final class HandlerRegistry
 {
@@ -70,6 +75,7 @@ final class HandlerRegistry
             'kanban_coord_card' => new KanbanCoordCardHandler,
             'kanban_coord_card_move' => new KanbanCoordCardMoveHandler,
             PrCorrelationComment::HANDLER => new GitHubPrCorrelationCommentHandler,
+            ProtocolInvalidLabeler::HANDLER => new GitHubProtocolInvalidLabelHandler,
         ];
         if ($spawnDetachedEnabled) {
             $this->handlers['spawn_detached'] = new SpawnDetachedHandler;

@@ -51,17 +51,18 @@ final class PrCorrelationCommenter
     public const TIMEOUT_SECONDS = 4;
 
     /**
-     * Every (pull request, outcome) this instance has already attempted, WHATEVER came of it. The
-     * instance lives as long as the handler singleton that owns it: one delivery in the receiver, one
-     * `bridge:replay` run. Within that, a bundled DL's cards and each subscribed agent ask again for
-     * the same marker, and a second attempt could only repeat a refusal or timeout just logged, or
-     * miss a comment just posted from a list GitHub has not caught up with. The next event tries again.
-     *
-     * @var array<string, true>
+     * Every (pull request, outcome) this instance has already attempted, WHATEVER came of it —
+     * {@see OncePerKey} owns that rule and its lifetime. Here the key is what a REPEAT within one
+     * delivery would be: a bundled DL's cards and each subscribed agent ask again for the same
+     * marker, and a second attempt could only repeat a refusal or timeout just logged, or miss a
+     * comment just posted from a list GitHub has not caught up with.
      */
-    private array $attempted = [];
+    private OncePerKey $attempted;
 
-    public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver) {}
+    public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver)
+    {
+        $this->attempted = new OncePerKey;
+    }
 
     /**
      * Report a cause decided against $mapping — the mapping the caller actually wrote (or refused)
@@ -135,11 +136,9 @@ final class PrCorrelationCommenter
     {
         $marker = $comment->marker();
         $context = ['repo' => $comment->repo, 'pr' => $comment->prNumber, 'outcome' => $comment->outcome, 'cause' => $cause];
-        $key = $comment->repo."\x00".$comment->prNumber."\x00".$marker;
-        if (isset($this->attempted[$key])) {
+        if (! $this->attempted->claim($comment->repo, $comment->prNumber, $marker)) {
             return;
         }
-        $this->attempted[$key] = true;
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {
