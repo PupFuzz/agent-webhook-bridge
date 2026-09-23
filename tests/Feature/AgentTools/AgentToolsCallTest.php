@@ -11,6 +11,7 @@ use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Http\Controllers\AgentTools\AgentToolsController;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
@@ -5043,6 +5044,67 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(422)
             ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}']);
         Http::assertNothingSent();
+    }
+
+    // ─── what the two new gates NARROWED, measured (card#10106) ───────────────
+
+    /**
+     * ⭐ THE ACCEPTANCE NARROWING THIS CHANGE MAKES IS MEASURED HERE, NOT ENUMERATED IN PROSE.
+     * `Request::input()` reads `data_get($this->getInputSource()->all() + $this->query->all(), …)`,
+     * so `?tool=board_my_cards` has always been able to supply the tool BY ITSELF — which means a
+     * call whose BODY was not a JSON object still reached the tool and RAN it. Both new gates now
+     * refuse such a call, and the two gates are not interchangeable here: the first three rows are
+     * refused by the BODY PARSE under a perfectly correct `Content-Type` — one row per body class
+     * the parse names (empty, unparseable, JSON of another type) — so DL-410 Decision 3's
+     * alternative (read the raw body whatever the `Content-Type`) would NOT restore them. The
+     * fourth row is the `Content-Type` gate reaching the same request by the other route.
+     *
+     * ⚑ THE LAST ROW IS WHAT MAKES THE OTHERS A MEASUREMENT RATHER THAN AN ASSUMPTION, and it is
+     * DL-410 bound (a): the same query string with a JSON object body still runs the tool. So the
+     * refusals above are refusals OF THE BODY and not of a `tool` nobody supplied — which is the
+     * whole reason these calls used to succeed.
+     *
+     * ⚑ SEEN TO FAIL (the pre-card#10106 door, reproduced): delete the `! $request->isJson()`
+     * refusal AND the `ToolCallBody::parse()` gate from {@see AgentToolsController::call}
+     * — the two blocks this change adds — and every refusal row answers `200` with the tool's
+     * real result body (measured: with both gates removed, the empty-body row asserts
+     * `ok: true` / `tool: board_my_cards`, i.e. the tool RAN). That is what this door did before,
+     * and it is why the narrowing is operator-gated.
+     *
+     * @return array<string, array{0: string, 1: string, 2: int, 3: ?string}>
+     */
+    public static function queryStringSuppliedTool(): array
+    {
+        return [
+            'an EMPTY body under a JSON Content-Type' => ['application/json', '', 422, 'request body is empty — expected a JSON object {tool, args?, client_version?}'],
+            'a body that never parses' => ['application/json', '{"args":{', 422, 'request body is not valid JSON (Syntax error) — expected a JSON object {tool, args?, client_version?}'],
+            'a body that is JSON of another type' => ['application/json', '42', 422, 'request body is a JSON number, not an object — expected a JSON object {tool, args?, client_version?}'],
+            'an EMPTY body under no JSON Content-Type' => ['text/plain', '', 422, 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}'],
+            'a JSON object body' => ['application/json', '{}', 200, null],
+        ];
+    }
+
+    #[DataProvider('queryStringSuppliedTool')]
+    public function test_a_tool_named_only_in_the_query_string_is_served_or_refused_for_its_body(string $contentType, string $body, int $status, ?string $error): void
+    {
+        CallingSeatSeal::forANewServingProcess();
+        $this->fakeEmptyWindow();
+
+        $response = $this->call('POST', '/agent-tools/call?tool=board_my_cards', [], [], [], [
+            'CONTENT_TYPE' => $contentType,
+            'HTTP_ACCEPT' => 'application/json',
+            'REMOTE_ADDR' => '127.0.0.1',
+            'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
+        ], $body)->assertStatus($status);
+
+        if ($error !== null) {
+            $response->assertExactJson(['ok' => false, 'error' => $error]);
+            Http::assertNothingSent();
+
+            return;
+        }
+
+        $response->assertJsonPath('ok', true)->assertJsonPath('tool', 'board_my_cards');
     }
 
     // ─── undeclared argument keys: one refusal, in the dispatcher ─────────────

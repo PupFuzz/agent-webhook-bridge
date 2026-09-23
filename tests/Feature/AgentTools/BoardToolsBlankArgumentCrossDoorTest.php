@@ -5,6 +5,8 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Tools\BoardToolArgs;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\ClientVersion;
+use App\Bridge\Tools\DispatchOutcome;
+use App\Bridge\Tools\ToolCallBody;
 use App\Bridge\Tools\ToolsCallStdio;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Models\BoardToolsClientCall;
@@ -15,6 +17,7 @@ use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
+use Tests\Support\JsonTypeArms;
 use Tests\TestCase;
 
 /**
@@ -552,10 +555,18 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      * Guards that still run against the value AS SENT — `idempotency_key`'s charset, a
      * tag's charset, `title`/`name`'s length cap — refuse a value whose PADDING is what
      * trips them, where HTTP accepts its trimmed self because the middleware removed the
-     * padding before any guard ran. ⚠ In every case the SSH DOOR IS THE STRICTER ONE, and
+     * padding before any guard ran. ⚠ On those arms the SSH DOOR IS THE STRICTER ONE, and
      * closing the gap means making it ACCEPT input it refuses today: a permissive change,
      * its own operator gate, and not the one card#9155 answered. Nothing wrong is written
      * in the meantime — the strict door refuses.
+     *
+     * ⛔ THE STRICTER DOOR IS NOT ALWAYS THE SSH ONE, AND A ROW SHAPE THAT ASSUMED SO COULD
+     * NOT HAVE SAID THIS (card#10106 review). `args: null` is the counter-example: HTTP
+     * refuses it and ssh RUNS THE TOOL, because `input('args', [])` returns the stored null
+     * — `Arr::get` finds a key that EXISTS, so the default is never reached — and the
+     * dispatcher's `! is_array($rawArgs)` refuses it, while `$decoded['args'] ?? []`
+     * coalesces the same null to `[]`. So each row now declares which door accepts, and the
+     * denominator covers BOTH directions rather than one.
      *
      * ⭐ THE LAST ARM IS NOT IN `args` AT ALL, AND THAT IS THE POINT. `TrimStrings` cleans
      * the WHOLE decoded HTTP body, so it rewrites the ENVELOPE keys — `tool`,
@@ -567,6 +578,13 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      * and one end's argument object is not the hop). The envelope is now part of the
      * population both here and in the drift guard.
      *
+     * ⚠ THE ASCII-PADDED `tool` ROW IS NOT A DUPLICATE OF THE NBSP ONE — IT DISCRIMINATES A
+     * HALF-FIX. Both are the same mechanism today, but the two part company under the
+     * obvious repair: give the ssh door PHP's ASCII `trim()` on the envelope and the ASCII
+     * row closes while the NBSP row stays open — DL-367's defect re-minted one layer up.
+     * Only delegating to `Str::trim` BY IDENTITY closes both, and that is what these two
+     * rows together can tell apart.
+     *
      * ⚑ THIS IS THE DENOMINATOR, NOT A PROSE COUNT. Every doc that used to say how many
      * divergences remain now points at this method instead, so the answer is whatever this
      * asserts and cannot go stale in a sentence somebody forgets to update.
@@ -574,23 +592,39 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
     public function test_the_divergences_this_change_deliberately_does_not_close(): void
     {
         $overLong = str_repeat('a', KanbanFieldLimits::NAME_MAX);
+        $creates = fn () => $this->fakeUncorrelatedBoard();
+        $reads = fn () => $this->fakeReadableWindow();
 
         foreach ([
             // ── in the ARGUMENT VALUES, where the guards read the value as sent ──
-            'a padded idempotency_key' => ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'idempotency_key' => '  abc  ']],
-            'a tag padded with invisible characters' => ['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ["\u{00A0}needs-review"]]],
-            'a title at the cap, padded past it' => ['tool' => 'board_create_card', 'args' => ['title' => '  '.$overLong.'  ']],
+            'a padded idempotency_key' => [['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'idempotency_key' => '  abc  ']], true, false, $creates],
+            'a tag padded with invisible characters' => [['tool' => 'board_create_card', 'args' => ['title' => 'a real title', 'tags' => ["\u{00A0}needs-review"]]], true, false, $creates],
+            'a title at the cap, padded past it' => [['tool' => 'board_create_card', 'args' => ['title' => '  '.$overLong.'  ']], true, false, $creates],
             // ── in the request ENVELOPE, which is a different population entirely ──
-            'a padded `tool` key' => ['tool' => "board_create_card\u{00A0}", 'args' => ['title' => 'a real title']],
-        ] as $label => $call) {
-            $this->fakeUncorrelatedBoard();
+            'a padded `tool` key' => [['tool' => "board_create_card\u{00A0}", 'args' => ['title' => 'a real title']], true, false, $creates],
+            'a `tool` key padded with ASCII spaces' => [['tool' => ' board_my_cards ', 'args' => []], true, false, $reads],
+            // ── and the one the ssh door is the PERMISSIVE end of ──
+            'a null `args`' => [['tool' => 'board_my_cards', 'args' => null], false, true, $reads],
+        ] as $label => [$call, $httpAccepts, $sshAccepts, $board]) {
+            $board();
 
             $http = $this->throughHttpDoor($call);
             $ssh = $this->throughSshDoor($call);
 
-            $this->assertTrue($http['ok'], "{$label}: the HTTP door is expected to ACCEPT this — ".json_encode($http['body']));
-            $this->assertFalse($ssh['ok'], "{$label}: the ssh door is expected to REFUSE this. If it now accepts, the divergence was closed — which is a PERMISSIVE change to what this door accepts and needs an operator ruling, not a green test.");
+            $this->assertSame($httpAccepts, $http['ok'], "{$label}: the HTTP door is expected to ".($httpAccepts ? 'ACCEPT' : 'REFUSE').' this — '.json_encode($http['body']));
+            $this->assertSame($sshAccepts, $ssh['ok'], "{$label}: the ssh door is expected to ".($sshAccepts ? 'ACCEPT' : 'REFUSE').' this — '.json_encode($ssh['body']).'. If this door moved, a cross-door divergence MOVED — which changes what a door accepts and needs an operator ruling, not a green test.');
         }
+    }
+
+    /** A board the READ tools can answer from, for a divergence row whose accepting door runs one. */
+    private function fakeReadableWindow(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
     }
 
     /**
@@ -651,10 +685,11 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
      * carry. The first is rt#538's shape: a `tool` key that IS present, in a body that was
      * cut off — the HTTP door used to answer it "request must carry a non-empty `tool`".
      *
-     * ⚑ THIS PROVIDER IS THE CONTROL SET FOR EVERY ARM OF `ToolCallBody::jsonType()`.
-     * An arm with no row here is a refusal the operator-facing enumeration names and nothing
-     * exercises — which is what `true` / `false` were until card#10106's review measured it.
-     * Add an arm there, add its row here; `true` and `false` are separate rows because they
+     * ⚑ THIS PROVIDER IS THE CONTROL SET FOR EVERY ARM OF `ToolCallBody::jsonType()`, AND
+     * {@see test_every_json_type_arm_is_named_by_a_row_in_this_control_set} IS WHAT KEEPS THAT
+     * TRUE. An arm with no row here is a refusal the operator-facing enumeration names and
+     * nothing exercises — which is what `true` / `false` were until card#10106's review measured
+     * it. Add an arm there, add its row here; `true` and `false` are separate rows because they
      * are separate inputs, not because they produce separate words.
      *
      * @return array<string, array{0: string, 1: string}>
@@ -673,6 +708,42 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             'JSON false' => ['false', 'request body is a JSON boolean, not an object'],
             'JSON null' => ['null', 'request body is a JSON null, not an object'],
         ];
+    }
+
+    /**
+     * ⛔ THE GUARD BEHIND THE PROVIDER'S UNIVERSAL — a declaration in a test with no mechanism
+     * keeping it true is a comment, and the person who adds an arm is editing
+     * `ToolCallBody.php`, where nothing points here (card#10106 review, canon #16). The arm
+     * words are read out of that method's source every run by {@see JsonTypeArms}, never listed,
+     * so a new arm joins the population by existing and reds here until it has a row.
+     *
+     * ⚠ THE FIRST LEG TESTS THIS GUARD'S OWN PREMISE, because the matching rule is the one
+     * thing here that is not derived: a row names a type by carrying the fragment
+     * `JSON <word>,` — DELIMITED ON BOTH SIDES, which is not cosmetic. Measured: the undelimited
+     * `JSON <word>` reads `boolean`'s row as covering an arm renamed to `bool`, so renaming an
+     * arm passed a guard whose entire job is to red on it. The leg asserts the fragment against a
+     * refusal the PRIMITIVE composes, and asserts it resolves to exactly ONE arm word, so a
+     * reworded refusal or an ambiguous rule reds saying THE RULE is stale — rather than blaming a
+     * row for a missing word, which would send the next maintainer to the wrong file.
+     */
+    public function test_every_json_type_arm_is_named_by_a_row_in_this_control_set(): void
+    {
+        $fragment = fn (string $word): string => 'JSON '.$word.',';
+
+        $words = JsonTypeArms::words();
+        $this->assertNotSame([], $words, 'the arm reader found no arms at all — an empty population, not a covered one');
+
+        $sample = ToolCallBody::parse('[]');
+        $this->assertInstanceOf(DispatchOutcome::class, $sample);
+        $sampleError = (string) $sample->body()['error'];
+        $this->assertCount(1, array_filter($words, fn (string $w): bool => str_contains($sampleError, $fragment($w))),
+            'this guard reads a row as naming a type by the fragment `JSON <word>,`, and the refusal '.JsonTypeArms::SUBJECT." composes for a JSON array — {$sampleError} — does not resolve to exactly one arm word under that rule. Re-derive the rule before trusting the coverage below.");
+
+        $phrases = implode("\n", array_column(self::unparseableBodies(), 1));
+        foreach ($words as $word) {
+            $this->assertStringContainsString($fragment($word), $phrases,
+                "`ToolCallBody::jsonType()` can answer `{$word}` and no row in unparseableBodies() exercises it: that refusal is named in the operator-facing enumeration and measured nowhere. Add its row.");
+        }
     }
 
     /**

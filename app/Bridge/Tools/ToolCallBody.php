@@ -58,6 +58,11 @@ final class ToolCallBody
         return DispatchOutcome::failure(422, $what.' — expected '.self::SHAPE);
     }
 
+    /**
+     * ⛔ EVERY ARM HERE OWES A ROW in `BoardToolsBlankArgumentCrossDoorTest::unparseableBodies()`,
+     * the only control set this refusal has; the guard beside that provider reads these arms out
+     * of this file and reds on one that has none.
+     */
     private static function jsonType(mixed $value): string
     {
         return match (true) {
