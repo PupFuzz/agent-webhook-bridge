@@ -25,9 +25,10 @@ use ReflectionMethod;
  * CONFIDENCE where they should have got a question. These two authorities have already drifted
  * in production (kanban DL-251 / bridge DL-309) and nothing reported it.
  *
- * POPULATION, and it is DERIVED rather than listed here: every PUBLIC METHOD this class
- * declares and every CONSTANT it carries, read off the class by reflection on every run. The
- * DECLARATION is [`docs/external-reference-parity-corpus.json`](../../../docs/external-reference-parity-corpus.json)
+ * THE REVERSE ARM'S POPULATION, and it is DERIVED rather than listed here: every PUBLIC
+ * METHOD this class declares and every CONSTANT it carries, read off the class by reflection
+ * on every run. The DECLARATION is
+ * [`docs/external-reference-parity-corpus.json`](../../../docs/external-reference-parity-corpus.json)
  * — a published artifact rather than a fixture in this file, because the far end has to be able
  * to READ it and run it, and a check that reads a local restatement of what was published can
  * only certify the restatement. This class reads the very file a kanban maintainer downloads.
@@ -37,6 +38,11 @@ use ReflectionMethod;
  *  - **declared ⇒ real:** every vector's expectation is asserted against this class.
  *  - **real ⇒ declared:** a public method with no vectors, or a constant the corpus does not
  *    pin — or a corpus key naming a member this class no longer has — reds.
+ *  - **the VECTOR POPULATION**, which neither of those two reaches: both are MEMBER-granular
+ *    and blind to how many vectors a member carries, so a corpus cut to one vector per method
+ *    passes both BYTE-IDENTICALLY. The population is held against the identity of the one the
+ *    cross-repo measurement was taken over
+ *    ({@see test_the_published_vectors_are_the_population_the_measurement_was_taken_over}).
  *
  * ⛔ WHAT A GREEN RUN DOES NOT SAY is stated ONCE, in the corpus's `not_checked_by_this_repo`,
  * where the far end reads it — including that both arms are MEMBER-granular, so a branch or an
@@ -95,6 +101,41 @@ class ExternalReferenceNormalizerTest extends TestCase
     }
 
     /**
+     * ⚠ THE POPULATION LEG, and it exists because the two arms above HAVE none. Measured:
+     * cut this corpus to one vector per method — losing every negative one — and both arms
+     * pass BYTE-IDENTICALLY, same tests, same assertion count. The presence witness is one
+     * vector deep, the reverse arm compares member NAMES and constant VALUES, and the
+     * vector population is in neither, so a green run certifies a PUBLISHED contract
+     * without ever stating how much of it was there (card#9936 — the same leg
+     * `bin/decision-log.py` gained as `_population()` in this change, for the same reason).
+     *
+     * ⛔ NOT A PINNED COUNT. A count here would be a restatement with a maintenance
+     * schedule (canon #16). What is pinned is the IDENTITY of the population the cross-repo
+     * measurement was taken over — the way `last_measured.authority_blob` already pins the
+     * identity of the class that answered — and this leg RE-DERIVES it from the vectors on
+     * every run. That makes it the CHECK for a declaration the corpus already published and
+     * nothing held: `last_measured.result` says in as many words that whoever adds a vector
+     * re-takes the measurement over the whole corpus, *because nothing reds when they do
+     * not*. Now something does, in this repo, in both directions — an added vector and a
+     * DELETED one red alike.
+     *
+     * What it does NOT reach: kanban's end, which reds on nothing here (the corpus's
+     * `not_checked_by_this_repo` owns that bound), and the truth of the measurement itself,
+     * which stays a dated hand claim. This leg holds the claim to the population it was
+     * made over; it cannot hold it to the world.
+     */
+    public function test_the_published_vectors_are_the_population_the_measurement_was_taken_over(): void
+    {
+        $corpus = self::corpus();
+
+        $this->assertSame(
+            $corpus['last_measured']['vectors_digest'] ?? null,
+            self::vectorsDigest($corpus['vectors']),
+            'the vectors of '.self::CORPUS.' are not the population its `last_measured` block was taken over ('.self::population($corpus['vectors']).'). A vector was added, changed or DELETED since that measurement — and deletion is the case the other arms cannot see at all, because a corpus cut to one vector per method passes both of them unchanged. Re-take the measurement over the WHOLE corpus against the kanban authority (`last_measured.method` says how), re-date the block, and write the actual digest below into `last_measured.vectors_digest`. A vector `note` is deliberately outside this digest: rewording prose is not a behavioural claim and must not demand a re-measurement.',
+        );
+    }
+
+    /**
      * ⚠ THE CONTROL FOR THE COMPARATOR ITSELF. Every assertion above is built on
      * {@see disagreement} answering null, so a comparator that answered null unconditionally
      * would make the whole class green and vacuous. This feeds it one expectation known to be
@@ -129,7 +170,7 @@ class ExternalReferenceNormalizerTest extends TestCase
         $this->assertNotEmpty($corpus['how_the_far_end_runs_this'] ?? null);
         $this->assertNotSame([], $corpus['not_checked_by_this_repo'] ?? [], 'the corpus must NAME what this end cannot establish. Nothing here reds when kanban changes its own class, and a contract that does not say so hands the far end confidence instead of a question (canon #7).');
 
-        foreach (['date', 'authority_ref', 'authority_commit', 'method', 'result'] as $key) {
+        foreach (['date', 'authority_ref', 'authority_commit', 'method', 'result', 'vectors_digest'] as $key) {
             $this->assertNotEmpty($corpus['last_measured'][$key] ?? null, "the corpus's cross-repo measurement is missing `{$key}`. An undated, unattributed agreement claim is the thing this card exists to remove.");
         }
     }
@@ -148,6 +189,72 @@ class ExternalReferenceNormalizerTest extends TestCase
     private static function readable(mixed $value): string
     {
         return (string) json_encode($value, JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * The identity of the vector population: every vector's method, its position in that
+     * method's list, and everything the corpus spells about it EXCEPT its `note`, one line
+     * each, byte-sorted so the digest is a property of the vectors and not of the order the
+     * blocks happen to sit in.
+     *
+     * @param  array<string, array<int, array<string, mixed>>>  $vectors
+     */
+    private static function vectorsDigest(array $vectors): string
+    {
+        $lines = [];
+        foreach ($vectors as $method => $cases) {
+            foreach ($cases as $i => $case) {
+                unset($case['note']);
+                $lines[] = $method.'#'.$i.' '.self::canonical($case);
+            }
+        }
+        sort($lines);
+
+        return 'sha256:'.hash('sha256', implode("\n", $lines));
+    }
+
+    /**
+     * One value rendered so the digest is a property of the VECTOR and not of the host's
+     * `serialize_precision` ini, which is what `json_encode` renders a float through — this
+     * corpus carries four floats, so a digest taken that way would red on a differently
+     * configured box and say "the corpus moved".
+     */
+    private static function canonical(mixed $value): string
+    {
+        if (is_array($value)) {
+            $parts = [];
+            foreach ($value as $key => $item) {
+                $parts[] = self::canonical((string) $key).':'.self::canonical($item);
+            }
+
+            return '['.implode(',', $parts).']';
+        }
+
+        return match (true) {
+            is_float($value) => sprintf('%.17G', $value),
+            is_int($value) => (string) $value,
+            is_bool($value) => $value ? 'true' : 'false',
+            is_string($value) => (string) json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            default => 'null',
+        };
+    }
+
+    /**
+     * The denominator, derived from the corpus in hand rather than written down anywhere.
+     *
+     * @param  array<string, array<int, mixed>>  $vectors
+     */
+    private static function population(array $vectors): string
+    {
+        $per = [];
+        $total = 0;
+        foreach ($vectors as $method => $cases) {
+            $per[] = $method.' '.count($cases);
+            $total += count($cases);
+        }
+        sort($per);
+
+        return "the corpus in hand carries {$total} vectors over ".count($vectors).' methods: '.implode(', ', $per);
     }
 
     /** @return array<string, mixed> */

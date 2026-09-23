@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "The behavioural parity corpus for the bridge's VENDORED copy of kanban-board's external-reference normalization rule. The bridge cannot import the kanban class (separate repo, separate runtime), so it carries a mirror \u2014 and a mirror with no check is a comment. These vectors are what the bridge BELIEVES the rule to be. tests/Unit/Support/ExternalReferenceNormalizerTest.php runs every one of them against the bridge's own class on every test run, and reds when the mirror grows a member no vector covers. docs/kanban-integration-contract.md section 3 carries the row that publishes this file to the far end.",
+  "about": "The behavioural parity corpus for the bridge's VENDORED copy of kanban-board's external-reference normalization rule. The bridge cannot import the kanban class (separate repo, separate runtime), so it carries a mirror — and a mirror with no check is a comment. These vectors are what the bridge BELIEVES the rule to be. tests/Unit/Support/ExternalReferenceNormalizerTest.php runs every one of them against the bridge's own class on every test run, and reds when the mirror grows a member no vector covers. docs/kanban-integration-contract.md section 3 carries the row that publishes this file to the far end.",
   "mirror": {
     "repo": "PupFuzz/agent-webhook-bridge",
     "class": "App\\Bridge\\Support\\ExternalReferenceNormalizer",
@@ -26,8 +26,9 @@
     "authority_ref": "dev",
     "authority_commit": "a02142724f308d1f36d6d3280428dd34c042d4ef",
     "authority_blob": "b93af716bfe82af7646a32890d04c9009f1d26dc",
-    "method": "every vector below was executed against BOTH classes, and every constant below was read off both, in one process. The authority was loaded from the named COMMIT rather than from a working tree, so the blob above is what answered. RE-TAKEN 2026-09-23 over the whole corpus after EACH time it was extended -- first for the folded-in vectors, then again for the negative ones below (the `releases` path kind, the upper-cased path kind and host) -- so no vector here is carrying an agreement claim from a run that never executed it.",
-    "result": "AGREED -- every vector and every constant above answered identically on the two classes, read in one process. THE MEASUREMENT DISCRIMINATES: re-run with kanban's canonicalizeSource mutated to stop lower-casing, the kanban end failed the vectors that carry a mixed-case repo and the bridge end failed none, so an agreement here is a result and not an empty run. ONE-TIME AND DATED: it was taken by hand from a checkout that could read both repos. Nothing schedules it, and the bridge's CI cannot take it. \u26a0 A DATE HERE OLDER THAN A VECTOR BELOW WOULD BE A FALSE CLAIM: whoever adds a vector re-takes this measurement over the whole corpus and re-dates this block, because nothing in either repo reds when they do not."
+    "vectors_digest": "sha256:80353fdd34deae2c05d5043fc7714ca5a13059d7905072a987d8c55019c8e207",
+    "method": "every vector below was executed against BOTH classes, and every constant below was read off both, in one process. The authority was loaded from the named COMMIT rather than from a working tree, so the blob above is what answered. RE-TAKEN over the whole corpus after EACH time it was extended -- for the folded-in vectors, then for the three path-kind and case-folding vectors (`releases`, which is a NEGATIVE vector, and the upper-cased path kind and the upper-cased host, which are POSITIVE ones), then for the pr_url-over-issue_url preference vector -- so no vector here is carrying an agreement claim from a run that never executed it. `vectors_digest` is what HOLDS that rule rather than leaving it to be remembered: it is the identity of the vector population this block was taken over -- each vector's method, its position, and everything spelled about it except its `note` -- re-derived from the file on every run by tests/Unit/Support/ExternalReferenceNormalizerTest.php, which owns the recipe. A vector added, changed or DELETED reds the bridge's suite until this block is re-taken and re-dated.",
+    "result": "AGREED -- every vector and every constant above answered identically on the two classes, read in one process. THE MEASUREMENT DISCRIMINATES: re-run with kanban's canonicalizeSource mutated to stop lower-casing, the kanban end failed every vector that answers with a repo and the bridge end failed none, so an agreement here is a result and not an empty run. ONE-TIME AND DATED: it was taken by hand from a checkout that could read both repos. Nothing schedules it, and the bridge's CI cannot take it. ⚠ A DATE HERE OLDER THAN A VECTOR BELOW WOULD BE A FALSE CLAIM: whoever adds a vector re-takes this measurement over the whole corpus and re-dates this block. Nothing in EITHER repo used to red when they did not; `vectors_digest` above now reds in the bridge's suite, and kanban's end still reds on nothing here."
   },
   "not_mirrored": {
     "divergentRefKeySeverity": "kanban's by-ref KEY REGISTRATION guard: it rules on whether a custom-field key merely resembles a by-ref key. The bridge registers no keys, so it carries neither the method nor its DIVERGENT_REJECT / DIVERGENT_WARN / AMBIGUOUS_REF_STEMS / REF_SUFFIXES constants.",
@@ -507,6 +508,17 @@
           null
         ],
         "expect": "a/b"
+      },
+      {
+        "note": "PREFERENCE 2's FIRST KEY AGAINST ITS SECOND, and the only vector that spells BOTH: pr_url outranks issue_url. Without it nothing behavioural pins pr_url's rank -- swapping the two at the USE SITE, leaving SOURCE_URL_KEYS byte-identical, answers every other vector here the same and both member arms stay green. The harm it now catches: a card carrying a pr_url and an issue_url that name DIFFERENT repos gets a different source from each end, which is the drift this corpus exists to catch, while the corpus reports AGREED.",
+        "args": [
+          {
+            "pr_url": "https://github.com/X/Y/pull/1",
+            "issue_url": "https://github.com/Z/W/issues/2"
+          },
+          null
+        ],
+        "expect": "x/y"
       },
       {
         "note": "PREFERENCE 3: the card's top-level external_link, so a card that stores its PR URL in kanban's canonical field still qualifies with no producer migration.",

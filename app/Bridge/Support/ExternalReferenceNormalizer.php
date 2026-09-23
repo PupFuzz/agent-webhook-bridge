@@ -21,7 +21,9 @@ namespace App\Bridge\Support;
  * over `docs/external-reference-parity-corpus.json`: a PUBLISHED behavioural corpus that
  * pins what this mirror answers and what its constants are, run against this class on every
  * test run, reding in both directions — a vector this class fails, and a public member or a
- * constant no vector covers. ⚠ **What those two arms do NOT establish is stated ONCE, in the
+ * constant no vector covers — and over the corpus's own POPULATION, so vectors cannot be LOST
+ * from the published file without the run saying so. ⚠ **What the two member arms do NOT
+ * establish is stated ONCE, in the
  * corpus's `not_checked_by_this_repo`** — both are member-granular, and nothing here reads
  * kanban's class. Read it there before trusting a green run; it is why a member added here must
  * be published there too.
