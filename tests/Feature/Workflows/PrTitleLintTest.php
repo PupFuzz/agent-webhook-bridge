@@ -327,6 +327,33 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
+     * The steps that MATCH a card token — the population the scan above has to cover,
+     * derived the same way it is. The predicate is the card stem against a BRACKETED
+     * separator, which is the shape of a matcher and not of the prose that prints one
+     * (`card-$card_id` in an `echo` is not a member), and comment lines are stripped:
+     * this workflow discusses the grammar at length and it is the CODE that has to
+     * join the tie.
+     *
+     * @return list<string>
+     */
+    private function cardMatchingSteps(): array
+    {
+        $wf = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'));
+
+        return array_values(array_map(
+            fn (array $step) => (string) ($step['name'] ?? ''),
+            array_filter($wf['jobs']['lint-title']['steps'],
+                fn (array $step) => $this->scriptMatchesCardTokens((string) ($step['run'] ?? ''))),
+        ));
+    }
+
+    /** The predicate itself, over one script's text — separate so a synthetic can prove it discriminates. */
+    private function scriptMatchesCardTokens(string $script): bool
+    {
+        return preg_match('/card[(\[]\[?[-#]/', (string) preg_replace('/^\s*#.*$/m', '', $script)) === 1;
+    }
+
+    /**
      * Run one extracted regex under real bash + `grep -E` over MANY subjects in ONE
      * process, returning the subjects it matched, in corpus order. Batched because
      * the second tie below asks about ~200 of them: a process per subject measured
@@ -467,8 +494,8 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * THE STEP AS CI RUNS IT — the `run:` script under the step's own declared `env:`,
-     * applied on top of `$ambientLocale`. {@see runStep()} deliberately does NOT apply
+     * THE STEP AS CI RUNS IT — the `run:` script under the declared `env:`, the JOB's
+     * block composed with the step's own, applied on top of `$ambientLocale`. {@see runStep()} deliberately does NOT apply
      * that env: it measures the SCRIPT, which is what the collation characterizations
      * need, and a harness that always applied the pin could not see what the pin is
      * for. Both surfaces exist because the two questions are different — "is this
@@ -1180,7 +1207,7 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * THE CHARACTERIZATION, now ONE row. Of the three divergences card#5300 pinned,
+     * THE CHARACTERIZATION. Of the three divergences card#5300 pinned,
      * card#10031 closed two — not by repairing them, which is why they could close
      * without their own gate:
      *
@@ -1258,9 +1285,15 @@ class PrTitleLintTest extends TestCase
         ];
 
         $surfaces = [];
+        $orderIsObservable = false;
         foreach ($rows as [$title, $head, $surface]) {
             $surfaces[$surface] = true;
             $expected = $this->classifierSelects($title, $head);
+            // Coverage of both limbs is not enough to measure their ORDER: a corpus
+            // whose every head-ref row carried an agreeing title would satisfy the
+            // assertion below while a classifier that read the title FIRST still
+            // passed. So the disagreement the order decides is asserted to exist.
+            $orderIsObservable = $orderIsObservable || CardTokenGrammar::parse($title) !== $expected;
             $this->assertNotNull($expected,
                 "'{$title}' on '{$head}' must correlate at runtime, or this row measures nothing");
 
@@ -1271,6 +1304,8 @@ class PrTitleLintTest extends TestCase
 
         $this->assertSame(['head' => true, 'title' => true], $surfaces,
             'the corpus must exercise BOTH limbs of cardTokenResolution() — a title-only corpus leaves head-ref precedence untested');
+        $this->assertTrue($orderIsObservable,
+            'no row has the title\'s own leftmost token disagree with what the classifier selects — the corpus covers both limbs but measures nothing about their ORDER');
 
         // The both-null arm: nothing correlates, and the step must say so rather than
         // print a card id it invented.
@@ -1618,8 +1653,7 @@ class PrTitleLintTest extends TestCase
      * answering `OK: the title carries a closing form naming card 9996` about a title
      * that correlates card 1234 — worse than the require step's, because that one at
      * least greened a card the title NAMED. So the pin is declared once at
-     * `jobs.lint-title.env`, not per step: three step-level pins are the same fix
-     * written three times and the fourth step someone adds needs a fourth. This leg
+     * `jobs.lint-title.env`, not per step — that block's own comment owns why. This leg
      * drives EVERY step of the job through the composed env for that reason — a new
      * step arrives already covered, and one that overrides the pin reds here.
      *
@@ -2659,6 +2693,25 @@ class PrTitleLintTest extends TestCase
             [['step' => 'synthetic', 'name' => 'good', 'regex' => 'A'], ['step' => 'synthetic', 'name' => 'token', 'regex' => 'B']],
             $this->cardTokenRegexesIn('synthetic', "  good='A'\n  good_dl='X'\n  # token='commented'\n  token='B'\n  looks='Y'\n"),
             'control: the scan must collect both names, and neither the DL stem nor a commented-out line');
+
+        // ⛔ AND THE POPULATION HAS TO BE COVERED, not merely derived — the scan's
+        // stated scope is every step that matches card tokens, while its PREDICATE is
+        // an assignment NAMED `good` or `token`, single-quoted, on its own line. Every
+        // other assignment is also named at some `stepRegex()` call site; the require
+        // step's `token=` is tied through this scan ALONE, so renaming it to `sel=` or
+        // writing it double-quoted would drop this file's one SELECTION regex out of
+        // the tie with the `>1 step` leg still green on the remaining two. So the
+        // universal is asserted over the derived population: a step that MATCHES card
+        // tokens contributes at least one scanned assignment.
+        $contributing = array_unique(array_column($found, 'step'));
+        $this->assertTrue($this->scriptMatchesCardTokens("  sel='(^|[^0-9a-z_])card([-#][0123456789]+)'\n"),
+            'control: a card-token matcher RENAMED out of the scan is still a step that matches card tokens');
+        $this->assertFalse($this->scriptMatchesCardTokens("  # token='(^|[^0-9a-z_])card([-#]0)'\n  echo \"add card-123 or card#123 to the title\"\n"),
+            'control: printing a card token, or discussing one in a comment, is not matching one');
+        foreach ($this->cardMatchingSteps() as $step) {
+            $this->assertContains($step, $contributing,
+                "the '{$step}' step matches card tokens but contributes no `good=`/`token=` assignment the scan collects — a card-token regex renamed or re-quoted out of the tie answers to nothing");
+        }
 
         $vectors = array_merge(CardTokenGrammar::VECTORS, self::singleCharacterSeparatorVectors());
         $answers = [];

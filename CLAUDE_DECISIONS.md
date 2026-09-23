@@ -6989,7 +6989,9 @@ diagnostic on the failure path.
   selection, over rows asserted to exercise BOTH limbs of the resolution order. The reverse arm
   re-creates the pre-fix step from the shipped script and shows the same two-token fixture GREEN
   under it — measured both ways: removing the conjunct reds the verdict legs; flipping the
-  classifier's own precedence reds the tie.
+  classifier's own precedence reds the tie, and the corpus row that makes that observable at
+  all — a title whose own leftmost token DISAGREES with what the classifier selects — is
+  asserted rather than incidental.
 - **Four of card#5300's pinned divergences close, none by repairing what the gate ACCEPTS.**
   `card4`'s FALSE GREEN closes by construction. The 5-digit-DL FALSE RED closes by removal (the DL
   is a diagnostic now) and its residue — a missing SENTENCE — closes with it, along with the

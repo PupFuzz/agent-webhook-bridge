@@ -360,7 +360,9 @@ jobs:
           # drives each against `CardTokenGrammar`; a copy in `env:` is not in any
           # `run:` script, so hoisting would delete the tie rather than the drift. Each
           # copy is driven against the grammar's answer set independently, so a
-          # divergence between them REDS — which is the property the hoist was for.
+          # divergence between them REDS — detection is what remains available while
+          # the scan reads only `run:`; the hoist would have removed the POSSIBILITY
+          # of divergence, which is stronger.
           # Revisit only with a scan that reads both.
           token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
 
