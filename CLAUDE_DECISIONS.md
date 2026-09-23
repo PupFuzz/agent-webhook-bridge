@@ -867,6 +867,8 @@
 
 *[Annotation, 2026-08-18 (card#6822, DL-289) — ADDITIVE, nothing above removed.] The accept-set named in this entry's Context and Decision, `^[a-z-]+/[0-9]+-` / `<type>/<card-id>-slug`, is CORRECTED by DL-289 and is no longer what the gate matches. The RULE this entry established is unchanged and re-confirmed; only the set of branch spellings it reaches moved, after the house style drifted to the `card`-prefixed spellings and the gate ran green over the difference. This entry stays frozen as written.*
 
+*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] Two claims above are FALSIFIED. (1) **`DL-NNNN` is no longer a satisfying token** — this entry's title, Context and Decision all name it as one, and DL-411 removed it from the accept-check because the writeback resolves a DL's VALUE against `payload.dl_number`, where a DL is bound to no one card; it survives only as a diagnostic on the failure path. (2) The Consequences' *"it cannot verify the id resolves to a real card or the RIGHT card"* is now HALF true: with no checkout and no board credential the gate still cannot say the id names a real, open card, but it does now pin the RIGHT-card half — it re-computes the writeback's SELECTION (`cardTokenResolution()`: head ref first, else the title's leftmost token) and requires the selected card to be the branch's. That sentence is the one the workflow header's SCOPE / LIMITS block was corrected from in the same change. The rule this entry established — a card-id branch's PR title must carry the writeback's correlation key — is unchanged and re-confirmed. This entry stays frozen as written.*
+
 **Consequences:** `.github/workflows/pr-title-lint.yml` (new), `CLAUDE.md` rule 5 workflow enumeration. No app code, no receiver/schema/config change. Converts the silent "card never moves" into a loud red check; merge-blocking comes from the all-workflows-green dev-PR merge rule (rule 5) — deliberately NOT a required status check (consistent with the drift-gate posture). **Documented limits (unsolvable here):** token-presence lint only — it cannot verify the id resolves to a real card or the RIGHT card; a cross-board work item (a board-12 card shipped via a kanban/bridge PR, e.g. #3765) passes the lint but still won't auto-move, because correlation is deliberately board-scoped 1:1 per repo (DL-174). The lint checks the convention, not end-to-end movement.
 
 ## DL-183 — `bridge:reconcile` — board-vs-GitHub drift reconciler (closes RC-B; eventually-consistent card movement)
@@ -2643,6 +2645,8 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 - **The pin became a regression anchor, and its control had to be re-pinned to survive that.** The old leg asserted the vector red under a C-family locale and green under `en_US.UTF-8`. Post-fix the vector reds in BOTH, so a same-shape assertion would pass whether or not the fix were present — a check that cannot fail. The leg now MUTATES the real workflow script back to `[0-9]` and re-runs it: the pre-fix spelling must GREEN under `en_US.UTF-8` where the shipped one REDS, same locale, same vector, same process. The mutation's application is asserted (`str_replace` count `=== 1`), so a rename or a re-spelling can never leave a control that silently re-runs the unmutated script. The `grep -E` control is retained — GNU grep's `[0-9]` is ASCII in every locale measured, which is what identified bash's engine rather than the bracket expression as the cause.
 - **Proven failable, not merely green.** With the fix reverted in the real file, two legs red: the mutation assertion (`0 !== 1`) and — because this box's ambient locale IS `en_US.UTF-8` — the DL agreement loop, on `DL-<U+0663>`. That second red is why the vector left the exemption list rather than being re-exempted: it now rides the same loop as every other vector. Restored, `PrTitleLintTest` 18/18, 316 assertions.
 - **Consequences:** `.github/workflows/pr-title-lint.yml` (one regex + the comment stating why an enumeration and why the remaining ranges stay), `tests/Feature/Workflows/PrTitleLintTest.php`. **This DOES change what a CI gate accepts — strictly narrowing, on the approved row only: a title whose only DL token spells its digits in non-ASCII now reds where it used to pass. No migration, no `.env`, no token-scope change, and no change to what the receiver or either board-tools door accepts.**
+
+*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] The direction claim above — that this step's REMAINING bracket expressions are negated classes "where a collation-wide range REDS a title the authority correlates instead of greening one it does not" — is **FALSIFIED for the leading class**. card#10031 gave the step a `token=` selection scan, and there `(^|[^0-9a-z_])` decides which card is SELECTED: under `en_US.UTF-8` a swallowed non-ASCII letter stops being a boundary, the scan skips a FOREIGN leftmost token and the gate GREENS the hijack. The ranges are still not narrowed — the JOB now pins `LC_ALL: C.UTF-8` in `jobs.lint-title.env`, which every step inherits and which also closes the three rows measured above. **The Decision's arm spelling is FALSIFIED too:** `dl-[0123456789]{1,4}` is no longer an ACCEPT arm at all — DL-411 removed the DL from the accept-check, and the surviving failure-path DIAGNOSTIC is spelled `dl-[0123456789]+` with no trailing boundary, the authority's own shape. The ENUMERATION this entry ruled for is untouched and re-confirmed; only the `{1,4}` bound and the arm's role moved.*
 
 ## DL-273 — A DL-token near-miss stops being silent, and the probe that finds one becomes a shared primitive rather than a second grammar inside a second grammar
 
@@ -6969,6 +6973,239 @@ Selection and EMISSION are separated deliberately: the kept rows are re-emitted 
   - **Alternative not taken — read the body whatever the `Content-Type`.** It is what the ssh door does, and it would need no HTTP-only refusal. Rejected for now because a JSON body under a non-JSON `Content-Type` skips the middleware normalisation Decision 2 relies on, so the same door would read one call two ways by header, and because it makes calls succeed that fail today. Either direction is the operator's call.
 - **Bounds, stated.** (a) **The query string still reaches `input()`:** a JSON body `{}` posted to `/agent-tools/call?tool=board_my_cards` is served over HTTP and refused over ssh. It is a permissive divergence, not a wrong-field message, and closing it narrows acceptance, so it is reported rather than closed here. ⚑ **This bound names ONE divergence and is not the enumeration of them** — writing the list here would be a second copy of a set no sentence can keep current, and it was already one short when this entry was written (a `null` `args` runs the tool over ssh and is refused over HTTP; an ASCII-padded `tool` is accepted over HTTP and refused over ssh). **The denominator is `BoardToolsBlankArgumentCrossDoorTest::test_the_divergences_this_change_deliberately_does_not_close`**, which asserts each one and which door is the permissive end — the same treatment DL-367 gave its own census, for the same reason. (b) The webhook receiver (`POST /webhooks/{provider}`) parses its own body through `AbstractWebhookAdapter::decodeJson()` and answers `400 invalid_envelope`; it names no field and is unchanged. (c) The error strings are sentences for a reader, not a contract; branch on status / exit code.
 - **Consequences.** New `app/Bridge/Tools/ToolCallBody.php` and `tests/Support/JsonTypeArms.php` (the reader behind the arm-coverage guard: `jsonType()`'s arms are the population, read from source, so a new arm reds until a row exercises it). Changed: `AgentToolsController`, `ToolsCallCommand`, `BoardToolsBlankArgumentCrossDoorTest` (request-body arms, the arm-coverage guard, and the divergence denominator's two new rows), `AgentToolsCallTest` (Content-Type arm, query-string arm), `docs/board-tools.md` § Errors, `CLAUDE_ARCHITECTURE.md`, `docs/CHANGELOG.md` `[Unreleased]`.
+
+## DL-411 — the PR-title gate requires the card the writeback SELECTS, and a bare DL is not a correlation token (card#10031)
+
+**Date:** 2026-09-22
+
+**Context.** The require step's accept-check asked two questions the writeback does not ask. It
+accepted **either** `card<branch id>` **present anywhere** in the title **or** any `DL-<number>` at
+all. The writeback asks neither:
+
+- It **SELECTS** one card. `GitHubPrCardMoveClassifier::cardTokenResolution()` takes the HEAD REF's
+  token when the ref carries one — the ref is minted by this install's own tooling and OUTRANKS the
+  title — and otherwise the TITLE's **LEFTMOST** token, `CardTokenGrammar::parse()` being a single
+  leftmost `preg_match`. Presence and position are different properties of the same string.
+- It resolves a DL's **VALUE** against `payload.dl_number` on the board (`KanbanClient::correlateDl`),
+  where a DL is bound to no one card and FR-7 try-in-order gives it precedence when it resolves.
+
+So a title citing another card before its own, or carrying only a foreign DL with no co-present
+`card#` (so the DL-218 conflict guard never fires), greened this gate while the merge moved a
+DIFFERENT card and this branch's card never moved. This is kanban card#10021's defect class in two
+spellings; kanban card#10062 is the same selection half seen from that repo.
+
+**Decision.** The accept-check is **PRESENCE and SELECTION**. The step re-computes the writeback's
+selection from the same two surfaces in the same order, using the same `token` expression the
+closure step already carries, and requires the selected card to equal the branch's id. It **prints
+the selection on every run**, pass or fail, and a selection red names the card that would have been
+correlated instead. **The DL arm is removed from the accept-check** and survives only as a
+diagnostic on the failure path.
+
+**Alternatives considered.**
+
+- *Resolve the DL here instead.* Rejected on three measured legs, unchanged from card#10021's: the
+  authority for DL → card is the BOARD, not a CI job with no checkout or credential; nothing
+  guarantees a card carries its DL when the gate runs (the stamping write-back is an open
+  obligation); and a DL in a title is often legitimately descriptive or bundled (DL-148), which the
+  writeback already rules on by preferring a disagreeing `card#` (DL-218). Requiring the card token
+  makes this gate REQUIRE what the writeback PREFERS.
+- *Narrow the selection scan to the spelling the gate accepts.* Rejected — the writeback selects over
+  every spelling its grammar parses, so a leftmost `card-1234` hijacks a title whose own token is
+  `card#8286`. A narrowed scan would not see the hijack the conjunct exists to red.
+- *Share one implementation with the kanban copy.* The correct end state; see the seam below.
+
+**Consequences.**
+
+- ⚠ **ACCEPT-SET CHANGE, measured on this repo's own history and not inherited from kanban's.** A
+  DATED OBSERVATION OF A RUN, not a standing property: on **2026-09-23** every merged pull request of
+  this repo (**753** at that moment, `#1`–`#776`) was driven through the real extracted require step
+  under both predicates at `C.UTF-8` — **31 change verdict, all GREEN → RED, none RED → GREEN.**
+  Attributed per conjunct by re-running an INTERMEDIATE predicate that removes only the DL accept arm
+  — **31 to the DL-arm removal, 0 to the selection conjunct** — against a control (a synthetic hijack
+  title whose own card is present but not leftmost) on which the same harness reports 1, so the
+  selection zero is a measurement rather than a silent instrument. **29 of the 31 carry no card
+  token in the title at all; 2 carry a FOREIGN one** — #304's `card-4485` against branch card 75 (a
+  live historical hijack: the writeback would have selected 4485) and #702's `card#9200` against
+  branch card 9121. ⚠ **16 of the 31 are on branches whose head ref ALREADY correlated the card
+  correctly** — those reds are the PRICE of requiring the title to restate what the ref says, not
+  instances of the defect; the same 16 are re-derivable through the shipped step alone, by counting
+  the refusals that print *"that IS the card the writeback selects"*. ⚠ **Re-derive rather than
+  quoting these figures:** take `gh pr list --state merged --limit 2000 --json
+  number,title,headRefName` — the flag is load-bearing: `gh pr list` defaults to 30 rows, so the
+  recipe without it silently measures one page instead of the corpus and reports a change count of
+  ZERO against the figures above (DL-289's window note is this class one instrument along) — extract
+  the step from the workflow, and run it over each title/head-ref pair under both predicates. The
+  population moves every time a PR merges — an earlier run of this same harness, one day and one
+  merge before, reported 752 and the same 31.
+- ⚖ **THE `card`-STEM CASE WAS CONSIDERED AND DELIBERATELY NOT EXEMPTED (operator ruling,
+  2026-09-23).** 16 of the 31 above are PRs whose head ref already named the card, so an exemption
+  for that shape would have removed most of the cost this change carries. It is declined: a title
+  naming the card it finishes is a READABILITY property of the merge record, independent of what the
+  writeback happens to select from, and the price is one token in a title. What made the friction
+  read as a defect was the refusal MESSAGE, which told such an author the card "silently never
+  moves" three lines after the same step printed that the head ref selects it; that arm now states
+  what is true of its own fault and the sentence is gone.
+- **The selection rule is TIED to the authority, not trusted.** `PrTitleLintTest` drives the REAL
+  classifier on a `pull_request.opened` event and compares its move target to the step's printed
+  selection, over rows asserted to exercise BOTH limbs of the resolution order. The reverse arm
+  re-creates the pre-fix step from the shipped script and shows the same two-token fixture GREEN
+  under it — measured both ways: removing the conjunct reds the verdict legs; flipping the
+  classifier's own precedence reds the tie, and the corpus row that makes that observable at
+  all — a title whose own leftmost token DISAGREES with what the classifier selects — is
+  asserted rather than incidental.
+- **Four of card#5300's pinned divergences close, none by repairing what the gate ACCEPTS.**
+  `card4`'s FALSE GREEN closes by construction. The 5-digit-DL FALSE RED closes by removal (the DL
+  is a diagnostic now) and its residue — a missing SENTENCE — closes with it, along with the
+  collation-suppressed one beside it: the diagnostic's pattern is the authority's shape now, `+`
+  digits and no trailing boundary, and **a diagnostic's bound reds nothing**, so the justification
+  that kept the four-digit bound (*repairing it changes what the gate accepts*) retired with the
+  accept arm it was written for. The two collation FALSE REDS on the card arm close as a side effect
+  of the `LC_ALL` pin below. The leading-zero FALSE RED survives, still pinned, still gated.
+  ⚠ **A COPY OF THE DL TOKEN IN ANOTHER WORKFLOW moves with that bound, and the move is NOT
+  MONOTONE — BOTH DIRECTIONS, because the premise that it was a strict narrowing is FALSIFIED.**
+  `changelog-gate.yml`'s correlation arm spelled the same `{1,4}` and now spells `+`. The bound did
+  not make the arm stricter; it moved WHICH DL the arm SELECTS, because the trailing `([^0-9]|$)`
+  cannot bound a run longer than the quantifier, so `{1,4}` skipped a >4-digit DL at its own
+  position and matched a LATER one. Measured through the real extracted step:
+  - `fix a thing dl-12345` — `{1,4}` classified NOTHING, `+` classifies `dl/12345`. **STRICTER**: a
+    title whose only DL runs past four digits used to fall through to the TOKENLESS DISPOSITION and
+    is now held to naming `DL-12345` in `[Unreleased]`.
+  - `fix dl-12345 and also dl-99` — `{1,4}` classified `dl/99`, `+` classifies `dl/12345`.
+    **SELECTION MOVES, and one direction is a GREEN**: a PR whose `[Unreleased]` names `DL-12345`
+    but not `DL-99` was RED and is now GREEN; the same PR naming `DL-99` but not `DL-12345` was
+    GREEN and is now RED.
+  The greening direction is taken deliberately: `DlTokenGrammar::parse()` — the authority every DL
+  consumer in this repo resolves through — returns `DL-12345` for that string, so the arm's old
+  verdict demanded an entry for a token the authority does not select. ⚠ **The CORRECTION to the
+  old behaviour's name:** an empty `kind` never SKIPPED the gate. It fell back to the weaker
+  section-moved check, which still requires the `[Unreleased]` section to have CHANGED — a weaker
+  check, not no check. ✅ **The copy is TIED now, not hand-made:** `ChangelogGateTest` drives that
+  fixture through the real extracted step against `DlTokenGrammar::parse()` and mutates the arm back
+  to `{1,4}` to watch the selection move, so the agreement is re-measured rather than remembered.
+  One owner across both workflows is still the honest close and is NAMED here, not taken.
+- ⚠ **THE JOB PINS ITS COLLATION (`jobs.lint-title.env: LC_ALL: C.UTF-8`), and that is an accept-set
+  change on TWO steps.** bash resolves a bracket RANGE by collation, and this card's `token=` made one
+  of them decide SELECTION. Measured: `TITLE='docs: port écard-1234 guidance (card#9996)'` on
+  `fix/9996-slug` reds under `C.UTF-8` and **GREENS under `en_US.UTF-8`** — the swallowed `é` stops
+  being a boundary, the scan skips the FOREIGN leftmost token, and the gate certifies the exact
+  hijack this card exists to red. card#5300 had audited those ranges and left them on the reasoning
+  that a NEGATED class only ever REDS; that reasoning died with the selection conjunct, on the same
+  line it was written about.
+  ⛔ **The sibling audit found the CLOSURE step carrying the same defect and WORSE**, which is why the
+  pin is declared on the JOB and not on the step that raised it: the same title with a closing form
+  (`… (closes card#9996)`) makes that step answer `OK: the title carries a closing form naming card
+  9996` about a PR the writeback closes card 1234 on — the require step at least greened a card the
+  title NAMED. Three step-level pins would be one fix written three times, and the fourth step
+  someone adds would need a fourth.
+  Watched fail in both directions and on both steps: with the pin gone from the job, each case greens
+  again under an ambient `en_US.UTF-8`; with a step overriding the pin, the leg reds on that step.
+  ⚠ **A THIRD site moves and it moves PERMISSIVE**: the require step's branch-shape predicate keeps
+  `[0-9]` as a RANGE (card#5300, still pinned), so the pin makes it resolve ASCII everywhere and the
+  step SKIPS a Unicode-digit branch (`fix/٣-slug`, measured: rc 0 pinned, rc 1 under an unpinned
+  `en_US.UTF-8`) that a non-C-family runner would have enforced against — the direction the step's
+  own comment says it refuses to take when narrowing the range, reached by the pin instead. **Nothing
+  a C-family runner accepted moves** — GitHub's `ubuntu-latest` is one, so the residual bites one
+  `runs-on` edit away — and the job's answers stop depending on which runner it lands on (DL-272
+  records this job giving a host-dependent answer once already).
+  ⛔ **THE SIBLING AUDIT INITIALLY STOPPED ONE WORKFLOW SHORT, and the same pin is owed to
+  `changelog-gate.yml` (`jobs.changelog-gate.env: LC_ALL: C.UTF-8`).** The population is re-derivable
+  rather than recalled: `grep -l '\[\^0-9a-z_\]' .github/workflows/*` names every workflow carrying a
+  boundary of this class. ⚠ **That predicate is the BOUNDARY class, not the collation class.** Widened
+  to any bash bracket RANGE in a workflow regex — `grep -lE '\[\^?[^]]*[0-9a-zA-Z]-[0-9a-zA-Z][^]]*\]'
+  .github/workflows/*` — it also names `auto-tag-version.yml`, whose `^[0-9]+\.[0-9]+\.[0-9]+$` VERSION
+  validator ACCEPTS `0.7٣.0` under `en_US.UTF-8` and rejects it under `C.UTF-8` (measured). That is
+  the same permissive direction, on a surface nothing author-controlled reaches — the VERSION file is
+  repo content — so it is recorded here and deliberately NOT fixed in this card; a reader taking the
+  narrower grep as the collation population would miss it. That gate's feature step classifies the PR's correlation token with the
+  same `(^|[^0-9a-z_])`, and the token it picks is what the `[Unreleased]` search pattern is BUILT
+  FROM — so the false direction there is a GREEN as well. Measured on the same fixture,
+  `docs: port écard-1234 guidance (card#9996)`: `C.UTF-8` classifies `kind=card id=1234` (what
+  `CardTokenGrammar::parse()` selects) and reds a changelog naming only 9996; `en_US.UTF-8`
+  classifies `kind=card id=9996`, builds its pattern for 9996 and GREENS it. ⚠ **The card#5300
+  reasoning was left standing IN THAT FILE** — three lines above this card's only edit to it, a
+  comment still said the negated classes there "red instead of greening" — three lines above the DL
+  arm, which was the only line of that file this card had touched. That sentence is deleted: it is
+  the identical dead reasoning this entry retires above, and leaving one copy standing is what lets
+  the next author re-derive the retired conclusion. `ChangelogGateTest` asserts every step of that
+  job composes to the pin, drives the step with teeth through the composed env, and strips the pin to
+  watch the false green return.
+- **The refusal carries ONE MESSAGE SET PER FAULT because the ACTION differs at each, and some used to inherit
+  another arm's advice.** A `card`-stem branch was told its card "silently never moves" while the
+  step's own selection line said otherwise; a present-but-unparseable token (`card4`) was told to
+  make it FIRST when the token IS first and the spelling is the fault; a HEAD-REF selection was told
+  to retitle, which cannot move a head-ref selection at all. Each arm is driven in `PrTitleLintTest`
+  by both the sentence it owes and the absence of the one it must not inherit.
+- ⚠ **BOUNDS — the CLOSURE step is NOT brought along, and the gap widens in readability terms.** This
+  card teaches the REQUIRE step the writeback's resolution order (head ref, then the title's leftmost
+  token); the closure step still reads the TITLE's leftmost card only. So on a `card`-stem branch
+  whose title cites another card before its own, the two steps disagree about which card the PR is
+  about and CI reds a merge the writeback closes STRUCTURALLY. ⛔ **The pre-existing whole-step tie
+  cannot see this** — it derives both sides from `CardTokenGrammar::parse($title)`, so it compares the
+  closure step against a runtime predicate asked about the same leftmost id and they agree by
+  construction. A dedicated leg now asks the REAL classifier and pins the false red. NOT repaired:
+  teaching the closure step head precedence changes what THAT step accepts, which is a gate decision
+  of its own and not this card's.
+- ⚠ **A NON-ASCII branch id is guarded at BOTH halves, and each half was watched fail.** The branch
+  predicate keeps `[0-9]` as a collation-sensitive RANGE by ratification (card#5300), so `card_id`
+  can capture a Unicode digit where the pin above is absent. `$((10#٣))` is a bash ARITHMETIC SYNTAX
+  ERROR, not a falsy 0, so an unguarded normalisation aborted the step under `set -e`/`set -u` and
+  replaced the refusal with a runner stack trace (measured: `card_id_n: unbound variable`) — that
+  route is gone, because the id is now normalised by STRIPPING leading zeros rather than by
+  arithmetic (`$((10#…))` also WRAPS at 2^63 where the grammar's `(int)` saturates, so a 20-digit
+  token made the step name a card neither engine ever selects). Guarding the assignment alone then
+  makes BOTH sides of the selection compare the empty string, and `[ "" = "" ]` is TRUE — a measured
+  FALSE GREEN whose own output reads *"OK: title carries card#٣ AND that is the card the writeback
+  selects"* directly beneath *"selects no card from either surface"*. The accept-check therefore
+  carries `-n "$card_id_n"` as well: empty means NO ID, never an id that matched.
+- ⛔ **A CROSS-REPO SEAM, DECLARED AND NOT CLOSED.** `kanban-board` carries a sibling copy of this
+  rule. Its CI has no checkout of this repo, so its copy cannot be tied to this authority and **a
+  change to `CardTokenGrammar` or to the resolution order reds nothing
+  there** — a complete audit of either repo can come back clean while the seam is audited by
+  neither. This end DECLARES it on a surface the other's reader reaches (this repo's workflow header
+  names kanban) and owns the CHECK against the real authority. ⛔ **THE FAR END'S HALF IS A
+  DEPENDENCY, NOT AN OUTCOME OF THIS CHANGE.**
+
+  ⚠ **WHAT FOLLOWS IS TWO DATED OBSERVATIONS OF ANOTHER REPO AND THE EVENT BETWEEN THEM, and it is
+  written that way on purpose.** The far end is not this repo's to assert: an undated present-tense
+  sentence about it goes false on somebody else's merge, silently, in a log nothing re-reads. The
+  BEFORE reading is kept rather than overwritten — it is the honest record of what was true when this
+  card was built, and deleting it would leave a sentence that looks as though it had always said
+  this. **Both readings fall on the same DATE, so they are distinguished by TIME.**
+
+  **BEFORE — read 2026-09-23 ≈18:24–18:30Z**: `kanban-board` `dev` = `009822da`, `main` = `a524ef6d`,
+  `PupFuzz/kanban-board` PR #721 (`fix/card-10021-pr-title-dl-binding`) head = `5df010c5`, OPEN,
+  `CONFLICTING`/`DIRTY`, **zero workflow runs ever** — a conflicting PR gets no merge ref, so its
+  `pull_request` jobs had nothing to check out.
+
+  **THE EVENT — #721 MERGED to `dev` at 2026-09-23T18:50:07Z, merge commit `9cc631f5`.** Its head had
+  moved `5df010c5` → **`2cf1749f`** first, which is what the BEFORE pin exists to expose; that final
+  head went `MERGEABLE`/`CLEAN` and ran **7 workflows, all `completed`/`success`** — its first runs
+  ever. ⚠ **The delta between the head this entry first read and the head that landed is ONE prose
+  correction**, not new mechanism: the ACCEPT-SET narrowing comment's population was re-measured over
+  the full history (715 merged + 4 open PRs) after a `gh pr list` page cap had been mistaken for the
+  whole corpus — the same page-cap class this entry's own blast-radius bullet warns about.
+
+  **AFTER — re-read 2026-09-23 ≈18:50–18:52Z at `dev` = `9cc631f5`, `main` = `a524ef6d` (UNMOVED).**
+  Every row below was re-measured against `origin/dev` itself, not inferred from the merge:
+
+  | clause | BEFORE (`dev` `009822da`) | AFTER (`dev` `9cc631f5`) |
+  | --- | --- | --- |
+  | `pr-title-lint.yml` **byte-identical on `main` and `dev`** | true — `cmp` clean, 8059 bytes each | **FALSE OF `dev`** (16357 bytes), ✅ **still TRUE OF `main`**, which is byte-identical to the BEFORE `dev` and holds until kanban cuts a release |
+  | it **names neither this grammar nor this classifier** | true — 0 of each; only bridge mention was the DL-174 board-scope note | **FALSE OF `dev`** — `CardTokenGrammar` ×3 + `GitHubPrCardMoveClassifier` ×1 = 4 occurrences; ✅ **still TRUE OF `main`** (0) |
+  | it **carries `DL-[0-9]{1,4}` as an ACCEPT arm** | true — `dev` line 128 `\|\|`-joined it to the `card#` check | **FALSE OF `dev`** — line 235, below the accept-check's `exit 0` at 228, a pure failure-path diagnostic: the identical move this card made here; ✅ **still TRUE OF `main`** |
+  | it is **pinned to no table of this grammar's answers** | true | ✅ **SURVIVES, re-verified against what LANDED** — the authorities are named in prose and no answer table is transcribed, so nothing there reds when this grammar moves |
+  | **kanban card#10062 is the only far-end surface declaring the seam** | true | **FALSE** — that workflow's header is a second declaring surface now (its SCOPE / LIMITS block and its pass message both name card#10062) |
+  | canon #7's **DECLARE leg is discharged at ONE end** | true | **FALSE** — discharged at BOTH ends |
+  | #721 **OPEN, `CONFLICTING`, no check ever run** | true | **FALSE** — MERGED as `9cc631f5`; final head `2cf1749f`, 7/7 runs `success` |
+
+  ⭐ **AND THE SEAM ITSELF IS STILL OPEN — re-confirmed by the EVENT rather than predicted.** Measured
+  on `dev` at `9cc631f5`: that gate still pins **PRESENCE** and still **explicitly refuses to pin
+  SELECTION**, filing it as kanban card#10062 in its header, at its accept-check and in its own pass
+  message; this gate pins selection. The two ends enforce different propositions, the surviving row
+  is the reason neither end reds when the other moves, and this entry's conclusion is untouched:
+  **changing either side is a TWO-REPO change.** The honest close is ONE implementation both
+  repos consume — a toolkit-hosted lint generated from, or checked against, this grammar. Neither
+  repo can mint that alone, so it is named and routed rather than built as a third copy.
 
 ---
 

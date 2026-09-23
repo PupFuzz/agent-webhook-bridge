@@ -2802,16 +2802,53 @@ the work distinguishes those.
 - **The correlation-token grammars.** `CardTokenGrammar` / `DlTokenGrammar` are well-built — the
   operator-facing accept-set is *derived by running the pattern* (`describe()`), which is the
   right answer. One real gap remains and is **separate from this program**:
-  `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls both token grammars: the card
-  arm has no 2-digit floor (⇒ glued `card4` passes CI but never correlates — a silent green) and
-  the DL arm is four-digit-bounded where `DlTokenGrammar` is unbounded (⇒ `DL-12345` false-reds).
-  **Both arms have since been given the answer-set comparison guard the *warn* leg had (DL-240),
-  so the divergences are re-measured every run rather than remembered — what remains open is
-  repairing them, not observing them.** That workflow has **no checkout and no PHP setup**, so it
-  cannot call the PHP authority without adding both; extending the answer-set guard was the
-  correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard gate); one
-  row — the locale-dependent Unicode-digit false green — was approved and fixed under DL-272, the
-  rest are still pinned.
+  `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls both token grammars.
+  **Both hand-rolled GRAMMARS have the answer-set comparison guard the *warn* leg had (DL-240), so
+  THOSE divergences are re-measured every run rather than remembered — ⚠ but the require step's
+  PRESENCE conjunct is not one of them.** It is written INLINE against an interpolated `${card_id}`,
+  so it is outside `cardTokenRegexesIn()`'s scan BY CONSTRUCTION — that scan collects single-quoted
+  `good=` / `token=` assignments standing on their own line — and outside the DL vector loop as
+  well. **Its divergences are pinned case by case instead**, `card4` (ARM 3 of
+  `test_each_failure_arm_states_only_what_is_true_of_its_own_fault`) and `card#0123`
+  (`test_the_require_step_diverges_from_the_authority_on_a_leading_zero_id_pending_a_gate`) among
+  them — **and a hand-pinned divergence is re-measured only where someone wrote the case, so this
+  leg's list is a floor and not a population.** That workflow has **no checkout and no PHP setup**,
+  so it cannot call the PHP authority without adding both; extending the answer-set guard was the
+  correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard gate).
+  ⚠ **Most of the rows this bullet used to enumerate have closed — re-read each before citing it;
+  the ones that have not are the rows below marked *still pinned*:**
+  - the locale-dependent Unicode-digit false green was approved and fixed under **DL-272**;
+  - the glued-`card4` FALSE GREEN closed **on the SELECTION side only** under **card#10031**, and
+    the four-digit-DL FALSE RED closed with it; neither was *repaired* — the card arm now SELECTS
+    with the same grammar shape that rejects `card4`, so the selection scan has nothing left to
+    disagree with, and the DL arm stopped being an accept arm at all, so its bound can no longer
+    red anything (its residue — a diagnostic sentence that did not appear — closed with it, the
+    pattern now being the authority's own shape). ⚠ **The require step's PRESENCE conjunct still
+    matches `card4`, so THAT divergence is live and hand-pinned rather than answer-set-guarded**
+    (the inline matcher named above);
+  - the card arm's two **collation FALSE REDS** closed with the `jobs.lint-title.env: LC_ALL:
+    C.UTF-8` pin, which card#10031 added on finding that the same collation GREENS a foreign
+    leftmost token once a negated class decides SELECTION — and that the CLOSURE step had the same
+    defect, which is why the pin is on the job. The ranges are unchanged; the runner no longer
+    chooses;
+  - the **leading-zero FALSE RED** is still pinned and still gated;
+  - the **branch-shape `[0-9]` RANGE** is still pinned and still gated — enumerating it would SKIP a
+    Unicode-digit branch instead of enforcing against it, which widens the gate. ⚠ card#10031's pin
+    reaches that outcome by the other route: the range now resolves ASCII on every runner, so the
+    step skips `fix/٣-slug` where an unpinned `en_US.UTF-8` runner enforced against it. Nothing a
+    C-family runner accepted moves, and `runs-on: ubuntu-latest` is unchanged.
+  ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
+  `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no
+  check in either repo can hold against this authority. This repo owns the CHECK (its
+  `PrTitleLintTest` drives the real classifier); ⛔ **the kanban end's declaration HAS SHIPPED on
+  that repo's integration branch and the seam is STILL OPEN**, because a declaration at both ends is
+  not a TIE at either — neither repo's CI can execute the other's authority, so a change to
+  `CardTokenGrammar` or to the resolution order still reds nothing there. WHICH branch carries it,
+  WHEN it landed, WHAT that end ships and WHAT still differs are DATED facts this doc does not
+  restate — the cross-repo seam bullet of **DL-411** in `CLAUDE_DECISIONS.md` owns them, and is
+  where to read them. Closing the seam means one shared
+  implementation both repos consume — out of this program's scope and not mintable by either repo
+  alone.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
   site to migrate and another chance to re-mint the same card. **LIFTED: Stage 8 has landed.** A
   new leg is now added as a registered `Check`, and `CheckCommandRegistrationTest`'s pinned id list
