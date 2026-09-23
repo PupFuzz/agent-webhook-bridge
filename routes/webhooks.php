@@ -12,8 +12,10 @@ use Illuminate\Support\Facades\Route;
 // 400 from VerifyHmacSignature (preserving the receiver's status contract),
 // not a 404 from route matching.
 //
-// RecordWebhookOutcome is FIRST so its terminate() sees every final status on this route,
-// the gates' own 5xx included — and only this route's (card#10158).
+// RecordWebhookOutcome is listed first so its handle() is outermost. Its terminate() sees the
+// final status regardless of order — Laravel gathers terminable middleware from the ROUTE, not
+// from whatever short-circuited the request — so the ORDER here is readability and the ROUTE is
+// the load-bearing part: it scopes the record to this route's 5xx and no other's (card#10158).
 //
 // URL: POST /webhooks/<provider>?b=<scope_id>
 Route::post('/webhooks/{provider}', [WebhookController::class, 'receive'])

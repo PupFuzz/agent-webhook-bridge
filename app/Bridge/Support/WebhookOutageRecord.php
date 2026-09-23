@@ -19,9 +19,10 @@ use Closure;
  * message, a response body or anything from the request — a connection error carries the DB
  * user and host, and `bridge:inbox` prints this record into every seat's context.
  *
- * ⚑ STATES. `failing` is present from the first 5xx until the next 2xx. That 2xx moves it to
- * `recovered` (replacing any earlier recovery) and `bridge:inbox` shows each consumer the
- * recovery once, within {@see self::NOTICE_WINDOW_SECONDS}. A 4xx is a refused request, not
+ * ⚑ STATES. `failing` is present from the first 5xx until the next 2xx, and `bridge:inbox`
+ * shows each consumer that run at most once per {@see self::WARNING_REPEAT_SECONDS}. That 2xx
+ * moves it to `recovered` (replacing any earlier recovery) and `bridge:inbox` shows each
+ * consumer the recovery once, within {@see self::NOTICE_WINDOW_SECONDS}. A 4xx is a refused request, not
  * evidence either way, and neither counts nor clears; the receiver's ping reply is a 2xx that
  * never reaches the dispatch path, so it is neutral too ({@see self::NEUTRAL_ATTRIBUTE}).
  *
@@ -48,6 +49,31 @@ final class WebhookOutageRecord
      * it. Bounded so a seat started weeks later is not handed a stale remedy as news.
      */
     public const NOTICE_WINDOW_SECONDS = 7 * 86400;
+
+    /**
+     * How long a consumer just shown a STILL-FAILING run is not shown it again.
+     *
+     * ⚑ WHY A FLOOR. `bridge:inbox` is a documented `PreToolUse`/`PostToolUse` mount, so it
+     * runs once per tool call, and a run lasts as long as the outage — days, in the incident
+     * this exists for. Unthrottled, a multi-day outage prepends this block to every tool call
+     * for its whole length: the recovery notice's "once per consumer" problem in the other
+     * direction, and it also ends the command's silent-when-nothing-new discipline for that
+     * window. An hour keeps the warning live inside a long session without making it the
+     * loudest thing in the context. A consumer whose context is starting empty, and an
+     * operator asking directly, are never throttled — `bridge:inbox` owns which invocations
+     * those are, and is named here rather than linked: a `{@see}` to it becomes a real import
+     * of a Console command into this Support class the next time the formatter runs.
+     */
+    public const WARNING_REPEAT_SECONDS = 3600;
+
+    /**
+     * The two notice CLASSES the seen-cursor holds, and the prefix of every id in it. They
+     * share one file and must not prune each other: a new run's first warning must not drop
+     * the marks that say who has already been shown the previous run's recovery.
+     */
+    private const RECOVERY_CLASS = 'webhook-5xx-recovered';
+
+    private const WARNING_CLASS = 'webhook-5xx-failing';
 
     /** Request attribute the receiver sets on a 2xx that proves nothing about processing. */
     public const NEUTRAL_ATTRIBUTE = 'bridge.outcome_neutral';
@@ -158,7 +184,46 @@ final class WebhookOutageRecord
      */
     public static function noticeId(array $recovered): string
     {
-        return 'webhook-5xx-recovered:'.$recovered['since'].'/'.$recovered['recovered_at'];
+        return self::RECOVERY_CLASS.':'.$recovered['since'].'/'.$recovered['recovered_at'];
+    }
+
+    /**
+     * The id a still-failing run's warning is throttled under — one per RUN, so the first
+     * warning of a new outage is never suppressed by the last one of the previous outage.
+     *
+     * @param  array{since: string}  $failing
+     */
+    public static function warningNoticeId(array $failing): string
+    {
+        return self::WARNING_CLASS.':'.$failing['since'];
+    }
+
+    /**
+     * Whether $consumer is shown the still-failing run $noticeId names on this invocation.
+     * $unconditional is the caller's "this consumer has not been told in this context, or
+     * asked directly"; everything else waits out {@see self::WARNING_REPEAT_SECONDS}.
+     */
+    public static function warningIsDue(string $consumer, string $noticeId, bool $unconditional): bool
+    {
+        if ($unconditional) {
+            return true;
+        }
+        $last = self::warningLastShownAt($consumer, $noticeId);
+
+        return $last === null || now()->getTimestamp() - $last >= self::WARNING_REPEAT_SECONDS;
+    }
+
+    /** The epoch second $consumer was last shown this run, or null if it never was. */
+    public static function warningLastShownAt(string $consumer, string $noticeId): ?int
+    {
+        $mark = $noticeId.'|'.$consumer.'|';
+        foreach (BridgePaths::readSeen(self::noticeSeenPath()) as $key) {
+            if (str_starts_with($key, $mark) && ctype_digit($at = substr($key, strlen($mark)))) {
+                return (int) $at;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -180,21 +245,38 @@ final class WebhookOutageRecord
     }
 
     /**
-     * Mark a recovery seen for one consumer. Keys for any other recovery are dropped in the
-     * same write, so the cursor holds at most one run's consumers.
+     * Mark a notice shown to one consumer — a recovery ($shownAt null: it is shown once and
+     * never again), or a still-failing run at the second it was shown ($shownAt set: the
+     * repeat floor reads it back). Keys for any other notice OF THE SAME CLASS are dropped in
+     * the same write, so each class holds at most one run's consumers.
      */
-    public static function markNoticeSeen(string $consumer, string $noticeId): void
+    public static function markNoticeSeen(string $consumer, string $noticeId, ?int $shownAt = null): void
     {
-        $key = self::seenKey($consumer, $noticeId);
-        $prefix = $noticeId.'|';
+        $mark = self::seenKey($consumer, $noticeId);
 
         BridgePaths::updateSeenLocked(
             self::noticeSeenPath(),
             fn (array $seen) => array_values(array_unique([
-                ...array_filter($seen, fn (string $k) => str_starts_with($k, $prefix)),
-                $key,
+                ...array_filter($seen, fn (string $k) => self::survivesMark($k, $noticeId, $mark)),
+                $shownAt === null ? $mark : $mark.'|'.$shownAt,
             ])),
         );
+    }
+
+    /**
+     * Keys that survive writing $mark: every key of ANOTHER class untouched, and this class's
+     * keys for the SAME notice belonging to OTHER consumers. This consumer's own prior key
+     * goes, so a re-shown warning replaces its timestamp instead of accumulating one per show.
+     */
+    private static function survivesMark(string $key, string $noticeId, string $mark): bool
+    {
+        if (strstr($key, ':', true) !== strstr($noticeId, ':', true)) {
+            return true;
+        }
+
+        return str_starts_with($key, $noticeId.'|')
+            && $key !== $mark
+            && ! str_starts_with($key, $mark.'|');
     }
 
     private static function seenKey(string $consumer, string $noticeId): string

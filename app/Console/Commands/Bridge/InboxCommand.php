@@ -15,9 +15,11 @@ use App\Bridge\Support\WebhookOutageRecord;
  * prints plain markdown. Silent when there's nothing new.
  *
  * It also carries the receiver's webhook 5xx record ({@see WebhookOutageRecord}) — a run in
- * progress on every invocation, a finished one once per consumer — because this is the one
- * hook every seat already mounts and it reads only files, so it still runs while the database
- * the outage took down is unreachable (card#10158).
+ * progress at most once per {@see WebhookOutageRecord::WARNING_REPEAT_SECONDS} per consumer
+ * ({@see self::warningIsUnconditional} for the invocations that never wait), a finished one
+ * once per consumer — because this is the one hook every seat already mounts
+ * and it reads only files, so it still runs while the database the outage took down is
+ * unreachable (card#10158).
  */
 class InboxCommand extends BridgeCommand
 {
@@ -50,17 +52,21 @@ class InboxCommand extends BridgeCommand
         // disagree about one inbox.
         $unseen = BridgePaths::unseenInboxLines($agent);
 
+        // Read once — it consumes stdin — and before the health lines, whose repeat floor is
+        // decided on which hook event (if any) is driving this invocation.
+        $hookEvent = $this->readHookEvent();
+
         // The seen-cursor's own file name IS the consumer identity, so "once per consumer"
-        // for a recovery means exactly what "seen" means for this consumer's intents.
+        // for a recovery, and "not again for an hour" for a run still failing, mean exactly
+        // what "seen" means for this consumer's intents.
         $consumer = basename($seenPath);
-        [$health, $noticeId] = $this->deliveryHealth($consumer);
+        [$health, $marks] = $this->deliveryHealth($consumer, $hookEvent);
 
         if ($unseen === [] && $health === []) {
             return self::SUCCESS;   // silent-when-empty discipline
         }
 
         $format = (string) $this->option('hook-format');
-        $hookEvent = $this->readHookEvent();
         $this->output->writeln($this->buildOutput($unseen, $format, $hookEvent, $health));
 
         // Only advance the seen cursor when the output can actually reach a
@@ -72,8 +78,8 @@ class InboxCommand extends BridgeCommand
         // peek that never marks seen.
         $reachesConsumer = $hookEvent === null || in_array($hookEvent, self::ADDITIONAL_CONTEXT_EVENTS, true);
         if ($reachesConsumer && ! $this->option('no-cursor-advance')) {
-            if ($noticeId !== null) {
-                WebhookOutageRecord::markNoticeSeen($consumer, $noticeId);
+            foreach ($marks as [$noticeId, $shownAt]) {
+                WebhookOutageRecord::markNoticeSeen($consumer, $noticeId, $shownAt);
             }
             if ($unseen === []) {
                 return self::SUCCESS;
@@ -106,38 +112,56 @@ class InboxCommand extends BridgeCommand
     }
 
     /**
-     * The webhook 5xx lines for this consumer, and the id of the recovery notice among them
-     * (null when none is shown) so the caller can mark it seen under the cursor's own rule.
+     * Invocations the still-failing warning's repeat floor never silences: a `SessionStart`
+     * hook, because that consumer's context is starting empty and a throttled warning would
+     * leave a whole session unaware of a live outage; and a non-hook run, because an operator
+     * asked at a terminal and answering nothing during an outage is the silence DL-409 exists
+     * to end. Every other mount — `PreToolUse` above all, which fires per tool call — waits
+     * out {@see WebhookOutageRecord::WARNING_REPEAT_SECONDS}.
+     */
+    private function warningIsUnconditional(?string $hookEvent): bool
+    {
+        return $hookEvent === null || $hookEvent === 'SessionStart';
+    }
+
+    /**
+     * The webhook 5xx lines for this consumer, and the notices among them to mark — each as
+     * `[id, shown-at-or-null]` — so the caller records them under the cursor's own rule.
      *
      * An unreadable record is SAID, not read as healthy and not allowed to abort the inbox:
      * the intents below it are still deliverable.
      *
-     * @return array{0: list<string>, 1: string|null}
+     * @return array{0: list<string>, 1: list<array{0: string, 1: int|null}>}
      */
-    private function deliveryHealth(string $consumer): array
+    private function deliveryHealth(string $consumer, ?string $hookEvent): array
     {
         try {
             $record = WebhookOutageRecord::read();
         } catch (UnreadableFileException) {
-            return [['- **WARNING: webhook delivery health is UNKNOWN** — `'.WebhookOutageRecord::path().'` exists but this user cannot read it.'], null];
+            return [['- **WARNING: webhook delivery health is UNKNOWN** — `'.WebhookOutageRecord::path().'` exists but this user cannot read it.'], []];
         }
 
         $lines = [];
+        $marks = [];
         $failing = $record['failing'] ?? null;
         if ($failing !== null) {
-            $lines[] = sprintf(
-                '- **WARNING: %d consecutive webhook 5xx since %s** (last: HTTP %d at %s). Webhook events are not being processed, so whatever the upstream does not redeliver is lost for this window. Run `php artisan bridge:check` (it tests database connectivity and the webhook secrets); an uncaught exception\'s detail is in the bridge\'s Laravel log.',
-                $failing['count'], $failing['since'], $failing['last_status'], $failing['last_at'],
-            );
+            $warningId = WebhookOutageRecord::warningNoticeId($failing);
+            if (WebhookOutageRecord::warningIsDue($consumer, $warningId, $this->warningIsUnconditional($hookEvent))) {
+                $lines[] = sprintf(
+                    '- **WARNING: %d consecutive webhook 5xx since %s** (last: HTTP %d at %s). Webhook events are not being processed, so whatever the upstream does not redeliver is lost for this window. Run `php artisan bridge:check` (it tests database connectivity and the webhook secrets); an uncaught exception\'s detail is in the bridge\'s Laravel log.',
+                    $failing['count'], $failing['since'], $failing['last_status'], $failing['last_at'],
+                );
+                $marks[] = [$warningId, now()->getTimestamp()];
+            }
         }
 
         $recovered = $record['recovered'] ?? null;
         if ($recovered === null || ! WebhookOutageRecord::noticeIsCurrent($recovered)) {
-            return [$lines, null];
+            return [$lines, $marks];
         }
         $noticeId = WebhookOutageRecord::noticeId($recovered);
         if (WebhookOutageRecord::noticeSeenBy($consumer, $noticeId)) {
-            return [$lines, null];
+            return [$lines, $marks];
         }
 
         $lines[] = sprintf(
@@ -147,8 +171,9 @@ class InboxCommand extends BridgeCommand
             .'This notice is shown once.',
             $recovered['recovered_at'], $recovered['count'], $recovered['since'], $recovered['last_failure_at'], $recovered['last_status'],
         );
+        $marks[] = [$noticeId, null];
 
-        return [$lines, $noticeId];
+        return [$lines, $marks];
     }
 
     /**

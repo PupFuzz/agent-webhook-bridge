@@ -156,6 +156,39 @@ class WebhookOutageRecordTest extends TestCase
         $this->assertSame('', $this->inbox(['--agent' => 'pm']));
     }
 
+    public function test_a_new_runs_warning_does_not_re_show_a_recovery_this_consumer_already_saw(): void
+    {
+        // The two notice classes share one cursor file. Pruning it by "this notice's keys
+        // only" would make the first warning of run B drop the mark recording that run A's
+        // recovery was already shown — and the consumer would be handed a stale remedy as
+        // news, in the same output that says deliveries are failing right now.
+        $this->databaseDown();
+        Carbon::setTestNow('2026-09-14T14:01:54Z');
+        $this->deliver()->assertStatus(500);
+        $this->databaseUp();
+        Carbon::setTestNow('2026-09-14T15:00:00Z');
+        $this->deliver()->assertStatus(200);
+
+        $this->assertStringContainsString('recovered at', $this->inbox(), 'control: the recovery is shown once');
+        $this->assertSame('', $this->inbox(), 'control: and consumed');
+
+        // A SECOND outage begins. Its warning is due; run A's recovery is not.
+        $this->databaseDown();
+        Carbon::setTestNow('2026-09-14T16:00:00Z');
+        $this->deliver()->assertStatus(500);
+
+        // ⛔ TWO invocations, and the SECOND is the one that measures: the recovery mark is
+        // read before the warning mark is written, so a prune that drops it leaves this call's
+        // own output clean and re-shows the recovery on the NEXT one.
+        $first = $this->inbox();
+        $this->assertStringContainsString('1 consecutive webhook 5xx since 2026-09-14T16:00:00Z', $first);
+        $this->assertStringNotContainsString('recovered at', $first);
+
+        $second = $this->inbox();
+        $this->assertStringContainsString('1 consecutive webhook 5xx since 2026-09-14T16:00:00Z', $second);
+        $this->assertStringNotContainsString('recovered at', $second, 'the warning write must not drop the recovery mark');
+    }
+
     public function test_a_recovery_older_than_the_notice_window_is_not_shown(): void
     {
         $this->databaseDown();

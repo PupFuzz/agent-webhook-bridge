@@ -245,7 +245,7 @@ final class WritebackAlertNotifier
     {
         $signature = sha1($dedupKey);
         $dir = BridgePaths::stateDir().'/writeback-alerts';
-        if (! is_dir($dir) && ! @mkdir($dir, 0700, true) && ! is_dir($dir)) {
+        if (! BridgePaths::tryEnsureDir($dir)) {
             Log::warning('writeback alert dedup-dir could not be created — skipping push to avoid a per-event storm', [
                 'catalog_id' => 'alert_notifier.dedup_dir_unavailable',
                 'dir' => $dir, 'error' => error_get_last()['message'] ?? 'unknown',

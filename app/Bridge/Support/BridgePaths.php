@@ -359,17 +359,35 @@ final class BridgePaths
     }
 
     /**
-     * Create a directory (and parents) owner-only (0700) if absent. The ONE
-     * place the bridge creates a state/secret-holding dir, so the mode can't
-     * drift per call site (DL-016) — these dirs sit next to HMAC secrets/tokens.
+     * Create a directory (and parents) owner-only (0700) if absent, REPORTING whether it is
+     * there afterwards instead of throwing. {@see ensureDir} is this plus the throw, and
+     * both exist so the idiom below is written once (DL-016): a caller that must SKIP its
+     * work rather than fail it reads the bool, and never re-spells the sequence.
      *
-     * Race-safe: two requests creating the same dir at once both succeed. A bare
+     * Race-safe: two processes creating the same dir at once both succeed. A bare
      * `is_dir()`-then-`mkdir()` let the loser's "File exists" warning become an
      * ErrorException, failing a write whose directory was, by then, there.
+     *
+     * On false, `error_get_last()` carries the failed mkdir's own message.
+     */
+    public static function tryEnsureDir(string $dir): bool
+    {
+        return is_dir($dir) || @mkdir($dir, 0700, true) || is_dir($dir);
+    }
+
+    /**
+     * Create a directory (and parents) owner-only (0700) if absent, THROWING when it is not
+     * there afterwards. This and {@see tryEnsureDir} are the only two ways the bridge creates
+     * a state/secret-holding dir — one mkdir between them, so the mode cannot drift per call
+     * site (DL-016); these dirs sit next to HMAC secrets/tokens. A caller reaches for this one
+     * unless it must SKIP its work rather than fail it.
+     *
+     * ⚑ The rule is an instrument, not just this sentence: `Tests\Feature\Support\
+     * DirectoryCreationCensusTest` reds on a third directory-creating site anywhere in `app/`.
      */
     public static function ensureDir(string $dir): void
     {
-        if (is_dir($dir) || @mkdir($dir, 0700, true) || is_dir($dir)) {
+        if (self::tryEnsureDir($dir)) {
             return;
         }
         $reason = error_get_last()['message'] ?? 'mkdir failed';

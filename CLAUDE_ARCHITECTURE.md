@@ -37,10 +37,12 @@ Upstream system (kanban-board, GitHub, ...)
    ▼
  ── response sent; Response::send() → fastcgi_finish_request() ──────────────────
    ▼
- [terminate]   RecordWebhookOutcome: the FINAL status of EVERY webhook request (an
-               escaped exception already rendered to its 5xx) → the file-backed
-               webhook 5xx record, never the DB (DL-409). Runs BEFORE the callbacks
-               below; never throws.
+ [terminate]   RecordWebhookOutcome: the FINAL status of every request that reached
+               THIS pipeline (an escaped exception already rendered to its 5xx) →
+               the file-backed webhook 5xx record, never the DB (DL-409). Route
+               middleware, so a 5xx answered before a route is bound — maintenance
+               mode, a bootstrap/provider failure — is NOT here. Runs BEFORE the
+               callbacks below; never throws.
  [terminating] RetentionGate: interval-gated, non-blocking-locked, BOUNDED prune
                of webhook_events (+ cascading agent_dispatches) + inbox*.jsonl.
  [terminating] StandupGate / JobSchedulerGate: the same four properties, over a
@@ -56,8 +58,8 @@ client nothing — measured: a pass deleting 20,000 rows (≥0.911s of work) lef
 against a 0.231–0.258s no-prune baseline. It is the only stage that runs *work* after the 200, and it is
 deliberately the *only* thing allowed to. (The one other after-response step is DL-409's
 `RecordWebhookOutcome::terminate()`, which is not work in this sense: one read of a small state file on a
-healthy install, and a locked rewrite of it only while deliveries are failing. It runs on every status,
-5xx included, which is the point of it; no gate here does.) Retention holds an FPM worker, so it is interval-gated (~24h once
+healthy install, and a locked rewrite of it only while deliveries are failing. It runs on every status a
+routed request ends in, 5xx included, which is the point of it; no gate here does.) Retention holds an FPM worker, so it is interval-gated (~24h once
 drained), bounded (`retention.batch` rows per leg), guarded by a **non-blocking** `Cache::lock` (a
 blocking one would queue concurrent receives behind the pruner — the exact DL-001 regression), and it
 never throws (a 5xx would make the provider redeliver, compounding the failure). This replaced DL-012's
@@ -95,7 +97,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `routes/webhooks.php` | The `/webhooks/{provider}` route + middleware stack |
 | `app/Http/Middleware/VerifyHmacSignature.php` | Loads the per-`(provider,scope)` secret, computes HMAC over the **raw** request body, constant-time compare. Stashes `bridge.{provider,scope_id,body}` request attributes. |
 | `app/Http/Middleware/EnvelopeSizeLimit.php` | Rejects bodies over the configured cap before HMAC work |
-| `app/Http/Middleware/RecordWebhookOutcome.php` | Terminable, FIRST on the webhook route only: hands each request's final status to `App\Bridge\Support\WebhookOutageRecord` (the file-backed run of consecutive 5xx that `bridge:inbox` surfaces, DL-409). Changes no response and never throws. |
+| `app/Http/Middleware/RecordWebhookOutcome.php` | Terminable, on the webhook route only (its ORDER there is not load-bearing; `terminate()` is gathered from the route): hands each routed request's final status to `App\Bridge\Support\WebhookOutageRecord` (the file-backed run of consecutive 5xx that `bridge:inbox` surfaces, DL-409). Changes no response and never throws. |
 | `app/Http/Controllers/Webhook/WebhookController.php` | Parse envelope → ping short-circuit → scope double-check → hand off to `DispatchService` |
 
 > **No `TrustProxies` (deliberate, DL-016).** The app does not register Laravel's `TrustProxies` middleware, so it never trusts `X-Forwarded-*` headers. The webhook path reads nothing security-relevant from them: HMAC is computed over the **raw body** (not headers), the scope comes from the URL path and is re-checked against the body, and `channel_push`'s *outbound* loopback gate validates the **configured** URL, not the request host. The two-way board-tools ingress (DL-217) DOES make one client-IP decision — its `LoopbackOnly` middleware admits a request only when `$request->ip()` is loopback — and that gate is sound **precisely because** of this no-`TrustProxies` posture: Apache + `mod_proxy_fcgi` passes the true `REMOTE_ADDR`, so `$request->ip()` is the real peer and a spoofed XFF cannot influence it. Adding `TrustProxies('*')` would make that peer attacker-controlled and the loopback gate bypassable — so the middleware carries a comment naming this dependency, and DL-016 is now load-bearing for the board-tools gate, not only a "no gain" observation.
@@ -193,7 +195,7 @@ migrated, and what each stage measured, is owned by
 |---|---|
 | `bridge:provision` (`ProvisionCommand` + `app/Bridge/Provision/*`) | Idempotent `(provider, scope)` subscription create on kanban-board + per-scope HMAC secret write; `--reconcile` fixes inactive/filter drift (delete + recreate reusing the secret); URL-drift orphan cleanup is manual (no local registry — the live API is truth). Since DL-377 it REFUSES, before the provisioner is entered, every subscription whose composed receiver URL fails `ReceiverUrl::reachesThisInstall()` — in default, `--dry-run` and `--reconcile` mode alike (`--list` only reads) — unless `--allow-unreachable-receiver` is given, which is stated in the output. A receiver base that `UrlValidator::configDoorHttpUrl()` — `install.endpoint_urls`'s rule for that field — rejects is refused for the whole run, in every mode except `--list`, with no override (card#9510; `--list` is exempt by operator ruling because it never reads the receiver base and lists every webhook on the scope, so a row registered at an earlier malformed base stays visible for cleanup). Since DL-369 it also OFFERS the writeback `identity_id` — resolved from the writeback token, shown with the user's display name, written only on confirmation, and fail-soft to the by-hand recipe on every failure; it never moves the command's exit code  ⚑ `app/Bridge/Provision/GitHubWebhookProbe*` is in this namespace and is NOT part of that command: github is not API-provisionable here, so the only thing the bridge can do about a github subscription is ASK whether its hook is still there, which `bridge:check` does (DL-368) |
 | `bridge:check` (`CheckCommand`) | Validate the install: config dir, DB connectivity, agent YAMLs parse, install-guard. Its legs are registered checks — see § The check registry. It also ends with a **NEXT STEPS** block (DL-352) that is deliberately NOT a check: it reports no verdict, reaches no disposition, is absent from the registered count, and yields no finding of its own — it derives the one command to run next, from findings the run already produced. ⚠ **Its population and entry shape are [`docs/check-json-contract.md` § 7a](docs/check-json-contract.md#7a-next_steps--what-to-run-next)'s to state and are deliberately not restated here** (card#9150: the copy that stood here said *per agent whose board-tools enablement is incomplete*, which DL-368 falsified). ⛔ **And *cannot move the exit code* is now a claim about the BLOCK, not about the run:** since DL-368 an entry can point at a `github.webhook_subscription` **fail**, so an install printing that entry exits non-zero — because of the finding, never because of the block |
-| `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope). Above the intents, the webhook 5xx record (DL-409): a run in progress on every call, a recovery once per consumer. Silent when there is neither. Reads files only, so it runs with the DB down |
+| `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope). Above the intents, the webhook 5xx record (DL-409): a run in progress at most once per `WebhookOutageRecord::WARNING_REPEAT_SECONDS` per consumer, a recovery once per consumer. Silent when there is neither. Reads files only, so it runs with the DB down |
 | `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
 | `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |
 | `bridge:stats` (`StatsCommand`) | Event / dispatch counts, plus the writeback board-divergence counts (DL-300 — printed every run, zero included) and, when the table is non-empty, a per-divergence first-seen / last-seen / observation-count detail (DL-347, capped at the 10 most recently seen with the total named) |
