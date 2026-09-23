@@ -8,7 +8,9 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
+use App\Bridge\Tools\DispatchOutcome;
 use App\Bridge\Tools\ServingProcessEnvironment;
+use App\Bridge\Tools\ToolCallBody;
 use App\Bridge\Tools\ToolsCallStdio;
 
 /**
@@ -115,21 +117,23 @@ class ToolsCallCommand extends BridgeCommand
             return $this->emit($io, ['ok' => false, 'error' => $stdinError], 1);
         }
 
-        $decoded = json_decode($raw, true);
-        if (! is_array($decoded)) {
-            return $this->emit($io, ['ok' => false, 'error' => 'STDIN must be a JSON object {tool, args?, client_version?}'], 1);
+        // The same parse, and so the same refusal in the same words, as the HTTP door (card#10106).
+        $decoded = ToolCallBody::parse($raw);
+        if ($decoded instanceof DispatchOutcome) {
+            return $this->emit($io, $decoded->body(), $decoded->exitCode());
         }
+        // A missing or non-string `tool` is the dispatcher's refusal, as it is for the HTTP door.
         $tool = $decoded['tool'] ?? null;
-        if (! is_string($tool) || $tool === '') {
-            return $this->emit($io, ['ok' => false, 'error' => 'request must carry a non-empty `tool`'], 1);
+        if (! is_string($tool)) {
+            $tool = '';
         }
         $args = $decoded['args'] ?? [];
         // ⛔ OPTIONAL, AND NOTHING ABOUT IT CAN REFUSE A CALL (card#8974 / DL-364). Absent —
         // which is what every client older than the first reporting snapshot sends — or of
         // any shape {@see ClientVersion} will not take, it becomes null and the call
         // proceeds byte-identically to how it did before the field existed. There is
-        // deliberately no arm above this that inspects it: the two things this door refuses
-        // on are a non-object body and a missing `tool`, exactly as before.
+        // deliberately no arm above this that inspects it: what refuses a request before a
+        // tool runs is the body parse and the dispatcher's `tool` check, never this field.
         $clientVersion = ClientVersion::fromCall($decoded['client_version'] ?? null);
 
         // Measured at the dispatch, not at boot: what is being recorded is a fact about the
