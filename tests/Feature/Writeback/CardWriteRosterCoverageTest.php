@@ -275,18 +275,23 @@ class CardWriteRosterCoverageTest extends TestCase
         // made that list the POPULATION — so the list itself is now the artifact that can go
         // silently short, and the trigger is ordinary: an anchor assertion fires on a doc
         // reword, and the cheapest green is to delete the row that fired.
-        // ⛔ SETS, never a count: what must not be lost is that BOTH documents are still read
-        // and that both sides of {@see ROSTERS} — its keys and its values — are still published
-        // by something. ⚠ It does not witness the roster doc's PRIMITIVES clause alone: dropping
-        // that one leaves the contract clause publishing the keys and the row clause naming the
-        // doc, and binding it would mean writing the clause list down a second time.
+        // ⛔ SETS, never a count, and the first leg is keyed on the SUBJECT rather than on bare
+        // presence: what must not be lost is that BOTH documents are still publishing the
+        // PRIMITIVES, and that both sides of {@see ROSTERS} — its keys and its values — are still
+        // published by something. Asking only which documents are READ let the roster doc's
+        // primitives clause be dropped and stay green, because that doc's row clause still named
+        // it; the discriminator here is derived from {@see ROSTERS}, so no clause list is written
+        // down a second time.
         $this->assertSame(
             [
-                'documents read' => self::asSet([self::ROSTER_DOC, self::CONTRACT_DOC]),
+                'documents publishing the PRIMITIVES' => self::asSet([self::ROSTER_DOC, self::CONTRACT_DOC]),
                 'sides of ROSTERS published' => self::asSet(array_merge(array_keys(self::ROSTERS), array_values(self::ROSTERS))),
             ],
             [
-                'documents read' => self::asSet(array_column($published, 'doc')),
+                'documents publishing the PRIMITIVES' => self::asSet(array_column(array_filter(
+                    $published,
+                    static fn (array $clause): bool => self::asSet($clause['held']) === self::asSet(array_keys(self::ROSTERS)),
+                ), 'doc')),
                 'sides of ROSTERS published' => self::asSet(array_merge(...array_column($published, 'held'))),
             ],
             'the published-reach check has lost part of its own population: this test asserts NOTHING about a clause '
