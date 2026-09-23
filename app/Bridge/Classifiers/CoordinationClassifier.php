@@ -12,8 +12,11 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
+use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CoordLaneStages;
+use App\Bridge\Writeback\PrCorrelationComment;
+use App\Bridge\Writeback\ProtocolInvalidLabeler;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 
@@ -42,6 +45,10 @@ use App\Bridge\Writeback\WritebackMapping;
  *     messages, addressed per DL-022, shared-identity re-attributed. Optional
  *     `drop_title_all_of` drops a subject whose title contains every substring of
  *     any configured group (bookkeeping-title noise, e.g. a back-merge anchor).
+ *     On a repo listed in `bridge.protocol_invalid_label.repos` (DL-408, empty by
+ *     default), a created comment it cannot attribute also emits ONE
+ *     `github_protocol_invalid_label` target, whether or not the serving agent is
+ *     addressed — {@see protocolInvalidLabelTargets()}.
  *   - `impl-ci-wake`  — github push→release-branch (release-landed) + workflow_run
  *     wake-worthy CI (failure-class conclusions, provenance-success). DEFAULT
  *     surgical: hand-emits a channel_push ONLY for wake-worthy events, else
@@ -376,6 +383,42 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $labels = $this->labels($eventType, $payload);
         $me = $agent->agentName;
 
+        // §1 shared-identity attribution — TWO facts, kept apart (DL-252): who
+        // ACTED (null ⇒ this event carries no evidence of it) and whose SUBJECT
+        // this is. The dispatcher's echo check reads the FIRST (DL-253) — a drop
+        // claims this agent wrote the event, which only `actor` can evidence.
+        //
+        // Computed BEFORE the recipient gate (DL-408) because it is a fact about the
+        // EVENT, not about this agent: it reads nothing the gate decides, and the
+        // `protocol:invalid` label below is owed whether or not this agent is addressed.
+        $attribution = $this->attribute(
+            $actor, $ctx->scopeId, $labels, $subject['body'],
+            subjectIsComment: $subject['kind'] === 'comment',
+            actorAuthoredSubject: $subject['authored_by_actor'],
+            cfg: $cfg,
+        );
+        $acting = $attribution['actor'];
+        $threadAuthor = $attribution['thread_author'];
+
+        // THE ATTRIBUTION MARKER IS A VALUE, NEVER AN ABSENT KEY. `actor.name` is
+        // already nullable and null there means "the registry could not resolve it",
+        // so an absent field and a null one read identically — and to a reading
+        // agent an absent field renders as nothing at all, which is indistinguishable
+        // from a summary that simply did not mention who acted. That ambiguity is
+        // what let a seat supply an actor from context and post it as fact
+        // (roundtable #209). Three states, always present, always one of these:
+        //   resolved       — `from` names the agent that performed THIS event
+        //   unresolved     — this action could carry actor evidence; none was present
+        //   unattributable — this action carries NO evidence of who acted, and under
+        //                    a shared identity none exists to find
+        $actingName = $acting->name ?? $actor->name;   // null ⇒ nobody is named for this event
+        $attributionState = match (true) {
+            $actingName !== null => 'resolved',
+            $subject['authored_by_actor'] => 'unresolved',
+            default => 'unattributable',
+        };
+        $labelTargets = $this->protocolInvalidLabelTargets($ctx, $subject, $attributionState);
+
         // Recipient gate (DL-022): membership is label-authoritative. Which label
         // classes grant live-wake membership is config-driven via `wake_membership`
         // — DEFAULT `[to_me, to_all, comment_to, bare_reply_to_own_thread]` (DL-235 added
@@ -440,40 +483,12 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // `impl_non_wake_disposition`; DL-215). Only the recipient gate softens: the
         // earlier subject/noise drops already returned null for both dispositions.
         if (! $forMe && $cfg->string('coord_non_addressed_disposition', 'drop') !== 'inbox_stage') {
-            return null;
+            // Not this agent's message — but the label is the event's, so it still goes out
+            // (DL-408). With the label off this is `null`, exactly as before.
+            return $labelTargets === [] ? null : new ClassifyResult(targets: $labelTargets);
         }
 
-        // §1 shared-identity attribution — TWO facts, kept apart (DL-252): who
-        // ACTED (null ⇒ this event carries no evidence of it) and whose SUBJECT
-        // this is. The dispatcher's echo check reads the FIRST (DL-253) — a drop
-        // claims this agent wrote the event, which only `actor` can evidence.
-        $attribution = $this->attribute(
-            $actor, $ctx->scopeId, $labels, $subject['body'],
-            subjectIsComment: $subject['kind'] === 'comment',
-            actorAuthoredSubject: $subject['authored_by_actor'],
-            cfg: $cfg,
-        );
-        $acting = $attribution['actor'];
-        $threadAuthor = $attribution['thread_author'];
         $who = $this->displayName($acting, $actor);
-
-        // THE ATTRIBUTION MARKER IS A VALUE, NEVER AN ABSENT KEY. `actor.name` is
-        // already nullable and null there means "the registry could not resolve it",
-        // so an absent field and a null one read identically — and to a reading
-        // agent an absent field renders as nothing at all, which is indistinguishable
-        // from a summary that simply did not mention who acted. That ambiguity is
-        // what let a seat supply an actor from context and post it as fact
-        // (roundtable #209). Three states, always present, always one of these:
-        //   resolved       — `from` names the agent that performed THIS event
-        //   unresolved     — this action could carry actor evidence; none was present
-        //   unattributable — this action carries NO evidence of who acted, and under
-        //                    a shared identity none exists to find
-        $actingName = $acting->name ?? $actor->name;   // null ⇒ nobody is named for this event
-        $attributionState = match (true) {
-            $actingName !== null => 'resolved',
-            $subject['authored_by_actor'] => 'unresolved',
-            default => 'unattributable',
-        };
 
         // The rendered summary is the ONLY surface a reading agent consumes, so it
         // draws the ACTOR-vs-AUTHOR distinction whose absence misled one: on
@@ -525,9 +540,109 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         return new ClassifyResult(
             intents: [$intent],
-            targets: $forMe ? $this->wakePush($intent, $ctx) : [],   // non-addressed inbox_stage: staged, never woken
+            targets: [...($forMe ? $this->wakePush($intent, $ctx) : []), ...$labelTargets],   // non-addressed inbox_stage: staged, never woken
             reattributedActor: $acting,   // the ACTOR fact, never the thread author (DL-253)
         );
+    }
+
+    /**
+     * The `protocol:invalid` label target (card#10218 / DL-408): one, for a COMMENT whose attribution
+     * is `unresolved`, on a repo `bridge.protocol_invalid_label.repos` lists; otherwise none.
+     *
+     * ⛔ THE DECISION IS THE INSTALL'S, NOT THE SERVING AGENT'S, and that is what makes the label
+     * honest. Every subscribed agent classifies the event independently, the write is repo-global,
+     * and the label is never removed (DL-408 decision 4) — so a predicate keyed on the serving
+     * agent's own config is an OR across agents: one agent that cannot attribute would label a
+     * comment another agent attributes fine, permanently, in the very queue the seats sweep. So the
+     * two per-agent inputs are read over EVERY agent subscribed to this scope ({@see installExempts}),
+     * which makes this a function of the EVENT and the INSTALL only: every agent computes the same
+     * answer, and `bridge:replay --agent x` computes it too.
+     *
+     * The serving agent's `$attributionState` is the cheap half, and it is necessary but not
+     * sufficient: `unresolved` on a comment means the action wrote the body ({@see AUTHORING_ACTIONS}
+     * — `created`, so an `edited` or `deleted` comment is never this state) and this agent named
+     * nobody. Of the three attribution inputs two are install-level already (the body `FROM:` line
+     * and the registry, built from every agent YAML); only `scope_author_map` is per-agent, so it is
+     * the one attribution leg {@see installExempts} widens to every agent. No protocol rule is checked anywhere:
+     * the label asserts "the install could not attribute this" and nothing else.
+     *
+     * The bridge's OWN comment — the DL-390 correlation report, the only COMMENT it posts to GitHub
+     * (its other GitHub write adds a label, which carries no body to attribute) — has no `FROM:`
+     * line and would otherwise be labelled wherever a writeback repo is also a coordination scope;
+     * it is recognised by the marker it starts with.
+     *
+     * Every subscribed agent emits this same target for the same comment; the labeler writes once.
+     *
+     * @param  array{kind:string,number:int|string,title:string,body:string,comment_id?:int|string|null}  $subject
+     * @return list<ReactionTarget>
+     */
+    private function protocolInvalidLabelTargets(ClassifyContext $ctx, array $subject, string $attributionState): array
+    {
+        if ($subject['kind'] !== 'comment' || $attributionState !== 'unresolved') {
+            return [];
+        }
+        if (PrCorrelationComment::isBridgePost($subject['body']) || ! ProtocolInvalidLabeler::enabledFor($ctx->scopeId)) {
+            return [];
+        }
+        if (! is_int($subject['number']) || $subject['number'] < 1) {
+            return [];   // no issue to label
+        }
+        // LAST, deliberately: with the opt-in unset `enabledFor()` above already returned, so an
+        // install that has not asked for the label reads no agent config here. What that does and
+        // does not establish about byte-identity with a pre-DL-408 build is bounded in DL-408 2a.
+        if ($this->installExempts($ctx, $subject['title'])) {
+            return [];
+        }
+
+        return [ReactionTarget::make(
+            ProtocolInvalidLabeler::HANDLER,
+            $ctx->scopeId.'#'.$subject['number'],
+            payload: ['repo' => $ctx->scopeId, 'number' => $subject['number'], 'comment_id' => $subject['comment_id'] ?? null],
+        )];
+    }
+
+    /**
+     * Does ANY agent subscribed to this scope declare something that exempts this subject from the
+     * `protocol:invalid` label (card#10218 / DL-408)? The two per-agent declarations the label's
+     * contract states at install level:
+     *
+     *   - `scope_author_map[<scope>]` — "one agent does everything on this repo". An agent that
+     *     declares it ATTRIBUTES every comment here, so the install can attribute this one, whoever
+     *     is serving. ({@see attribute} applies the serving agent's own entry; this sees the rest.)
+     *   - `drop_title_all_of` — "a subject with this title is not a coordination message". The
+     *     declaring agent drops the event before the label is considered; an agent that does not
+     *     declare it must not label what the install already called noise.
+     *
+     * Read from the agents' own YAMLs through the SAME registry the dispatcher subscribes from, so
+     * the population is every agent SUBSCRIBED to this scope — the set `DispatchService` serves,
+     * including on a `bridge:replay --agent <one>`, which serves one agent and must not thereby
+     * change what the label MEANS. Deliberately NOT narrowed to "agents running this classifier":
+     * a declaration is read from an agent's config whatever classifier it names, which needs no
+     * classifier-class introspection and errs toward NOT writing a permanent label.
+     * ⛔ THE DELIVERY'S REGISTRY, NOT A FRESH ONE. `SubscriptionRegistry` memoizes its parse per
+     * INSTANCE, so constructing one here would re-glob the config dir and re-parse every agent YAML
+     * once per SERVING agent — N agents on a scope, N² `AgentConfig::load()` calls per label-eligible
+     * event, on the FPM request path — while the dispatcher is holding an instance that already
+     * parsed exactly these files at the top of this delivery (that read is what found the agents
+     * being served). So the config dir is walked once per DELIVERY. Outside the dispatch loop
+     * `$ctx->subscriptions` is null and this builds its own, which is the same answer at the old
+     * cost. Either way a malformed config fails the delivery closed before any classify runs, so
+     * these are known-good parses; one rewritten malformed mid-delivery would throw here and be
+     * treated as any classify throw is — recorded against this agent's dispatch, acked 200,
+     * replayable — never a new failure class.
+     */
+    private function installExempts(ClassifyContext $ctx, string $title): bool
+    {
+        $registry = $ctx->subscriptions ?? new SubscriptionRegistry((string) config('bridge.config_dir'));
+        $agents = $registry->subscribedTo($ctx->provider, $ctx->scopeId);
+        foreach ($agents as $agent) {
+            if ($this->scopeAuthor($agent->classifierConfig, $ctx->scopeId) !== null
+                || $this->titleMatchesDropGroup($title, $agent->classifierConfig)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // =====================================================================
@@ -1533,7 +1648,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             return ['actor' => null, 'thread_author' => $threadAuthor];
         }
 
-        $mapped = $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
+        $mapped = $this->scopeAuthor($cfg, $scopeId);
 
         $actorEvidence = null;
         if ($actorAuthoredSubject) {
@@ -1544,6 +1659,17 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             'actor' => $this->named($actor, $mapped ?? $actorEvidence),
             'thread_author' => $threadAuthor,
         ];
+    }
+
+    /**
+     * The agent a `scope_author_map` entry declares as the sole author on `$scopeId`, or null. The
+     * map's keys are lowercased at parse ({@see ClassifierConfig}), so the lookup lowercases too —
+     * in ONE place, because two readers apply it now: this classifier's own attribution and the
+     * install-level read {@see installExempts} makes over every subscribed agent's map.
+     */
+    private function scopeAuthor(ClassifierConfig $cfg, string $scopeId): ?string
+    {
+        return $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
     }
 
     /**
