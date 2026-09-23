@@ -235,18 +235,24 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * A step's declared `env:` LITERALS — what GitHub Actions exports into the step's
-     * shell on top of whatever the runner's own environment holds. The `${{ … }}`
-     * entries are this gate's INPUTS (title, head ref) and are supplied by
-     * {@see runScriptText()} instead, so filtering them out is not a convenience: an
+     * The declared `env:` LITERALS a step actually runs under — the JOB's block, then
+     * the step's own on top, which is the order GitHub Actions composes them in. Read
+     * as a composition and not off one level, because that is exactly what a pin moved
+     * from a step to the job (or back) changes, and a leg reading only the step's block
+     * would report the job-level pin as absent.
+     *
+     * The `${{ … }}` entries are this gate's INPUTS (title, head ref) and are supplied
+     * by {@see runScriptText()} instead, so filtering them out is not a convenience: an
      * unexpanded expression exported as a literal would silently become the title.
      *
      * @return array<string,string>
      */
     private function stepDeclaredEnv(string $namePrefix): array
     {
+        $job = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'))['jobs']['lint-title'];
+
         return array_filter(
-            array_map('strval', $this->step($namePrefix)['env'] ?? []),
+            array_map('strval', array_merge($job['env'] ?? [], $this->step($namePrefix)['env'] ?? [])),
             fn (string $v) => ! str_contains($v, '${{'),
         );
     }
@@ -1590,12 +1596,22 @@ class PrTitleLintTest extends TestCase
      * hijack this step exists to red. Row 3 is that false green, and it is why the
      * step's `env:` pins `LC_ALL` instead of leaving the runner to decide.
      *
-     * So this leg measures two different things and says which is which: the SCRIPT is
+     * ⛔ AND IT IS NOT ONE STEP'S DEFECT. The sibling audit found the CLOSURE step
+     * answering `OK: the title carries a closing form naming card 9996` about a title
+     * that correlates card 1234 — worse than the require step's, because that one at
+     * least greened a card the title NAMED. So the pin is declared once at
+     * `jobs.lint-title.env`, not per step: three step-level pins are the same fix
+     * written three times and the fourth step someone adds needs a fourth. This leg
+     * drives EVERY step of the job through the composed env for that reason — a new
+     * step arrives already covered, and one that overrides the pin reds here.
+     *
+     * So it measures two different things and says which is which: the SCRIPTS are
      * still collation-sensitive (rows, both locales, pin bypassed — the ranges were
-     * not narrowed), and the STEP is not (the same rows through {@see runStepAsCi()},
-     * which applies the declared `env:` as Actions does). The mutation at the end —
-     * the pin stripped, everything else identical — is what makes the second half
-     * attributable to the pin rather than to a box that happens to answer alike.
+     * not narrowed), and the STEPS are not (the same rows through
+     * {@see runStepAsCi()}, which applies the declared `env:` as Actions does). The
+     * mutation at the end — the pin stripped, everything else identical — is what
+     * makes the second half attributable to the pin rather than to a box that happens
+     * to answer alike.
      */
     public function test_the_collation_pin_is_what_stops_the_runners_locale_deciding_a_verdict(): void
     {
@@ -1610,35 +1626,53 @@ class PrTitleLintTest extends TestCase
         $this->assertSame(1234, CardTokenGrammar::parse('docs: port '."\u{e9}".'card-1234 guidance (card#9996)'),
             'the authority selects the FOREIGN leftmost token — that is what row 3 says the gate must red');
 
-        // [title, branch, the SCRIPT's rc under C.UTF-8, and under en_US.UTF-8]
+        // [step, title, branch, the SCRIPT's rc under C.UTF-8, and under en_US.UTF-8]
         $rows = [
             // trailing ([^0-9]|$), card arm — a Unicode digit after the id is not a
             // boundary under a collation locale, so the token stops being bounded.
-            ['card-4'."\u{0663}", 'fix/4-slug', 0, 1],
+            [self::REQUIRE_STEP, 'card-4'."\u{0663}", 'fix/4-slug', 0, 1],
             // leading (^|[^0-9a-z_]) — here the collation-wide range is `a-z`, not
             // the digits, which is why narrowing the digit class did not move it.
-            ["\u{e9}".'card-44', 'fix/44-slug', 0, 1],
+            [self::REQUIRE_STEP, "\u{e9}".'card-44', 'fix/44-slug', 0, 1],
             // ⛔ THE FALSE GREEN, and the row every earlier one structurally could not
             // be: each of those carries the branch's OWN card, so presence and
             // selection agree whatever the collation does. Here the swallowed letter
             // hides a FOREIGN leftmost token, the selection scan skips to the branch's
             // own, and the gate certifies a merge that moves card 1234.
-            ['docs: port '."\u{e9}".'card-1234 guidance (card#9996)', 'fix/9996-slug', 1, 0],
+            [self::REQUIRE_STEP, 'docs: port '."\u{e9}".'card-1234 guidance (card#9996)', 'fix/9996-slug', 1, 0],
+            // ⛔ THE SAME DEFECT IN THE CLOSURE STEP, and the worse half of it: that
+            // step reads the title's leftmost card to decide WHICH card the PR is
+            // about, so the swallowed letter makes it answer about card 9996 — with a
+            // closing form naming 9996 present — while the writeback would close 1234.
+            // It greens a PR that closes a card nobody claimed.
+            [self::CLOSURE_STEP, 'docs: port '."\u{e9}".'card-1234 guidance (closes card#9996)', 'fix/9996-slug', 1, 0],
         ];
 
-        foreach ($rows as [$title, $branch, $cRc, $enRc]) {
-            $this->assertSame($cRc, $this->runRequireStep($title, $branch, 'C.UTF-8'),
+        foreach ($rows as [$step, $title, $branch, $cRc, $enRc]) {
+            $this->assertSame($cRc, $this->runStep($step, $title, $branch, 'C.UTF-8')[0],
                 "'{$title}': the script's C.UTF-8 answer, which is the one that agrees with the authority");
-            $this->assertSame($enRc, $this->runRequireStep($title, $branch, 'en_US.UTF-8'),
+            $this->assertSame($enRc, $this->runStep($step, $title, $branch, 'en_US.UTF-8')[0],
                 "'{$title}': the script is still collation-sensitive — the ranges were pinned, not narrowed");
 
             // THE SHIPPED ANSWER: the same script under the same ambient locale, with
-            // the step's declared env applied. The pin decides, so both locales give
-            // the C.UTF-8 answer.
+            // the declared env applied. The pin decides, so both locales give the
+            // C.UTF-8 answer.
             foreach (['C.UTF-8', 'en_US.UTF-8'] as $ambient) {
-                $this->assertSame($cRc, $this->runStepAsCi(self::REQUIRE_STEP, $title, $branch, $ambient)[0],
+                $this->assertSame($cRc, $this->runStepAsCi($step, $title, $branch, $ambient)[0],
                     "'{$title}': under ambient {$ambient} the STEP must answer what C.UTF-8 answers — the pin is the whole point");
             }
+        }
+
+        // EVERY STEP OF THE JOB, derived rather than the two with rows above: a step
+        // added later inherits the pin from the job, and one that declares its own
+        // `LC_ALL` on top takes it away again. Both are caught here rather than by a
+        // reviewer noticing.
+        $steps = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'))['jobs']['lint-title']['steps'];
+        $this->assertNotEmpty($steps);
+        foreach ($steps as $s) {
+            $name = (string) ($s['name'] ?? '');
+            $this->assertSame('C.UTF-8', $this->stepDeclaredEnv($name)['LC_ALL'] ?? null,
+                "'{$name}' does not run under the C.UTF-8 pin — its bracket ranges are the runner's to resolve");
         }
 
         // ⛔ THE DL ROW CLOSED rather than moving a third time. It was pinned here
@@ -1677,14 +1711,14 @@ class PrTitleLintTest extends TestCase
         // about the PIN rather than about this box. The declared env is taken from the
         // workflow and the pin removed from it; nothing else changes. A pin nothing can
         // falsify is a decoration, and the FALSE GREEN is the row it must come back on.
-        $env = $this->stepDeclaredEnv(self::REQUIRE_STEP);
-        $this->assertArrayHasKey('LC_ALL', $env, 'the require step declares no LC_ALL — the collation is the runner\'s again');
-        $this->assertSame('C.UTF-8', $env['LC_ALL'], 'the pin must be a C-family collation, or it pins the defect in place');
-        unset($env['LC_ALL']);
+        foreach ($rows as [$step, $title, $branch, , $enRc]) {
+            $env = $this->stepDeclaredEnv($step);
+            $this->assertSame('C.UTF-8', $env['LC_ALL'] ?? null,
+                'the pin must be a C-family collation, or it pins the defect in place');
+            unset($env['LC_ALL']);
 
-        foreach ($rows as [$title, $branch, , $enRc]) {
             $this->assertSame($enRc,
-                $this->runScriptText($this->stepScript(self::REQUIRE_STEP), $title, $branch, 'en_US.UTF-8', 'dev', $env)[0],
+                $this->runScriptText($this->stepScript($step), $title, $branch, 'en_US.UTF-8', 'dev', $env)[0],
                 "'{$title}': with the pin gone the runner's locale decides again — this is what the pin is holding shut");
         }
     }

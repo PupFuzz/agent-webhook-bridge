@@ -131,6 +131,23 @@ jobs:
   lint-title:
     # No checkout — the job reads only the event payload.
     runs-on: ubuntu-latest
+    env:
+      # THE COLLATION IS PINNED FOR THE WHOLE JOB, not inherited from the runner
+      # (card#10031). bash resolves a bracket RANGE by collation, and every step below
+      # decides which card a PR is about with one: under en_US.UTF-8 a non-ASCII letter
+      # stops being a boundary in `(^|[^0-9a-z_])`, so the leftmost card token is
+      # skipped and the wrong card is selected. Measured, both directions, on the two
+      # steps with teeth — `docs: port écard-1234 guidance (card#9996)` on a
+      # `fix/9996-slug` branch GREENS the require step's hijack check, and
+      # `… (closes card#9996)` makes the closure step answer "OK: the title carries a
+      # closing form naming card 9996" about a title that correlates card 1234.
+      # HERE rather than on each step: three step-level pins are the same fix written
+      # three times, and the fourth step someone adds would need a fourth. Narrowing
+      # the ranges instead would make the gate more permissive (card#5300), and DL-272
+      # already records this job giving a host-dependent answer. PrTitleLintTest drives
+      # EVERY step of this job through the env Actions composes, and mutates the pin
+      # away to show both false greens come back.
+      LC_ALL: C.UTF-8
     steps:
       - name: Warn on a card or DL token that names nothing (DL-234)
         # UNCONDITIONAL — deliberately outside the card-id branch gate the step
@@ -215,16 +232,6 @@ jobs:
         # runner without bash on PATH would otherwise silently fall back to sh.
         shell: bash
         env:
-          # THE COLLATION IS PINNED, not inherited from the runner (card#10031). bash
-          # resolves a bracket RANGE by collation, and `token=` below made one of them
-          # decide SELECTION: under en_US.UTF-8 the leading `[^0-9a-z_]` stops seeing a
-          # non-ASCII letter as a boundary, so `écard-1234 … (card#9996)` on a 9996
-          # branch GREENS — the exact hijack this step exists to red — while C.UTF-8
-          # reds it. One pin here beats narrowing N ranges (which would make the gate
-          # more permissive, card#5300), and DL-272 already records this step giving a
-          # host-dependent answer. Mutated in PrTitleLintTest: with the pin gone the
-          # false green comes back.
-          LC_ALL: C.UTF-8
           TITLE: ${{ github.event.pull_request.title }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
@@ -268,7 +275,7 @@ jobs:
           # digits: enumerating it would SKIP a Unicode-digit branch instead of
           # enforcing against it, which makes the gate MORE permissive — a hard gate,
           # measured in PrTitleLintTest under card#5300, not fixed here. What the
-          # runner's locale decides is no longer this: the step's `env:` pins the
+          # runner's locale decides is no longer this: the JOB's `env:` pins the
           # collation (card#10031), so the range resolves to ASCII wherever it runs.
           #
           # DISCLOSED, not overlooked: with both optionals empty the accepted shape
@@ -381,8 +388,8 @@ jobs:
           # collation that admits a Unicode digit makes `card_id` one. It is left EMPTY
           # rather than carried into the compare, and the `-n` test below is the other
           # half of that: empty is "no id", never "an id that matched". The step's
-          # `env:` pin is what keeps a runner from reaching this state at all; the two
-          # are independent, and this one is what holds if the pin is ever dropped.
+          # job-level `env:` pin is what keeps a runner from reaching this state at
+          # all; the two are independent, and this one holds if the pin is dropped.
           card_id_n=''
           if [[ "$card_id" =~ ^[0123456789]+$ ]]; then
             card_id_n=$(fold_id "$card_id")

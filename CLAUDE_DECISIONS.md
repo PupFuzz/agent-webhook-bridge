@@ -6993,19 +6993,25 @@ diagnostic on the failure path.
   that kept the four-digit bound (*repairing it changes what the gate accepts*) retired with the
   accept arm it was written for. The two collation FALSE REDS on the card arm close as a side effect
   of the `LC_ALL` pin below. The leading-zero FALSE RED survives, still pinned, still gated.
-- ⚠ **THE STEP PINS ITS COLLATION (`env: LC_ALL: C.UTF-8`), and that is an accept-set change of its
-  own.** bash resolves a bracket RANGE by collation, and this card's `token=` made one of them decide
-  SELECTION. Measured: `TITLE='docs: port écard-1234 guidance (card#9996)'` on `fix/9996-slug` reds
-  under `C.UTF-8` and **GREENS under `en_US.UTF-8`** — the swallowed `é` stops being a boundary, the
-  scan skips the FOREIGN leftmost token, and the gate certifies the exact hijack this card exists to
-  red. card#5300 had audited those ranges and left them on the reasoning that a NEGATED class only
-  ever REDS; that reasoning died with the selection conjunct, on the same line it was written about.
-  The fix is one pin on the step rather than N narrowed ranges (narrowing them makes the gate MORE
-  permissive, which card#5300 gates), and it is watched fail: with the pin stripped from the
-  workflow's own `env:`, the false green comes back under an ambient `en_US.UTF-8`. **Nothing a
-  C-family runner accepted moves** — GitHub's `ubuntu-latest` is one — and the step's answers stop
-  depending on which runner it lands on (DL-272 records this step giving a host-dependent answer
-  once already).
+- ⚠ **THE JOB PINS ITS COLLATION (`jobs.lint-title.env: LC_ALL: C.UTF-8`), and that is an accept-set
+  change on TWO steps.** bash resolves a bracket RANGE by collation, and this card's `token=` made one
+  of them decide SELECTION. Measured: `TITLE='docs: port écard-1234 guidance (card#9996)'` on
+  `fix/9996-slug` reds under `C.UTF-8` and **GREENS under `en_US.UTF-8`** — the swallowed `é` stops
+  being a boundary, the scan skips the FOREIGN leftmost token, and the gate certifies the exact
+  hijack this card exists to red. card#5300 had audited those ranges and left them on the reasoning
+  that a NEGATED class only ever REDS; that reasoning died with the selection conjunct, on the same
+  line it was written about.
+  ⛔ **The sibling audit found the CLOSURE step carrying the same defect and WORSE**, which is why the
+  pin is declared on the JOB and not on the step that raised it: the same title with a closing form
+  (`… (closes card#9996)`) makes that step answer `OK: the title carries a closing form naming card
+  9996` about a PR the writeback closes card 1234 on — the require step at least greened a card the
+  title NAMED. Three step-level pins would be one fix written three times, and the fourth step
+  someone adds would need a fourth.
+  Watched fail in both directions and on both steps: with the pin gone from the job, each case greens
+  again under an ambient `en_US.UTF-8`; with a step overriding the pin, the leg reds on that step.
+  **Nothing a C-family runner accepted moves** — GitHub's `ubuntu-latest` is one — and the job's
+  answers stop depending on which runner it lands on (DL-272 records this job giving a
+  host-dependent answer once already).
 - **The refusal has FOUR arms because the ACTION differs at each, and three of them used to inherit
   another arm's advice.** A `card`-stem branch was told its card "silently never moves" while the
   step's own selection line said otherwise; a present-but-unparseable token (`card4`) was told to
