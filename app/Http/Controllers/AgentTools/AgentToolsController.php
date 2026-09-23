@@ -5,9 +5,12 @@ namespace App\Http\Controllers\AgentTools;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolAgentResolver;
+use App\Bridge\Tools\BoardToolArgs;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientVersion;
+use App\Bridge\Tools\DispatchOutcome;
+use App\Bridge\Tools\ToolCallBody;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -48,10 +51,26 @@ final class AgentToolsController
             return $this->refuse(401, 'unrecognized bearer token');
         }
 
-        // The tool key is extracted from the HTTP body here (this door's transport
-        // shape); everything after agent-resolution — tool resolution, args
-        // validation, writeback, invocation, exception→status mapping — lives in
-        // the shared dispatcher so the ssh door yields the byte-identical body.
+        // The body is parsed by the ONE primitive both doors share (card#10106), on the raw
+        // bytes, before any field is read: `input()` sits on `Request::json()`, which turns a
+        // body that never parsed into `[]` and would answer it with the `tool` refusal below.
+        // ⛔ The Content-Type refusal is this door's own and comes first because, without a
+        // JSON Content-Type, `input()` reads form fields and the query string rather than the
+        // body — so a body that parses would still reach the dispatcher with no `tool`.
+        if (! $request->isJson()) {
+            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::SHAPE);
+        }
+        $parseResult = ToolCallBody::parse($request->getContent());
+        if ($parseResult instanceof DispatchOutcome) {
+            return response()->json($parseResult->body(), $parseResult->status);
+        }
+        // ⛔ Only the REFUSAL is used here; the decoded object is deliberately discarded.
+
+        // The fields are still read through `input()`, deliberately: that is the value the
+        // global TrimStrings / ConvertEmptyStringsToNull middleware has normalised, which is
+        // what {@see BoardToolArgs} reproduces for the ssh door. Everything after this —
+        // tool resolution, args validation, writeback, invocation, exception→status mapping —
+        // lives in the shared dispatcher so the ssh door yields the byte-identical body.
         $toolName = $request->input('tool');
         if (! is_string($toolName)) {
             $toolName = '';

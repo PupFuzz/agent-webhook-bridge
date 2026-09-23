@@ -2802,21 +2802,25 @@ the work distinguishes those.
 - **The correlation-token grammars.** `CardTokenGrammar` / `DlTokenGrammar` are well-built — the
   operator-facing accept-set is *derived by running the pattern* (`describe()`), which is the
   right answer. One real gap remains and is **separate from this program**:
-  `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls both token grammars: the card
-  arm has no 2-digit floor (⇒ glued `card4` passes CI but never correlates — a silent green) and
-  the DL arm is four-digit-bounded where `DlTokenGrammar` is unbounded (⇒ `DL-12345` false-reds).
-  **Both arms have since been given the answer-set comparison guard the *warn* leg had (DL-240),
-  so the divergences are re-measured every run rather than remembered — what remains open is
-  repairing them, not observing them.** That workflow has **no checkout and no PHP setup**, so it
-  cannot call the PHP authority without adding both; extending the answer-set guard was the
-  correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard gate); one
-  row — the locale-dependent Unicode-digit false green — was approved and fixed under DL-272, the
-  rest are still pinned. **Superseded in part by card#10031:** the DL arm is no longer an accept
-  arm at all (a DL is bound to no one card), so the `DL-12345` false red is gone with it; and the
-  gate leg now also requires that the card the classifier SELECTS is the branch's, which reds the
-  glued `card4` title too, since it selects no card. What stays pinned under card#5300 is the
-  leading-zero false red and the collation-sensitive negated classes — `PrTitleLintTest` holds the
-  current list.
+  `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls both token grammars.
+  **Both arms have the answer-set comparison guard the *warn* leg had (DL-240), so the divergences
+  are re-measured every run rather than remembered.** That workflow has **no checkout and no PHP
+  setup**, so it cannot call the PHP authority without adding both; extending the answer-set guard
+  was the correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard
+  gate). ⚠ **Of the rows this bullet used to enumerate, ONE remains — re-read it before citing it:**
+  - the locale-dependent Unicode-digit false green was approved and fixed under **DL-272**;
+  - the glued-`card4` FALSE GREEN and the four-digit-DL FALSE RED both closed under **card#10031**,
+    and neither was *repaired* — the card arm now SELECTS with the same grammar shape that rejects
+    `card4`, so there is nothing left to disagree with, and the DL arm stopped being an accept arm
+    at all, so its bound can no longer red anything (its residue is a diagnostic sentence that does
+    not appear, pinned as such);
+  - the **leading-zero FALSE RED** is the one still pinned and still gated.
+  ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
+  `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no
+  check in either repo can hold against this authority. This repo owns the CHECK (its
+  `PrTitleLintTest` drives the real classifier); the kanban end NAMES what it cannot verify. Closing
+  the seam means one shared implementation both repos consume — out of this program's scope and not
+  mintable by either repo alone.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
   site to migrate and another chance to re-mint the same card. **LIFTED: Stage 8 has landed.** A
   new leg is now added as a registered `Check`, and `CheckCommandRegistrationTest`'s pinned id list
