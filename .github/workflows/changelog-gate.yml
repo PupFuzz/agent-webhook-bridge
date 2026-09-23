@@ -674,7 +674,7 @@ jobs:
           elif [[ "$title_lc" =~ (^|[^0-9a-z_])card($D$D+)([^0-9]|$) ]]; then
             # The glued form takes 2+ digits (DL-233); `card4` names no card.
             kind=card; id="${BASH_REMATCH[2]}"
-          elif [[ "$title_lc" =~ (^|[^0-9a-z_])dl-($D{1,4})([^0-9]|$) ]]; then
+          elif [[ "$title_lc" =~ (^|[^0-9a-z_])dl-($D+)([^0-9]|$) ]]; then
             kind=dl; id="${BASH_REMATCH[2]}"
           fi
 

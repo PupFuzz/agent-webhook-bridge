@@ -63,17 +63,16 @@ name: PR title correlation-key lint
 #     because the job has no checkout — and it is TIED, not trusted:
 #     `PrTitleLintTest` drives this step's selection against what the REAL classifier
 #     emits as its move target, so the order and the grammar cannot drift.
-#   - ⚠ THE SIBLING COPY IN `kanban-board` CANNOT BE TIED THAT WAY and this is the
-#     one place both ends are named together. That repo's CI has no bridge checkout
-#     and no `CardTokenGrammar` to compare against, so a change HERE reds nothing
-#     THERE. ⛔ THE FAR END'S HALF OF THE DECLARATION IS A DEPENDENCY, NOT A DONE
-#     THING: it is `PupFuzz/kanban-board` PR #721, OPEN and CONFLICTING as of
-#     2026-09-23, so until that merges, that repo's SHIPPED step declares none of
-#     this, is pinned to no table of this grammar's answers, and still accepts a bare
-#     `DL-<number>` as an accept arm of its own. What names the seam from that side
-#     today is kanban card#10062. Closing the seam means one shared implementation
-#     both repos consume; until then, a change to `CardTokenGrammar` or to the
-#     resolution order is a TWO-REPO change.
+#   - ⚠ THE SIBLING COPY IN `kanban-board` CANNOT BE TIED THAT WAY. That repo's CI
+#     has no bridge checkout and no `CardTokenGrammar` to compare against, so a
+#     change HERE reds nothing THERE, and a change to `CardTokenGrammar` or to the
+#     resolution order is a TWO-REPO change. ⛔ THE FAR END'S HALF OF THE
+#     DECLARATION IS A DEPENDENCY, NOT A DONE THING — and WHAT that end ships,
+#     WHICH pull request carries its half and WHAT names the seam from that side
+#     are DATED facts this comment deliberately does not restate: the cross-repo
+#     seam bullet of DL-411 in `CLAUDE_DECISIONS.md` owns them, and it is where to
+#     read them. Closing the seam means one shared implementation both repos
+#     consume.
 #   - A cross-board work item (a board-12 card implemented via a kanban/bridge PR,
 #     e.g. #3765 itself) passes this lint but still will not auto-move —
 #     correlation is deliberately board-scoped 1:1 per repo (DL-174). This checks

@@ -2803,18 +2803,27 @@ the work distinguishes those.
   operator-facing accept-set is *derived by running the pattern* (`describe()`), which is the
   right answer. One real gap remains and is **separate from this program**:
   `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls both token grammars.
-  **Both arms have the answer-set comparison guard the *warn* leg had (DL-240), so the divergences
-  are re-measured every run rather than remembered.** That workflow has **no checkout and no PHP
-  setup**, so it cannot call the PHP authority without adding both; extending the answer-set guard
-  was the correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard
-  gate). ⚠ **Most of the rows this bullet used to enumerate have closed — re-read each before
+  **Both arms' `good=` / `token=` MATCHERS have the answer-set comparison guard the *warn* leg had
+  (DL-240), so THOSE divergences are re-measured every run rather than remembered — ⚠ but the
+  require step's PRESENCE conjunct is written INLINE, and the scan collects only single-quoted
+  `good=` / `token=` assignments standing on their own line, so the presence matcher is outside it
+  BY CONSTRUCTION and its divergences are pinned case by case instead** (`card4` in ARM 3 of
+  `test_each_failure_arm_states_only_what_is_true_of_its_own_fault`, `card#0123` in
+  `test_the_require_step_diverges_from_the_authority_on_a_leading_zero_id_pending_a_gate`) — **a
+  hand-pinned divergence is re-measured only where someone wrote the case.** That workflow has **no
+  checkout and no PHP setup**, so it cannot call the PHP authority without adding both; extending
+  the answer-set guard was the correct fix under that constraint, not a restructure. Tracked as
+  **card#5300** (hard gate). ⚠ **Most of the rows this bullet used to enumerate have closed — re-read each before
   citing it; the ones that have not are the rows below marked *still pinned*:**
   - the locale-dependent Unicode-digit false green was approved and fixed under **DL-272**;
-  - the glued-`card4` FALSE GREEN and the four-digit-DL FALSE RED both closed under **card#10031**,
-    and neither was *repaired* — the card arm now SELECTS with the same grammar shape that rejects
-    `card4`, so there is nothing left to disagree with, and the DL arm stopped being an accept arm
-    at all, so its bound can no longer red anything (its residue — a diagnostic sentence that did
-    not appear — closed with it, the pattern now being the authority's own shape);
+  - the glued-`card4` FALSE GREEN closed **on the SELECTION side only** under **card#10031**, and
+    the four-digit-DL FALSE RED closed with it; neither was *repaired* — the card arm now SELECTS
+    with the same grammar shape that rejects `card4`, so the selection scan has nothing left to
+    disagree with, and the DL arm stopped being an accept arm at all, so its bound can no longer
+    red anything (its residue — a diagnostic sentence that did not appear — closed with it, the
+    pattern now being the authority's own shape). ⚠ **The require step's PRESENCE conjunct still
+    matches `card4`, so THAT divergence is live and hand-pinned rather than answer-set-guarded**
+    (the inline matcher named above);
   - the card arm's two **collation FALSE REDS** closed with the `jobs.lint-title.env: LC_ALL:
     C.UTF-8` pin, which card#10031 added on finding that the same collation GREENS a foreign
     leftmost token once a negated class decides SELECTION — and that the CLOSURE step had the same
@@ -2829,11 +2838,12 @@ the work distinguishes those.
   ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
   `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no
   check in either repo can hold against this authority. This repo owns the CHECK (its
-  `PrTitleLintTest` drives the real classifier); ⛔ the kanban end's declaration is NOT SHIPPED — it
-  is `PupFuzz/kanban-board` PR #721, OPEN and CONFLICTING as of 2026-09-23, and until it merges that
-  repo's shipped step declares none of this and still accepts a bare `DL-<number>`. Closing
-  the seam means one shared implementation both repos consume — out of this program's scope and not
-  mintable by either repo alone.
+  `PrTitleLintTest` drives the real classifier); ⛔ the kanban end's declaration is NOT SHIPPED, and
+  WHAT that end ships, WHICH pull request carries its half and WHAT names the seam from that side
+  are DATED facts this doc does not restate — the cross-repo seam bullet of **DL-411** in
+  `CLAUDE_DECISIONS.md` owns them, and is where to read them. Closing the seam means one shared
+  implementation both repos consume — out of this program's scope and not mintable by either repo
+  alone.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
   site to migrate and another chance to re-mint the same card. **LIFTED: Stage 8 has landed.** A
   new leg is now added as a registered `Check`, and `CheckCommandRegistrationTest`'s pinned id list

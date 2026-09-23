@@ -7000,6 +7000,12 @@ diagnostic on the failure path.
   that kept the four-digit bound (*repairing it changes what the gate accepts*) retired with the
   accept arm it was written for. The two collation FALSE REDS on the card arm close as a side effect
   of the `LC_ALL` pin below. The leading-zero FALSE RED survives, still pinned, still gated.
+  ⚠ **A FOURTH copy of the DL token moves with that bound and it is UN-TIED:** `changelog-gate.yml`
+  spelled the same `{1,4}`, where a longer DL left `kind` empty and the gate silently SKIPPED — the
+  permissive direction — so it now matches the authority's `+`. Nothing re-measures that copy
+  against `DlTokenGrammar` (`ChangelogGateTest` does not reference it), so the agreement is
+  hand-made, not tied; one owner across both workflows is the honest close and is NAMED here, not
+  taken.
 - ⚠ **THE JOB PINS ITS COLLATION (`jobs.lint-title.env: LC_ALL: C.UTF-8`), and that is an accept-set
   change on TWO steps.** bash resolves a bracket RANGE by collation, and this card's `token=` made one
   of them decide SELECTION. Measured: `TITLE='docs: port écard-1234 guidance (card#9996)'` on
