@@ -531,6 +531,116 @@ class WritebackBoardStateCheckTest extends TestCase
         }
     }
 
+    // ---- card#9850 / DL-404: every ADDED declared board's ids are checked against THAT board ----
+
+    /**
+     * An added board's stage map, promote-from set and unpark set are all stage ids of THAT
+     * board, so each is compared to that board's own stages — never to the mapped board's.
+     * Board 13 lacks 97 (its stage map) and 93 (its unpark set); board 8 has every id the
+     * mapped board names, so its own leg stays the all-clear. The mapped board's promote-from
+     * id (50) is not on board 13 and must NOT be reported against it: that set is board 8's.
+     */
+    public function test_an_added_boards_stage_ids_are_checked_against_that_board(): void
+    {
+        $this->fakeBoards([
+            self::BOARD => [50, 51],
+            13 => [94, 95],
+        ]);
+
+        $findings = $this->findings($this->loadedMapping([
+            'board_id' => self::BOARD,
+            'stages' => ['started' => 51],
+            'started_from_stages' => [50],
+            'boards' => ['13' => [
+                'started' => 95,
+                'merged' => 97,
+                'started_from_stages' => [94],
+                'unpark_from_stages' => [93],
+            ]],
+        ]));
+
+        $this->assertContains(
+            ['severity' => Severity::Ok, 'message' => 'writeback: all mapped stage ids exist on board 8 (owner/repo)'],
+            $findings,
+        );
+        $this->assertContains(
+            ['severity' => Severity::Warn, 'message' => 'writeback: mapping for owner/repo references workflow stage id(s) 97, 93 not on board 13 — those moves will 422 (or the started/no-regression guard will silently never match) until fixed'],
+            $findings,
+        );
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/boards/13/preload.json'));
+    }
+
+    /**
+     * The same leg on the key shape `boards` shipped with — a bare stage map. Before this
+     * leg existed an added board's stage ids were compared to NOTHING, so a typo'd id there
+     * was a silent 422 `bridge:check` certified around.
+     */
+    public function test_an_added_boards_bare_stage_map_is_checked_against_that_board(): void
+    {
+        $this->fakeBoards([self::BOARD => [52], 13 => [96]]);
+
+        $findings = $this->findings($this->loadedMapping([
+            'board_id' => self::BOARD,
+            'stages' => ['merged' => 52],
+            'boards' => ['13' => ['opened' => 96, 'merged' => 97]],
+        ]));
+
+        $this->assertContains(
+            ['severity' => Severity::Warn, 'message' => 'writeback: mapping for owner/repo references workflow stage id(s) 97 not on board 13 — those moves will 422 (or the started/no-regression guard will silently never match) until fixed'],
+            $findings,
+        );
+    }
+
+    /**
+     * The control for the legs above: an added board whose ids ARE all on it earns its own
+     * all-clear, so the warn is the ids and not the board.
+     */
+    public function test_an_added_board_whose_ids_are_all_on_it_is_cleared_by_its_own_id(): void
+    {
+        $this->fakeBoards([self::BOARD => [50, 51], 13 => [94, 95, 97]]);
+
+        $findings = $this->findings($this->addedBoardMapping());
+
+        $this->assertContains(
+            ['severity' => Severity::Ok, 'message' => 'writeback: all mapped stage ids exist on board 13 (owner/repo)'],
+            $findings,
+        );
+        $this->assertStringNotContainsString('references workflow stage id(s)', $this->joined($findings));
+    }
+
+    /**
+     * An added board that cannot be read is reported against THAT board — not the mapped
+     * board the per-mapping catch would name — and loses none of the mapped board's findings
+     * already yielded.
+     */
+    public function test_an_unreadable_added_board_is_reported_by_its_own_id_and_keeps_the_mapped_boards_findings(): void
+    {
+        Http::fake(fn (Request $r) => str_contains($r->url(), '/boards/13/')
+            ? Http::response(['message' => 'gone'], 500)
+            : Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'position' => 1.0], ['id' => 51, 'position' => 2.0]]]]], 'meta' => ['total' => 1]]));
+
+        $findings = $this->findings($this->addedBoardMapping());
+
+        $this->assertContains(
+            ['severity' => Severity::Ok, 'message' => 'writeback: all mapped stage ids exist on board 8 (owner/repo)'],
+            $findings,
+        );
+        $unreadable = array_values(array_filter($findings, fn (array $f) => str_starts_with($f['message'], 'writeback: could not read board ')));
+        $this->assertCount(1, $unreadable);
+        $this->assertSame(Severity::Unvalidated, $unreadable[0]['severity']);
+        $this->assertStringStartsWith('writeback: could not read board 13 (owner/repo) with the writeback token', $unreadable[0]['message']);
+    }
+
+    private function addedBoardMapping(): WritebackMapping
+    {
+        return $this->loadedMapping([
+            'board_id' => self::BOARD,
+            'stages' => ['started' => 51],
+            'started_from_stages' => [50],
+            'boards' => ['13' => ['started' => 95, 'merged' => 97, 'started_from_stages' => [94]]],
+        ]);
+    }
+
     // ---- DL-200: the coord-terminal cross-config compare (the residue arms) ----
 
     public function test_the_compare_is_silent_when_the_move_leg_is_off(): void
@@ -850,6 +960,30 @@ class WritebackBoardStateCheckTest extends TestCase
             }
 
             return Http::response(['data' => [], 'meta' => ['total' => $total]]);
+        });
+    }
+
+    /** @param  array<string, mixed>  $mapping  one `writeback.json` mapping, loaded through the real loader */
+    private function loadedMapping(array $mapping): WritebackMapping
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => $mapping]]));
+
+        return WritebackConfig::load($this->dir)->mappingFor(self::REPO);
+    }
+
+    /** @param  array<int, list<int>>  $stagesByBoard  board id => the stage ids its preload returns */
+    private function fakeBoards(array $stagesByBoard): void
+    {
+        Http::fake(function (Request $request) use ($stagesByBoard) {
+            foreach ($stagesByBoard as $board => $ids) {
+                if (str_contains($request->url(), "/boards/{$board}/preload.json")) {
+                    return Http::response(['data' => ['workflows' => [['stages' => array_map(
+                        fn (int $id) => ['id' => $id, 'position' => (float) $id], $ids,
+                    )]]]]);
+                }
+            }
+
+            return Http::response(['data' => [], 'meta' => ['total' => 1]]);
         });
     }
 

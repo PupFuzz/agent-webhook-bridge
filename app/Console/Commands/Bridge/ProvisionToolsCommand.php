@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Scheduling\TickAdoptionNotice;
 use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\AgentNameShape;
@@ -294,10 +295,7 @@ class ProvisionToolsCommand extends BridgeCommand
 
     private function writeSecret(string $path, string $value): void
     {
-        $dir = dirname($path);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0o700, true);
-        }
+        BridgePaths::ensureDir(dirname($path));
         // Umask-safe: pin 0600 on the empty file BEFORE the secret bytes land, so the
         // token is never briefly world-readable on a multi-tenant host.
         touch($path);

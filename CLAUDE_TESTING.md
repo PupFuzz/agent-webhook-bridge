@@ -594,6 +594,13 @@ everything outside it. ⛔ **That bound was measured, not hypothetical** — the
 handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern was invisible to it
 exactly as the `app/Bridge/Tools/` compare was.
 
+Another minuted narrowing, which reads through PhpParser rather than `SourceScan`:
+`BoardMoverCatalogTest` (DL-405). It walks `SourceScan::appFiles()` and keeps a class by what the class
+DECLARES (its namespace, or the writeback interface it implements), never by its file name. It reads
+the kept files with PhpParser, because what it checks is a key inside a call's ARGUMENT (a
+`catalog_id` in a context array, possibly on the far side of a `+`). That is a parse question, and a
+token predicate cannot answer it. `tests/Support/BoardMoverCatalogCheck.php`'s docblock owns the scope.
+
 **When the answer for a site is "yes, and that is fine", DISPOSITION it — do not narrow the
 population to exclude it.** A disposition list entry names the SUBJECT the site reads and why it
 is not the thing being policed; a narrowed population reports clean over a question nobody asked.
@@ -616,6 +623,16 @@ that minted it (card#8530 — one change does one thing). **bridge card#8575 own
 consolidation.** ⚠ Do not read their existence as licence. Copying the nearest neighbour is exactly
 how the N+1th copy gets minted, which is the failure this § exists to stop — and an un-migrated
 walk is where the next silently-narrow population comes from.
+
+⚠ **The FILE WALK is not the only un-hoisted half. The call-site PREDICATE is the other**, and
+`SourceScan::methodCallAt()` is where it is now spelled — with only card#10063's own copy bound to
+it, and no other census migrated onto it yet. Census classes under `tests/` still carry their own
+`T_STRING` + `T_OBJECT_OPERATOR`/`T_NULLSAFE_OBJECT_OPERATOR` + `'('` triple; migrating them is
+owed and is its own change, not a rider on whichever card touches one next. Re-derive the same way
+as below, and read the output as LEADS — the spelling appears in predicates that are not this shape
+at all (an EXCLUSION of member access, a static-call arm), so each hit is a file to read:
+
+    command grep -rln 'T_NULLSAFE_OBJECT_OPERATOR' tests/ | xargs -r grep -L 'methodCallAt'
 
 **Re-derive the remainder; do not trust a list written here** — a hand-written member list is how
 this § came to tell the next author that the class they were about to copy was out of scope. What

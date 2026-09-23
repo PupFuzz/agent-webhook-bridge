@@ -113,6 +113,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | protocol:invalid on an unattributable coordination comment (card#10218, DL-408)
+    |--------------------------------------------------------------------------
+    |
+    | The repos (`owner/name`, case-insensitive, comma-separated) on which this
+    | install ADDS the `protocol:invalid` label to an issue or pull request when
+    | CoordinationClassifier's coord-message family could not attribute a comment
+    | created on it: no scope_author_map entry, no body `FROM:` line, and no
+    | registry name for the sender. EMPTY BY DEFAULT, and empty writes nothing and
+    | changes nothing: it is an outward write onto repos this install may only be
+    | receiving events from, so each install names them. Add-only; the label is
+    | never removed here. The write uses the receiver's placed GitHub token file
+    | only, which needs Issues or Pull requests WRITE on each listed repo. A
+    | failure is one logged warning and never changes routing. docs/writeback.md.
+    |
+    */
+
+    'protocol_invalid_label' => [
+        'repos' => CsvEnv::parse((string) env('BRIDGE_PROTOCOL_INVALID_LABEL_REPOS', '')),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Retention (DL-199) — event-gated, after-response, bounded
     |--------------------------------------------------------------------------
     |

@@ -57,10 +57,28 @@ class Grammar(unittest.TestCase):
         self.assertEqual([(302, 6)], dl.header_numbers(text))
 
     def test_the_scan_reports_how_many_headers_the_fences_hid_from_it(self):
-        entries, skipped = dl.header_scan("## DL-100 — real\n\n```\n## DL-101 — quoted\n```\n")
+        entries, skipped, unnumbered = dl.header_scan("## DL-100 — real\n\n```\n## DL-101 — quoted\n```\n")
 
         self.assertEqual([(100, 1)], entries)
         self.assertEqual(1, skipped)
+        self.assertEqual([], unnumbered)
+
+    def test_a_numberless_header_is_neither_an_entry_nor_invisible(self):
+        # The card#9936 shape: `_HEADER` requires digits, so before this leg a
+        # `## DL-TBD` was counted by nothing and skipped by nothing — the two
+        # figures agreed while the population they described was one short.
+        entries, skipped, unnumbered = dl.header_scan("## DL-100 — real\n## DL-TBD — a draft\n")
+
+        self.assertEqual([(100, 1)], entries)
+        self.assertEqual(0, skipped)
+        self.assertEqual([("## DL-TBD — a draft", 2)], unnumbered)
+
+    def test_a_numberless_header_inside_a_fence_is_an_example_not_a_placeholder(self):
+        entries, skipped, unnumbered = dl.header_scan("```\n## DL-TBD — what a draft looks like\n```\n")
+
+        self.assertEqual([], entries)
+        self.assertEqual(1, skipped)
+        self.assertEqual([], unnumbered)
 
 
 class CheckHarness(unittest.TestCase):
@@ -117,6 +135,71 @@ class CheckRefusals(CheckHarness):
         self.assertEqual(6, proc.returncode)
         self.assertIn("DL-294", proc.stderr)
         self.assertIn("DL-295", proc.stderr)
+
+
+class CheckUnnumbered(CheckHarness):
+    """A header with no number at all — the input this guard used to pass GREEN.
+
+    `## DL-TBD` matches neither assertion's grammar, so two changes could each
+    write one and both pass; the log then carries two entries claiming one
+    non-identifier, which is the very outcome card#7157 built this gate for.
+    """
+
+    def test_a_planted_placeholder_this_change_adds_is_refused(self):
+        base = self.write("base.md", log("293"))
+        head = self.write("head.md", log("293") + "## DL-TBD — a draft entry\n")
+        target = self.write("target.md", log("293"))
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("## DL-TBD — a draft entry", proc.stderr)
+        self.assertIn("NO NUMBER", proc.stderr)
+
+    def test_a_placeholder_is_refused_on_the_head_only_run_too(self):
+        head = self.write("head.md", log("293") + "## DL-TBD — a draft entry\n")
+
+        proc = self.check("--head", head)
+
+        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_a_second_copy_of_an_inherited_placeholder_is_still_an_addition(self):
+        # The hole a SET would leave: base already carries the text, so
+        # membership reads both copies at head as inherited and refuses
+        # neither — two entries claiming one non-identifier, which is the
+        # outcome this assertion exists to refuse. Counted, not set-tested.
+        placeholder = "## DL-TBD — landed earlier\n\n"
+        base = self.write("base.md", log("293") + placeholder)
+        head = self.write("head.md", log("293") + placeholder + placeholder)
+        target = self.write("target.md", log("293") + placeholder)
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_the_control_the_same_entry_with_a_number_passes(self):
+        # Without this the refusal above could be firing on the entry rather than
+        # on the missing number, and would refuse every PR that adds one.
+        base = self.write("base.md", log("293"))
+        head = self.write("head.md", log("293") + "## DL-414 — a draft entry\n")
+        target = self.write("target.md", log("293"))
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_a_placeholder_already_on_the_base_snapshot_does_not_red_an_innocent_change(self):
+        # It is reported by the population line, not refused: the change that
+        # wrote it is the one to fix, and refusing here reds every PR cut after.
+        placeholder = "## DL-TBD — landed earlier\n\n"
+        base = self.write("base.md", log("293") + placeholder)
+        head = self.write("head.md", log("293", "295") + placeholder)
+        target = self.write("target.md", log("293") + placeholder)
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("1 carrying no number", proc.stdout)
 
 
 class CheckPinnedNegatives(CheckHarness):

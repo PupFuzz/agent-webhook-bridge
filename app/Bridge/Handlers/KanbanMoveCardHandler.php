@@ -16,6 +16,7 @@ use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
+use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -35,7 +36,18 @@ use Throwable;
  * The classifier (correlation) supplies WHICH card + the repo + the
  * GitHub-controlled outcome in the payload; the BOARD + STAGE come exclusively
  * from operator config (`writeback.json`), keyed on the outcome — the webhook
- * body can't choose a board or stage (DL-009). Two failure modes, treated
+ * body can't choose a board or stage (DL-009).
+ *
+ * ⭐ Since card#9850 / DL-404 the BOARD is chosen from among the boards that config
+ * DECLARES, by asking which of them the card is on. A coordination repo's pull requests
+ * cite cards on several boards, so a mapping's single `board_id` could not name the right
+ * destination and the sprint card a branch cited was never moved; the mapping now supplies
+ * the declared SET and the per-board stage semantics, and the card supplies which member of
+ * that set. It is still config that decides — the set is closed, the lookups are
+ * board-scoped, and a card in none of them is REFUSED rather than written to a fallback
+ * board. A mapping declaring one board behaves exactly as it did.
+ *
+ * Two failure modes, treated
  * differently:
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
@@ -44,7 +56,10 @@ use Throwable;
  *    check before the card is read at all — card#8375), the card kanban handed back is NOT on
  *    the mapped board, the card is PINNED against
  *    auto-movement on an outcome that is not one of the two operator-ruled overrides
- *    (DL-178, card#8289 — see the consult in handle()), an uncorroborated title-only
+ *    (DL-178, card#8289 — see the consult in handle()), the card carries the `program` tag and
+ *    is therefore a PARENT naming several legs that no one pull request may speak for
+ *    (card#9929 — {@see ProgramCardGuard}, the one refusal here that withholds the STAMP as
+ *    well as the move), an uncorroborated title-only
  *    `card#` names a card that already tracks a different PR, or the subject carried
  *    an unreadable card-shaped token naming some other card — DL-287) → alert + log + NO-OP.
  *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
@@ -135,6 +150,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // classifier (the event couldn't be moved anyway — we don't know the card).
         if (! is_int($cardId) && ! (is_string($cardId) && ctype_digit($cardId))) {
             $this->alerts->warnAndNotify(
+                'move_card.card_id_not_int',
                 'kanban_move_card: payload.card_id is not an integer; ignoring',
                 ['payload' => $payload],
                 is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', null, 'card_id_not_int',
@@ -145,6 +161,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $cardId = (int) $cardId;
         if (! is_string($repo) || $repo === '' || ! is_string($outcome) || $outcome === '') {
             $this->alerts->warnAndNotify(
+                'move_card.repo_or_outcome_invalid',
                 'kanban_move_card: payload.repo and payload.outcome must be non-empty strings; ignoring',
                 ['card_id' => $cardId],
                 is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', $cardId, 'repo_or_outcome_invalid',
@@ -161,6 +178,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // alert_channel to load, so this branch is inherently quiet (documented
             // in docs/writeback.md). The call is kept for symmetry/correctness.
             $this->alerts->warnAndNotify(
+                'move_card.writeback_not_configured',
                 'kanban_move_card: writeback is not configured (no writeback.json); ignoring move',
                 ['card_id' => $cardId, 'repo' => $repo],
                 $repo, $outcome, $cardId, 'writeback_not_configured',
@@ -171,7 +189,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         $mapping = $writeback->mappingFor($repo);
         if ($mapping === null) {
-            Log::info('kanban_move_card: no writeback mapping for repo; ignoring', ['repo' => $repo, 'card_id' => $cardId]);
+            Log::info('kanban_move_card: no writeback mapping for repo; ignoring', ['catalog_id' => 'move_card.repo_not_mapped', 'repo' => $repo, 'card_id' => $cardId]);
 
             return;
         }
@@ -179,9 +197,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // own — it reuses the `opened` (In-Review) stage. Resolve it explicitly so
         // stageFor('reopened')===null doesn't no-op the revival at the guard below.
         $stageOutcome = $outcome === 'reopened' ? 'opened' : $outcome;
-        $stageId = $mapping->stageFor($stageOutcome);
-        if ($stageId === null) {
-            Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
+        // The CHEAP necessary condition, asked before a client exists so a repo that maps no
+        // stage for this outcome still no-ops with no request and no token resolution — which
+        // is what it has always done. On a single-board mapping this IS `stageFor() !== null`;
+        // on a multi-board one (card#9850 / DL-404) it asks the same question of the union,
+        // because WHICH stage this move writes is not knowable until the board the card is
+        // actually on has been established below. The sufficient condition is re-asked there.
+        if (! $mapping->anyDeclaredBoardMaps($stageOutcome)) {
+            Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['catalog_id' => 'move_card.no_stage_mapped', 'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
 
             return;
         }
@@ -196,11 +219,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // missing/insecure token must not 5xx-retry an event that is refused anyway.
         if (($payload['card_token_near_miss'] ?? null) === true) {
             $this->alerts->warnAndNotify(
+                'move_card.card_token_near_miss',
                 'kanban_move_card: REFUSED — the subject carries a card-shaped token that does not parse and names a card the DL did not resolve to, so which card this event is about is unknown (near-miss card token)',
                 ['card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
                 $repo, $outcome, $cardId, 'card_token_near_miss',
             );
-            $this->comments->report($payload, 'card_token_near_miss');
+            $this->comments->report($payload, 'card_token_near_miss', $mapping);
 
             return;
         }
@@ -219,11 +243,37 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // decides whether we may WRITE the row we got, and only that one can record the
         // (card board, mapped board) divergence pair — a refusal here never learns the
         // card's board, which is the point of refusing before the read.
+        //
+        // ⭐ AND IT IS ALSO WHERE THE DESTINATION BOARD IS DECIDED (card#9850 / DL-404). A
+        // coordination repo's PRs cite cards on SEVERAL boards, so the repo cannot supply the
+        // board: the repo mapping supplies the STAGE SEMANTICS and the CARD supplies the
+        // BOARD. The guard asks each board the mapping declares, in order, with the same
+        // board-scoped lookup, and NARROWS $mapping IN PLACE onto the one the card was
+        // established on — so `$mapping->stageFor()`, `$mapping->boardId`, the `started`
+        // promote-from / unpark sets and the board-order read below all speak about the board
+        // actually written to. On a mapping with one
+        // declared board (every mapping written before that key existed) it narrows onto the
+        // same object and issues the same single request.
         $refusal = '';
         if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome, $refusal)) {
             // Only the foreign-id verdict is the PR's to hear about; the commenter drops the
             // install-fault reasons this guard can also refuse under.
-            $this->comments->report($payload, $refusal);
+            $this->comments->report($payload, $refusal, $mapping);
+
+            return;
+        }
+
+        // The SUFFICIENT condition, now that the board is known: a declared board need not map
+        // every outcome (a board whose cards this repo only ever ships, say), and a stage id is
+        // meaningful only on its own board — so the stage comes from the RESOLVED board's map
+        // and nowhere else. Unreachable on a single-board mapping, where the check above
+        // already answered for the one board there is.
+        $stageId = $mapping->stageFor($stageOutcome);
+        if ($stageId === null) {
+            Log::info('kanban_move_card: no stage mapped for this outcome on the declared board the card is on; ignoring', [
+                'catalog_id' => 'move_card.no_stage_mapped_on_card_board',
+                'repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId, 'board' => $mapping->boardId,
+            ]);
 
             return;
         }
@@ -261,6 +311,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                     default => 'kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
                 };
                 $this->alerts->warnAndNotifyCardIdWithheld(
+                    'move_card.getcard_4xx',
                     $message,
                     ['card_id' => $cardId] + $refusal,
                     $repo, $outcome, RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
@@ -281,8 +332,25 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // request earlier, and it is the only arm that records the (card board, mapped
         // board) divergence. Its refused set on this path is expected to be EMPTY.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
-            $this->comments->report($payload, MappedBoardGuard::REASON);
+            $this->comments->report($payload, MappedBoardGuard::REASON, $mapping);
 
+            return;
+        }
+
+        // PARENT-CARD refusal (card#9929, rt#522 ask 3): the card carries the `program` tag,
+        // so it names SEVERAL LEGS rather than one deliverable and no single pull request's
+        // outcome may speak for it. Permanent refusal — alert + log + NO write of any kind.
+        //
+        // ⛔ PLACED UPSTREAM OF EVERY STAMP CALL SITE, and that is the point rather than a
+        // preference. The three `stampCorrelationRefs` sites below are reached from the
+        // already-in-stage self-heal, the PIN refusal, and the completed move — so the pin,
+        // which is the only thing an operator can put on a parent today, leaves the stamp half
+        // of this defect wide open by design (it governs the STAGE, not the refs; see the
+        // consult's own comment below). Consulting beside the pin would inherit exactly that.
+        // Placed after the two board guards, which are the security boundary and stay first,
+        // and before the DL-270 corroboration arm, which writes a card NOTE: on a parent the
+        // accurate report is "cite a leg", not "this card already tracks another PR".
+        if (ProgramCardGuard::refuses($this->alerts, $card, 'kanban_move_card', "{$outcome} move and correlation stamp", $cardId, $repo, $outcome, ['current_stage' => $card['workflow_stage_id'] ?? null])) {
             return;
         }
 
@@ -305,6 +373,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // Permanent refusal: log + no-op, never retry.
         if (CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['stamp_pr'] ?? null)) {
             $this->alerts->warnAndNotify(
+                'move_card.card_token_uncorroborated',
                 'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
                 [
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
@@ -320,7 +389,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'card_token_uncorroborated');
+            $this->comments->report($payload, 'card_token_uncorroborated', $mapping);
 
             return;
         }
@@ -413,6 +482,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $allowed = array_merge($mapping->startedFromStages ?? [], $unparkStages);
             if ($allowed === [] || ! in_array($current, $allowed, true)) {
                 Log::info('kanban_move_card: started move skipped — card is not in an allowed promote-from stage (no regression)', [
+                    'catalog_id' => 'move_card.started_not_promotable',
                     'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current,
                     'started_from_stages' => $mapping->startedFromStages, 'unpark_from_stages' => $mapping->unparkFromStages,
                 ]);
@@ -437,6 +507,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (in_array($outcome, ['opened', 'merged', 'merged_to_main', 'closed_unmerged', 'reopened'], true)) {
             if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
+                    'catalog_id' => 'move_card.would_regress',
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome, 'current_stage' => $current, 'target_stage' => $stageId,
                 ]);
 
@@ -456,6 +527,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // (getCard above succeeded), so this arm is the operator's only signal
                 // for the scope-narrowed-token shape (card#5312 / DL-274).
                 $this->alerts->warnAndNotify(
+                    'move_card.move_4xx',
                     'kanban_move_card: kanban refused the move (4xx) — see `body` for the reason kanban gave',
                     ['card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId] + RefusalContext::from($e),
                     $repo, $outcome, $cardId, RefusalContext::writeReason('movecard', $e),
@@ -482,6 +554,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             if ($signal !== null) {
                 $fromStage = $card['workflow_stage_id'] ?? null;
                 Log::warning('kanban_move_card: auto-unparked a card from a parked stage', [
+                    'catalog_id' => 'move_card.auto_unparked',
                     'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
                 ]);
                 $this->alerts->notifyUnpark($repo, $cardId, is_int($fromStage) ? $fromStage : null);
@@ -498,6 +571,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             if ($signal !== null) {
                 $fromStage = $card['workflow_stage_id'] ?? null;
                 Log::warning('kanban_move_card: revived a card from the abandon stage on PR reopen', [
+                    'catalog_id' => 'move_card.revived_on_reopen',
                     'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
                 ]);
                 $this->alerts->notifyRevive($repo, $cardId, is_int($fromStage) ? $fromStage : null);
@@ -513,7 +587,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // the one we intended to write to — so a write that landed on an out-of-mapping
         // card logged identically to a correct one, and "has a cross-board write ever
         // landed?" was unanswerable from the record rather than merely unanswered.
-        Log::info('kanban_move_card: moved', ['card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
+        Log::info('kanban_move_card: moved', ['catalog_id' => 'move_card.moved', 'card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**
@@ -630,13 +704,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         if ($dropped !== []) {
             $this->alerts->warnAndNotify(
+                'move_card.correlation_ref_not_stamped',
                 'kanban_move_card: a correlation ref this event carries was NOT stamped — the card already answers with a different value (a card correlates ONE pull request; first write wins)',
                 ['card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped],
                 $repo, $outcome, $cardId, 'correlation_ref_not_stamped',
             );
             $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
             $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $mapping, $cardId, $client, $repo, $outcome);
-            $this->comments->report($payload, 'correlation_ref_not_stamped', ['dropped' => array_keys($dropped)]);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, ['dropped' => array_keys($dropped)]);
         }
 
         if ($refs === []) {
@@ -645,10 +720,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         try {
             $client->stampCorrelationRefs($cardId, $refs);
-            Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_move_card: stamped correlation refs', ['catalog_id' => 'move_card.stamped', 'card_id' => $cardId, 'refs' => array_keys($refs)] + MappedBoardGuard::boardContext($card, $mapping));
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
+                    'move_card.stamp_4xx',
                     'kanban_move_card: stamp refused by kanban (4xx) — skipping (see `body` for the reason kanban gave)',
                     ['card_id' => $cardId] + RefusalContext::from($e),
                     $repo, $outcome, $cardId, RefusalContext::writeReason('stamp', $e),
@@ -776,9 +852,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         try {
             $client->addComment($cardId, $note->content());
-            Log::info('kanban_move_card: recorded a correlation note on the card', ['card_id' => $cardId, 'marker' => $note->marker] + MappedBoardGuard::boardContext($card, $mapping));
+            Log::info('kanban_move_card: recorded a correlation note on the card', ['catalog_id' => 'move_card.note_recorded', 'card_id' => $cardId, 'marker' => $note->marker] + MappedBoardGuard::boardContext($card, $mapping));
         } catch (RequestException $e) {
             $this->alerts->warnAndNotify(
+                'move_card.note_refused',
                 'kanban_move_card: the card note was refused by kanban — the dropped correlation leg stays in this log but is NOT visible on the card (see `body` for the reason kanban gave)',
                 ['card_id' => $cardId, 'marker' => $note->marker] + RefusalContext::from($e),
                 $repo, $outcome, $cardId,
@@ -786,6 +863,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             );
         } catch (Throwable $e) {
             $this->alerts->warnAndNotify(
+                'move_card.note_send_failed',
                 'kanban_move_card: the card note could not be sent to kanban — the dropped correlation leg stays in this log but is NOT visible on the card',
                 ['card_id' => $cardId, 'marker' => $note->marker, 'error' => RedactedErrorText::of($e)],
                 $repo, $outcome, $cardId, 'cardnote_send_failed',
@@ -868,6 +946,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
+                'catalog_id' => 'move_card.stage_order_unreadable',
                 'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),
             ]);
 
@@ -881,7 +960,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // could not read, or one stale stage id — so it is the one that actually happens,
             // and it was the silent one. Same tail as the catch arm so one grep finds both.
             Log::warning('kanban_move_card: could not place this move in the board stage order for the no-regression guard — allowing the move', [
+                'catalog_id' => 'move_card.stage_order_unplaceable',
                 'board' => $mapping->boardId,
+                // Two keys, two jobs: `catalog_id` names this ARM for docs/board-mover-catalog.json
+                // readers; `reason` is the per-branch sub-cause within it. Do not merge them.
                 'reason' => $order === [] ? 'stage_order_empty' : 'stage_not_on_board',
                 'outcome' => $outcome,
                 'current_stage' => $currentStage,

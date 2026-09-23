@@ -9,6 +9,7 @@ use App\Bridge\Http\PlainTextResponse;
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Scheduling\JobSchedulerGate;
 use App\Bridge\Standup\StandupGate;
+use App\Bridge\Support\WebhookOutageRecord;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -65,6 +66,10 @@ class WebhookController extends Controller
         }
 
         if ($adapter->isPing($event)) {
+            // A pong never reaches the dispatch path, so it is no evidence a webhook 5xx run
+            // has ended — an operator pinging a dead-DB install must not be told it recovered.
+            $request->attributes->set(WebhookOutageRecord::NEUTRAL_ATTRIBUTE, true);
+
             return $this->plain('pong', 200);
         }
 

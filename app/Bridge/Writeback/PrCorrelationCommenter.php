@@ -51,24 +51,60 @@ final class PrCorrelationCommenter
     public const TIMEOUT_SECONDS = 4;
 
     /**
-     * Every (pull request, outcome) this instance has already attempted, WHATEVER came of it. The
-     * instance lives as long as the handler singleton that owns it: one delivery in the receiver, one
-     * `bridge:replay` run. Within that, a bundled DL's cards and each subscribed agent ask again for
-     * the same marker, and a second attempt could only repeat a refusal or timeout just logged, or
-     * miss a comment just posted from a list GitHub has not caught up with. The next event tries again.
-     *
-     * @var array<string, true>
+     * Every (pull request, outcome) this instance has already attempted, WHATEVER came of it —
+     * {@see OncePerKey} owns that rule and its lifetime. Here the key is what a REPEAT within one
+     * delivery would be: a bundled DL's cards and each subscribed agent ask again for the same
+     * marker, and a second attempt could only repeat a refusal or timeout just logged, or miss a
+     * comment just posted from a list GitHub has not caught up with.
      */
-    private array $attempted = [];
+    private OncePerKey $attempted;
 
-    public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver) {}
+    public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver)
+    {
+        $this->attempted = new OncePerKey;
+    }
 
     /**
+     * Report a cause decided against $mapping — the mapping the caller actually wrote (or refused)
+     * against, NOT one re-derived from the repo here.
+     *
+     * ⛔ THE MAPPING IS THE CALLER'S TO PASS (card#9850 / DL-404). The move handler NARROWS its
+     * mapping onto the declared board the card was established on, so every cause it decides
+     * after that point is about THAT board and its stage map. Re-reading the repo's mapping here
+     * would hand the comment the repo's mapped board and that board's stage id instead — a wrong
+     * board and a stage id meaningless on the card's own board, on a public pull-request page.
+     * Before the narrowing the caller's mapping IS the repo mapping, so a cause decided there
+     * renders exactly as it always did.
+     *
      * @param  array<string, mixed>  $payload  the target payload, carrying the classifier's evidence
      * @param  string  $cause  a refusal reason or a classifier cause; anything {@see PrCorrelationComment::isCause()} rejects posts nothing
      * @param  array<string, mixed>  $refusalContext
      */
-    public function report(array $payload, string $cause, array $refusalContext = []): void
+    public function report(array $payload, string $cause, WritebackMapping $mapping, array $refusalContext = []): void
+    {
+        if (! PrCorrelationComment::isCause($cause) || ! isset($payload[PrCorrelationComment::EVIDENCE_KEY])) {
+            return;
+        }
+
+        try {
+            $comment = PrCorrelationComment::fromPayload($payload, $cause, $mapping, $refusalContext);
+            if ($comment === null) {
+                return;
+            }
+            $this->post($comment, $cause);
+        } catch (Throwable $e) {
+            $this->unexpected($payload, $cause, $e);
+        }
+    }
+
+    /**
+     * Report a cause decided before any card was resolved — the classifier's, where no board has
+     * been chosen and the repo's own mapping is the only one there is. Loads it, and posts
+     * nothing for a repo this install does not map.
+     *
+     * @param  array<string, mixed>  $payload  the target payload, carrying the classifier's evidence
+     */
+    public function reportForRepo(array $payload, string $cause): void
     {
         if (! PrCorrelationComment::isCause($cause) || ! isset($payload[PrCorrelationComment::EVIDENCE_KEY])) {
             return;
@@ -77,31 +113,36 @@ final class PrCorrelationCommenter
         try {
             $repo = $payload['repo'] ?? null;
             $mapping = is_string($repo) ? WritebackConfig::loadDefault()?->mappingFor($repo) : null;
-            $comment = $mapping === null ? null : PrCorrelationComment::fromPayload($payload, $cause, $mapping, $refusalContext);
-            if ($comment === null) {
-                return;
-            }
-            $this->post($comment, $cause);
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
-                'repo' => $payload['repo'] ?? null, 'cause' => $cause, 'reason' => 'unexpected', 'error' => RedactedErrorText::of($e),
-            ]);
+            $this->unexpected($payload, $cause, $e);
+
+            return;
         }
+        if ($mapping !== null) {
+            $this->report($payload, $cause, $mapping);
+        }
+    }
+
+    /** @param  array<string, mixed>  $payload */
+    private function unexpected(array $payload, string $cause, Throwable $e): void
+    {
+        Log::warning('pr_correlation_comment: NOT posted — an unexpected failure; the writeback outcome is unchanged', [
+            'catalog_id' => 'pr_correlation_comment.unexpected_failure',
+            'repo' => $payload['repo'] ?? null, 'cause' => $cause, 'reason' => 'unexpected', 'error' => RedactedErrorText::of($e),
+        ]);
     }
 
     private function post(PrCorrelationComment $comment, string $cause): void
     {
         $marker = $comment->marker();
         $context = ['repo' => $comment->repo, 'pr' => $comment->prNumber, 'outcome' => $comment->outcome, 'cause' => $cause];
-        $key = $comment->repo."\x00".$comment->prNumber."\x00".$marker;
-        if (isset($this->attempted[$key])) {
+        if (! $this->attempted->claim($comment->repo, $comment->prNumber, $marker)) {
             return;
         }
-        $this->attempted[$key] = true;
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {
-            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.no_token'] + $context + [
                 'reason' => 'token_unresolved', 'problem' => $resolution->problem,
             ]);
 
@@ -112,27 +153,27 @@ final class PrCorrelationCommenter
         try {
             $present = (new GitHubReadClient($token, self::TIMEOUT_SECONDS))->hasIssueCommentStartingWith($comment->repo, $comment->prNumber, $marker);
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the read of this pull request\'s comments with an HTTP error, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_http_error'] + $context + [
                 'reason' => 'dedupe_read_refused', 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the read of this pull request\'s comments failed, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_failed'] + $context + [
                 'reason' => 'dedupe_read_failed', 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         }
         if ($present === null) {
-            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — this pull request\'s comments could not be read to the end, so an earlier copy cannot be ruled out; the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.comments_read_incomplete'] + $context + [
                 'reason' => 'dedupe_read_incomplete',
             ]);
 
             return;
         }
         if ($present) {
-            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', $context);
+            Log::info('pr_correlation_comment: already on the pull request for this outcome; not posted again', ['catalog_id' => 'pr_correlation_comment.already_posted'] + $context);
 
             return;
         }
@@ -140,18 +181,18 @@ final class PrCorrelationCommenter
         try {
             (new GitHubWriteClient($token, self::TIMEOUT_SECONDS))->createIssueComment($comment->repo, $comment->prNumber, $comment->body());
         } catch (RequestException $e) {
-            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried, and the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — GitHub answered the comment with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_http_error'] + $context + [
                 'reason' => 'post_refused', 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         } catch (Throwable $e) {
-            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried, and the writeback outcome is unchanged', $context + [
+            Log::warning('pr_correlation_comment: NOT posted — the comment could not be sent to GitHub; not retried, and the writeback outcome is unchanged', ['catalog_id' => 'pr_correlation_comment.post_failed'] + $context + [
                 'reason' => 'post_failed', 'error' => RedactedErrorText::of($e),
             ]);
 
             return;
         }
-        Log::info('pr_correlation_comment: posted', $context);
+        Log::info('pr_correlation_comment: posted', ['catalog_id' => 'pr_correlation_comment.posted'] + $context);
     }
 }

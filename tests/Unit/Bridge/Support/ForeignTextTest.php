@@ -145,6 +145,16 @@ class ForeignTextTest extends TestCase
                 .'two of these three lines carry two uses each. The derivation is what corrected it, which is '
                 .'the argument for deriving rather than writing a figure down.',
         ],
+        'Console/Commands/Bridge/WritebackExposureCommand.php' => [
+            'uses' => 2,
+            'ruling' => '✔ TO A MATCHER ×2, never to a sink (card#9850 / DL-404) — the multi-board exposure '
+                .'audit feeds a merged pull request\'s TITLE and its HEAD REF to '
+                .'`CardTokenGrammar::parseAll()`, which answers a list of INTEGER card ids and prints nothing. '
+                .'⚑ It is the integers that reach the report, never the text they were parsed out of: the '
+                .'finding line is built from `card#<int>` and from counts, so no byte a pull-request author '
+                .'chose can reach this command\'s stdout. That is why this file needs the raw exit and does '
+                .'NOT need `forOperator()` — unlike `ReconcileCommand`, which prints the values it matched.',
+        ],
     ];
 
     public function test_every_raw_use_in_app_is_ruled_on(): void

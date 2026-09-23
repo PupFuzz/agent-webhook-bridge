@@ -2884,12 +2884,20 @@ pull request it already names', $notes[0]);
      * Card 5 behind a stateful `/tasks/{id}.json`, on a board whose order places Won't Do (77)
      * after Released, with the alert channel stubbed.
      *
+     * $preloadStages widens the board's ORDER for a caller that needs a stage this default set
+     * does not carry — the two pre-Backlog stages the `started` / non-revival `reopened` legs
+     * promote FROM. It is a parameter rather than a wider default because the no-regression
+     * guard fails OPEN on a stage the order does not name, so silently adding ids here would
+     * change which arm other legs exercise without their assertions moving.
+     *
      * @param  array<string, mixed>  $row
+     * @param  array<int, int>|null  $preloadStages  stage id => position; null keeps the default order
      */
-    private function stubCard5(array $row, bool $moveOnlyToken = false): KanbanCardStub
+    private function stubCard5(array $row, bool $moveOnlyToken = false, ?array $preloadStages = null): KanbanCardStub
     {
         $stub = new KanbanCardStub([5 => array_replace(['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => []], $row)], $moveOnlyToken);
-        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])] + $stub->stub() + PreloadStub::stub(8, [49 => 3, 50 => 4, 52 => 5, 53 => 6, 77 => 7]));
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])] + $stub->stub()
+            + PreloadStub::stub(8, $preloadStages ?? [49 => 3, 50 => 4, 52 => 5, 53 => 6, 77 => 7]));
 
         return $stub;
     }
@@ -3134,5 +3142,225 @@ pull request it already names', $notes[0]);
         $this->handle($this->payload(['outcome' => 'merged']));
 
         $this->assertSame([], $stub->patchesTo(5));
+    }
+
+    // --- card#9929: a `program`-tagged PARENT card is neither moved NOR stamped ---
+
+    /**
+     * The payload every leg below delivers: an `opened` outcome carrying correlation refs to
+     * stamp. `opened` (49 → 50) rather than `merged` deliberately — 52 is terminal on this
+     * board, and the owner-tag clear that follows a terminal move would add a second read and
+     * a second write to the shape the subject asserts is EMPTY, which is noise in the one
+     * assertion that has to be exact.
+     *
+     * @return array<string, mixed>
+     */
+    private function programPayload(): array
+    {
+        return $this->payload([
+            'outcome' => 'opened',
+            'stamp_pr' => 719,
+            'stamp_pr_url' => 'https://github.com/owner/repo/pull/719',
+        ]);
+    }
+
+    public function test_a_leg_card_with_no_program_tag_is_moved_and_stamped_and_alerts_nothing(): void
+    {
+        // THE CONTROL, and it is the load-bearing half: `assertSame([], …)` on the subject
+        // below is satisfied by ANY refusal on this path — the board guards, the pin, the
+        // no-regression guard — so without a leg card that DOES move and DOES stamp through
+        // this exact fixture, the subject's silence is not evidence about the `program` tag.
+        // It is also the card#9929 approval's own boundary condition: a card with no
+        // `program` tag must behave exactly as it did before, which is this.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['workflow_stage_id' => 49, 'tags' => ['triaged']]);
+
+        $this->handle($this->programPayload());
+
+        $this->assertSame([
+            ['workflow_stage_id' => 50],
+            ['payload' => ['pr_number' => 719, 'pr_url' => 'https://github.com/owner/repo/pull/719']],
+        ], $stub->patchesTo(5));
+        $this->assertSame(50, $stub->cards[5]['workflow_stage_id']);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_program_parent_card_is_neither_moved_nor_stamped(): void
+    {
+        // THE card#9929 defect. Every guard above this consult passes — the card is on the
+        // mapped board, the move is forward, nothing is pinned, the refs are unset so the
+        // stamp has something to write — and one leg's pull request would otherwise drive the
+        // whole program's stage AND bind its correlation refs to that one PR.
+        //
+        // The assertion is on the CARD's state, not on the log: `patchesTo` is every PATCH
+        // that reached the card, so an empty list is both halves of the refusal (no move, no
+        // stamp) rather than only the half a "did it move?" test would see. That second half
+        // is the one an operator has no workaround for — a pinned parent is still stamped.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['workflow_stage_id' => 49, 'tags' => ['triaged', 'program']]);
+
+        $this->handle($this->programPayload());
+
+        $this->assertSame([], $stub->patchesTo(5));
+        $this->assertSame(49, $stub->cards[5]['workflow_stage_id']);
+        $this->assertArrayNotHasKey('payload', $stub->cards[5]);
+    }
+
+    public function test_the_program_parent_refusal_alerts(): void
+    {
+        // Why the refusal lives where a permanent refusal lives: it must emit a LIVE signal,
+        // not only a durable log line — the same register as the `correlation_ref_not_stamped`
+        // alert beside it. The reason code is asserted because it is the operator's filter and
+        // the third element of the `(repo, outcome, reason)` dedup tuple.
+        $this->writeAllOutcomesWithAlert();
+        Log::spy();
+        $this->stubCard5(['workflow_stage_id' => 49, 'tags' => ['program']]);
+
+        $this->handle($this->programPayload());
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'program_parent_card'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'opened'
+            && $r['card_id'] === 5);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'PARENT')
+            && str_contains((string) $msg, 'cite the LEG card'))->once();
+    }
+
+    public function test_a_program_parent_is_refused_before_the_already_in_stage_self_heal_can_stamp_it(): void
+    {
+        // The placement, asserted rather than asserted-about. The self-heal arm stamps a card
+        // that is ALREADY in the target stage and makes no move at all, so a refusal placed
+        // beside the MOVE — or beside the pin consult, which is past this branch and stamps on
+        // its own refusal arm — would leave this path writing a leg's refs onto the parent
+        // while every "was it moved?" assertion above still passed.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['workflow_stage_id' => 50, 'tags' => ['program']]);   // already at `opened`
+
+        $this->handle($this->programPayload());
+
+        $this->assertSame([], $stub->patchesTo(5));
+    }
+
+    /**
+     * A parent is a parent whatever the event: the predicate is a property of the CARD, never
+     * of the outcome. Scoping it to one outcome would be card#8289's defect one guard over,
+     * and `closed_unmerged` is in the set for the same reason it is in the pin's — the lone
+     * backward outcome must not be the one that slips through.
+     *
+     * ⛔ THE POPULATION IS EVERY OUTCOME THE HANDLER CAN RECEIVE, NOT THE PR-DRIVEN ONES ALONE,
+     * and it is read off the code rather than chosen: `WritebackConfig::OUTCOMES` plus the
+     * handler-internal `reopened` (DL-195), which has no config stage of its own and resolves
+     * to `opened`'s at `KanbanMoveCardHandler::handle()`. The docs claim the refusal is taken
+     * on every one of them; a provider missing two of them made that claim an assertion rather
+     * than a control, and
+     * unlike the pin — whose `started` / `reopened` behaviour is governed by the DL-194 and
+     * DL-195 OVERRIDES and has dedicated tests — this guard takes no override, so those two
+     * outcomes had no control anywhere in the suite.
+     *
+     * A DATA PROVIDER rather than a loop, for the reason {@see pinnedOutcomes} states: a
+     * second `Http::fake()` in one test body cannot replace the card the first one stubbed,
+     * so a looped control/subject pair silently reuses the first case's card.
+     *
+     * @return array<string, array{string, int, int}> outcome, current stage, target stage
+     */
+    public static function programOutcomes(): array
+    {
+        // Stages chosen so every guard BETWEEN the consult under test and the move passes, so
+        // that a refusal can only be the one this class is about. 46/47 sit before 49 in the
+        // widened order below; 49 is behind 50/52/53; the backward `closed_unmerged` runs
+        // 50 → 49; nothing starts in a terminal stage. `started` promotes 46 → 49 out of the
+        // `started_from_stages` set (DL-160 fails CLOSED without it), and `reopened` runs
+        // 47 → 50 from OUTSIDE the mapped abandon stage, so it is the non-revival arm that
+        // behaves like `opened` — the revival (DL-195) has its own tests and its own override.
+        return [
+            'started' => ['started', 46, 49],
+            'opened' => ['opened', 49, 50],
+            'reopened' => ['reopened', 47, 50],
+            'merged' => ['merged', 49, 52],
+            'merged_to_main' => ['merged_to_main', 49, 53],
+            'closed_unmerged' => ['closed_unmerged', 50, 49],
+        ];
+    }
+
+    /**
+     * The mapping and the board order the rows above need, which is not the one the PR-driven
+     * outcomes alone would need: `started` has a stage of its own AND a fail-closed promote-from set the handler
+     * checks downstream of the consult, and `reopened` reaches this handler at all only on a
+     * mapping that opted into the revival. Missing either, the CONTROL below would be silent
+     * for a reason that has nothing to do with the `program` tag — which is the whole failure
+     * mode a control exists to exclude.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function stubProgramOutcomeCard(array $row): KanbanCardStub
+    {
+        $this->writeWritebackWithAlert(
+            ['started' => 49, 'opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+            ['started_from_stages' => [46], 'revive_on_reopen' => true],
+        );
+        $this->writeToken();
+
+        return $this->stubCard5($row, preloadStages: [46 => 1, 47 => 2, 49 => 3, 50 => 4, 52 => 5, 53 => 6, 77 => 7]);
+    }
+
+    #[DataProvider('programOutcomes')]
+    public function test_a_leg_card_moves_on_this_outcome(string $outcome, int $from, int $target): void
+    {
+        // The per-outcome control. Without one that MOVES, the subject below is silent for
+        // reasons this test cannot distinguish from the `program` tag.
+        $stub = $this->stubProgramOutcomeCard(['workflow_stage_id' => $from, 'tags' => ['triaged']]);
+
+        $this->handle($this->payload(['outcome' => $outcome]));
+
+        $this->assertSame($target, $stub->cards[5]['workflow_stage_id']);
+    }
+
+    #[DataProvider('programOutcomes')]
+    public function test_a_program_parent_is_not_written_to_on_this_outcome(string $outcome, int $from, int $target): void
+    {
+        // ⚠ The `started` row is the operator-visible behaviour change this card ships: a
+        // branch cut naming a parent no longer promotes it out of Backlog. This row is where
+        // that is asserted — nothing else in the suite asserts it.
+        $stub = $this->stubProgramOutcomeCard(['workflow_stage_id' => $from, 'tags' => ['program']]);
+
+        $this->handle($this->payload(['outcome' => $outcome, 'stamp_pr' => 719]));
+
+        $this->assertSame([], $stub->patchesTo(5));
+        $this->assertSame($from, $stub->cards[5]['workflow_stage_id']);
+    }
+
+    public function test_a_pinned_leg_card_is_still_stamped_on_this_payload(): void
+    {
+        // THE CONTROL for the case below, and the sentence the whole decision is argued from:
+        // the pin governs the card's STAGE, not its refs, so its refusal arm STAMPS before
+        // returning (DL-178) — a card an operator parked still has a leg's PR written onto it.
+        // Through this exact fixture, so the pair below differs by ONE property: the tag.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['workflow_stage_id' => 49, 'tags' => ['no-automove']]);
+
+        $this->handle($this->programPayload());
+
+        $this->assertSame([['payload' => ['pr_number' => 719, 'pr_url' => 'https://github.com/owner/repo/pull/719']]], $stub->patchesTo(5));
+        $this->assertSame(49, $stub->cards[5]['workflow_stage_id']);
+    }
+
+    public function test_a_pinned_program_parent_is_neither_moved_nor_stamped(): void
+    {
+        // The change's HEADLINE SCENARIO, which nothing else asserts: the card an operator
+        // ACTUALLY parked. Pinning is the nearest thing they can do to a parent today and it
+        // covers half the defect — the control above stamps — so if this consult sat beside
+        // the pin instead of upstream of it, this subject would still be carrying a leg's
+        // `pr_number` while every "was it moved?" assertion in the cluster passed.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['workflow_stage_id' => 49, 'tags' => ['program', 'no-automove']]);
+
+        $this->handle($this->programPayload());
+
+        $this->assertSame([], $stub->patchesTo(5));
+        $this->assertSame(49, $stub->cards[5]['workflow_stage_id']);
+        $this->assertArrayNotHasKey('payload', $stub->cards[5]);
     }
 }

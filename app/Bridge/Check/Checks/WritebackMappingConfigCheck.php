@@ -124,28 +124,46 @@ final class WritebackMappingConfigCheck implements Check
             // BOTH `stages.started` AND `started_from_stages`. With exactly one set the
             // move is silently INERT (the `stages.started`-only half is refused for lack
             // of a promote-from set; the `started_from_stages`-only half has no `started`
-            // outcome to fire).
-            $hasStartedStage = $mapping->stageFor('started') !== null;
-            $hasStartedFrom = $mapping->startedFromStages !== null && $mapping->startedFromStages !== [];
-            if ($hasStartedStage !== $hasStartedFrom) {
-                $present = $hasStartedStage ? 'stages.started' : 'started_from_stages';
-                $missing = $hasStartedStage ? 'started_from_stages' : 'stages.started';
-                yield Finding::warn("writeback: mapping for {$repo} sets {$present} but not {$missing} — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until {$missing} is set");
+            // outcome to fire). Asked of EVERY declared board (card#9850 / DL-404): an added
+            // board's `started` move promotes only from that board's OWN set, so it is inert
+            // on exactly the same terms, and is named by its own `boards.<id>` keys. The
+            // mapped board is the first element and keeps its keys and message unchanged.
+            foreach ($mapping->perDeclaredBoard() as $declared) {
+                $keys = $declared->isOnAdditionalDeclaredBoard()
+                    ? ['stage' => "boards.{$declared->boardId}.started", 'from' => "boards.{$declared->boardId}.started_from_stages"]
+                    : ['stage' => 'stages.started', 'from' => 'started_from_stages'];
+                $hasStartedStage = $declared->stageFor('started') !== null;
+                $hasStartedFrom = $declared->startedFromStages !== null && $declared->startedFromStages !== [];
+                if ($hasStartedStage !== $hasStartedFrom) {
+                    $present = $hasStartedStage ? $keys['stage'] : $keys['from'];
+                    $missing = $hasStartedStage ? $keys['from'] : $keys['stage'];
+                    yield Finding::warn("writeback: mapping for {$repo} sets {$present} but not {$missing} — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until {$missing} is set");
+                }
             }
             // DL-195: Won't-Do-revival needs BOTH stages.opened (the revive-to target)
             // AND stages.closed_unmerged (the abandon stage the revival is scoped from).
             // With revive_on_reopen on but either missing, a reopened PR's revival is
-            // silently INERT.
+            // silently INERT. Asked of EVERY declared board (card#9850 r3), through the same
+            // loop and key naming as the DL-160 leg above: a narrowed `reopened` move revives
+            // from THAT board's own abandon stage to THAT board's own `opened`. ONE ASYMMETRY,
+            // deliberate: an ADDED board that maps NEITHER half takes no part in the
+            // close/reopen cycle (no close ever parked one of its cards), so there is nothing
+            // for a reopen to fail to revive and it is not accused; the mapped board — whose
+            // keys `revive_on_reopen` was written against — keeps its unconditional rule.
             if ($mapping->reviveOnReopen) {
-                $missingRevive = [];
-                if ($mapping->stageFor('opened') === null) {
-                    $missingRevive[] = 'stages.opened';
-                }
-                if ($mapping->stageFor('closed_unmerged') === null) {
-                    $missingRevive[] = 'stages.closed_unmerged';
-                }
-                if ($missingRevive !== []) {
-                    yield Finding::warn("writeback: mapping for {$repo} sets revive_on_reopen but not ".implode(' / ', $missingRevive).' — Won\'t-Do-revival (DL-195) needs BOTH stages.opened (revive-to) and stages.closed_unmerged (abandon stage) and is silently INERT until set');
+                foreach ($mapping->perDeclaredBoard() as $declared) {
+                    $prefix = $declared->isOnAdditionalDeclaredBoard() ? "boards.{$declared->boardId}" : 'stages';
+                    $missingRevive = [];
+                    if ($declared->stageFor('opened') === null) {
+                        $missingRevive[] = "{$prefix}.opened";
+                    }
+                    if ($declared->stageFor('closed_unmerged') === null) {
+                        $missingRevive[] = "{$prefix}.closed_unmerged";
+                    }
+                    if ($missingRevive === [] || (count($missingRevive) === 2 && $declared->isOnAdditionalDeclaredBoard())) {
+                        continue;
+                    }
+                    yield Finding::warn("writeback: mapping for {$repo} sets revive_on_reopen but not ".implode(' / ', $missingRevive)." — Won't-Do-revival (DL-195) needs BOTH {$prefix}.opened (revive-to) and {$prefix}.closed_unmerged (abandon stage) and is silently INERT until set");
                 }
             }
             // DL-198: a created coord card's task.created webhook would echo back to the
@@ -372,10 +390,19 @@ final class WritebackMappingConfigCheck implements Check
             // second copy free to disagree with the runtime the day the set moves — which is
             // precisely the failure mode this check exists to report on other people's
             // config.
+            //
+            // EVERY DECLARED BOARD'S merge outcomes are named (card#9850 r3), each by its own
+            // key — `stages.<outcome>` on the mapped board, `boards.<id>.<outcome>` on an added
+            // one — because a merge moves a card on whichever declared board it is on. A
+            // coordination mapping whose own `stages` maps no merge outcome is exactly the
+            // shape `boards` exists for, and reading `stages` alone left it silent.
             $gated = [];
-            foreach (PrOutcome::MERGE_OUTCOMES as $mergeOutcome) {
-                if ($mapping->stageFor($mergeOutcome) !== null) {
-                    $gated[] = "stages.{$mergeOutcome} (".$mapping->stageFor($mergeOutcome).')';
+            foreach ($mapping->perDeclaredBoard() as $declared) {
+                $prefix = $declared->isOnAdditionalDeclaredBoard() ? "boards.{$declared->boardId}" : 'stages';
+                foreach (PrOutcome::MERGE_OUTCOMES as $mergeOutcome) {
+                    if ($declared->stageFor($mergeOutcome) !== null) {
+                        $gated[] = "{$prefix}.{$mergeOutcome} (".$declared->stageFor($mergeOutcome).')';
+                    }
                 }
             }
             if ($gated !== []) {
@@ -387,7 +414,7 @@ final class WritebackMappingConfigCheck implements Check
             }
         }
 
-        yield Silence::because('no mapping maps a merge outcome (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, when a coord-card family is enabled without the mapping keys that family reads, or when two files spell one repo two ways');
+        yield Silence::because('no mapping maps a merge outcome on any board it declares — neither its own `stages` nor any `boards.<id>` entry — (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, when a coord-card family is enabled without the mapping keys that family reads, or when two files spell one repo two ways');
     }
 
     /**

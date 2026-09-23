@@ -5,6 +5,7 @@ namespace Tests\Feature\Writeback;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class WritebackConfigTest extends TestCase
@@ -510,6 +511,35 @@ class WritebackConfigTest extends TestCase
         $this->assertTrue($cfg->boardIsShared(8));
         $this->assertFalse($cfg->boardIsShared(12));
         $this->assertFalse($cfg->boardIsShared(999));
+    }
+
+    /**
+     * card#9850 r3: a board a mapping DECLARES in `boards` is a board that mapping writes to —
+     * its PRs narrow onto it and stamp their DL/PR refs onto cards there — so it counts toward
+     * both board-keyed reads exactly as `board_id` does. Only `octo/web` names board 8 as its
+     * `board_id`; `octo/coord` declares it. Board 5 is `octo/coord`'s alone (nobody declares
+     * it), and board 12 is untouched by `boards`, which is the single-board control.
+     */
+    public function test_a_board_declared_in_boards_counts_toward_sharing_and_hold_tags(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 1,
+            'mappings' => [
+                'octo/web' => ['board_id' => 8, 'stages' => ['opened' => 50], 'hold_marker_tags' => ['web-hold']],
+                'octo/coord' => ['board_id' => 5, 'stages' => ['opened' => 60], 'hold_marker_tags' => ['coord-hold', 'web-hold'],
+                    'boards' => ['8' => ['opened' => 50]]],
+                'octo/cli' => ['board_id' => 12, 'stages' => ['opened' => 87], 'hold_marker_tags' => ['cli-hold']],
+            ],
+        ]));
+        $cfg = WritebackConfig::load($this->dir);
+
+        $this->assertTrue($cfg->boardIsShared(8), 'octo/coord declares board 8, so a colliding DL there is ambiguous');
+        $this->assertFalse($cfg->boardIsShared(5));
+        $this->assertFalse($cfg->boardIsShared(12));
+        $this->assertSame(['web-hold', 'coord-hold'], $cfg->holdMarkerTagsForBoard(8),
+            'octo/coord\'s hold convention protects its cards on the board it declares — the union, deduped, first-seen order');
+        $this->assertSame(['coord-hold', 'web-hold'], $cfg->holdMarkerTagsForBoard(5));
+        $this->assertSame(['cli-hold'], $cfg->holdMarkerTagsForBoard(12));
     }
 
     // ---- DL-198: create_coord_cards + coord_card_stage_id ----
@@ -1146,5 +1176,192 @@ class WritebackConfigTest extends TestCase
         $this->assertSame('PupFuzz/agent-webhook-bridge', $cfg->configuredRepoFor('PupFuzz/agent-webhook-bridge'));
         $this->assertNull($cfg->configuredRepoFor('pupfuzz/not-mapped'));
         $this->assertSame(['PupFuzz/agent-webhook-bridge'], array_keys($cfg->mappings));
+    }
+
+    // --- card#9850 / DL-404: the optional `boards` key. ---------------------------------
+    //
+    // ⭐ THE COMPATIBILITY CELL IS THE FIRST ONE AND IT IS NOT DECORATION. The ruling's
+    // non-negotiable is that a mapping written before this key existed loads and behaves
+    // byte-identically (except the reconcile skip line docs/writeback.md § Optional: a repo
+    // whose PRs cite cards on SEVERAL boards names), so the guarantee is asserted as a
+    // PROPERTY of the loaded mapping —
+    // one declared board, `perDeclaredBoard()` yielding the same object — rather than left
+    // to be inferred from the absence of a red elsewhere.
+
+    public function test_a_mapping_with_no_boards_key_declares_exactly_its_mapped_board(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('owner/repo');
+        $this->assertNull($mapping->boards);
+        $this->assertFalse($mapping->declaresAdditionalBoards());
+        $this->assertSame([8], $mapping->declaredBoardIds());
+        $this->assertSame([$mapping], $mapping->perDeclaredBoard(),
+            'a single-board mapping must yield ITSELF — the resolution loop then runs against exactly '
+            .'the values it read before this key existed, rather than against a copy that could drift');
+        $this->assertTrue($mapping->anyDeclaredBoardMaps('merged'));
+        $this->assertFalse($mapping->anyDeclaredBoardMaps('opened'));
+    }
+
+    public function test_boards_is_additive_and_each_declared_board_carries_its_own_stage_map(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'owner/coord' => [
+                'board_id' => 2,
+                'stages' => ['merged' => 22],
+                'boards' => ['13' => ['opened' => 96, 'merged' => 97], '3' => ['merged' => 22]],
+            ],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('owner/coord');
+        $this->assertSame([2, 13, 3], $mapping->declaredBoardIds(),
+            'the mapped board stays FIRST — that is what keeps the happy path of a repo whose cards '
+            .'are on its own board at one request, and it is why `boards` is additive rather than a replacement');
+        $narrowed = $mapping->perDeclaredBoard();
+        $this->assertSame([2, 13, 3], array_map(fn ($m) => $m->boardId, $narrowed));
+        $this->assertSame([true, true, true], array_map(fn ($m) => $m->declaresAdditionalBoards(), $narrowed),
+            'every narrowed copy still declares `boards`, which is what makes `declared_board` present on each of its records');
+        $this->assertSame([22, 97, 22], array_map(fn ($m) => $m->stageFor('merged'), $narrowed),
+            'stage ids are per-board arbitrary integers, so each declared board answers from ITS OWN map — '
+            .'board 3 and board 2 both using 22 is a coincidence a shared map would have made look like a rule');
+        $this->assertNull($narrowed[2]->stageFor('opened'));
+        $this->assertTrue($mapping->anyDeclaredBoardMaps('opened'), 'one declared board mapping it is enough for the cheap pre-check');
+        // Every other field survives the narrowing — the guarantee `clone($this, …)` buys over
+        // a re-spelled constructor call, which would silently drop a field added later.
+        $this->assertSame($mapping->createCoordCards, $narrowed[1]->createCoordCards);
+        $this->assertSame($mapping->issuePopulation, $narrowed[1]->issuePopulation);
+    }
+
+    public function test_boards_re_declaring_the_mapped_board_fails_closed(): void
+    {
+        // One board with two stage maps and nothing reconciling them: the operator must say
+        // which they meant (the DL-293 duplicate-key precedent).
+        $this->write(json_encode(['mappings' => [
+            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'boards' => ['8' => ['merged' => 99]]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('re-declares board_id 8');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_an_empty_boards_object_fails_closed(): void
+    {
+        // Configured scenery: it disables the multi-board path while looking configured — the
+        // same fail-quiet shape `started_from_stages` and `coord_card_lane_stage_ids` reject.
+        $this->write(json_encode(['mappings' => [
+            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'boards' => new \stdClass],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('boards must be a non-empty object');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_declared_board_with_an_empty_stage_map_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":{}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('needs a non-empty stages object');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_an_unknown_outcome_on_a_declared_board_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":{"shipped":97}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("unknown stage outcome 'shipped'");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_non_numeric_stage_id_on_a_declared_board_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":{"merged":"ninety-seven"}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("board 13 stage 'merged' must be a numeric workflow_stage_id");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_non_numeric_board_key_fails_closed(): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"sprint":{"merged":97}}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("non-numeric board key 'sprint'");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_list_shaped_boards_value_fails_closed(): void
+    {
+        // `[{"merged":97}]` reads as board 0 — a board id no kanban instance has — so it is
+        // caught at the shape rather than loading a mapping that could never resolve.
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":[{"merged":97}]}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('boards must be a non-empty object');
+        WritebackConfig::load($this->dir);
+    }
+
+    /**
+     * r1 of card#9850: each declared board's `started` source sets are its OWN, narrowed by
+     * `perDeclaredBoard()` exactly like its stage map. A board that names none gets null —
+     * the DL-160 fail-closed default — never the mapped board's sets, whose ids are stages of
+     * the mapped board and of no other (stage ids are a global auto-increment). And every
+     * narrowed copy still knows the repo's configured board, which is what records key
+     * `mapped_board` on.
+     */
+    public function test_each_declared_board_carries_its_own_started_sets_and_never_inherits_the_mapped_boards(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'owner/coord' => [
+                'board_id' => 2,
+                'stages' => ['started' => 31],
+                'started_from_stages' => [30],
+                'unpark_from_stages' => [29],
+                'boards' => [
+                    '13' => ['started' => 95, 'started_from_stages' => [94], 'unpark_from_stages' => [93]],
+                    '3' => ['merged' => 22],
+                ],
+            ],
+        ]]));
+
+        $narrowed = WritebackConfig::load($this->dir)->mappingFor('owner/coord')->perDeclaredBoard();
+
+        $this->assertSame([[30], [94], null], array_map(fn ($m) => $m->startedFromStages, $narrowed));
+        $this->assertSame([[29], [93], null], array_map(fn ($m) => $m->unparkFromStages, $narrowed));
+        $this->assertSame([2, 2, 2], array_map(fn ($m) => $m->mappedBoardId, $narrowed));
+        $this->assertSame([2, 13, 3], array_map(fn ($m) => $m->boardId, $narrowed));
+    }
+
+    /**
+     * A declared board's sets fail closed on exactly the rules the top-level keys do — one
+     * primitive parses both — and an entry carrying sets but no outcome is still an entry
+     * with no stage map.
+     */
+    #[DataProvider('badDeclaredBoardSets')]
+    public function test_a_declared_boards_started_sets_fail_closed_on_the_top_level_rules(string $entry, string $message): void
+    {
+        $this->write('{"mappings":{"owner/repo":{"board_id":8,"stages":{"merged":52},"boards":{"13":'.$entry.'}}}}');
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage($message);
+        WritebackConfig::load($this->dir);
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public static function badDeclaredBoardSets(): array
+    {
+        return [
+            'not a list' => ['{"started":95,"started_from_stages":{"a":94}}', 'mapping for owner/repo boards board 13 started_from_stages must be a list of workflow_stage_ids'],
+            'empty' => ['{"started":95,"unpark_from_stages":[]}', 'mapping for owner/repo boards board 13 unpark_from_stages must be non-empty (an empty list silently disables auto-unpark; omit the key to disable instead)'],
+            'non-numeric' => ['{"started":95,"started_from_stages":["backlog"]}', 'mapping for owner/repo boards board 13 started_from_stages must contain only numeric workflow_stage_ids'],
+            'overlap' => ['{"started":95,"started_from_stages":[94],"unpark_from_stages":[94]}', 'mapping for owner/repo boards board 13 stage id(s) 94 appear in BOTH started_from_stages and unpark_from_stages'],
+            'sets but no outcome' => ['{"started_from_stages":[94]}', 'mapping for owner/repo boards board 13 needs a non-empty stages object'],
+        ];
     }
 }

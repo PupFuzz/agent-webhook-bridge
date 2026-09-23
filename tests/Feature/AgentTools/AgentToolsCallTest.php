@@ -11,6 +11,7 @@ use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Http\Controllers\AgentTools\AgentToolsController;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
@@ -1761,6 +1762,7 @@ class AgentToolsCallTest extends TestCase
             'limit' => BoardMyCardsTool::DEFAULT_MAX_CARDS,
             'truncated' => true,
             'stage_filter' => null,
+            'remedy' => $result['cards_window']['remedy'] ?? null,
         ], $result['cards_window']);
     }
 
@@ -1947,6 +1949,105 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame(500, $result['cards_window']['limit']);
     }
 
+    // ─── board_my_cards: a truncated window names its own remedy (card#10150) ──────
+
+    /**
+     * ⭐ THE CALLER THIS IS FOR HAS NO SCHEMA SAYING `stage` OR `limit` EXIST: a seat whose
+     * channel-server snapshot predates those arguments is capped by the bridge all the same,
+     * and the arguments work from it — only the sentence naming them never reached it. The
+     * response body is the one surface every caller reads, so the window names the arguments
+     * itself, by their wire names, and names where a column id comes from.
+     */
+    public function test_a_truncated_lane_window_names_stage_and_limit_as_its_remedy(): void
+    {
+        $this->fakeLaneOf(500);
+
+        $window = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result.cards_window');
+
+        $this->assertTrue($window['truncated']);
+        $this->assertIsString($window['remedy'] ?? null, 'a truncated window must say how to get the rest');
+        $this->assertStringContainsString('`stage`', $window['remedy']);
+        $this->assertStringContainsString('`board_stages`', $window['remedy'], 'the remedy names where the column id it asks for is listed');
+        $this->assertStringContainsString('`limit`', $window['remedy']);
+    }
+
+    public function test_an_untruncated_window_carries_no_remedy_key_at_all(): void
+    {
+        // The additive half: a list that was not cut is the shape it always was — no key,
+        // not a null one. Paired with the presence witness above, so this cannot pass by the
+        // key having been dropped everywhere.
+        $this->fakeLaneOf(3);
+
+        $window = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result.cards_window');
+
+        $this->assertFalse($window['truncated']);
+        $this->assertArrayNotHasKey('remedy', $window);
+    }
+
+    public function test_a_stage_narrowed_window_names_limit_and_not_stage_as_its_remedy(): void
+    {
+        // Already one column: sending the caller back to `stage` would be advice it has
+        // already taken. What is left is `limit`.
+        $this->fakeLaneOf(500);
+
+        $window = $this->callTool(['tool' => 'board_my_cards', 'args' => ['stage' => 50, 'limit' => 4]])
+            ->assertStatus(200)->json('result.cards_window');
+
+        $this->assertTrue($window['truncated']);
+        $this->assertStringContainsString('`limit`', $window['remedy'] ?? '');
+        $this->assertStringNotContainsString('narrow with `stage`', $window['remedy'] ?? '');
+    }
+
+    public function test_a_truncated_shared_lane_window_names_its_remedy_too(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  shared_swimlane_id: 9\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $lane = str_contains(urldecode($request->url()), 'swimlane_id=9') ? 9 : 4;
+                $rows = [];
+                for ($id = 1; $id <= 3; $id++) {
+                    $rows[] = ['id' => $lane * 100 + $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => $lane,
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10];
+                }
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            },
+        ]);
+
+        $window = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 2]])
+            ->assertStatus(200)->json('result.shared_swimlane.cards_window');
+
+        $this->assertTrue($window['truncated']);
+        $this->assertStringContainsString('`stage`', $window['remedy'] ?? '');
+        $this->assertStringContainsString('`limit`', $window['remedy'] ?? '');
+    }
+
+    public function test_an_untruncated_coord_window_carries_no_remedy_key(): void
+    {
+        $this->fakeCoordLeg(['board_id' => 12]);
+
+        $window = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result.coord_cards_window');
+
+        $this->assertFalse($window['truncated']);
+        $this->assertArrayNotHasKey('remedy', $window);
+    }
+
+    public function test_the_limit_refusal_still_names_stage_as_the_narrower_escape(): void
+    {
+        // The refusal and the windows read one constant for the `stage` escape; this pins that
+        // the refusal's wording did not move when it was hoisted.
+        Http::fake();
+
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 0]])->assertStatus(422);
+
+        $this->assertStringEndsWith('Raising it raises the response size in proportion; narrow with `stage` instead where you can.', (string) $res->json('error'));
+    }
+
     /** @return array<string, array{0: mixed}> */
     public static function unusableLimits(): array
     {
@@ -2012,6 +2113,7 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertSame([
             'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
+            'remedy' => $result['cards_window']['remedy'] ?? null,
         ], $result['cards_window']);
         $this->assertSame([497, 498, 499, 500], array_column($result['cards_by_stage']['Backlog'], 'id'));
     }
@@ -2276,9 +2378,14 @@ class AgentToolsCallTest extends TestCase
         // ...and the coord cards are untouched by it, capped on their own count only.
         $this->assertCount(4, $result['coord_cards']);
         $this->assertSame(
-            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true],
+            ['total' => 10, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'remedy' => $result['coord_cards_window']['remedy'] ?? null],
             $result['coord_cards_window']
         );
+        // card#10150 — its remedy is `limit` alone. `stage` is the one argument this call already
+        // sent and it did not reach these cards, so a remedy naming it would send the caller back
+        // to an argument that leaves this window exactly as cut.
+        $this->assertStringContainsString('`limit`', $result['coord_cards_window']['remedy'] ?? '');
+        $this->assertStringNotContainsString('narrow with `stage`', $result['coord_cards_window']['remedy'] ?? '');
     }
 
     // ─── board_correct_card: ownership scoping + the refusal table (card#8378) ─
@@ -2866,6 +2973,36 @@ class AgentToolsCallTest extends TestCase
             ['tags' => ['fresh-caller-tag', 'created-by:me', 'gate']],
             $this->sentPatchBody(),
             'this board\'s declared hold survives; another board\'s declared hold is not this board\'s convention'
+        );
+    }
+
+    /**
+     * card#9850 r3: a mapping that DECLARES this board in `boards` writes to cards here, so its
+     * hold convention is this board's too. `o/coord` is mapped to board 999 and declares board
+     * 10; its `coord-hold` must survive the wholesale replace exactly as `o/mine`'s `gate` does.
+     * `o/other` is the control — it neither maps nor declares board 10.
+     */
+    public function test_correct_preserves_the_hold_tags_of_a_mapping_that_declares_this_board_in_boards(): void
+    {
+        $this->writeWriteback((string) json_encode(['mappings' => [
+            'o/mine' => ['board_id' => 10, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['gate']],
+            'o/coord' => ['board_id' => 999, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['coord-hold'],
+                'boards' => ['10' => ['merged' => 52]]],
+            'o/other' => ['board_id' => 998, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['other-hold']],
+        ]]));
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'gate', 'coord-hold', 'other-hold'],
+        ])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(200);
+        $this->assertSame(
+            ['tags' => ['fresh-caller-tag', 'created-by:me', 'gate', 'coord-hold']],
+            $this->sentPatchBody(),
+            'a hold declared by a mapping that writes to this board through `boards` is this board\'s convention too'
         );
     }
 
@@ -4863,6 +5000,111 @@ class AgentToolsCallTest extends TestCase
         Http::fake();
         $this->callTool(['args' => []])->assertStatus(422);
         Http::assertNothingSent();
+    }
+
+    // ─── the Content-Type this door reads its body by (card#10106) ─────────────
+
+    /**
+     * Without a JSON Content-Type, Laravel's `input()` reads form fields and the query string
+     * instead of the body — so a body whose `tool` is present was answered "request must
+     * carry a non-empty `tool`", and a form-encoded `tool=` reached a tool with no JSON body
+     * at all. Both are refused for the Content-Type, by name. HTTP-only by construction: the
+     * ssh door has no Content-Type to get wrong.
+     *
+     * The third element is the form fields PHP's SAPI would have parsed out of the body: the
+     * test kernel does not parse a raw body into them, so without it the form row would
+     * model a call that never reaches `input()` — and pass for the wrong reason (measured:
+     * with it, the pre-card#10106 door answered this row 200).
+     *
+     * @return array<string, array{0: string, 1: string, 2: array<string, string>}>
+     */
+    public static function nonJsonContentTypes(): array
+    {
+        return [
+            'a JSON body labelled text/plain' => ['text/plain', '{"tool":"board_my_cards","args":{}}', []],
+            'a form-encoded call' => ['application/x-www-form-urlencoded', 'tool=board_my_cards', ['tool' => 'board_my_cards']],
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $formFields
+     */
+    #[DataProvider('nonJsonContentTypes')]
+    public function test_a_body_not_labelled_json_is_refused_for_its_content_type(string $contentType, string $body, array $formFields): void
+    {
+        CallingSeatSeal::forANewServingProcess();
+        $this->fakeEmptyWindow();
+
+        $this->call('POST', '/agent-tools/call', $formFields, [], [], [
+            'CONTENT_TYPE' => $contentType,
+            'HTTP_ACCEPT' => 'application/json',
+            'REMOTE_ADDR' => '127.0.0.1',
+            'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
+        ], $body)
+            ->assertStatus(422)
+            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}']);
+        Http::assertNothingSent();
+    }
+
+    // ─── what the two new gates NARROWED, measured (card#10106) ───────────────
+
+    /**
+     * ⭐ THE ACCEPTANCE NARROWING THIS CHANGE MAKES IS MEASURED HERE, NOT ENUMERATED IN PROSE.
+     * `Request::input()` reads `data_get($this->getInputSource()->all() + $this->query->all(), …)`,
+     * so `?tool=board_my_cards` has always been able to supply the tool BY ITSELF — which means a
+     * call whose BODY was not a JSON object still reached the tool and RAN it. Both new gates now
+     * refuse such a call, and the two gates are not interchangeable here: the first three rows are
+     * refused by the BODY PARSE under a perfectly correct `Content-Type` — one row per body class
+     * the parse names (empty, unparseable, JSON of another type) — so DL-410 Decision 3's
+     * alternative (read the raw body whatever the `Content-Type`) would NOT restore them. The
+     * fourth row is the `Content-Type` gate reaching the same request by the other route.
+     *
+     * ⚑ THE LAST ROW IS WHAT MAKES THE OTHERS A MEASUREMENT RATHER THAN AN ASSUMPTION, and it is
+     * DL-410 bound (a): the same query string with a JSON object body still runs the tool. So the
+     * refusals above are refusals OF THE BODY and not of a `tool` nobody supplied — which is the
+     * whole reason these calls used to succeed.
+     *
+     * ⚑ SEEN TO FAIL (the pre-card#10106 door, reproduced): delete the `! $request->isJson()`
+     * refusal AND the `ToolCallBody::parse()` gate from {@see AgentToolsController::call}
+     * — the two blocks this change adds — and every refusal row answers `200` with the tool's
+     * real result body (measured: with both gates removed, the empty-body row asserts
+     * `ok: true` / `tool: board_my_cards`, i.e. the tool RAN). That is what this door did before,
+     * and it is why the narrowing is operator-gated.
+     *
+     * @return array<string, array{0: string, 1: string, 2: int, 3: ?string}>
+     */
+    public static function queryStringSuppliedTool(): array
+    {
+        return [
+            'an EMPTY body under a JSON Content-Type' => ['application/json', '', 422, 'request body is empty — expected a JSON object {tool, args?, client_version?}'],
+            'a body that never parses' => ['application/json', '{"args":{', 422, 'request body is not valid JSON (Syntax error) — expected a JSON object {tool, args?, client_version?}'],
+            'a body that is JSON of another type' => ['application/json', '42', 422, 'request body is a JSON number, not an object — expected a JSON object {tool, args?, client_version?}'],
+            'an EMPTY body under no JSON Content-Type' => ['text/plain', '', 422, 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}'],
+            'a JSON object body' => ['application/json', '{}', 200, null],
+        ];
+    }
+
+    #[DataProvider('queryStringSuppliedTool')]
+    public function test_a_tool_named_only_in_the_query_string_is_served_or_refused_for_its_body(string $contentType, string $body, int $status, ?string $error): void
+    {
+        CallingSeatSeal::forANewServingProcess();
+        $this->fakeEmptyWindow();
+
+        $response = $this->call('POST', '/agent-tools/call?tool=board_my_cards', [], [], [], [
+            'CONTENT_TYPE' => $contentType,
+            'HTTP_ACCEPT' => 'application/json',
+            'REMOTE_ADDR' => '127.0.0.1',
+            'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
+        ], $body)->assertStatus($status);
+
+        if ($error !== null) {
+            $response->assertExactJson(['ok' => false, 'error' => $error]);
+            Http::assertNothingSent();
+
+            return;
+        }
+
+        $response->assertJsonPath('ok', true)->assertJsonPath('tool', 'board_my_cards');
     }
 
     // ─── undeclared argument keys: one refusal, in the dispatcher ─────────────

@@ -12,6 +12,7 @@ use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -748,6 +749,145 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertCount(1, $messages);
         $this->assertStringContainsString('is ORPHANED', $messages[0]);
         $this->assertStringNotContainsString('SPELLING SPLIT', $messages[0]);
+    }
+
+    /**
+     * card#9850 / DL-404 (r1): the DL-160 both-halves rule holds PER DECLARED BOARD. An added
+     * board's `started` move promotes only from that board's OWN set, so an added board with
+     * exactly one half is inert exactly as the mapped board would be — and is named by its own
+     * `boards.<id>` keys. The mapped board carries both halves, so its own line stays silent:
+     * the finding is about board 13, and only board 13.
+     *
+     * @param  array<string, mixed>  $added
+     */
+    #[DataProvider('addedBoardHalves')]
+    public function test_the_dl160_both_halves_rule_holds_on_each_added_declared_board(array $added, string $expected): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => [
+            'board_id' => self::BOARD,
+            'stages' => ['started' => 51, 'merged' => 52],
+            'started_from_stages' => [50],
+            'boards' => ['13' => $added],
+        ]]]));
+
+        $warnings = $this->warnings($this->findings(WritebackConfig::load($this->dir)->mappingFor(self::REPO)));
+
+        $this->assertSame([$expected], array_column($warnings, 'message'));
+    }
+
+    /** @return array<string, array{0: array<string, mixed>, 1: string}> */
+    public static function addedBoardHalves(): array
+    {
+        return [
+            'started without a promote-from set' => [
+                ['started' => 95, 'merged' => 97],
+                'writeback: mapping for owner/repo sets boards.13.started but not boards.13.started_from_stages — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until boards.13.started_from_stages is set',
+            ],
+            'a promote-from set without started' => [
+                ['merged' => 97, 'started_from_stages' => [94]],
+                'writeback: mapping for owner/repo sets boards.13.started_from_stages but not boards.13.started — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until boards.13.started is set',
+            ],
+        ];
+    }
+
+    /**
+     * card#9850 r3: the DL-195 revive leg is asked of every declared board. A narrowed
+     * `reopened` move revives from THAT board's own `closed_unmerged` to THAT board's own
+     * `opened`, so an added board mapping one half is inert on exactly the mapped board's
+     * terms, and is named by its `boards.<id>` keys. The mapped board carries both halves, so
+     * the finding is about board 13 alone.
+     *
+     * @param  array<string, mixed>  $added
+     */
+    #[DataProvider('addedBoardReviveHalves')]
+    public function test_the_dl195_revive_rule_holds_on_each_added_declared_board(array $added, string $missing): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => [
+            'board_id' => self::BOARD,
+            'stages' => ['opened' => 50, 'closed_unmerged' => 49, 'merged' => 52],
+            'revive_on_reopen' => true,
+            'boards' => ['13' => $added],
+        ]]]));
+
+        $warnings = $this->warnings($this->findings(WritebackConfig::load($this->dir)->mappingFor(self::REPO)));
+
+        $this->assertSame(
+            ["writeback: mapping for owner/repo sets revive_on_reopen but not {$missing} — Won't-Do-revival (DL-195) needs BOTH boards.13.opened (revive-to) and boards.13.closed_unmerged (abandon stage) and is silently INERT until set"],
+            array_column($warnings, 'message'),
+        );
+    }
+
+    /** @return array<string, array{0: array<string, mixed>, 1: string}> */
+    public static function addedBoardReviveHalves(): array
+    {
+        return [
+            'an abandon stage with no revive-to stage' => [['closed_unmerged' => 92, 'merged' => 97], 'boards.13.opened'],
+            'a revive-to stage with no abandon stage' => [['opened' => 96, 'merged' => 97], 'boards.13.closed_unmerged'],
+        ];
+    }
+
+    /**
+     * An added board that maps NEITHER half takes no part in the close/reopen cycle — a close
+     * never moved one of its cards into an abandon stage, so there is nothing a reopen could
+     * fail to revive. It stays silent, where the mapped board (whose keys `revive_on_reopen`
+     * was written against) keeps its unconditional rule. The DL-305 `ok` is the witness.
+     */
+    public function test_an_added_board_mapping_neither_revive_half_is_not_accused(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => [
+            'board_id' => self::BOARD,
+            'stages' => ['opened' => 50, 'closed_unmerged' => 49, 'merged' => 52],
+            'revive_on_reopen' => true,
+            'boards' => ['13' => ['merged' => 97]],
+        ]]]));
+
+        $findings = $this->findings(WritebackConfig::load($this->dir)->mappingFor(self::REPO));
+
+        $this->assertSame([], $this->warnings($findings));
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString('moves a card on MERGE only when', $findings[0]['message']);
+    }
+
+    /**
+     * card#9850 r3: the DL-305 mention-vs-closure line reads every declared board. A mapping
+     * whose OWN stage map carries no merge outcome but whose `boards.13` maps `merged` DOES move
+     * cards on merge — onto board 13 — so the line must speak, naming the board-13 key. Before
+     * this it read `stages` alone and the check fell through to its "no mapping maps a merge
+     * outcome" silence on exactly the coordination shape `boards` exists for.
+     */
+    public function test_the_dl305_line_names_a_merge_outcome_mapped_only_on_an_added_board(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => [
+            'board_id' => self::BOARD,
+            'create_coord_cards' => true,
+            'coord_card_stage_id' => 21,
+            'boards' => ['13' => ['opened' => 96, 'merged' => 97]],
+        ]]]));
+
+        $findings = $this->findings(WritebackConfig::load($this->dir)->mappingFor(self::REPO), families: ['coord-card-create']);
+
+        $this->assertSame([], $this->warnings($findings));
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('boards.13.merged (97) is gated', $findings[0]['message']);
+        $this->assertStringNotContainsString('stages.merged', $findings[0]['message']);
+    }
+
+    public function test_the_dl305_line_names_the_mapped_and_the_added_boards_merge_outcomes_together(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode(['mappings' => [self::REPO => [
+            'board_id' => self::BOARD,
+            'stages' => ['merged' => 52],
+            'boards' => ['13' => ['merged' => 97, 'merged_to_main' => 98]],
+        ]]]));
+
+        $findings = $this->findings(WritebackConfig::load($this->dir)->mappingFor(self::REPO));
+
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString(
+            'stages.merged (52) and boards.13.merged (97) and boards.13.merged_to_main (98) are gated',
+            $findings[0]['message'],
+        );
     }
 
     private function mapping(): WritebackMapping
