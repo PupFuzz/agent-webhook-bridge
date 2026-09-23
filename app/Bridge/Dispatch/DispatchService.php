@@ -163,7 +163,7 @@ final class DispatchService
             // (ruled, DL-203): the classifier error is real and must stay
             // replayable regardless of how the gate would have disposed of it.
             try {
-                $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent);
+                $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent, $this->subscriptions);
                 $result = $classifier->classify($ctx);
             } catch (Throwable $e) {
                 $this->recordError($dispatch, $e);

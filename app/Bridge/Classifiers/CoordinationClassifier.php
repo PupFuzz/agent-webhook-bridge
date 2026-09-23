@@ -563,7 +563,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * — `created`, so an `edited` or `deleted` comment is never this state) and this agent named
      * nobody. Of the three attribution inputs two are install-level already (the body `FROM:` line
      * and the registry, built from every agent YAML); only `scope_author_map` is per-agent, so it is
-     * the one attribution leg {@see installExempts} re-reads. No protocol rule is checked anywhere:
+     * the one attribution leg {@see installExempts} widens to every agent. No protocol rule is checked anywhere:
      * the label asserts "the install could not attribute this" and nothing else.
      *
      * The bridge's OWN comment — the DL-390 correlation report, the only COMMENT it posts to GitHub
@@ -619,15 +619,22 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * change what the label MEANS. Deliberately NOT narrowed to "agents running this classifier":
      * a declaration is read from an agent's config whatever classifier it names, which needs no
      * classifier-class introspection and errs toward NOT writing a permanent label.
-     * Every one of those files parsed moments ago, at the top of this same delivery
-     * (that read is what found the agents being served, and a malformed config fails the delivery
-     * closed before any classify runs), so this is a re-read of known-good configs; a config
-     * rewritten malformed mid-delivery would throw here and be treated as any classify throw is —
-     * recorded against this agent's dispatch, acked 200, replayable — never a new failure class.
+     * ⛔ THE DELIVERY'S REGISTRY, NOT A FRESH ONE. `SubscriptionRegistry` memoizes its parse per
+     * INSTANCE, so constructing one here would re-glob the config dir and re-parse every agent YAML
+     * once per SERVING agent — N agents on a scope, N² `AgentConfig::load()` calls per label-eligible
+     * event, on the FPM request path — while the dispatcher is holding an instance that already
+     * parsed exactly these files at the top of this delivery (that read is what found the agents
+     * being served). So the config dir is walked once per DELIVERY. Outside the dispatch loop
+     * `$ctx->subscriptions` is null and this builds its own, which is the same answer at the old
+     * cost. Either way a malformed config fails the delivery closed before any classify runs, so
+     * these are known-good parses; one rewritten malformed mid-delivery would throw here and be
+     * treated as any classify throw is — recorded against this agent's dispatch, acked 200,
+     * replayable — never a new failure class.
      */
     private function installExempts(ClassifyContext $ctx, string $title): bool
     {
-        $agents = (new SubscriptionRegistry((string) config('bridge.config_dir')))->subscribedTo($ctx->provider, $ctx->scopeId);
+        $registry = $ctx->subscriptions ?? new SubscriptionRegistry((string) config('bridge.config_dir'));
+        $agents = $registry->subscribedTo($ctx->provider, $ctx->scopeId);
         foreach ($agents as $agent) {
             if ($this->scopeAuthor($agent->classifierConfig, $ctx->scopeId) !== null
                 || $this->titleMatchesDropGroup($title, $agent->classifierConfig)) {

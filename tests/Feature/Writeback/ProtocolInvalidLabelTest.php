@@ -289,6 +289,31 @@ class ProtocolInvalidLabelTest extends TestCase
         $this->assertSame([], $this->github);
     }
 
+    public function test_the_exemption_reads_the_deliverys_registry_rather_than_walking_the_config_dir_per_agent(): void
+    {
+        // WHY THE FILE IS DELETED MID-TEST: the cost claim ("the config dir is walked ONCE per
+        // delivery, not once per serving agent") has no assertable shape — nothing here counts
+        // `AgentConfig::load()` calls. So the population is made to DIFFER between the two readings
+        // instead. alpha exempts the comment and its YAML is removed AFTER the delivery's registry
+        // has parsed it: the memoized registry still holds alpha, a fresh glob would not. Reading
+        // the delivery's registry ⇒ exempt ⇒ no write; building one per serving agent ⇒ gamma sees
+        // an install with no exempting agent ⇒ a permanent "could not attribute" on an attributable
+        // thread. Nothing else in this path reads the config dir, so the deletion isolates that one
+        // read. (Mutation: restore the `new SubscriptionRegistry(...)` inside `installExempts()` and
+        // this reds with the POST.)
+        $this->coordAgent('alpha', extra: "  config:\n    scope_author_map:\n      acme/coord: beta\n", inClassifier: true);
+        $this->coordAgent('gamma');
+        $this->fakePeers();
+
+        $subs = new SubscriptionRegistry($this->dir);
+        $subs->agentConfigs();                      // the walk the dispatch loop makes at the top of a delivery
+        File::delete($this->dir.'/alpha.yml');      // stands in for the second walk that must not happen
+
+        $this->dispatch('d1', $this->comment('created', 'no from line here'), subs: $subs);
+
+        $this->assertSame([], $this->github);
+    }
+
     public function test_a_comment_whose_sender_the_registry_names_is_not_labelled(): void
     {
         // A distinct, non-shared account the registry resolves to an agent: attributed, FROM: or not.
@@ -515,9 +540,9 @@ class ProtocolInvalidLabelTest extends TestCase
     }
 
     /** @param  array<string, mixed>  $payload */
-    private function dispatch(string $deliveryId, array $payload, ?string $eventType = null): void
+    private function dispatch(string $deliveryId, array $payload, ?string $eventType = null, ?SubscriptionRegistry $subs = null): void
     {
-        $subs = new SubscriptionRegistry($this->dir);
+        $subs ??= new SubscriptionRegistry($this->dir);
         (new DispatchService(
             $subs,
             AgentRegistry::fromAgentConfigs($subs->agentConfigs(), AgentRegistry::loadSharedIdentities($this->dir)),
