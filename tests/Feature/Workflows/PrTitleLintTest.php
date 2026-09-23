@@ -2669,7 +2669,9 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * EVERY card-token regex in this workflow, over one domain, against one answer.
+     * EVERY card-token regex in this workflow WRITTEN AS A `good=`/`token=` ASSIGNMENT,
+     * over one domain, against one answer — an INLINE matcher (the require step's
+     * presence conjunct) is outside the scan and is pinned separately.
      *
      * ⛔ THE POPULATION IS DERIVED, NOT ENUMERATED (card#10031). The enumerated version
      * of this leg named the warn step's `good=` and the closure step's `token=`, and

@@ -2829,7 +2829,9 @@ the work distinguishes those.
   ⛔ card#10031 also makes this leg a **declared cross-repo seam**: the gate's SELECTION rule is
   `cardTokenResolution()` + `CardTokenGrammar`, and `kanban-board` carries a copy of it that no
   check in either repo can hold against this authority. This repo owns the CHECK (its
-  `PrTitleLintTest` drives the real classifier); the kanban end NAMES what it cannot verify. Closing
+  `PrTitleLintTest` drives the real classifier); ⛔ the kanban end's declaration is NOT SHIPPED — it
+  is `PupFuzz/kanban-board` PR #721, OPEN and CONFLICTING as of 2026-09-23, and until it merges that
+  repo's shipped step declares none of this and still accepts a bare `DL-<number>`. Closing
   the seam means one shared implementation both repos consume — out of this program's scope and not
   mintable by either repo alone.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another

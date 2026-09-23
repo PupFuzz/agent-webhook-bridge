@@ -40,9 +40,9 @@ name: PR title correlation-key lint
 # an unbounded `\d+`. The digit-count spelling is gone for the same reason. Where the
 # require step below genuinely DISAGREES with an authority it is PINNED rather than
 # repaired by default — repairing one changes what a CI gate accepts, which is a hard
-# gate (card#5300); one row was approved and fixed (DL-272) and the rest have closed
-# as side effects rather than repairs (card#10031), the card staying open for what
-# is still pinned. The disagreements are
+# gate (card#5300); one row was approved and fixed (DL-272) and SEVERAL MORE — not
+# all — closed as side effects rather than repairs (card#10031), the card staying
+# open for the rows that are still pinned. The disagreements are
 # enumerated in PrTitleLintTest, never here: a count in this header is the same kind
 # of copy nothing holds, and it was already wrong once (the audit that wrote this
 # paragraph found a further divergence the same day).
@@ -65,12 +65,15 @@ name: PR title correlation-key lint
 #     emits as its move target, so the order and the grammar cannot drift.
 #   - ⚠ THE SIBLING COPY IN `kanban-board` CANNOT BE TIED THAT WAY and this is the
 #     one place both ends are named together. That repo's CI has no bridge checkout
-#     and no `CardTokenGrammar` to compare against, so its copy of this rule is
-#     pinned to a TABLE of this grammar's answers and a change HERE reds nothing
-#     THERE. The seam is declared, in kanban card#10062, and in that repo's own step
-#     — it is not closed. Closing it means one shared implementation both repos
-#     consume; until then, a change to `CardTokenGrammar` or to the resolution order
-#     is a TWO-REPO change.
+#     and no `CardTokenGrammar` to compare against, so a change HERE reds nothing
+#     THERE. ⛔ THE FAR END'S HALF OF THE DECLARATION IS A DEPENDENCY, NOT A DONE
+#     THING: it is `PupFuzz/kanban-board` PR #721, OPEN and CONFLICTING as of
+#     2026-09-23, so until that merges, that repo's SHIPPED step declares none of
+#     this, is pinned to no table of this grammar's answers, and still accepts a bare
+#     `DL-<number>` as an accept arm of its own. What names the seam from that side
+#     today is kanban card#10062. Closing the seam means one shared implementation
+#     both repos consume; until then, a change to `CardTokenGrammar` or to the
+#     resolution order is a TWO-REPO change.
 #   - A cross-board work item (a board-12 card implemented via a kanban/bridge PR,
 #     e.g. #3765 itself) passes this lint but still will not auto-move —
 #     correlation is deliberately board-scoped 1:1 per repo (DL-174). This checks
@@ -340,9 +343,13 @@ jobs:
           # card never moved.
           #
           # ONE RULE, DERIVED AT BOTH ENDS — `token` below is the SAME expression the
-          # closure step uses, and PrTitleLintTest holds every card-token regex in this
-          # workflow to ONE answer set against `CardTokenGrammar`, and holds this
-          # step's SELECTION to what the REAL classifier emits as its move target. The
+          # closure step uses, and PrTitleLintTest holds every `good=`/`token=`
+          # ASSIGNMENT it scans in this workflow to ONE answer set against
+          # `CardTokenGrammar` — CONJUNCT 1's presence regex above is written INLINE, is
+          # therefore not in that scan, and does disagree with the grammar (`card4`
+          # matches presence where the grammar rejects it; `card#0123` reds presence
+          # where the grammar parses card 123 — both pinned in PrTitleLintTest) — and
+          # holds this step's SELECTION to what the REAL classifier emits. The
           # order (head ref, then title) is tied the same way. Neither is kept in
           # lockstep by discipline.
           #
@@ -604,8 +611,12 @@ jobs:
           #
           # NOT kept in lockstep with CardTokenGrammar by discipline — PrTitleLintTest
           # SCANS every step for `good=` / `token=` and drives each one against that
-          # grammar and against the others, so this file cannot hold card-token regexes
-          # that disagree, however many it grows. ⚠ Byte-identical to the require
+          # grammar and against the others, so no two of the `good=`/`token=`
+          # assignments this file scans can disagree. ⚠ That is the whole guarantee: a
+          # matcher written INLINE (the require step's presence check) or with a literal
+          # separator, or a second regex in a contributing step under another name, is
+          # outside the scan — see `cardMatchingSteps()` / `cardTokenRegexesIn()`.
+          # ⚠ Byte-identical to the require
           # step's copy, and DELIBERATELY not hoisted to `env:` — the reason is at that
           # copy: the scan that ties them reads `run:` scripts, so a hoist removes the
           # tie, not the duplication.

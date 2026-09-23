@@ -2646,7 +2646,7 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 - **Proven failable, not merely green.** With the fix reverted in the real file, two legs red: the mutation assertion (`0 !== 1`) and — because this box's ambient locale IS `en_US.UTF-8` — the DL agreement loop, on `DL-<U+0663>`. That second red is why the vector left the exemption list rather than being re-exempted: it now rides the same loop as every other vector. Restored, `PrTitleLintTest` 18/18, 316 assertions.
 - **Consequences:** `.github/workflows/pr-title-lint.yml` (one regex + the comment stating why an enumeration and why the remaining ranges stay), `tests/Feature/Workflows/PrTitleLintTest.php`. **This DOES change what a CI gate accepts — strictly narrowing, on the approved row only: a title whose only DL token spells its digits in non-ASCII now reds where it used to pass. No migration, no `.env`, no token-scope change, and no change to what the receiver or either board-tools door accepts.**
 
-*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] The direction claim above — that this step's REMAINING bracket expressions are negated classes "where a collation-wide range REDS a title the authority correlates instead of greening one it does not" — is **FALSIFIED for the leading class**. card#10031 gave the step a `token=` selection scan, and there `(^|[^0-9a-z_])` decides which card is SELECTED: under `en_US.UTF-8` a swallowed non-ASCII letter stops being a boundary, the scan skips a FOREIGN leftmost token and the gate GREENS the hijack. The ranges are still not narrowed — the JOB now pins `LC_ALL: C.UTF-8` in `jobs.lint-title.env`, which every step inherits and which also closes the three rows measured above.*
+*[Annotation, 2026-09-23 (card#10031, DL-411) — CORRECTING.] The direction claim above — that this step's REMAINING bracket expressions are negated classes "where a collation-wide range REDS a title the authority correlates instead of greening one it does not" — is **FALSIFIED for the leading class**. card#10031 gave the step a `token=` selection scan, and there `(^|[^0-9a-z_])` decides which card is SELECTED: under `en_US.UTF-8` a swallowed non-ASCII letter stops being a boundary, the scan skips a FOREIGN leftmost token and the gate GREENS the hijack. The ranges are still not narrowed — the JOB now pins `LC_ALL: C.UTF-8` in `jobs.lint-title.env`, which every step inherits and which also closes the three rows measured above. **The Decision's arm spelling is FALSIFIED too:** `dl-[0123456789]{1,4}` is no longer an ACCEPT arm at all — DL-411 removed the DL from the accept-check, and the surviving failure-path DIAGNOSTIC is spelled `dl-[0123456789]+` with no trailing boundary, the authority's own shape. The ENUMERATION this entry ruled for is untouched and re-confirmed; only the `{1,4}` bound and the arm's role moved.*
 
 ## DL-273 — A DL-token near-miss stops being silent, and the probe that finds one becomes a shared primitive rather than a second grammar inside a second grammar
 
@@ -7053,12 +7053,19 @@ diagnostic on the failure path.
   selects"* directly beneath *"selects no card from either surface"*. The accept-check therefore
   carries `-n "$card_id_n"` as well: empty means NO ID, never an id that matched.
 - ⛔ **A CROSS-REPO SEAM, DECLARED AND NOT CLOSED.** `kanban-board` carries a sibling copy of this
-  rule. Its CI has no checkout of this repo, so its copy is pinned to a transcribed table of this
-  grammar's answers and **a change to `CardTokenGrammar` or to the resolution order reds nothing
+  rule. Its CI has no checkout of this repo, so its copy cannot be tied to this authority and **a
+  change to `CardTokenGrammar` or to the resolution order reds nothing
   there** — a complete audit of either repo can come back clean while the seam is audited by
-  neither. Both ends now DECLARE it on surfaces the other's reader reaches (this repo's workflow
-  header names kanban; kanban's step and card#10062 name this repo, its classifier and this card),
-  this end owns the CHECK against the real authority, and the kanban end NAMES what it cannot
-  verify. **Changing either side is a TWO-REPO change.** The honest close is ONE implementation both
+  neither. This end DECLARES it on a surface the other's reader reaches (this repo's workflow header
+  names kanban) and owns the CHECK against the real authority. ⛔ **THE FAR END'S HALF IS A
+  DEPENDENCY, NOT AN OUTCOME OF THIS CHANGE.** The kanban declaration is `PupFuzz/kanban-board`
+  **PR #721 — OPEN and CONFLICTING as of 2026-09-23**, with no check ever run on it. Measured at
+  the authority that day: that repo's `.github/workflows/pr-title-lint.yml` is byte-identical on
+  `main` and `dev`, names neither this grammar nor this classifier (its only mention of this repo is
+  the pre-existing DL-174 board-scope note), is pinned to no table of this grammar's answers, and
+  still carries `DL-[0-9]{1,4}` as an ACCEPT arm of its own. So until #721 merges, canon #7's
+  DECLARE leg is discharged at ONE end and kanban card#10062 is the only far-end surface that
+  declares the seam. **Changing either side is a
+  TWO-REPO change.** The honest close is ONE implementation both
   repos consume — a toolkit-hosted lint generated from, or checked against, this grammar. Neither
   repo can mint that alone, so it is named and routed rather than built as a third copy.
