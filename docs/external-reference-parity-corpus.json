@@ -5,6 +5,7 @@
     "repo": "PupFuzz/agent-webhook-bridge",
     "class": "App\\Bridge\\Support\\ExternalReferenceNormalizer",
     "path": "app/Bridge/Support/ExternalReferenceNormalizer.php",
+    "corpus": "docs/external-reference-parity-corpus.json",
     "checked_by": "tests/Unit/Support/ExternalReferenceNormalizerTest.php"
   },
   "authority": {
@@ -13,9 +14,10 @@
     "path": "app/Services/ExternalReferenceNormalizer.php",
     "relationship": "kanban-board OWNS this rule. The bridge mirrors it. A disagreement is the bridge's defect to fix by re-mirroring, never kanban's to fix by matching the bridge."
   },
-  "how_the_far_end_runs_this": "Load this file, construct App\\Services\\ExternalReferenceNormalizer, and for every entry of `vectors` call the named method with `args` (a JSON object argument decodes to a PHP associative array) and compare the result to `expect` with ===. Any disagreement is drift between the two authorities and should be reported to the bridge repo. `constants` is a second, cheaper check: the values there are the ones the mirrored methods are parametrised by.",
+  "how_the_far_end_runs_this": "Load this file, construct App\\Services\\ExternalReferenceNormalizer, and for every entry of `vectors` call the named method with `args` (a JSON object argument decodes to a PHP associative array) and compare the result to `expect` with ===. Any disagreement is drift between the two authorities and should be reported to the bridge repo. THEN RUN IT THE OTHER WAY, because the step above is `declared => real` and that is half a check -- it passes forever on a class that grew a member nobody published a vector for: hold your OWN public surface and constants against this file's keys, and read a public method or constant of your class that `vectors` / `constants` does not name, and that `not_mirrored` does not excuse, as rule the bridge has not copied. `constants` is that second, cheaper check, and what it holds is exactly what the MIRROR class DECLARES as constants, read off it by reflection -- it is NOT the set of values the mirrored methods are parametrised by. SYSTEM_REGEX is declared and read by nothing in the bridge, and the patterns that DO parametrise canonicalize, repoFromGitHubUrl and sourceFor are inline literals inside those method bodies, named by no block of this file; compare those by reading the two methods.",
   "not_checked_by_this_repo": [
     "THAT KANBAN'S CLASS STILL ANSWERS THESE VECTORS. Nothing in the bridge repo reds when kanban-board changes its own class: the bridge's CI has no checkout of, and no credential for, that repo. The `last_measured` block below is a dated MEASUREMENT, not a live check, and it goes stale silently.",
+    "THAT A MIRRORED METHOD STILL BEHAVES AS IT DID. Both arms of the bridge's check are MEMBER-GRANULAR -- `declared => real` asserts the vectors below, and the reverse arm compares public method NAMES and constant VALUES -- and neither reads a branch or an inline literal. A pattern or a condition edited inside an existing public method changes what this mirror answers with both arms green, unless a vector below happens to cover the changed case. The vectors are behavioural COVERAGE; they are not a proof that this published contract reaches every branch of the code behind it.",
     "THAT THE UN-MIRRORED MEMBERS ARE IRRELEVANT. `not_mirrored` lists the kanban members the bridge deliberately does not carry. If a change to one of them changed what the MIRRORED members mean, no check at either end would see it.",
     "THAT A CONSUMER OF `board_my_cards` READS THIS FILE. The `source` field a seat reads is computed by the mirror; a seat that never reads this corpus or the contract row has no way to tell a mirrored answer from the server's own."
   ],

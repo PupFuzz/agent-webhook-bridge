@@ -21,10 +21,10 @@ namespace App\Bridge\Support;
  * over `docs/external-reference-parity-corpus.json`: a PUBLISHED behavioural corpus that
  * pins what this mirror answers and what its constants are, run against this class on every
  * test run, reding in both directions — a vector this class fails, and a public member or a
- * constant no vector covers. ⚠ **What it cannot do is read kanban's class**: this repo's CI
- * has no checkout of and no credential for that repo, so a far-end change reds nothing here.
- * That bound is named in the corpus and in `docs/kanban-integration-contract.md` § 3, where
- * the far end reads it, and it is why a member added here must be published there too.
+ * constant no vector covers. ⚠ **What those two arms do NOT establish is stated ONCE, in the
+ * corpus's `not_checked_by_this_repo`** — both are member-granular, and nothing here reads
+ * kanban's class. Read it there before trusting a green run; it is why a member added here must
+ * be published there too.
  *
  * **Mirrored through kanban DL-251** (bridge DL-309 — a drift that had already SHIPPED
  * on both sides is what that pair is: for a while the two authorities answered a

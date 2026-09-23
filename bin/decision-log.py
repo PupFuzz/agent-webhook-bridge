@@ -27,6 +27,7 @@ Exit codes are the contract:
   4 (next)  the allocated number is already used in a local checkout
   5 (check) the log at head uses one number twice
   6 (check) a number this change adds is already in use on the target branch
+  7 (check) this change adds an entry whose header carries no number at all
 """
 
 import argparse
@@ -43,6 +44,7 @@ EXIT_NO_ALLOCATOR = 3
 EXIT_LOCAL_COLLISION = 4
 EXIT_DUPLICATE_AT_HEAD = 5
 EXIT_ALREADY_ON_TARGET = 6
+EXIT_UNNUMBERED_AT_HEAD = 7
 
 DECISION_LOG = "CLAUDE_DECISIONS.md"
 
@@ -65,11 +67,18 @@ DEFAULT_CHECKOUT_GLOBS = "~/agent-webhook-bridge-*"
 # the real max was 188. Leading zeros are stripped by `int()` so the log's own
 # two spellings (`## DL-031`, `## DL-291`) name the same number.
 _HEADER = re.compile(r"^##[ \t]+DL-0*(\d+)\b")
+# An H2 that opens a DL entry and carries NO number — `## DL-TBD`, the placeholder
+# an entry is drafted with before `next` has been run. `_HEADER` cannot see it (it
+# requires digits), so until card#9936 such an entry was invisible to BOTH of
+# `cmd_check`'s assertions AND absent from its population line: two changes could
+# each mint `## DL-TBD`, both pass, and the log ends up with two entries claiming
+# one non-identifier. Matched here so it is REFUSED rather than uncounted.
+_UNNUMBERED = re.compile(r"^##[ \t]+DL-(?!0*\d)")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
 
-def header_scan(text: str) -> tuple[list[tuple[int, int]], int]:
-    """(every DL entry header outside a code fence, how many were SKIPPED inside one).
+def header_scan(text: str) -> tuple[list[tuple[int, int]], int, list[tuple[str, int]]]:
+    """(every DL entry header outside a code fence, how many were SKIPPED inside one, the UNNUMBERED ones).
 
     Lines inside a fenced code block are skipped: a decision entry that shows
     what a header looks like is documentation, not a second entry, and treating
@@ -85,6 +94,7 @@ def header_scan(text: str) -> tuple[list[tuple[int, int]], int]:
     was written down here.
     """
     found: list[tuple[int, int]] = []
+    unnumbered: list[tuple[str, int]] = []
     skipped = 0
     fence: str | None = None
     for lineno, line in enumerate(text.splitlines(), start=1):
@@ -95,6 +105,14 @@ def header_scan(text: str) -> tuple[list[tuple[int, int]], int]:
             elif line.strip().startswith(fence):
                 fence = None
             continue
+        if _UNNUMBERED.match(line):
+            # Fenced the same way, and for the same reason: an entry shown as an
+            # EXAMPLE of a placeholder is documentation, not a placeholder.
+            if fence is None:
+                unnumbered.append((line.strip(), lineno))
+            else:
+                skipped += 1
+            continue
         m = _HEADER.match(line)
         if m is None:
             continue
@@ -102,7 +120,7 @@ def header_scan(text: str) -> tuple[list[tuple[int, int]], int]:
             skipped += 1
             continue
         found.append((int(m.group(1)), lineno))
-    return found, skipped
+    return found, skipped, unnumbered
 
 
 def header_numbers(text: str) -> list[tuple[int, int]]:
@@ -118,9 +136,9 @@ def _read(path: str, label: str) -> str:
         raise SystemExit(EXIT_USAGE) from exc
 
 
-def _scan(path: str, label: str) -> tuple[list[tuple[int, int]], int]:
+def _scan(path: str, label: str) -> tuple[list[tuple[int, int]], int, list[tuple[str, int]]]:
     """`header_scan` over a file, stating on stderr what the fences hid from it."""
-    entries, skipped = header_scan(_read(path, label))
+    entries, skipped, unnumbered = header_scan(_read(path, label))
     if skipped:
         print(
             f"decision-log: WARNING: {skipped} `## DL-` line(s) in the {label} log {path} sit "
@@ -129,15 +147,40 @@ def _scan(path: str, label: str) -> tuple[list[tuple[int, int]], int]:
             "later header, and this run's verdict would then cover a truncated population.",
             file=sys.stderr,
         )
-    return entries, skipped
+    return entries, skipped, unnumbered
 
 
-def _population(entries: list[tuple[int, int]], skipped: int) -> str:
-    """The head log's denominator, printed beside every OK so it is never implicit."""
+def _population(entries: list[tuple[int, int]], skipped: int, unnumbered: list[tuple[str, int]]) -> str:
+    """The head log's denominator, printed beside every OK so it is never implicit.
+
+    The unnumbered term is the third leg and it exists because it was MISSING: a
+    `## DL-TBD` header was neither counted nor skipped, so the two figures agreed
+    with each other while the population they described was short (card#9936).
+    """
+    total = len(entries) + skipped + len(unnumbered)
     return (
-        f"population: {len(entries)} of {len(entries) + skipped} `## DL-` header lines counted, "
-        f"{skipped} skipped inside code fences"
+        f"population: {len(entries)} of {total} `## DL-` header lines counted, "
+        f"{skipped} skipped inside code fences, {len(unnumbered)} carrying no number"
     )
+
+
+def _refuse_unnumbered(path: str, unnumbered: list[tuple[str, int]]) -> bool:
+    """Name every numberless DL header handed in, and say whether there were any."""
+    for text, lineno in unnumbered:
+        print(
+            f"decision-log: {path} line {lineno} opens a DL entry with NO NUMBER: {text}",
+            file=sys.stderr,
+        )
+    if unnumbered:
+        print(
+            "decision-log: a placeholder header is not an identifier. Two changes can each "
+            "write one, and neither this guard's duplicate assertion nor its target-branch "
+            "assertion can see it — both read `## DL-NNN`. Allocate the number with "
+            "`python3 bin/decision-log.py next` and renumber the entry, its CHANGELOG line, "
+            "its commit messages and the PR title together.",
+            file=sys.stderr,
+        )
+    return bool(unnumbered)
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -188,8 +231,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         board counter but not yet written into any log, and nothing about a
         checkout on another host. `next` is what covers those; this is the
         backstop for when `next` was bypassed.
+      * The UNNUMBERED assertion below refuses a placeholder this change ADDS,
+        not every placeholder in the file: one already on the base snapshot is
+        reported and allowed through, because refusing it would red every
+        innocent PR cut after it landed rather than the change that wrote it.
     """
-    head_headers, head_skipped = _scan(args.head, "head")
+    head_headers, head_skipped, head_unnumbered = _scan(args.head, "head")
 
     seen: dict[int, int] = {}
     for number, lineno in head_headers:
@@ -214,13 +261,20 @@ def cmd_check(args: argparse.Namespace) -> int:
         return EXIT_USAGE
 
     if args.base is None:
+        if _refuse_unnumbered(args.head, head_unnumbered):
+            return EXIT_UNNUMBERED_AT_HEAD
         print(f"OK: {args.head} carries {len(head_headers)} DL entries, no number twice.")
-        print(f"({_population(head_headers, head_skipped)})")
+        print(f"({_population(head_headers, head_skipped, head_unnumbered)})")
         print("(no --base/--target given — the target-branch assertion did not run)")
         return 0
 
-    base_numbers = {n for n, _ in _scan(args.base, "base")[0]}
+    base_entries, _, base_unnumbered = _scan(args.base, "base")
+    base_numbers = {n for n, _ in base_entries}
     target_numbers = {n for n, _ in _scan(args.target, "target")[0]}
+
+    inherited = {text for text, _ in base_unnumbered}
+    if _refuse_unnumbered(args.head, [(t, ln) for t, ln in head_unnumbered if t not in inherited]):
+        return EXIT_UNNUMBERED_AT_HEAD
 
     added = [(n, lineno) for n, lineno in head_headers if n not in base_numbers]
     collisions = [(n, lineno) for n, lineno in added if n in target_numbers]
@@ -239,7 +293,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         "no number it adds is already in use on the target branch, and the log "
         "at head uses no number twice."
     )
-    print(f"({_population(head_headers, head_skipped)})")
+    print(f"({_population(head_headers, head_skipped, head_unnumbered)})")
     return 0
 
 

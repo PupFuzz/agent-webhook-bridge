@@ -38,15 +38,11 @@ use ReflectionMethod;
  *  - **real ⇒ declared:** a public method with no vectors, or a constant the corpus does not
  *    pin — or a corpus key naming a member this class no longer has — reds.
  *
- * ⛔ WHAT A GREEN RUN DOES NOT SAY, named here rather than left to be assumed, and named again
- * in the corpus itself where the far end reads it:
- *  - **It says NOTHING about kanban's class.** This repo's CI has no checkout of, and no
- *    credential for, kanban-board; nothing here reds when the authority changes. The corpus's
- *    `last_measured` block is a dated hand measurement of the two ends, and it goes stale
- *    silently. Naming that is the result, not a gap in this class.
- *  - **It does not reach the members the bridge does not mirror** (the corpus's `not_mirrored`),
- *    and a change to one of those that changed the meaning of a mirrored member is invisible at
- *    both ends.
+ * ⛔ WHAT A GREEN RUN DOES NOT SAY is stated ONCE, in the corpus's `not_checked_by_this_repo`,
+ * where the far end reads it — including that both arms are MEMBER-granular, so a branch or an
+ * inline literal edited inside an existing public method is outside both. This class asserts that
+ * block is PRESENT ({@see test_the_corpus_declares_its_authority_and_names_what_this_repo_cannot_check})
+ * rather than carrying a second copy of it here.
  */
 class ExternalReferenceNormalizerTest extends TestCase
 {
@@ -56,9 +52,9 @@ class ExternalReferenceNormalizerTest extends TestCase
     {
         $vectors = self::corpus()['vectors'];
 
-        // ⚠ THE PRESENCE WITNESS. An empty corpus satisfies every loop below, so without this
-        // the check goes green the moment the file stops being readable or parseable — which
-        // reports where the reader stopped rather than the state of the mirror.
+        // ⚠ THE PRESENCE WITNESS for a `vectors` block that is PRESENT and EMPTY, which
+        // satisfies every loop below. The unreadable, unparseable and missing-block shapes are
+        // witnessed in {@see corpus} instead, so each reds by name rather than by a TypeError.
         $this->assertNotSame([], $vectors, self::CORPUS.' carries no vectors at all — the corpus, not the mirror, is what changed.');
 
         $disagreements = [];
@@ -163,6 +159,15 @@ class ExternalReferenceNormalizerTest extends TestCase
 
         $doc = json_decode($raw, true);
         self::assertIsArray($doc, self::CORPUS.' is not parseable JSON — it is a PUBLISHED artifact, so a consumer at the far end reads exactly this file.');
+
+        // ⚠ THE PRESENCE WITNESS, AT THE SHAPE RATHER THAN AT ONE VALUE. A corpus missing
+        // these blocks used to leave `$doc['vectors']` as null, which satisfies every loop
+        // below `assertNotSame([], …)` and reds only by an incidental TypeError nobody wrote.
+        foreach (['vectors', 'constants'] as $block) {
+            self::assertIsArray($doc[$block] ?? null, self::CORPUS." carries no `{$block}` block at all — the corpus, not the mirror, is what changed.");
+        }
+
+        self::assertSame(self::CORPUS, $doc['mirror']['corpus'] ?? null, 'the corpus\'s `mirror.corpus` is not this file\'s own repo-relative path, so the far end that downloaded it is told nothing about where it came from, or is told the wrong place.');
 
         return $doc;
     }
