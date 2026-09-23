@@ -453,7 +453,7 @@
         "expect": null
       },
       {
-        "note": "NON-MEMBERSHIP, and it is what the positive vectors above cannot say: `releases` is a real GitHub path kind this rule deliberately does NOT recognise, so the set is CLOSED. Every vector above stays green if the set is widened or collapsed to a catch-all; this one reds.",
+        "note": "NON-MEMBERSHIP, and it is what the positive vectors above cannot say: `releases` is a real GitHub path kind this rule deliberately does NOT recognise, so the set is CLOSED. Measured: every vector above stays green when the set is WIDENED (`releases` added) or collapsed to a catch-all (`[^/]+`); this one reds on both.",
         "args": [
           "https://github.com/Octo/Web/releases/tag/v1"
         ],
