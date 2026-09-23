@@ -1,0 +1,571 @@
+{
+  "schema": 1,
+  "about": "The behavioural parity corpus for the bridge's VENDORED copy of kanban-board's external-reference normalization rule. The bridge cannot import the kanban class (separate repo, separate runtime), so it carries a mirror — and a mirror with no check is a comment. These vectors are what the bridge BELIEVES the rule to be. tests/Unit/Support/ExternalReferenceNormalizerTest.php runs every one of them against the bridge's own class on every test run, and reds when the mirror grows a member no vector covers. docs/kanban-integration-contract.md section 3 carries the row that publishes this file to the far end.",
+  "mirror": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Support\\ExternalReferenceNormalizer",
+    "path": "app/Bridge/Support/ExternalReferenceNormalizer.php",
+    "corpus": "docs/external-reference-parity-corpus.json",
+    "checked_by": "tests/Unit/Support/ExternalReferenceNormalizerTest.php"
+  },
+  "authority": {
+    "repo": "PupFuzz/kanban-board",
+    "class": "App\\Services\\ExternalReferenceNormalizer",
+    "path": "app/Services/ExternalReferenceNormalizer.php",
+    "relationship": "kanban-board OWNS this rule. The bridge mirrors it. A disagreement is the bridge's defect to fix by re-mirroring, never kanban's to fix by matching the bridge."
+  },
+  "how_the_far_end_runs_this": "Load this file, construct App\\Services\\ExternalReferenceNormalizer, and for every entry of `vectors` call the named method with `args` (a JSON object argument decodes to a PHP associative array) and compare the result to `expect` with ===. Any disagreement is drift between the two authorities and should be reported to the bridge repo. THEN RUN IT THE OTHER WAY, because the step above is `declared => real` and that is half a check -- it passes forever on a class that grew a member nobody published a vector for: hold your OWN public surface and constants against this file's keys, and read a public method or constant of your class that `vectors` / `constants` does not name, and that `not_mirrored` does not excuse, as rule the bridge has not copied. `constants` is that second, cheaper check, and what it holds is exactly what the MIRROR class DECLARES as constants, read off it by reflection -- it is NOT the set of values the mirrored methods are parametrised by. SYSTEM_REGEX is declared and read by nothing in the bridge, and the patterns that DO parametrise canonicalize, repoFromGitHubUrl and sourceFor are inline literals inside those method bodies, named by no block of this file; compare those by reading those method bodies in the two classes.",
+  "not_checked_by_this_repo": [
+    "THAT KANBAN'S CLASS STILL ANSWERS THESE VECTORS. Nothing in the bridge repo reds when kanban-board changes its own class: the bridge's CI has no checkout of, and no credential for, that repo. The `last_measured` block below is a dated MEASUREMENT, not a live check, and it goes stale silently.",
+    "THAT A MIRRORED METHOD STILL BEHAVES AS IT DID. Both arms of the bridge's check are MEMBER-GRANULAR -- `declared => real` asserts the vectors below, and the reverse arm compares public method NAMES and constant VALUES -- and neither reads a branch or an inline literal. A pattern or a condition edited inside an existing public method changes what this mirror answers with both arms green, unless a vector below happens to cover the changed case. The vectors are behavioural COVERAGE; they are not a proof that this published contract reaches every branch of the code behind it.",
+    "THAT THE UN-MIRRORED MEMBERS ARE IRRELEVANT. `not_mirrored` lists the kanban members the bridge deliberately does not carry. If a change to one of them changed what the MIRRORED members mean, no check at either end would see it.",
+    "THAT A CONSUMER OF `board_my_cards` READS THIS FILE. The `source` field a seat reads is computed by the mirror; a seat that never reads this corpus or the contract row has no way to tell a mirrored answer from the server's own."
+  ],
+  "last_measured": {
+    "date": "2026-09-23",
+    "authority_ref": "dev",
+    "authority_commit": "a02142724f308d1f36d6d3280428dd34c042d4ef",
+    "authority_blob": "b93af716bfe82af7646a32890d04c9009f1d26dc",
+    "vectors_digest": "sha256:6545f8211c827751ea593558197458492d16141f4cf0ca04247b99c49b114805",
+    "method": "every vector below was executed against BOTH classes, and every constant below was read off both, in one process. The authority was loaded from the named COMMIT rather than from a working tree, so the blob above is what answered. RE-TAKEN over the whole corpus after EACH time it was extended -- for the folded-in vectors, then for the three path-kind and case-folding vectors (`releases`, which is a NEGATIVE vector, and the upper-cased path kind and the upper-cased host, which are POSITIVE ones), then for the pr_url-over-issue_url preference vector -- so no vector here is carrying an agreement claim from a run that never executed it. `vectors_digest` is what HOLDS that rule rather than leaving it to be remembered: it is the identity of the vector population this block was taken over -- each vector's method, its position, and everything spelled about it except its `note` and the ORDER of its keys -- its argument TYPES included, so `85` and `85.0` are different vectors and a PHP round-trip of this file that collapses one to the other reds -- re-derived from the file on every run by tests/Unit/Support/ExternalReferenceNormalizerTest.php, which owns the recipe. A vector added, changed or DELETED reds the bridge's suite until this block is re-taken and re-dated.",
+    "result": "AGREED -- every vector and every constant above answered identically on the two classes, read in one process. THE MEASUREMENT DISCRIMINATES: re-run with kanban's canonicalizeSource mutated to stop lower-casing, the kanban end failed every vector that answers with a repo and the bridge end failed none, so an agreement here is a result and not an empty run. ONE-TIME AND DATED: it was taken by hand from a checkout that could read both repos. Nothing schedules it, and the bridge's CI cannot take it. ⚠ A DATE HERE OLDER THAN A VECTOR BELOW WOULD BE A FALSE CLAIM: whoever adds a vector re-takes this measurement over the whole corpus and re-dates this block. Nothing in EITHER repo used to red when they did not; `vectors_digest` above now reds in the bridge's suite, and kanban's end still reds on nothing here."
+  },
+  "not_mirrored": {
+    "divergentRefKeySeverity": "kanban's by-ref KEY REGISTRATION guard: it rules on whether a custom-field key merely resembles a by-ref key. The bridge registers no keys, so it carries neither the method nor its DIVERGENT_REJECT / DIVERGENT_WARN / AMBIGUOUS_REF_STEMS / REF_SUFFIXES constants.",
+    "divergentRefKeyRejectMessage": "The message that guard emits. Server-side only, for the same reason.",
+    "canonicalPayloadKeys": "The registration guard's accessor over PAYLOAD_KEY_TO_SYSTEM's keys. The bridge reads that map through systemForPayloadKey instead."
+  },
+  "constants": {
+    "SYSTEM_DL": "dl",
+    "SYSTEM_GITHUB_PR": "github_pr",
+    "SYSTEM_GITHUB_ISSUE": "github_issue",
+    "SYSTEM_REGEX": "/^[a-z0-9_]{1,32}$/",
+    "PAYLOAD_KEY_TO_SYSTEM": {
+      "dl_number": "dl",
+      "pr_number": "github_pr",
+      "issue_number": "github_issue"
+    },
+    "SOURCE_URL_KEYS": [
+      "pr_url",
+      "issue_url",
+      "html_url"
+    ],
+    "NUMERIC_SYSTEMS": [
+      "dl",
+      "github_pr",
+      "github_issue"
+    ],
+    "REF_MAX": 255
+  },
+  "vectors": {
+    "systemForPayloadKey": [
+      {
+        "note": "The closed display-key map, one vector per entry.",
+        "args": [
+          "dl_number"
+        ],
+        "expect": "dl"
+      },
+      {
+        "note": "",
+        "args": [
+          "pr_number"
+        ],
+        "expect": "github_pr"
+      },
+      {
+        "note": "",
+        "args": [
+          "issue_number"
+        ],
+        "expect": "github_issue"
+      },
+      {
+        "note": "A key that is not a correlation source derives no system.",
+        "args": [
+          "unrelated_key"
+        ],
+        "expect": null
+      },
+      {
+        "note": "The map is keyed VERBATIM -- case is not normalised, so an upper-cased spelling of a real key derives nothing.",
+        "args": [
+          "PR_NUMBER"
+        ],
+        "expect": null
+      },
+      {
+        "note": "A URL-bearing payload key is a SOURCE input, never a ref system: sourceFor reads pr_url, this must not.",
+        "args": [
+          "pr_url"
+        ],
+        "expect": null
+      }
+    ],
+    "canonicalize": [
+      {
+        "note": "A numeric system's ref is ONE decorated integer: prefix and leading zeros collapse, so these four spellings name one decision.",
+        "args": [
+          "dl",
+          "DL-28"
+        ],
+        "expect": "28"
+      },
+      {
+        "note": "",
+        "args": [
+          "dl",
+          "DL-028"
+        ],
+        "expect": "28"
+      },
+      {
+        "note": "",
+        "args": [
+          "dl",
+          "28"
+        ],
+        "expect": "28"
+      },
+      {
+        "note": "",
+        "args": [
+          "dl",
+          "#28"
+        ],
+        "expect": "28"
+      },
+      {
+        "note": "An int-typed stored value answers as the same ref as its string spelling.",
+        "args": [
+          "dl",
+          28
+        ],
+        "expect": "28"
+      },
+      {
+        "note": "The same rule on the other two numeric systems.",
+        "args": [
+          "github_pr",
+          "hash-85"
+        ],
+        "expect": "85"
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          "#85"
+        ],
+        "expect": "85"
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          "85"
+        ],
+        "expect": "85"
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          85
+        ],
+        "expect": "85"
+      },
+      {
+        "note": "",
+        "args": [
+          "github_issue",
+          "085"
+        ],
+        "expect": "85"
+      },
+      {
+        "note": "SEVERAL DIGIT RUNS NAME NO SINGLE IDENTIFIER (kanban DL-251), so the value derives NOTHING rather than the concatenation of its runs -- which would be a real, DIFFERENT pull request or decision. The ISO date below derived '20260823' on the bridge while the server derived nothing for the same card: that pair is what this rule was written from.",
+        "args": [
+          "github_pr",
+          "1.5"
+        ],
+        "expect": null
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          "PR 12 of 34"
+        ],
+        "expect": null
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          "v1.2 #85"
+        ],
+        "expect": null
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          "2026-08-23"
+        ],
+        "expect": null
+      },
+      {
+        "note": "",
+        "args": [
+          "github_pr",
+          "12-34"
+        ],
+        "expect": null
+      },
+      {
+        "note": "",
+        "args": [
+          "github_issue",
+          "1.5"
+        ],
+        "expect": null
+      },
+      {
+        "note": "A NUMBER-typed correlation field reaches the rule as a float, and what a card correlates to must be a property of the VALUE rather than of the JSON type it arrived as: the float 1.5 and the string '1.5' must answer alike.",
+        "args": [
+          "github_pr",
+          1.5
+        ],
+        "expect": null
+      },
+      {
+        "note": "The control that keeps the refusal scoped to the non-integral case rather than to floats generally.",
+        "args": [
+          "github_pr",
+          85.0
+        ],
+        "expect": "85"
+      },
+      {
+        "note": "",
+        "args": [
+          "dl",
+          1.0
+        ],
+        "expect": "1"
+      },
+      {
+        "note": "An in-range whole float renders through int, so an exact integer is not spelled '1.0E+15'.",
+        "args": [
+          "dl",
+          1000000000000000.0
+        ],
+        "expect": "1000000000000000"
+      },
+      {
+        "note": "A float too large to be an integer identifier names no identifier.",
+        "args": [
+          "dl",
+          1e+20
+        ],
+        "expect": null
+      },
+      {
+        "note": "All-zero canonicalizes to a single zero rather than to the empty string.",
+        "args": [
+          "dl",
+          "DL-000"
+        ],
+        "expect": "0"
+      },
+      {
+        "note": "",
+        "args": [
+          "dl",
+          "0"
+        ],
+        "expect": "0"
+      },
+      {
+        "note": "No digits at all, and the empty value: no identifier.",
+        "args": [
+          "dl",
+          "no-digits"
+        ],
+        "expect": null
+      },
+      {
+        "note": "",
+        "args": [
+          "dl",
+          ""
+        ],
+        "expect": null
+      },
+      {
+        "note": "AN UNKNOWN SYSTEM IS VERBATIM, trimmed and capped -- and the float branch sits BEFORE the system branch, so a numeric value reaches an unknown system unrounded instead of being truncated.",
+        "args": [
+          "jira",
+          1.5
+        ],
+        "expect": "1.5"
+      },
+      {
+        "note": "",
+        "args": [
+          "jira",
+          "PROJ-123"
+        ],
+        "expect": "PROJ-123"
+      },
+      {
+        "note": "",
+        "args": [
+          "jira",
+          "  Free-Form_Ref  "
+        ],
+        "expect": "Free-Form_Ref"
+      },
+      {
+        "note": "An unknown system's blank value stores nothing.",
+        "args": [
+          "jira",
+          "   "
+        ],
+        "expect": null
+      },
+      {
+        "note": "The cap is REF_MAX characters, applied to an unknown system's verbatim value.",
+        "args": [
+          "jira",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        "expect": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+        "note": "A NUMERIC system's value is trimmed before its digits are read, exactly as an unknown system's verbatim value is.",
+        "args": [
+          "dl",
+          "  DL-28  "
+        ],
+        "expect": "28"
+      }
+    ],
+    "canonicalizeSource": [
+      {
+        "note": "A source repo is trimmed and lower-cased, because GitHub owner/repo is case-insensitive and the two spellings must land on one storage key.",
+        "args": [
+          "  Octo/Web  "
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "",
+        "args": [
+          "OCTO/WEB"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "A blank source is stored and queried as UNQUALIFIED rather than as an empty string.",
+        "args": [
+          "   "
+        ],
+        "expect": null
+      },
+      {
+        "note": "The cap is REF_MAX characters.",
+        "args": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "expect": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "note": "The signature takes int|string: a numeric source is stringified rather than refused.",
+        "args": [
+          28
+        ],
+        "expect": "28"
+      },
+      {
+        "note": "An EMPTY value is unqualified, pinned separately from the BLANK one above: the trim and the emptiness test are different steps, and a change to either would leave the other vector green.",
+        "args": [
+          ""
+        ],
+        "expect": null
+      }
+    ],
+    "repoFromGitHubUrl": [
+      {
+        "note": "Every GitHub web path kind the rule recognises, case-folded on the way out.",
+        "args": [
+          "https://github.com/Octo/Web/pull/12"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "",
+        "args": [
+          "https://github.com/Octo/Web/issues/5"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "",
+        "args": [
+          "https://github.com/Octo/Web/commit/abc123"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "",
+        "args": [
+          "https://github.com/Octo/Web/tree/main"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "",
+        "args": [
+          "https://github.com/Octo/Web/blob/main/README.md"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "A .git suffix is stripped by the non-greedy capture.",
+        "args": [
+          "https://github.com/Octo/Web.git/pull/12"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "A bare repo URL names no path kind, so it parses to nothing -- the rule reads a REF's URL, not a repo home page.",
+        "args": [
+          "https://github.com/Octo/Web"
+        ],
+        "expect": null
+      },
+      {
+        "note": "Another host is not GitHub however GitHub-shaped its path is.",
+        "args": [
+          "https://example.com/foo/bar/pull/1"
+        ],
+        "expect": null
+      },
+      {
+        "note": "NON-MEMBERSHIP, and it is what the positive vectors above cannot say: `releases` is a real GitHub path kind this rule deliberately does NOT recognise, so the set is CLOSED. Measured: every vector above stays green when the set is WIDENED (`releases` added) or collapsed to a catch-all (`[^/]+`); this one reds on both.",
+        "args": [
+          "https://github.com/Octo/Web/releases/tag/v1"
+        ],
+        "expect": null
+      },
+      {
+        "note": "The pattern is case-insensitive at the PATH KIND: an upper-cased `PULL` names the same ref.",
+        "args": [
+          "https://github.com/Octo/Web/PULL/12"
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "... and at the HOST. No other vector spells the host or the path kind in anything but lower case, so without these two nothing reds when the case-insensitive flag is dropped.",
+        "args": [
+          "https://GitHub.com/Octo/Web/pull/12"
+        ],
+        "expect": "octo/web"
+      }
+    ],
+    "sourceFor": [
+      {
+        "note": "PREFERENCE 1: an explicit payload.repo that is a plausible owner/repo wins over every URL key.",
+        "args": [
+          {
+            "repo": "Octo/Web",
+            "pr_url": "https://github.com/Other/Repo/pull/1"
+          },
+          null
+        ],
+        "expect": "octo/web"
+      },
+      {
+        "note": "A SHORT ADAPTER ALIAS with no path separator ('DEV') is not an owner/repo and must NOT win and be stored as a useless source: it falls through to the URL keys.",
+        "args": [
+          {
+            "repo": "DEV",
+            "pr_url": "https://github.com/Other/Repo/pull/1"
+          },
+          null
+        ],
+        "expect": "other/repo"
+      },
+      {
+        "note": "PREFERENCE 2: the URL keys in order -- pr_url, then issue_url, then html_url.",
+        "args": [
+          {
+            "issue_url": "https://github.com/A/B/issues/3",
+            "html_url": "https://github.com/C/D/pull/4"
+          },
+          null
+        ],
+        "expect": "a/b"
+      },
+      {
+        "note": "PREFERENCE 2's FIRST KEY AGAINST ITS SECOND, and the only vector that spells BOTH: pr_url outranks issue_url. Without it nothing behavioural pins pr_url's rank -- swapping the two at the USE SITE, leaving SOURCE_URL_KEYS byte-identical, answers every other vector here the same and both member arms stay green. The harm it now catches: a card carrying a pr_url and an issue_url that name DIFFERENT repos gets a different source from each end, which is the drift this corpus exists to catch, while the corpus reports AGREED.",
+        "args": [
+          {
+            "pr_url": "https://github.com/X/Y/pull/1",
+            "issue_url": "https://github.com/Z/W/issues/2"
+          },
+          null
+        ],
+        "expect": "x/y"
+      },
+      {
+        "note": "PREFERENCE 3: the card's top-level external_link, so a card that stores its PR URL in kanban's canonical field still qualifies with no producer migration.",
+        "args": [
+          {},
+          "https://github.com/E/F/pull/9"
+        ],
+        "expect": "e/f"
+      },
+      {
+        "note": "Nothing parseable anywhere: the card is unqualified, which is a real answer and not a failure.",
+        "args": [
+          {},
+          null
+        ],
+        "expect": null
+      },
+      {
+        "note": "An alias with no URL to fall through to is still unqualified.",
+        "args": [
+          {
+            "repo": "DEV"
+          },
+          null
+        ],
+        "expect": null
+      },
+      {
+        "note": "PREFERENCE 2, ITS LAST KEY, ALONE: html_url is read when no earlier URL key is present. The ordering vector above only ever shows html_url LOSING, so without this the key is never shown to be read at all.",
+        "args": [
+          {
+            "html_url": "https://github.com/Third/Repo/commit/abc123"
+          },
+          null
+        ],
+        "expect": "third/repo"
+      },
+      {
+        "note": "A URL key whose value is NOT a string names no repo -- a number-typed field must not be coerced into a URL parse.",
+        "args": [
+          {
+            "pr_url": 12
+          },
+          null
+        ],
+        "expect": null
+      }
+    ]
+  }
+}
