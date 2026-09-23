@@ -54,11 +54,15 @@ use Tests\TestCase;
  *    reaches it.
  *
  * ⛔ STATED BOUNDS — WHAT A GREEN RUN SAYS. It says the set of classes calling each lifecycle
- * primitive is exactly the set of classes that row names, and that every LIVE clause publishing
- * what this roster holds names exactly the side of {@see ROSTERS} it speaks for — both surfaces'
- * primitives against its KEYS, the roster doc's row enumeration against its VALUES. It does NOT
- * say the prose beside each name describes that class correctly, and it does not reach a mover
- * in another repo.
+ * primitive is exactly the set of classes that row names, and that each of the clauses
+ * {@see publishedClauses} lists names exactly the side of {@see ROSTERS} it speaks for — both
+ * surfaces' primitives against its KEYS, the roster doc's row enumeration against its VALUES.
+ * It does NOT say the prose beside each name describes that class correctly, and it does not
+ * reach a mover in another repo.
+ *  - **A FURTHER clause publishing this roster, in this or any other doc, is outside this
+ *    check** — the population held is the clauses {@see publishedClauses} enumerates, and
+ *    nothing scans prose for a roster-publishing sentence, so a new one is read by a reviewer
+ *    or by nothing.
  *  - **The house spelling is load-bearing and is a convention, not a property this can
  *    enforce:** every writer in one of these rows is named by its CLASS in backticks.
  *    A class-shaped backticked token added to one of these rows for some other purpose reds
@@ -442,8 +446,11 @@ class CardWriteRosterCoverageTest extends TestCase
     /**
      * $values as a SET — deduplicated and sorted, the shape {@see namesInClause} returns.
      *
-     * Deduplication is not cosmetic on the PERMISSION side: two primitives rostered into one
-     * permission are ONE row, and a document naming that row once is right.
+     * The deduplication is what makes both sides of that comparison the same shape; it is inert
+     * on {@see ROSTERS}' own values today, and not a blessing of the state that would exercise
+     * it: {@see test_each_roster_row_names_exactly_the_classes_that_call_its_primitive} holds
+     * one row against the callers of EACH primitive, so two primitives sharing one permission
+     * row is unsatisfiable there unless their caller sets are identical.
      *
      * @param  list<string>  $values
      * @return list<string>

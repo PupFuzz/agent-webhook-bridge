@@ -625,8 +625,8 @@ how the N+1th copy gets minted, which is the failure this § exists to stop — 
 walk is where the next silently-narrow population comes from.
 
 ⚠ **The FILE WALK is not the only un-hoisted half. The call-site PREDICATE is the other**, and
-`SourceScan::methodCallAt()` is where it is now spelled — hoisted at its second caller (card#10063)
-with only that card's own copy bound to it. Census classes under `tests/` still carry their own
+`SourceScan::methodCallAt()` is where it is now spelled — with only card#10063's own copy bound to
+it, and no other census migrated onto it yet. Census classes under `tests/` still carry their own
 `T_STRING` + `T_OBJECT_OPERATOR`/`T_NULLSAFE_OBJECT_OPERATOR` + `'('` triple; migrating them is
 owed and is its own change, not a rider on whichever card touches one next. Re-derive the same way
 as below, and read the output as LEADS — the spelling appears in predicates that are not this shape

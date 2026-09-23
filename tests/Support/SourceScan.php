@@ -230,8 +230,9 @@ final class SourceScan
      * The name of the method CALLED at $index when that call is `->name(` or `?->name(` and
      * `name` is one of $names — otherwise `null`, the absence {@see sites} reads.
      *
-     * The call-site half of a census predicate, hoisted here at its second caller (canon #5)
-     * so that a census answering "which classes call X" spells the recognition once.
+     * The call-site half of a census predicate: it lives beside {@see sites}, the visitor that
+     * reads its return, so that a census answering "which classes call X" spells the
+     * recognition once. It has ONE caller today.
      * ⚠ It answers WHETHER the token is such a call and nothing else: what the call means —
      * the argument it writes, the guard that precedes it — stays with the caller, which is
      * the half no two censuses share.
