@@ -131,7 +131,7 @@ class ExternalReferenceNormalizerTest extends TestCase
         $this->assertSame(
             $corpus['last_measured']['vectors_digest'] ?? null,
             self::vectorsDigest($corpus['vectors']),
-            'the vectors of '.self::CORPUS.' are not the population its `last_measured` block was taken over ('.self::population($corpus['vectors']).'). A vector was added, changed or DELETED since that measurement — and deletion is the case the other arms cannot see at all, because a corpus cut to one vector per method passes both of them unchanged. Re-take the measurement over the WHOLE corpus against the kanban authority (`last_measured.method` says how), re-date the block, and write the actual digest below into `last_measured.vectors_digest`. A vector `note` is deliberately outside this digest: rewording prose is not a behavioural claim and must not demand a re-measurement.',
+            'the vectors of '.self::CORPUS.' are not the population its `last_measured` block was taken over ('.self::population($corpus['vectors']).'). A vector was added, changed or DELETED since that measurement — and deletion is the case the other arms cannot see at all, because a corpus cut to one vector per method passes both of them unchanged. Re-take the measurement over the WHOLE corpus against the kanban authority (`last_measured.method` says how), re-date the block, and write the actual digest below into `last_measured.vectors_digest`. A vector\'s `note` and the ORDER of its keys are deliberately outside this digest: rewording prose and re-ordering keys are not behavioural claims and must not demand a re-measurement. Its argument TYPES are INSIDE it, because `85` and `85.0` are different inputs — so a PHP round-trip of this file, which collapses the second spelling to the first, IS a change.',
         );
     }
 
@@ -193,9 +193,9 @@ class ExternalReferenceNormalizerTest extends TestCase
 
     /**
      * The identity of the vector population: every vector's method, its position in that
-     * method's list, and everything the corpus spells about it EXCEPT its `note`, one line
-     * each, byte-sorted so the digest is a property of the vectors and not of the order the
-     * blocks happen to sit in.
+     * method's list, and everything the corpus spells about it EXCEPT its `note` and the
+     * ORDER of its keys, one line each, byte-sorted so the digest is a property of the
+     * vectors and not of the order the blocks happen to sit in.
      *
      * @param  array<string, array<int, array<string, mixed>>>  $vectors
      */
@@ -215,13 +215,23 @@ class ExternalReferenceNormalizerTest extends TestCase
 
     /**
      * One value rendered so the digest is a property of the VECTOR and not of the host's
-     * `serialize_precision` ini, which is what `json_encode` renders a float through — this
-     * corpus carries four floats, so a digest taken that way would red on a differently
-     * configured box and say "the corpus moved".
+     * `serialize_precision` ini, which is what `json_encode` renders a float through — a
+     * digest taken that way would red on a differently configured box, over a corpus
+     * carrying any float at all, and say "the corpus moved".
+     *
+     * ⛔ The TYPE is tagged because it is part of the vector: `85` and `85.0` are different
+     * INPUTS — the float one takes {@see ExternalReferenceNormalizer::canonicalize()}'s
+     * dedicated float branch — and PHP's own `json_decode`/`json_encode` round-trip collapses
+     * the second spelling to the first, so an untagged digest would let a reformat of the
+     * published file silently retype a measured vector and stay byte-identical.
      */
     private static function canonical(mixed $value): string
     {
         if (is_array($value)) {
+            // Sorted, so a key REORDER — which no formatter treats as a change and which
+            // moves no value — does not demand a fresh cross-repo measurement.
+            ksort($value);
+
             $parts = [];
             foreach ($value as $key => $item) {
                 $parts[] = self::canonical((string) $key).':'.self::canonical($item);
@@ -231,8 +241,8 @@ class ExternalReferenceNormalizerTest extends TestCase
         }
 
         return match (true) {
-            is_float($value) => sprintf('%.17G', $value),
-            is_int($value) => (string) $value,
+            is_float($value) => 'F'.sprintf('%.17G', $value),
+            is_int($value) => 'I'.$value,
             is_bool($value) => $value ? 'true' : 'false',
             is_string($value) => (string) json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             default => 'null',
