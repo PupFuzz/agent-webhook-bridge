@@ -78,6 +78,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'App\Bridge\Validation\EndpointValidationException' => 'composed by this app\'s own endpoint validators from a configured URL or socket path',
         'Error' => 'a PHP engine error (ArgumentCountError from `new $class`) about a classifier class this install configured',
         'Illuminate\Database\QueryException' => 'a PDO/driver error from this install\'s own database, with the SQL this app wrote',
+        'JsonException' => 'PHP\'s own json_decode() diagnosis, from a fixed table (`Syntax error`, `Malformed UTF-8 characters, possibly incorrectly encoded`, `Control character error, …`, `Maximum stack depth exceeded`) — measured to carry none of the bytes it was decoding',
         'Symfony\Component\Yaml\Exception\ParseException' => 'the YAML parser\'s position and snippet of this install\'s own agent config file',
     ];
 
@@ -124,6 +125,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#3' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/SeatKanbanUser.php::lookup#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Tools/ToolCallBody.php::parse#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Writeback/WritebackAlertNotifier.php::push#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Writeback/WritebackClientFactory.php::make#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Writeback/WritebackConfig.php::load#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
