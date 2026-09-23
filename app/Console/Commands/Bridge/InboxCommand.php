@@ -52,6 +52,16 @@ class InboxCommand extends BridgeCommand
         // disagree about one inbox.
         $unseen = BridgePaths::unseenInboxLines($agent);
 
+        // ⛔ DECIDED BEFORE STDIN IS TOUCHED. On a healthy install — no 5xx record has ever been
+        // written and nothing is unseen — this is the whole command, and it is the path taken on
+        // essentially every tool call. readHookEvent() is an unbounded read to EOF, so reading it
+        // first would make that path block for as long as whatever started the command holds its
+        // stdin pipe open; the documented hook mount closes it, any other mount need not.
+        $record = $this->outageRecord();
+        if ($unseen === [] && $record === null) {
+            return self::SUCCESS;   // silent-when-empty discipline
+        }
+
         // Read once — it consumes stdin — and before the health lines, whose repeat floor is
         // decided on which hook event (if any) is driving this invocation.
         $hookEvent = $this->readHookEvent();
@@ -60,7 +70,7 @@ class InboxCommand extends BridgeCommand
         // for a recovery, and "not again for an hour" for a run still failing, mean exactly
         // what "seen" means for this consumer's intents.
         $consumer = basename($seenPath);
-        [$health, $marks] = $this->deliveryHealth($consumer, $hookEvent);
+        [$health, $marks] = $this->deliveryHealth($record, $consumer, $hookEvent);
 
         if ($unseen === [] && $health === []) {
             return self::SUCCESS;   // silent-when-empty discipline
@@ -125,19 +135,37 @@ class InboxCommand extends BridgeCommand
     }
 
     /**
+     * The 5xx record, `false` when the file is there and cannot be read, or null when there is
+     * no record at all.
+     *
+     * The three are distinct on purpose: `false` is itself something to SAY, so collapsing it
+     * into "no record" would silence the one state an operator most needs reported, and null is
+     * the only one the caller may treat as nothing-to-do.
+     *
+     * @return array{failing: array{since: string, last_at: string, count: int, last_status: int}|null, recovered: array{since: string, last_failure_at: string, count: int, last_status: int, recovered_at: string}|null}|false|null
+     */
+    private function outageRecord(): array|false|null
+    {
+        try {
+            return WebhookOutageRecord::read();
+        } catch (UnreadableFileException) {
+            return false;
+        }
+    }
+
+    /**
      * The webhook 5xx lines for this consumer, and the notices among them to mark — each as
      * `[id, shown-at-or-null]` — so the caller records them under the cursor's own rule.
      *
      * An unreadable record is SAID, not read as healthy and not allowed to abort the inbox:
      * the intents below it are still deliverable.
      *
+     * @param  array{failing: array{since: string, last_at: string, count: int, last_status: int}|null, recovered: array{since: string, last_failure_at: string, count: int, last_status: int, recovered_at: string}|null}|false|null  $record
      * @return array{0: list<string>, 1: list<array{0: string, 1: int|null}>}
      */
-    private function deliveryHealth(string $consumer, ?string $hookEvent): array
+    private function deliveryHealth(array|false|null $record, string $consumer, ?string $hookEvent): array
     {
-        try {
-            $record = WebhookOutageRecord::read();
-        } catch (UnreadableFileException) {
+        if ($record === false) {
             return [['- **WARNING: webhook delivery health is UNKNOWN** — `'.WebhookOutageRecord::path().'` exists but this user cannot read it.'], []];
         }
 

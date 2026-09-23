@@ -4,16 +4,23 @@ namespace Tests\Feature\Console;
 
 use App\Bridge\Support\WebhookOutageRecord;
 use Illuminate\Support\Facades\File;
+use Tests\Support\InboxSubprocess;
 use Tests\TestCase;
 
 /**
  * The still-failing warning's repeat floor, exercised through a REAL `php artisan bridge:inbox`
  * process with a hook payload on its stdin (card#10158).
  *
- * ⚑ WHY A SUBPROCESS. Which invocations the floor silences is decided by the hook event, and
- * that arrives on the process's own STDIN. In-process (`Artisan::call`) stdin is the runner's,
- * so every invocation reads as a non-hook run — the one arm the floor never applies to. A test
- * that could only take that arm would certify the throttle without ever reaching it.
+ * ⚑ WHY A SUBPROCESS ({@see InboxSubprocess} owns the general reason). Which
+ * invocations the floor silences is decided by the hook event, and that arrives on the process's
+ * own STDIN. In-process (`Artisan::call`) stdin is the runner's, so every invocation reads as a
+ * non-hook run — the one arm the floor never applies to. A test that could only take that arm
+ * would certify the throttle without ever reaching it.
+ *
+ * ⚑ THE FLOOR IS ALSO THE ONLY BEHAVIOURAL INSTRUMENT for the RECOVERY → WARNING half of
+ * `WebhookOutageRecord`'s "the two notice classes must not prune each other", for the same
+ * reason: a dropped warning mark is observable only as a warning shown again inside its floor,
+ * and the floor never applies where the hook event cannot be reached.
  */
 class InboxWarningRepeatFloorTest extends TestCase
 {
@@ -30,9 +37,20 @@ class InboxWarningRepeatFloorTest extends TestCase
 
         $this->dir = sys_get_temp_dir().'/bridge-floor-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/state');
+        $this->writeRecord();
+    }
+
+    /**
+     * The install every arm here runs against: one run, still failing since {@see SINCE}, with
+     * $recovered as whatever earlier run the record also carries (none, by default).
+     *
+     * @param  array<string, int|string>|null  $recovered
+     */
+    private function writeRecord(?array $recovered = null): void
+    {
         File::put($this->dir.'/state/'.WebhookOutageRecord::FILE, (string) json_encode([
             'failing' => ['since' => self::SINCE, 'last_at' => self::SINCE, 'count' => 3, 'last_status' => 500],
-            'recovered' => null,
+            'recovered' => $recovered,
         ]));
     }
 
@@ -83,37 +101,76 @@ class InboxWarningRepeatFloorTest extends TestCase
         );
     }
 
-    /** Move this consumer's mark $seconds further into the past, in the cursor's own spelling. */
-    private function ageMarkBy(int $seconds): void
+    public function test_a_recovery_notice_does_not_drop_a_live_runs_warning_mark(): void
+    {
+        // ⛔ THE REVERSE DIRECTION of "the two notice classes must not prune each other", and the
+        // one no other test can reach. This invocation writes BOTH marks, warning first and
+        // recovery second, so it is the recovery write that has the live warning mark in front
+        // of it. WebhookOutageRecordTest's arm measures the other direction only: when it writes
+        // its recovery there is no warning mark in the file at all, so a survivesMark() that
+        // lost its class guard in THIS direction stays green there.
+        $this->writeRecord([
+            'since' => '2026-09-01T00:00:00Z',
+            'last_failure_at' => '2026-09-01T02:00:00Z',
+            'count' => 2,
+            'last_status' => 503,
+            'recovered_at' => gmdate('Y-m-d\TH:i:s\Z'),   // just now, so it is inside the notice window
+        ]);
+
+        $first = $this->inbox('PreToolUse');
+        $this->assertStringContainsString('3 consecutive webhook 5xx', $first, 'control: the live run is warned about');
+        $this->assertStringContainsString('recovered at', $first, 'control: and the earlier run is reported recovered, in the same output');
+
+        $this->assertSame(
+            '',
+            $this->inbox('PreToolUse'),
+            'the recovery write must not drop the live run warning mark — dropped, the very next per-tool-call hook re-shows a warning that is well inside its floor',
+        );
+
+        // ⛔ THE DISCRIMINATOR: the silence above has to be the floor holding, not the warning
+        // having stopped being written at all.
+        $this->ageMarkBy(WebhookOutageRecord::WARNING_REPEAT_SECONDS, besideOtherClasses: 1);
+
+        $this->assertStringContainsString(
+            '3 consecutive webhook 5xx',
+            $this->inbox('PreToolUse'),
+            'at the floor the same consumer is shown the same run again',
+        );
+    }
+
+    /**
+     * Move this consumer's WARNING mark $seconds further into the past, in the cursor's own
+     * spelling, leaving every other key byte-identical.
+     *
+     * $besideOtherClasses is how many keys of OTHER notice classes are expected beside it: the
+     * floor writes exactly one warning mark per consumer per run, so the total is asserted rather
+     * than the warning key merely being found among however many are there.
+     */
+    private function ageMarkBy(int $seconds, int $besideOtherClasses = 0): void
     {
         $path = $this->dir.'/state/'.WebhookOutageRecord::NOTICE_SEEN_FILE;
         $keys = json_decode((string) File::get($path), true);
         $this->assertIsArray($keys);
-        $this->assertCount(1, $keys, 'the floor writes exactly one mark per consumer per run');
+        $this->assertCount($besideOtherClasses + 1, $keys, 'the floor writes exactly one mark per consumer per run, beside whatever the other classes hold');
 
-        $parts = explode('|', (string) $keys[0]);
+        $warning = WebhookOutageRecord::warningNoticeId(['since' => self::SINCE]).'|';
+        $marks = array_values(array_filter($keys, fn (mixed $k) => str_starts_with((string) $k, $warning)));
+        $this->assertCount(1, $marks, 'exactly one key marks this run as shown to this consumer');
+
+        $parts = explode('|', (string) $marks[0]);
         $this->assertCount(3, $parts, 'a warning mark is <notice-id>|<consumer>|<shown-at>');
         $parts[2] = (string) ((int) $parts[2] - $seconds);
 
-        File::put($path, (string) json_encode([implode('|', $parts)]));
+        File::put($path, (string) json_encode(array_map(
+            fn (mixed $k) => $k === $marks[0] ? implode('|', $parts) : $k,
+            $keys,
+        )));
     }
 
     /** Run the real command with $hookEvent on stdin (null = no hook payload), returning stdout. */
     private function inbox(?string $hookEvent): string
     {
-        $process = proc_open(
-            [PHP_BINARY, base_path('artisan'), 'bridge:inbox', '--hook-format=plain', '--agent='.self::AGENT],
-            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
-            $pipes,
-            base_path(),
-            [
-                'PATH' => getenv('PATH'),
-                'HOME' => getenv('HOME'),
-                'BRIDGE_DIR' => $this->dir,
-                'BRIDGE_STATE_DIR' => $this->dir.'/state',
-            ],
-        );
-        $this->assertIsResource($process, 'could not start the artisan subprocess');
+        [$process, $pipes] = InboxSubprocess::start($this->dir, self::AGENT);
 
         fwrite($pipes[0], $hookEvent === null ? '' : (string) json_encode(['hook_event_name' => $hookEvent]));
         fclose($pipes[0]);

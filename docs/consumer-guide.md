@@ -131,7 +131,7 @@ php artisan bridge:inbox --hook-format=plain
 **Flags:**
 
 - `--hook-format={auto|claude-code|plain}` (default `auto`):
-  - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
+  - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown. ⚑ **It reads stdin only where there is something to decide with it**: with nothing unseen and no webhook 5xx record — a healthy install, which is what nearly every run finds — the command returns before touching stdin, so a mount whose stdin writer stays open (a wrapper, a supervisor, a cron line with an inherited pipe) is never held waiting for an EOF that is not coming.
   - `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
   - `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
   - ⚠ **Whichever format, the output passes the console output choke (DL-393).** In plain markdown, C0 controls other than newline and tab, DEL, C1 and Unicode format characters (`\p{Cf}`, including a zero-width joiner inside an emoji sequence) are removed from an intent's text on the way out. The hook envelope's JSON already escapes every C0 and non-ASCII character, so a raw DEL is the only thing the choke can remove from it. `inbox.jsonl` itself is never changed.

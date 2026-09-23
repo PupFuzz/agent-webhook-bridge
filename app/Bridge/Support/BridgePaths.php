@@ -377,13 +377,19 @@ final class BridgePaths
 
     /**
      * Create a directory (and parents) owner-only (0700) if absent, THROWING when it is not
-     * there afterwards. This and {@see tryEnsureDir} are the only two ways the bridge creates
-     * a state/secret-holding dir — one mkdir between them, so the mode cannot drift per call
-     * site (DL-016); these dirs sit next to HMAC secrets/tokens. A caller reaches for this one
-     * unless it must SKIP its work rather than fail it.
+     * there afterwards. This and {@see tryEnsureDir} are the two ways the bridge is MEANT to
+     * create a state/secret-holding dir — one mkdir between them, so the mode cannot drift per
+     * call site (DL-016); these dirs sit next to HMAC secrets/tokens. A caller reaches for this
+     * one unless it must SKIP its work rather than fail it.
      *
-     * ⚑ The rule is an instrument, not just this sentence: `Tests\Feature\Support\
-     * DirectoryCreationCensusTest` reds on a third directory-creating site anywhere in `app/`.
+     * ⚑ The rule is an instrument and not just this sentence — over a BOUNDED population:
+     * `Tests\Feature\Support\DirectoryCreationCensusTest` reds on a third directory-creating
+     * site in `app/` spelled any way that class knows, which is a bare `mkdir()` plus
+     * `ensureDirectoryExists`/`makeDirectory` on any receiver (`File::`, `Storage::`, an
+     * injected `Filesystem` — the Laravel idiom, whose default mode is 0755).
+     * ⛔ That class's docblock owns what is OUTSIDE the set — a shell-out, a name it does not
+     * list, anything outside `app/` — and this sentence deliberately does not restate it. What
+     * is outside is checked by nothing, so read the bound there before trusting this one.
      */
     public static function ensureDir(string $dir): void
     {

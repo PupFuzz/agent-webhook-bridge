@@ -67,9 +67,18 @@ final class WebhookOutageRecord
     public const WARNING_REPEAT_SECONDS = 3600;
 
     /**
-     * The two notice CLASSES the seen-cursor holds, and the prefix of every id in it. They
-     * share one file and must not prune each other: a new run's first warning must not drop
-     * the marks that say who has already been shown the previous run's recovery.
+     * The two notice CLASSES the seen-cursor holds, and the prefix of every id in it. They share
+     * one file and must not prune each other — a claim in BOTH directions, so it is measured in
+     * both rather than in the one that is easy to reach:
+     *  - a new run's first WARNING must not drop the marks saying who was already shown the
+     *    previous run's RECOVERY, or the consumer is handed a stale remedy as news in the same
+     *    output that says deliveries are failing now — `Tests\Feature\Webhook\
+     *    WebhookOutageRecordTest::test_a_new_runs_warning_does_not_re_show_a_recovery_this_consumer_already_saw`;
+     *  - a RECOVERY write must not drop a LIVE run's warning mark, or the next per-tool-call hook
+     *    re-shows a warning well inside {@see self::WARNING_REPEAT_SECONDS} — `Tests\Feature\
+     *    Console\InboxWarningRepeatFloorTest::test_a_recovery_notice_does_not_drop_a_live_runs_warning_mark`,
+     *    which is there and not beside its sibling because the floor is the only surface on which
+     *    a dropped warning mark is observable at all.
      */
     private const RECOVERY_CLASS = 'webhook-5xx-recovered';
 
