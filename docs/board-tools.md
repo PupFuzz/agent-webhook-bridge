@@ -1033,7 +1033,7 @@ no write on a not-on-board refusal.
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
+| 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
 | 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
@@ -1091,7 +1091,8 @@ object `` among them), the 503 install fault and the `upstream board error`. Eac
 call arrived, and apart from the malformed-request refusals none is anything your arguments can
 fix. The full set is whatever the doors
 compose, and their source owns it: `AgentToolsController` and `LoopbackOnly` on the HTTP door,
-`bridge:tools-call` on the ssh door, and `BoardToolDispatcher` behind both.
+`bridge:tools-call` on the ssh door, and `ToolCallBody` (the one parse of the request body) and
+`BoardToolDispatcher` behind both.
 
 ⚠ **What none of this can tell you is WHICH seat-side failure you hit** — an unloaded schema
 or a payload that really is malformed; [§ Discovering them](#discovering-them) owns telling
