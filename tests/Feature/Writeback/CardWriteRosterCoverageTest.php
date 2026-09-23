@@ -36,8 +36,10 @@ use Tests\TestCase;
  * of the card LIFECYCLE surface {@see KanbanClient} exposes is a CLAIM, and an unchecked claim
  * about a population is the defect this class exists to remove — one level up. It was measured
  * live: a fourth lifecycle method on the client, with a live caller in `app/`, reddened nothing
- * and every row stayed true. {@see CLIENT_SURFACE} closes that, so a writer absent from this
- * census is absent from the bridge.
+ * and every row stayed true. {@see CLIENT_SURFACE} closes that. ⛔ **`docs/writeback.md`
+ * § *A least-privilege writeback token* owns the READER-facing statement of what the pair
+ * reaches; the bounds below are that same scope addressed to the next author of this class,
+ * and may come to say less than it but never more.**
  *
  * ⛔ THE TWO ROWS THIS CLASS DELIBERATELY DOES NOT COVER, disposed of rather than left to be
  * noticed as a gap:
@@ -62,6 +64,14 @@ use Tests\TestCase;
  *  - **A row naming the right classes with the wrong prose is green here.** A reviewer reads
  *    the prose; this reads the roster.
  *  - **`tests/` is not in the population.** A test double is not a writeback.
+ *  - **It reaches {@see KanbanClient}.** A card written through some other client class is
+ *    outside both the primitive surface and the call-site census.
+ *  - **A `task.move` written as `->patchCard($id, ['workflow_stage_id' => $s])` from outside
+ *    the client is outside this census** — the predicate matches the method NAME, and kanban
+ *    authorizes a PATCH whose SOLE key is `workflow_stage_id` as `task.move`. Not live at the
+ *    time of writing (`command grep -rn "workflow_stage_id" app/` → the only PATCH-writing
+ *    sites are inside {@see KanbanClient}); {@see PinnedFieldWriteCoverageTest} derives the
+ *    `->patchCard(` population that would carry it.
  */
 class CardWriteRosterCoverageTest extends TestCase
 {
@@ -77,6 +87,23 @@ class CardWriteRosterCoverageTest extends TestCase
     ];
 
     private const ROSTER_DOC = 'docs/writeback.md';
+
+    private const CONTRACT_DOC = 'docs/kanban-integration-contract.md';
+
+    /**
+     * The dispositions in {@see CLIENT_SURFACE} that are NOT a card-lifecycle write — `read`,
+     * and the two rows this class deliberately does not cover, each disposed of in the class
+     * docblock above.
+     *
+     * ⛔ IT IS THE ANCHOR, and it is written down rather than derived from {@see ROSTERS} for
+     * one reason: scoping "which client methods must be rostered" by ROSTERS' OWN values makes
+     * a deleted roster row take its scope with it, so the check goes green on exactly the
+     * mutation it exists to catch. The complement is the end a mutation of the roster does not
+     * move. A permission appearing in CLIENT_SURFACE that is in neither list reds.
+     *
+     * @var list<string>
+     */
+    private const UNROSTERED = ['read', 'task.update', 'comment.create'];
 
     /**
      * Every public method {@see KanbanClient} declares, against what this roster does with it.
@@ -127,7 +154,8 @@ class CardWriteRosterCoverageTest extends TestCase
     /**
      * The REVERSE arm one level up from the call-site census: the three primitives this class
      * rosters are held against the client's OWN public surface, so a new card-lifecycle
-     * method cannot ride along undispositioned.
+     * method cannot ride along undispositioned — nor, dispositioned into a lifecycle
+     * permission, unrostered.
      *
      * ⚠ What it asserts is that every public method is ACCOUNTED FOR, not that the
      * disposition beside it is correct — `read` is a human's reading of what that method
@@ -156,13 +184,22 @@ class CardWriteRosterCoverageTest extends TestCase
             .'Dispose of it: give it one of the roster permissions (and add it to ROSTERS, and name its callers in that row), or `task.update` / `comment.create` / `read` with the owner named in the class docblock.',
         );
 
-        $rostered = array_keys(self::ROSTERS);
-        sort($rostered);
-        $byPermission = array_values(array_unique(array_intersect(self::CLIENT_SURFACE, self::ROSTERS)));
+        $rostered = self::ROSTERS;
+        ksort($rostered);
+        $lifecycle = array_filter(
+            self::CLIENT_SURFACE,
+            static fn (string $permission): bool => ! in_array($permission, self::UNROSTERED, true),
+        );
+        ksort($lifecycle);
+
         $this->assertSame(
-            count($rostered),
-            count($byPermission),
-            'ROSTERS and CLIENT_SURFACE disagree about which primitives this class rosters, so one of them is stale.',
+            $rostered,
+            $lifecycle,
+            'ROSTERS and CLIENT_SURFACE disagree about which of '.KanbanClient::class.'\'s methods write a card\'s LIFECYCLE, so one of them is stale. '
+            .'Compared as MAPS, in both directions: every method this roster names must carry that same permission in CLIENT_SURFACE, and every method CLIENT_SURFACE disposes of into anything but '.implode(' / ', self::UNROSTERED).' must be rostered here. '
+            .'A method on the LEFT and not the right is a roster row nothing holds any more — deleting it from ROSTERS silently stops '.self::ROSTER_DOC.'\'s row for it being checked at all. '
+            .'A method on the RIGHT and not the left is a FOURTH way to write a card that is dispositioned but unrostered — the shape that was measured green before card#10063. '
+            .'Add it to ROSTERS and name its callers in the matching row of '.self::ROSTER_DOC.', or dispose of it as something that is not a card write.',
         );
     }
 
@@ -182,7 +219,7 @@ class CardWriteRosterCoverageTest extends TestCase
                 $classes,
                 self::classesNamedIn(self::rosterRow($permission)),
                 "the `{$permission}` row of ".self::ROSTER_DOC." § A least-privilege writeback token does not name exactly the classes that call `->{$method}(` in app/. "
-                ."That row is the ONE home of this roster — the cross-repo `program` row of docs/kanban-integration-contract.md and this repo's own parent-card bullet both POINT at it — so a writer missing from it is a writer no auditor at either end can see. "
+                .'That row is the ONE home of this roster — the cross-repo `program` row of '.self::CONTRACT_DOC.' and this repo\'s own parent-card bullet both POINT at it — so a writer missing from it is a writer no auditor at either end can see. '
                 .'Name the new writer by its CLASS in backticks, or delete a name whose class is gone.',
             );
         }
@@ -271,15 +308,7 @@ class CardWriteRosterCoverageTest extends TestCase
      */
     private static function siteAt(array $tokens, int $index, int $scopeStart): ?string
     {
-        if ($tokens[$index][0] !== T_STRING || ! isset(self::ROSTERS[$tokens[$index][1]])) {
-            return null;
-        }
-        $arrow = $tokens[$index - 1][0] ?? null;
-        if (($arrow !== T_OBJECT_OPERATOR && $arrow !== T_NULLSAFE_OBJECT_OPERATOR) || ($tokens[$index + 1][1] ?? null) !== '(') {
-            return null;
-        }
-
-        return $tokens[$index][1];
+        return SourceScan::methodCallAt($tokens, $index, array_keys(self::ROSTERS));
     }
 
     /** The one table row whose permission cell is $permission. */
