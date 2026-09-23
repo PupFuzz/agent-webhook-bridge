@@ -20,12 +20,12 @@
     "THAT A CONSUMER OF `board_my_cards` READS THIS FILE. The `source` field a seat reads is computed by the mirror; a seat that never reads this corpus or the contract row has no way to tell a mirrored answer from the server's own."
   ],
   "last_measured": {
-    "date": "2026-09-22",
+    "date": "2026-09-23",
     "authority_ref": "dev",
     "authority_commit": "a02142724f308d1f36d6d3280428dd34c042d4ef",
     "authority_blob": "b93af716bfe82af7646a32890d04c9009f1d26dc",
-    "method": "every vector below was executed against BOTH classes, and every constant below was read off both, in one process.",
-    "result": "AGREED -- every vector and every constant above answered identically on the two classes, read in one process. THE MEASUREMENT DISCRIMINATES: re-run with kanban's canonicalizeSource mutated to stop lower-casing, the kanban end failed the vectors that carry a mixed-case repo and the bridge end failed none, so an agreement here is a result and not an empty run. ONE-TIME AND DATED: it was taken by hand from a checkout that could read both repos. Nothing schedules it, and the bridge's CI cannot take it."
+    "method": "every vector below was executed against BOTH classes, and every constant below was read off both, in one process. The authority was loaded from the named COMMIT rather than from a working tree, so the blob above is what answered. RE-TAKEN 2026-09-23 over the whole corpus after it was extended -- the vectors added then were measured by the same run, not inherited from the earlier one.",
+    "result": "AGREED -- every vector and every constant above answered identically on the two classes, read in one process. THE MEASUREMENT DISCRIMINATES: re-run with kanban's canonicalizeSource mutated to stop lower-casing, the kanban end failed the vectors that carry a mixed-case repo and the bridge end failed none, so an agreement here is a result and not an empty run. ONE-TIME AND DATED: it was taken by hand from a checkout that could read both repos. Nothing schedules it, and the bridge's CI cannot take it. \u26a0 A DATE HERE OLDER THAN A VECTOR BELOW WOULD BE A FALSE CLAIM: whoever adds a vector re-takes this measurement over the whole corpus and re-dates this block, because nothing in either repo reds when they do not."
   },
   "not_mirrored": {
     "divergentRefKeySeverity": "kanban's by-ref KEY REGISTRATION guard: it rules on whether a custom-field key merely resembles a by-ref key. The bridge registers no keys, so it carries neither the method nor its DIVERGENT_REJECT / DIVERGENT_WARN / AMBIGUOUS_REF_STEMS / REF_SUFFIXES constants.",
@@ -81,6 +81,20 @@
         "note": "A key that is not a correlation source derives no system.",
         "args": [
           "unrelated_key"
+        ],
+        "expect": null
+      },
+      {
+        "note": "The map is keyed VERBATIM -- case is not normalised, so an upper-cased spelling of a real key derives nothing.",
+        "args": [
+          "PR_NUMBER"
+        ],
+        "expect": null
+      },
+      {
+        "note": "A URL-bearing payload key is a SOURCE input, never a ref system: sourceFor reads pr_url, this must not.",
+        "args": [
+          "pr_url"
         ],
         "expect": null
       }
@@ -325,6 +339,14 @@
           "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         ],
         "expect": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+        "note": "A NUMERIC system's value is trimmed before its digits are read, exactly as an unknown system's verbatim value is.",
+        "args": [
+          "dl",
+          "  DL-28  "
+        ],
+        "expect": "28"
       }
     ],
     "canonicalizeSource": [
@@ -362,6 +384,13 @@
           28
         ],
         "expect": "28"
+      },
+      {
+        "note": "An EMPTY value is unqualified, pinned separately from the BLANK one above: the trim and the emptiness test are different steps, and a change to either would leave the other vector green.",
+        "args": [
+          ""
+        ],
+        "expect": null
       }
     ],
     "repoFromGitHubUrl": [
@@ -477,6 +506,26 @@
         "args": [
           {
             "repo": "DEV"
+          },
+          null
+        ],
+        "expect": null
+      },
+      {
+        "note": "PREFERENCE 2, ITS LAST KEY, ALONE: html_url is read when no earlier URL key is present. The ordering vector above only ever shows html_url LOSING, so without this the key is never shown to be read at all.",
+        "args": [
+          {
+            "html_url": "https://github.com/Third/Repo/commit/abc123"
+          },
+          null
+        ],
+        "expect": "third/repo"
+      },
+      {
+        "note": "A URL key whose value is NOT a string names no repo -- a number-typed field must not be coerced into a URL parse.",
+        "args": [
+          {
+            "pr_url": 12
           },
           null
         ],
