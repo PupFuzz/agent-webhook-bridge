@@ -163,6 +163,20 @@ class CheckUnnumbered(CheckHarness):
 
         self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
 
+    def test_a_second_copy_of_an_inherited_placeholder_is_still_an_addition(self):
+        # The hole a SET would leave: base already carries the text, so
+        # membership reads both copies at head as inherited and refuses
+        # neither — two entries claiming one non-identifier, which is the
+        # outcome this assertion exists to refuse. Counted, not set-tested.
+        placeholder = "## DL-TBD — landed earlier\n\n"
+        base = self.write("base.md", log("293") + placeholder)
+        head = self.write("head.md", log("293") + placeholder + placeholder)
+        target = self.write("target.md", log("293") + placeholder)
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(7, proc.returncode, proc.stdout + proc.stderr)
+
     def test_the_control_the_same_entry_with_a_number_passes(self):
         # Without this the refusal above could be firing on the entry rather than
         # on the missing number, and would refuse every PR that adds one.

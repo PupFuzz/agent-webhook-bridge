@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 EXIT_USAGE = 2
@@ -272,8 +273,18 @@ def cmd_check(args: argparse.Namespace) -> int:
     base_numbers = {n for n, _ in base_entries}
     target_numbers = {n for n, _ in _scan(args.target, "target")[0]}
 
-    inherited = {text for text, _ in base_unnumbered}
-    if _refuse_unnumbered(args.head, [(t, ln) for t, ln in head_unnumbered if t not in inherited]):
+    # COUNTED, not set-membership: a change that adds a SECOND copy of a
+    # placeholder heading already on base is adding one, and a set would read the
+    # text as inherited and let both through — the two-entries-claiming-one-
+    # non-identifier shape this assertion exists to refuse.
+    budget = Counter(text for text, _ in base_unnumbered)
+    added_unnumbered = []
+    for text, lineno in head_unnumbered:
+        if budget[text]:
+            budget[text] -= 1
+            continue
+        added_unnumbered.append((text, lineno))
+    if _refuse_unnumbered(args.head, added_unnumbered):
         return EXIT_UNNUMBERED_AT_HEAD
 
     added = [(n, lineno) for n, lineno in head_headers if n not in base_numbers]
