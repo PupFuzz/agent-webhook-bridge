@@ -398,8 +398,11 @@ final class BoardMyCardsTool implements Tool
             TerminalBasis::Declared => 'this board flags its terminal columns with kanban `is_terminal`, and that column is one of them',
             TerminalBasis::LaneType => 'no column on this board is flagged with kanban `is_terminal`, so the `lane_type: done` columns stand in and that column is one of them',
             // Not a guard on a live path — the enum is TOTAL and this arm is what makes the match
-            // exhaustive. The refusal above cannot be reached in this state: an unreadable stage
-            // collection leaves `$stageNames` empty, so `stageFilter()` refuses any `stage` first.
+            // exhaustive. The refusal above cannot be reached in this state, and NOT because
+            // `stageFilter()` refuses first: with `$stageNames` empty its id guard short-circuits
+            // and a NUMERIC `stage` comes back unrefused — only a stage NAME is refused there.
+            // What makes it unreachable is that the same unread collection leaves
+            // `$structure->terminalStageIds` empty, so the refusal's `in_array` is never true.
             // Written truthfully rather than left to a default, because a string that lies is
             // worse than an arm that never prints.
             TerminalBasis::Unreadable => "this board's columns could not be read at all, so no declaration about them answered",
