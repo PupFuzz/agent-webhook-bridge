@@ -191,11 +191,7 @@ class ProgramParentMoveCoverageTest extends TestCase
      */
     private static function siteAt(array $tokens, int $index, int $scopeStart): ?bool
     {
-        if ($tokens[$index][0] !== T_STRING || $tokens[$index][1] !== self::MOVE_METHOD) {
-            return null;
-        }
-        $arrow = $tokens[$index - 1][0] ?? null;
-        if (($arrow !== T_OBJECT_OPERATOR && $arrow !== T_NULLSAFE_OBJECT_OPERATOR) || ($tokens[$index + 1][1] ?? null) !== '(') {
+        if (SourceScan::methodCallAt($tokens, $index, [self::MOVE_METHOD]) === null) {
             return null;
         }
 
