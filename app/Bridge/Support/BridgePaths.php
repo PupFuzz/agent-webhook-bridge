@@ -3,6 +3,7 @@
 namespace App\Bridge\Support;
 
 use App\Bridge\Exceptions\ConfigException;
+use Closure;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -528,6 +529,39 @@ final class BridgePaths
             $reason = error_get_last()['message'] ?? 'disk full / read-only fs / permissions?';
 
             throw new \RuntimeException("bridge: failed to write {$path} ({$reason})");
+        }
+    }
+
+    /**
+     * Run $body holding LOCK_EX on `<$path>.lock`, so concurrent read-modify-writes of a state
+     * file cannot lose each other's update. Hoisted at its second caller
+     * ({@see App\Bridge\Support\WebhookOutageRecord}, `App\Bridge\Writeback\ProtocolInvalidLabelDebt`),
+     * the `GitHubApi` precedent — a second copy would let two state files disagree about whether
+     * an increment can be lost.
+     *
+     * ⛔ THE LOCK IS A SIBLING FILE, NEVER THE STATE FILE ITSELF, because {@see writeFileAtomic()}
+     * REPLACES the state file by rename: a lock held on the old inode would guard nothing once the
+     * new one is in place.
+     *
+     * @param  Closure(): void  $body
+     */
+    public static function withLock(string $path, Closure $body): void
+    {
+        self::ensureDir(dirname($path));
+        $lockPath = $path.'.lock';
+        $handle = @fopen($lockPath, 'c');
+        if ($handle === false) {
+            throw new \RuntimeException("bridge: failed to open {$lockPath}");
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException("bridge: failed to lock {$lockPath}");
+            }
+            $body();
+        } finally {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
         }
     }
 

@@ -321,22 +321,7 @@ final class WebhookOutageRecord
      */
     private static function locked(Closure $body): void
     {
-        BridgePaths::ensureDir(BridgePaths::stateDir());
-        $lockPath = self::path().'.lock';
-        $h = @fopen($lockPath, 'c');
-        if ($h === false) {
-            throw new \RuntimeException("bridge: failed to open {$lockPath}");
-        }
-
-        try {
-            if (! flock($h, LOCK_EX)) {
-                throw new \RuntimeException("bridge: failed to lock {$lockPath}");
-            }
-            $body();
-        } finally {
-            @flock($h, LOCK_UN);
-            @fclose($h);
-        }
+        BridgePaths::withLock(self::path(), $body);
     }
 
     /** @param  array<string, mixed>  $record */

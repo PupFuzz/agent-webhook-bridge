@@ -1159,7 +1159,7 @@ It **does** fire whether or not any agent is addressed. A thread whose `to:` lab
 
 **Once per event, not once per agent.** Every subscribed agent classifies the event and emits the same target, and the handler writes once per `(repo, issue, comment)` within a delivery, whatever the result.
 
-⛔ **Nothing re-attempts a write that did not land — read this before you read the reason table below.** Every failure arm above still completes the dispatch (the label never changes routing, so a failed label is not a failed delivery), which means both routes that look like a retry are not one: a redelivery the bridge recognises as the same delivery is skipped for every agent row it already processed (deliveries dedupe on `X-GitHub-Delivery`, and a dispatch already marked processed is not re-run), and `bridge:replay` **skips** already-processed rows unless you pass `--force`. `bridge:replay --force` is the one route that re-attempts the label after a delivery that completed for every agent; the trigger is a comment being *created*, so no later event for that comment re-attempts it either. Combined with add-only (above), a thread that went unlabelled — a token without write is the realistic cause — **stays** unlabelled until someone replays that delivery with `--force` or labels it by hand, and the arbiter's label sweep does not see it in the meantime.
+⛔ **Nothing re-attempts a write INSIDE the delivery, and no later event re-attempts it either — read this before you read the reason table below.** Every failure arm above still completes the dispatch (the label never changes routing, so a failed label is not a failed delivery), which means both routes that look like a retry are not one: a redelivery the bridge recognises as the same delivery is skipped for every agent row it already processed (deliveries dedupe on `X-GitHub-Delivery`, and a dispatch already marked processed is not re-run), and `bridge:replay` **skips** already-processed rows unless you pass `--force`. The trigger is a comment being *created*, so no later event for **that** comment re-attempts it. What closes the gap that leaves is not a retry at all but a RECORD — § *A refused label write is remembered, and `bridge:relabel` finishes it* below (card#10242 / DL-419), the section you want if a write was refused. (A later unattributable comment on the **same thread** also writes the label, and discharges what the earlier one owed.)
 
 **Routing is unchanged.** The same intents are staged and the same pushes go out whether the write succeeds, fails, or is off. One thing does move in the dispatch ledger. An agent the comment is not addressed to used to record `dropped` (`classifier emitted no reactions`); on a listed repo its row now carries the label as a reaction and records `delivered`. So does an agent whose echo or `treat_as_signal` gate strips the event, with reason `echo: agent surface suppressed` (DL-203). `bridge:standup`'s per-seat `last_delivery_at` counts those rows. `coord-card-create` already emits a machine-only target the same way, whether or not the agent is addressed.
 
@@ -1169,12 +1169,50 @@ It **does** fire whether or not any agent is addressed. A thread whose `to:` lab
 | --- | --- |
 | `add_refused` (with `status`) | GitHub answered with an HTTP error (any 4xx or 5xx); a `403` is a token without write |
 | `add_failed` | the request did not complete (a transport failure included) |
+| `add_unconfirmed` | GitHub **accepted** the request and its answer did not list the label. A 2xx is the server's claim, not the outcome: this endpoint answers with the label set the thread now carries, so the write confirms itself out of that same answer and an answer that does not carry it is not a success. A body the bridge cannot read lands here too — unconfirmed, never confirmed |
 | `token_unresolved` | no GitHub token file resolves |
 | `repo_not_enabled` | a target named a repo that is not in the list. The shipped classifier never emits one; a custom classifier can |
 | `payload_invalid` | a target did not name a repo and an issue number |
 | `unexpected` | anything outside those steps. Worded *"NOT applied, or not confirmed"*, because it can also fire after the request landed |
 
 A label that was applied logs `protocol_invalid_label: applied`. Every row carries a `catalog_id` (§ *The board-mover catalog* below). Adding the label emits an `issues.labeled` event. That cannot re-trigger the write, which fires only on a created comment, so it does not loop.
+
+### A refused label write is remembered, and `bridge:relabel` finishes it (card#10242, DL-419)
+
+**The bridge records every label write it DECIDED on and could not land**, in `<state_dir>/protocol-invalid-labels-owed.json`, and `php artisan bridge:relabel` is how you finish them. Without it the realistic failure — the placed token has no **Issues** or **Pull requests** write, so the first real call 403s — left the thread permanently unlabelled with nothing an operator could query afterwards: the outcome of the write lived only in a log line, and the two routes above are closed.
+
+```
+php artisan bridge:relabel                 # report-only: what is owed, why, since when. Sends nothing.
+php artisan bridge:relabel --fix           # write them
+php artisan bridge:relabel --fix --repo owner/name --limit 20
+```
+
+**The sequence it is for.** A comment cannot be attributed → the bridge tries to label → GitHub answers `403` → `protocol_invalid_label: NOT applied`, `reason: add_refused, status: 403`, and the thread is recorded as owed. You grant the token the permission → `bridge:relabel --fix` → the label lands and the entry is gone. Until you run it nothing is sent: **there is no timer, gate or job behind this command**, which is what keeps a permanent refusal from becoming an unbounded retry — the bridge re-attempts an outward write only when a person asks it to.
+
+⛔ **It carries out a verdict, it does not re-take one.** Every entry is a decision the classifier already made at the event under the rules above. The command never re-classifies, never labels a thread the bridge had not already decided to label, and — like every path in this app — **never removes a label**. It re-asks only one question: is the repo still in `BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`? A repo you have since removed is **dropped**, not written.
+
+⛔ **Not every failure is owed, and the split is the point.** A retry that can never succeed is an unbounded retry against a permanent refusal, and a retry of a repo you switched off is an outward write you switched off.
+
+| Failure | Owed? | Why |
+| --- | --- | --- |
+| `token_unresolved` | yes | place the token file and the identical request succeeds |
+| `add_refused` `401` / `403` | yes | the token is expired, or lacks Issues or Pull requests write — one operator act away |
+| `add_refused` `404` | yes | GitHub answers `404` both for a thread that is GONE and for a repo the token cannot **see**, and the response cannot tell you which. Reading it as terminal would drop exactly the case this record exists for; the expiry below bounds the other reading |
+| `add_refused` `408` / `429` / any `5xx` | yes | time, rate, or GitHub's own fault |
+| `add_failed` | yes | the request never completed |
+| `add_unconfirmed` | yes | the write is not confirmed, and the add is idempotent, so re-attempting costs one request and never a duplicate label |
+| `unexpected` | yes | worded *"NOT applied, **or not confirmed**"* — the bridge does not know which, and an idempotent re-attempt is the cheap side of that |
+| `add_refused` any other 4xx (`400`, `410`, `422`, `451`) | **no** | the identical request is refused for a reason no waiting changes. Logged as before; nothing is queued |
+| `repo_not_enabled` | **no** | the install excluded this repo |
+| `payload_invalid` | **no** | no repo and issue number to name |
+
+**Bounds, accepted and stated.** One entry per **thread**, not per comment (the label is a property of the issue or pull request, so two unattributable comments on one thread owe one write and bump one attempt count). An entry older than **7 days** is not repaired and does not appear in the report — a label applied long after the comment describes less and less, and the comment may be gone. At most **500** entries are kept — at the cap the **oldest** are dropped, the expiry's reasoning applied one step earlier, so the write most likely still worth making is the one kept; both drops are logged (`protocol_invalid_label.owed_record_pruned`), never silent. A record the bridge cannot write is one warning and the delivery is untouched (`…owed_record_unwritable`) — the write is then unlisted and `bridge:relabel` will not find it. A record it cannot read is **reported** (`…owed_record_unreadable`) and treated as empty, which is not a claim that nothing is owed.
+
+**Exit code.** Report-only always exits 0. Under `--fix` the run exits **non-zero whenever anything in scope is still owed** — a partial repair is never readable as a finished one from the exit code alone. An entry is removed only on a write GitHub's own answer **confirms**, or on a refusal that can never clear; a repair that failed stays owed and is counted apart.
+
+**The identity is the receiver's placed token file, as everywhere else here** (`GitHubTokenResolver::resolveFromFile()`), so a `bridge:relabel` run from a shell writes as the receiver or not at all — never the credential store, never `GH_TOKEN`.
+
+⚠ **Not built, and named rather than left to be inferred:** nothing repairs these automatically. An operator who wants that has the periodic-job registry ([`periodic-jobs.md`](periodic-jobs.md)) and its capability gate, which is the mechanism this install already has for arming a mutating job — but an automatic, unattended GitHub write is a wider act than the event-driven one DL-408 was approved for, so it is an operator decision and not a default.
 
 ## Failure behaviour (what retries vs not)
 

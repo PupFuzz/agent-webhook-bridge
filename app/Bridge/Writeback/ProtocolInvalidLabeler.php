@@ -23,10 +23,18 @@ use Throwable;
  * one, and a removal would erase a label a human or the framework's arbiter set for a reason the
  * bridge never saw.
  *
+ * ⭐ BUT A DECIDED WRITE THAT DID NOT LAND IS REMEMBERED (card#10242 / DL-419). Add-only is about
+ * what the label MEANS; it was never a reason to forget a write the install decided on and GitHub
+ * refused. {@see ProtocolInvalidLabelDebt} records the ones whose cause can still clear — a token
+ * without Issues write is the realistic one — and `bridge:relabel` finishes them once it has.
+ * Nothing re-attempts on its own: the retry is an operator act, so a permanent refusal can never
+ * become an unbounded retry, and the record's own expiry bounds how stale a repair may be.
+ *
  * ⛔ OPT-IN PER REPO, DEFAULT OFF: `bridge.protocol_invalid_label.repos`
  * (`BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`). The classifier emits no target for a repo not listed, and
  * this class re-checks the list before writing, because a target is classifier-emitted and a custom
- * classifier can emit one for any repo.
+ * classifier can emit one for any repo. The repair re-asks the same question at repair time, so a
+ * repo the operator has since removed is forgotten rather than written.
  *
  * ⛔ NOTHING HERE THROWS, RETRIES OR ALERTS, and no routing OUTCOME depends on it — not what is
  * staged, not what is pushed, not the status the receiver answers. Routing does WAIT on it: the
@@ -38,13 +46,20 @@ use Throwable;
  * `Log::warning` whose message starts `protocol_invalid_label: NOT applied` and whose `reason` names
  * the step: `repo_not_enabled`, `payload_invalid`, `token_unresolved`, `add_refused` (an HTTP error
  * answer, any 4xx or 5xx, with `status` — a 403 is a token without Issues or Pull requests WRITE),
- * `add_failed` (the POST did not complete, a transport failure included), `unexpected` (anything
+ * `add_failed` (the POST did not complete, a transport failure included), `add_unconfirmed` (the
+ * POST was ACCEPTED and GitHub's answer did not list the label), `unexpected` (anything
  * outside those steps — worded "NOT applied, or not confirmed", because it can also fire after a
  * POST that landed). Error text goes through {@see RedactedErrorText}.
  *
+ * ⭐ A 2xx IS THE SERVER'S CLAIM, NOT THE OUTCOME. `POST .../labels` answers with the label set the
+ * thread now carries, so the write CONFIRMS itself out of that same answer — free, no second
+ * request — and a 2xx whose body does not carry the label is `add_unconfirmed` rather than
+ * `applied`. The cost, accepted: a body this cannot read reads as unconfirmed, which owes one
+ * idempotent re-attempt and never a false success.
+ *
  * ⛔ ONE POSTING IDENTITY ON EVERY PATH, the {@see PrCorrelationCommenter} rule: the token is the
  * receiver's placed file and nothing else ({@see GitHubTokenResolver::resolveFromFile()}), so a
- * `bridge:replay` from a shell writes as the receiver or not at all.
+ * `bridge:replay` or a `bridge:relabel` from a shell writes as the receiver or not at all.
  */
 final class ProtocolInvalidLabeler
 {
@@ -56,6 +71,30 @@ final class ProtocolInvalidLabeler
 
     /** Per request to GitHub. One attempt is one POST, so it can add at most this to the delivery. */
     public const TIMEOUT_SECONDS = 4;
+
+    /**
+     * The arms. Every value below `APPLIED` is a `reason` on this class's warnings AND the census
+     * {@see ProtocolInvalidLabelDebt::retriable()} rules over — one vocabulary, so an arm cannot be
+     * added to the log without the repair rule being asked about it.
+     */
+    public const APPLIED = 'applied';
+
+    public const REASON_PAYLOAD_INVALID = 'payload_invalid';
+
+    public const REASON_REPO_NOT_ENABLED = 'repo_not_enabled';
+
+    public const REASON_TOKEN_UNRESOLVED = 'token_unresolved';
+
+    public const REASON_ADD_REFUSED = 'add_refused';
+
+    public const REASON_ADD_FAILED = 'add_failed';
+
+    public const REASON_ADD_UNCONFIRMED = 'add_unconfirmed';
+
+    public const REASON_UNEXPECTED = 'unexpected';
+
+    /** Claimed but not attempted: this instance already tried this thread — {@see $attempted}. */
+    public const DEDUPED = 'deduped';
 
     /**
      * Every comment this instance has already attempted, WHATEVER came of it — {@see OncePerKey}
@@ -89,70 +128,122 @@ final class ProtocolInvalidLabeler
     /**
      * @param  array<mixed>  $payload  `repo`, `number` (the issue or pull request) and `comment_id`
      */
-    public function apply(array $payload): void
+    public function apply(array $payload): ProtocolInvalidLabelAttempt
     {
         try {
-            $this->label($payload);
+            return $this->label($payload);
         } catch (Throwable $e) {
             Log::warning('protocol_invalid_label: NOT applied, or not confirmed — an unexpected failure outside the steps below; routing is unchanged', [
                 'catalog_id' => 'protocol_invalid_label.unexpected_failure',
                 'repo' => $payload['repo'] ?? null, 'number' => $payload['number'] ?? null,
-                'reason' => 'unexpected', 'error' => RedactedErrorText::of($e),
+                'reason' => self::REASON_UNEXPECTED, 'error' => RedactedErrorText::of($e),
             ]);
+
+            // ⛔ OWED EVEN THOUGH THE POST MAY HAVE LANDED — this arm can fire after a successful
+            // write (a log sink that throws on the success line is the shipped case). The
+            // re-attempt is an idempotent add that confirms itself, so a debt recorded here for a
+            // write that DID land costs one POST and then clears; the other direction costs a
+            // thread the arbiter never sweeps.
+            $this->owe($payload, self::REASON_UNEXPECTED, null);
+
+            return new ProtocolInvalidLabelAttempt(self::REASON_UNEXPECTED);
         }
     }
 
     /** @param  array<mixed>  $payload */
-    private function label(array $payload): void
+    private function label(array $payload): ProtocolInvalidLabelAttempt
     {
         $repo = $payload['repo'] ?? null;
         $number = $payload['number'] ?? null;
         if (! is_string($repo) || $repo === '' || ! is_int($number) || $number < 1) {
             Log::warning('protocol_invalid_label: NOT applied — the target does not name a repo and an issue number; routing is unchanged', [
                 'catalog_id' => 'protocol_invalid_label.payload_invalid',
-                'reason' => 'payload_invalid',
+                'reason' => self::REASON_PAYLOAD_INVALID,
             ]);
 
-            return;
+            return new ProtocolInvalidLabelAttempt(self::REASON_PAYLOAD_INVALID);
         }
         $context = ['repo' => $repo, 'number' => $number, 'comment_id' => $payload['comment_id'] ?? null];
 
         if (! self::enabledFor($repo)) {
             Log::warning('protocol_invalid_label: NOT applied — this repo is not in BRIDGE_PROTOCOL_INVALID_LABEL_REPOS; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.repo_not_enabled'] + $context + [
-                'reason' => 'repo_not_enabled',
+                'reason' => self::REASON_REPO_NOT_ENABLED,
             ]);
 
-            return;
+            return new ProtocolInvalidLabelAttempt(self::REASON_REPO_NOT_ENABLED);
         }
 
         if (! $this->attempted->claim($repo, $number, is_scalar($context['comment_id']) ? (string) $context['comment_id'] : null)) {
-            return;
+            return new ProtocolInvalidLabelAttempt(self::DEDUPED);
         }
 
         $resolution = $this->tokens->resolveFromFile();
         if (! $resolution->ok()) {
             Log::warning('protocol_invalid_label: NOT applied — no GitHub token file resolves (only the receiver\'s token file is used here, never the credential store or GH_TOKEN); routing is unchanged', ['catalog_id' => 'protocol_invalid_label.no_token'] + $context + [
-                'reason' => 'token_unresolved', 'problem' => $resolution->problem,
+                'reason' => self::REASON_TOKEN_UNRESOLVED, 'problem' => $resolution->problem,
             ]);
 
-            return;
+            return $this->failure($payload, self::REASON_TOKEN_UNRESOLVED, null);
         }
 
         try {
-            (new GitHubWriteClient((string) $resolution->token, self::TIMEOUT_SECONDS))->addLabels($repo, $number, [self::LABEL]);
+            $labels = (new GitHubWriteClient((string) $resolution->token, self::TIMEOUT_SECONDS))->addLabels($repo, $number, [self::LABEL]);
         } catch (RequestException $e) {
-            Log::warning('protocol_invalid_label: NOT applied — GitHub answered the label request with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_http_error'] + $context + [
-                'reason' => 'add_refused', 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
+            Log::warning('protocol_invalid_label: NOT applied — GitHub answered the label request with an HTTP error (a 403 is a token without Issues or Pull requests WRITE); not retried in this run, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_http_error'] + $context + [
+                'reason' => self::REASON_ADD_REFUSED, 'status' => $e->response->status(), 'error' => RedactedErrorText::of($e),
             ]);
 
-            return;
+            return $this->failure($payload, self::REASON_ADD_REFUSED, $e->response->status());
         } catch (Throwable $e) {
-            Log::warning('protocol_invalid_label: NOT applied — the label request could not be sent to GitHub; not retried, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_failed'] + $context + [
-                'reason' => 'add_failed', 'error' => RedactedErrorText::of($e),
+            Log::warning('protocol_invalid_label: NOT applied — the label request could not be sent to GitHub; not retried in this run, and routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_failed'] + $context + [
+                'reason' => self::REASON_ADD_FAILED, 'error' => RedactedErrorText::of($e),
             ]);
 
+            return $this->failure($payload, self::REASON_ADD_FAILED, null);
+        }
+
+        if (! in_array(self::LABEL, $labels, true)) {
+            Log::warning('protocol_invalid_label: NOT applied — GitHub ACCEPTED the label request and its answer does not carry the label, so the write is not confirmed; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_unconfirmed'] + $context + [
+                'reason' => self::REASON_ADD_UNCONFIRMED, 'labels_answered' => count($labels),
+            ]);
+
+            return $this->failure($payload, self::REASON_ADD_UNCONFIRMED, null);
+        }
+
+        ProtocolInvalidLabelDebt::forget($repo, $number);
+        Log::info('protocol_invalid_label: applied', ['catalog_id' => 'protocol_invalid_label.applied'] + $context);
+
+        return new ProtocolInvalidLabelAttempt(self::APPLIED);
+    }
+
+    /**
+     * Record this failure against the thread, and say which arm it was.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function failure(array $payload, string $reason, ?int $status): ProtocolInvalidLabelAttempt
+    {
+        $this->owe($payload, $reason, $status);
+
+        return new ProtocolInvalidLabelAttempt($reason, $status);
+    }
+
+    /**
+     * ⛔ THE ENABLED-LIST IS RE-ASKED HERE, not assumed from the caller's arm. `apply()`'s catch-all
+     * reaches this having passed through no gate at all, so without it an unexpected failure on a
+     * repo this install does not write would queue that repo's write for repair.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function owe(array $payload, string $reason, ?int $status): void
+    {
+        $repo = $payload['repo'] ?? null;
+        $number = $payload['number'] ?? null;
+        if (! is_string($repo) || $repo === '' || ! is_int($number) || $number < 1 || ! self::enabledFor($repo)) {
             return;
         }
-        Log::info('protocol_invalid_label: applied', ['catalog_id' => 'protocol_invalid_label.applied'] + $context);
+        $commentId = $payload['comment_id'] ?? null;
+
+        ProtocolInvalidLabelDebt::settle($repo, $number, is_scalar($commentId) ? (string) $commentId : null, $reason, $status);
     }
 }

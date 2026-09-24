@@ -477,6 +477,11 @@ php artisan bridge:provision-tools [--dry-run] [--agent=] [--host-a=] [--ssh-por
                                                       # ssh-only and each is refused without --agent. docs/board-tools-enablement.md
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
+php artisan bridge:relabel [--fix] [--repo=owner/repo] [--limit=50]           # finish the protocol:invalid label writes this install
+                                                      #   decided on and could not land (DL-419; report-only unless --fix).
+                                                      #   No timer, gate or job runs it — the bridge re-attempts an outward
+                                                      #   write only when a person asks. --fix exits NON-ZERO while anything
+                                                      #   in scope is still owed. docs/writeback.md
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
 php artisan bridge:jobs [list|add|remove|enable|disable|run] [name] [--json] [--assert-tick]   # the periodic-job registry (DL-325)
 php artisan bridge:tick                               # one bounded pass over that registry — the opt-in crontab ingress (DL-325)

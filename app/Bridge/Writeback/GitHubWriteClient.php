@@ -30,14 +30,32 @@ final class GitHubWriteClient
 
     /**
      * Adds $labels to issue or pull request $number. ADDITIVE: GitHub adds them "to the issue's
-     * existing labels" (its REST reference); replacing the set is a different endpoint.
+     * existing labels" (its REST reference); replacing the set is a different endpoint. Which also
+     * makes it IDEMPOTENT — adding a label a thread already carries writes nothing new — so a
+     * caller may safely re-attempt one it is unsure landed.
+     *
+     * ⭐ IT RETURNS WHAT GITHUB SAYS IS ON THE THREAD NOW, because a 2xx is the server's CLAIM and
+     * not the outcome. This endpoint answers with the resulting label set, so a caller can CONFIRM
+     * its own write out of the same response rather than inferring it from the status — for free,
+     * with no extra request. A name this cannot read is omitted rather than guessed, so an
+     * unreadable body reads as "not confirmed" and never as "confirmed".
      *
      * @param  list<string>  $labels
+     * @return list<string> the label names GitHub answered with
      */
-    public function addLabels(string $repo, int $number, array $labels): void
+    public function addLabels(string $repo, int $number, array $labels): array
     {
-        GitHubApi::request($this->token, $this->timeoutSeconds)
+        $response = GitHubApi::request($this->token, $this->timeoutSeconds)
             ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/labels", ['labels' => $labels])
             ->throw();
+
+        $names = [];
+        foreach (is_array($body = $response->json()) ? $body : [] as $label) {
+            if (is_array($label) && is_string($label['name'] ?? null)) {
+                $names[] = $label['name'];
+            }
+        }
+
+        return $names;
     }
 }
