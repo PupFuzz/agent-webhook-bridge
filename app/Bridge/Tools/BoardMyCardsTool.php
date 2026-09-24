@@ -397,6 +397,12 @@ final class BoardMyCardsTool implements Tool
         return match ($basis) {
             TerminalBasis::Declared => 'this board flags its terminal columns with kanban `is_terminal`, and that column is one of them',
             TerminalBasis::LaneType => 'no column on this board is flagged with kanban `is_terminal`, so the `lane_type: done` columns stand in and that column is one of them',
+            // Not a guard on a live path — the enum is TOTAL and this arm is what makes the match
+            // exhaustive. The refusal above cannot be reached in this state: an unreadable stage
+            // collection leaves `$stageNames` empty, so `stageFilter()` refuses any `stage` first.
+            // Written truthfully rather than left to a default, because a string that lies is
+            // worse than an arm that never prints.
+            TerminalBasis::Unreadable => "this board's columns could not be read at all, so no declaration about them answered",
         };
     }
 
@@ -446,9 +452,14 @@ final class BoardMyCardsTool implements Tool
      * flagged anything here, so 53 is out because its `lane_type` is `done`" — and the remedy an
      * operator who disagrees needs differs between them. It is reported even under
      * `include_terminal: true`, where the exclusion is empty, because it describes the BOARD and
-     * not this call's narrowing. ⛔ It is NOT a second way to read the list's emptiness: an empty
-     * exclusion under a `is_terminal` basis is unreachable by construction — a board answers on
-     * that basis only by flagging at least one stage ({@see TerminalBasis}).
+     * not this call's narrowing. ⛔ It is NOT a second way to read the list's emptiness, and the
+     * SCOPE CLAUSE is load-bearing: **under `include_terminal: false`** an empty exclusion cannot
+     * carry an `is_terminal` basis, because a board answers on that basis only by flagging at least
+     * one stage ({@see TerminalBasis}). **Under `include_terminal: true` that pair is ordinary** —
+     * `$excluded` is emptied by the caller's own argument below whatever the board declared, which
+     * is exactly what `BoardMyCardsTagReadTest::test_the_basis_is_reported_even_when_include_terminal_empties_the_exclusion`
+     * pins. An earlier revision of this paragraph stated the claim unscoped, which its own test
+     * contradicted.
      *
      * @return array{tag: string, include_terminal: bool, terminal_basis: string, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
      */

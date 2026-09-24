@@ -181,7 +181,8 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "tag_cards": {
     "tag": "lane:A",
     "include_terminal": false,
-    "terminal_basis": "lane_type",         // WHICH declaration answered: "is_terminal" or "lane_type"
+    "terminal_basis": "lane_type",         // WHICH declaration answered: "is_terminal", "lane_type", or
+                                           // "stages_unreadable" (no columns were read — NOT "flags none")
     "excluded_terminal_stage_ids": [53],   // the columns left out ([] when none, or when include_terminal)
     "cards": [ { /* the card shape above */ "swimlane_id": null } ],  // null ⇒ in NO lane
     "cards_window": { /* the same keys, over this block's population, plus: */ "total_is_lower_bound": false },
@@ -340,8 +341,11 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
     terminal, and a `done` column it declined to flag is **not**. A board that flags **none** has
     opted into nothing (nothing backfills the flag, and that is the ordinary state), so its
     `lane_type: done` columns stand in, exactly as before the flag existed. `terminal_basis` says
-    which of the two answered — `"is_terminal"` or `"lane_type"` — and
-    `excluded_terminal_stage_ids` lists what was left out. It is not the writeback's terminal
+    which answered — `"is_terminal"` or `"lane_type"` — and `excluded_terminal_stage_ids` lists what
+    was left out. ⛔ **A third value, `"stages_unreadable"`, means NO declaration answered**: the
+    board read came back carrying no columns at all, so nothing could be excluded. **It is not a
+    board that flags nothing** — a board that genuinely has no columns still reads `"lane_type"` —
+    so read it as *unknown* and never as *unflagged*. It is not the writeback's terminal
     rule, and a board that declares nothing terminal by either route has none.
   - A `stage` that names a terminal column is **refused** without `include_terminal: true`,
     rather than answering an empty block. ⛔ The refusal is the exclusion set read back, so it

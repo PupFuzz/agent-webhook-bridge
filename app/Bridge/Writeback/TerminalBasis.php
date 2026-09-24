@@ -26,17 +26,32 @@ namespace App\Bridge\Writeback;
  * deliberately leaves a `done` column unflagged would keep being told it is terminal — which is
  * one of the two divergences this exists to close.
  *
+ * ⚠ AND THE BOARD CROSSES WORKFLOWS, WHICH IS THE UNIT'S REACH AND IS DELIBERATE.
+ * {@see KanbanClient::stagesIn} concatenates every workflow's stages, so on a two-workflow board a
+ * single stage flagged in ONE workflow puts the WHOLE board on this basis and declassifies the
+ * OTHER workflow's `done` columns. Per-WORKFLOW precedence is a real third alternative with the
+ * same opt-in logic, and the board was chosen because it is kanban's own reporting unit — its
+ * `kanban:terminal-stages` joins `workflows` and groups by `board_id`, so a per-workflow rule here
+ * would answer a question the far end does not ask. `KanbanClientTest::test_the_board_level_unit_reaches_across_workflows`
+ * pins the reach so it stays a measured property rather than a side effect of the descent.
+ *
  * ⚠ A stage whose `is_terminal` key is ABSENT is not flagged, and that is the whole handling it
  * needs: absent and `false` both mean "this stage is not opted in", and the board-level fallback
  * is what makes a kanban older than v0.47.0 — which sends the key on no stage at all — read
  * exactly as it did before the field existed, rather than as a board with nothing terminal.
  *
- * ⛔ THIS IS NOT THE WRITEBACK'S TERMINAL SET AND NEVER ANSWERS FOR IT. The bridge holds three
- * OTHER terminal notions, and they are deliberately not derivations of the board's property:
- * {@see WritebackMapping::isTerminalStage} (the operator's PR-outcome mapping plus board
- * position), `coord_card_terminal_stage_id` (one operator-named stage) and
- * {@see CoordConfigTerminals} (the coordination config's terminal column NAMES). Those state
- * where the BRIDGE concludes a card; this states what the BOARD declares about its own columns.
+ * ⛔ THIS IS NOT THE WRITEBACK'S TERMINAL SET AND NEVER ANSWERS FOR IT. The bridge holds other
+ * terminal notions — `WritebackMapping::isTerminalStage` and `terminalFloor` (the operator's
+ * PR-outcome mapping plus board position), `coord_card_terminal_stage_id` (one operator-named
+ * stage), `CoordConfigTerminals` (the coordination config's terminal column NAMES) — and they are
+ * deliberately not derivations of the board's property: they state where the BRIDGE concludes a
+ * card, while this states what the BOARD declares about its own columns.
+ *
+ * ⚠ THAT LIST IS AN ORIENTATION, NOT THE POPULATION, AND CARRIES NO COUNT ON PURPOSE.
+ * `bin/derive-terminal-sites.sh` owns the population and re-derives it; a figure written here is
+ * the copy a maintainer adding a fifth notion would read and not update, and this file ships
+ * beside the very script that exists so the number is never quoted
+ * (`CLAUDE_CONVENTIONS.md` § Derived figures).
  */
 enum TerminalBasis: string
 {
@@ -45,4 +60,24 @@ enum TerminalBasis: string
 
     /** No stage on this board is flagged, so the `lane_type: done` columns stand in (kanban's default state). */
     case LaneType = 'lane_type';
+
+    /**
+     * NO DECLARATION ANSWERED — the preload carried no stage collection, so nothing about this
+     * board's columns was read (card#10274 r1).
+     *
+     * ⛔ THIS IS NOT A THIRD KIND OF BOARD, IT IS THE ABSENCE OF A READ, and it exists because the
+     * other two cases are POSITIVE CLAIMS about the operator's configuration. `stagesIn()` warns
+     * and yields nothing on a 200 whose body carries no `workflows` collection — a state this repo
+     * has already seen live (card#8761) — and without this case the empty flagged set that results
+     * is indistinguishable from a board that deliberately flags nothing, so the seat is told
+     * `lane_type` about a board nobody read. An empty stage LIST asserts nothing and needs no such
+     * case, which is why {@see BoardStructure}'s older fields legitimately have none; an enum that
+     * always names a declaration is the opposite.
+     *
+     * ⚠ `workflows: []` IS NOT THIS CASE. That is a read that WORKED over a board with no columns,
+     * and a board with no columns flags none — so it answers {@see self::LaneType}, truthfully. The
+     * split is `stagesIn()`'s own and is deliberately not a second predicate: see
+     * {@see KanbanClient::stageCollectionReadable}.
+     */
+    case Unreadable = 'stages_unreadable';
 }

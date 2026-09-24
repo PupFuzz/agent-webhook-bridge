@@ -665,7 +665,8 @@ final class KanbanClient
     public function boardStructure(int $boardId): BoardStructure
     {
         $data = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data');
-        $stages = iterator_to_array(self::stagesIn(is_array($data) ? ($data['workflows'] ?? null) : null, $boardId), false);
+        $workflows = is_array($data) ? ($data['workflows'] ?? null) : null;
+        $stages = iterator_to_array(self::stagesIn($workflows, $boardId), false);
 
         $rows = [];
         $stageIds = [];
@@ -712,7 +713,14 @@ final class KanbanClient
             $byId[$row['id']] = $row['name'];
         }
 
-        $basis = $declared === [] ? TerminalBasis::LaneType : TerminalBasis::Declared;
+        // ⛔ THE UNREADABLE ARM IS FIRST AND IS NOT AN EMPTINESS TEST. `$declared === []` is true in
+        // BOTH the unread state and the ordinary unflagged one, so ordering it first is what keeps
+        // the enum from making a positive claim about a board this read never saw.
+        $basis = match (true) {
+            ! self::stageCollectionReadable($workflows) => TerminalBasis::Unreadable,
+            $declared !== [] => TerminalBasis::Declared,
+            default => TerminalBasis::LaneType,
+        };
 
         return new BoardStructure(
             $byId,
@@ -1182,6 +1190,24 @@ final class KanbanClient
     }
 
     /**
+     * Whether a preload body carried a stage collection AT ALL — the one discriminator behind
+     * both {@see warnUnreadableStages}' "this was not an answer" warning and
+     * {@see TerminalBasis::Unreadable}.
+     *
+     * ⛔ ONE PREDICATE, TWO READERS, DELIBERATELY. {@see boardStructure} has to answer the same
+     * question {@see stagesIn} answers — did this read carry columns, or is the empty result the
+     * board's own state? — and a second `is_array()` spelled there would be a copy that can drift
+     * from the warning, leaving a seat told `stages_unreadable` on a read that logged nothing, or
+     * the reverse. ⚠ It is `is_array` and not `!== []`: `workflows: []` IS a collection, and a
+     * board that genuinely has no columns is a fact every caller already handles quietly — warning
+     * on it is the noise {@see warnUnreadableStages} is shaped to avoid.
+     */
+    private static function stageCollectionReadable(mixed $workflows): bool
+    {
+        return is_array($workflows);
+    }
+
+    /**
      * The `workflows[].stages[]` descent over an already-read workflows value — shared by
      * {@see preloadStages} and {@see boardStructure}, which read the preload body differently.
      *
@@ -1189,7 +1215,7 @@ final class KanbanClient
      */
     private static function stagesIn(mixed $workflows, int $boardId): iterable
     {
-        if (! is_array($workflows)) {
+        if (! self::stageCollectionReadable($workflows)) {
             self::warnUnreadableStages($boardId);
 
             return;

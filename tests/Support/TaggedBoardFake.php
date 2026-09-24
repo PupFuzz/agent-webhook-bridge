@@ -43,7 +43,7 @@ trait TaggedBoardFake
      */
     private function fakeTaggedBoard(array $laneRows, array $tagRows, array $options = []): void
     {
-        $options += ['parser' => 'current', 'pre_none_total' => 0, 'swimlanes' => [4, 9], 'count_meta_total' => true, 'none_total' => null, 'refuse' => [], 'flagged' => null];
+        $options += ['parser' => 'current', 'pre_none_total' => 0, 'swimlanes' => [4, 9], 'count_meta_total' => true, 'none_total' => null, 'refuse' => [], 'flagged' => null, 'omit_workflows' => false];
         $refused = static fn (string $read) => isset($options['refuse'][$read]) ? Http::response('the board said something', $options['refuse'][$read]) : null;
 
         $flagged = $options['flagged'];
@@ -58,6 +58,12 @@ trait TaggedBoardFake
             ['id' => 51, 'name' => 'In Review', 'position' => 2, 'lane_type' => 'in_progress'],
             ['id' => 52, 'name' => 'Shipped', 'position' => 3, 'lane_type' => 'done'],
         ])]]];
+        if ($options['omit_workflows'] === true) {
+            // A 200 whose body carries NO `workflows` key at all — not `workflows: []`. That is the
+            // state `KanbanClient::warnUnreadableStages` exists to log (card#8761), and the one
+            // where no declaration about the board's columns was read.
+            unset($preload['workflows']);
+        }
         if ($options['swimlanes'] !== null) {
             $preload['swimlanes'] = array_map(static fn (int $id): array => ['id' => $id, 'name' => "lane {$id}"], $options['swimlanes']);
         }

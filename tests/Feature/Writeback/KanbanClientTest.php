@@ -801,6 +801,64 @@ class KanbanClientTest extends TestCase
     }
 
     /**
+     * ⛔ A READ THAT CARRIED NO STAGE COLLECTION DECLARED NOTHING, AND MUST NOT BE REPORTED AS A
+     * BOARD THAT FLAGS NOTHING (card#10274 r1). `stagesIn()` warns and yields nothing on a 200
+     * whose body carries no `workflows` collection — a state this repo has already seen live
+     * (card#8761) — so `$declared` is empty for a reason that has nothing to do with the
+     * operator's configuration. A two-state basis answers `lane_type` there, which is a POSITIVE
+     * claim about a board nobody read.
+     *
+     * ⭐ AND THE DISCRIMINATION IS `stagesIn()`'s OWN, NOT A SECOND ONE: `workflows: []` is a
+     * board that genuinely has no stages, which every caller already handles quietly, so it keeps
+     * answering `lane_type` — truthfully, because a board with no columns flags none. The arms
+     * below are the two halves of that split and must not collapse into one.
+     */
+    public function test_a_read_that_carried_no_stage_collection_names_itself_rather_than_claiming_the_board_flags_nothing(): void
+    {
+        Log::spy();
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => new \stdClass])]);
+
+        $structure = $this->client()->boardStructure(8);
+
+        $this->assertSame(TerminalBasis::Unreadable, $structure->terminalBasis);
+        $this->assertSame([], $structure->terminalStageIds, 'an unreadable collection excludes nothing');
+        Log::shouldHaveReceived('warning')->once()->withArgs(
+            fn (string $m, array $c = []) => ($c['catalog_id'] ?? null) === 'kanban_client.stage_collection_unreadable'
+        );
+    }
+
+    public function test_a_board_that_genuinely_has_no_workflows_still_answers_lane_type(): void
+    {
+        // `workflows: []` is a READ that worked over a board with no columns — a board with no
+        // columns flags none, so `lane_type` is TRUE of it. Pinned beside the arm above because
+        // collapsing the two is the whole defect: one is an answer, the other is no answer.
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]])]);
+
+        $this->assertSame(TerminalBasis::LaneType, $this->client()->boardStructure(8)->terminalBasis);
+    }
+
+    /**
+     * ⚠ THE OPT-IN UNIT IS THE BOARD, AND THE BOARD CROSSES WORKFLOWS (card#10274 r1).
+     * `stagesIn()` concatenates every workflow's stages, so a stage flagged in ONE workflow puts
+     * the WHOLE board on the `is_terminal` basis and declassifies another workflow's `done`
+     * column. That is deliberate — kanban's own `kanban:terminal-stages` groups by board, not by
+     * workflow — and it is pinned here so the reach is a measured property rather than a side
+     * effect of the descent nobody exercised.
+     */
+    public function test_the_board_level_unit_reaches_across_workflows(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [['id' => 60, 'name' => 'A', 'position' => 1, 'lane_type' => 'in_progress', 'is_terminal' => true]]],
+            ['stages' => [['id' => 61, 'name' => 'B', 'position' => 2, 'lane_type' => 'done', 'is_terminal' => false]]],
+        ]]])]);
+
+        $structure = $this->client()->boardStructure(8);
+
+        $this->assertSame(TerminalBasis::Declared, $structure->terminalBasis);
+        $this->assertSame([60], $structure->terminalStageIds, "the OTHER workflow's `done` column is declassified by a flag set in the first");
+    }
+
+    /**
      * ⛔ THE FLAG IS A BOOLEAN AND ONLY A BOOLEAN `true` OPTS A STAGE IN. A truthy spelling kanban
      * does not send — `1`, `"true"` — must not opt a board in, because doing so would switch the
      * whole board off `lane_type` on the strength of a value the contract does not carry, which is

@@ -449,6 +449,24 @@ class BoardMyCardsTagReadTest extends TestCase
         }
     }
 
+    /**
+     * ⛔ THE SEAT IS TOLD THAT NO DECLARATION ANSWERED, NOT THAT THE BOARD FLAGS NOTHING
+     * (card#10274 r1). `terminal_basis` is a claim about the OPERATOR'S board, so the one state in
+     * which nothing was read has to be its own value: `docs/CHANGELOG.md` tells consumers to branch
+     * on this key rather than on an empty `excluded_terminal_stage_ids`, and a consumer obeying
+     * that must not be handed `lane_type` for a board nobody read.
+     */
+    public function test_a_read_that_carried_no_columns_says_so_instead_of_naming_a_declaration(): void
+    {
+        $this->fakeTaggedBoard([], [self::taggedRow(77, 51, null)], ['omit_workflows' => true]);
+
+        $block = $this->tagCards(['tag' => 'lane:A']);
+
+        $this->assertSame('stages_unreadable', $block['terminal_basis']);
+        $this->assertSame([], $block['excluded_terminal_stage_ids'], 'nothing was excluded, because nothing was read');
+        $this->assertSame([77], array_column($block['cards'], 'id'), 'the tag read still answers — the basis reports the gap, it does not refuse');
+    }
+
     public function test_the_basis_is_reported_even_when_include_terminal_empties_the_exclusion(): void
     {
         $this->fakeTaggedBoard([], [self::taggedRow(76, 51, null)], ['flagged' => [51]]);
