@@ -177,6 +177,47 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         $this->assertMovedTo(99);
     }
 
+    /**
+     * card#10068 — the PARENT-CARD refusal on the coordination-card CLOSE, the third terminal
+     * write in `app/` and the lowest-volume of them. A predicate enforced at some writers of a
+     * terminal stage is enforced at none of them: this leg reads the whole row (it already
+     * consults the board and pin guards on it), so the tag is readable for no extra request.
+     *
+     * ⚠ MIXED SET, ONE MEASUREMENT: two cards carry the issue's `sid` tag, both at stage 50,
+     * both on the mapped board, both unpinned, and the ONLY thing separating them is the
+     * `program` tag. The ordinary card is the arm a guard refusing everything fails.
+     *
+     * ⛔ ONLY THE TERMINAL LEG. The revive leg moves a card OUT of the terminal and the relane
+     * leg moves lane to lane; neither writes a terminal stage, and card#10068's ruling is about
+     * writers of one. `Tests\Feature\Writeback\ProgramParentMoveCoverageTest` carries
+     * that ruling for both, where it is derived rather than remembered.
+     */
+    public function test_close_refuses_a_program_parent_and_still_concludes_an_ordinary_card(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7], ['id' => 8]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['triaged']]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['triaged', 'program']]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        // PRESENCE WITNESS — the ordinary coordination card is still concluded.
+        $this->assertMovedTo(99);
+        // CONTROL — the parent is not written to at all.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json'));
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'program_parent_card'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 8
+            // The issue number travels, as it does on this arm's pin and board twins: a coord
+            // refusal an operator cannot trace back to an issue is half a report.
+            && $r['issue_number'] === 4);
+    }
+
     // ---- reopen → revive (the actor-gate) ----
 
     public function test_revive_returns_a_service_set_terminal_card_to_the_create_stage(): void

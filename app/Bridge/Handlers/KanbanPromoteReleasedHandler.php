@@ -14,6 +14,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
 use App\Bridge\Writeback\TrackedRefKind;
@@ -207,6 +208,20 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // another tenant's board. Applied where a row BECOMES a candidate, so the
             // refused set is exactly the set this handler would otherwise have written to.
             if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
+                continue;
+            }
+            // PARENT-CARD refusal (card#10068): the row carries the `program` tag, so it names
+            // SEVERAL LEGS and no one release may speak for it. ⭐ THE WRITER THAT ACTUALLY
+            // FIRES — `ProgramCardGuard` shipped consulted by the PR-event path alone, and this
+            // scan is what moved every card of the release that made card#10068 measurable.
+            //
+            // ⛔ IN THE CANDIDATE SCAN, NOT AT THE MOVE, for the reason the board guard above is:
+            // this is where a row BECOMES a candidate, the whole row (and so its `tags`) is in
+            // hand here and NOWHERE below — `promoteIfReleased` holds only an id — and refusing
+            // here costs ZERO extra requests while also never dereferencing a parent's pull
+            // request with this repo's token. The refused set is exactly the set this handler
+            // would otherwise have written to.
+            if (ProgramCardGuard::refuses($this->alerts, $card, 'kanban_promote_released', 'Shipped→Released promote', $cardId, $repo, 'promote_on_release', ['pr' => $prNumber])) {
                 continue;
             }
             // The ROW's own board travels with the candidate (card#7212), because the promote

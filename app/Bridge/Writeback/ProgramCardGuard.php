@@ -45,15 +45,23 @@ namespace App\Bridge\Writeback;
  * establishes that a parent card actually CARRIES the tag — an untagged parent is invisible to
  * this guard, which is the residual card#9929 records and not something this check closes.
  *
- * ⛔ ONE CONSULT, AND THE REFUSAL IS NOT REPO-WIDE. `KanbanMoveCardHandler` — the GitHub-PR
- * EVENT path — is the only caller, which `grep -rn 'ProgramCardGuard::' app/` re-derives; every
- * other card writer in this repo writes without asking this guard, so a parent already carrying
- * a leg PR's `pr_number` can still be moved by one of them, terminal stages included. WHICH
- * writers those are is not restated here — the population is the one `PinGuard`'s docblock owns
- * the recipe for, and the operator-facing list is the writeback token's permission table in
- * `docs/writeback.md`; a roster copied into a comment is true until the next writer lands
- * (bridge card#10063). That is this change's scope holding, not a safety claim; widening it is
- * filed on card#9929.
+ * ⛔ EVERY TERMINAL-STAGE WRITER IN THIS REPO CONSULTS IT — AND THE REFUSAL IS STILL NOT
+ * REPO-WIDE (card#10068). Shipped with ONE caller, which is what card#10068 reports: a
+ * predicate enforced at one writer of a terminal stage is not enforced, and the writer that
+ * actually fires on this install's releases was not the one guarded. The consults now sit on
+ * the PR-event path, the release promote scan, the `bridge:reconcile --fix` plan and the
+ * coordination-card close. ⛔ WHICH WRITERS THOSE ARE IS NOT A LIST TO TRUST HERE: the
+ * population is DERIVED every run by `Tests\Feature\Writeback\ProgramParentMoveCoverageTest`
+ * over every `->moveCard(` site in `app/`, each of which carries a ruling — consulted, or what
+ * it moves and why it does not — so a new writer arrives as a red test rather than as a
+ * silence. (Named, not `{@see}`-linked, for the pint reason this docblock already carries
+ * below.) A roster copied into a comment is true until the next writer lands (card#10063), and
+ * this paragraph's own previous version is the worked example.
+ * ⛔ WHAT IS STILL UNREACHED, stated rather than implied away: the TOOLKIT's
+ * `bin/promote-released-cards` is a second implementation of the same Shipped→Released move,
+ * in another repo, racing this one on every release — nothing here reaches it; and kanban's own
+ * UI drag and HTTP API reach no bridge-side predicate at all. `docs/writeback.md` § Parent
+ * cards owns that boundary for an operator.
  *
  * ⚑ EXACT MATCH, like `no-automove`'s: kanban stores tags verbatim (it normalizes neither case
  * nor whitespace), so `Program` and `program ` are not this tag and are not refused. The
@@ -112,6 +120,11 @@ final class ProgramCardGuard
      *
      * $write names WHICH write was refused, because this arm refuses two of them at once.
      *
+     * $issueNumber carries the GitHub issue a refusal belongs to on the arms that have one
+     * ({@see PinGuard::refuses}' final parameter, and the same default): the coordination-card
+     * arm is keyed by issue, and a refusal an operator cannot trace back to one is half a
+     * report. The PR-event and release-scan arms have no issue and pass nothing.
+     *
      * @param  array<string, mixed>  $card
      * @param  array<string, mixed>  $logContext  arm-specific context; `card_id` and `repo` are added here
      */
@@ -124,6 +137,7 @@ final class ProgramCardGuard
         string $repo,
         string $outcome,
         array $logContext = [],
+        ?int $issueNumber = null,
     ): bool {
         if (! self::isProgramParent($card)) {
             return false;
@@ -136,7 +150,7 @@ final class ProgramCardGuard
             .'correlation ref. The pull request should cite the LEG card it finishes instead, and the parent should be '
             .'moved when every leg is done.',
             ['card_id' => $cardId, 'repo' => $repo, 'program_tag' => self::TAG] + $logContext,
-            $repo, $outcome, $cardId, self::REASON,
+            $repo, $outcome, $cardId, self::REASON, $issueNumber,
         );
 
         return true;

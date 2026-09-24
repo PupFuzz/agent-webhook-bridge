@@ -15,6 +15,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
 use App\Bridge\Writeback\TrackedRefKind;
@@ -463,6 +464,26 @@ class ReconcileCommand extends BridgeCommand
             // Backward drift — report only. Usually a deliberate human move; the
             // reconciler never regresses a card (DL-163 posture).
             $this->backward[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'backward');
+
+            return;
+        }
+
+        // PARENT-CARD refusal (card#10068): the card carries the `program` tag, so it names
+        // SEVERAL LEGS and no one pull request may speak for it. ⚠ THIS LEG IS THE DOCUMENTED
+        // BYPASS — v0.88.0's changelog said in as many words that the reconcile "can still
+        // perform the move the event path refuses", and `--fix` runs on a schedule, so without
+        // this consult the event path's refusal is silently undone on the next pass.
+        //
+        // ⛔ PLACED WHERE THE FORWARD MOVE IS PLANNED, for the reason the closure gate above is
+        // placed after the terminal return: this command DECIDES about every tracked card and
+        // WRITES to almost none of them, so consulting beside the pin — which is quiet, and can
+        // therefore sit early — would report a permanent refusal on every in-sync and backward
+        // parent, i.e. withhold nothing and say it had. The refused set is exactly the set
+        // `finish()` would otherwise have moved. The cost of the placement is the one GitHub
+        // read the pin skip saves, which buys a report that is true.
+        if (ProgramCardGuard::refuses($this->alerts, $card, 'bridge_reconcile', 'forward drift move', $cardId, (string) $repo, self::ALERT_OUTCOME, ['stage' => $current, 'expected' => $expected])) {
+            $this->line("card {$cardId} ({$repo}): REFUSED — the card carries the `".ProgramCardGuard::TAG.'` tag, so it is a PARENT naming several legs; the forward move is not planned and `--fix` will not apply it');
+            $this->skipped++;
 
             return;
         }
