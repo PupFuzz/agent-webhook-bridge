@@ -298,8 +298,10 @@ const TOOL_DEFINITIONS = [
         include_terminal: {
           type: 'boolean',
           description:
-            'Keep cards in terminal columns (kanban lane type done) in the tag_cards read ' +
-            '(default false). Refused without tag.',
+            'Keep cards in terminal columns in the tag_cards read (default false). Which ' +
+            'columns those are is the BOARD\'s declaration - its is_terminal flagged stages, ' +
+            'or its lane_type done columns when it flags none - and the response says which ' +
+            'answered in tag_cards.terminal_basis. Refused without tag.',
         },
       },
       additionalProperties: false,
