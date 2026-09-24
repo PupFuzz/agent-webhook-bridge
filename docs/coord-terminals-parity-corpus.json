@@ -1,0 +1,524 @@
+{
+  "schema": 1,
+  "about": "The behavioural parity corpus for the bridge's VENDORED PHP copy of the coordination framework's Python terminal-column rule (card#10273, adopting the primitive card#9936 / DL-414 built). The bridge cannot import Python, so it re-implements the rule; this file is the contract between the two copies, and it is RUNNABLE at both ends. Every entry is an ARGUMENT -> ANSWER pair, never a text comparison: the two ends are different languages, so a textual diff of them is undefined.",
+  "mirror": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Writeback\\CoordConfigTerminals",
+    "path": "app/Bridge/Writeback/CoordConfigTerminals.php",
+    "corpus": "docs/coord-terminals-parity-corpus.json",
+    "checked_by": "tests/Unit/Writeback/CoordConfigTerminalsParityTest.php",
+    "runner": "bin/coord-mirror-parity.py"
+  },
+  "authority": {
+    "repo": "PupFuzz/agent-board-framework (the `coord` plugin)",
+    "symbol": "kanban_common.terminals_for_board + kanban-inbox-check._terminal_columns_by_board",
+    "path": "templates/kanban/examples/kanban_common.py, templates/kanban/examples/kanban-inbox-check.py",
+    "relationship": "The coordination framework OWNS this rule. The bridge mirrors it, because `bridge:check`'s DL-200 cross-config compare has to answer 'what does the OTHER mover consider terminal' in PHP. A disagreement is the bridge's defect to fix by re-mirroring, never the framework's to fix by matching the bridge."
+  },
+  "how_the_far_end_runs_this": "Run this repo's `bin/coord-mirror-parity.py --corpus docs/coord-terminals-parity-corpus.json [--coord-examples <your templates/kanban/examples>]`. It imports `kanban_common.terminals_for_board` and `kanban-inbox-check._terminal_columns_by_board` FROM SOURCE and executes every vector below against them — it never re-implements the rule (the board-id join and the placeholder skip ARE the rule under test, so a local copy of that loop would agree by construction and measure nothing) and it never writes an expectation back. `--control` perturbs every published expectation and requires each to be reported, so the green is falsifiable. Exit 0 = agreed, 1 = disagreed, 2 = could not measure. SHAPE NOTE: `terminalsForBoard` / `terminalNamesForBoardId` answer an ordered list on the mirror and a frozenset on the authority; the runner compares them as SETS, because order is not part of this rule.",
+  "not_checked_by_this_repo": [
+    "NOTHING HERE REDS WHEN THE COORDINATION FRAMEWORK CHANGES ITS OWN PYTHON. The bridge's suite holds the MIRROR against this file; the far-end half is `bin/coord-mirror-parity.py`, which is deliberately NOT in this repo's CI, because CI has no copy of the authority (it is a plugin the bridge does not vendor). A green bridge suite says the mirror still answers what this file publishes — never that the authority still does.",
+    "Both arms are MEMBER-GRANULAR. A branch, a guard or an inline literal edited INSIDE an existing public method is outside both: the reverse arm counts member names, and the vector arm only sees a change that moves one of the published answers.",
+    "MALFORMED CONFIG IS OUTSIDE THE PARITY CLAIM, and `known_divergences` pins where. The mirror type-guards every value it reads out of `coordination.config.json` (`is_array`, `is_string`, non-empty) and the authority does not. That is ONE shape with four measured instances, not four defects, and the mirror's behaviour is the deliberate one — it reads a file it does not own, over a path a lower-trust principal can influence. The divergent answers are inert downstream: a per-character or empty-string 'terminal' matches no column on either side.",
+    "THREE MALFORMED-CONFIG SHAPES MAKE THE AUTHORITY RAISE RATHER THAN ANSWER, so they have no value to pin and are named here instead (measured 2026-09-24 against agent-board-framework coord plugin 0.55.0, templates/kanban/examples): a `board_id` that is a non-numeric string other than `REPLACE_ME` on an entry that HAS terminals, and `\"8.5\"`, both raise `ValueError` from `int()`; a `kanban.boards[]` member that is not an object raises `AttributeError`. The mirror skips all three and answers []. An operator hand-editing that file gets a crashed reconcile and a quiet bridge.",
+    "`load()` and `issuePopulationsForBoardId()` carry NO parity vectors — `mirror_local` names each and says why. `issuePopulationsForBoardId` in particular carries a divergence that cannot be pinned as a value pair: the authority REFUSES an unrecognised `issue_population` (`raise SystemExit` naming the key, in `reconcile_simple_board`) where this mirror resolves anything that is not literally 'all' to 'prefixed'.",
+    "The measurement is against ONE version of the authority (`last_measured.authority_ref`). An install running a different coord version is UNMEASURED, not agreed — re-run the runner against your own copy."
+  ],
+  "last_measured": {
+    "date": "2026-09-24",
+    "authority_ref": "agent-board-framework coord plugin 0.55.0, templates/kanban/examples",
+    "authority_blob": "sha256:f85539708a76baf2bab3cb730ba3e3b3204849faa72295605ae56e7b5094dc68 (kanban_common.py), sha256:2b2283cc782b38ee0d94c6d711c06976bfb5f44d97e742018c9890c436cbfdfa (kanban-inbox-check.py)",
+    "vectors_digest": "sha256:cac7a2f9b9b63f27405d8b6f8d6c7630e06036f04dc14fd139646c5485c17d32",
+    "method": "`bin/coord-mirror-parity.py --corpus docs/coord-terminals-parity-corpus.json` executed every vector and every known divergence below against the authority named above, and held `DEFAULT_TERMINAL` against `terminals_for_board`'s own `default_terminal` parameter default AND against `kanban-inbox-check`'s `DONE_COLUMN` (one mirror constant, two authority sites — if those two ever disagree the mirror cannot match both, and the runner says so). The same invocation with `--control` was run and reported a disagreement for EVERY perturbed expectation. Whoever adds, changes or DELETES a vector re-takes this measurement over the WHOLE corpus and rewrites `vectors_digest`; the bridge's own suite reds until they do.",
+    "result": "AGREED, AND THE DISAGREEMENTS ARE NAMED RATHER THAN ABSENT. Every one of the 26 vectors and all 4 known divergences above was EXECUTED against the authority named in `authority_ref`, and `DEFAULT_TERMINAL` was read off `terminals_for_board`'s own signature and off `kanban-inbox-check.DONE_COLUMN`; all agreed. The run is falsifiable: the same command with `--control` perturbed all 30 expectations and reported a disagreement for every one. ⚠ THIS IS A DATED OBSERVATION OF ONE AUTHORITY VERSION, NOT A STANDING PROPERTY — nothing in the bridge's CI re-takes it, because CI has no copy of the authority."
+  },
+  "not_mirrored": {
+    "done_column= / terminal_columns= kwargs": "`terminals_for_board` folds two DEPRECATED adapter kwargs for un-migrated callers. Its own docstring is explicit that the READ-site sees none of them ('only terminals present in CONFIG are visible to the read-site'), and this mirror is a read-site, so they are deliberately not mirrored. Vector `terminalsForBoard#9` pins that a `done_column` KEY in the config (as opposed to the kwarg) is inert on both ends.",
+    "lifecycle_rank_for_board and the rest of kanban_common": "Out of scope. The bridge mirrors the terminal rule only; nothing here claims anything about the authority's other primitives."
+  },
+  "mirror_local": {
+    "load": "The bridge's own guarded reader for `coordination.config.json` (card#9121's `UntrustedPathContents`). The authority resolves $COORD_CONFIG through `kanban_common.load_config()`, whose contract — throw vs None, size cap, symlink handling — is a property of the PROCESS doing the reading and not of the terminal rule. There is no shared observable, and publishing a 'parity' vector for one would dress a local expectation up as a cross-repo agreement. `CoordConfigTerminalsTest` pins its local behaviour.",
+    "issuePopulationsForBoardId": "Mirrors `kanban.boards[].issue_population`, whose authority read-site is EMBEDDED inside `kanban_common.reconcile_simple_board` (the `_population` resolution and its fail-loud) rather than exposed as a callable, so the runner cannot drive it without standing up a fake board client — at which point the harness, not the authority, would be answering. The divergence this leaves unpinned is named in `not_checked_by_this_repo`."
+  },
+  "known_divergences": {
+    "terminalsForBoard": [
+      {
+        "args": [
+          {
+            "terminal_columns": "Done"
+          }
+        ],
+        "mirror": [],
+        "authority": [
+          "D",
+          "o",
+          "n",
+          "e"
+        ],
+        "why": "A STRING where the schema says list. Python's `set(\"Done\")` splits it into characters; the mirror's `is_array` guard answers no terminals. ONE SHAPE with the three below: the mirror type-guards an untrusted config file and the authority does not. Inert downstream — no column is named 'D'."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done",
+              ""
+            ]
+          }
+        ],
+        "mirror": [
+          "Done"
+        ],
+        "authority": [
+          "",
+          "Done"
+        ],
+        "why": "An EMPTY-STRING member. The authority keeps it; the mirror's `$name !== ''` drops it. Same shape. Inert downstream — no column is named ''."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done",
+              5
+            ]
+          }
+        ],
+        "mirror": [
+          "Done"
+        ],
+        "authority": [
+          "Done",
+          5
+        ],
+        "why": "A NON-STRING member. The authority keeps the integer; the mirror's `is_string` drops it. Same shape. Inert downstream — no column is named 5."
+      },
+      {
+        "args": [
+          {
+            "user_lanes": "stage-next"
+          }
+        ],
+        "mirror": [],
+        "authority": [
+          "Done"
+        ],
+        "why": "`user_lanes` as a non-empty STRING. Python tests truthiness and falls back to the default terminal; the mirror requires a non-empty ARRAY. Same shape, and the ONE instance whose divergent answer is NOT inert — the authority concludes 'Done' is terminal on that board and the mirror concludes nothing is, so `bridge:check` would report agreement it does not have. It takes a hand-edited config to reach."
+      }
+    ]
+  },
+  "constants": {
+    "DEFAULT_TERMINAL": "Done"
+  },
+  "vectors": {
+    "terminalsForBoard": [
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done"
+            ]
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "the ordinary shape: one explicit terminal."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done",
+              "Released"
+            ]
+          }
+        ],
+        "expect": [
+          "Done",
+          "Released"
+        ],
+        "note": "several explicit terminals, returned VERBATIM in the vocabulary config spells them."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done",
+              "stage-done"
+            ]
+          }
+        ],
+        "expect": [
+          "Done",
+          "stage-done"
+        ],
+        "note": "the DUAL-VOCABULARY case the framework's own docs require: a terminal listed by display name AND stage external_id. Neither end resolves or filters either spelling."
+      },
+      {
+        "args": [
+          {
+            "user_lanes": [
+              "stage-next",
+              "stage-later"
+            ]
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "THE LANE-MODEL FALLBACK, and the one the DL-200 spec text originally missed: a board declaring `user_lanes` and NO `terminal_columns` resolves the `default_terminal`, not nothing."
+      },
+      {
+        "args": [
+          {}
+        ],
+        "expect": [],
+        "note": "a board with neither explicit terminals nor `user_lanes` has NO terminals — it never concludes anything. NEGATIVE."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [],
+            "user_lanes": [
+              "stage-next"
+            ]
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "an EMPTY explicit list still reaches the lane-model fallback: the authority's condition is `if not terminals`, not `if 'terminal_columns' not in cfg`."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done"
+            ],
+            "user_lanes": [
+              "stage-next"
+            ]
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "explicit terminals SUPPRESS the fallback rather than unioning with it — 'Done' appears once, not twice."
+      },
+      {
+        "args": [
+          {
+            "user_lanes": []
+          }
+        ],
+        "expect": [],
+        "note": "an EMPTY `user_lanes` is not the lane model. NEGATIVE, and the pair to #5: `[]` is falsy in Python and `!== []` in the mirror, which is why both answer nothing."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done",
+              "Done"
+            ]
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "duplicates collapse — a set on the authority, a keyed array on the mirror."
+      },
+      {
+        "args": [
+          {
+            "done_column": "Shipped"
+          }
+        ],
+        "expect": [],
+        "note": "a `done_column` KEY in the config is NOT read by either end: it is a deprecated adapter KWARG, and this is a read-site. NEGATIVE, and the one that pins `not_mirrored`."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": [
+              "Done"
+            ],
+            "done_column": "Shipped"
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "the same, beside a real terminal: 'Shipped' is not folded in."
+      },
+      {
+        "args": [
+          {
+            "terminal_columns": null,
+            "user_lanes": [
+              "stage-next"
+            ]
+          }
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "an explicit NULL `terminal_columns` falls through to the lane model on both ends — the authority's `or ()` and the mirror's `is_array` agree here, which is what makes the string case in `known_divergences` a shape rather than an accident."
+      },
+      {
+        "args": [
+          {
+            "user_lanes": 0
+          }
+        ],
+        "expect": [],
+        "note": "a FALSY non-array `user_lanes`: both ends answer nothing. NEGATIVE, and the control for the `user_lanes: \"stage-next\"` divergence — it shows the two ends part on truthiness-vs-type, not on the key."
+      }
+    ],
+    "terminalNamesForBoardId": [
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8,
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "the ordinary shape: one board entry, joined by board ID."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8,
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                }
+              ]
+            }
+          },
+          9
+        ],
+        "expect": [],
+        "note": "a board id no entry carries resolves NOTHING. NEGATIVE — and the reason the mirror must not read [] as 'no terminals declared anywhere'."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8,
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                },
+                {
+                  "board_id": 8,
+                  "terminal_columns": [
+                    "Released"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [
+          "Done",
+          "Released"
+        ],
+        "note": "TWO entries sharing one physical board id (a `prs` + `product-tasks` pair) UNION their terminals rather than the last winning."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": "8",
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "a NUMERIC STRING board id joins — real configs carry \"8\" where the framework's own vectors use 8."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": "REPLACE_ME",
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [],
+        "note": "the `REPLACE_ME` placeholder is INERT on both ends. NEGATIVE."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8,
+                  "user_lanes": [
+                    "stage-next"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "the lane-model fallback reaches the by-id read too — this is the canonical `issues` board's real shape."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [],
+        "note": "an entry that declares no terminals contributes none, and the board resolves to nothing. NEGATIVE."
+      },
+      {
+        "args": [
+          {},
+          8
+        ],
+        "expect": [],
+        "note": "no `kanban` block at all. NEGATIVE."
+      },
+      {
+        "args": [
+          {
+            "kanban": {}
+          },
+          8
+        ],
+        "expect": [],
+        "note": "a `kanban` block with no `boards`. NEGATIVE."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": []
+            }
+          },
+          8
+        ],
+        "expect": [],
+        "note": "an EMPTY `boards` list. NEGATIVE."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": null,
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [],
+        "note": "a NULL board id is skipped by both ends — the authority by its explicit sentinel list, the mirror by `is_numeric`. NEGATIVE."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8,
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                },
+                {
+                  "board_id": 12,
+                  "terminal_columns": [
+                    "Shipped"
+                  ]
+                }
+              ]
+            }
+          },
+          12
+        ],
+        "expect": [
+          "Shipped"
+        ],
+        "note": "several boards, asking for the SECOND: the join key is the board id and nothing leaks between entries."
+      },
+      {
+        "args": [
+          {
+            "kanban": {
+              "boards": [
+                {
+                  "board_id": 8.0,
+                  "terminal_columns": [
+                    "Done"
+                  ]
+                }
+              ]
+            }
+          },
+          8
+        ],
+        "expect": [
+          "Done"
+        ],
+        "note": "a FLOAT board id joins on both ends. It also exercises the digest's float typing — `8` and `8.0` are different inputs and a JSON reformat must not silently retype this vector."
+      }
+    ]
+  }
+}

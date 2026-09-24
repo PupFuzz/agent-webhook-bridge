@@ -11,6 +11,7 @@
   "authority": {
     "repo": "PupFuzz/kanban-board",
     "class": "App\\Services\\ExternalReferenceNormalizer",
+    "symbol": "App\\Services\\ExternalReferenceNormalizer",
     "path": "app/Services/ExternalReferenceNormalizer.php",
     "relationship": "kanban-board OWNS this rule. The bridge mirrors it. A disagreement is the bridge's defect to fix by re-mirroring, never kanban's to fix by matching the bridge."
   },
@@ -35,6 +36,8 @@
     "divergentRefKeyRejectMessage": "The message that guard emits. Server-side only, for the same reason.",
     "canonicalPayloadKeys": "The registration guard's accessor over PAYLOAD_KEY_TO_SYSTEM's keys. The bridge reads that map through systemForPayloadKey instead."
   },
+  "mirror_local": {},
+  "known_divergences": {},
   "constants": {
     "SYSTEM_DL": "dl",
     "SYSTEM_GITHUB_PR": "github_pr",

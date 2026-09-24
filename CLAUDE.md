@@ -19,6 +19,17 @@ python3 bin/check-doc-secret-fences.py .            # CI gate: do any *.md SHELL
                                                     # ⚠ a BACKSTOP under docs/config-schema.md § Handling a
                                                     # secret VALUE, never the rule — a clean run is NOT
                                                     # evidence the class is absent (DL-324, read its bound)
+python3 bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json
+                                                    # DO THE TWO COPIES OF ONE RULE STILL AGREE? (DL-421)
+                                                    # Runs a PUBLISHED behaviour corpus against the COORD
+                                                    # framework's own Python, imported from source — the far-end
+                                                    # half of the lockstep contract for the two mirrors in
+                                                    # app/Bridge/Writeback/ that the bridge cannot import.
+                                                    # ⛔ NOT in CI (CI has no coord plugin): run it on a coord
+                                                    # bump. 0 = agreed · 1 = DRIFTED · 2 = could not measure,
+                                                    # never read as agreement. --control shows it fail.
+                                                    # The bridge-side half IS in CI and reds BOTH ways — read
+                                                    # each corpus's own not_checked_by_this_repo for the bound
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —
