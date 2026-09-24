@@ -270,12 +270,6 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             if ($stage === $mapping->coordCardTerminalStageId) {
                 return;   // already concluded — redelivery-safe no-op
             }
-            // The DL-178 human hold (card#8523, DL-340). Taken AFTER the already-concluded
-            // no-op, exactly where the move and dependabot handlers take theirs: a pinned
-            // card that is already in the terminal has no write to refuse, and alerting
-            // there would report a permanent failure that did not happen. There is no
-            // override to test first — the DL-194 unpark and DL-195 revive are outcomes of
-            // the PR move handler and have no counterpart on an `issues.closed`.
             // PARENT-CARD refusal (card#10068). ⛔ THIS LEG ONLY, and the two below are ruled
             // the other way rather than left unconsidered: the revive leg moves a card OUT of
             // the terminal and the relane leg moves lane to lane, so neither writes a terminal
@@ -295,6 +289,12 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             )) {
                 return;
             }
+            // The DL-178 human hold (card#8523, DL-340). Taken AFTER the already-concluded
+            // no-op, exactly where the move and dependabot handlers take theirs: a pinned
+            // card that is already in the terminal has no write to refuse, and alerting
+            // there would report a permanent failure that did not happen. There is no
+            // override to test first — the DL-194 unpark and DL-195 revive are outcomes of
+            // the PR move handler and have no counterpart on an `issues.closed`.
             if (PinGuard::refuses(
                 $this->alerts, $card, 'kanban_coord_card_move', 'terminal move', $id, $repo, self::ALERT_OUTCOME,
                 ['issue' => $issueNumber, 'sid' => $sid] + MappedBoardGuard::boardContext($card, $mapping),
