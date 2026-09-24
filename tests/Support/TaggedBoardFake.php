@@ -27,6 +27,12 @@ use Illuminate\Support\Facades\Http;
  *  - `refuse` — `[read => status]`: the board answers that status, with a body the seat must never
  *    see, on `preload`, the `tag` row read, the `other` count, the free-text `probe` or the `none`
  *    count.
+ *  - `flagged` — the stage ids this board carries `is_terminal: true` on. Default `null` is a
+ *    board that has OPTED INTO NOTHING and whose preload carries no `is_terminal` key at all —
+ *    the state of every live board and of every kanban before v0.47.0, which is why it is what
+ *    the unrelated tests keep getting. `[]` is the other unflagged state: a board whose stages
+ *    all carry an explicit `is_terminal: false`. Both must read the same, and a test that names
+ *    one of them is not evidence about the other.
  */
 trait TaggedBoardFake
 {
@@ -37,14 +43,21 @@ trait TaggedBoardFake
      */
     private function fakeTaggedBoard(array $laneRows, array $tagRows, array $options = []): void
     {
-        $options += ['parser' => 'current', 'pre_none_total' => 0, 'swimlanes' => [4, 9], 'count_meta_total' => true, 'none_total' => null, 'refuse' => []];
+        $options += ['parser' => 'current', 'pre_none_total' => 0, 'swimlanes' => [4, 9], 'count_meta_total' => true, 'none_total' => null, 'refuse' => [], 'flagged' => null];
         $refused = static fn (string $read) => isset($options['refuse'][$read]) ? Http::response('the board said something', $options['refuse'][$read]) : null;
 
-        $preload = ['workflows' => [['stages' => [
+        $flagged = $options['flagged'];
+        $stage = static function (array $row) use ($flagged): array {
+            // A null `flagged` leaves the KEY OFF, which is what a kanban before v0.47.0 sends and
+            // is a different body from `is_terminal: false` even though both mean "not flagged".
+            return $flagged === null ? $row : $row + ['is_terminal' => in_array($row['id'], $flagged, true)];
+        };
+
+        $preload = ['workflows' => [['stages' => array_map($stage, [
             ['id' => 50, 'name' => 'Backlog', 'position' => 1, 'lane_type' => 'backlog_inventory'],
             ['id' => 51, 'name' => 'In Review', 'position' => 2, 'lane_type' => 'in_progress'],
             ['id' => 52, 'name' => 'Shipped', 'position' => 3, 'lane_type' => 'done'],
-        ]]]];
+        ])]]];
         if ($options['swimlanes'] !== null) {
             $preload['swimlanes'] = array_map(static fn (int $id): array => ['id' => $id, 'name' => "lane {$id}"], $options['swimlanes']);
         }

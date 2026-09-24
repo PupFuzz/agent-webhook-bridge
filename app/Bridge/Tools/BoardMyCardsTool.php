@@ -10,6 +10,7 @@ use App\Bridge\Writeback\BoardStructure;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Bridge\Writeback\SearchTotal;
+use App\Bridge\Writeback\TerminalBasis;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -210,7 +211,12 @@ final class BoardMyCardsTool implements Tool
         // or names two things — is refused before any card search is paid for.
         $stageFilter = $this->stageFilter($args, $stageNames, $boardId);
         if ($tag !== null && ! $includeTerminal && $stageFilter !== null && in_array($stageFilter, $structure->terminalStageIds, true)) {
-            throw new ToolRefusalException("board_my_cards: `stage` {$stageFilter} is a terminal column of board {$boardId} (kanban lane type `done`), and the `tag` read leaves terminal columns out unless `include_terminal` is true — so it could only answer an empty tag window. Pass `include_terminal: true`, or name a column that is not terminal.");
+            // ⛔ NOT AN INDEPENDENT VALIDATION RULE — this refusal is the `tag` read's exclusion
+            // set read back ({@see tagBlock}'s `$excluded`), so that the two can never answer
+            // differently about the same column. It exists only to say WHY the window would be
+            // empty instead of answering an empty one; widening or narrowing it is a consequence
+            // of what the BOARD declares terminal, never a decision taken here.
+            throw new ToolRefusalException("board_my_cards: `stage` {$stageFilter} is a terminal column of board {$boardId} ({$this->basisClause($structure->terminalBasis)}), and the `tag` read leaves terminal columns out unless `include_terminal` is true — so it could only answer an empty tag window. Pass `include_terminal: true`, or name a column that is not terminal.");
         }
 
         try {
@@ -380,6 +386,21 @@ final class BoardMyCardsTool implements Tool
     }
 
     /**
+     * How the refusal above names WHICH declaration made that column terminal, so an operator who
+     * disagrees with the verdict is sent to the setting that produced it rather than to the other
+     * one. The two clauses are not interchangeable: `is_terminal` is a per-stage board setting an
+     * operator can change on that column alone, while the `lane_type` clause is only reached on a
+     * board that has flagged nothing at all, where the remedy is to flag the right column.
+     */
+    private function basisClause(TerminalBasis $basis): string
+    {
+        return match ($basis) {
+            TerminalBasis::Declared => 'this board flags its terminal columns with kanban `is_terminal`, and that column is one of them',
+            TerminalBasis::LaneType => 'no column on this board is flagged with kanban `is_terminal`, so the `lane_type: done` columns stand in and that column is one of them',
+        };
+    }
+
+    /**
      * Whether the tag read keeps cards in terminal columns. A present null is refused rather
      * than read as the default, for `stage`'s reason: the HTTP door hands `""` over as null. And
      * it is refused without `tag`, because it changes nothing else in the response — an argument
@@ -419,7 +440,17 @@ final class BoardMyCardsTool implements Tool
      * says so, and both counts are `tag_read_incomplete` with no count request sent: a count is checked
      * against these rows, and rows short of the population can agree with it by luck.
      *
-     * @return array{tag: string, include_terminal: bool, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
+     * ⭐ `terminal_basis` IS REPORTED WITH THE EXCLUSION, NOT INSTEAD OF IT. The id list says WHICH
+     * columns were left out and cannot say on whose authority: a seat handed
+     * `excluded_terminal_stage_ids: [53]` cannot tell "the board FLAGGED 53 terminal" from "nobody
+     * flagged anything here, so 53 is out because its `lane_type` is `done`" — and the remedy an
+     * operator who disagrees needs differs between them. It is reported even under
+     * `include_terminal: true`, where the exclusion is empty, because it describes the BOARD and
+     * not this call's narrowing. ⛔ It is NOT a second way to read the list's emptiness: an empty
+     * exclusion under a `is_terminal` basis is unreachable by construction — a board answers on
+     * that basis only by flagging at least one stage ({@see TerminalBasis}).
+     *
+     * @return array{tag: string, include_terminal: bool, terminal_basis: string, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
      */
     private function tagBlock(KanbanClient $client, BoardStructure $structure, BoardRead $read, string $tag, bool $includeTerminal, ?int $stageFilter, int $limit, ?int $descriptionCap, int $boardId, int $swimlaneId, string $agentName): array
     {
@@ -477,6 +508,7 @@ final class BoardMyCardsTool implements Tool
         return [
             'tag' => $tag,
             'include_terminal' => $includeTerminal,
+            'terminal_basis' => $structure->terminalBasis->value,
             'excluded_terminal_stage_ids' => $excluded,
             'cards' => array_map(fn (array $row): array => $this->withSwimlane($this->projectCard($row, $structure->stageNames, $descriptionCap), $row), $cards),
             'cards_window' => $window,

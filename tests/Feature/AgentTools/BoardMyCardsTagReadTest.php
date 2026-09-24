@@ -394,6 +394,71 @@ class BoardMyCardsTagReadTest extends TestCase
         $this->assertSame([], self::sentSearches());
     }
 
+    // ─── the board's own `is_terminal` flag versus `lane_type: done` (card#10274) ──────────
+    //
+    // ⭐ THE DIVERGENCE HAS TWO DIRECTIONS AND EACH NEEDS ITS OWN ARM. A flagged stage that is
+    // not `done` and a `done` stage the board declined to flag are different failures — the first
+    // reports finished cards as live, the second reports live cards as finished — and a suite
+    // that only exercises the first certifies nothing about the second. Both arms below are
+    // reached on ONE board, deliberately: stage 51 (`in_progress`) flagged, stage 52 (`done`) not.
+
+    public function test_a_flagged_column_that_is_not_lane_type_done_is_the_terminal_one_and_the_done_column_is_not(): void
+    {
+        $this->fakeTaggedBoard([], [self::taggedRow(71, 51, null), self::taggedRow(72, 52, null)], ['flagged' => [51]]);
+
+        $block = $this->tagCards(['tag' => 'lane:A']);
+
+        $this->assertSame('is_terminal', $block['terminal_basis']);
+        $this->assertSame([51], $block['excluded_terminal_stage_ids'], 'the board flags 51; 52 is merely typed `done`');
+        $this->assertSame([72], array_column($block['cards'], 'id'), 'the card in the flagged column is the finished one');
+        $this->assertSame(1, $block['cards_window']['total']);
+        $this->assertSame(1, $block['no_swimlane'], 'every number in the block counts the one population');
+    }
+
+    public function test_the_refusal_follows_the_flag_in_both_directions_on_one_board(): void
+    {
+        // ⛔ ONE fake for both calls, deliberately: `Http::fake()` STACKS rather than replaces, so a
+        // second `fakeTaggedBoard()` in one test would leave the FIRST stub answering and the
+        // second arm would be measuring the first arm's board.
+        $this->fakeTaggedBoard([], [self::taggedRow(73, 51, null), self::taggedRow(74, 52, null)], ['flagged' => [51]]);
+
+        $flagged = $this->http(['tag' => 'lane:A', 'stage' => 51]);
+        $this->assertSame(422, $flagged['status'], 'the flagged column could only answer an empty window');
+        $this->assertStringContainsString('flags its terminal columns with kanban `is_terminal`', (string) $flagged['body']['error']);
+        $this->assertSame([], self::sentSearches(), 'refused before any card search');
+
+        $doneButUnflagged = $this->http(['tag' => 'lane:A', 'stage' => 52]);
+        $this->assertSame(200, $doneButUnflagged['status'], 'a `done` column this board declined to flag is NOT terminal, so it is answerable');
+        $this->assertSame([74], array_column($doneButUnflagged['body']['result']['tag_cards']['cards'], 'id'));
+    }
+
+    public function test_a_board_that_flags_nothing_keeps_reading_lane_type_done_however_the_absence_is_spelled(): void
+    {
+        $spellings = [
+            [null, 'no `is_terminal` key at all (kanban before v0.47.0)'],
+            [[], 'every stage explicitly `is_terminal: false` (the live state of every board today)'],
+        ];
+        foreach ($spellings as [$flagged, $why]) {
+            $this->fakeTaggedBoard([], [self::taggedRow(74, 51, null), self::taggedRow(75, 52, null)], ['flagged' => $flagged]);
+
+            $block = $this->tagCards(['tag' => 'lane:A']);
+
+            $this->assertSame('lane_type', $block['terminal_basis'], $why);
+            $this->assertSame([52], $block['excluded_terminal_stage_ids'], $why);
+            $this->assertSame([74], array_column($block['cards'], 'id'), $why.' — the card in the `done` column is the excluded one');
+        }
+    }
+
+    public function test_the_basis_is_reported_even_when_include_terminal_empties_the_exclusion(): void
+    {
+        $this->fakeTaggedBoard([], [self::taggedRow(76, 51, null)], ['flagged' => [51]]);
+
+        $block = $this->tagCards(['tag' => 'lane:A', 'include_terminal' => true]);
+
+        $this->assertSame([], $block['excluded_terminal_stage_ids']);
+        $this->assertSame('is_terminal', $block['terminal_basis'], 'the basis describes the BOARD, not this call\'s narrowing');
+    }
+
     public function test_the_tag_window_is_capped_like_every_other_list(): void
     {
         $rows = [];

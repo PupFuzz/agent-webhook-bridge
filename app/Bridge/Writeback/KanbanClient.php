@@ -647,14 +647,20 @@ final class KanbanClient
 
     /**
      * {@see boardStageNames}' map plus the rest of what the same `preload.json` read carries about
-     * a board's columns and lanes, from ONE request: every stage id, the stages kanban marks
-     * `lane_type: done`, and the swimlane ids with {@see boardSwimlaneIds}' null-versus-empty
-     * split. `board_my_cards` reads this once per call.
+     * a board's columns and lanes, from ONE request: every stage id, the stages the board declares
+     * terminal, and the swimlane ids with {@see boardSwimlaneIds}' null-versus-empty split.
+     * `board_my_cards` reads this once per call.
      *
-     * ⚠ `lane_type` IS KANBAN'S COLUMN SEMANTICS, NOT THE BRIDGE'S TERMINAL SET. The writeback's
-     * terminal rule is `WritebackMapping::isTerminalStage()`, configured per mapping; this is
-     * what the board itself declares, and a board whose finished columns are not typed `done`
-     * has no terminal stage here.
+     * ⭐ TERMINALITY IS READ FROM THE BOARD'S OWN FLAG WHERE THE BOARD SETS ONE, AND FROM
+     * `lane_type: done` ONLY WHERE IT SETS NONE — the precedence, its unit and why a blind switch
+     * to the flag would be a regression are {@see TerminalBasis}'. This method owns only the
+     * mechanics: one pass collects both candidate sets, and the board-level choice is made after
+     * it, because "has this board opted in?" cannot be answered until every stage has been seen.
+     *
+     * ⚠ THIS IS THE BOARD'S DECLARATION, NOT THE BRIDGE'S TERMINAL SET. The writeback's terminal
+     * rule is `WritebackMapping::isTerminalStage()`, configured per mapping; nothing here feeds a
+     * card move, and a board that declares nothing terminal by either route has no terminal stage
+     * here.
      */
     public function boardStructure(int $boardId): BoardStructure
     {
@@ -663,14 +669,21 @@ final class KanbanClient
 
         $rows = [];
         $stageIds = [];
-        $terminal = [];
+        $declared = [];
+        $laneTyped = [];
         foreach ($stages as $s) {
             if (! isset($s['id']) || ! is_numeric($s['id'])) {
                 continue;
             }
             $stageIds[] = (int) $s['id'];
+            // Strict `true`: kanban sends a real boolean, and a stage whose key is ABSENT (any
+            // kanban before v0.47.0) must land here as "not flagged" rather than as a read this
+            // method cannot interpret — see TerminalBasis on why absent needs no separate state.
+            if (($s['is_terminal'] ?? null) === true) {
+                $declared[] = (int) $s['id'];
+            }
             if (($s['lane_type'] ?? null) === 'done') {
-                $terminal[] = (int) $s['id'];
+                $laneTyped[] = (int) $s['id'];
             }
             if (isset($s['name']) && is_string($s['name']) && $s['name'] !== '') {
                 $rows[] = [
@@ -699,11 +712,14 @@ final class KanbanClient
             $byId[$row['id']] = $row['name'];
         }
 
+        $basis = $declared === [] ? TerminalBasis::LaneType : TerminalBasis::Declared;
+
         return new BoardStructure(
             $byId,
             array_values(array_unique($stageIds)),
-            array_values(array_unique($terminal)),
+            array_values(array_unique($basis === TerminalBasis::Declared ? $declared : $laneTyped)),
             self::idList(is_array($data) ? ($data['swimlanes'] ?? null) : null),
+            $basis,
         );
     }
 

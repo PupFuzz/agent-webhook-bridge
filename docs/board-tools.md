@@ -131,7 +131,7 @@ bridge answered: [§ Did the call reach the bridge?](#did-the-call-reach-the-bri
 | `stage` | no | Return only the cards in **one column of your product board**. The **numeric stage id** is the primary form. A **string** is a stage **NAME**, matched case-insensitively and whitespace-trimmed — `"50"` is looked up as a stage *called* `50`, never as id 50. A name that resolves to **no** stage, or to **more than one**, is **refused** (422): the bridge does not guess which column you meant. A numeric id that is not a stage on your board is refused too. ⛔ **An EMPTY value is refused, not ignored** — `""`, whitespace, an invisible character, or an explicit `null`. Omit the argument entirely to read every column; a silently-dropped filter would hand you *more* cards than you asked for, and the two doors disagreed about it. ⛔ **It does not reach the coord cards** — they are on a different board, whose stage ids are unrelated to yours. See § The default is capped below. |
 | `limit` | no | How many cards **each list** is cut to (default **52 cards per list** — see § The default is capped). A positive integer; anything else (a float, a numeric string such as `"20"`, a boolean, `0`, a negative) is **refused** (422) before any board read, never coerced. |
 | `tag` | no | **ONE tag, matched exactly** (for example `lane:A`). Adds a `tag_cards` block: every live card on **your board** carrying it, in **any lane or in none**, each with its own `swimlane_id`. See § [Cards carrying a tag, in any lane](#cards-carrying-a-tag-in-any-lane-tag-include_terminal). Trimmed as the HTTP door trims. **Refused** (422, before any board read): a non-string, an EMPTY value (`""`, whitespace, an invisible character, an explicit `null`), a value containing `"`, `*` or `%`, a value containing a character kanban stores escaped (a control character, `/`, `\` or any non-ASCII character — no exact tag match can find it), and one longer than kanban's tag cap. ⛔ Omit it and the response is exactly the default. |
-| `include_terminal` | no | Boolean (default `false`). Keeps cards in **terminal columns** — the columns kanban types `lane_type: done` — in the `tag_cards` read. **Refused** without `tag` (it would change nothing), and when not a boolean, an explicit `null` included. |
+| `include_terminal` | no | Boolean (default `false`). Keeps cards in **terminal columns** — the columns **the board itself declares terminal**, see § [Cards carrying a tag, in any lane](#cards-carrying-a-tag-in-any-lane-tag-include_terminal) for which declaration answers — in the `tag_cards` read. **Refused** without `tag` (it would change nothing), and when not a boolean, an explicit `null` included. |
 
 Any other key — `status` for `stage`, say — is **refused** (422) before any board read, naming the key and the accepted set: see § [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
 
@@ -181,7 +181,8 @@ Any other key — `status` for `stage`, say — is **refused** (422) before any 
   "tag_cards": {
     "tag": "lane:A",
     "include_terminal": false,
-    "excluded_terminal_stage_ids": [53],   // the lane_type `done` columns left out ([] when none)
+    "terminal_basis": "lane_type",         // WHICH declaration answered: "is_terminal" or "lane_type"
+    "excluded_terminal_stage_ids": [53],   // the columns left out ([] when none, or when include_terminal)
     "cards": [ { /* the card shape above */ "swimlane_id": null } ],  // null ⇒ in NO lane
     "cards_window": { /* the same keys, over this block's population, plus: */ "total_is_lower_bound": false },
     "other_swimlanes": 2,            // cards in a lane other than yours, or null …
@@ -332,11 +333,21 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
 - **The population** — every live card on your configured board carrying the tag, **minus
   terminal columns** unless `include_terminal: true`, **narrowed by `stage`** when you pass it.
   `cards_window.total`, `other_swimlanes` and `no_swimlane` all count that one population.
-  - **Terminal** is the board's own declaration: a column kanban types `lane_type: done`. It is
-    not the writeback's terminal rule, and a board that does not type its finished columns
-    `done` has none — `excluded_terminal_stage_ids` lists what was left out.
+  - **Terminal** is the board's own declaration, and **which declaration answers depends on the
+    board**: kanban ships a per-stage `is_terminal` flag (kanban DL-281, v0.47.0) that is
+    deliberately *not* `lane_type: done`. A board that flags **any** stage has opted in and
+    answers with **exactly its flagged stages** — a flagged column that is not typed `done` is
+    terminal, and a `done` column it declined to flag is **not**. A board that flags **none** has
+    opted into nothing (nothing backfills the flag, and that is the ordinary state), so its
+    `lane_type: done` columns stand in, exactly as before the flag existed. `terminal_basis` says
+    which of the two answered — `"is_terminal"` or `"lane_type"` — and
+    `excluded_terminal_stage_ids` lists what was left out. It is not the writeback's terminal
+    rule, and a board that declares nothing terminal by either route has none.
   - A `stage` that names a terminal column is **refused** without `include_terminal: true`,
-    rather than answering an empty block.
+    rather than answering an empty block. ⛔ The refusal is the exclusion set read back, so it
+    follows the same declaration — it names which one in its message. **`terminal_basis` is
+    reported even under `include_terminal: true`**, where the exclusion is empty: it describes
+    the board, not the call's narrowing.
 - **`cards`** — capped by `limit` like every list here, newest kept, with `cards_window`.
   **Each card carries `swimlane_id`**: a lane id, or **`null` when the card is in no lane**.
   A card whose row carried no readable lane field has **no** `swimlane_id` key, never a null

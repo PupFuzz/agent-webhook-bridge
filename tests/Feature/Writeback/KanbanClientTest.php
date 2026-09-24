@@ -3,10 +3,12 @@
 namespace Tests\Feature\Writeback;
 
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\TerminalBasis;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class KanbanClientTest extends TestCase
@@ -733,8 +735,90 @@ class KanbanClientTest extends TestCase
         $this->assertSame([50 => 'Backlog', 52 => 'Shipped'], $structure->stageNames);
         $this->assertSame([52, 50, 53], $structure->stageIds, 'a stage with no name is still a stage a count can be narrowed to');
         $this->assertSame([52, 53], $structure->terminalStageIds);
+        $this->assertSame(TerminalBasis::LaneType, $structure->terminalBasis, 'this board flags nothing, so `lane_type` stands in');
         $this->assertSame([31, 32], $structure->swimlaneIds);
         Http::assertSentCount(1);
+    }
+
+    /**
+     * card#10274 — kanban v0.47.0 ships `workflow_stages.is_terminal` and states it is deliberately
+     * NOT `lane_type === 'done'`. The board answers for itself where it has been told to; where it
+     * has not, `lane_type` stands in, because NOTHING backfills the flag and every live board is in
+     * that state. The two directions of the divergence get an arm each — see {@see TerminalBasis}.
+     *
+     * @return iterable<string, array{0: list<array<string, mixed>>, 1: list<int>, 2: TerminalBasis}>
+     */
+    public static function terminalDeclarations(): iterable
+    {
+        $stage = static fn (int $id, string $laneType, ?bool $flag): array => ['id' => $id, 'name' => "s{$id}", 'position' => $id]
+            + ['lane_type' => $laneType] + ($flag === null ? [] : ['is_terminal' => $flag]);
+
+        yield 'a flagged column that is not `done` is terminal and the `done` one is not' => [
+            [$stage(60, 'in_progress', true), $stage(61, 'done', false), $stage(62, 'backlog_inventory', false)],
+            [60],
+            TerminalBasis::Declared,
+        ];
+        yield 'a board that flags several answers with all of them' => [
+            [$stage(60, 'in_progress', true), $stage(61, 'done', true), $stage(62, 'waiting', false)],
+            [60, 61],
+            TerminalBasis::Declared,
+        ];
+        yield 'a board whose stages all read false has opted into nothing' => [
+            [$stage(60, 'in_progress', false), $stage(61, 'done', false)],
+            [61],
+            TerminalBasis::LaneType,
+        ];
+        yield 'a kanban that sends no `is_terminal` key reads exactly as it did before the field existed' => [
+            [$stage(60, 'in_progress', null), $stage(61, 'done', null)],
+            [61],
+            TerminalBasis::LaneType,
+        ];
+        yield 'a board that flags a column and types NO column `done` still answers the flag' => [
+            [$stage(60, 'in_progress', true), $stage(61, 'waiting', false)],
+            [60],
+            TerminalBasis::Declared,
+        ];
+        yield 'a board that neither flags nor types anything has no terminal column' => [
+            [$stage(60, 'in_progress', false), $stage(61, 'waiting', false)],
+            [],
+            TerminalBasis::LaneType,
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $stages
+     * @param  list<int>  $terminal
+     */
+    #[DataProvider('terminalDeclarations')]
+    public function test_board_structure_reads_terminality_from_the_boards_own_flag_and_falls_back_per_board(array $stages, array $terminal, TerminalBasis $basis): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => $stages]], 'swimlanes' => []]])]);
+
+        $structure = $this->client()->boardStructure(8);
+
+        $this->assertSame($terminal, $structure->terminalStageIds);
+        $this->assertSame($basis, $structure->terminalBasis);
+    }
+
+    /**
+     * ⛔ THE FLAG IS A BOOLEAN AND ONLY A BOOLEAN `true` OPTS A STAGE IN. A truthy spelling kanban
+     * does not send — `1`, `"true"` — must not opt a board in, because doing so would switch the
+     * whole board off `lane_type` on the strength of a value the contract does not carry, which is
+     * the same silent retirement a blind switch to the field would have caused.
+     */
+    public function test_only_a_boolean_true_flags_a_stage(): void
+    {
+        foreach ([1, '1', 'true', 'yes'] as $truthy) {
+            Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 60, 'name' => 'A', 'position' => 1, 'lane_type' => 'in_progress', 'is_terminal' => $truthy],
+                ['id' => 61, 'name' => 'B', 'position' => 2, 'lane_type' => 'done', 'is_terminal' => false],
+            ]]]]])]);
+
+            $structure = $this->client()->boardStructure(8);
+
+            $this->assertSame(TerminalBasis::LaneType, $structure->terminalBasis, var_export($truthy, true));
+            $this->assertSame([61], $structure->terminalStageIds, var_export($truthy, true));
+        }
     }
 
     public function test_board_structure_keeps_the_absent_versus_empty_lane_split(): void
