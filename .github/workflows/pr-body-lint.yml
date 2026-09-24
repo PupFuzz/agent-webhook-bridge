@@ -58,12 +58,21 @@
 # workflow template does), THEN add `pr-body-lint` to the required status checks.
 # THE SCOPE ABOVE IS WHAT MAKES THAT PLAN SAFE rather than a repo-wide block, and it is why the
 # gate is a job-level `if:` and not an `on:`-level filter: the job still REPORTS on every pull
-# request (as `skipped` on a feature PR — measured on this change's own PR), where a
+# request (as `skipped` on a feature PR — the block below is the measurement), where a
 # workflow-level filter produces no run at all, and a required context that never reports
 # deadlocks every pull request. ⚠ Two things to read live before promoting, not from here:
 # whether this repo's protection treats a `skipped` conclusion as satisfying the context, and
 # that once required, this context can never speak FOR a feature PR, because on one it never runs.
 #
+# MEASURED IN BOTH DIRECTIONS, 2026-09-24 (card#10352) — a condition that silently never fires is
+# THIS change's failure mode, so the positive arm is the half that matters and "the job stopped
+# appearing" would not have been evidence. NEGATIVE: PR #784 (head `card10352-pr-body-lint-release-scope`) —
+# the workflow run exists and reports `conclusion: skipped` with ZERO steps. POSITIVE: a
+# throwaway probe PR #785, one empty commit on the same tree under the head
+# `release/v0.0.0-pbl-probe`, base `dev` — the same workflow ran EVERY step, `vendored linter
+# matches its pin` / `passes its own selftest` / `lint this PR's body` all `success`. The probe
+# is closed and its head ref no longer exists; the two runs are the record.
+
 # `edited` is in the trigger because the body is not part of the diff: a body edit fires `edited`,
 # never `synchronize`.
 
