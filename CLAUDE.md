@@ -19,6 +19,17 @@ python3 bin/check-doc-secret-fences.py .            # CI gate: do any *.md SHELL
                                                     # ⚠ a BACKSTOP under docs/config-schema.md § Handling a
                                                     # secret VALUE, never the rule — a clean run is NOT
                                                     # evidence the class is absent (DL-324, read its bound)
+python3 bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json
+                                                    # DO THE TWO COPIES OF ONE RULE STILL AGREE? (DL-421)
+                                                    # Runs a PUBLISHED behaviour corpus against the COORD
+                                                    # framework's own Python, imported from source — the far-end
+                                                    # half of the lockstep contract for the two mirrors in
+                                                    # app/Bridge/Writeback/ that the bridge cannot import.
+                                                    # ⛔ NOT in CI (CI has no coord plugin): run it on a coord
+                                                    # bump. 0 = agreed · 1 = DRIFTED · 2 = could not measure,
+                                                    # never read as agreement. --control shows it fail.
+                                                    # The bridge-side half IS in CI and reds BOTH ways — read
+                                                    # each corpus's own not_checked_by_this_repo for the bound
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —
@@ -47,6 +58,12 @@ php artisan bridge:inbox                 # surface staged intents (Claude Code h
 php artisan bridge:prune --older-than=30d # retention: prune old events/dispatches/inbox lines (manual/unbounded; the receiver self-prunes since DL-199)
 php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (report-only; --fix applies) — rerunnable writeback backstop
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
+php artisan bridge:relabel               # the protocol:invalid label writes this install DECIDED on and could not
+                                         # land (card#10242/DL-419): report-only, --fix writes them. No timer, gate or
+                                         # job runs it — an outward write is re-attempted only when a person asks.
+                                         # `--fix` exits non-zero while anything is owed; either mode exits
+                                         # non-zero when the record cannot be read, and refuses as root where
+                                         # posix is loaded — who may run it: CLAUDE_DEPLOYMENT.md § Where things land
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
 php artisan bridge:writeback-exposure    # is THIS install exposed to the one-repo-one-board writeback defect

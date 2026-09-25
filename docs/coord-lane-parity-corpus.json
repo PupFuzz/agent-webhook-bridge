@@ -1,0 +1,501 @@
+{
+  "schema": 1,
+  "about": "The behavioural parity corpus for the bridge's VENDORED PHP copy of the coordination framework's Python PRIORITY-LANE rule (card#10273, adopting the primitive card#9936 / DL-414 built). The bridge cannot import Python, so it re-implements the rule; this file is the contract between the two copies, and it is RUNNABLE at both ends. Every entry is an ARGUMENT -> ANSWER pair, never a text comparison.",
+  "mirror": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Writeback\\CoordLaneStages",
+    "path": "app/Bridge/Writeback/CoordLaneStages.php",
+    "corpus": "docs/coord-lane-parity-corpus.json",
+    "checked_by": "tests/Unit/Writeback/CoordLaneStagesParityTest.php",
+    "runner": "bin/coord-mirror-parity.py"
+  },
+  "authority": {
+    "repo": "PupFuzz/agent-board-framework (the `coord` plugin)",
+    "symbol": "kanban-issues-sync._STAGE_LANE / _task_lane / classify_coord",
+    "path": "templates/kanban/examples/kanban-issues-sync.py",
+    "relationship": "The coordination framework OWNS this rule. The bridge mirrors it because it creates a coord card in real time (DL-198) and must place it in the lane the consumer's reconcile will agree with — on a board whose lane model is live, a create-time disagreement is not a placement but a REWRITE, and `user_lanes` then preserves whichever mover won. A disagreement is the bridge's defect to fix by re-mirroring."
+  },
+  "how_the_far_end_runs_this": "Run this repo's `bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json [--coord-examples <your templates/kanban/examples>]`. It binds the `coord` package to the directory named, so the scripts' own `from coord.kanban_common import …` resolves THERE and never to an installed copy elsewhere on `sys.path`; it refuses to measure (exit 2) if any `coord` function the scripts hold comes from a file outside that directory, and it prints the sha256 of every file it executed. It imports `_STAGE_LANE`, `_task_lane` and `classify_coord` FROM SOURCE and executes every vector below against them. SHAPE NOTES, both stated so a shape difference is never read as a drift: (1) the mirror's `resolveLane` answers `{lane, unmapped}` where the authority answers a lane NAME — the runner folds the mirror's null `lane` onto its `DEFAULT_LANE`, which is the lane the authority returns directly, and compares case-insensitively; `unmapped` is the mirror's own operator-warn material and has no far-end counterpart. (2) `governs` has no standalone callable at the far end — its gate lives inside `classify_coord` — so it is observed through the COLUMN `classify_coord` actually chooses for an issue carrying no `stage:*` label, where the lane branch lands on Later and every other open branch lands on Now or Awaiting ACK. That reads the real gate rather than a copy of its condition. `--control` perturbs every published expectation AND every pinned constant and requires each to be reported. Exit 0 = agreed, 1 = disagreed (a different answer, printed `DISAGREE:`, or the authority RAISED where this file records an answer, printed `RAISED:`), 2 = could not measure.",
+  "not_checked_by_this_repo": [
+    "NOTHING HERE REDS WHEN THE COORDINATION FRAMEWORK CHANGES ITS OWN PYTHON. The far-end half is `bin/coord-mirror-parity.py`, deliberately NOT in this repo's CI, because CI has no copy of the authority. A green bridge suite says the mirror still answers what this file publishes — never that the authority still does.",
+    "Both arms are MEMBER-GRANULAR. A branch or an inline literal edited INSIDE an existing public method is outside both.",
+    "UNICODE CASE FOLDING IS A MEASURED DIVERGENCE and is pinned in `known_divergences`: Python's `str.upper()` is Unicode-aware and PHP's `strtoupper()` is ASCII-only, so a title whose uppercase form only BECOMES `[TASK]` under Unicode folding is lane-derived by the consumer and not by the bridge. It takes a deliberate homoglyph in an issue title to reach, and the consequence is one card created in the mapping's fixed stage instead of its declared lane.",
+    "THE LANE -> STAGE-ID HALF IS NOT MIRRORED AND IS NOT CHECKED HERE. The authority maps a lane to a stage EXTERNAL_ID (`LANE_TO_COLUMN`); the bridge maps it to a numeric stage id through operator config (`coord_card_lane_stage_ids`), because the `coordination.config.json` read that would let it derive the names is CLI-only. Nothing in this corpus says the two ends target the same physical column — only that they choose the same LANE.",
+    "`classify_coord`'s NON-`[TASK]` branches are out of scope and the mirror does not claim them. The authority sends a non-`[TASK]` open issue to Awaiting ACK when it is an announce and to Now otherwise; the bridge keeps the mapping's fixed `coord_card_stage_id`. That create disagreement PREDATES the lane model, is recorded in DL-286's sibling audit, and is not a drift in this mirror.",
+    "The measurement is against ONE version of the authority (`last_measured.authority_ref`). An install running a different coord version is UNMEASURED, not agreed."
+  ],
+  "last_measured": {
+    "date": "2026-09-24",
+    "authority_ref": "agent-board-framework coord plugin 0.55.0, templates/kanban/examples",
+    "authority_blob": "sha256:e4f88a492818eb2433a3f7b1b5b1543a6632215ceee5ef25cfa17dd3516f3d3a (kanban-issues-sync.py)",
+    "vectors_digest": "sha256:fd1979d510f60fa33348bea867a8f969b4e0322788453280dec3a6542849344b",
+    "method": "`bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json` executed every vector and every known divergence below against the authority named above, and held every constant against the authority's OWN data rather than against a copy: `LANES` against `_STAGE_LANE`'s values in its insertion order, `DEFAULT_LANE` against what `_task_lane` returns for an unlabelled issue, `LABEL_PREFIX` against the composition of `_STAGE_LANE`'s own keys, and `LANE_MODEL_TITLE_PREFIX` against whether `classify_coord` actually lane-derives a title carrying it (and does not, for one that does not). The same invocation with `--control` was run and reported EVERY perturbed expectation and EVERY perturbed pinned constant. Whoever adds, changes or DELETES a vector re-takes this measurement over the WHOLE corpus and rewrites `vectors_digest`; the bridge's own suite reds until they do.",
+    "result": "AGREED, AND THE ONE DISAGREEMENT IS NAMED RATHER THAN ABSENT. Every one of the 38 vectors and the 1 known divergence above was EXECUTED against the authority named in `authority_ref`, and every constant was held against the authority's own `_STAGE_LANE` / `_task_lane` / `classify_coord` rather than against a copy; all agreed. The run is falsifiable: the same command with `--control` perturbed every expectation and every pinned constant, and reported every one. ⚠ THIS IS A DATED OBSERVATION OF ONE AUTHORITY VERSION, NOT A STANDING PROPERTY — nothing in the bridge's CI re-takes it, because CI has no copy of the authority."
+  },
+  "not_mirrored": {
+    "LANE_TO_COLUMN / USER_LANES": "The authority's lane -> stage-external-id map and its curated-lane set. The bridge reaches stage ids through operator config instead — see `not_checked_by_this_repo`.",
+    "_itype and the announce branch": "`classify_coord`'s non-`[TASK]` routing. Deliberately not mirrored; see `not_checked_by_this_repo`."
+  },
+  "mirror_local": {},
+  "mirrored_but_not_driven": {},
+  "known_divergences": {
+    "governs": [
+      {
+        "args": [
+          "[TAſK] x"
+        ],
+        "mirror": false,
+        "authority": true,
+        "why": "UNICODE CASE FOLDING. `'[TAſK] x'.upper()` is `'[TASK] X'` in Python (U+017F LATIN SMALL LETTER LONG S folds to ASCII 'S'), so the authority lane-derives it; PHP's `strtoupper()` is ASCII-only and leaves the byte alone, so the mirror does not. Measured 2026-09-24. The mirror is the one that is arguably wrong here — its contract is 'the set of issues the CONSUMER lane-derives' — but correcting it changes what the bridge creates, which card#10273 puts out of scope; it is pinned so that a later `mb_strtoupper` fix reds this entry instead of passing unnoticed."
+      }
+    ]
+  },
+  "constants": {
+    "LANES": [
+      "now",
+      "next",
+      "later",
+      "maybe"
+    ],
+    "DEFAULT_LANE": "later",
+    "LANE_MODEL_TITLE_PREFIX": "[TASK]",
+    "LABEL_PREFIX": "stage:"
+  },
+  "vectors": {
+    "governs": [
+      {
+        "args": [
+          "[TASK] x"
+        ],
+        "expect": true,
+        "note": "the ordinary shape: the anchored title prefix the authority gates the lane model on."
+      },
+      {
+        "args": [
+          "[task] x"
+        ],
+        "expect": true,
+        "note": "LOWERCASE: both ends uppercase the title before the anchored match."
+      },
+      {
+        "args": [
+          " [TASK] x"
+        ],
+        "expect": false,
+        "note": "a LEADING SPACE is not the prefix. NEGATIVE — and deliberately unlike `CoordinationClassifier::stableId()`, which trims before its own anchored match: this gate's contract is the set of issues the CONSUMER lane-derives, not the set the bridge cards."
+      },
+      {
+        "args": [
+          "[BRIEF] x"
+        ],
+        "expect": false,
+        "note": "another coordination prefix is not governed. NEGATIVE."
+      },
+      {
+        "args": [
+          "[ANNOUNCE] x"
+        ],
+        "expect": false,
+        "note": "an announce is not governed — the authority sends it to Awaiting ACK, which this mirror does not claim. NEGATIVE."
+      },
+      {
+        "args": [
+          ""
+        ],
+        "expect": false,
+        "note": "an empty title. NEGATIVE."
+      },
+      {
+        "args": [
+          "[TASK]"
+        ],
+        "expect": true,
+        "note": "the prefix and nothing else still governs — `startswith` / `str_starts_with`, not a word match."
+      },
+      {
+        "args": [
+          "x [TASK]"
+        ],
+        "expect": false,
+        "note": "the prefix ANYWHERE BUT THE START does not govern. NEGATIVE — this is what 'anchored' buys."
+      },
+      {
+        "args": [
+          "[TASKS] x"
+        ],
+        "expect": false,
+        "note": "a LONGER prefix does NOT match, because the closing bracket is part of the token. NEGATIVE, and the one most likely to be mis-mirrored by someone matching '[TASK' instead."
+      },
+      {
+        "args": [
+          "[TASK]x"
+        ],
+        "expect": true,
+        "note": "no separator needed after the bracket — the rule is a prefix test, and both ends agree on the same surprising answer."
+      },
+      {
+        "args": [
+          "TASK x"
+        ],
+        "expect": false,
+        "note": "no brackets at all. NEGATIVE."
+      }
+    ],
+    "isLaneLabel": [
+      {
+        "args": [
+          "stage:now"
+        ],
+        "expect": true,
+        "note": "the ordinary shape: a label naming a lane of the model."
+      },
+      {
+        "args": [
+          "stage:next"
+        ],
+        "expect": true,
+        "note": "each lane of the model in turn — `next`."
+      },
+      {
+        "args": [
+          "stage:later"
+        ],
+        "expect": true,
+        "note": "`later`."
+      },
+      {
+        "args": [
+          "stage:maybe"
+        ],
+        "expect": true,
+        "note": "`maybe`."
+      },
+      {
+        "args": [
+          "STAGE:NOW"
+        ],
+        "expect": true,
+        "note": "UPPERCASE: both ends lowercase before testing."
+      },
+      {
+        "args": [
+          "Stage:Now"
+        ],
+        "expect": true,
+        "note": "MIXED CASE, the shape a hand-edit actually produces."
+      },
+      {
+        "args": [
+          "stage:done"
+        ],
+        "expect": false,
+        "note": "THE PREFIX ALONE IS NOT THE QUESTION. `stage:done` is in the `stage:` namespace and states no lane this model knows. NEGATIVE — and the one that makes this a behaviour difference rather than a tidiness one (card#6393): a MOVE keyed on the prefix would demote a card to `later` on a label that expressed no lane."
+      },
+      {
+        "args": [
+          "stage:"
+        ],
+        "expect": false,
+        "note": "the bare prefix names no lane. NEGATIVE."
+      },
+      {
+        "args": [
+          "now"
+        ],
+        "expect": false,
+        "note": "a lane name WITHOUT the prefix. NEGATIVE."
+      },
+      {
+        "args": [
+          ""
+        ],
+        "expect": false,
+        "note": "an empty label. NEGATIVE."
+      },
+      {
+        "args": [
+          "xstage:now"
+        ],
+        "expect": false,
+        "note": "the prefix must be at the START. NEGATIVE."
+      },
+      {
+        "args": [
+          "stage:nowx"
+        ],
+        "expect": false,
+        "note": "the lane must be the WHOLE remainder, not a prefix of it. NEGATIVE."
+      }
+    ],
+    "resolveLane": [
+      {
+        "args": [
+          [
+            "stage:now"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "now",
+          "unmapped": []
+        },
+        "note": "the ordinary shape: one declared lane, mapped."
+      },
+      {
+        "args": [
+          [],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": null,
+          "unmapped": []
+        },
+        "note": "NO `stage:*` label at all — the mirror answers null and the caller lands on DEFAULT_LANE, which is exactly what the authority returns. NEGATIVE."
+      },
+      {
+        "args": [
+          [
+            "stage:next",
+            "stage:now"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "now",
+          "unmapped": []
+        },
+        "note": "TWO declared lanes resolve in `_STAGE_LANE`'s insertion order, NOT the label order — which is what makes a multi-labelled issue land in the same lane on both movers."
+      },
+      {
+        "args": [
+          [
+            "stage:now"
+          ],
+          [
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": null,
+          "unmapped": [
+            "now"
+          ]
+        },
+        "note": "a declared lane the board does not carry is SKIPPED, and with nothing else declared the scan is exhausted."
+      },
+      {
+        "args": [
+          [
+            "stage:now",
+            "stage:next"
+          ],
+          [
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "next",
+          "unmapped": [
+            "now"
+          ]
+        },
+        "note": "THE LOAD-BEARING VECTOR for where the availability test sits: INSIDE the loop. Testing it after the loop — resolve first, then fall back — would answer `later` here and `Next` there, a create-time disagreement `user_lanes` then preserves."
+      },
+      {
+        "args": [
+          [
+            "stage:now",
+            "stage:maybe"
+          ],
+          [
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "maybe",
+          "unmapped": [
+            "now"
+          ]
+        },
+        "note": "the scan CONTINUES past an unmapped lane to a later one in model order, rather than stopping at the first declared lane."
+      },
+      {
+        "args": [
+          [
+            "stage:next",
+            "stage:later",
+            "stage:maybe"
+          ],
+          [
+            "later"
+          ]
+        ],
+        "expect": {
+          "lane": "later",
+          "unmapped": [
+            "next"
+          ]
+        },
+        "note": "several declared, one mapped, and the mapped one is not the first in model order. Note `maybe` is NOT reported unmapped — the scan returns before reaching it, on both ends."
+      },
+      {
+        "args": [
+          [
+            "stage:someday"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": null,
+          "unmapped": []
+        },
+        "note": "an UNRECOGNISED `stage:*` label declares no lane and is not reported as unmapped either. NEGATIVE."
+      },
+      {
+        "args": [
+          [
+            "stage:done"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": null,
+          "unmapped": []
+        },
+        "note": "`stage:done` — in the namespace, not of the model. NEGATIVE."
+      },
+      {
+        "args": [
+          [
+            "Stage:Now"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "now",
+          "unmapped": []
+        },
+        "note": "labels are lowercased on both ends, so a hand-edited `Stage:Now` still resolves."
+      },
+      {
+        "args": [
+          [
+            "stage:NOW"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "now",
+          "unmapped": []
+        },
+        "note": "the same, uppercased on the lane rather than the prefix."
+      },
+      {
+        "args": [
+          [
+            "stage:maybe"
+          ],
+          [
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "maybe",
+          "unmapped": []
+        },
+        "note": "the last lane in model order, on a board mapping only it."
+      },
+      {
+        "args": [
+          [
+            "stage:later"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "later",
+          "unmapped": []
+        },
+        "note": "`later` declared EXPLICITLY resolves as a lane — distinct from `later` reached as the default, which the two vectors above cover."
+      },
+      {
+        "args": [
+          [
+            "stage:now"
+          ],
+          []
+        ],
+        "expect": {
+          "lane": null,
+          "unmapped": [
+            "now"
+          ]
+        },
+        "note": "a board mapping NO lanes at all: everything falls to the default. NEGATIVE."
+      },
+      {
+        "args": [
+          [
+            "stage:maybe",
+            "stage:next"
+          ],
+          [
+            "now",
+            "next",
+            "later",
+            "maybe"
+          ]
+        ],
+        "expect": {
+          "lane": "next",
+          "unmapped": []
+        },
+        "note": "model order again, with the labels supplied in the reverse of it."
+      }
+    ]
+  }
+}

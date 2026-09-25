@@ -158,6 +158,11 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'arm. None involves an exception, all four are ordinary-operation lines, and the count is '
                 .'8 rather than 6 because the rule escapes AT THE WRITE and `evidence` has two of them.',
         ],
+        'Bridge/RelabelCommand.php' => [
+            'relays' => 2, 'escaped' => 0,
+            'ruling' => '✔ NOT FOREIGN ×2 — an UnreadableFileException and a MalformedStateFileException over the '
+                .'owed-label record\'s own path: the path plus the fixed permissions-fault sentence, or the path plus a fixed phrase.',
+        ],
         'Bridge/ReplayCommand.php' => [
             'relays' => 1, 'escaped' => 0,
             'ruling' => '✔ NOT FOREIGN ×1 — a config fault on this install\'s own files.',
