@@ -6,8 +6,10 @@ use App\Bridge\Exceptions\MalformedStateFileException;
 use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\FileContents;
+use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -52,8 +54,9 @@ use Throwable;
  *
  * ⛔ A RECORD THAT CANNOT BE READ IS NEVER *NOTHING OWED*, and there are three answers, not two:
  * absent (nothing owed), rows, or present-and-unreadable — a file this process cannot open
- * ({@see UnreadableFileException}, the realistic case being `bridge:relabel` run as a user other
- * than the receiver's, since the record is `0600`) or cannot parse ({@see MalformedStateFileException}).
+ * ({@see UnreadableFileException}, the realistic case being the receiver facing a `0600` record
+ * another user wrote — see {@see writerRefusal()} for the one such write it cannot refuse) or
+ * cannot parse ({@see MalformedStateFileException}).
  * {@see owed()} THROWS on the third, so the operator's surface cannot render it as an all-clear;
  * the request-path peek in {@see forget()} reports it and changes nothing; and a write STOPS —
  * the file is left byte-for-byte as it was and the write is logged as unrecorded. There is
@@ -202,6 +205,59 @@ final class ProtocolInvalidLabelDebt
     }
 
     /**
+     * Why THIS process must not write the record, or null when it may. The one owner of that rule:
+     * {@see mutate()} refuses on it and `bridge:relabel` refuses on it before reading anything.
+     *
+     * ⛔ A RECORD IS OWNED BY WHOEVER LAST WROTE IT, `0600` (`writeFileAtomic()`'s `tempnam`), and
+     * only the receiver's user writes the refused writes into it. So a writer running as anyone else
+     * does not merely write a row — it takes the file off the receiver, whose every later refused
+     * write is then logged and lost, while the new owner reads the record fine and is told nothing is
+     * owed (r3 M1). Two refusals follow:
+     *  - ROOT NEVER WRITES IT, present or absent: root is never the receiver's user, and a record (or
+     *    a lock file) root creates is one the receiver cannot open;
+     *  - A PRESENT RECORD IS REPLACED ONLY BY ITS OWNER, since that owner is, by the rule above, the
+     *    last user that could write it.
+     * ⚑ An ABSENT record created by a non-root user other than the receiver's is NOT refused: nothing
+     * this process can read says which user the receiver runs as. `CLAUDE_DEPLOYMENT.md` names it.
+     * An effective uid this process cannot read (no posix extension) is unmeasured and refuses
+     * nothing, the `bridge:jobs install-tick` root refusal's reading of the same fact.
+     */
+    public static function writerRefusal(): ?string
+    {
+        $identity = app(ProcessIdentity::class);
+        $euid = $identity->euid();
+        if ($euid === null) {
+            return null;
+        }
+        $path = self::path();
+        $owner = $identity->ownerOf($path);
+        $ownerName = $owner === null ? null : ($identity->accountName($owner) ?? "uid {$owner}");
+        // ⛔ A ROOT-OWNED RECORD HAS NO USER TO RUN AS — root is refused below — so the only
+        // remedy is to hand the file back; "run it as root" would send the operator in a circle.
+        $giveBack = "give {$path} and its .lock back to the user the receiver runs as";
+
+        if ($euid === 0) {
+            return 'this process runs as root, and a record root writes is one the receiver cannot open — every refused write after it would go unrecorded; '
+                .match (true) {
+                    $owner === null => 'run it as the user the receiver runs as',
+                    $owner === 0 => "{$path} is already owned by root: {$giveBack}",
+                    default => "{$path} is owned by {$ownerName}: run it as {$ownerName}",
+                };
+        }
+        if ($owner !== null && $owner !== $euid) {
+            $me = $identity->accountName($euid) ?? "uid {$euid}";
+
+            // The same sentence reaches the operator's terminal and the receiver's log, so it
+            // names both remedies: the owner may be the receiver's user, or may be the one write
+            // this method cannot refuse (above).
+            return "{$path} is owned by {$ownerName} and this process runs as {$me}; replacing it would hand it to {$me} — "
+                .($owner === 0 ? $giveBack : "run it as {$ownerName}, or, if {$ownerName} is not the user the receiver runs as, {$giveBack}");
+        }
+
+        return null;
+    }
+
+    /**
      * @param  array<string, mixed>  $entry
      */
     private static function live(array $entry): bool
@@ -223,6 +279,12 @@ final class ProtocolInvalidLabelDebt
             // Resolved ONCE: the catch arm must not re-enter a call that can itself throw, or a
             // failure here would leave the delivery by way of the handler meant to contain it.
             $path = self::path();
+            // Asked BEFORE the lock: a lock file root creates locks the receiver out as surely as
+            // a record root writes.
+            $refusal = self::writerRefusal();
+            if ($refusal !== null) {
+                throw new RuntimeException($refusal);
+            }
             BridgePaths::withLock($path, function () use ($change, $path): void {
                 $owed = [];
                 // load(), never read(): a record this process cannot read or parse THROWS here,
@@ -233,14 +295,15 @@ final class ProtocolInvalidLabelDebt
                 }
                 BridgePaths::writeFileAtomic(
                     $path,
-                    (string) json_encode(['owed' => (object) self::prune($change($owed))], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+                    json_encode(['owed' => (object) self::prune($change($owed))], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n",
                 );
             });
         } catch (Throwable $e) {
             // The bookkeeping must never break the delivery it books (DL-408: routing does not
             // depend on this label). The cost of landing here is that the write stays unrepairable
             // and unlisted, which is what this line is for — and when the cause is a record this
-            // process cannot read or parse, `error` names it and `bridge:relabel` reds on it.
+            // process cannot read or parse, `error` names it and `bridge:relabel` reds on it; when
+            // it is a writer running as the wrong user, `error` says which user to run as.
             Log::warning('protocol_invalid_label: the record of writes this install still owes could not be updated and was left exactly as it was — a refused write this was recording is not in it and `bridge:relabel` will not repair it; routing is unchanged', [
                 'catalog_id' => 'protocol_invalid_label.owed_record_unwritable',
                 'path' => $path, 'error' => RedactedErrorText::of($e),
@@ -313,7 +376,11 @@ final class ProtocolInvalidLabelDebt
         }
         $decoded = json_decode($raw, true);
         if (! is_array($decoded) || ! is_array($decoded['owed'] ?? null)) {
-            throw MalformedStateFileException::notARecord($path, is_array($decoded) ? 'no "owed" map' : 'not valid JSON');
+            throw MalformedStateFileException::notARecord($path, match (true) {
+                is_array($decoded) => 'no "owed" map',
+                json_last_error() !== JSON_ERROR_NONE => 'not valid JSON',
+                default => 'valid JSON, but not an object',
+            });
         }
 
         $rows = [];

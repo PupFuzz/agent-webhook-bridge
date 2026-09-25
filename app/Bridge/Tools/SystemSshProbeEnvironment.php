@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\PathResolvesToNoFileException;
 use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Support\SystemProcessIdentity;
 use App\Bridge\Support\UntrustedPathContents;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
@@ -24,7 +25,7 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
 {
     public function isRoot(): bool
     {
-        return function_exists('posix_geteuid') && posix_geteuid() === 0;
+        return $this->euid() === 0;
     }
 
     public function fipsEnabled(): bool
@@ -87,7 +88,7 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
 
     public function euid(): ?int
     {
-        return function_exists('posix_geteuid') ? posix_geteuid() : null;
+        return (new SystemProcessIdentity)->euid();
     }
 
     public function sshdEffectiveConfig(?string $forUser = null): ?string

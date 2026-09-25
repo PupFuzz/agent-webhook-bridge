@@ -3,9 +3,12 @@
 namespace Tests\Feature\Writeback;
 
 use App\Bridge\Exceptions\MalformedStateFileException;
+use App\Bridge\Support\ProcessIdentity;
+use App\Bridge\Support\SystemProcessIdentity;
 use App\Bridge\Writeback\ProtocolInvalidLabelDebt;
 use App\Bridge\Writeback\ProtocolInvalidLabeler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -504,7 +507,233 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unwritable')->once();
     }
 
+    // --- who may write the record ---------------------------------------------------------------------
+
+    /**
+     * ⛔ THE PRODUCER OF AN UNREADABLE RECORD IS A WRITER RUNNING AS THE WRONG USER. `writeFileAtomic()`
+     * leaves the record `0600` and owned by whoever wrote it, so a `sudo bridge:relabel --fix` hands it
+     * to root: the receiver can no longer open it, every later refused write goes unrecorded, and root
+     * — who CAN read it — is told nothing is owed. The write is refused at the primitive, so every
+     * route to it (a relabel, a `bridge:replay --force`) is covered, and the record is left as it was.
+     *
+     * The suite is not root and cannot chown, so the process identity is the seam; the OWNER is still
+     * the real file's, read through the default implementation.
+     */
+    public function test_a_write_never_replaces_a_record_another_user_owns(): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        $held = File::get(ProtocolInvalidLabelDebt::path());
+        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        $this->runAs($owner + 1, [$owner => 'www-data']);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        ProtocolInvalidLabelDebt::forget(self::REPO, 41);
+
+        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()), 'a write never replaces a record another user owns');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unwritable'
+            && str_contains((string) ($context['error'] ?? ''), 'owned by www-data'))->twice();
+    }
+
+    public function test_a_write_as_root_never_creates_the_record_or_its_lock(): void
+    {
+        $this->runAs(0);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+
+        $this->assertFileDoesNotExist(ProtocolInvalidLabelDebt::path());
+        $this->assertFileDoesNotExist(ProtocolInvalidLabelDebt::path().'.lock', 'a root-owned lock locks the receiver out as surely as a root-owned record');
+        $this->assertUnwritableNaming('this process runs as root');
+    }
+
+    public function test_a_write_as_root_never_replaces_the_record(): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        $held = File::get(ProtocolInvalidLabelDebt::path());
+        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        $this->runAs(0, [$owner => 'www-data']);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+
+        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
+        $this->assertUnwritableNaming('this process runs as root');
+    }
+
+    /**
+     * The reviewer's sequence (r3 M1), on the operator's surface: a refused write is owed, and the
+     * operator runs the repair as root. The command refuses before it sends or writes anything, in
+     * both modes, and names the user to run as — never the all-clear root would otherwise print.
+     */
+    public function test_relabel_as_root_refuses_in_both_modes_and_names_the_user_to_run_as(): void
+    {
+        $this->fakePeers();
+        $this->githubAnswer = 403;
+        $this->dispatch('d1', $this->comment('created', 'no from line here'));
+        $held = File::get(ProtocolInvalidLabelDebt::path());
+        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        $this->github = [];
+        $this->githubAnswer = 200;
+        $this->runAs(0, [$owner => 'www-data']);
+
+        foreach ([[], ['--fix' => true]] as $options) {
+            [$code, $out] = $this->relabel($options);
+            $this->assertSame(1, $code);
+            $this->assertStringContainsString('REFUSED — this process runs as root', $out);
+            $this->assertStringContainsString('run it as www-data', $out);
+            $this->assertStringNotContainsString('nothing owed', $out);
+        }
+
+        $this->assertSame([], $this->github, 'a refused run sends nothing');
+        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
+    }
+
+    public function test_relabel_as_root_with_no_record_refuses_rather_than_creating_one(): void
+    {
+        $this->runAs(0);
+
+        [$code, $out] = $this->relabel(['--fix' => true]);
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('REFUSED — this process runs as root', $out);
+        $this->assertStringContainsString('run it as the user the receiver runs as', $out);
+        $this->assertStringNotContainsString('nothing owed', $out);
+
+        $this->assertFileDoesNotExist(ProtocolInvalidLabelDebt::path());
+    }
+
+    public function test_relabel_as_a_user_who_does_not_own_the_record_refuses_and_names_the_owner(): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        $this->runAs($owner + 1, [$owner => 'www-data']);
+
+        [$code, $out] = $this->relabel(['--fix' => true]);
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('REFUSED — '.ProtocolInvalidLabelDebt::path().' is owned by www-data', $out);
+        $this->assertStringContainsString('run it as www-data', $out);
+        $this->assertSame([], $this->github, 'a refused run sends nothing');
+    }
+
+    /**
+     * A record ALREADY root-owned (a `sudo --fix` from before this refusal existed) has no user to
+     * run as — root is refused — so both the receiver's log and the operator's terminal must say to
+     * hand the file back, never "run it as root".
+     */
+    public function test_a_root_owned_record_is_answered_with_giving_it_back_never_with_running_as_root(): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        $held = File::get(ProtocolInvalidLabelDebt::path());
+        $this->runAs(1000, [0 => 'root', 1000 => 'www-data'], owner: 0);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        [$code, $out] = $this->relabel(['--fix' => true]);
+
+        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
+        $this->assertUnwritableNaming('give '.ProtocolInvalidLabelDebt::path().' and its .lock back to the user the receiver runs as');
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('is owned by root and this process runs as www-data', $out);
+        $this->assertStringContainsString('back to the user the receiver runs as', $out);
+        $this->assertStringNotContainsString('run it as root', $out);
+
+        $this->runAs(0, [0 => 'root'], owner: 0);
+        [$code, $out] = $this->relabel([]);
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('already owned by root', $out);
+        $this->assertStringNotContainsString('run it as root', $out);
+    }
+
+    /** The control for the refusals above: the owner itself, not root, is let through. */
+    public function test_relabel_as_the_records_owner_is_not_refused(): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        $this->runAs($owner, [$owner => 'www-data']);
+
+        $this->artisan('bridge:relabel')
+            ->expectsOutputToContain('owed  '.self::REPO.'#41')
+            ->doesntExpectOutputToContain('REFUSED')
+            ->assertSuccessful();
+    }
+
+    // --- what the record is made of ------------------------------------------------------------------
+
+    /**
+     * r3 m1: an entry `json_encode` cannot encode must not turn the rewrite into an empty file. A
+     * custom classifier can hand the labeler any scalar as a comment id; the shipped one cannot.
+     */
+    public function test_an_entry_that_cannot_be_encoded_leaves_the_record_byte_identical(): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 42, null, 'add_refused', 403);
+        $held = File::get(ProtocolInvalidLabelDebt::path());
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, "\xff\xfe", 'add_refused', 403);
+
+        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()), 'a failed encode never replaces the record');
+        $this->assertSame([[self::REPO, 42, 'add_refused', 403, 1]], $this->owedTuples());
+        $this->assertUnwritableNaming('Malformed UTF-8');
+    }
+
+    public function test_valid_json_that_is_not_an_object_is_not_called_invalid_json(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put(ProtocolInvalidLabelDebt::path(), '42');
+
+        $this->artisan('bridge:relabel')
+            ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote (valid JSON, but not an object)')
+            ->assertFailed();
+    }
+
     // --- helpers -------------------------------------------------------------------------------------
+
+    /**
+     * Run the rest of the test as $euid. The OWNER of a file is read from the real file unless $owner
+     * overrides it, so by default a record this test wrote is owned by the suite's own uid.
+     *
+     * @param  array<int, string>  $names
+     * @param  int|null  $owner  the owner to report for a file that EXISTS, in place of its real one
+     */
+    private function runAs(int $euid, array $names = [], ?int $owner = null): void
+    {
+        $this->app->instance(ProcessIdentity::class, new class($euid, $names, $owner) implements ProcessIdentity
+        {
+            /** @param  array<int, string>  $names */
+            public function __construct(private int $euid, private array $names, private ?int $owner) {}
+
+            public function euid(): ?int
+            {
+                return $this->euid;
+            }
+
+            public function ownerOf(string $path): ?int
+            {
+                $real = (new SystemProcessIdentity)->ownerOf($path);
+
+                return $real === null ? null : ($this->owner ?? $real);
+            }
+
+            public function accountName(int $uid): ?string
+            {
+                return $this->names[$uid] ?? null;
+            }
+        });
+    }
+
+    /**
+     * One run, its exit code and ALL of its output — `expectsOutputToContain` consumes a line on its
+     * first match, so two facts on one line cannot both be asserted through it.
+     *
+     * @param  array<string, mixed>  $options
+     * @return array{0: int, 1: string}
+     */
+    private function relabel(array $options): array
+    {
+        $code = Artisan::call('bridge:relabel', $options);
+
+        return [$code, Artisan::output()];
+    }
 
     /** @return list<string> every file beside the record, the record itself excluded */
     private function siblingsOfTheRecord(): array

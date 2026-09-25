@@ -161,7 +161,7 @@ class ForeignRelayAdoptionTest extends TestCase
         'Bridge/RelabelCommand.php' => [
             'relays' => 2, 'escaped' => 0,
             'ruling' => '✔ NOT FOREIGN ×2 — an UnreadableFileException and a MalformedStateFileException over the '
-                .'owed-label record\'s own path: the path plus PHP\'s filesystem warning, or the path plus a fixed phrase.',
+                .'owed-label record\'s own path: the path plus the fixed permissions-fault sentence, or the path plus a fixed phrase.',
         ],
         'Bridge/ReplayCommand.php' => [
             'relays' => 1, 'escaped' => 0,

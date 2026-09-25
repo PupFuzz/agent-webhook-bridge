@@ -35,7 +35,9 @@ use App\Bridge\Writeback\ProtocolInvalidLabeler;
  *    reported as a done one is the defect this command exists to end. Every way an entry LEAVES
  *    the record is listed once, in `docs/writeback.md` § *When an entry leaves the record*;
  *  - a record it cannot open or parse is NAMED and reds the run in both modes, before anything
- *    is sent — reading it as empty would be the all-clear this command must never give falsely.
+ *    is sent — reading it as empty would be the all-clear this command must never give falsely;
+ *  - it REFUSES to run as root, or as a user other than the record's owner, in both modes, naming
+ *    the user to run as — {@see ProtocolInvalidLabelDebt::writerRefusal()} owns why.
  */
 class RelabelCommand extends BridgeCommand
 {
@@ -53,6 +55,15 @@ class RelabelCommand extends BridgeCommand
             return self::FAILURE;
         }
         $repoFilter = $this->strOption('repo');
+
+        // ⛔ BEFORE ANYTHING IS READ, in both modes: run as root, the report answers "nothing owed"
+        // over a record the receiver has been locked out of, and --fix is what locks it out.
+        $refusal = ProtocolInvalidLabelDebt::writerRefusal();
+        if ($refusal !== null) {
+            $this->error("bridge:relabel: REFUSED — {$refusal}. Nothing was read, sent or written.");
+
+            return self::FAILURE;
+        }
 
         $owed = $this->owedInScope($repoFilter);
         if ($owed === null) {

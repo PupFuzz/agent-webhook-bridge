@@ -10,6 +10,7 @@ use App\Bridge\Scheduling\JobSpecException;
 use App\Bridge\Scheduling\TickAdoptionNotice;
 use App\Bridge\Scheduling\TickAssertRecord;
 use App\Bridge\Scheduling\TickRecord;
+use App\Bridge\Support\ProcessIdentity;
 use App\Models\ScheduledJob;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -110,7 +111,7 @@ class JobsCommand extends BridgeCommand
     {
         $notice = TickAdoptionNotice::forThisInstall();
 
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        if ($this->laravel->make(ProcessIdentity::class)->euid() === 0) {
             $this->stderr()->writeln('bridge:jobs install-tick: REFUSED as root. The tick line belongs in the '
                 ."seat-owner account's OWN crontab, never root's — a root tick runs every job as root. Re-run as the "
                 .'account that owns this checkout.');

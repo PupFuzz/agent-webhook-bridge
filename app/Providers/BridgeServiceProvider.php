@@ -13,9 +13,11 @@ use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\SystemChannelProbeEnvironment;
+use App\Bridge\Support\SystemProcessIdentity;
 use App\Bridge\Support\SystemTerminalProbe;
 use App\Bridge\Support\TerminalProbe;
 use App\Bridge\Tools\BoardToolDispatcher;
@@ -116,6 +118,11 @@ class BridgeServiceProvider extends ServiceProvider
         // live-vs-dead endpoint (and the platform's own error text) is deterministic.
         $this->app->bind(ChannelProbeEnvironment::class, SystemChannelProbeEnvironment::class);
         $this->app->bind(TerminalProbe::class, SystemTerminalProbe::class);
+
+        // Who this process runs as, and who owns a state file it would replace (card#10242) — the
+        // default reads the real process; a test binds a fake, because a suite is not root and
+        // cannot chown.
+        $this->app->bind(ProcessIdentity::class, SystemProcessIdentity::class);
 
         // The store-cost seam behind the bridge:check retention posture (card#8374) —
         // the default queries the live database; the golden harness binds a pinned answer,
