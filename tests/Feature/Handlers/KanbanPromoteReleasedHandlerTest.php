@@ -731,6 +731,44 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         $this->assertSame([['workflow_stage_id' => 53], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
     }
 
+    /**
+     * card#10068 — the PARENT-CARD refusal at the writer that ACTUALLY FIRES on this
+     * install's releases. `ProgramCardGuard` shipped consulted by the GitHub-PR event path
+     * alone, and this scan is the leg that moved every card of the release that prompted the
+     * measurement; a predicate enforced at one writer of a terminal stage is not enforced.
+     *
+     * ⚠ MIXED SET, ONE MEASUREMENT — the shape
+     * `Tests\Feature\Console\ReconcileCommandTest` uses on the board guard, for the same
+     * reason. Both cards are Shipped, both cite the SAME merged-and-on-main PR, both are
+     * unpinned and on the mapped board: the ONLY thing separating them is the `program` tag.
+     * A test asserting only the refusal could not tell "refuses parents" from "promotes
+     * nothing any more", which is the arm that matters most here — a guard that refuses
+     * everything passes a one-armed test.
+     */
+    public function test_a_program_parent_is_refused_at_the_candidate_scan_while_an_ordinary_card_still_promotes(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        $this->fakeBoard([
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged'], 'payload' => ['pr_number' => 100]],
+            ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'program'], 'payload' => ['pr_number' => 100]],
+        ], [self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle();
+
+        $this->assertMoved(5, 53);   // PRESENCE WITNESS — an ordinary card still promotes
+        $this->assertNotMoved(6);
+        $this->assertPromoteAlert('program_parent_card', 6);
+        // ⭐ REFUSED AT THE SCAN, NOT AT THE MOVE, and this is what measures it: the two cards
+        // cite ONE pull request, so a refusal taken after the GitHub reads would leave TWO
+        // `/pulls/100` reads on the wire. The row is already in hand at the scan, so the
+        // refusal costs no request — and the parent's PR is never dereferenced at all.
+        $this->assertSame(
+            1,
+            collect(Http::recorded())->filter(fn (array $pair) => str_contains($pair[0]->url(), '/pulls/100'))->count(),
+            'the parent card reached the GitHub read — the refusal is not at the candidate scan',
+        );
+    }
+
     public function test_a_refused_owner_tag_write_leaves_the_promote_standing_and_alerts(): void
     {
         $this->writeWritebackWithAlert(['promote_on_release' => true]);

@@ -236,6 +236,53 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    /**
+     * card#10068 — the PARENT-CARD refusal on the leg v0.88.0's own changelog named as able
+     * to *"still perform the move the event path refuses"*. `bridge:reconcile --fix` runs on a
+     * schedule and re-derives the same proposition the event path does, so without this the
+     * guard's refusal is undone on the next pass, an hour later, with a CLI's name on it.
+     *
+     * ⚠ MIXED SET, ONE MEASUREMENT (the board-guard leg's shape, below): both cards drift
+     * forward 50 → 52 from the same PR state, and the ONLY thing separating them is the
+     * `program` tag. The ordinary card is the arm that catches a guard refusing everything.
+     *
+     * ⛔ THE ABSENCE IS ASSERTED OVER THE BUFFERED OUTPUT, not through a second
+     * `PendingCommand` matcher: two matchers both hang on `doWrite` and Mockery gives the call
+     * to the first, so the second goes vacuous (`WritebackIdentityOfferTest` owns that note).
+     */
+    public function test_fix_moves_an_ordinary_card_and_refuses_the_forward_move_of_a_program_parent(): void
+    {
+        $this->writeWriteback([], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $this->fake([
+            $this->card(5, 50, ['pr_url' => $this->prUrl(5)]),
+            $this->card(6, 50, ['pr_url' => $this->prUrl(6)], ['tags' => ['triaged', 'program']]),
+        ], [5 => $this->mergedToDevPr(), 6 => $this->mergedToDevPr(6)]);
+
+        $this->assertSame(0, Artisan::call('bridge:reconcile', ['--fix' => true]));
+        $output = Artisan::output();
+
+        // PRESENCE WITNESS — the ordinary card's forward move is still applied.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['workflow_stage_id' => 52]);
+        // CONTROL — the parent is not written to at all.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/6.json'));
+        // ⭐ REFUSED IN THE PLAN, NOT AT THE WRITE: the parent never becomes a planned move, so
+        // it is absent from the DRIFT report a report-only run prints and cannot be counted
+        // against `--max-moves`. A refusal taken in `finish()` would leave this line standing.
+        $this->assertStringContainsString('MOVED     card 5 → stage 52', $output);
+        $this->assertStringNotContainsString('DRIFT     card 6', $output);
+        $this->assertStringContainsString('card 6 (owner/repo): REFUSED — the card carries the `program` tag', $output);
+        // The refusal reaches the operator LIVE through the same primitive, reason code and
+        // dedup tuple the event path's parent-card refusal uses — kept apart by its `outcome`.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'program_parent_card'
+            && $r['outcome'] === 'reconcile'
+            && $r['card_id'] === 6);
+    }
+
     public function test_dl_only_card_is_skipped_with_info(): void
     {
         $this->writeWriteback();
