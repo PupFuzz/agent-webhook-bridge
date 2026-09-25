@@ -313,6 +313,16 @@ class GitHubWriteDebtTest extends TestCase
         $this->assertSame([[self::REPO, 42, 'add_refused', 403, 2]], $this->owedTuples());
     }
 
+    public function test_an_owed_label_keeps_the_first_comment_id_that_named_it(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => '77'], 'add_refused', 403, true);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => '88'], 'add_refused', 403, true);
+
+        // A null never pins the row: the first comment that NAMED the thread is the one kept.
+        $this->assertSame(['77'], array_column(GitHubWriteDebt::owed(), 'comment_id'));
+    }
+
     public function test_the_record_is_capped_and_says_when_it_drops_something(): void
     {
         // The cap is a BOUND, so the state it bounds is constructed rather than accumulated: one
