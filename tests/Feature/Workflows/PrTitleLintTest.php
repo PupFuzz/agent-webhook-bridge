@@ -212,6 +212,11 @@ class PrTitleLintTest extends TestCase
         ['release/6822-hotfix-slug', 'skip:exempt', 'release PRs consume the log, they do not name a card'],
         ['sync/6822-backport-slug', 'skip:exempt', 'ditto'],
         ['dependabot/6822-bump-slug', 'skip:exempt', 'automation carries no card'],
+        // The exemption is matched on the FOLDED branch, like the classifier after it
+        // (card#10364). Matched raw, these three were ENFORCED against card 6822.
+        ['RELEASE/6822-hotfix-slug', 'skip:exempt', 'an upper-case exempt segment is exempt too'],
+        ['Sync/6822-backport-slug', 'skip:exempt', 'ditto, mixed case'],
+        ['DEPENDABOT/6822-bump-slug', 'skip:exempt', 'ditto'],
     ];
 
     /** One whole step of the workflow, by name prefix. */
@@ -2060,7 +2065,7 @@ class PrTitleLintTest extends TestCase
         $script = $this->stepScript(self::REQUIRE_STEP);
         // Column 0: `stepScript()` returns the YAML literal block AFTER parsing, which
         // has already stripped the 10-space block indentation the file shows.
-        $noExemption = preg_replace('/^case "\$BRANCH" in\n.*?\nesac\n/ms', '', $script, 1, $count);
+        $noExemption = preg_replace('/^case "\$branch_lc" in\n.*?\nesac\n/ms', '', $script, 1, $count);
         $this->assertSame(1, $count, 'the exemption `case` block is gone or reshaped — this control measures nothing');
 
         foreach ($this->branchRowsExpecting('skip:exempt') as [$branch, , $why]) {
@@ -2091,6 +2096,66 @@ class PrTitleLintTest extends TestCase
                 "'{$branch}' must go unreachable without the fold, or the fold is not what carries the answer");
         }
     }
+
+    /**
+     * THE EXEMPTION IS CASE-BLIND IN BOTH STEPS (card#10364), and the pre-change
+     * arm is the control. Both `case` blocks matched the RAW branch while everything
+     * after them reads it folded, so `RELEASE/6822-slug` missed the exemption and was
+     * ENFORCED where `release/6822-slug` was skipped — a false red with no title edit
+     * that clears it, because the branch is what selected the rule.
+     *
+     * The pre-change step is reconstructed by pointing the `case` back at `$BRANCH`,
+     * which is exactly what it read before. Per step, the upper-case spelling is
+     * exempt now and was NOT before (the control fails on it), and the lower-case
+     * spelling is exempt on both, so its verdict did not move.
+     */
+    public function test_the_exemption_arms_match_the_folded_branch_and_the_prior_code_did_not(): void
+    {
+        // REQUIRE STEP — a token-free title, so an enforced branch reds naming its id.
+        $require = $this->stepScript(self::REQUIRE_STEP);
+        $requireBefore = $this->withRawExemption($require);
+        foreach (['release', 'sync', 'dependabot'] as $segment) {
+            $lower = "{$segment}/6822-slug";
+            foreach ([strtoupper($segment), ucfirst($segment)] as $shouted) {
+                $upper = "{$shouted}/6822-slug";
+                $this->assertSame('skip:exempt', $this->requireStepVerdict($upper), "'{$upper}' must be exempt");
+                $this->assertSame('6822', $this->requireStepVerdict($upper, $requireBefore),
+                    "'{$upper}' must be ENFORCED by the pre-change step, or this is no control for the fix");
+            }
+            $this->assertSame('skip:exempt', $this->requireStepVerdict($lower), "'{$lower}' must stay exempt");
+            $this->assertSame('skip:exempt', $this->requireStepVerdict($lower, $requireBefore),
+                "'{$lower}' was exempt before the change too — its verdict must not move");
+        }
+
+        // CLOSURE STEP — a title that correlates a card and closes nothing, so only the
+        // exemption can pass it.
+        $closure = $this->stepScript(self::CLOSURE_STEP);
+        $closureBefore = $this->withRawExemption($closure);
+        $title = 'chore(release): v0.79.0 (card#8286)';
+        foreach ([
+            'release/v0.79.0' => 'RELEASE/v0.79.0',
+            'sync/main-to-dev-post-v0.79.0' => 'SYNC/Main-To-Dev-Post-v0.79.0',
+            'dependabot/composer/x-2.0' => 'Dependabot/composer/x-2.0',
+            'revert-608-ci/8286-release-tag-check' => 'Revert-608-ci/8286-release-tag-check',
+        ] as $lower => $upper) {
+            $this->assertSame(0, $this->runScriptText($closure, $title, $upper)[0], "'{$upper}' must be exempt");
+            $this->assertSame(1, $this->runScriptText($closureBefore, $title, $upper)[0],
+                "'{$upper}' must RED on the pre-change step, or this is no control for the fix");
+            $this->assertSame(0, $this->runScriptText($closure, $title, $lower)[0], "'{$lower}' must stay exempt");
+            $this->assertSame(0, $this->runScriptText($closureBefore, $title, $lower)[0],
+                "'{$lower}' was exempt before the change too — its verdict must not move");
+        }
+    }
+
+    /** The step as it was before card#10364: its exemption `case` reading the raw branch. */
+    private function withRawExemption(string $script): string
+    {
+        $before = str_replace('case "$branch_lc" in', 'case "$BRANCH" in', $script, $applied);
+        $this->assertSame(1, $applied, 'the exemption no longer reads `case "$branch_lc" in` — this control is measuring nothing');
+
+        return $before;
+    }
+
     // ---------------------------------------------------------------------
     // THE CLOSURE STEP (card#8294) — a correlated card with no closure claim
     // ---------------------------------------------------------------------
@@ -2632,7 +2697,7 @@ class PrTitleLintTest extends TestCase
     public function test_the_exemption_block_is_what_passes_an_exempt_branch(): void
     {
         $script = $this->stepScript(self::CLOSURE_STEP);
-        $stripped = preg_replace('/^case "\$BRANCH" in\n.*?^esac\n/ms', '', $script, 1, $count);
+        $stripped = preg_replace('/^case "\$branch_lc" in\n.*?^esac\n/ms', '', $script, 1, $count);
         $this->assertSame(1, $count, 'the exemption `case` block is gone or reshaped — this control measures nothing');
         $this->assertIsString($stripped);
 
