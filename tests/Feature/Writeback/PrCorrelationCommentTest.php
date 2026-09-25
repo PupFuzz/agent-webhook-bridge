@@ -1016,11 +1016,36 @@ class PrCorrelationCommentTest extends TestCase
             default => $this->github->postStatus = (int) $answer,
         };
         $this->fakePeers();
+        Log::spy();
 
         $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
+        // The arm is REACHED, not just the record empty: a terminal row that never got its answer
+        // would also owe nothing.
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
+            && ($context['reason'] ?? null) === $reason
+            && ($context['status'] ?? null) === (is_int($answer) ? $answer : null))->once();
         $this->assertSame([], $this->github->stored(702));
         $this->assertSame($owed ? [[702, 'merged', $reason, is_int($answer) ? $answer : null, 1]] : [], $this->owedComments());
+    }
+
+    public function test_an_owed_comment_the_repair_finds_can_never_land_is_reported_terminal_and_forgotten(): void
+    {
+        $this->github = new GitHubIssueCommentsStub(postStatus: 403);
+        $this->fakePeers();
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->assertSame([[702, 'merged', 'post_refused', 403, 1]], $this->owedComments());
+
+        // The pull request's thread is now GONE: the identical request is refused forever.
+        $this->github->postStatus = 410;
+
+        $this->artisan('bridge:github-owed', ['--fix' => true])
+            ->expectsOutputToContain('terminal  '.self::REPO.'#702 [the `merged` correlation comment] — post_refused (410); this write can never land and is no longer owed')
+            ->assertSuccessful();
+
+        $this->assertCount(2, $this->github->posts(702), 'the repair did attempt it');
+        $this->assertSame([], $this->github->stored(702));
+        $this->assertSame([], GitHubWriteDebt::owed());
     }
 
     public function test_a_two_hundred_that_does_not_carry_the_comment_is_owed_and_the_repair_never_posts_it_twice(): void

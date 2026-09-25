@@ -99,7 +99,7 @@ final class GitHubWriteDebt
      * can still clear, forgotten when it cannot. ONE call site shape for every arm of every writer,
      * so an arm cannot be added that records nothing and nothing says so.
      *
-     * A label row keeps the FIRST `comment_id` (the comment that decided it); a comment row keeps
+     * A label row keeps the FIRST non-null `comment_id` (the comment that decided it); a comment row keeps
      * the LATEST `body` — the event path, had the first attempt failed and the latest landed, would
      * have posted the latest, so that is the write still owed.
      *
@@ -118,8 +118,8 @@ final class GitHubWriteDebt
             $key = self::key($kind, $repo, $number, $write);
             $now = self::now();
             $existing = $rows[$key] ?? null;
-            if ($kind === self::KIND_LABEL && is_array($existing) && array_key_exists('comment_id', $existing)) {
-                $write['comment_id'] = $existing['comment_id'];
+            if ($kind === self::KIND_LABEL && is_array($existing)) {
+                $write['comment_id'] = $existing['comment_id'] ?? $write['comment_id'] ?? null;
             }
             $rows[$key] = [
                 'kind' => $kind,
