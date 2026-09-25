@@ -4,6 +4,7 @@ namespace Tests\Feature\Console;
 
 use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\TickRecord;
+use App\Bridge\Support\ProcessIdentity;
 use App\Models\ScheduledJob;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -247,6 +248,63 @@ class JobsCommandTest extends TestCase
         $this->assertStringContainsString('`--yes` was not passed', $message);
         $this->assertStringContainsString('Re-run without `-n` to be asked, or pass `--yes`', $message);
         $this->assertStringNotContainsString('TTY', $message, 'the guard tests interactivity, not a terminal');
+    }
+
+    /**
+     * The root refusal reads the effective uid through the process-identity seam, so it is
+     * reachable from a suite that is not root. ⛔ A `crontab` shim is first on PATH and it FAILS
+     * every call: without it a regression in the refusal would reach this account's REAL crontab
+     * under `--yes` and install a tick line there (measured — that is how this guard was added).
+     * The shim's call log staying empty is what proves the refusal came before any crontab read.
+     */
+    public function test_install_tick_refuses_root_before_reading_any_crontab(): void
+    {
+        $this->app->instance(ProcessIdentity::class, new class implements ProcessIdentity
+        {
+            public function euid(): ?int
+            {
+                return 0;
+            }
+
+            public function ownerOf(string $path): ?int
+            {
+                return null;
+            }
+
+            public function accountName(int $uid): ?string
+            {
+                return null;
+            }
+        });
+
+        $shim = sys_get_temp_dir().'/jobs-crontab-shim-'.uniqid();
+        File::ensureDirectoryExists($shim);
+        File::put($shim.'/crontab', "#!/bin/sh\n"
+            .'echo "$*" >> '.escapeshellarg($shim.'/calls')."\n"
+            ."exit 1\n");
+        chmod($shim.'/crontab', 0755);
+        $path = (string) getenv('PATH');
+        putenv('PATH='.$shim.':'.$path);
+
+        $stderr = new BufferedOutput;
+        $console = new class extends ConsoleOutput
+        {
+            protected function doWrite(string $message, bool $newline): void {}
+        };
+        $console->setErrorOutput($stderr);
+
+        try {
+            $code = $this->app->make(Kernel::class)
+                ->call('bridge:jobs', ['action' => 'install-tick', '--yes' => true], $console);
+            $calls = is_file($shim.'/calls') ? (string) file_get_contents($shim.'/calls') : '';
+        } finally {
+            putenv('PATH='.$path);
+            File::deleteDirectory($shim);
+        }
+
+        $this->assertSame('', $calls, 'root is refused before any crontab is read');
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('REFUSED as root', $stderr->fetch());
     }
 
     /**
