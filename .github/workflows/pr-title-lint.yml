@@ -241,19 +241,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Non-feature branches carry no card id — skip (pass).
-          case "$BRANCH" in
-            dependabot/*|release/*|sync/*|revert-*)
-              echo "Branch '$BRANCH' is exempt (automation/release/revert) — skipping."
-              exit 0
-              ;;
-          esac
-
           # Case-insensitive throughout: the classifier's regexes are /i, so the
           # lint folds its INPUTS once and matches lowercase patterns — a title
           # the classifier correlates must never red here on case alone (#4384).
           branch_lc=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]')
           title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+
+          # Non-feature branches carry no card id — skip (pass). Matched on the
+          # FOLDED branch, like the classifier below it (card#10364): matched raw,
+          # `RELEASE/6100-slug` missed this arm, reached the folded classifier and
+          # was enforced against card 6100 while `release/6100-slug` was exempt.
+          case "$branch_lc" in
+            dependabot/*|release/*|sync/*|revert-*)
+              echo "Branch '$BRANCH' is exempt (automation/release/revert) — skipping."
+              exit 0
+              ;;
+          esac
 
           # A branch NAMES a card id when, after an optional `<type>/` segment and
           # an optional `card`/`card-` prefix, it opens with digits then a hyphen.
@@ -546,6 +549,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Folded once, like both steps above: the runtime grammars are /i, so a
+          # title this step reds must be one the bridge would also have refused.
+          title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+          branch_lc=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]')
+
           # The require step's exemption set, and here it earns a THIRD reason:
           # GitHub mints a revert PR's title by QUOTING the original's, so
           # `Revert "feat: x (closes card#1)"` carries a closing form for work this PR
@@ -559,17 +567,14 @@ jobs:
           # and `bridge:reconcile`. This exemption never governed that — it governs what
           # CI DEMANDS — and it is still right: a revert is not required to claim a
           # closure, and now cannot accidentally make one either.
-          case "$BRANCH" in
+          #
+          # Matched on the FOLDED branch, as the require step's copy is (card#10364).
+          case "$branch_lc" in
             dependabot/*|release/*|sync/*|revert-*)
               echo "Branch '$BRANCH' is exempt (automation/release/revert) — skipping."
               exit 0
               ;;
           esac
-
-          # Folded once, like both steps above: the runtime grammars are /i, so a
-          # title this step reds must be one the bridge would also have refused.
-          title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
-          branch_lc=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]')
 
           # THE OPT-OUT, and the reason it must exist: a PR that cites a card for
           # CONTEXT and deliberately does not finish it is legitimate — demanding a

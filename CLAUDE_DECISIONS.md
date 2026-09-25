@@ -7464,6 +7464,26 @@ diagnostic on the failure path.
 
 ---
 
+## DL-423 — `pr-title-lint`'s exemption arms match the FOLDED branch, like the classifier behind them (card#10364)
+
+- **Date:** 2026-09-25
+- **Status:** CI only. `.github/workflows/pr-title-lint.yml` and `PrTitleLintTest`. No runtime code, migration, config key, route or token scope changes.
+
+- **Context.** Both `case` exemption blocks (`dependabot/*|release/*|sync/*|revert-*`) — in the card-id require step and in the closure step — matched the raw head ref, while the code after each reads `branch_lc`, folded since #4384. So `RELEASE/6100-slug` missed the exemption, reached the folded classifier and was enforced against card 6100, while `release/6100-slug` was skipped; the closure step likewise red `RELEASE/v0.79.0` under a title citing a card. That is a false red in the restrictive direction, and no title edit clears it because the branch selected the rule. It is the half kanban's card#10349 / DL-0292 described as the verdict a sensitive exemption in front of a folded classifier leaves behind; kanban's audit found it here.
+
+- **Decision.** Fold once, above the exemption, in both steps, and match `case "$branch_lc"`. The echoed message still prints the raw `$BRANCH` so the author sees what they typed.
+
+- **Evidence.** `PrTitleLintTest::test_the_exemption_arms_match_the_folded_branch_and_the_prior_code_did_not` drives each exempt prefix in lower and upper/mixed case through both steps and through the pre-change arm (the same step with the `case` pointed back at `$BRANCH`): the upper-case spelling is exempt now and was enforced/red before; the lower-case spelling is exempt on both. `BRANCH_VERDICTS` gains upper-case exempt rows, which red the corpus leg against the pre-change workflow.
+
+- **Deliberately NOT changed.**
+  - **The title's presence check** stays case-sensitive — a separate accept-set change with its own known `Card#<id>` false red, left alone here exactly as kanban left it.
+  - **The exempt-prefix bypass itself.** A hand-named `release/…` branch skips this gate whoever types it; folding widens it in case only, not in kind.
+  - **`changelog-gate.yml`'s copy of the same prefix set** still matches `$HEAD_REF` raw. No branch classifier stands behind it, so the pr-title-lint mechanism (sensitive exemption in front of a folded classifier) does not apply there; by reading, not measurement, an upper-case `RELEASE/` release PR whose title carries a card token would still hit that gate's tokened arm. Reported on card#10364 for a ruling rather than folded in, because it changes a second gate's accept-set. The prefix set is written once per exemption block across both workflows — the consolidation candidate for whoever takes that ruling.
+
+- **Consequences.** `.github/workflows/pr-title-lint.yml` (both exemption blocks), `tests/Feature/Workflows/PrTitleLintTest.php` (new rows, one new test, the two exemption-deletion controls re-pointed at `case "$branch_lc"`), `docs/CHANGELOG.md`. Card #10364; kanban card#10349 / DL-0292; #4384.
+
+---
+
 ## DL-422 — a refused DL-390 correlation comment is REMEMBERED in the same record as the `protocol:invalid` label, and `bridge:github-owed` finishes both (card#10365)
 
 - **Date:** 2026-09-25

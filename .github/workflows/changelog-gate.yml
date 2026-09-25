@@ -193,7 +193,9 @@ jobs:
           # PR's net change. The file header owns which question is which.
           BASE=$(bin/pr-base-snapshot.sh "$HEAD")
 
-          # Same exemption set as pr-title-lint.yml, for the same reasons:
+          # Same exemption set as pr-title-lint.yml (same prefixes; matched
+          # case-sensitively here, case-insensitively in pr-title-lint.yml — DL-423),
+          # for the same reasons:
           # dependabot and revert PRs carry no card, and release/sync PRs are
           # the events that CONSUME [Unreleased] rather than add to it.
           case "$HEAD_REF" in
