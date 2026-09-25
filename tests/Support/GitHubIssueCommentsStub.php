@@ -37,6 +37,7 @@ final class GitHubIssueCommentsStub
         public int $postStatus = 201,
         public bool $postFailsInTransport = false,
         public int $listStatus = 200,
+        public bool $listFailsInTransport = false,
         /** What a 2xx POST answers with, in place of the created comment — a body that does not carry it */
         public ?array $postAnswer = null,
     ) {}
@@ -89,6 +90,9 @@ final class GitHubIssueCommentsStub
         $number = (int) $m[1];
 
         if ($request->method() === 'GET') {
+            if ($this->listFailsInTransport) {
+                return Http::failedConnection()($request);
+            }
             if ($this->listStatus !== 200) {
                 return Http::response(['message' => 'Resource not accessible by personal access token'], $this->listStatus);
             }

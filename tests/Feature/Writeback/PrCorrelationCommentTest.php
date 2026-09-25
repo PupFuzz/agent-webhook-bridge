@@ -7,10 +7,14 @@ use App\Bridge\Classifiers\GitHubPrCardMoveClassifier;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\GitHubWriteDebt;
+use App\Bridge\Writeback\PrCorrelationComment;
+use App\Bridge\Writeback\PrCorrelationCommenter;
+use App\Bridge\Writeback\WritebackConfig;
 use App\Models\AgentDispatch;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -18,6 +22,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\Support\GitHubIssueCommentsStub;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\PreloadStub;
@@ -974,6 +979,32 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertSame([[702, 'merged', 'post_refused', 403, 2]], $this->owedComments());
     }
 
+    public function test_a_repair_refuses_while_another_repair_holds_the_lock_and_posts_nothing(): void
+    {
+        // The repair's dedupe read and its POST are not atomic, so two runs at once could each find
+        // the comment absent and each post it. The second is REFUSED, by name, before it reads.
+        $this->github = new GitHubIssueCommentsStub(postStatus: 403);
+        $this->fakePeers();
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->github->postStatus = 201;
+        $requests = count($this->github->requests);
+
+        // Another run holds the repair lock — through the same primitive a run takes it with.
+        BridgePaths::withLock(GitHubWriteDebt::repairLockTarget(), function (): void {
+            $this->artisan('bridge:github-owed', ['--fix' => true])
+                ->expectsOutputToContain('REFUSED — another `bridge:github-owed --fix` is running on this install')
+                ->assertFailed();
+        });
+
+        $this->assertCount($requests, $this->github->requests, 'a refused repair must reach GitHub for nothing');
+        $this->assertSame([], $this->github->stored(702));
+        $this->assertSame([[702, 'merged', 'post_refused', 403, 1]], $this->owedComments());
+
+        // Released, the same command runs: the refusal was the lock, not the state.
+        $this->artisan('bridge:github-owed', ['--fix' => true])->assertSuccessful();
+        $this->assertCount(1, $this->github->stored(702));
+    }
+
     /**
      * Re-derived for THIS surface (card#10365), from GitHub's REST reference for the two requests
      * the comment makes — not inherited from the label's table. `422` is the row that differs.
@@ -993,9 +1024,13 @@ class PrCorrelationCommentTest extends TestCase
             'post 429 rate limited' => ['post', 429, 'post_refused', true],
             'post 500 a GitHub fault' => ['post', 500, 'post_refused', true],
             'post never completed' => ['post', 'transport', 'post_failed', true],
+            'read 401' => ['list', 401, 'dedupe_read_refused', true],
             'read 403' => ['list', 403, 'dedupe_read_refused', true],
             'read 404' => ['list', 404, 'dedupe_read_refused', true],
+            'read 408' => ['list', 408, 'dedupe_read_refused', true],
+            'read 429' => ['list', 429, 'dedupe_read_refused', true],
             'read 502' => ['list', 502, 'dedupe_read_refused', true],
+            'read never completed' => ['list', 'transport', 'dedupe_read_failed', true],
             'read not to the end' => ['list', 'unreadable', 'dedupe_read_incomplete', true],
             // terminal: the identical request will be refused for the same reason forever
             'post 410 the thread is gone' => ['post', 410, 'post_refused', false],
@@ -1010,6 +1045,7 @@ class PrCorrelationCommentTest extends TestCase
     {
         match (true) {
             $answer === null => File::delete($this->dir.'/github/token'),
+            $answer === 'transport' && $request === 'list' => $this->github->listFailsInTransport = true,
             $answer === 'transport' => $this->github->postFailsInTransport = true,
             $answer === 'unreadable' => $this->github->seedUnreadable(702),
             $request === 'list' => $this->github->listStatus = (int) $answer,
@@ -1069,6 +1105,52 @@ class PrCorrelationCommentTest extends TestCase
 
         $this->assertCount(1, $this->github->posts(702), 'the repair must find the comment that landed, never post a second');
         $this->assertSame([], GitHubWriteDebt::owed());
+    }
+
+    public function test_an_unexpected_failure_after_the_post_landed_is_owed_and_the_repair_finds_it_without_posting_again(): void
+    {
+        // A log sink that fails on the success line: outside every named step, AFTER GitHub stored
+        // the comment. The bridge cannot tell that from a failure before the POST, so it is owed.
+        $this->fakePeers();
+        Log::spy();
+        Log::shouldReceive('info')->withArgs(fn (string $message) => $message === 'pr_correlation_comment: posted')
+            ->andThrow(new RuntimeException('log sink down'));
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
+            && ($context['reason'] ?? null) === 'unexpected'
+            && ($context['catalog_id'] ?? null) === 'pr_correlation_comment.unexpected_failure')->once();
+        $this->assertCount(1, $this->github->stored(702), 'the comment DID land');
+        $this->assertSame([[702, 'merged', 'unexpected', null, 1]], $this->owedComments());
+
+        $this->artisan('bridge:github-owed', ['--fix' => true])
+            ->expectsOutputToContain('done      '.self::REPO.'#702 [the `merged` correlation comment] — already_posted')
+            ->assertSuccessful();
+
+        $this->assertCount(1, $this->github->posts(702), 'the repair must find the comment that landed, never post a second');
+        $this->assertSame([], GitHubWriteDebt::owed());
+    }
+
+    public function test_a_comment_that_failed_to_render_is_not_owed(): void
+    {
+        // Nothing was decided that could be finished: the body never existed. A ref key that is
+        // not a string throws inside the render (an array meets string conversion), which is a
+        // real failure of the render step rather than a stand-in for one.
+        $this->fakePeers();
+        Log::spy();
+        $mapping = WritebackConfig::loadDefault()?->mappingFor(self::REPO);
+        $this->assertNotNull($mapping);
+        $payload = ['repo' => self::REPO, 'outcome' => 'merged']
+            + PrCorrelationComment::evidence('merged', 702, 'feat/thing', 'feat: a thing');
+
+        (new PrCorrelationCommenter)->report($payload, PrCorrelationComment::TOKEN_UNREADABLE, $mapping, ['dropped' => [['not a key']]]);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
+            && ($context['reason'] ?? null) === 'unexpected')->once();
+        $this->assertSame([], $this->github->requests, 'nothing rendered, so nothing reached GitHub');
+        $this->assertSame([], $this->owedComments());
+        $this->assertFileDoesNotExist(GitHubWriteDebt::path());
     }
 
     public function test_a_later_event_that_posts_the_comment_discharges_what_an_earlier_one_owed(): void

@@ -46,6 +46,9 @@ use Throwable;
  *    the record is listed once, in `docs/writeback.md` § *When an entry leaves the record*;
  *  - a record it cannot open or parse is NAMED and reds the run in both modes, before anything
  *    is sent — reading it as empty would be the all-clear this command must never give falsely;
+ *  - `--fix` REFUSES while another `--fix` holds the repair lock, naming it — two repairs at once
+ *    could each read a pull request without its comment and both post it;
+ *    {@see GitHubWriteDebt::whileRepairing()} owns why, and the overlap it cannot cover;
  *  - it REFUSES to run as root, or as a user other than the record's owner, in both modes, naming
  *    the user to run as — {@see GitHubWriteDebt::writerRefusal()} owns why.
  */
@@ -75,6 +78,27 @@ class GitHubOwedCommand extends BridgeCommand
             return self::FAILURE;
         }
 
+        if (! $this->option('fix')) {
+            return $this->owedRun($repoFilter, $limit);
+        }
+
+        $exit = self::FAILURE;
+        $ran = GitHubWriteDebt::whileRepairing(function () use (&$exit, $repoFilter, $limit): void {
+            $exit = $this->owedRun($repoFilter, $limit);
+        });
+        if (! $ran) {
+            $this->error('bridge:github-owed: REFUSED — another `bridge:github-owed --fix` is running on this install (it holds '
+                .GitHubWriteDebt::repairLockTarget().'.lock); two repairs at once could each find a comment absent and both post it. '
+                .'Nothing was read, sent or written — re-run once that run has finished.');
+
+            return self::FAILURE;
+        }
+
+        return $exit;
+    }
+
+    private function owedRun(?string $repoFilter, int $limit): int
+    {
         $owed = $this->owedInScope($repoFilter);
         if ($owed === null) {
             return self::FAILURE;

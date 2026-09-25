@@ -258,6 +258,21 @@ class GitHubWriteDebtTest extends TestCase
         $this->assertSame([], $this->github);
     }
 
+    public function test_a_fresh_refusal_of_a_write_whose_row_has_expired_is_owed_from_now(): void
+    {
+        // The expired row is still in the FILE (a pure read never rewrites it), so the next refusal
+        // of the same write meets it. Inheriting its first_failed_at would prune the fresh
+        // refusal in the very write that records it.
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 42, ['comment_id' => '7'], 'add_refused', 403, true);
+        $this->travel(GitHubWriteDebt::EXPIRY_SECONDS + 60)->seconds();
+        $this->assertSame([], GitHubWriteDebt::owed());
+
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 42, ['comment_id' => '9'], 'add_refused', 403, true);
+
+        $this->assertSame([[self::REPO, 42, 'add_refused', 403, 1]], $this->owedTuples());
+        $this->assertSame('9', GitHubWriteDebt::owed()[0]['comment_id'], 'an expired row lends the fresh one nothing');
+    }
+
     public function test_the_run_attempts_no_more_than_the_limit(): void
     {
         $this->fakePeers();

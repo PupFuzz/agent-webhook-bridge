@@ -33,8 +33,9 @@ use Throwable;
  * `protocol:invalid` label, one record for both — with the BODY this event rendered, and
  * `bridge:github-owed --fix` posts it once the cause clears. Nothing re-attempts on its own: the
  * retry is an operator act, so a permanent refusal never becomes an unbounded retry. The repair
- * goes through the same dedupe read as the event, so a comment that DID land is found and never
- * posted twice.
+ * goes through the same dedupe read as the event, so a comment that DID land is found rather than
+ * posted again — with the read-then-POST race below: two repairs are serialised
+ * ({@see GitHubWriteDebt::whileRepairing()}), a repair and a delivery are not.
  *
  * ⭐ A 2xx IS THE SERVER'S CLAIM, NOT THE OUTCOME. `POST .../comments` answers with the comment it
  * created, so the post CONFIRMS itself out of that answer — its body must start with this
@@ -220,7 +221,7 @@ final class PrCorrelationCommenter
 
             // ⛔ OWED EVEN THOUGH THE POST MAY HAVE LANDED — this arm can fire after a successful
             // write. The repair reads the pull request before it posts, so a debt recorded here for
-            // a comment that DID land costs one read and then clears; never a second comment.
+            // a comment that DID land costs one read and then clears, not a second comment.
             return $this->settled($repo, $number, $outcome, $body, self::REASON_UNEXPECTED, null);
         }
     }

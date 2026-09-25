@@ -95,6 +95,34 @@ final class GitHubWriteDebt
     }
 
     /**
+     * The path whose `.lock` sibling one repair run holds for its whole length. Not the record's own
+     * lock: that one is taken per row by every write, the receiver's included, and a repair holding
+     * it for a run of HTTP requests would stall deliveries behind it.
+     */
+    public static function repairLockTarget(): string
+    {
+        return self::path().'.repair';
+    }
+
+    /**
+     * Run $repair only if no other repair is running on this install; the answer is whether it ran.
+     *
+     * ⛔ A REPAIR RE-READS BEFORE IT POSTS, AND THAT READ IS NOT ATOMIC WITH THE POST. Two repairs at
+     * once can each read a pull request with no comment and each post one, so they are serialised
+     * here — and REFUSED, never queued, so the operator is told another run holds it rather than
+     * watching a command hang for the length of someone else's. What this does not cover, and
+     * cannot: a delivery posting the same comment while a repair runs. The receiver never takes
+     * this lock (a delivery must not wait on an operator's run), so that overlap can still post
+     * twice; sequential repairs never do.
+     *
+     * @param  \Closure(): void  $repair
+     */
+    public static function whileRepairing(\Closure $repair): bool
+    {
+        return BridgePaths::withLockIfFree(self::repairLockTarget(), $repair);
+    }
+
+    /**
      * Record the outcome of one decided write: owed when the writer's own predicate says its cause
      * can still clear, forgotten when it cannot. ONE call site shape for every arm of every writer,
      * so an arm cannot be added that records nothing and nothing says so.
@@ -117,7 +145,9 @@ final class GitHubWriteDebt
         self::mutate(function (array $rows) use ($kind, $repo, $number, $write, $reason, $status): array {
             $key = self::key($kind, $repo, $number, $write);
             $now = self::now();
-            $existing = $rows[$key] ?? null;
+            // An expired row is still in the file until a mutation prunes it; inheriting its
+            // first_failed_at would prune this fresh refusal in the same write that records it.
+            $existing = isset($rows[$key]) && self::live($rows[$key]) ? $rows[$key] : null;
             if ($kind === self::KIND_LABEL && is_array($existing)) {
                 $write['comment_id'] = $existing['comment_id'] ?? $write['comment_id'] ?? null;
             }
