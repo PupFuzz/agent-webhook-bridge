@@ -202,7 +202,9 @@ final class ProtocolInvalidLabeler
             return $this->failure($payload, self::REASON_ADD_FAILED, null);
         }
 
-        if (! in_array(self::LABEL, $labels, true)) {
+        // Case-insensitive: a repo already carrying the label under another spelling can answer
+        // with THAT spelling, and an exact compare would then keep a landed write owed until expiry.
+        if (! in_array(strtolower(self::LABEL), array_map(strtolower(...), $labels), true)) {
             Log::warning('protocol_invalid_label: NOT applied — GitHub ACCEPTED the label request and its answer does not carry the label, so the write is not confirmed; routing is unchanged', ['catalog_id' => 'protocol_invalid_label.add_unconfirmed'] + $context + [
                 'reason' => self::REASON_ADD_UNCONFIRMED, 'labels_answered' => count($labels),
             ]);

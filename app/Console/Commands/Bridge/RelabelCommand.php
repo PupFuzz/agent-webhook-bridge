@@ -2,6 +2,8 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Exceptions\MalformedStateFileException;
+use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Writeback\ProtocolInvalidLabelDebt;
 use App\Bridge\Writeback\ProtocolInvalidLabeler;
 
@@ -11,7 +13,7 @@ use App\Bridge\Writeback\ProtocolInvalidLabeler;
  * {@see ReconcileCommand} is for the card-move writeback.
  *
  * Default is REPORT-ONLY: a line per owed thread and a summary, exit 0, nothing sent. `--fix`
- * re-attempts them.
+ * re-attempts them. Either mode exits non-zero on a record it cannot read (below).
  *
  * ⛔ IT DECIDES NOTHING ABOUT WHICH THREADS DESERVE THE LABEL. Every entry it reads is a verdict
  * the classifier already reached at the event under DL-408's rules; this command carries out the
@@ -29,9 +31,11 @@ use App\Bridge\Writeback\ProtocolInvalidLabeler;
  *  - an entry past {@see ProtocolInvalidLabelDebt::EXPIRY_SECONDS} is not in `owed()` at all, so a
  *    stale write is never sent;
  *  - `--limit` bounds the run, because each entry is one POST with its own timeout;
- *  - an entry is dropped ONLY on a write GitHub's own answer confirms, or on a refusal that can
- *    never clear. A repair that failed stays owed, is counted apart, and reds the run — a failed
- *    repair reported as a done one is the defect this command exists to end.
+ *  - a repair that failed stays owed, is counted apart, and reds the run — a failed repair
+ *    reported as a done one is the defect this command exists to end. Every way an entry LEAVES
+ *    the record is listed once, in `docs/writeback.md` § *When an entry leaves the record*;
+ *  - a record it cannot open or parse is NAMED and reds the run in both modes, before anything
+ *    is sent — reading it as empty would be the all-clear this command must never give falsely.
  */
 class RelabelCommand extends BridgeCommand
 {
@@ -50,7 +54,10 @@ class RelabelCommand extends BridgeCommand
         }
         $repoFilter = $this->strOption('repo');
 
-        $owed = $this->inScope(ProtocolInvalidLabelDebt::owed(), $repoFilter);
+        $owed = $this->owedInScope($repoFilter);
+        if ($owed === null) {
+            return self::FAILURE;
+        }
         if ($owed === []) {
             $this->info('nothing owed: every protocol:invalid label this install decided on has been written, refused for good, or aged out of the repair window'
                 .($repoFilter !== null ? " (scoped to {$repoFilter})" : ''));
@@ -101,7 +108,11 @@ class RelabelCommand extends BridgeCommand
             }
         }
 
-        $remaining = count($this->inScope(ProtocolInvalidLabelDebt::owed(), $repoFilter));
+        $after = $this->owedInScope($repoFilter);
+        if ($after === null) {
+            return self::FAILURE;
+        }
+        $remaining = count($after);
         $this->newLine();
         $this->line("{$applied} applied, {$stillOwed} still owed, {$terminal} refused for good, {$dropped} dropped (repo no longer listed); {$remaining} owed after this run.");
 
@@ -115,6 +126,29 @@ class RelabelCommand extends BridgeCommand
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * What is owed in scope, or null once the record's being unreadable has been SAID — the caller
+     * then exits non-zero. The two causes print different remedies because they have different
+     * ones: a permissions fault is uid-relative (the receiver may read it fine), a malformed file
+     * is wrong for every reader.
+     *
+     * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>|null
+     */
+    private function owedInScope(?string $repoFilter): ?array
+    {
+        try {
+            return $this->inScope(ProtocolInvalidLabelDebt::owed(), $repoFilter);
+        } catch (UnreadableFileException $e) {
+            $this->error('cannot tell what is owed: '.$e->getMessage().'. The receiver writes this record mode 0600 — '
+                .'run bridge:relabel as the user the receiver runs as. Nothing was sent.');
+        } catch (MalformedStateFileException $e) {
+            $this->error('cannot tell what is owed: '.$e->getMessage().'. The next refused label write sets it aside '
+                .'(as '.ProtocolInvalidLabelDebt::FILE.'.corrupt-<time>) and starts a new record; the writes it held have to be read from it by hand. Nothing was sent.');
+        }
+
+        return null;
     }
 
     /**

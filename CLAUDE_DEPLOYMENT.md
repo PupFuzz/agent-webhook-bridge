@@ -436,6 +436,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | Inbox (agent surface) | `<state_dir>/inbox.jsonl` (state dir defaults to `<config_dir>/state`) |
 | Inbox seen-set (`bridge:inbox` dedup) | `…/state/inbox-seen.json` |
 | Webhook 5xx record (DL-409) — the current run of consecutive 5xx, and the last recovery | `…/state/webhook-5xx.json` (+ `webhook-5xx.json.lock`), written by the receiver |
+| `protocol:invalid` label writes this install still owes (DL-419) | `…/state/protocol-invalid-labels-owed.json` (+ `protocol-invalid-labels-owed.json.lock`), written by the receiver, and rewritten by `bridge:relabel --fix` as whoever runs it. Mode **`0600`** (the `tempnam()` in `writeFileAtomic()`), so run `bridge:relabel` as the user the receiver runs as — any other user gets a named, non-zero "cannot tell what is owed", and a `--fix` that does write leaves the file that user's, which the receiver then sets aside. A record that cannot be read is set aside beside it as `….corrupt-<time>` / `….unreadable-<time>`, never overwritten (`docs/writeback.md`) |
 | Which `bridge:inbox` consumers have been shown that recovery | `…/state/webhook-5xx-notice-seen.json`, written by `bridge:inbox` |
 | Handler forensic log (`log_intent`) | `…/state/handler-log.jsonl` |
 | Per-target registry (`registry_append`) | `…/state/registry-<target>.jsonl` |
@@ -481,7 +482,8 @@ php artisan bridge:relabel [--fix] [--repo=owner/repo] [--limit=50]           # 
                                                       #   decided on and could not land (DL-419; report-only unless --fix).
                                                       #   No timer, gate or job runs it — the bridge re-attempts an outward
                                                       #   write only when a person asks. --fix exits NON-ZERO while anything
-                                                      #   in scope is still owed. docs/writeback.md
+                                                      #   in scope is still owed; either mode exits NON-ZERO on a record it
+                                                      #   cannot read. Run as the receiver's user (the record is 0600). docs/writeback.md
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
 php artisan bridge:jobs [list|add|remove|enable|disable|run] [name] [--json] [--assert-tick]   # the periodic-job registry (DL-325)
 php artisan bridge:tick                               # one bounded pass over that registry — the opt-in crontab ingress (DL-325)

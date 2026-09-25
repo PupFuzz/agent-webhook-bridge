@@ -50,7 +50,8 @@ php artisan bridge:replay <N>            # re-dispatch a stored event by id (rec
 php artisan bridge:relabel               # the protocol:invalid label writes this install DECIDED on and could not
                                          # land (card#10242/DL-419): report-only, --fix writes them. No timer, gate or
                                          # job runs it — an outward write is re-attempted only when a person asks.
-                                         # Non-zero exit while anything in scope is still owed — docs/writeback.md
+                                         # Non-zero exit while anything in scope is still owed, or the record
+                                         # cannot be read (run as the receiver's user) — docs/writeback.md
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
 php artisan bridge:writeback-exposure    # is THIS install exposed to the one-repo-one-board writeback defect

@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Exceptions\MalformedStateFileException;
+use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\FileContents;
 use App\Bridge\Support\RedactedErrorText;
@@ -46,8 +48,15 @@ use Throwable;
  *
  * ⛔ NOTHING HERE THROWS INTO THE DELIVERY. The writer is on the request path, so every mutation is
  * wrapped: a state dir that cannot be written is one warning and the routing it was booking is
- * untouched. The read is total the same way — a file this process cannot parse is REPORTED and then
- * treated as empty, never silently read as *nothing is owed*.
+ * untouched.
+ *
+ * ⛔ A RECORD THAT CANNOT BE READ IS NEVER *NOTHING OWED*, and there are three answers, not two:
+ * absent (nothing owed), rows, or present-and-unreadable — a file this process cannot open
+ * ({@see UnreadableFileException}, the realistic case being `bridge:relabel` run as a user other
+ * than the receiver's, since the record is `0600`) or cannot parse ({@see MalformedStateFileException}).
+ * {@see owed()} THROWS on the third, so the operator's surface cannot render it as an all-clear;
+ * the request-path peek in {@see forget()} reports it and changes nothing; and a write SETS THE
+ * FILE ASIDE before replacing it, so what it held is kept for the operator rather than destroyed.
  */
 final class ProtocolInvalidLabelDebt
 {
@@ -135,10 +144,13 @@ final class ProtocolInvalidLabelDebt
      * next mutation — a pure read never rewrites the file it is answering about.
      *
      * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>
+     *
+     * @throws UnreadableFileException the record is present and this process cannot open it
+     * @throws MalformedStateFileException the record is present and is not one this class wrote
      */
     public static function owed(): array
     {
-        $rows = array_values(array_filter(self::read(), self::live(...)));
+        $rows = array_values(array_filter(self::load(), self::live(...)));
         usort($rows, fn (array $a, array $b): int => [$a['first_failed_at'], $a['repo'], $a['number']] <=> [$b['first_failed_at'], $b['repo'], $b['number']]);
 
         return $rows;
@@ -210,7 +222,7 @@ final class ProtocolInvalidLabelDebt
             $path = self::path();
             BridgePaths::withLock($path, function () use ($change, $path): void {
                 $owed = [];
-                foreach (self::read() as $entry) {
+                foreach (self::loadForRewrite($path) as $entry) {
                     $owed[self::key($entry['repo'], $entry['number'])] = $entry;
                 }
                 BridgePaths::writeFileAtomic(
@@ -256,28 +268,81 @@ final class ProtocolInvalidLabelDebt
     }
 
     /**
+     * The request path's read: TOTAL, because it runs inside a delivery. A record it cannot read is
+     * reported and answered as empty — safe only because this answer feeds nothing but
+     * {@see forget()}'s peek, which then changes nothing. Never the operator's read: that is
+     * {@see owed()}, which says so instead.
+     *
      * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>
      */
     private static function read(): array
     {
         try {
-            $raw = FileContents::read(self::path(), 'protocol-invalid owed-label record');
-        } catch (Throwable) {
-            // A file that is present and unreadable is not an empty one — it falls through to the
-            // warning below and is reported, never read as "nothing is owed".
-            $raw = false;
-        }
-        if ($raw === null) {
-            return [];
-        }
-        $decoded = is_string($raw) ? json_decode($raw, true) : null;
-        if (! is_array($decoded) || ! is_array($decoded['owed'] ?? null)) {
-            Log::warning('protocol_invalid_label: the record of writes this install still owes could not be read — it is being treated as EMPTY, which is not a claim that nothing is owed', [
+            return self::load();
+        } catch (UnreadableFileException|MalformedStateFileException $e) {
+            Log::warning('protocol_invalid_label: the record of writes this install still owes could not be read — nothing was removed from it; `bridge:relabel` names the problem', [
                 'catalog_id' => 'protocol_invalid_label.owed_record_unreadable',
-                'path' => self::path(),
+                'path' => self::path(), 'problem' => $e->getMessage(),
             ]);
 
             return [];
+        }
+    }
+
+    /**
+     * The rows a write starts from. A record this process cannot read is MOVED ASIDE first, never
+     * overwritten: the rename in {@see BridgePaths::writeFileAtomic()} needs only the directory,
+     * so it would replace a file it could not open — destroying every entry in it — without a
+     * word. A failed move throws, and {@see mutate()} then writes nothing.
+     *
+     * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>
+     */
+    private static function loadForRewrite(string $path): array
+    {
+        try {
+            return self::load();
+        } catch (MalformedStateFileException $e) {
+            self::setAside($path, 'corrupt', $e);
+        } catch (UnreadableFileException $e) {
+            self::setAside($path, 'unreadable', $e);
+        }
+
+        return [];
+    }
+
+    private static function setAside(string $path, string $state, \RuntimeException $problem): void
+    {
+        $aside = $path.'.'.$state.'-'.now()->utc()->format('Ymd\THis.u\Z');
+        if (! @rename($path, $aside)) {
+            $reason = error_get_last()['message'] ?? 'rename failed';
+
+            throw new \RuntimeException("bridge: failed to set {$path} aside as {$aside} ({$reason}) — not replacing a record whose entries could not be read");
+        }
+
+        Log::warning('protocol_invalid_label: the record of writes this install still owes could not be read, so it was SET ASIDE before this write replaced it — the threads it held are not in the record now and `bridge:relabel` will not repair them; the set-aside file names them', [
+            'catalog_id' => 'protocol_invalid_label.owed_record_set_aside',
+            'path' => $path, 'set_aside_as' => $aside, 'problem' => $problem->getMessage(),
+        ]);
+    }
+
+    /**
+     * The record's rows; [] only when there is NO FILE.
+     *
+     * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>
+     *
+     * @throws UnreadableFileException
+     * @throws MalformedStateFileException
+     */
+    private static function load(): array
+    {
+        $path = self::path();
+        $raw = FileContents::read($path, 'protocol-invalid owed-label record');
+        if ($raw === null) {
+            return [];
+        }
+        $decoded = json_decode($raw, true);
+        if (! is_array($decoded) || ! is_array($decoded['owed'] ?? null)) {
+            throw MalformedStateFileException::notARecord($path, is_array($decoded) ? 'no "owed" map' : 'not valid JSON');
         }
 
         $rows = [];

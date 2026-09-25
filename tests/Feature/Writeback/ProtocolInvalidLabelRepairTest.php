@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Writeback;
 
+use App\Bridge\Exceptions\MalformedStateFileException;
 use App\Bridge\Writeback\ProtocolInvalidLabelDebt;
 use App\Bridge\Writeback\ProtocolInvalidLabeler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -202,6 +203,20 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->assertSame([[self::REPO, 42, 'add_unconfirmed', null, 1]], $this->owedTuples());
     }
 
+    public function test_the_confirmation_matches_the_label_name_case_insensitively(): void
+    {
+        // A repo that already carries the label under another spelling answers the add with THAT
+        // spelling; the thread carries the label, so the write is confirmed, not owed.
+        $this->fakePeers();
+        $this->githubOkBody = [['name' => 'to:alpha'], ['name' => 'Protocol:Invalid']];
+        Log::spy();
+
+        $this->dispatch('d1', $this->comment('created', 'no from line here'));
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.applied')->once();
+        $this->assertSame([], $this->owedTuples());
+    }
+
     // --- the command's own refusals and bounds -------------------------------------------------------
 
     public function test_a_repo_dropped_from_the_list_is_forgotten_rather_than_written(): void
@@ -321,14 +336,116 @@ class ProtocolInvalidLabelRepairTest extends TestCase
             && ($context['dropped'] ?? null) === 2)->once();
     }
 
-    public function test_an_unreadable_record_is_reported_rather_than_read_as_empty(): void
+    public function test_a_corrupt_record_is_not_read_as_nothing_owed(): void
     {
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put(ProtocolInvalidLabelDebt::path(), 'not json');
+
+        try {
+            ProtocolInvalidLabelDebt::owed();
+            $this->fail('a record that does not parse answered as a list of what is owed');
+        } catch (MalformedStateFileException $e) {
+            $this->assertStringContainsString(ProtocolInvalidLabelDebt::path(), $e->getMessage());
+        }
+    }
+
+    /**
+     * ⛔ THE OPERATOR'S SURFACE IS THE SUBJECT. The record is the receiver's, so the realistic
+     * reader that cannot parse or open it is `bridge:relabel`; asserting only the class's answer
+     * would leave the command free to turn it back into "nothing owed", exit 0. Both modes are
+     * asserted because `--fix`'s exit code is the contract a script reads.
+     */
+    public function test_a_corrupt_record_reds_the_command_in_both_modes_and_names_the_file(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put(ProtocolInvalidLabelDebt::path(), 'not json');
+
+        foreach ([[], ['--fix' => true]] as $options) {
+            $this->artisan('bridge:relabel', $options)
+                ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote')
+                ->doesntExpectOutputToContain('nothing owed')
+                ->assertFailed();
+        }
+
+        $this->assertSame('not json', File::get(ProtocolInvalidLabelDebt::path()), 'a report never rewrites the file it is reporting on');
+    }
+
+    public function test_a_record_this_user_cannot_read_reds_the_command_in_both_modes_and_names_the_file(): void
+    {
+        $this->skipWhenModeZeroCannotRefuseARead();
+        $this->fakePeers();
+        $this->githubAnswer = 403;
+        $this->dispatch('d1', $this->comment('created', 'no from line here'));
+        $this->assertCount(1, ProtocolInvalidLabelDebt::owed());
+        $this->github = [];
+        $this->githubAnswer = 200;
+
+        chmod(ProtocolInvalidLabelDebt::path(), 0);
+        try {
+            foreach ([[], ['--fix' => true]] as $options) {
+                $this->artisan('bridge:relabel', $options)
+                    ->expectsOutputToContain('at '.ProtocolInvalidLabelDebt::path().' could not be read by this process')
+                    ->doesntExpectOutputToContain('nothing owed')
+                    ->assertFailed();
+            }
+        } finally {
+            chmod(ProtocolInvalidLabelDebt::path(), 0600);
+        }
+
+        $this->assertSame([], $this->github, 'a run that cannot read what is owed must write nothing');
+        $this->assertCount(1, ProtocolInvalidLabelDebt::owed(), 'the entry is still there once the file is readable again');
+    }
+
+    public function test_a_corrupt_record_is_set_aside_rather_than_overwritten_by_the_next_write(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        $torn = '{"owed": {"acme/coord#41": {"repo": "Acme/Coord", "number": 41';
+        File::put(ProtocolInvalidLabelDebt::path(), $torn);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+
+        $aside = glob(ProtocolInvalidLabelDebt::path().'.corrupt-*') ?: [];
+        $this->assertCount(1, $aside, 'the bytes the bridge could not parse are kept beside the record, not destroyed');
+        $this->assertSame($torn, File::get($aside[0]));
+        $this->assertSame([[self::REPO, 43, 'add_refused', 403, 1]], $this->owedTuples());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_set_aside'
+            && ($context['set_aside_as'] ?? null) === $aside[0])->once();
+    }
+
+    public function test_a_record_this_user_cannot_read_is_set_aside_rather_than_overwritten_by_the_next_write(): void
+    {
+        // The realistic producer: `bridge:relabel --fix` run as the OPERATOR rewrites the record,
+        // and `writeFileAtomic()` leaves it 0600 and owned by that user, so the receiver's next
+        // write finds a file it cannot open — and a rename over it would destroy what it holds.
+        $this->skipWhenModeZeroCannotRefuseARead();
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        $held = File::get(ProtocolInvalidLabelDebt::path());
+        chmod(ProtocolInvalidLabelDebt::path(), 0);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+
+        $aside = glob(ProtocolInvalidLabelDebt::path().'.unreadable-*') ?: [];
+        $this->assertCount(1, $aside);
+        chmod($aside[0], 0600);
+        $this->assertSame($held, File::get($aside[0]));
+        $this->assertSame([[self::REPO, 43, 'add_refused', 403, 1]], $this->owedTuples());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_set_aside'
+            && ($context['set_aside_as'] ?? null) === $aside[0])->once();
+    }
+
+    public function test_the_request_path_peek_reports_an_unreadable_record_and_changes_nothing(): void
+    {
+        // `forget()` runs on every successful label write, so it must not throw into the
+        // delivery; it reports the record and leaves it for the operator.
         File::ensureDirectoryExists($this->dir.'/state');
         File::put(ProtocolInvalidLabelDebt::path(), 'not json');
         Log::spy();
 
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed());
+        ProtocolInvalidLabelDebt::forget(self::REPO, 42);
 
+        $this->assertSame('not json', File::get(ProtocolInvalidLabelDebt::path()));
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unreadable')->once();
     }
 
@@ -350,6 +467,17 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     }
 
     // --- helpers -------------------------------------------------------------------------------------
+
+    /**
+     * Mode 0 refuses a read only to a process without CAP_DAC_OVERRIDE; as root the file opens
+     * anyway, and the test would construct a READABLE file and assert about an unreadable one.
+     */
+    private function skipWhenModeZeroCannotRefuseARead(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('running as root: a mode-0 file is still readable, so an unreadable record cannot be constructed');
+        }
+    }
 
     /**
      * The owed writes as `[repo, number, reason, status, attempts]` — the fields a reader acts on,

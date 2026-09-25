@@ -1169,7 +1169,7 @@ It **does** fire whether or not any agent is addressed. A thread whose `to:` lab
 | --- | --- |
 | `add_refused` (with `status`) | GitHub answered with an HTTP error (any 4xx or 5xx); a `403` is a token without write |
 | `add_failed` | the request did not complete (a transport failure included) |
-| `add_unconfirmed` | GitHub **accepted** the request and its answer did not list the label. A 2xx is the server's claim, not the outcome: this endpoint answers with the label set the thread now carries, so the write confirms itself out of that same answer and an answer that does not carry it is not a success. A body the bridge cannot read lands here too — unconfirmed, never confirmed |
+| `add_unconfirmed` | GitHub **accepted** the request and its answer did not list the label (the name is compared case-insensitively, so the label already present under another spelling counts). A 2xx is the server's claim, not the outcome: this endpoint answers with the label set the thread now carries, so the write confirms itself out of that same answer and an answer that does not carry it is not a success. A body the bridge cannot read lands here too — unconfirmed, never confirmed |
 | `token_unresolved` | no GitHub token file resolves |
 | `repo_not_enabled` | a target named a repo that is not in the list. The shipped classifier never emits one; a custom classifier can |
 | `payload_invalid` | a target did not name a repo and an issue number |
@@ -1206,9 +1206,18 @@ php artisan bridge:relabel --fix --repo owner/name --limit 20
 | `repo_not_enabled` | **no** | the install excluded this repo |
 | `payload_invalid` | **no** | no repo and issue number to name |
 
-**Bounds, accepted and stated.** One entry per **thread**, not per comment (the label is a property of the issue or pull request, so two unattributable comments on one thread owe one write and bump one attempt count). An entry older than **7 days** is not repaired and does not appear in the report — a label applied long after the comment describes less and less, and the comment may be gone. At most **500** entries are kept — at the cap the **oldest** are dropped, the expiry's reasoning applied one step earlier, so the write most likely still worth making is the one kept; both drops are logged (`protocol_invalid_label.owed_record_pruned`), never silent. A record the bridge cannot write is one warning and the delivery is untouched (`…owed_record_unwritable`) — the write is then unlisted and `bridge:relabel` will not find it. A record it cannot read is **reported** (`…owed_record_unreadable`) and treated as empty, which is not a claim that nothing is owed.
+**Bounds, accepted and stated.** One entry per **thread**, not per comment (the label is a property of the issue or pull request, so two unattributable comments on one thread owe one write and bump one attempt count). An entry older than **7 days** is not repaired and does not appear in the report — a label applied long after the comment describes less and less, and the comment may be gone. At most **500** entries are kept — at the cap the **oldest** are dropped, the expiry's reasoning applied one step earlier, so the write most likely still worth making is the one kept; both drops are logged (`protocol_invalid_label.owed_record_pruned`), never silent. A record the bridge cannot write is one warning and the delivery is untouched (`…owed_record_unwritable`) — the write is then unlisted and `bridge:relabel` will not find it.
 
-**Exit code.** Report-only always exits 0. Under `--fix` the run exits **non-zero whenever anything in scope is still owed** — a partial repair is never readable as a finished one from the exit code alone. An entry is removed only on a write GitHub's own answer **confirms**, or on a refusal that can never clear; a repair that failed stays owed and is counted apart.
+**A record that cannot be read is never "nothing owed".** The record is written by the receiver, mode `0600`, so run `bridge:relabel` as the user the receiver runs as. A record the command cannot open, or cannot parse, is named with its path and the run exits **non-zero in both modes** before anything is sent. On the request path the same record is reported (`protocol_invalid_label.owed_record_unreadable`) and left untouched. The next write that has to change it first **sets it aside** beside itself, as `protocol-invalid-labels-owed.json.corrupt-<time>` (unparseable) or `.unreadable-<time>` (unopenable), and logs that (`…owed_record_set_aside`); it is never replaced in place, because the rename that replaces it needs only the directory and would destroy entries it could not read. The threads a set-aside file names are no longer in the record and `bridge:relabel` will not repair them; read them from that file.
+
+**Exit code.** Report-only exits 0 unless the record cannot be read. Under `--fix` the run exits **non-zero whenever anything in scope is still owed** — a partial repair is never readable as a finished one from the exit code alone. A repair that failed stays owed and is counted apart.
+
+**When an entry leaves the record** — this is the whole list, and other surfaces point here rather than restating it:
+- a write GitHub's own answer **confirms** — the repair's, or a later successful label write on the same thread;
+- a refusal that can **never clear** (the **no** rows in the table above);
+- under `bridge:relabel --fix`, its repo is **no longer** in `BRIDGE_PROTOCOL_INVALID_LABEL_REPOS` (dropped, nothing written);
+- the **expiry** or the **cap** (*Bounds* above), logged;
+- the whole record is **set aside** because it could not be read (above), logged.
 
 **The identity is the receiver's placed token file, as everywhere else here** (`GitHubTokenResolver::resolveFromFile()`), so a `bridge:relabel` run from a shell writes as the receiver or not at all — never the credential store, never `GH_TOKEN`.
 
