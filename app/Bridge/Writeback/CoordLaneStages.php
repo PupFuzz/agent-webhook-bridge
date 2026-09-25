@@ -24,11 +24,28 @@ namespace App\Bridge\Writeback;
  * WHY A SECOND IMPLEMENTATION. The rule's home is Python — the consumer's
  * `kanban-issues-sync` `_STAGE_LANE` / `_task_lane` / `classify_coord` — and the
  * bridge is PHP and cannot import it. This is a deliberate mirror of a rule the bridge
- * does not own, the same shape (and the same obligation to re-port on a rule change) as
- * {@see CoordConfigTerminals}. The `coordination.config.json` read that would let the
+ * does not own, the same shape as {@see CoordConfigTerminals} — and, like it, DELETING
+ * IT IS NOT AVAILABLE: the lane has to be resolved inside the synchronous webhook
+ * request, in PHP, with no import and no service to point a reader at. The copy is
+ * GUARDED rather than retired. The `coordination.config.json` read that would let the
  * bridge derive the lane NAMES itself is deliberately CLI-only — see that class — so
  * the lane→stage-id half is operator config (`coord_card_lane_stage_ids`), exactly
  * like every other stage id the writeback targets.
+ *
+ * ⭐ THE LOCKSTEP OBLIGATION IS A CHECKED CONTRACT, NOT THIS DOCBLOCK (card#10273). The
+ * "same obligation to re-port on a rule change" that used to stand in the paragraph above
+ * was a DECLARE with no CHECK — the defect DL-414 names. What holds it now:
+ * docs/coord-lane-parity-corpus.json (the PUBLISHED behaviour corpus — argument vectors
+ * and the answers both ends give, never a text comparison),
+ * tests/Unit/Writeback/CoordLaneStagesParityTest.php (holds this class against that file
+ * in BOTH directions, so an undeclared constant or a new public method reds like a changed
+ * answer), and bin/coord-mirror-parity.py (the far-end half, which imports the Python from
+ * source; NOT in CI, because CI has no copy of the coord plugin — run it on a coord bump).
+ * ⚠ The corpus is narrower than "the two answer alike" and says where: one Unicode
+ * case-folding divergence is MEASURED and pinned in its `known_divergences`, and the
+ * lane→stage-id half is not mirrored at all. That boundary lives in the corpus's
+ * `not_checked_by_this_repo`; it is deliberately not restated here. (Named in prose, not
+ * `@see`: a production class must not import a test class.)
  *
  * WHAT IS MIRRORED, precisely:
  *   - the four labels and their lane order — `_STAGE_LANE`'s insertion order, which is
