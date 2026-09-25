@@ -396,7 +396,13 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->assertCount(1, ProtocolInvalidLabelDebt::owed(), 'the entry is still there once the file is readable again');
     }
 
-    public function test_a_corrupt_record_is_set_aside_rather_than_overwritten_by_the_next_write(): void
+    /**
+     * ⛔ A WRITE THAT MEETS A RECORD IT CANNOT READ STOPS. Replacing the file destroys the entries
+     * nobody read, and moving it aside takes them off the operator's surface — so the file is left
+     * byte-for-byte, the write is logged as unrecorded, and the operator's command keeps naming the
+     * file. Both halves are asserted, because either alone certifies a system that loses the entries.
+     */
+    public function test_a_corrupt_record_is_left_byte_identical_by_a_write_and_the_command_still_reds_on_it(): void
     {
         File::ensureDirectoryExists($this->dir.'/state');
         $torn = '{"owed": {"acme/coord#41": {"repo": "Acme/Coord", "number": 41';
@@ -405,15 +411,19 @@ class ProtocolInvalidLabelRepairTest extends TestCase
 
         ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
 
-        $aside = glob(ProtocolInvalidLabelDebt::path().'.corrupt-*') ?: [];
-        $this->assertCount(1, $aside, 'the bytes the bridge could not parse are kept beside the record, not destroyed');
-        $this->assertSame($torn, File::get($aside[0]));
-        $this->assertSame([[self::REPO, 43, 'add_refused', 403, 1]], $this->owedTuples());
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_set_aside'
-            && ($context['set_aside_as'] ?? null) === $aside[0])->once();
+        $this->assertSame($torn, File::get(ProtocolInvalidLabelDebt::path()), 'a write never replaces a record it could not parse');
+        $this->assertSame([ProtocolInvalidLabelDebt::path().'.lock'], $this->siblingsOfTheRecord(), 'nothing is moved or written beside it');
+        $this->assertUnwritableNaming(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote (not valid JSON)');
+
+        foreach ([[], ['--fix' => true]] as $options) {
+            $this->artisan('bridge:relabel', $options)
+                ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote')
+                ->doesntExpectOutputToContain('nothing owed')
+                ->assertFailed();
+        }
     }
 
-    public function test_a_record_this_user_cannot_read_is_set_aside_rather_than_overwritten_by_the_next_write(): void
+    public function test_a_record_this_user_cannot_read_is_left_byte_identical_by_a_write(): void
     {
         // The realistic producer: `bridge:relabel --fix` run as the OPERATOR rewrites the record,
         // and `writeFileAtomic()` leaves it 0600 and owned by that user, so the receiver's next
@@ -424,15 +434,43 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         chmod(ProtocolInvalidLabelDebt::path(), 0);
         Log::spy();
 
+        try {
+            ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        } finally {
+            chmod(ProtocolInvalidLabelDebt::path(), 0600);
+        }
+
+        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
+        $this->assertSame([ProtocolInvalidLabelDebt::path().'.lock'], $this->siblingsOfTheRecord());
+        $this->assertSame([[self::REPO, 41, 'add_refused', 403, 1]], $this->owedTuples(), 'the write the record could not take is not in it — the warning says so');
+        $this->assertUnwritableNaming('at '.ProtocolInvalidLabelDebt::path().' could not be read by this process');
+    }
+
+    /**
+     * An entry in a well-formed record that is not one this class writes is the file-level fault
+     * one entry at a time: skipped, it would read as nothing owed and vanish on the next rewrite.
+     */
+    public function test_a_mis_shaped_entry_makes_the_record_corrupt_reported_and_never_dropped(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        ProtocolInvalidLabelDebt::settle(self::REPO, 42, null, 'add_refused', 403);
+        $decoded = json_decode(File::get(ProtocolInvalidLabelDebt::path()), true);
+        $decoded['owed']['acme/coord#41'] = ['number' => '41'] + $decoded['owed'][strtolower(self::REPO).'#42'];
+        $record = (string) json_encode($decoded);
+        File::put(ProtocolInvalidLabelDebt::path(), $record);
+        Log::spy();
+
+        foreach ([[], ['--fix' => true]] as $options) {
+            $this->artisan('bridge:relabel', $options)
+                ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote (an entry that is not an owed label write)')
+                ->doesntExpectOutputToContain('nothing owed')
+                ->assertFailed();
+        }
+
         ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
 
-        $aside = glob(ProtocolInvalidLabelDebt::path().'.unreadable-*') ?: [];
-        $this->assertCount(1, $aside);
-        chmod($aside[0], 0600);
-        $this->assertSame($held, File::get($aside[0]));
-        $this->assertSame([[self::REPO, 43, 'add_refused', 403, 1]], $this->owedTuples());
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_set_aside'
-            && ($context['set_aside_as'] ?? null) === $aside[0])->once();
+        $this->assertSame($record, File::get(ProtocolInvalidLabelDebt::path()), 'the rewrite that would drop the entry never happens');
+        $this->assertUnwritableNaming('(an entry that is not an owed label write)');
     }
 
     public function test_the_request_path_peek_reports_an_unreadable_record_and_changes_nothing(): void
@@ -467,6 +505,19 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     }
 
     // --- helpers -------------------------------------------------------------------------------------
+
+    /** @return list<string> every file beside the record, the record itself excluded */
+    private function siblingsOfTheRecord(): array
+    {
+        return array_values(array_diff(glob(ProtocolInvalidLabelDebt::path().'*') ?: [], [ProtocolInvalidLabelDebt::path()]));
+    }
+
+    private function assertUnwritableNaming(string $problem): void
+    {
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unwritable'
+            && ($context['path'] ?? null) === ProtocolInvalidLabelDebt::path()
+            && str_contains((string) ($context['error'] ?? ''), $problem))->once();
+    }
 
     /**
      * Mode 0 refuses a read only to a process without CAP_DAC_OVERRIDE; as root the file opens

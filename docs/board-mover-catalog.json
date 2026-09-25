@@ -152,7 +152,6 @@
     {"id":"protocol_invalid_label.applied","kind":"labeled","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
     {"id":"protocol_invalid_label.no_token","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
     {"id":"protocol_invalid_label.owed_record_pruned","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabelDebt::prune","since":"0.90.0"},
-    {"id":"protocol_invalid_label.owed_record_set_aside","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabelDebt::setAside","since":"0.90.0"},
     {"id":"protocol_invalid_label.owed_record_unreadable","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabelDebt::read","since":"0.90.0"},
     {"id":"protocol_invalid_label.owed_record_unwritable","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabelDebt::mutate","since":"0.90.0"},
     {"id":"protocol_invalid_label.payload_invalid","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},

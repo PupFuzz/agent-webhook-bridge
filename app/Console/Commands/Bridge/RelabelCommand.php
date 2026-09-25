@@ -142,10 +142,11 @@ class RelabelCommand extends BridgeCommand
             return $this->inScope(ProtocolInvalidLabelDebt::owed(), $repoFilter);
         } catch (UnreadableFileException $e) {
             $this->error('cannot tell what is owed: '.$e->getMessage().'. The receiver writes this record mode 0600 — '
-                .'run bridge:relabel as the user the receiver runs as. Nothing was sent.');
+                .'run bridge:relabel as the user the receiver runs as. If that user cannot read it either, give the file '
+                .'back to that user — until then the receiver records no refused label write. Nothing was sent.');
         } catch (MalformedStateFileException $e) {
-            $this->error('cannot tell what is owed: '.$e->getMessage().'. The next refused label write sets it aside '
-                .'(as '.ProtocolInvalidLabelDebt::FILE.'.corrupt-<time>) and starts a new record; the writes it held have to be read from it by hand. Nothing was sent.');
+            $this->error('cannot tell what is owed: '.$e->getMessage().'. The bridge will not rewrite it, so until it is '
+                .'corrected or removed by hand no refused label write is recorded (each is logged instead). Nothing was sent.');
         }
 
         return null;

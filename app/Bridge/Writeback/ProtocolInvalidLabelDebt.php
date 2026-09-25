@@ -55,8 +55,11 @@ use Throwable;
  * ({@see UnreadableFileException}, the realistic case being `bridge:relabel` run as a user other
  * than the receiver's, since the record is `0600`) or cannot parse ({@see MalformedStateFileException}).
  * {@see owed()} THROWS on the third, so the operator's surface cannot render it as an all-clear;
- * the request-path peek in {@see forget()} reports it and changes nothing; and a write SETS THE
- * FILE ASIDE before replacing it, so what it held is kept for the operator rather than destroyed.
+ * the request-path peek in {@see forget()} reports it and changes nothing; and a write STOPS —
+ * the file is left byte-for-byte as it was and the write is logged as unrecorded. There is
+ * nothing correct to do to such a file automatically: replacing it destroys entries this process
+ * could not read, and moving it aside takes them off the one surface the operator reads. So the
+ * bridge says so and leaves it where `bridge:relabel` will keep naming it until a person acts.
  */
 final class ProtocolInvalidLabelDebt
 {
@@ -222,7 +225,10 @@ final class ProtocolInvalidLabelDebt
             $path = self::path();
             BridgePaths::withLock($path, function () use ($change, $path): void {
                 $owed = [];
-                foreach (self::loadForRewrite($path) as $entry) {
+                // load(), never read(): a record this process cannot read or parse THROWS here,
+                // so the rename in writeFileAtomic() — which needs only the directory — never
+                // replaces entries nobody read. The catch below turns that into one warning.
+                foreach (self::load() as $entry) {
                     $owed[self::key($entry['repo'], $entry['number'])] = $entry;
                 }
                 BridgePaths::writeFileAtomic(
@@ -233,8 +239,9 @@ final class ProtocolInvalidLabelDebt
         } catch (Throwable $e) {
             // The bookkeeping must never break the delivery it books (DL-408: routing does not
             // depend on this label). The cost of landing here is that the write stays unrepairable
-            // and unlisted, which is what this line is for.
-            Log::warning('protocol_invalid_label: the record of writes this install still owes could not be updated — that write is now unlisted and `bridge:relabel` will not repair it; routing is unchanged', [
+            // and unlisted, which is what this line is for — and when the cause is a record this
+            // process cannot read or parse, `error` names it and `bridge:relabel` reds on it.
+            Log::warning('protocol_invalid_label: the record of writes this install still owes could not be updated and was left exactly as it was — a refused write this was recording is not in it and `bridge:relabel` will not repair it; routing is unchanged', [
                 'catalog_id' => 'protocol_invalid_label.owed_record_unwritable',
                 'path' => $path, 'error' => RedactedErrorText::of($e),
             ]);
@@ -290,43 +297,7 @@ final class ProtocolInvalidLabelDebt
     }
 
     /**
-     * The rows a write starts from. A record this process cannot read is MOVED ASIDE first, never
-     * overwritten: the rename in {@see BridgePaths::writeFileAtomic()} needs only the directory,
-     * so it would replace a file it could not open — destroying every entry in it — without a
-     * word. A failed move throws, and {@see mutate()} then writes nothing.
-     *
-     * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>
-     */
-    private static function loadForRewrite(string $path): array
-    {
-        try {
-            return self::load();
-        } catch (MalformedStateFileException $e) {
-            self::setAside($path, 'corrupt', $e);
-        } catch (UnreadableFileException $e) {
-            self::setAside($path, 'unreadable', $e);
-        }
-
-        return [];
-    }
-
-    private static function setAside(string $path, string $state, \RuntimeException $problem): void
-    {
-        $aside = $path.'.'.$state.'-'.now()->utc()->format('Ymd\THis.u\Z');
-        if (! @rename($path, $aside)) {
-            $reason = error_get_last()['message'] ?? 'rename failed';
-
-            throw new \RuntimeException("bridge: failed to set {$path} aside as {$aside} ({$reason}) — not replacing a record whose entries could not be read");
-        }
-
-        Log::warning('protocol_invalid_label: the record of writes this install still owes could not be read, so it was SET ASIDE before this write replaced it — the threads it held are not in the record now and `bridge:relabel` will not repair them; the set-aside file names them', [
-            'catalog_id' => 'protocol_invalid_label.owed_record_set_aside',
-            'path' => $path, 'set_aside_as' => $aside, 'problem' => $problem->getMessage(),
-        ]);
-    }
-
-    /**
-     * The record's rows; [] only when there is NO FILE.
+     * The record's rows; [] only when there is NO FILE. Every entry or nothing: see the loop.
      *
      * @return list<array{repo: string, number: int, comment_id: ?string, first_failed_at: string, last_failed_at: string, attempts: int, reason: string, status: ?int}>
      *
@@ -347,9 +318,13 @@ final class ProtocolInvalidLabelDebt
 
         $rows = [];
         foreach ($decoded['owed'] as $entry) {
-            if (self::shaped($entry)) {
-                $rows[] = $entry;
+            // ⛔ ONE MIS-SHAPED ENTRY MAKES THE WHOLE RECORD MALFORMED. Skipping it would hide it
+            // from owed() and drop it silently on the next rewrite — the file-level fault, one
+            // entry at a time.
+            if (! self::shaped($entry)) {
+                throw MalformedStateFileException::notARecord($path, 'an entry that is not an owed label write');
             }
+            $rows[] = $entry;
         }
 
         return $rows;
