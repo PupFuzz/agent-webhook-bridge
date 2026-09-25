@@ -178,7 +178,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
     }
 
     /**
-     * card#10068 — the PARENT-CARD refusal on the coordination-card CLOSE, the third terminal
+     * card#10068 — the PARENT-CARD refusal on the coordination-card CLOSE, a terminal
      * write in `app/` and the lowest-volume of them. A predicate enforced at some writers of a
      * terminal stage is enforced at none of them: this leg reads the whole row (it already
      * consults the board and pin guards on it), so the tag is readable for no extra request.

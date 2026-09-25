@@ -26,42 +26,46 @@ namespace App\Bridge\Writeback;
  * parent still has a leg's PR refs written onto it. This consult therefore sits UPSTREAM of
  * every stamp call site rather than beside the pin, where it would inherit exactly that.
  *
- * ⚑ THE TAG IS AN OPERATOR CONVENTION AND THIS CLASS IS ITS ONLY DECLARATION ANYWHERE. The
- * refusal was designed as a cross-repo guarantee, but ⛔ NO FAR END IMPLEMENTS IT TODAY:
- * measured 2026-09-20 over every coordination-framework version published on the reference
- * install (plugin cache 0.49.0–0.55.0, marketplace checkout `b6cb4ff` = v0.55.0), there is no
- * `program`-tag rule anywhere in the plugin, and the `kanban-prs-sync.py` it ships defers on
- * DL / card-id resolution and reads no tag at any version. (The instrument discriminates: the
- * same search finds `no-automove` published there in four places.) So the spelling published
- * in `docs/kanban-integration-contract.md` § 3 (Load-bearing invariants) is a REQUEST for a
- * counterpart, not a description of one, and that row says so in those terms — read it as the
- * declaration and this class as the only enforcement. The constant is read out of here by
- * `Tests\Feature\Writeback\ProgramCardGuardTest` rather than restated there by hand, so the
- * day a far end does implement it, the spelling it matches cannot have drifted from
- * {@see TAG}. (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and
+ * ⚑ THE TAG IS AN OPERATOR CONVENTION AND THIS CLASS IS ITS ONLY MERGED DECLARATION. The
+ * refusal was designed as a cross-repo guarantee. ⛔ THE COORDINATION FRAMEWORK DOES NOT
+ * IMPLEMENT IT: measured 2026-09-20 over every coordination-framework version published on the
+ * reference install (plugin cache 0.49.0–0.55.0, marketplace checkout `b6cb4ff` = v0.55.0),
+ * there is no `program`-tag rule anywhere in the plugin, and the `kanban-prs-sync.py` it ships
+ * defers on DL / card-id resolution and reads no tag at any version. (The instrument
+ * discriminates: the same search finds `no-automove` published there in four places.) The
+ * toolkit's `bin/promote-released-cards` implements a WITHHOLD on this same exact spelling as
+ * of PupFuzz/agent-board-toolkit#398, which is approved and NOT YET MERGED — so no released far
+ * end enforces it yet, and a toolkit pin older than that merge never will. So the spelling
+ * published in `docs/kanban-integration-contract.md` § 3 (Load-bearing invariants) is a
+ * REQUEST for a counterpart, not a description of one, and that row says so in those terms —
+ * read it as the declaration and this class as the only enforcement in this repo. The
+ * constant is read out of here by `Tests\Feature\Writeback\ProgramCardGuardTest` rather than
+ * restated there by hand, so the day a far end does implement it, the spelling it matches
+ * cannot have drifted from {@see TAG}. (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and
  * `app/` does not import from `tests/` — the same note `PrCorrelationCommenter` carries.)
  * ⛔ WHAT THIS SIDE CANNOT VERIFY, stated rather than assumed: nothing here can establish that
  * a future far-end implementation uses the same spelling, and nothing on either side
  * establishes that a parent card actually CARRIES the tag — an untagged parent is invisible to
  * this guard, which is the residual card#9929 records and not something this check closes.
  *
- * ⛔ EVERY TERMINAL-STAGE WRITER IN THIS REPO CONSULTS IT — AND THE REFUSAL IS STILL NOT
- * REPO-WIDE (card#10068). Shipped with ONE caller, which is what card#10068 reports: a
- * predicate enforced at one writer of a terminal stage is not enforced, and the writer that
- * actually fires on this install's releases was not the one guarded. The consults now sit on
- * the PR-event path, the release promote scan, the `bridge:reconcile --fix` plan and the
- * coordination-card close. ⛔ WHICH WRITERS THOSE ARE IS NOT A LIST TO TRUST HERE: the
- * population is DERIVED every run by `Tests\Feature\Writeback\ProgramParentMoveCoverageTest`
- * over every `->moveCard(` site in `app/`, each of which carries a ruling — consulted, or what
- * it moves and why it does not — so a new writer arrives as a red test rather than as a
- * silence. (Named, not `{@see}`-linked, for the pint reason this docblock already carries
- * below.) A roster copied into a comment is true until the next writer lands (card#10063), and
+ * ⛔ WHAT IS BOUNDED, AND IT IS NARROWER THAN "EVERY TERMINAL WRITER" (card#10068). Shipped
+ * with ONE caller, which is what card#10068 reports: a predicate enforced at one writer of a
+ * terminal stage is not enforced, and the writer that actually fires on this install's
+ * releases was not the one guarded. What `Tests\Feature\Writeback\ProgramParentMoveCoverageTest`
+ * now holds, DERIVED every run over the tree: every `->moveCard(` site in `app/` carries a
+ * reviewed ruling, and every site ruled terminal-capable consults this guard — none is
+ * exempted. Whether a site IS terminal-capable is the reviewed ruling, not a derivation: a new
+ * terminal writer ruled non-terminal in prose would stay green. Which sites consult is NOT a
+ * list to trust here — read the test, where a new writer arrives as a red test rather than as
+ * a silence. (Named, not `{@see}`-linked, for the pint reason this docblock already carries
+ * above.) A roster copied into a comment is true until the next writer lands (card#10063), and
  * this paragraph's own previous version is the worked example.
  * ⛔ WHAT IS STILL UNREACHED, stated rather than implied away: the TOOLKIT's
  * `bin/promote-released-cards` is a second implementation of the same Shipped→Released move,
- * in another repo, racing this one on every release — nothing here reaches it; and kanban's own
- * UI drag and HTTP API reach no bridge-side predicate at all. `docs/writeback.md` § Parent
- * cards owns that boundary for an operator.
+ * in another repo, racing this one on every release — nothing here reaches it (its own withhold
+ * is the one named above, pending merge); and kanban's own UI drag and HTTP API reach no
+ * bridge-side predicate at all. `docs/writeback.md` § How it works, the *A PARENT card is
+ * refused* bullet, owns that boundary for an operator.
  *
  * ⚑ EXACT MATCH, like `no-automove`'s: kanban stores tags verbatim (it normalizes neither case
  * nor whitespace), so `Program` and `program ` are not this tag and are not refused. The

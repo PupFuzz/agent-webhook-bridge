@@ -19,13 +19,13 @@ use Tests\TestCase;
  * earlier as a pure MEASUREMENT: whether an unguarded mover should refuse, warn, or
  * move-and-report was an ACCEPTANCE question reserved to the operator, so every entry below was
  * a record of an open gap and none of them was a disposition that the gap was fine. The operator
- * ruled on 2026-09-24 (card#10068) — the predicate is enforced at EVERY writer of a terminal
- * stage — and the three terminal writers that did not consult it now do. What a string entry
- * means therefore MOVED with that ruling: it no longer says *"nobody has decided"*, it says
- * *"this site reaches no consult IN ITS OWN BODY, and here is why that is right"* — either the
- * move is not a terminal one, or the consult is one frame up (and then {@see UPSTREAM_CONSULTS}
- * checks that claim rather than leaving it as prose), or the card being moved cannot be a
- * program parent at all.
+ * ruled on 2026-09-24 (card#10068) that the predicate is enforced at EVERY writer of a terminal
+ * stage, and approved the refusal as the response on 2026-09-25 (card#10068 comment 6446,
+ * option 1, dependabot included) — so every terminal-capable site now consults it and NONE is
+ * exempted. What a string entry means therefore MOVED with that ruling: it no longer says
+ * *"nobody has decided"*, it says *"this site reaches no consult IN ITS OWN BODY, and here is
+ * why that is right"* — either the move is not a terminal one, or the consult is one frame up
+ * (and then {@see UPSTREAM_CONSULTS} checks that claim rather than leaving it as prose).
  *
  * ⭐ THE POPULATION IS DERIVED, NOT LISTED — the same reason and the same instrument
  * {@see TerminalMoverOwnerClearCoverageTest} uses over this identical population
@@ -47,6 +47,11 @@ use Tests\TestCase;
  *    `UPSTREAM_CONSULTS` entry beside it, is checked by nothing — the claim is in prose and only
  *    an entry makes it a claim the tree can falsify.
  *  - It does NOT check that the consult's arguments are right, nor that a string ruling is true.
+ *    ⛔ SO THE CLAIM THIS CLASS BOUNDS IS NARROWER THAN "EVERY TERMINAL WRITER IS GUARDED": it
+ *    is that every `->moveCard(` site in `app/` carries a reviewed ruling, and that every site
+ *    ruled terminal-capable consults. Nothing here derives terminal-ness — a new terminal
+ *    writer ruled "NON-TERMINAL: …" in prose stays green, and only the review of that ruling
+ *    catches it.
  *  - It matches the guard by its SHORT name, the spelling `vendor/bin/pint`'s own
  *    `fully_qualified_strict_types` fixer produces here; a consult written as a single
  *    fully-qualified token would read as no consult. That direction is the safe one — it reds a
@@ -76,8 +81,8 @@ class ProgramParentMoveCoverageTest extends TestCase
      * @var array<string, true|string>
      */
     private const RULINGS = [
-        // Coordination-card close, into `coord_card_terminal_stage_id` — a TERMINAL move, and
-        // since card#10068 the third consult. The handler holds the full card row here (it
+        // Coordination-card close, into `coord_card_terminal_stage_id` — a TERMINAL move,
+        // consulting since card#10068. The handler holds the full card row here (it
         // consults PinGuard and MappedBoardGuard on it), so the tag costs no extra request.
         'Bridge/Handlers/KanbanCoordCardMoveHandler.php::moveOne#1' => self::CONSULTS,
         // The revive leg moves a card OUT of the terminal; the relane leg moves lane to lane.
@@ -86,16 +91,12 @@ class ProgramParentMoveCoverageTest extends TestCase
         // refusing the revive is the one direction that does not self-correct.
         'Bridge/Handlers/KanbanCoordCardMoveHandler.php::moveOne#2' => 'NON-TERMINAL: the revive leg moves a card OUT of the terminal, so it makes no completion claim about a parent and is deliberately not guarded',
         'Bridge/Handlers/KanbanCoordCardMoveHandler.php::relaneOne#1' => 'NON-TERMINAL: the relane leg moves lane to lane within the live columns, so it makes no completion claim about a parent and is deliberately not guarded',
-        // ⛔ RULED NO-REFUSAL ON THE SUBJECT, not on the write (card#10068, operator ruling).
-        // This is the one terminal-capable mover that gets no consult, and the reason is what
-        // it moves: its whole population is cards CORRELATED TO ONE DEPENDABOT PULL REQUEST
-        // (`correlatePr` by that PR's ref, then re-attributed by the card's own `pr_url`), and a
-        // single dependency bump names one deliverable — the shape the `program` tag exists to
-        // say a card is NOT. ⚠ THE HONEST BOUND, since the population is derived by CORRELATION
-        // and not by what this handler minted: an operator who hand-stamped a parent card with a
-        // dependabot PR's ref would reach this move. That is accepted rather than unnoticed —
-        // it takes a deliberate mis-stamp, and the same hand could as easily drop the tag.
-        'Bridge/Handlers/KanbanDependabotCardHandler.php::handle#1' => 'TERMINAL-CAPABLE, NO REFUSAL BY OPERATOR RULING: the dependabot survivor move; its population is cards correlated to ONE dependabot pull request, i.e. one dependency bump, which is not a parent naming several legs',
+        // The dependabot survivor move — TERMINAL-CAPABLE (`merged` / `merged_to_main`), and
+        // consulting since #787 r1 reproduced that a `program` parent reaches it: its population
+        // is derived by CORRELATION to the PR's ref, not by what the handler minted. The earlier
+        // "no refusal" entry rested on the premise that such a card cannot be a parent, and was
+        // never an operator ruling; the operator approved guarding it (card#10068 comment 6446).
+        'Bridge/Handlers/KanbanDependabotCardHandler.php::handle#1' => self::CONSULTS,
         // The GitHub-PR event path — the FIRST consult (card#9929).
         'Bridge/Handlers/KanbanMoveCardHandler.php::handle#1' => self::CONSULTS,
         // Shipped → Released. ⚠ THE WRITER THAT ACTUALLY FIRES on this install's releases.
@@ -107,11 +108,11 @@ class ProgramParentMoveCoverageTest extends TestCase
     /**
      * The sites whose consult is ONE FRAME UP → the `<file>::<function>` body that must carry it.
      *
-     * ⭐ IT EXISTS SO THE PROSE IS NOT THE CHECK. Two of the four consults cannot sit beside their
-     * own move, because the move site holds an id or a plan row and the `tags` are only readable
-     * where the ROW is; the scanner above is deliberately blind to that, so those two entries
-     * would otherwise be a claim a reviewer has to believe. Named here, the claim is falsifiable
-     * against the same tree: delete either consult, or move it to another method, and this reds.
+     * ⭐ IT EXISTS SO THE PROSE IS NOT THE CHECK. Some consults cannot sit beside their own move,
+     * because the move site holds an id or a plan row and the `tags` are only readable where the
+     * ROW is; the scanner above is deliberately blind to that, so those entries would otherwise
+     * be a claim a reviewer has to believe. Named here, the claim is falsifiable against the same
+     * tree: delete such a consult, or move it to another method, and this reds.
      *
      * ⛔ IT DOES NOT CHECK THE DIRECTION. The in-body scanner insists a consult PRECEDES its move;
      * nothing here can, the two being in different bodies. What an upstream entry establishes is
@@ -138,9 +139,9 @@ class ProgramParentMoveCoverageTest extends TestCase
             'the set of `->moveCard(` call sites in app/ is not the set this class has a ruling for. A NEW site '
             .'writes a card\'s stage, so it either consults '.self::GUARD_CLASS.' before its move — a card carrying '
             .'the `program` tag names SEVERAL legs, and no one event may speak for it — or its entry says what it '
-            .'moves and that it does not. ⛔ Adding a REFUSAL to a writer that moves today is an acceptance change '
-            .'and is card#10068\'s open operator decision; adding the RULING is not. A ruling whose site is gone is '
-            .'stale: delete it.',
+            .'moves and that it does not. ⛔ Adding or removing a REFUSAL at a writer changes what the system refuses, '
+            .'which is an acceptance change for the operator (card#10068 records the current one); adding the RULING '
+            .'is not. A ruling whose site is gone is stale: delete it.',
         );
     }
 
