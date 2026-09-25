@@ -420,7 +420,7 @@ class GitHubWriteDebtTest extends TestCase
                     ->assertFailed();
             }
             [, $out] = $this->relabel([]);
-            $this->assertStringContainsString('give the file and its .lock back to that user', $out, 'the lock is the second file the receiver must be able to open');
+            $this->assertStringContainsString(GitHubWriteDebt::giveBackRemedy(), $out, 'every file the receiver must be able to open is handed back');
         } finally {
             chmod(GitHubWriteDebt::path(), 0600);
         }
@@ -661,7 +661,7 @@ class GitHubWriteDebtTest extends TestCase
         [$code, $out] = $this->relabel(['--fix' => true]);
 
         $this->assertSame($held, File::get(GitHubWriteDebt::path()));
-        $this->assertUnwritableNaming('give '.GitHubWriteDebt::path().' and its .lock back to the user the receiver runs as');
+        $this->assertUnwritableNaming(GitHubWriteDebt::giveBackRemedy());
         $this->assertSame(1, $code);
         $this->assertStringContainsString('is owned by root and this process runs as www-data', $out);
         $this->assertStringContainsString('back to the user the receiver runs as', $out);
@@ -702,6 +702,50 @@ class GitHubWriteDebtTest extends TestCase
         $this->assertSame(1, $code);
         $this->assertStringContainsString('REFUSED — '.$lock.' is owned by deploy and this process runs as www-data', $out);
         $this->assertStringNotContainsString('nothing owed', $out);
+    }
+
+    /**
+     * The repair lock is the record's third file. `--fix` opens it with the record's own `fopen(…, 'c')`,
+     * so one another user owns stops every repair while the record and its `.lock` read fine — the
+     * command names it, in both modes, before anything is read or sent. The receiver never opens it,
+     * so the receiver's own write is NOT refused over it.
+     */
+    public function test_a_repair_lock_another_user_owns_refuses_the_command_and_not_the_receivers_write(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $repairLock = GitHubWriteDebt::repairLockTarget().'.lock';
+        File::put($repairLock, '');
+        $me = (int) fileowner(GitHubWriteDebt::path());
+        $this->runAs($me, [$me => 'www-data', $me + 1 => 'deploy'], owners: [$repairLock => $me + 1]);
+
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
+        $this->assertSame([41, 43], array_column(GitHubWriteDebt::owed(), 'number'), 'the receiver never opens the repair lock');
+
+        foreach ([[], ['--fix' => true]] as $options) {
+            [$code, $out] = $this->relabel($options);
+            $this->assertSame(1, $code);
+            $this->assertStringContainsString('REFUSED — '.$repairLock.' is owned by deploy and this process runs as www-data', $out);
+            $this->assertStringNotContainsString('owed  ', $out);
+        }
+        $this->assertSame([], $this->github, 'a refused run sends nothing');
+    }
+
+    /** A root-owned file of the three is answered by handing back ALL of them — the remedy names every file the check asks about. */
+    public function test_the_give_back_remedy_names_every_file_the_owner_check_asks_about(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $repairLock = GitHubWriteDebt::repairLockTarget().'.lock';
+        File::put($repairLock, '');
+        $me = (int) fileowner(GitHubWriteDebt::path());
+        $this->runAs($me, [0 => 'root', $me => 'www-data'], owners: [$repairLock => 0]);
+
+        [$code, $out] = $this->relabel(['--fix' => true]);
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString(
+            'give '.GitHubWriteDebt::path().', '.GitHubWriteDebt::path().'.lock and '.$repairLock.' back to the user the receiver runs as',
+            $out,
+        );
     }
 
     /** @return array<string, array{bool}> */

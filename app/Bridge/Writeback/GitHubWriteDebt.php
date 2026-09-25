@@ -105,6 +105,30 @@ final class GitHubWriteDebt
     }
 
     /**
+     * Every file this record's writers create, each mapped to whether the RECEIVER opens it. All of
+     * them must stay the receiver's user's: the record and its `.lock` are opened by every write,
+     * the repair lock by `bridge:github-owed --fix` alone. ONE list, so {@see writerRefusal()}'s
+     * owner check and the remedy it prints cannot name different files.
+     *
+     * @return array<string, bool>
+     */
+    public static function ownedFiles(): array
+    {
+        $path = self::path();
+
+        return [$path => true, "{$path}.lock" => true, self::repairLockTarget().'.lock' => false];
+    }
+
+    /** The one remedy for a file of {@see ownedFiles()} the receiver cannot open: hand them all back. */
+    public static function giveBackRemedy(): string
+    {
+        $files = array_keys(self::ownedFiles());
+        $last = array_pop($files);
+
+        return 'give '.implode(', ', $files)." and {$last} back to the user the receiver runs as";
+    }
+
+    /**
      * Run $repair only if no other repair is running on this install; the answer is whether it ran.
      *
      * ⛔ A REPAIR RE-READS BEFORE IT POSTS, AND THAT READ IS NOT ATOMIC WITH THE POST. Two repairs at
@@ -113,7 +137,9 @@ final class GitHubWriteDebt
      * watching a command hang for the length of someone else's. What this does not cover, and
      * cannot: a delivery posting the same comment while a repair runs. The receiver never takes
      * this lock (a delivery must not wait on an operator's run), so that overlap can still post
-     * twice; sequential repairs never do.
+     * twice. Sequential repairs never do once GitHub's comment list shows the earlier post; a
+     * comment GitHub stored but does not list yet reads as absent to the next repair's read too
+     * (the lag {@see PrCorrelationCommenter::$attempted} names).
      *
      * @param  \Closure(): void  $repair
      */
@@ -254,14 +280,16 @@ final class GitHubWriteDebt
      *  - ROOT NEVER WRITES IT, present or absent: root is never the receiver's user, and a record (or
      *    a lock file) root creates is one the receiver cannot open;
      *  - A PRESENT RECORD IS REPLACED ONLY BY ITS OWNER, since that owner is, by the rule above, the
-     *    last user that could write it — and a present `.lock` is held to the same rule, since a lock
-     *    the receiver cannot open stops its writes as surely as a record it cannot open.
+     *    last user that could write it — and every present file of {@see ownedFiles()} is held to
+     *    the same rule, since a lock the receiver cannot open stops its writes as surely as a record
+     *    it cannot open. $includeRepairLock asks it of the repair lock too: only `bridge:github-owed` opens
+     *    that one, so the receiver's own writes are never refused over it.
      * ⚑ An ABSENT record created by a non-root user other than the receiver's is NOT refused: nothing
      * this process can read says which user the receiver runs as. `CLAUDE_DEPLOYMENT.md` names it.
      * An effective uid this process cannot read (no posix extension) is unmeasured and refuses
      * nothing, the `bridge:jobs install-tick` root refusal's reading of the same fact.
      */
-    public static function writerRefusal(): ?string
+    public static function writerRefusal(bool $includeRepairLock = false): ?string
     {
         $identity = app(ProcessIdentity::class);
         $euid = $identity->euid();
@@ -273,7 +301,7 @@ final class GitHubWriteDebt
         $ownerName = $owner === null ? null : ($identity->accountName($owner) ?? "uid {$owner}");
         // ⛔ A ROOT-OWNED RECORD HAS NO USER TO RUN AS — root is refused below — so the only
         // remedy is to hand the file back; "run it as root" would send the operator in a circle.
-        $giveBack = "give {$path} and its .lock back to the user the receiver runs as";
+        $giveBack = self::giveBackRemedy();
 
         if ($euid === 0) {
             return 'this process runs as root, and a record root writes is one the receiver cannot open — every refused write after it would go unrecorded; '
@@ -283,9 +311,13 @@ final class GitHubWriteDebt
                     default => "{$path} is owned by {$ownerName}: run it as {$ownerName}",
                 };
         }
-        // The lock is asked the same question: a `.lock` the receiver cannot open fails every write
-        // in withLock() while the record itself still reads fine to its owner (r4 MINOR-1).
-        foreach ([$path => $owner, "{$path}.lock" => $identity->ownerOf("{$path}.lock")] as $file => $fileOwner) {
+        // The locks are asked the same question: a `.lock` the receiver cannot open fails every
+        // write in withLock() while the record itself still reads fine to its owner (r4 MINOR-1).
+        foreach (self::ownedFiles() as $file => $receiverOpens) {
+            if (! $receiverOpens && ! $includeRepairLock) {
+                continue;
+            }
+            $fileOwner = $identity->ownerOf($file);
             if ($fileOwner === null || $fileOwner === $euid) {
                 continue;
             }

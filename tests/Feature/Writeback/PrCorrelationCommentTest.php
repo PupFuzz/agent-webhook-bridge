@@ -1084,7 +1084,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertSame([], GitHubWriteDebt::owed());
     }
 
-    public function test_a_two_hundred_that_does_not_carry_the_comment_is_owed_and_the_repair_never_posts_it_twice(): void
+    public function test_a_two_hundred_that_does_not_carry_the_comment_is_owed_and_a_sequential_repair_never_posts_it_twice(): void
     {
         // A 2xx is the server's CLAIM. Here GitHub DID store the comment and answered with a body
         // that does not carry it, so the event cannot confirm it: owed, never `posted`. The repair

@@ -49,8 +49,9 @@ use Throwable;
  *  - `--fix` REFUSES while another `--fix` holds the repair lock, naming it — two repairs at once
  *    could each read a pull request without its comment and both post it;
  *    {@see GitHubWriteDebt::whileRepairing()} owns why, and the overlap it cannot cover;
- *  - it REFUSES to run as root, or as a user other than the record's owner, in both modes, naming
- *    the user to run as — {@see GitHubWriteDebt::writerRefusal()} owns why.
+ *  - it REFUSES to run as root, or as a user other than the owner of any file the record's writers
+ *    create (its repair lock included), in both modes, naming the user to run as —
+ *    {@see GitHubWriteDebt::writerRefusal()} owns why.
  */
 class GitHubOwedCommand extends BridgeCommand
 {
@@ -71,7 +72,7 @@ class GitHubOwedCommand extends BridgeCommand
 
         // ⛔ BEFORE ANYTHING IS READ, in both modes: run as root, the report answers "nothing owed"
         // over a record the receiver has been locked out of, and --fix is what locks it out.
-        $refusal = GitHubWriteDebt::writerRefusal();
+        $refusal = GitHubWriteDebt::writerRefusal(includeRepairLock: true);
         if ($refusal !== null) {
             $this->error("bridge:github-owed: REFUSED — {$refusal}. Nothing was read, sent or written.");
 
@@ -244,8 +245,8 @@ class GitHubOwedCommand extends BridgeCommand
             return $this->inScope(GitHubWriteDebt::owed(), $repoFilter);
         } catch (UnreadableFileException $e) {
             $this->error('cannot tell what is owed: '.$e->getMessage().'. The receiver writes this record mode 0600 — '
-                .'run bridge:github-owed as the user the receiver runs as. If that user cannot read it either, give the file '
-                .'and its .lock back to that user — until then the receiver records no refused GitHub write. Nothing was sent.');
+                .'run bridge:github-owed as the user the receiver runs as. If that user cannot read it either, '
+                .GitHubWriteDebt::giveBackRemedy().' — until then the receiver records no refused GitHub write. Nothing was sent.');
         } catch (MalformedStateFileException $e) {
             $this->error('cannot tell what is owed: '.$e->getMessage().'. The bridge will not rewrite it, so until it is '
                 .'corrected or removed by hand no refused GitHub write is recorded (each is logged instead). Nothing was sent.');
