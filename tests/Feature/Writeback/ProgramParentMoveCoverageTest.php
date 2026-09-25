@@ -43,14 +43,15 @@ use Tests\TestCase;
  *    being a sentence a reviewer has to believe: it names the body each such site's consult
  *    lives in, and {@see test_a_site_ruled_guarded_one_frame_up_has_a_consult_in_the_body_it_names}
  *    derives the consult scopes from the same tree and reds when the named body stops carrying
- *    one. ⛔ ITS BOUND: a NEW string ruling whose prose claims an upstream consult, with no
- *    `UPSTREAM_CONSULTS` entry beside it, is checked by nothing — the claim is in prose and only
- *    an entry makes it a claim the tree can falsify.
+ *    one. A string ruling with no such entry must start `NON-TERMINAL:`
+ *    ({@see test_a_string_ruling_is_non_terminal_or_names_its_upstream_consult}), so an upstream
+ *    consult claimed only in prose, or an exemption of a site admitted to be terminal, reds.
  *  - It does NOT check that the consult's arguments are right, nor that a string ruling is true.
  *    ⛔ SO THE CLAIM THIS CLASS BOUNDS IS NARROWER THAN "EVERY TERMINAL WRITER IS GUARDED": it
- *    is that every `->moveCard(` site in `app/` carries a reviewed ruling, and that every site
- *    ruled terminal-capable consults. Nothing here derives terminal-ness — a new terminal
- *    writer ruled "NON-TERMINAL: …" in prose stays green, and only the review of that ruling
+ *    is that every `->moveCard(` site in `app/` carries a ruling, and that every ruling is one of
+ *    a consult in the site's body, a consult in a named upstream body, or `NON-TERMINAL:` — so no
+ *    site is ruled a terminal writer AND exempt. Nothing here derives terminal-ness — a new
+ *    terminal writer ruled "NON-TERMINAL: …" stays green, and only the review of that ruling
  *    catches it.
  *  - It matches the guard by its SHORT name, the spelling `vendor/bin/pint`'s own
  *    `fully_qualified_strict_types` fixer produces here; a consult written as a single
@@ -70,6 +71,9 @@ class ProgramParentMoveCoverageTest extends TestCase
 
     /** The ruling for a site whose body consults the guard before its move. */
     private const CONSULTS = true;
+
+    /** The prefix a string ruling carries when its site cannot write a terminal stage. */
+    private const NON_TERMINAL = 'NON-TERMINAL:';
 
     /**
      * EVERY DERIVED `->moveCard(` SITE → `self::CONSULTS`, or what the site moves and why its own
@@ -159,6 +163,31 @@ class ProgramParentMoveCoverageTest extends TestCase
             }
             $this->assertNotSame('', trim($ruling), "{$site} is ruled unguarded with no reason.");
             $this->assertFalse($consults, "{$site} is ruled unguarded, yet a ".self::GUARD_CLASS.':: consult now precedes its move — rule it self::CONSULTS instead, and say so on card#10068: the coverage this class records has CHANGED.');
+        }
+    }
+
+    /**
+     * ⭐ WHAT MAKES "NONE IS EXEMPTED" A CHECKED CLAIM rather than a sentence: a string ruling is
+     * one of exactly two things — the site is not a terminal writer (it says so, first, in the
+     * `NON-TERMINAL:` prefix a reviewer checks), or its consult is one frame up (and then
+     * {@see UPSTREAM_CONSULTS} names the body, and the leg below checks it). Anything else — a
+     * ruling that admits the site writes a terminal stage and gives a reason not to refuse —
+     * is an EXEMPTION, and it reds here however well argued. #787 r1's dependabot entry
+     * ("TERMINAL-CAPABLE …, NO REFUSAL") was that shape and passed every other leg.
+     */
+    public function test_a_string_ruling_is_non_terminal_or_names_its_upstream_consult(): void
+    {
+        foreach (self::RULINGS as $site => $ruling) {
+            if ($ruling === self::CONSULTS) {
+                continue;
+            }
+            $this->assertTrue(
+                str_starts_with($ruling, self::NON_TERMINAL) || array_key_exists($site, self::UPSTREAM_CONSULTS),
+                "{$site} is ruled unguarded, but its ruling neither starts `".self::NON_TERMINAL.'` nor has an UPSTREAM_CONSULTS entry — '
+                .'so it is an EXEMPTION of a terminal writer from the parent-card guard, which card#10068 rules out. Consult '
+                .self::GUARD_CLASS.' before the move, name the body that consults one frame up, or — only if the move cannot '
+                .'reach a terminal stage — say so with the `'.self::NON_TERMINAL.'` prefix.',
+            );
         }
     }
 

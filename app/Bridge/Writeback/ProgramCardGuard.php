@@ -54,7 +54,8 @@ namespace App\Bridge\Writeback;
  * releases was not the one guarded. What `Tests\Feature\Writeback\ProgramParentMoveCoverageTest`
  * now holds, DERIVED every run over the tree: every `->moveCard(` site in `app/` carries a
  * reviewed ruling, and every site ruled terminal-capable consults this guard — none is
- * exempted. Whether a site IS terminal-capable is the reviewed ruling, not a derivation: a new
+ * exempted: a site with no consult must be ruled `NON-TERMINAL:` or name the upstream body
+ * that consults for it, and any other ruling reds. Whether a site IS terminal-capable is the reviewed ruling, not a derivation: a new
  * terminal writer ruled non-terminal in prose would stay green. Which sites consult is NOT a
  * list to trust here — read the test, where a new writer arrives as a red test rather than as
  * a silence. (Named, not `{@see}`-linked, for the pint reason this docblock already carries
@@ -124,10 +125,10 @@ final class ProgramCardGuard
      *
      * $write names WHICH write was refused, because this arm refuses two of them at once.
      *
-     * $issueNumber carries the GitHub issue a refusal belongs to on the arms that have one
-     * ({@see PinGuard::refuses}' final parameter, and the same default): the coordination-card
-     * arm is keyed by issue, and a refusal an operator cannot trace back to one is half a
-     * report. The PR-event and release-scan arms have no issue and pass nothing.
+     * $issueNumber is the GitHub issue or PR number a refusal belongs to
+     * ({@see PinGuard::refuses}' final parameter, and the same default): an arm keyed by one
+     * passes it, because a refusal an operator cannot trace back to one is half a report; an
+     * arm with none passes nothing.
      *
      * @param  array<string, mixed>  $card
      * @param  array<string, mixed>  $logContext  arm-specific context; `card_id` and `repo` are added here
