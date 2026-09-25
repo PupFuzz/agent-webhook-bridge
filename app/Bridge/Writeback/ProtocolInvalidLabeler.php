@@ -25,8 +25,8 @@ use Throwable;
  *
  * ⭐ BUT A DECIDED WRITE THAT DID NOT LAND IS REMEMBERED (card#10242 / DL-419). Add-only is about
  * what the label MEANS; it was never a reason to forget a write the install decided on and GitHub
- * refused. {@see ProtocolInvalidLabelDebt} records the ones whose cause can still clear — a token
- * without Issues write is the realistic one — and `bridge:relabel` finishes them once it has.
+ * refused. {@see GitHubWriteDebt} records the ones whose cause can still clear — a token
+ * without Issues write is the realistic one — and `bridge:github-owed` finishes them once it has.
  * Nothing re-attempts on its own: the retry is an operator act, so a permanent refusal can never
  * become an unbounded retry, and the record's own expiry bounds how stale a repair may be.
  *
@@ -59,7 +59,7 @@ use Throwable;
  *
  * ⛔ ONE POSTING IDENTITY ON EVERY PATH, the {@see PrCorrelationCommenter} rule: the token is the
  * receiver's placed file and nothing else ({@see GitHubTokenResolver::resolveFromFile()}), so a
- * `bridge:replay` or a `bridge:relabel` from a shell writes as the receiver or not at all.
+ * `bridge:replay` or a `bridge:github-owed` from a shell writes as the receiver or not at all.
  */
 final class ProtocolInvalidLabeler
 {
@@ -74,8 +74,8 @@ final class ProtocolInvalidLabeler
 
     /**
      * The arms. Every value below `APPLIED` is a `reason` on this class's warnings AND the census
-     * {@see ProtocolInvalidLabelDebt::retriable()} rules over — one vocabulary, so an arm cannot be
-     * added to the log without the repair rule being asked about it.
+     * {@see retriable()} rules over — one vocabulary, so an arm cannot be added to the log without
+     * the repair rule being asked about it.
      */
     public const APPLIED = 'applied';
 
@@ -126,9 +126,33 @@ final class ProtocolInvalidLabeler
     }
 
     /**
+     * Can the identical write still land? The census this answers over is the `reason` set this
+     * class's log arms emit, and it is asked at every one of them ({@see failure()}).
+     *
+     * A reason this does not name is OWED. That is a reasoned default and not a catch-all: a
+     * recorded write that turns out unrepairable costs one bounded, expiring row and one refused
+     * POST, while a dropped one costs a thread the arbiter never sweeps, permanently — and the arm
+     * this default actually serves today is `unexpected`, which is worded *"NOT applied, OR NOT
+     * CONFIRMED"* precisely because the bridge does not know which.
+     *
+     * `POST .../labels` documents no status the shared split in
+     * {@see GitHubWriteDebt::retriableStatus()} misreads, so `add_refused` takes it unwidened.
+     */
+    public static function retriable(string $reason, ?int $status): bool
+    {
+        return match ($reason) {
+            // the install excluded this repo, and no target was named: neither is a failed write
+            self::REASON_REPO_NOT_ENABLED,
+            self::REASON_PAYLOAD_INVALID => false,
+            self::REASON_ADD_REFUSED => $status !== null && GitHubWriteDebt::retriableStatus($status),
+            default => true,
+        };
+    }
+
+    /**
      * @param  array<mixed>  $payload  `repo`, `number` (the issue or pull request) and `comment_id`
      */
-    public function apply(array $payload): ProtocolInvalidLabelAttempt
+    public function apply(array $payload): GitHubWriteAttempt
     {
         try {
             return $this->label($payload);
@@ -144,14 +168,12 @@ final class ProtocolInvalidLabeler
             // re-attempt is an idempotent add that confirms itself, so a debt recorded here for a
             // write that DID land costs one POST and then clears; the other direction costs a
             // thread the arbiter never sweeps.
-            $this->owe($payload, self::REASON_UNEXPECTED, null);
-
-            return new ProtocolInvalidLabelAttempt(self::REASON_UNEXPECTED);
+            return $this->failure($payload, self::REASON_UNEXPECTED, null);
         }
     }
 
     /** @param  array<mixed>  $payload */
-    private function label(array $payload): ProtocolInvalidLabelAttempt
+    private function label(array $payload): GitHubWriteAttempt
     {
         $repo = $payload['repo'] ?? null;
         $number = $payload['number'] ?? null;
@@ -161,7 +183,7 @@ final class ProtocolInvalidLabeler
                 'reason' => self::REASON_PAYLOAD_INVALID,
             ]);
 
-            return new ProtocolInvalidLabelAttempt(self::REASON_PAYLOAD_INVALID);
+            return $this->failure($payload, self::REASON_PAYLOAD_INVALID, null);
         }
         $context = ['repo' => $repo, 'number' => $number, 'comment_id' => $payload['comment_id'] ?? null];
 
@@ -170,11 +192,11 @@ final class ProtocolInvalidLabeler
                 'reason' => self::REASON_REPO_NOT_ENABLED,
             ]);
 
-            return new ProtocolInvalidLabelAttempt(self::REASON_REPO_NOT_ENABLED);
+            return $this->failure($payload, self::REASON_REPO_NOT_ENABLED, null);
         }
 
         if (! $this->attempted->claim($repo, $number, is_scalar($context['comment_id']) ? (string) $context['comment_id'] : null)) {
-            return new ProtocolInvalidLabelAttempt(self::DEDUPED);
+            return new GitHubWriteAttempt(self::DEDUPED, landed: false, owed: self::retriable(self::DEDUPED, null));
         }
 
         $resolution = $this->tokens->resolveFromFile();
@@ -212,10 +234,10 @@ final class ProtocolInvalidLabeler
             return $this->failure($payload, self::REASON_ADD_UNCONFIRMED, null);
         }
 
-        ProtocolInvalidLabelDebt::forget($repo, $number);
+        GitHubWriteDebt::forget(GitHubWriteDebt::KIND_LABEL, $repo, $number);
         Log::info('protocol_invalid_label: applied', ['catalog_id' => 'protocol_invalid_label.applied'] + $context);
 
-        return new ProtocolInvalidLabelAttempt(self::APPLIED);
+        return new GitHubWriteAttempt(self::APPLIED, landed: true, owed: false);
     }
 
     /**
@@ -223,11 +245,11 @@ final class ProtocolInvalidLabeler
      *
      * @param  array<mixed>  $payload
      */
-    private function failure(array $payload, string $reason, ?int $status): ProtocolInvalidLabelAttempt
+    private function failure(array $payload, string $reason, ?int $status): GitHubWriteAttempt
     {
         $this->owe($payload, $reason, $status);
 
-        return new ProtocolInvalidLabelAttempt($reason, $status);
+        return new GitHubWriteAttempt($reason, landed: false, owed: self::retriable($reason, $status), status: $status);
     }
 
     /**
@@ -246,6 +268,6 @@ final class ProtocolInvalidLabeler
         }
         $commentId = $payload['comment_id'] ?? null;
 
-        ProtocolInvalidLabelDebt::settle($repo, $number, is_scalar($commentId) ? (string) $commentId : null, $reason, $status);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, $repo, $number, ['comment_id' => is_scalar($commentId) ? (string) $commentId : null], $reason, $status, self::retriable($reason, $status));
     }
 }

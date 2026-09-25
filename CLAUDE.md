@@ -58,8 +58,9 @@ php artisan bridge:inbox                 # surface staged intents (Claude Code h
 php artisan bridge:prune --older-than=30d # retention: prune old events/dispatches/inbox lines (manual/unbounded; the receiver self-prunes since DL-199)
 php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (report-only; --fix applies) — rerunnable writeback backstop
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
-php artisan bridge:relabel               # the protocol:invalid label writes this install DECIDED on and could not
-                                         # land (card#10242/DL-419): report-only, --fix writes them. No timer, gate or
+php artisan bridge:github-owed           # the GitHub writes this install DECIDED on and could not land — protocol:invalid
+                                         # labels (card#10242/DL-419) and DL-390 correlation comments (card#10365/DL-422),
+                                         # one record: report-only, --fix writes them. No timer, gate or
                                          # job runs it — an outward write is re-attempted only when a person asks.
                                          # `--fix` exits non-zero while anything is owed; either mode exits
                                          # non-zero when the record cannot be read, and refuses as root where

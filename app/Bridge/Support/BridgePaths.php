@@ -535,7 +535,7 @@ final class BridgePaths
     /**
      * Run $body holding LOCK_EX on `<$path>.lock`, so concurrent read-modify-writes of a state
      * file cannot lose each other's update. Hoisted at its second caller
-     * ({@see App\Bridge\Support\WebhookOutageRecord}, `App\Bridge\Writeback\ProtocolInvalidLabelDebt`),
+     * ({@see App\Bridge\Support\WebhookOutageRecord}, `App\Bridge\Writeback\GitHubWriteDebt`),
      * the `GitHubApi` precedent — a second copy would let two state files disagree about whether
      * an increment can be lost.
      *
