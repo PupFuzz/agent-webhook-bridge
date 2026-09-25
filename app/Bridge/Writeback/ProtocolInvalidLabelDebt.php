@@ -216,7 +216,8 @@ final class ProtocolInvalidLabelDebt
      *  - ROOT NEVER WRITES IT, present or absent: root is never the receiver's user, and a record (or
      *    a lock file) root creates is one the receiver cannot open;
      *  - A PRESENT RECORD IS REPLACED ONLY BY ITS OWNER, since that owner is, by the rule above, the
-     *    last user that could write it.
+     *    last user that could write it — and a present `.lock` is held to the same rule, since a lock
+     *    the receiver cannot open stops its writes as surely as a record it cannot open.
      * ⚑ An ABSENT record created by a non-root user other than the receiver's is NOT refused: nothing
      * this process can read says which user the receiver runs as. `CLAUDE_DEPLOYMENT.md` names it.
      * An effective uid this process cannot read (no posix extension) is unmeasured and refuses
@@ -244,14 +245,20 @@ final class ProtocolInvalidLabelDebt
                     default => "{$path} is owned by {$ownerName}: run it as {$ownerName}",
                 };
         }
-        if ($owner !== null && $owner !== $euid) {
+        // The lock is asked the same question: a `.lock` the receiver cannot open fails every write
+        // in withLock() while the record itself still reads fine to its owner (r4 MINOR-1).
+        foreach ([$path => $owner, "{$path}.lock" => $identity->ownerOf("{$path}.lock")] as $file => $fileOwner) {
+            if ($fileOwner === null || $fileOwner === $euid) {
+                continue;
+            }
+            $fileOwnerName = $identity->accountName($fileOwner) ?? "uid {$fileOwner}";
             $me = $identity->accountName($euid) ?? "uid {$euid}";
 
             // The same sentence reaches the operator's terminal and the receiver's log, so it
             // names both remedies: the owner may be the receiver's user, or may be the one write
             // this method cannot refuse (above).
-            return "{$path} is owned by {$ownerName} and this process runs as {$me}; replacing it would hand it to {$me} — "
-                .($owner === 0 ? $giveBack : "run it as {$ownerName}, or, if {$ownerName} is not the user the receiver runs as, {$giveBack}");
+            return "{$file} is owned by {$fileOwnerName} and this process runs as {$me}; replacing it would hand it to {$me} — "
+                .($fileOwner === 0 ? $giveBack : "run it as {$fileOwnerName}, or, if {$fileOwnerName} is not the user the receiver runs as, {$giveBack}");
         }
 
         return null;

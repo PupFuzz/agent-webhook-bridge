@@ -391,6 +391,8 @@ class ProtocolInvalidLabelRepairTest extends TestCase
                     ->doesntExpectOutputToContain('nothing owed')
                     ->assertFailed();
             }
+            [, $out] = $this->relabel([]);
+            $this->assertStringContainsString('give the file and its .lock back to that user', $out, 'the lock is the second file the receiver must be able to open');
         } finally {
             chmod(ProtocolInvalidLabelDebt::path(), 0600);
         }
@@ -644,6 +646,42 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->assertStringNotContainsString('run it as root', $out);
     }
 
+    /**
+     * r4 MINOR-1: the lock is the record's second file. A `.lock` the receiver cannot open fails
+     * every write in `withLock()` while the record itself reads fine, so the owner's report would
+     * say nothing is owed. The owner rule is asked of the lock as well — with the record present
+     * and owned by this process, and with no record at all.
+     */
+    #[DataProvider('recordPresence')]
+    public function test_a_lock_another_user_owns_refuses_the_write_and_the_report(bool $recordPresent): void
+    {
+        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        if (! $recordPresent) {
+            File::delete(ProtocolInvalidLabelDebt::path());
+        }
+        $held = $recordPresent ? File::get(ProtocolInvalidLabelDebt::path()) : null;
+        $me = (int) fileowner(ProtocolInvalidLabelDebt::path().'.lock');
+        $lock = ProtocolInvalidLabelDebt::path().'.lock';
+        $this->runAs($me, [$me => 'www-data', $me + 1 => 'deploy'], owners: [$lock => $me + 1]);
+        Log::spy();
+
+        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        [$code, $out] = $this->relabel([]);
+
+        $this->assertSame($held, $recordPresent ? File::get(ProtocolInvalidLabelDebt::path()) : null);
+        $this->assertFileExists($lock);
+        $this->assertUnwritableNaming($lock.' is owned by deploy');
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('REFUSED — '.$lock.' is owned by deploy and this process runs as www-data', $out);
+        $this->assertStringNotContainsString('nothing owed', $out);
+    }
+
+    /** @return array<string, array{bool}> */
+    public static function recordPresence(): array
+    {
+        return ['record present, owned by this process' => [true], 'no record' => [false]];
+    }
+
     /** The control for the refusals above: the owner itself, not root, is let through. */
     public function test_relabel_as_the_records_owner_is_not_refused(): void
     {
@@ -694,13 +732,17 @@ class ProtocolInvalidLabelRepairTest extends TestCase
      *
      * @param  array<int, string>  $names
      * @param  int|null  $owner  the owner to report for a file that EXISTS, in place of its real one
+     * @param  array<string, int>  $owners  per-path overrides of $owner, for a file that EXISTS
      */
-    private function runAs(int $euid, array $names = [], ?int $owner = null): void
+    private function runAs(int $euid, array $names = [], ?int $owner = null, array $owners = []): void
     {
-        $this->app->instance(ProcessIdentity::class, new class($euid, $names, $owner) implements ProcessIdentity
+        $this->app->instance(ProcessIdentity::class, new class($euid, $names, $owner, $owners) implements ProcessIdentity
         {
-            /** @param  array<int, string>  $names */
-            public function __construct(private int $euid, private array $names, private ?int $owner) {}
+            /**
+             * @param  array<int, string>  $names
+             * @param  array<string, int>  $owners
+             */
+            public function __construct(private int $euid, private array $names, private ?int $owner, private array $owners) {}
 
             public function euid(): ?int
             {
@@ -711,7 +753,7 @@ class ProtocolInvalidLabelRepairTest extends TestCase
             {
                 $real = (new SystemProcessIdentity)->ownerOf($path);
 
-                return $real === null ? null : ($this->owner ?? $real);
+                return $real === null ? null : ($this->owners[$path] ?? $this->owner ?? $real);
             }
 
             public function accountName(int $uid): ?string

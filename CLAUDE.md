@@ -62,8 +62,8 @@ php artisan bridge:relabel               # the protocol:invalid label writes thi
                                          # land (card#10242/DL-419): report-only, --fix writes them. No timer, gate or
                                          # job runs it — an outward write is re-attempted only when a person asks.
                                          # `--fix` exits non-zero while anything is owed; either mode exits
-                                         # non-zero when the record cannot be read, and REFUSES as root or as
-                                         # anyone but the record's owner (run as the receiver's user) — docs/writeback.md
+                                         # non-zero when the record cannot be read, and refuses as root where
+                                         # posix is loaded — who may run it: CLAUDE_DEPLOYMENT.md § Where things land
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
 php artisan bridge:writeback-exposure    # is THIS install exposed to the one-repo-one-board writeback defect
