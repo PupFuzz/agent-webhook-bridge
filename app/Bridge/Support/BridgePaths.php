@@ -535,7 +535,7 @@ final class BridgePaths
     /**
      * Run $body holding LOCK_EX on `<$path>.lock`, so concurrent read-modify-writes of a state
      * file cannot lose each other's update. Hoisted at its second caller
-     * ({@see App\Bridge\Support\WebhookOutageRecord}, `App\Bridge\Writeback\ProtocolInvalidLabelDebt`),
+     * ({@see App\Bridge\Support\WebhookOutageRecord}, `App\Bridge\Writeback\GitHubWriteDebt`),
      * the `GitHubApi` precedent — a second copy would let two state files disagree about whether
      * an increment can be lost.
      *
@@ -547,6 +547,23 @@ final class BridgePaths
      */
     public static function withLock(string $path, Closure $body): void
     {
+        self::lockAround($path, $body, wait: true);
+    }
+
+    /**
+     * {@see withLock()} for a caller that must REFUSE rather than queue behind a holder: $body runs
+     * only if `<$path>.lock` is free right now, and the answer is whether it ran.
+     *
+     * @param  Closure(): void  $body
+     */
+    public static function withLockIfFree(string $path, Closure $body): bool
+    {
+        return self::lockAround($path, $body, wait: false);
+    }
+
+    /** @param  Closure(): void  $body */
+    private static function lockAround(string $path, Closure $body, bool $wait): bool
+    {
         self::ensureDir(dirname($path));
         $lockPath = $path.'.lock';
         $handle = @fopen($lockPath, 'c');
@@ -555,10 +572,15 @@ final class BridgePaths
         }
 
         try {
-            if (! flock($handle, LOCK_EX)) {
+            if (! flock($handle, $wait ? LOCK_EX : LOCK_EX | LOCK_NB, $wouldBlock)) {
+                if ($wouldBlock === 1) {
+                    return false;
+                }
                 throw new \RuntimeException("bridge: failed to lock {$lockPath}");
             }
             $body();
+
+            return true;
         } finally {
             @flock($handle, LOCK_UN);
             @fclose($handle);

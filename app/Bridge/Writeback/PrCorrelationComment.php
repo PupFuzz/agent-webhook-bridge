@@ -205,7 +205,16 @@ final class PrCorrelationComment
     /** The comment's first line and its dedupe key: one per pull request and outcome. */
     public function marker(): string
     {
-        return self::MARKER_PREFIX."outcome={$this->outcome} -->";
+        return self::markerFor($this->outcome);
+    }
+
+    /**
+     * {@see marker()} for $outcome, without a comment to render — the key a comment the bridge
+     * already rendered is deduped and repaired by ({@see GitHubWriteDebt}).
+     */
+    public static function markerFor(string $outcome): string
+    {
+        return self::MARKER_PREFIX."outcome={$outcome} -->";
     }
 
     /**

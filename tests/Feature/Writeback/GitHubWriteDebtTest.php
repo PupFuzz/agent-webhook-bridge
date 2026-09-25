@@ -5,7 +5,7 @@ namespace Tests\Feature\Writeback;
 use App\Bridge\Exceptions\MalformedStateFileException;
 use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\SystemProcessIdentity;
-use App\Bridge\Writeback\ProtocolInvalidLabelDebt;
+use App\Bridge\Writeback\GitHubWriteDebt;
 use App\Bridge\Writeback\ProtocolInvalidLabeler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -17,7 +17,10 @@ use Tests\TestCase;
 
 /**
  * card#10242 / DL-419: a `protocol:invalid` write the install DECIDED on and could not land is
- * remembered, and `bridge:relabel` discharges it once the cause clears.
+ * remembered, and `bridge:github-owed` discharges it once the cause clears — and the record's own
+ * mechanics (bounds, unreadable and malformed files, the owner rule), which since card#10365 /
+ * DL-422 are shared with the correlation comment. That writer's own transition is asserted end to
+ * end through its merge event in `PrCorrelationCommentTest`.
  *
  * ⛔ THE TRANSITION IS THE SUBJECT, NEVER THE END STATE. A test that only asserts the label is on
  * the thread at the end certifies whatever put it there, so every leg here asserts the sequence:
@@ -25,7 +28,7 @@ use Tests\TestCase;
  * debt is gone. The report-only leg is the CONTROL for that sequence — the identical state, the
  * identical command, one flag apart — and it must leave the thread exactly as the defect left it.
  */
-class ProtocolInvalidLabelRepairTest extends TestCase
+class GitHubWriteDebtTest extends TestCase
 {
     use RefreshDatabase;
     use UnattributableCommentHarness;
@@ -58,15 +61,15 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->github = [];
         $this->githubAnswer = 200;
 
-        $this->artisan('bridge:relabel', ['--fix' => true])
-            ->expectsOutputToContain('applied   '.self::REPO.'#42 — '.ProtocolInvalidLabeler::LABEL)
+        $this->artisan('bridge:github-owed', ['--fix' => true])
+            ->expectsOutputToContain('done      '.self::REPO.'#42 ['.ProtocolInvalidLabeler::LABEL.'] — applied')
             ->assertSuccessful();
 
         // (3) APPLIED, AND THE DEBT IS DISCHARGED.
         $this->assertSame([self::LABELS_URL], array_column($this->github, 'url'));
         $this->assertSame('{"labels":["protocol:invalid"]}', $this->github[0]['body']);
         $this->assertSame('Bearer gh-test-token', $this->github[0]['auth']);
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed());
+        $this->assertSame([], GitHubWriteDebt::owed());
     }
 
     public function test_the_default_run_is_report_only_and_leaves_the_thread_as_the_defect_left_it(): void
@@ -80,8 +83,8 @@ class ProtocolInvalidLabelRepairTest extends TestCase
 
         // The report LINE is asserted, not just the exit code: a broken interpolation would leave
         // the operator an exit 0 and nothing they can act on, which is silent.
-        $this->artisan('bridge:relabel')
-            ->expectsOutputToContain('owed  '.self::REPO.'#42 — add_refused (403)')
+        $this->artisan('bridge:github-owed')
+            ->expectsOutputToContain('owed  '.self::REPO.'#42 [protocol:invalid] — add_refused (403)')
             ->assertSuccessful();
 
         $this->assertSame([], $this->github, 'a report-only run must reach GitHub for nothing');
@@ -96,8 +99,8 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->github = [];
 
         // The operator did not actually fix it. A failed repair is never reported as a done one.
-        $this->artisan('bridge:relabel', ['--fix' => true])
-            ->expectsOutputToContain('still owed '.self::REPO.'#42 — add_refused (403)')
+        $this->artisan('bridge:github-owed', ['--fix' => true])
+            ->expectsOutputToContain('still owed '.self::REPO.'#42 [protocol:invalid] — add_refused (403)')
             ->assertFailed();
 
         $this->assertSame([self::LABELS_URL], array_column($this->github, 'url'));
@@ -111,12 +114,12 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->fakePeers();
         $this->githubAnswer = 403;
         $this->dispatch('d1', $this->comment('created', 'no from line here'));
-        $this->assertCount(1, ProtocolInvalidLabelDebt::owed());
+        $this->assertCount(1, GitHubWriteDebt::owed());
 
         $this->githubAnswer = 200;
         $this->dispatch('d2', $this->comment('created', 'still no from line', commentId: 9002));
 
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed());
+        $this->assertSame([], GitHubWriteDebt::owed());
     }
 
     // --- the population: which failures are recoverable and which are terminal -----------------------
@@ -173,7 +176,7 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->handle(['repo' => self::REPO, 'number' => '42']);
 
         $this->assertSame([], $this->github);
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed(), 'a target that names no thread names nothing to repair');
+        $this->assertSame([], GitHubWriteDebt::owed(), 'a target that names no thread names nothing to repair');
     }
 
     public function test_a_repo_this_install_does_not_write_is_owed_nothing(): void
@@ -184,7 +187,7 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->handle(['repo' => 'acme/other', 'number' => 42, 'comment_id' => 1]);
 
         $this->assertSame([], $this->github);
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed(), 'the install excluded this repo — a debt would queue a write it switched off');
+        $this->assertSame([], GitHubWriteDebt::owed(), 'the install excluded this repo — a debt would queue a write it switched off');
     }
 
     public function test_a_two_hundred_that_does_not_confirm_the_label_is_not_applied_and_stays_owed(): void
@@ -233,10 +236,10 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         // The operator switched this repo off between the failure and the repair.
         config(['bridge.protocol_invalid_label.repos' => []]);
 
-        $this->artisan('bridge:relabel', ['--fix' => true])->assertSuccessful();
+        $this->artisan('bridge:github-owed', ['--fix' => true])->assertSuccessful();
 
         $this->assertSame([], $this->github, 'the install no longer writes this repo — the repair must not either');
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed());
+        $this->assertSame([], GitHubWriteDebt::owed());
     }
 
     public function test_an_owed_write_older_than_the_window_is_not_repaired(): void
@@ -244,15 +247,30 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->fakePeers();
         $this->githubAnswer = 403;
         $this->dispatch('d1', $this->comment('created', 'no from line here'));
-        $this->assertCount(1, ProtocolInvalidLabelDebt::owed());
+        $this->assertCount(1, GitHubWriteDebt::owed());
         $this->github = [];
         $this->githubAnswer = 200;
 
-        $this->travel(ProtocolInvalidLabelDebt::EXPIRY_SECONDS + 60)->seconds();
+        $this->travel(GitHubWriteDebt::EXPIRY_SECONDS + 60)->seconds();
 
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed());
-        $this->artisan('bridge:relabel', ['--fix' => true])->assertSuccessful();
+        $this->assertSame([], GitHubWriteDebt::owed());
+        $this->artisan('bridge:github-owed', ['--fix' => true])->assertSuccessful();
         $this->assertSame([], $this->github);
+    }
+
+    public function test_a_fresh_refusal_of_a_write_whose_row_has_expired_is_owed_from_now(): void
+    {
+        // The expired row is still in the FILE (a pure read never rewrites it), so the next refusal
+        // of the same write meets it. Inheriting its first_failed_at would prune the fresh
+        // refusal in the very write that records it.
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 42, ['comment_id' => '7'], 'add_refused', 403, true);
+        $this->travel(GitHubWriteDebt::EXPIRY_SECONDS + 60)->seconds();
+        $this->assertSame([], GitHubWriteDebt::owed());
+
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 42, ['comment_id' => '9'], 'add_refused', 403, true);
+
+        $this->assertSame([[self::REPO, 42, 'add_refused', 403, 1]], $this->owedTuples());
+        $this->assertSame('9', GitHubWriteDebt::owed()[0]['comment_id'], 'an expired row lends the fresh one nothing');
     }
 
     public function test_the_run_attempts_no_more_than_the_limit(): void
@@ -262,14 +280,14 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         foreach ([11, 12, 13] as $i => $number) {
             $this->dispatch('d'.$i, $this->comment('created', 'no from line here', number: $number, commentId: 9000 + $number));
         }
-        $this->assertCount(3, ProtocolInvalidLabelDebt::owed());
+        $this->assertCount(3, GitHubWriteDebt::owed());
         $this->github = [];
         $this->githubAnswer = 200;
 
-        $this->artisan('bridge:relabel', ['--fix' => true, '--limit' => 2])->assertFailed();
+        $this->artisan('bridge:github-owed', ['--fix' => true, '--limit' => 2])->assertFailed();
 
         $this->assertCount(2, $this->github);
-        $this->assertCount(1, ProtocolInvalidLabelDebt::owed());
+        $this->assertCount(1, GitHubWriteDebt::owed());
     }
 
     public function test_repo_scopes_the_run(): void
@@ -279,11 +297,11 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->githubAnswer = 403;
         $this->dispatch('d1', $this->comment('created', 'no from line here'));
         $this->handle(['repo' => 'acme/other', 'number' => 7, 'comment_id' => 5]);
-        $this->assertCount(2, ProtocolInvalidLabelDebt::owed());
+        $this->assertCount(2, GitHubWriteDebt::owed());
         $this->github = [];
         $this->githubAnswer = 200;
 
-        $this->artisan('bridge:relabel', ['--fix' => true, '--repo' => 'ACME/Other'])->assertSuccessful();
+        $this->artisan('bridge:github-owed', ['--fix' => true, '--repo' => 'ACME/Other'])->assertSuccessful();
 
         $this->assertSame(['https://api.github.com/repos/acme/other/issues/7/labels'], array_column($this->github, 'url'));
         $this->assertSame([[self::REPO, 42, 'add_refused', 403, 1]], $this->owedTuples());
@@ -291,9 +309,9 @@ class ProtocolInvalidLabelRepairTest extends TestCase
 
     public function test_an_install_owing_nothing_says_so_and_exits_clean(): void
     {
-        $this->artisan('bridge:relabel', ['--fix' => true])->assertSuccessful();
+        $this->artisan('bridge:github-owed', ['--fix' => true])->assertSuccessful();
 
-        $this->assertSame([], ProtocolInvalidLabelDebt::owed());
+        $this->assertSame([], GitHubWriteDebt::owed());
     }
 
     // --- the record itself ---------------------------------------------------------------------------
@@ -310,6 +328,16 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->assertSame([[self::REPO, 42, 'add_refused', 403, 2]], $this->owedTuples());
     }
 
+    public function test_an_owed_label_keeps_the_first_comment_id_that_named_it(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => '77'], 'add_refused', 403, true);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => '88'], 'add_refused', 403, true);
+
+        // A null never pins the row: the first comment that NAMED the thread is the one kept.
+        $this->assertSame(['77'], array_column(GitHubWriteDebt::owed(), 'comment_id'));
+    }
+
     public function test_the_record_is_capped_and_says_when_it_drops_something(): void
     {
         // The cap is a BOUND, so the state it bounds is constructed rather than accumulated: one
@@ -317,60 +345,60 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         // write path 500 times would measure the write path instead.
         File::ensureDirectoryExists($this->dir.'/state');
         $entries = [];
-        foreach (range(1, ProtocolInvalidLabelDebt::MAX_ENTRIES + 1) as $number) {
-            $entries[strtolower(self::REPO).'#'.$number] = [
-                'repo' => self::REPO, 'number' => $number, 'comment_id' => null,
-                'first_failed_at' => now()->utc()->subSeconds(ProtocolInvalidLabelDebt::MAX_ENTRIES + 1 - $number)->format('Y-m-d\\TH:i:s\\Z'),
+        foreach (range(1, GitHubWriteDebt::MAX_ENTRIES + 1) as $number) {
+            $entries['protocol_invalid_label|'.strtolower(self::REPO).'#'.$number] = [
+                'kind' => GitHubWriteDebt::KIND_LABEL, 'repo' => self::REPO, 'number' => $number, 'comment_id' => null,
+                'first_failed_at' => now()->utc()->subSeconds(GitHubWriteDebt::MAX_ENTRIES + 1 - $number)->format('Y-m-d\\TH:i:s\\Z'),
                 'last_failed_at' => now()->utc()->format('Y-m-d\\TH:i:s\\Z'),
                 'attempts' => 1, 'reason' => 'add_refused', 'status' => 403,
             ];
         }
-        File::put(ProtocolInvalidLabelDebt::path(), (string) json_encode(['owed' => $entries]));
-        $this->assertCount(ProtocolInvalidLabelDebt::MAX_ENTRIES + 1, ProtocolInvalidLabelDebt::owed());
+        File::put(GitHubWriteDebt::path(), (string) json_encode(['owed' => $entries]));
+        $this->assertCount(GitHubWriteDebt::MAX_ENTRIES + 1, GitHubWriteDebt::owed());
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 999999, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 999999, ['comment_id' => null], 'add_refused', 403, true);
 
-        $owed = ProtocolInvalidLabelDebt::owed();
-        $this->assertCount(ProtocolInvalidLabelDebt::MAX_ENTRIES, $owed);
+        $owed = GitHubWriteDebt::owed();
+        $this->assertCount(GitHubWriteDebt::MAX_ENTRIES, $owed);
         $this->assertSame([3, 999999], [$owed[0]['number'], $owed[array_key_last($owed)]['number']],
             'at the cap the OLDEST go: the two oldest of the 502 are dropped and the newest — the write just refused — is kept');
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_pruned'
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'github_write_debt.record_pruned'
             && ($context['dropped'] ?? null) === 2)->once();
     }
 
     public function test_a_corrupt_record_is_not_read_as_nothing_owed(): void
     {
         File::ensureDirectoryExists($this->dir.'/state');
-        File::put(ProtocolInvalidLabelDebt::path(), 'not json');
+        File::put(GitHubWriteDebt::path(), 'not json');
 
         try {
-            ProtocolInvalidLabelDebt::owed();
+            GitHubWriteDebt::owed();
             $this->fail('a record that does not parse answered as a list of what is owed');
         } catch (MalformedStateFileException $e) {
-            $this->assertStringContainsString(ProtocolInvalidLabelDebt::path(), $e->getMessage());
+            $this->assertStringContainsString(GitHubWriteDebt::path(), $e->getMessage());
         }
     }
 
     /**
      * ⛔ THE OPERATOR'S SURFACE IS THE SUBJECT. The record is the receiver's, so the realistic
-     * reader that cannot parse or open it is `bridge:relabel`; asserting only the class's answer
+     * reader that cannot parse or open it is `bridge:github-owed`; asserting only the class's answer
      * would leave the command free to turn it back into "nothing owed", exit 0. Both modes are
      * asserted because `--fix`'s exit code is the contract a script reads.
      */
     public function test_a_corrupt_record_reds_the_command_in_both_modes_and_names_the_file(): void
     {
         File::ensureDirectoryExists($this->dir.'/state');
-        File::put(ProtocolInvalidLabelDebt::path(), 'not json');
+        File::put(GitHubWriteDebt::path(), 'not json');
 
         foreach ([[], ['--fix' => true]] as $options) {
-            $this->artisan('bridge:relabel', $options)
-                ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote')
+            $this->artisan('bridge:github-owed', $options)
+                ->expectsOutputToContain(GitHubWriteDebt::path().' is not a record this bridge wrote')
                 ->doesntExpectOutputToContain('nothing owed')
                 ->assertFailed();
         }
 
-        $this->assertSame('not json', File::get(ProtocolInvalidLabelDebt::path()), 'a report never rewrites the file it is reporting on');
+        $this->assertSame('not json', File::get(GitHubWriteDebt::path()), 'a report never rewrites the file it is reporting on');
     }
 
     public function test_a_record_this_user_cannot_read_reds_the_command_in_both_modes_and_names_the_file(): void
@@ -379,26 +407,26 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->fakePeers();
         $this->githubAnswer = 403;
         $this->dispatch('d1', $this->comment('created', 'no from line here'));
-        $this->assertCount(1, ProtocolInvalidLabelDebt::owed());
+        $this->assertCount(1, GitHubWriteDebt::owed());
         $this->github = [];
         $this->githubAnswer = 200;
 
-        chmod(ProtocolInvalidLabelDebt::path(), 0);
+        chmod(GitHubWriteDebt::path(), 0);
         try {
             foreach ([[], ['--fix' => true]] as $options) {
-                $this->artisan('bridge:relabel', $options)
-                    ->expectsOutputToContain('at '.ProtocolInvalidLabelDebt::path().' could not be read by this process')
+                $this->artisan('bridge:github-owed', $options)
+                    ->expectsOutputToContain('at '.GitHubWriteDebt::path().' could not be read by this process')
                     ->doesntExpectOutputToContain('nothing owed')
                     ->assertFailed();
             }
             [, $out] = $this->relabel([]);
-            $this->assertStringContainsString('give the file and its .lock back to that user', $out, 'the lock is the second file the receiver must be able to open');
+            $this->assertStringContainsString(GitHubWriteDebt::giveBackRemedy(), $out, 'every file the receiver must be able to open is handed back');
         } finally {
-            chmod(ProtocolInvalidLabelDebt::path(), 0600);
+            chmod(GitHubWriteDebt::path(), 0600);
         }
 
         $this->assertSame([], $this->github, 'a run that cannot read what is owed must write nothing');
-        $this->assertCount(1, ProtocolInvalidLabelDebt::owed(), 'the entry is still there once the file is readable again');
+        $this->assertCount(1, GitHubWriteDebt::owed(), 'the entry is still there once the file is readable again');
     }
 
     /**
@@ -411,18 +439,18 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     {
         File::ensureDirectoryExists($this->dir.'/state');
         $torn = '{"owed": {"acme/coord#41": {"repo": "Acme/Coord", "number": 41';
-        File::put(ProtocolInvalidLabelDebt::path(), $torn);
+        File::put(GitHubWriteDebt::path(), $torn);
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
 
-        $this->assertSame($torn, File::get(ProtocolInvalidLabelDebt::path()), 'a write never replaces a record it could not parse');
-        $this->assertSame([ProtocolInvalidLabelDebt::path().'.lock'], $this->siblingsOfTheRecord(), 'nothing is moved or written beside it');
-        $this->assertUnwritableNaming(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote (not valid JSON)');
+        $this->assertSame($torn, File::get(GitHubWriteDebt::path()), 'a write never replaces a record it could not parse');
+        $this->assertSame([GitHubWriteDebt::path().'.lock'], $this->siblingsOfTheRecord(), 'nothing is moved or written beside it');
+        $this->assertUnwritableNaming(GitHubWriteDebt::path().' is not a record this bridge wrote (not valid JSON)');
 
         foreach ([[], ['--fix' => true]] as $options) {
-            $this->artisan('bridge:relabel', $options)
-                ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote')
+            $this->artisan('bridge:github-owed', $options)
+                ->expectsOutputToContain(GitHubWriteDebt::path().' is not a record this bridge wrote')
                 ->doesntExpectOutputToContain('nothing owed')
                 ->assertFailed();
         }
@@ -430,25 +458,25 @@ class ProtocolInvalidLabelRepairTest extends TestCase
 
     public function test_a_record_this_user_cannot_read_is_left_byte_identical_by_a_write(): void
     {
-        // The realistic producer: `bridge:relabel --fix` run as the OPERATOR rewrites the record,
+        // The realistic producer: `bridge:github-owed --fix` run as the OPERATOR rewrites the record,
         // and `writeFileAtomic()` leaves it 0600 and owned by that user, so the receiver's next
         // write finds a file it cannot open — and a rename over it would destroy what it holds.
         $this->skipWhenModeZeroCannotRefuseARead();
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
-        $held = File::get(ProtocolInvalidLabelDebt::path());
-        chmod(ProtocolInvalidLabelDebt::path(), 0);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $held = File::get(GitHubWriteDebt::path());
+        chmod(GitHubWriteDebt::path(), 0);
         Log::spy();
 
         try {
-            ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+            GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
         } finally {
-            chmod(ProtocolInvalidLabelDebt::path(), 0600);
+            chmod(GitHubWriteDebt::path(), 0600);
         }
 
-        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
-        $this->assertSame([ProtocolInvalidLabelDebt::path().'.lock'], $this->siblingsOfTheRecord());
+        $this->assertSame($held, File::get(GitHubWriteDebt::path()));
+        $this->assertSame([GitHubWriteDebt::path().'.lock'], $this->siblingsOfTheRecord());
         $this->assertSame([[self::REPO, 41, 'add_refused', 403, 1]], $this->owedTuples(), 'the write the record could not take is not in it — the warning says so');
-        $this->assertUnwritableNaming('at '.ProtocolInvalidLabelDebt::path().' could not be read by this process');
+        $this->assertUnwritableNaming('at '.GitHubWriteDebt::path().' could not be read by this process');
     }
 
     /**
@@ -458,24 +486,24 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     public function test_a_mis_shaped_entry_makes_the_record_corrupt_reported_and_never_dropped(): void
     {
         File::ensureDirectoryExists($this->dir.'/state');
-        ProtocolInvalidLabelDebt::settle(self::REPO, 42, null, 'add_refused', 403);
-        $decoded = json_decode(File::get(ProtocolInvalidLabelDebt::path()), true);
-        $decoded['owed']['acme/coord#41'] = ['number' => '41'] + $decoded['owed'][strtolower(self::REPO).'#42'];
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 42, ['comment_id' => null], 'add_refused', 403, true);
+        $decoded = json_decode(File::get(GitHubWriteDebt::path()), true);
+        $decoded['owed']['protocol_invalid_label|acme/coord#41'] = ['number' => '41'] + $decoded['owed']['protocol_invalid_label|'.strtolower(self::REPO).'#42'];
         $record = (string) json_encode($decoded);
-        File::put(ProtocolInvalidLabelDebt::path(), $record);
+        File::put(GitHubWriteDebt::path(), $record);
         Log::spy();
 
         foreach ([[], ['--fix' => true]] as $options) {
-            $this->artisan('bridge:relabel', $options)
-                ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote (an entry that is not an owed label write)')
+            $this->artisan('bridge:github-owed', $options)
+                ->expectsOutputToContain(GitHubWriteDebt::path().' is not a record this bridge wrote (an entry that is not an owed GitHub write)')
                 ->doesntExpectOutputToContain('nothing owed')
                 ->assertFailed();
         }
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
 
-        $this->assertSame($record, File::get(ProtocolInvalidLabelDebt::path()), 'the rewrite that would drop the entry never happens');
-        $this->assertUnwritableNaming('(an entry that is not an owed label write)');
+        $this->assertSame($record, File::get(GitHubWriteDebt::path()), 'the rewrite that would drop the entry never happens');
+        $this->assertUnwritableNaming('(an entry that is not an owed GitHub write)');
     }
 
     public function test_the_request_path_peek_reports_an_unreadable_record_and_changes_nothing(): void
@@ -483,13 +511,13 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         // `forget()` runs on every successful label write, so it must not throw into the
         // delivery; it reports the record and leaves it for the operator.
         File::ensureDirectoryExists($this->dir.'/state');
-        File::put(ProtocolInvalidLabelDebt::path(), 'not json');
+        File::put(GitHubWriteDebt::path(), 'not json');
         Log::spy();
 
-        ProtocolInvalidLabelDebt::forget(self::REPO, 42);
+        GitHubWriteDebt::forget(GitHubWriteDebt::KIND_LABEL, self::REPO, 42);
 
-        $this->assertSame('not json', File::get(ProtocolInvalidLabelDebt::path()));
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unreadable')->once();
+        $this->assertSame('not json', File::get(GitHubWriteDebt::path()));
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'github_write_debt.record_unreadable')->once();
     }
 
     public function test_a_record_the_bridge_cannot_write_never_reaches_routing(): void
@@ -499,21 +527,21 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         // The record's own LOCK path is a directory, so the mutation cannot take it. Nothing else
         // in the state dir is touched — a broken state dir would fail the inbox staging instead,
         // which is a different (and loud) failure.
-        File::ensureDirectoryExists(ProtocolInvalidLabelDebt::path().'.lock');
+        File::ensureDirectoryExists(GitHubWriteDebt::path().'.lock');
         Log::spy();
         $this->githubAnswer = 403;
 
         $this->dispatch('d1', $this->comment('created', 'no from line here'));
 
         $this->assertCount(1, $this->pushes, 'routing is unchanged by a failure to record the debt');
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unwritable')->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'github_write_debt.record_unwritable')->once();
     }
 
     // --- who may write the record ---------------------------------------------------------------------
 
     /**
      * ⛔ THE PRODUCER OF AN UNREADABLE RECORD IS A WRITER RUNNING AS THE WRONG USER. `writeFileAtomic()`
-     * leaves the record `0600` and owned by whoever wrote it, so a `sudo bridge:relabel --fix` hands it
+     * leaves the record `0600` and owned by whoever wrote it, so a `sudo bridge:github-owed --fix` hands it
      * to root: the receiver can no longer open it, every later refused write goes unrecorded, and root
      * — who CAN read it — is told nothing is owed. The write is refused at the primitive, so every
      * route to it (a relabel, a `bridge:replay --force`) is covered, and the record is left as it was.
@@ -523,17 +551,17 @@ class ProtocolInvalidLabelRepairTest extends TestCase
      */
     public function test_a_write_never_replaces_a_record_another_user_owns(): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
-        $held = File::get(ProtocolInvalidLabelDebt::path());
-        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $held = File::get(GitHubWriteDebt::path());
+        $owner = (int) fileowner(GitHubWriteDebt::path());
         $this->runAs($owner + 1, [$owner => 'www-data']);
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
-        ProtocolInvalidLabelDebt::forget(self::REPO, 41);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
+        GitHubWriteDebt::forget(GitHubWriteDebt::KIND_LABEL, self::REPO, 41);
 
-        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()), 'a write never replaces a record another user owns');
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unwritable'
+        $this->assertSame($held, File::get(GitHubWriteDebt::path()), 'a write never replaces a record another user owns');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'github_write_debt.record_unwritable'
             && str_contains((string) ($context['error'] ?? ''), 'owned by www-data'))->twice();
     }
 
@@ -542,24 +570,24 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->runAs(0);
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
 
-        $this->assertFileDoesNotExist(ProtocolInvalidLabelDebt::path());
-        $this->assertFileDoesNotExist(ProtocolInvalidLabelDebt::path().'.lock', 'a root-owned lock locks the receiver out as surely as a root-owned record');
+        $this->assertFileDoesNotExist(GitHubWriteDebt::path());
+        $this->assertFileDoesNotExist(GitHubWriteDebt::path().'.lock', 'a root-owned lock locks the receiver out as surely as a root-owned record');
         $this->assertUnwritableNaming('this process runs as root');
     }
 
     public function test_a_write_as_root_never_replaces_the_record(): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
-        $held = File::get(ProtocolInvalidLabelDebt::path());
-        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $held = File::get(GitHubWriteDebt::path());
+        $owner = (int) fileowner(GitHubWriteDebt::path());
         $this->runAs(0, [$owner => 'www-data']);
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
 
-        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
+        $this->assertSame($held, File::get(GitHubWriteDebt::path()));
         $this->assertUnwritableNaming('this process runs as root');
     }
 
@@ -573,8 +601,8 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->fakePeers();
         $this->githubAnswer = 403;
         $this->dispatch('d1', $this->comment('created', 'no from line here'));
-        $held = File::get(ProtocolInvalidLabelDebt::path());
-        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        $held = File::get(GitHubWriteDebt::path());
+        $owner = (int) fileowner(GitHubWriteDebt::path());
         $this->github = [];
         $this->githubAnswer = 200;
         $this->runAs(0, [$owner => 'www-data']);
@@ -588,7 +616,7 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         }
 
         $this->assertSame([], $this->github, 'a refused run sends nothing');
-        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
+        $this->assertSame($held, File::get(GitHubWriteDebt::path()));
     }
 
     public function test_relabel_as_root_with_no_record_refuses_rather_than_creating_one(): void
@@ -601,18 +629,18 @@ class ProtocolInvalidLabelRepairTest extends TestCase
         $this->assertStringContainsString('run it as the user the receiver runs as', $out);
         $this->assertStringNotContainsString('nothing owed', $out);
 
-        $this->assertFileDoesNotExist(ProtocolInvalidLabelDebt::path());
+        $this->assertFileDoesNotExist(GitHubWriteDebt::path());
     }
 
     public function test_relabel_as_a_user_who_does_not_own_the_record_refuses_and_names_the_owner(): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
-        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $owner = (int) fileowner(GitHubWriteDebt::path());
         $this->runAs($owner + 1, [$owner => 'www-data']);
 
         [$code, $out] = $this->relabel(['--fix' => true]);
         $this->assertSame(1, $code);
-        $this->assertStringContainsString('REFUSED — '.ProtocolInvalidLabelDebt::path().' is owned by www-data', $out);
+        $this->assertStringContainsString('REFUSED — '.GitHubWriteDebt::path().' is owned by www-data', $out);
         $this->assertStringContainsString('run it as www-data', $out);
         $this->assertSame([], $this->github, 'a refused run sends nothing');
     }
@@ -624,16 +652,16 @@ class ProtocolInvalidLabelRepairTest extends TestCase
      */
     public function test_a_root_owned_record_is_answered_with_giving_it_back_never_with_running_as_root(): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
-        $held = File::get(ProtocolInvalidLabelDebt::path());
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $held = File::get(GitHubWriteDebt::path());
         $this->runAs(1000, [0 => 'root', 1000 => 'www-data'], owner: 0);
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
         [$code, $out] = $this->relabel(['--fix' => true]);
 
-        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()));
-        $this->assertUnwritableNaming('give '.ProtocolInvalidLabelDebt::path().' and its .lock back to the user the receiver runs as');
+        $this->assertSame($held, File::get(GitHubWriteDebt::path()));
+        $this->assertUnwritableNaming(GitHubWriteDebt::giveBackRemedy());
         $this->assertSame(1, $code);
         $this->assertStringContainsString('is owned by root and this process runs as www-data', $out);
         $this->assertStringContainsString('back to the user the receiver runs as', $out);
@@ -655,25 +683,69 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     #[DataProvider('recordPresence')]
     public function test_a_lock_another_user_owns_refuses_the_write_and_the_report(bool $recordPresent): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
         if (! $recordPresent) {
-            File::delete(ProtocolInvalidLabelDebt::path());
+            File::delete(GitHubWriteDebt::path());
         }
-        $held = $recordPresent ? File::get(ProtocolInvalidLabelDebt::path()) : null;
-        $me = (int) fileowner(ProtocolInvalidLabelDebt::path().'.lock');
-        $lock = ProtocolInvalidLabelDebt::path().'.lock';
+        $held = $recordPresent ? File::get(GitHubWriteDebt::path()) : null;
+        $me = (int) fileowner(GitHubWriteDebt::path().'.lock');
+        $lock = GitHubWriteDebt::path().'.lock';
         $this->runAs($me, [$me => 'www-data', $me + 1 => 'deploy'], owners: [$lock => $me + 1]);
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, null, 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
         [$code, $out] = $this->relabel([]);
 
-        $this->assertSame($held, $recordPresent ? File::get(ProtocolInvalidLabelDebt::path()) : null);
+        $this->assertSame($held, $recordPresent ? File::get(GitHubWriteDebt::path()) : null);
         $this->assertFileExists($lock);
         $this->assertUnwritableNaming($lock.' is owned by deploy');
         $this->assertSame(1, $code);
         $this->assertStringContainsString('REFUSED — '.$lock.' is owned by deploy and this process runs as www-data', $out);
         $this->assertStringNotContainsString('nothing owed', $out);
+    }
+
+    /**
+     * The repair lock is the record's third file. `--fix` opens it with the record's own `fopen(…, 'c')`,
+     * so one another user owns stops every repair while the record and its `.lock` read fine — the
+     * command names it, in both modes, before anything is read or sent. The receiver never opens it,
+     * so the receiver's own write is NOT refused over it.
+     */
+    public function test_a_repair_lock_another_user_owns_refuses_the_command_and_not_the_receivers_write(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $repairLock = GitHubWriteDebt::repairLockTarget().'.lock';
+        File::put($repairLock, '');
+        $me = (int) fileowner(GitHubWriteDebt::path());
+        $this->runAs($me, [$me => 'www-data', $me + 1 => 'deploy'], owners: [$repairLock => $me + 1]);
+
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => null], 'add_refused', 403, true);
+        $this->assertSame([41, 43], array_column(GitHubWriteDebt::owed(), 'number'), 'the receiver never opens the repair lock');
+
+        foreach ([[], ['--fix' => true]] as $options) {
+            [$code, $out] = $this->relabel($options);
+            $this->assertSame(1, $code);
+            $this->assertStringContainsString('REFUSED — '.$repairLock.' is owned by deploy and this process runs as www-data', $out);
+            $this->assertStringNotContainsString('owed  ', $out);
+        }
+        $this->assertSame([], $this->github, 'a refused run sends nothing');
+    }
+
+    /** A root-owned file of the three is answered by handing back ALL of them — the remedy names every file the check asks about. */
+    public function test_the_give_back_remedy_names_every_file_the_owner_check_asks_about(): void
+    {
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $repairLock = GitHubWriteDebt::repairLockTarget().'.lock';
+        File::put($repairLock, '');
+        $me = (int) fileowner(GitHubWriteDebt::path());
+        $this->runAs($me, [0 => 'root', $me => 'www-data'], owners: [$repairLock => 0]);
+
+        [$code, $out] = $this->relabel(['--fix' => true]);
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString(
+            'give '.GitHubWriteDebt::path().', '.GitHubWriteDebt::path().'.lock and '.$repairLock.' back to the user the receiver runs as',
+            $out,
+        );
     }
 
     /** @return array<string, array{bool}> */
@@ -685,11 +757,11 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     /** The control for the refusals above: the owner itself, not root, is let through. */
     public function test_relabel_as_the_records_owner_is_not_refused(): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 41, null, 'add_refused', 403);
-        $owner = (int) fileowner(ProtocolInvalidLabelDebt::path());
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 41, ['comment_id' => null], 'add_refused', 403, true);
+        $owner = (int) fileowner(GitHubWriteDebt::path());
         $this->runAs($owner, [$owner => 'www-data']);
 
-        $this->artisan('bridge:relabel')
+        $this->artisan('bridge:github-owed')
             ->expectsOutputToContain('owed  '.self::REPO.'#41')
             ->doesntExpectOutputToContain('REFUSED')
             ->assertSuccessful();
@@ -703,13 +775,13 @@ class ProtocolInvalidLabelRepairTest extends TestCase
      */
     public function test_an_entry_that_cannot_be_encoded_leaves_the_record_byte_identical(): void
     {
-        ProtocolInvalidLabelDebt::settle(self::REPO, 42, null, 'add_refused', 403);
-        $held = File::get(ProtocolInvalidLabelDebt::path());
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 42, ['comment_id' => null], 'add_refused', 403, true);
+        $held = File::get(GitHubWriteDebt::path());
         Log::spy();
 
-        ProtocolInvalidLabelDebt::settle(self::REPO, 43, "\xff\xfe", 'add_refused', 403);
+        GitHubWriteDebt::settle(GitHubWriteDebt::KIND_LABEL, self::REPO, 43, ['comment_id' => "\xff\xfe"], 'add_refused', 403, true);
 
-        $this->assertSame($held, File::get(ProtocolInvalidLabelDebt::path()), 'a failed encode never replaces the record');
+        $this->assertSame($held, File::get(GitHubWriteDebt::path()), 'a failed encode never replaces the record');
         $this->assertSame([[self::REPO, 42, 'add_refused', 403, 1]], $this->owedTuples());
         $this->assertUnwritableNaming('Malformed UTF-8');
     }
@@ -717,10 +789,10 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     public function test_valid_json_that_is_not_an_object_is_not_called_invalid_json(): void
     {
         File::ensureDirectoryExists($this->dir.'/state');
-        File::put(ProtocolInvalidLabelDebt::path(), '42');
+        File::put(GitHubWriteDebt::path(), '42');
 
-        $this->artisan('bridge:relabel')
-            ->expectsOutputToContain(ProtocolInvalidLabelDebt::path().' is not a record this bridge wrote (valid JSON, but not an object)')
+        $this->artisan('bridge:github-owed')
+            ->expectsOutputToContain(GitHubWriteDebt::path().' is not a record this bridge wrote (valid JSON, but not an object)')
             ->assertFailed();
     }
 
@@ -772,7 +844,7 @@ class ProtocolInvalidLabelRepairTest extends TestCase
      */
     private function relabel(array $options): array
     {
-        $code = Artisan::call('bridge:relabel', $options);
+        $code = Artisan::call('bridge:github-owed', $options);
 
         return [$code, Artisan::output()];
     }
@@ -780,13 +852,13 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     /** @return list<string> every file beside the record, the record itself excluded */
     private function siblingsOfTheRecord(): array
     {
-        return array_values(array_diff(glob(ProtocolInvalidLabelDebt::path().'*') ?: [], [ProtocolInvalidLabelDebt::path()]));
+        return array_values(array_diff(glob(GitHubWriteDebt::path().'*') ?: [], [GitHubWriteDebt::path()]));
     }
 
     private function assertUnwritableNaming(string $problem): void
     {
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'protocol_invalid_label.owed_record_unwritable'
-            && ($context['path'] ?? null) === ProtocolInvalidLabelDebt::path()
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => ($context['catalog_id'] ?? null) === 'github_write_debt.record_unwritable'
+            && ($context['path'] ?? null) === GitHubWriteDebt::path()
             && str_contains((string) ($context['error'] ?? ''), $problem))->once();
     }
 
@@ -811,7 +883,7 @@ class ProtocolInvalidLabelRepairTest extends TestCase
     {
         return array_map(
             fn (array $e): array => [$e['repo'], $e['number'], $e['reason'], $e['status'], $e['attempts']],
-            ProtocolInvalidLabelDebt::owed(),
+            GitHubWriteDebt::owed(),
         );
     }
 }

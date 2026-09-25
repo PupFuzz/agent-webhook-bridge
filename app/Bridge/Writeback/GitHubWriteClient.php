@@ -20,12 +20,24 @@ final class GitHubWriteClient
 {
     public function __construct(private string $token, private int $timeoutSeconds) {}
 
-    /** A comment on issue or pull request $number — GitHub numbers the two in one space. */
-    public function createIssueComment(string $repo, int $number, string $body): void
+    /**
+     * A comment on issue or pull request $number — GitHub numbers the two in one space.
+     *
+     * ⭐ IT RETURNS THE BODY GITHUB SAYS IT STORED, for {@see addLabels()}'s reason: a 2xx is the
+     * server's CLAIM. `POST .../comments` answers `201` with the created comment (GitHub's REST
+     * reference, *Create an issue comment*: "Same response schema as Get an issue comment"), whose
+     * `body` is the raw markdown under the default media type, so the caller confirms its own write
+     * out of the same response. Null when the answer carries no readable `body` — unconfirmed, never
+     * guessed confirmed.
+     */
+    public function createIssueComment(string $repo, int $number, string $body): ?string
     {
-        GitHubApi::request($this->token, $this->timeoutSeconds)
+        $answer = GitHubApi::request($this->token, $this->timeoutSeconds)
             ->post(GitHubApi::BASE."/repos/{$repo}/issues/{$number}/comments", ['body' => $body])
-            ->throw();
+            ->throw()
+            ->json();
+
+        return is_array($answer) && is_string($answer['body'] ?? null) ? $answer['body'] : null;
     }
 
     /**
