@@ -19,16 +19,33 @@ use Tests\TestCase;
  * a multi-labelled issue), the `Later` default, the skip-and-continue on a lane this
  * board does not carry (`_task_lane`'s availability test sits INSIDE its loop), and
  * the gate (`classify_coord` routes an issue through `_task_lane` iff its TITLE
- * starts with `[TASK]`). If the consumer changes the rule, re-port these and this
- * test reds.
+ * starts with `[TASK]`).
+ *
+ * ⛔ THIS FILE PINS LOCAL BEHAVIOUR AND NOTHING ELSE, and the sentence that used to stand
+ * here — *"if the consumer changes the rule, re-port these and this test reds"* — was
+ * FALSE and is corrected rather than re-worded (card#10273). Nothing here reds when the
+ * consumer changes anything: these vectors were copied once, by hand, and a copy cannot
+ * notice its original moving. That is precisely the defect DL-414 diagnoses.
+ *
+ * ⭐ WHAT DOES HOLD THE TWO ENDS TOGETHER is a published corpus and a check that runs at
+ * both of them: `docs/coord-lane-parity-corpus.json`,
+ * `Tests\Unit\Writeback\CoordLaneStagesParityTest` for the bridge half, and
+ * `bin/coord-mirror-parity.py` for the far end — which also pins the one MEASURED
+ * divergence between the two (Unicode case folding in the `[TASK]` gate).
  *
  * {@see CoordLaneStages::isLaneLabel} is covered here too, and its status differs — say
  * so rather than let it inherit the paragraph above. It is not a port of a Python
  * function: the consumer has no "is this label a lane label" predicate, because it only
  * ever resolves a whole label SET. What it is, is the same VOCABULARY read from the other
- * end, so it belongs in the file that owns the agreement
+ * end. Its own vectors are therefore adversarial rather than ported.
+ *
+ * ⚠ THAT PARAGRAPH USED TO END *"so it belongs in the file that owns the agreement
  * (`docs/kanban-integration-contract.md` names this test as where the lane agreement's
- * vectors live). Its own vectors are therefore adversarial rather than ported.
+ * vectors live)"*, and card#10273 moved what that row points at: the lane agreement's
+ * vectors are now `docs/coord-lane-parity-corpus.json`, which `isLaneLabel` is covered by
+ * like every other public member. This file is no longer where that row sends a reader,
+ * and the sentence is corrected rather than left pointing at a claim the doc stopped
+ * making.
  */
 class CoordLaneStagesTest extends TestCase
 {

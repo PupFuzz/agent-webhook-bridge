@@ -15,9 +15,22 @@ use Tests\TestCase;
  * (coord `templates/kanban/examples/test_inbox_closure_intent.py`, the
  * `terminals_for_board` + `_terminal_columns_by_board` blocks). The bridge is PHP and
  * structurally cannot import the Python primitive, so this IS a second implementation
- * of one rule — the known runtime ceiling. A "keep these in sync" comment would
- * enforce nothing; sharing the ORIGINAL's vectors is the mechanical part. If the
- * framework changes the rule, re-port these vectors and this test reds.
+ * of one rule — the known runtime ceiling.
+ *
+ * ⛔ THIS FILE PINS LOCAL BEHAVIOUR AND NOTHING ELSE, and the sentence that used to stand
+ * here — *"if the framework changes the rule, re-port these vectors and this test reds"* —
+ * was FALSE and is corrected rather than re-worded (card#10273). Nothing here reds when
+ * the framework changes anything: these vectors were copied once, by hand, and a copy
+ * cannot notice its original moving. That is precisely the defect DL-414 diagnoses.
+ *
+ * ⭐ WHAT DOES HOLD THE TWO ENDS TOGETHER is a published corpus and a check that runs at
+ * both of them: `docs/coord-terminals-parity-corpus.json`,
+ * `Tests\Unit\Writeback\CoordConfigTerminalsParityTest` for the bridge half, and
+ * `bin/coord-mirror-parity.py` for the far end. This file keeps its own job — the
+ * ported vectors as a readable statement of the rule, beside the members the parity
+ * corpus publishes no vectors for: `load()`, which is bridge-local, and
+ * `issuePopulationsForBoardId()`, which mirrors a coord rule nothing holds it against
+ * (the corpus's `mirrored_but_not_driven` says why and what that leaves unchecked).
  *
  * Scope: the READ-SITE path only. `terminals_for_board`'s docstring is explicit that
  * the read-site sees no adapter kwargs ("only terminals present in CONFIG are visible
