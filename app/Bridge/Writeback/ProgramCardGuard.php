@@ -33,18 +33,21 @@ namespace App\Bridge\Writeback;
  * there is no `program`-tag rule anywhere in the plugin, and the `kanban-prs-sync.py` it ships
  * defers on DL / card-id resolution and reads no tag at any version. (The instrument
  * discriminates: the same search finds `no-automove` published there in four places.) The
- * toolkit's `bin/promote-released-cards` implements a WITHHOLD on this same exact spelling as
- * of PupFuzz/agent-board-toolkit#398, which is approved and NOT YET MERGED — so no released far
- * end enforces it yet, and a toolkit pin older than that merge never will. So the spelling
- * published in `docs/kanban-integration-contract.md` § 3 (Load-bearing invariants) is a
- * REQUEST for a counterpart, not a description of one, and that row says so in those terms —
- * read it as the declaration and this class as the only enforcement in this repo. The
- * constant is read out of here by `Tests\Feature\Writeback\ProgramCardGuardTest` rather than
- * restated there by hand, so the day a far end does implement it, the spelling it matches
- * cannot have drifted from {@see TAG}. (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and
+ * TOOLKIT's `bin/promote-released-cards` DOES implement it, as a WITHHOLD on this same exact
+ * spelling: PupFuzz/agent-board-toolkit#398, merged to the toolkit's `dev` as `842cc4f` and in
+ * no tagged toolkit release when this was written — so a toolkit pin that does not contain
+ * that commit is unguarded there, and every tag-pinned install is one until a release carries
+ * it. The spelling equality was measured by reading that source, not checked: nothing in this
+ * repo can read the toolkit. So the spelling published in `docs/kanban-integration-contract.md`
+ * § 3 (Load-bearing invariants) describes the toolkit counterpart WITH that version bound and
+ * is still a REQUEST to the coordination framework, and that row says so in those terms — read
+ * it as the declaration and this class as the only enforcement in this repo. The constant is
+ * read out of here by `Tests\Feature\Writeback\ProgramCardGuardTest` rather than restated
+ * there by hand, so the spelling a far end matches against cannot have drifted from {@see TAG}. (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and
  * `app/` does not import from `tests/` — the same note `PrCorrelationCommenter` carries.)
  * ⛔ WHAT THIS SIDE CANNOT VERIFY, stated rather than assumed: nothing here can establish that
- * a future far-end implementation uses the same spelling, and nothing on either side
+ * a far end's spelling STAYS equal to this one (the toolkit's, or a later implementation's),
+ * and nothing on either side
  * establishes that a parent card actually CARRIES the tag — an untagged parent is invisible to
  * this guard, which is the residual card#9929 records and not something this check closes.
  *
@@ -64,7 +67,7 @@ namespace App\Bridge\Writeback;
  * ⛔ WHAT IS STILL UNREACHED, stated rather than implied away: the TOOLKIT's
  * `bin/promote-released-cards` is a second implementation of the same Shipped→Released move,
  * in another repo, racing this one on every release — nothing here reaches it (its own withhold
- * is the one named above, pending merge); and kanban's own UI drag and HTTP API reach no
+ * is the one named above, bounded to a pin that contains it); and kanban's own UI drag and HTTP API reach no
  * bridge-side predicate at all. `docs/writeback.md` § How it works, the *A PARENT card is
  * refused* bullet, owns that boundary for an operator.
  *
