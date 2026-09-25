@@ -106,7 +106,12 @@ class ProgramCardGuardTest extends TestCase
         // would be relying on something untrue, and it cannot read that file from its own tree.
         $this->assertStringContainsString('bin/promote-released-cards', $row);
         $this->assertStringContainsString('whose toolkit pin does not contain', $row);
+        $this->assertStringContainsString('842cc4f', $row);
+        $this->assertStringContainsString('No tagged toolkit release contained', $row);
         $this->assertStringNotContainsString('no far-end counterpart exists today', strtolower($row));
+        // The coordination framework is a far end with no implementation, so for it the row
+        // must stay a request rather than drift into describing a counterpart nobody built.
+        $this->assertStringContainsString('For that end this row is still a REQUEST', $row);
         $this->assertStringContainsString('EVENT-path', $row);
         $this->assertStringContainsString('docs/writeback.md', $row);
         // ⛔ A POINTER, NEVER A ROSTER OR A COUNT — this leg exists because the row carried

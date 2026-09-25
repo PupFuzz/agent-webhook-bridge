@@ -43,13 +43,14 @@ namespace App\Bridge\Writeback;
  * is still a REQUEST to the coordination framework, and that row says so in those terms — read
  * it as the declaration and this class as the only enforcement in this repo. The constant is
  * read out of here by `Tests\Feature\Writeback\ProgramCardGuardTest` rather than restated
- * there by hand, so the spelling a far end matches against cannot have drifted from {@see TAG}. (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and
- * `app/` does not import from `tests/` — the same note `PrCorrelationCommenter` carries.)
+ * there by hand, so the spelling a far end matches against cannot have drifted from {@see TAG}.
+ * (Named, not `{@see}`-linked: pint turns a docblock FQCN into a real `use`, and `app/` does not
+ * import from `tests/` — the same note `PrCorrelationCommenter` carries.)
  * ⛔ WHAT THIS SIDE CANNOT VERIFY, stated rather than assumed: nothing here can establish that
  * a far end's spelling STAYS equal to this one (the toolkit's, or a later implementation's),
- * and nothing on either side
- * establishes that a parent card actually CARRIES the tag — an untagged parent is invisible to
- * this guard, which is the residual card#9929 records and not something this check closes.
+ * and nothing on either side establishes that a parent card actually CARRIES the tag — an
+ * untagged parent is invisible to this guard, which is the residual card#9929 records and not
+ * something this check closes.
  *
  * ⛔ WHAT IS BOUNDED, AND IT IS NARROWER THAN "EVERY TERMINAL WRITER" (card#10068). Shipped
  * with ONE caller, which is what card#10068 reports: a predicate enforced at one writer of a
