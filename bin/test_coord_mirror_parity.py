@@ -308,11 +308,14 @@ class TheShippedCorporaAreDrivable(unittest.TestCase):
             with self.subTest(corpus=name):
                 self.assertRegex(corpus["mirror"]["class"], r"(CoordConfigTerminals|CoordLaneStages)$")
 
-    def test_no_published_member_is_in_both_vectors_and_mirror_local(self):
+    def test_no_published_member_has_more_than_one_home(self):
+        blocks = ("vectors", "mirror_local", "mirrored_but_not_driven")
         for name in CORPORA:
             corpus = _corpus(name)
-            overlap = set(corpus["vectors"]) & set(corpus.get("mirror_local", {}))
-            self.assertEqual(overlap, set(), name)
+            for i, a in enumerate(blocks):
+                for b in blocks[i + 1:]:
+                    with self.subTest(corpus=name, blocks=(a, b)):
+                        self.assertEqual(set(corpus[a]) & set(corpus[b]), set())
 
 
 _STUB_COMMON = """

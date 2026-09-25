@@ -37,6 +37,7 @@
     "canonicalPayloadKeys": "The registration guard's accessor over PAYLOAD_KEY_TO_SYSTEM's keys. The bridge reads that map through systemForPayloadKey instead."
   },
   "mirror_local": {},
+  "mirrored_but_not_driven": {},
   "known_divergences": {},
   "constants": {
     "SYSTEM_DL": "dl",

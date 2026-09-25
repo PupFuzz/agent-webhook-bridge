@@ -37,6 +37,7 @@
     "_itype and the announce branch": "`classify_coord`'s non-`[TASK]` routing. Deliberately not mirrored; see `not_checked_by_this_repo`."
   },
   "mirror_local": {},
+  "mirrored_but_not_driven": {},
   "known_divergences": {
     "governs": [
       {

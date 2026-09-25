@@ -35,9 +35,9 @@ use ReflectionMethod;
  * ⭐ IT FAILS IN BOTH DIRECTIONS, which is the point. `declared ⇒ real` is half a check: it
  * passes forever on a mirror that grew a member nobody published a vector for.
  *  - **declared ⇒ real:** every vector's expectation is asserted against the mirror.
- *  - **real ⇒ declared:** a public method that is in neither `vectors` nor `mirror_local`, or a
- *    constant the corpus does not pin — or a corpus key naming a member the class no longer has —
- *    reds.
+ *  - **real ⇒ declared:** a public method that is in none of `vectors`, `mirror_local` and
+ *    `mirrored_but_not_driven`, or in more than one of them, or a constant the corpus does not
+ *    pin — or a corpus key naming a member the class no longer has — reds.
  *  - **the VECTOR POPULATION**, which neither of those two reaches: both are MEMBER-granular and
  *    blind to how many vectors a member carries, so a corpus cut to one vector per method passes
  *    both BYTE-IDENTICALLY. The population is held against the identity of the one the cross-repo
@@ -50,12 +50,18 @@ use ReflectionMethod;
  * block is PRESENT ({@see test_the_corpus_declares_its_authority_and_names_what_this_repo_cannot_check})
  * rather than carrying a second copy of it here.
  *
- * ⚠ `mirror_local` IS NOT AN ESCAPE HATCH, and the reverse arm is why. A member listed there is
- * excluded from the VECTOR arm and stays inside the POPULATION arm, so it still has to be named,
- * in the published file, with the reason it carries no parity vector. What it buys is honesty: a
- * mirror class may hold a member with no shared observable at the far end (a bridge-local reader,
- * a bridge-local half of a return value), and forcing a "parity" vector onto it would publish a
- * local expectation dressed as a cross-repo agreement.
+ * ⚠ THE EXCLUSION BLOCKS ARE NOT ESCAPE HATCHES, and the reverse arm is why. A member listed
+ * in either is excluded from the VECTOR arm and stays inside the POPULATION arm, so it still has
+ * to be named, in the published file, with its reason. They mean different things, and a member
+ * belongs in exactly one:
+ *  - `mirror_local` — a member with NO SHARED OBSERVABLE at the far end (a bridge-local reader, a
+ *    bridge-local half of a return value). Forcing a "parity" vector onto it would publish a local
+ *    expectation dressed as a cross-repo agreement. Nothing is left unchecked, because there is
+ *    nothing to compare.
+ *  - `mirrored_but_not_driven` — a member that DOES mirror an authority rule the far end can
+ *    observe, which the runner does not drive. That is an unchecked copy, stated as one: its reason
+ *    names the authority sites and the drift that goes undetected at both ends, so a reader is
+ *    told "not compared" rather than "nothing to compare".
  */
 abstract class MirrorParityTestCase extends TestCase
 {
@@ -112,21 +118,36 @@ abstract class MirrorParityTestCase extends TestCase
     {
         $corpus = static::corpus();
 
-        $declared = array_merge(array_keys($corpus['vectors']), array_keys($corpus['mirror_local']));
-        $this->assertSame(
-            static::publicMethods(),
-            static::sorted($declared),
-            'the published corpus does not account for exactly the public methods of '.static::mirrorClass().'. A NEW public method on the mirror is a new piece of the authority\'s rule that this repo has copied, and a copy nobody published a vector for is a copy nothing holds against the authority. Add its vectors to '.static::corpusPath().' (and re-measure against the authority), or — where the member has no shared observable at the far end — name it in `mirror_local` with the reason. Delete a corpus entry whose method is gone.',
-        );
+        $blocks = ['vectors', 'mirror_local', 'mirrored_but_not_driven'];
 
+        $homes = [];
+        foreach ($blocks as $block) {
+            foreach (array_keys($corpus[$block]) as $member) {
+                $homes[$member][] = $block;
+            }
+        }
+        $misfiled = [];
+        foreach ($homes as $member => $in) {
+            if (count($in) > 1) {
+                $misfiled[] = "{$member} (in ".implode(' and ', $in).')';
+            }
+        }
         $this->assertSame(
             [],
-            array_values(array_intersect(array_keys($corpus['vectors']), array_keys($corpus['mirror_local']))),
-            'a member of '.static::corpusPath().' is in BOTH `vectors` and `mirror_local`, which claims it is and is not held against the authority. One or the other.',
+            $misfiled,
+            'a member of '.static::corpusPath().' is filed in more than one of `'.implode('`, `', $blocks).'`. Each says something different about whether it is held against the authority and why, so a member in two of them is claimed to be both. One home each.',
         );
 
-        foreach ($corpus['mirror_local'] as $member => $reason) {
-            $this->assertNotEmpty($reason, "`mirror_local.{$member}` of ".static::corpusPath().' carries no reason. An unexplained exclusion is how a member that SHOULD be parity-checked gets parked there and stays.');
+        $this->assertSame(
+            static::publicMethods(),
+            static::sorted(array_keys($homes)),
+            'the published corpus does not account for exactly the public methods of '.static::mirrorClass().'. A NEW public method on the mirror is a new piece of the authority\'s rule that this repo has copied, and a copy nobody published a vector for is a copy nothing holds against the authority. Add its vectors to '.static::corpusPath().' (and re-measure against the authority); or — ONLY where the member has no shared observable at the far end — name it in `mirror_local` with the reason; or — where it mirrors an authority rule the far end CAN observe and the runner does not drive — name it in `mirrored_but_not_driven`, stating the authority sites and what drift that leaves undetected. Delete a corpus entry whose method is gone.',
+        );
+
+        foreach (['mirror_local', 'mirrored_but_not_driven'] as $block) {
+            foreach ($corpus[$block] as $member => $reason) {
+                $this->assertNotEmpty($reason, "`{$block}.{$member}` of ".static::corpusPath().' carries no reason. An unexplained exclusion is how a member that SHOULD be parity-checked gets parked there and stays.');
+            }
         }
 
         $this->assertSame(
@@ -396,7 +417,7 @@ abstract class MirrorParityTestCase extends TestCase
         // ⚠ THE PRESENCE WITNESS, AT THE SHAPE RATHER THAN AT ONE VALUE. A corpus missing these
         // blocks used to leave `$doc['vectors']` as null, which satisfies every loop below
         // `assertNotSame([], …)` and reds only by an incidental TypeError nobody wrote.
-        foreach (['vectors', 'constants', 'mirror_local', 'known_divergences'] as $block) {
+        foreach (['vectors', 'constants', 'mirror_local', 'mirrored_but_not_driven', 'known_divergences'] as $block) {
             self::assertIsArray($doc[$block] ?? null, static::corpusPath()." carries no `{$block}` block at all — the corpus, not the mirror, is what changed. An EMPTY block is a legitimate answer and must be spelled; an ABSENT one is not.");
         }
 

@@ -27,8 +27,10 @@ use Tests\TestCase;
  * both of them: `docs/coord-terminals-parity-corpus.json`,
  * `Tests\Unit\Writeback\CoordConfigTerminalsParityTest` for the bridge half, and
  * `bin/coord-mirror-parity.py` for the far end. This file keeps its own job — the
- * ported vectors as a readable statement of the rule, beside the local-only legs
- * (`load()`, `issuePopulationsForBoardId()`) the parity corpus deliberately excludes.
+ * ported vectors as a readable statement of the rule, beside the members the parity
+ * corpus publishes no vectors for: `load()`, which is bridge-local, and
+ * `issuePopulationsForBoardId()`, which mirrors a coord rule nothing holds it against
+ * (the corpus's `mirrored_but_not_driven` says why and what that leaves unchecked).
  *
  * Scope: the READ-SITE path only. `terminals_for_board`'s docstring is explicit that
  * the read-site sees no adapter kwargs ("only terminals present in CONFIG are visible
