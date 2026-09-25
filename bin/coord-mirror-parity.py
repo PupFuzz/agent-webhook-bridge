@@ -28,27 +28,35 @@ every later run agree with it.
 
 EXIT CODES — three, because "could not ask" is not "asked and agreed":
   0  every vector and every constant AGREED.
-  1  at least one DISAGREEMENT — the mirror and the authority have drifted.
-  2  COULD NOT MEASURE — the authority was not importable at the path given. Nothing is claimed.
+  1  the mirror and the authority have drifted: at least one DISAGREE (a different answer) or
+     RAISED (the authority raised where the corpus records an answer — the mirror answers that
+     input and the authority no longer does, which is a drift in its own words, never a traceback).
+  2  COULD NOT MEASURE — the authority was not importable at the path given, or the code that
+     would have run is not the authority named there. Nothing is claimed.
 
 USAGE
   bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json
   bin/coord-mirror-parity.py --corpus <file> --coord-examples <dir>   # authority checkout/cache
   bin/coord-mirror-parity.py --corpus <file> --control                # see it FAIL on purpose
 
---control is the falsifier (canon #9): it perturbs every published expectation and requires the
-run to report a disagreement for each one. A checker that cannot be shown to fail is a decoration,
-and this one's whole value is its red.
+--control is the falsifier (canon #9): it perturbs every published expectation AND every pinned
+constant, and requires the run to report each one. A checker that cannot be shown to fail is a
+decoration, and this one's whole value is its red.
 """
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
+import importlib
+import importlib.machinery
 import importlib.util
+import inspect
 import json
 import os
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 # The authority's example scripts, in the framework's own layout. A path given on the command
@@ -80,6 +88,10 @@ def default_examples_dir() -> Path | None:
     return None
 
 
+def _is_coord(module_name: str) -> bool:
+    return module_name == "coord" or module_name.startswith("coord.")
+
+
 class Authority:
     """The coord authority's own callables, imported from source and never re-implemented here.
 
@@ -89,13 +101,67 @@ class Authority:
     placeholder skip, the union of two entries sharing one id — so re-writing it here would make
     this program agree with the mirror by construction and measure nothing. It is driven instead
     through the authority's own function, with $COORD_CONFIG pointed at the vector's config.
+
+    ⛔ THE `coord` PACKAGE IS BOUND TO THE NAMED DIRECTORY BEFORE ANY SCRIPT LOADS. The two scripts
+    say `from coord.kanban_common import …`, which Python otherwise resolves on sys.path — on a box
+    with an installed `coord` package that is a DIFFERENT copy from the one named on the command
+    line, and the join method measured it while the output named the other (measured).
+    Binding alone is not trusted: `_verify_provenance` then requires every coord-module function the
+    scripts hold to come from a file under the named directory, and refuses to measure otherwise.
     """
 
     def __init__(self, examples: Path):
-        self.examples = examples
-        self.common = self._load("kanban_common", "kanban_common.py")
+        self.examples = examples.resolve()
+        self.common = self._bind_coord_package()
         self.inbox = self._load("coord_parity_inbox_check", "kanban-inbox-check.py")
         self.issues = self._load("coord_parity_issues_sync", "kanban-issues-sync.py")
+        self._verify_provenance()
+
+    def _bind_coord_package(self):
+        for name in [n for n in sys.modules if _is_coord(n)]:
+            del sys.modules[name]
+        package = types.ModuleType("coord")
+        package.__path__ = [str(self.examples)]
+        package.__spec__ = importlib.machinery.ModuleSpec("coord", None, is_package=True)
+        package.__spec__.submodule_search_locations = [str(self.examples)]
+        sys.modules["coord"] = package
+        return importlib.import_module("coord.kanban_common")
+
+    def _inside(self, filename) -> bool:
+        return Path(filename).resolve().is_relative_to(self.examples)
+
+    def _verify_provenance(self) -> None:
+        stray = []
+        for module in (self.common, self.inbox, self.issues):
+            for attr, value in vars(module).items():
+                if not inspect.isfunction(value) or not _is_coord(str(value.__module__)):
+                    continue
+                # A decorated function's own code object is the DECORATOR's (`@contextmanager`
+                # wrappers report contextlib.py); the body that runs is the one it wraps.
+                code = inspect.unwrap(value).__code__
+                if not self._inside(code.co_filename):
+                    stray.append(f"{module.__name__}.{attr} runs {code.co_filename}")
+        for name, module in self._coord_modules():
+            if not self._inside(module.__file__):
+                stray.append(f"{name} was loaded from {module.__file__}")
+        if stray:
+            raise ImportError(
+                f"the code that would run is not the authority at {self.examples}: " + "; ".join(stray)
+            )
+
+    @staticmethod
+    def _coord_modules():
+        return sorted(
+            (n, m) for n, m in sys.modules.items()
+            if _is_coord(n) and getattr(m, "__file__", None)
+        )
+
+    def executed_files(self) -> list[tuple[Path, str]]:
+        """Every authority source file this run executed, with its sha256 — the attribution a
+        published `last_measured.authority_blob` is copied from, never typed by hand."""
+        files = {Path(m.__file__).resolve() for _, m in self._coord_modules()}
+        files |= {Path(self.inbox.__file__).resolve(), Path(self.issues.__file__).resolve()}
+        return [(f, hashlib.sha256(f.read_bytes()).hexdigest()) for f in sorted(files)]
 
     def _load(self, name: str, filename: str):
         path = self.examples / filename
@@ -223,7 +289,6 @@ def check_constants(a: Authority, corpus: dict) -> list[str]:
             problems.append(f"constant {name}: corpus pins {declared!r}, authority says {authority_value!r} ({note})")
 
     if mirror_class.endswith("CoordConfigTerminals"):
-        import inspect
         default_terminal = inspect.signature(a.common.terminals_for_board).parameters["default_terminal"].default
         compare("DEFAULT_TERMINAL", default_terminal, "terminals_for_board's default_terminal")
         if a.inbox.DONE_COLUMN != default_terminal:
@@ -253,6 +318,30 @@ def check_constants(a: Authority, corpus: dict) -> list[str]:
     return problems
 
 
+def ask_constants(a: Authority, corpus: dict) -> tuple[list[str], str | None]:
+    """`check_constants`, with the authority's RAISE named instead of escaping as a traceback."""
+    try:
+        return check_constants(a, corpus), None
+    except Exception as exc:  # noqa: BLE001 — every failure to ANSWER is the same outcome here
+        return [], f"{type(exc).__name__}: {exc}"
+
+
+def control_constants(a: Authority, corpus: dict) -> list[str]:
+    """The constant arm's falsifier: perturb each pinned constant ALONE and require a problem that
+    names it. Returns the constants whose perturbation went unreported — including any the corpus
+    pins and `check_constants` holds against nothing, which would otherwise ride the success line."""
+    unseen: list[str] = []
+    for name, value in corpus["constants"].items():
+        moved = copy.deepcopy(corpus)
+        moved["constants"][name] = perturb(value)
+        problems, raised = ask_constants(a, moved)
+        if raised is not None:
+            unseen.append(f"constant {name}: the authority RAISED while the perturbed pin was held ({raised})")
+        elif not any(p.startswith(f"constant {name}") for p in problems):
+            unseen.append(f"constant {name}: perturbed to {perturb(value)!r} and nothing was reported")
+    return unseen
+
+
 def _render(value):
     """One answer, printed. A set is sorted by its STRING form rather than natively: a corpus
     carrying a divergence over a MIXED-TYPE set (the authority keeps an integer where the mirror
@@ -264,14 +353,14 @@ def _render(value):
 
 
 def _ask(adapter, authority, args, expect, default_lane, method):
-    """One comparison, with the authority's RAISE captured as its own outcome.
+    """One comparison, with the authority's RAISE captured and NAMED rather than escaping.
 
     ⛔ MEASURED, NOT HYPOTHETICAL: three malformed-config shapes make the coord authority raise
     where the mirror answers (`int()` on a non-numeric `board_id`, and `.get` on a `boards[]`
-    member that is not an object — see each corpus's `not_checked_by_this_repo`). Letting that
-    escape would kill this program with a traceback and Python's default exit 1, which THIS
-    program's own contract reads as `disagreed`. A raise is not a disagreement about an answer;
-    it is the absence of one, and it says so in its own words.
+    member that is not an object — see each corpus's `not_checked_by_this_repo`). An escaping
+    exception would end the run with a traceback in place of a report. A raise on a PUBLISHED
+    vector still exits 1 — the corpus records an answer the authority no longer gives, which is a
+    drift — but it is reported under its own `RAISED:` prefix with the authority's own error.
     """
     try:
         if method == "resolveLane":
@@ -295,18 +384,23 @@ def perturb(value):
             return perturbed
         return {"coord-mirror-parity-control": True}
     if isinstance(value, str):
-        return value + "-coord-mirror-parity-control"
+        # PREPENDED, not appended: a prefix-shaped pin (`[TASK]`, `stage:`) extended at its END
+        # still prefixes every string the original did, so an appended marker would leave the
+        # value's behaviour where it was and the control would prove nothing about it.
+        return "coord-mirror-parity-control-" + value
     return "coord-mirror-parity-control"
 
 
-def run(corpus: dict, authority: Authority, control: bool) -> tuple[list[str], list[str], str]:
+def run(corpus: dict, authority: Authority, control: bool) -> tuple[list[str], list[str], str, list[str]]:
+    """Returns (disagreements, missed, population, raised)."""
     mirror_class = corpus["mirror"]["class"]
     adapters = ADAPTERS.get(mirror_class)
     if adapters is None:
-        return ([f"no adapter table for {mirror_class}"], [], "0 vectors over 0 methods")
+        return ([f"no adapter table for {mirror_class}"], [], "0 vectors over 0 methods", [])
 
     default_lane = corpus["constants"].get("DEFAULT_LANE", "later")
     disagreements: list[str] = []
+    raised_list: list[str] = []
     missed: list[str] = []
     per_method: list[str] = []
     total = 0
@@ -322,7 +416,7 @@ def run(corpus: dict, authority: Authority, control: bool) -> tuple[list[str], l
             expect = perturb(case["expect"]) if control else case["expect"]
             result, raised = _ask(adapter, authority, case["args"], expect, default_lane, method)
             if raised is not None:
-                disagreements.append(
+                raised_list.append(
                     f"{method}#{index}: args={json.dumps(case['args'], sort_keys=True)} — the coord authority "
                     f"RAISED instead of answering ({raised}). It has no answer to compare, so this vector "
                     "establishes nothing; either the input is outside the rule's contract (move it to "
@@ -355,7 +449,7 @@ def run(corpus: dict, authority: Authority, control: bool) -> tuple[list[str], l
             declared = perturb(case["authority"]) if control else case["authority"]
             result, raised = _ask(adapter, authority, case["args"], declared, default_lane, method)
             if raised is not None:
-                disagreements.append(
+                raised_list.append(
                     f"known_divergences.{method}#{index}: the coord authority RAISED instead of answering "
                     f"({raised}). A divergence pins a PAIR of answers, and there is no second answer to pin."
                 )
@@ -380,7 +474,7 @@ def run(corpus: dict, authority: Authority, control: bool) -> tuple[list[str], l
         f"{total} vectors over {len(corpus['vectors'])} methods: " + ", ".join(per_method)
         + f", plus {divergences} known divergences"
     )
-    return disagreements, missed, population
+    return disagreements, missed, population, raised_list
 
 
 def main(argv=None) -> int:
@@ -406,39 +500,54 @@ def main(argv=None) -> int:
         print(f"COULD NOT MEASURE — the coord authority at {examples} did not import: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
-    disagreements, missed, population = run(corpus, authority, args.control)
-    constant_problems = [] if args.control else check_constants(authority, corpus)
+    disagreements, missed, population, raised = run(corpus, authority, args.control)
+    if args.control:
+        constant_problems, constants_raised = control_constants(authority, corpus), None
+    else:
+        constant_problems, constants_raised = ask_constants(authority, corpus)
+    if constants_raised is not None:
+        raised.append(f"constants: the coord authority RAISED while its constants were read ({constants_raised})")
 
     print(f"corpus:    {args.corpus}")
     print(f"mirror:    {corpus['mirror']['class']}  ({corpus['mirror']['path']})")
     print(f"authority: {corpus['authority']['symbol']}  ({examples})")
-    print(f"ran:       {population}")
+    for path, digest in authority.executed_files():
+        print(f"executed:  {path}  sha256:{digest}")
+    print(f"ran:       {population}, plus {len(corpus['constants'])} pinned constants")
 
     for line in missed:
         print(f"NOT RUN:   {line}")
+    for line in raised:
+        print(f"RAISED:    {line}")
     for line in disagreements:
-        print(f"DISAGREE:  {line}")
-    for line in constant_problems:
         print(f"DISAGREE:  {line}")
 
     if args.control:
-        if missed:
-            print("CONTROL FAILED — some vectors were not run at all, so the control proves nothing about them.", file=sys.stderr)
+        for line in constant_problems:
+            print(f"UNSEEN:    {line}")
+        if missed or raised:
+            print("CONTROL FAILED — some expectations were not compared at all, so the control proves nothing about them.", file=sys.stderr)
             return 1
         expected = sum(len(cases) for cases in corpus["vectors"].values()) + sum(
             len(cases) for cases in corpus.get("known_divergences", {}).values()
         )
-        if len(disagreements) != expected:
+        if len(disagreements) != expected or constant_problems:
             print(
-                f"CONTROL FAILED — perturbed all {expected} expectations and only {len(disagreements)} were reported. "
+                f"CONTROL FAILED — perturbed all {expected} expectations and {len(disagreements)} were reported, "
+                f"and {len(constant_problems)} perturbed pinned constants went unreported. "
                 "The comparator cannot see a difference it is being shown.",
                 file=sys.stderr,
             )
             return 1
-        print(f"CONTROL OK — all {expected} perturbed expectations were reported as disagreements.")
+        print(
+            f"CONTROL OK — all {expected} perturbed expectations and all {len(corpus['constants'])} "
+            "perturbed pinned constants were reported."
+        )
         return 0
 
-    if missed or disagreements or constant_problems:
+    for line in constant_problems:
+        print(f"DISAGREE:  {line}")
+    if missed or disagreements or constant_problems or raised:
         return 1
     print("AGREED — every published vector and every pinned constant answered identically on both ends.")
     return 0
