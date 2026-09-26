@@ -182,11 +182,17 @@ final class IdleNudgePostureCheck implements Check
 
             return;
         }
-        // The fleet line above already said why nothing Mezzanine-side measured; the reading
-        // below would call that the expected `no_declaring_seat` state, which it is not.
+        // Judged over the same population, for the same reason: a seat-record agent never reads
+        // `no_declaring_seat`, and one that measured would otherwise bury this reading in an Ok.
+        if ($mezzanineRouted !== [] && array_filter($mezzanineRouted, fn (mixed $code): bool => $code !== 'no_declaring_seat') === []) {
+            yield Finding::warn('idle_nudge: every push-routed Mezzanine-sourced agent read no_declaring_seat on the last pass ('.$tally
+                .') — the expected reading until Mezzanine seats publish `protocol_agent_name`, so none of them can be nudged yet.');
+
+            return;
+        }
+        // The fleet line above already said why nothing Mezzanine-side measured.
         if ($measured === [] && $fleetUnmeasured === null) {
-            yield Finding::warn('idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass ('.$tally
-                .'). On a Mezzanine agent, `no_declaring_seat` on every agent is the expected reading until Mezzanine seats publish `protocol_agent_name`.');
+            yield Finding::warn('idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass ('.$tally.').');
 
             return;
         }
@@ -227,10 +233,30 @@ final class IdleNudgePostureCheck implements Check
                 'seat_record_unreadable' => 'was present but not read on the last pass: not readable by the pass\'s OS user, a symbolic link (refused), or past the size bound.',
                 'seat_record_malformed' => 'is not a valid schema-v1 offer record (not a JSON object, or a member outside its contract).',
                 'seat_record_unknown_version' => 'carries a schema version this build does not read (only `v: 1`) — upgrade the bridge or pin the seat\'s writer.',
-                'seat_record_agent_mismatch' => "was written for another agent: its `agent` is not `{$agent}`. Point this YAML at {$agent}'s own record — no other seat's prompt is delivered here.",
+                'seat_record_agent_mismatch' => $this->mismatch($agent, $declared, $sources),
                 'offer_stale' => 'has NOT CHANGED for a whole horizon since its notice was pushed: the notice produced no turn end, or the seat stopped writing the record (its wake switched off, or the Stop hook no longer firing). No further notice is sent for it.',
             }.' This seat is not nudged.');
         }
+    }
+
+    /**
+     * What the record's `agent` was compared against and where that value came from, then the
+     * remedy for each way the two can disagree. Read from the agent YAMLs as they are now — the
+     * comparand is the operator's own value, the same in every process, unlike the path.
+     */
+    private function mismatch(string $agent, ?string $declared, IdleNudgeSources $sources): string
+    {
+        $remedy = "set `idle_nudge.seat_agent` to the `agent` value inside it; otherwise point `idle_nudge.seat_record` at the intended seat's record.";
+        if ($declared === null) {
+            return 'was written for another agent; the agent is no longer declared, so the name it was compared against is not known.';
+        }
+        if (array_key_exists($agent, $sources->seatAgents)) {
+            return "was written for another agent: its `agent` is not `{$sources->recordAgentOf($agent)}`, the value of this YAML's `idle_nudge.seat_agent`. "
+                ."If this file is the intended seat's record, {$remedy}";
+        }
+
+        return "was written for another agent: its `agent` is not `{$agent}`, this YAML's agent name (no `idle_nudge.seat_agent` is set). "
+            ."If this file is the intended seat's record — the seat's own agent name differs from the bridge agent name — {$remedy}";
     }
 
     /** @param  array<mixed>  $agents */

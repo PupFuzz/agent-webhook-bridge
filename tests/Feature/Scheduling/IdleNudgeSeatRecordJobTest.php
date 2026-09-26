@@ -412,4 +412,38 @@ class IdleNudgeSeatRecordJobTest extends TestCase
         $this->assertSame([], $this->pushes());
         $this->assertSame('seat_record_agent_mismatch', $this->verdictOf('pm'));
     }
+
+    /**
+     * The install shape `idle_nudge.seat_agent` exists for: the bridge agent `kanban-solo` serves
+     * the seat whose `$COORD_AGENT` — and so whose record's `agent` — is `kanban`.
+     */
+    private function kanbanSolo(string $recordAgent): void
+    {
+        $path = $this->dir.'/seat/kanban-lane-wake-offer.json';
+        $this->agent('kanban-solo', 8791, "idle_nudge:\n  seat_record: {$path}\n  seat_agent: kanban\n");
+        File::put($path, (string) json_encode(SeatRecordReaderTest::record(['agent' => $recordAgent, 'turn_ended_at' => self::TURN_S])));
+    }
+
+    public function test_a_seat_agent_key_makes_the_seats_own_name_the_one_the_record_must_carry(): void
+    {
+        $this->kanbanSolo('kanban');
+
+        $this->pass();
+
+        $pushes = $this->pushes();
+        $this->assertCount(1, $pushes);
+        $this->assertSame('http://127.0.0.1:8791/', $pushes[0]->url());
+        $this->assertSame('kanban-solo', json_decode($pushes[0]->body(), true)['intent']['payload']['agent']);
+        $this->assertSame('nudge', $this->verdictOf('kanban-solo'));
+    }
+
+    public function test_a_seat_agent_key_replaces_the_yaml_agent_name_rather_than_adding_to_it(): void
+    {
+        $this->kanbanSolo('kanban-solo');
+
+        $this->pass();
+
+        $this->assertSame([], $this->pushes());
+        $this->assertSame('seat_record_agent_mismatch', $this->verdictOf('kanban-solo'));
+    }
 }

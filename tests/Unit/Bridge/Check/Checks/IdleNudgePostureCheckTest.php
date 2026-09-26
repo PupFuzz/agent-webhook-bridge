@@ -177,13 +177,41 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->assertOne(Severity::Unvalidated, 'no readable last-pass record');
     }
 
-    public function test_every_push_routed_agent_unmeasured_warns_naming_the_reasons(): void
+    private const NO_DECLARING_SEAT = 'Warn: idle_nudge: every push-routed Mezzanine-sourced agent read no_declaring_seat on the last pass (%s) — the expected reading until Mezzanine seats publish `protocol_agent_name`, so none of them can be nudged yet.';
+
+    /** @return list<string> */
+    private function lines(): array
+    {
+        return array_map(fn (Finding $f): string => $f->severity->name.': '.$f->message, $this->findings());
+    }
+
+    public function test_every_push_routed_agent_on_no_declaring_seat_is_named_as_the_expected_reading(): void
     {
         // Today's live reading: no seat publishes protocol_agent_name.
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'agents' => ['impl' => 'no_declaring_seat', 'pm' => 'no_declaring_seat', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
-        $this->assertOne(Severity::Warn, 'every push-routed or seat-record agent was UNMEASURED on the last pass (no_declaring_seat 2, not_push_routed 1)');
+        $this->assertSame([sprintf(self::NO_DECLARING_SEAT, 'no_declaring_seat 2, not_push_routed 1')], $this->lines());
+    }
+
+    public function test_a_measured_seat_record_agent_does_not_hide_the_no_declaring_seat_reading_from_the_mezzanine_agents(): void
+    {
+        $this->agentYaml('seat', "idle_nudge:\n  seat_record: /home/seat/.cache/coord/seat-lane-wake-offer.json\n");
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['seat' => '/home/seat/.cache/coord/seat-lane-wake-offer.json'],
+            'agents' => ['impl' => 'no_declaring_seat', 'pm' => 'no_declaring_seat', 'seat' => 'nudge'], 'failed_agents' => []]);
+
+        $this->assertSame([sprintf(self::NO_DECLARING_SEAT, 'no_declaring_seat 2, nudge 1')], $this->lines());
+    }
+
+    public function test_a_seat_record_only_install_with_nothing_measured_is_not_told_about_mezzanine(): void
+    {
+        $this->seatRecordOnly();
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['pm' => '/home/seat/.cache/coord/pm-lane-wake-offer.json'],
+            'agents' => ['pm' => 'offer_unmeasured', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+
+        $this->assertSame(['Warn: idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass (not_push_routed 1, offer_unmeasured 1).'], $this->lines());
     }
 
     public function test_every_agent_unreadable_on_push_time_names_the_migration_and_the_receiver_config(): void
@@ -282,7 +310,7 @@ class IdleNudgePostureCheckTest extends TestCase
             'unreadable' => ['seat_record_unreadable', 'was present but not read on the last pass'],
             'malformed' => ['seat_record_malformed', 'is not a valid schema-v1 offer record'],
             'unknown version' => ['seat_record_unknown_version', 'carries a schema version this build does not read'],
-            'another agent\'s record' => ['seat_record_agent_mismatch', 'was written for another agent: its `agent` is not `pm`'],
+            'another agent\'s record' => ['seat_record_agent_mismatch', 'was written for another agent: its `agent` is not `pm`, this YAML\'s agent name'],
             'stale' => ['offer_stale', 'has NOT CHANGED for a whole horizon since its notice was pushed'],
         ];
     }
@@ -306,6 +334,38 @@ class IdleNudgePostureCheckTest extends TestCase
 
         $this->assertOne(Severity::Warn, $says);
         $this->assertOne(Severity::Warn, 'This seat is not nudged.');
+    }
+
+    private function mismatch(string $yaml): string
+    {
+        $this->seatRecordOnly();
+        File::delete($this->dir.'/pm.yml');
+        $this->agentYaml('kanban-solo', $yaml);
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['kanban-solo' => '/home/seat/.cache/coord/kanban-lane-wake-offer.json'],
+            'agents' => ['kanban-solo' => 'seat_record_agent_mismatch', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+
+        return $this->lines()[0];
+    }
+
+    public function test_a_mismatch_under_the_yaml_agent_name_names_it_and_the_seat_agent_remedy(): void
+    {
+        $this->assertSame(
+            "Warn: idle_nudge: kanban-solo's seat record /home/seat/.cache/coord/kanban-lane-wake-offer.json was written for another agent: its `agent` is not `kanban-solo`, "
+            .'this YAML\'s agent name (no `idle_nudge.seat_agent` is set). If this file is the intended seat\'s record — the seat\'s own agent name differs from the bridge agent name — '
+            .'set `idle_nudge.seat_agent` to the `agent` value inside it; otherwise point `idle_nudge.seat_record` at the intended seat\'s record. This seat is not nudged.',
+            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n"),
+        );
+    }
+
+    public function test_a_mismatch_under_a_seat_agent_key_names_the_key_as_the_comparand(): void
+    {
+        $this->assertSame(
+            "Warn: idle_nudge: kanban-solo's seat record /home/seat/.cache/coord/kanban-lane-wake-offer.json was written for another agent: its `agent` is not `kanban`, "
+            .'the value of this YAML\'s `idle_nudge.seat_agent`. If this file is the intended seat\'s record, set `idle_nudge.seat_agent` to the `agent` value inside it; '
+            .'otherwise point `idle_nudge.seat_record` at the intended seat\'s record. This seat is not nudged.',
+            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n"),
+        );
     }
 
     public function test_a_fleet_read_that_did_not_measure_is_named_beside_the_verdicts(): void

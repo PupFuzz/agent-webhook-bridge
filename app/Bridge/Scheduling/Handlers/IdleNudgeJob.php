@@ -138,7 +138,7 @@ final class IdleNudgeJob implements JobHandler
             $seatRecordPaths[$agent] = null;
             try {
                 $seatRecordPaths[$agent] = SeatRecordPath::resolve($declared);
-                $offer = $reader->read($seatRecordPaths[$agent], $agent);
+                $offer = $reader->read($seatRecordPaths[$agent], $sources->recordAgentOf($agent));
             } catch (SeatRecordUnmeasured $e) {
                 $offer = $e->verdict;
             }

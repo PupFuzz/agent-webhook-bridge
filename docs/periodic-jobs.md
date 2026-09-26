@@ -372,8 +372,9 @@ Mezzanine-sourced agent sets `channel.route_intents: true` — no other one can 
 1. Set `BRIDGE_IDLE_NUDGE_ENABLED=true`. The other `BRIDGE_IDLE_NUDGE_*` keys are Mezzanine's and
    bind only while some agent needs Mezzanine ([`config-schema.md`](config-schema.md) § 1 owns them;
    the install id is then required, because the fleet token reads every install).
-2. Per seat-record agent: `idle_nudge.seat_record` in its YAML ([`config-schema.md`](config-schema.md)
-   § 2 owns the key and the `~` caveat). Per Mezzanine install: place the `fleet_read` token in a
+2. Per seat-record agent: `idle_nudge.seat_record` in its YAML, plus `idle_nudge.seat_agent` where the
+   seat's `$COORD_AGENT` is not the bridge agent name ([`config-schema.md`](config-schema.md)
+   § 2 owns both keys and the `~` caveat). Per Mezzanine install: place the `fleet_read` token in a
    `0600` file and point `BRIDGE_IDLE_NUDGE_TOKEN_PATH` at it — [`config-schema.md`](config-schema.md)
    § *Handling a secret VALUE* owns how.
 3. Insert ONE instance (`bridge:jobs add … --handler=idle_nudge`); `bridge:check` fails on two.

@@ -56,6 +56,8 @@ final class AgentConfig
         public readonly ?BoardToolsConfig $boardTools = null,
         /** `idle_nudge.seat_record` as declared (`~` unresolved); null ⇒ the agent declares no seat record. */
         public readonly ?string $idleNudgeSeatRecord = null,
+        /** `idle_nudge.seat_agent` — the `agent` the seat record must carry; null ⇒ the agent name. */
+        public readonly ?string $idleNudgeSeatAgent = null,
     ) {}
 
     public static function load(string $agentName, string $configDir): self
@@ -138,6 +140,10 @@ final class AgentConfig
         // can default to the channel token; fromArray never re-parses $raw['channel'].
         $boardTools = BoardToolsConfig::fromArray($raw, $channel);
 
+        $idleNudge = self::requireMapping($raw, 'idle_nudge');
+        $seatRecord = self::declaredIdleNudgeSeatRecord($idleNudge);
+        $seatAgent = self::declaredIdleNudgeSeatAgent($idleNudge, $seatRecord, $agentName);
+
         return new self(
             agentName: $agentName,
             identity: $identity,
@@ -150,8 +156,33 @@ final class AgentConfig
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
             boardTools: $boardTools,
-            idleNudgeSeatRecord: self::declaredIdleNudgeSeatRecord(self::requireMapping($raw, 'idle_nudge')),
+            idleNudgeSeatRecord: $seatRecord,
+            idleNudgeSeatAgent: $seatAgent,
         );
+    }
+
+    /**
+     * `idle_nudge.seat_agent` — the name the seat record's own `agent` must equal, for a seat
+     * whose `$COORD_AGENT` is not this bridge agent's name. Compared EXACTLY, so a value the
+     * compare could only ever miss on (empty, padded) is refused here rather than read as a
+     * mismatch on every pass.
+     *
+     * @param  array<mixed>  $section
+     */
+    private static function declaredIdleNudgeSeatAgent(array $section, ?string $seatRecord, string $agentName): ?string
+    {
+        $raw = $section['seat_agent'] ?? null;
+        if ($raw === null) {
+            return null;
+        }
+        if (! is_string($raw) || $raw === '' || trim($raw) !== $raw) {
+            throw new ConfigException('idle_nudge.seat_agent must be a non-empty agent name with no surrounding whitespace');
+        }
+        if ($seatRecord === null) {
+            Log::warning("{$agentName}.yml: idle_nudge.seat_agent has no effect without idle_nudge.seat_record — this agent stays Mezzanine-sourced");
+        }
+
+        return $raw;
     }
 
     /**

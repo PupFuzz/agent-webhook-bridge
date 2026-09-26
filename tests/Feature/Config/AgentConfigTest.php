@@ -297,6 +297,49 @@ class AgentConfigTest extends TestCase
         AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => $value]]));
     }
 
+    public function test_idle_nudge_seat_agent_defaults_null(): void
+    {
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw())->idleNudgeSeatAgent);
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json']]))->idleNudgeSeatAgent);
+    }
+
+    public function test_idle_nudge_seat_agent_is_kept(): void
+    {
+        $cfg = AgentConfig::fromArray('kanban-solo', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json', 'seat_agent' => 'kanban']]));
+        $this->assertSame('kanban', $cfg->idleNudgeSeatAgent);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function badSeatAgents(): array
+    {
+        return [
+            'empty' => [''],
+            'blank' => ['  '],
+            'padded' => [' kanban'],
+            'not a string' => [['kanban']],
+            'a number' => [42],
+            'a boolean' => [true],
+        ];
+    }
+
+    #[DataProvider('badSeatAgents')]
+    public function test_idle_nudge_seat_agent_malformed_throws(mixed $value): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('idle_nudge.seat_agent');
+        AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json', 'seat_agent' => $value]]));
+    }
+
+    public function test_idle_nudge_seat_agent_without_a_seat_record_is_warned_not_fatal(): void
+    {
+        Log::spy();
+        $cfg = AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_agent' => 'kanban']]));
+
+        $this->assertNull($cfg->idleNudgeSeatRecord);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'idle_nudge.seat_agent')
+            && str_contains($message, 'has no effect without idle_nudge.seat_record'));
+    }
+
     public function test_idle_nudge_section_must_be_a_mapping(): void
     {
         $this->expectException(ConfigException::class);

@@ -21,10 +21,12 @@ final class IdleNudgeSources
     /**
      * @param  array<string, string>  $seatRecords  agent => its seat record path AS DECLARED ({@see SeatRecordPath::resolve()} at use)
      * @param  array<string, bool>  $mezzanine  agent => its `channel.route_intents`
+     * @param  array<string, string>  $seatAgents  seat-record agent => its `idle_nudge.seat_agent`, where declared
      */
     private function __construct(
         public readonly array $seatRecords,
         public readonly array $mezzanine,
+        public readonly array $seatAgents,
     ) {}
 
     /** @param  list<AgentConfig>  $configs */
@@ -32,15 +34,28 @@ final class IdleNudgeSources
     {
         $seatRecords = [];
         $mezzanine = [];
+        $seatAgents = [];
         foreach ($configs as $config) {
             if ($config->idleNudgeSeatRecord !== null) {
                 $seatRecords[$config->agentName] = $config->idleNudgeSeatRecord;
+                if ($config->idleNudgeSeatAgent !== null) {
+                    $seatAgents[$config->agentName] = $config->idleNudgeSeatAgent;
+                }
             } else {
                 $mezzanine[$config->agentName] = $config->channel->routeIntents;
             }
         }
 
-        return new self($seatRecords, $mezzanine);
+        return new self($seatRecords, $mezzanine, $seatAgents);
+    }
+
+    /**
+     * The `agent` a seat-record agent's record must carry: its `idle_nudge.seat_agent` where
+     * declared, else the bridge agent name (DL-424 Decision 9).
+     */
+    public function recordAgentOf(string $agent): string
+    {
+        return $this->seatAgents[$agent] ?? $agent;
     }
 
     public function mezzanineNeeded(): bool

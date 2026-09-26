@@ -108,9 +108,13 @@ subscriptions:
 # from that file alone (no Mezzanine, no route_intents). `~` is resolved when the
 # tick reads the record, against the TICK's home — if the tick runs as another OS
 # user, write the seat's absolute path and let that user traverse to and read it.
+# The record's own `agent` must equal this YAML's agent name — or seat_agent,
+# when the seat's $COORD_AGENT differs from it (e.g. kanban-solo.yml serving the
+# seat `kanban`); anything else is refused as seat_record_agent_mismatch.
 # ----------------------------------------------------------------------------
 # idle_nudge:
 #   seat_record: ~/.cache/coord/your-agent-lane-wake-offer.json
+#   seat_agent: your-agent            # optional; default = this YAML's agent name
 
 # ----------------------------------------------------------------------------
 # surface (optional): inbox/surfacing behaviour.

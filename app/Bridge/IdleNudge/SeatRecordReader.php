@@ -17,11 +17,11 @@ use JsonException;
  * written for another agent are different facts about the install, and only the operator can
  * tell which one to fix.
  *
- * ⚑ THE RECORD'S `agent` MUST BE THE AGENT WHOSE YAML DECLARED IT. A record is written for one
+ * ⚑ THE RECORD'S `agent` MUST BE THE SEAT THE DECLARING YAML NAMES. A record is written for one
  * seat (rt#562: its `agent` matches the `<agent>` in its path); one YAML pointed at another
  * seat's file — or two YAMLs at one — would otherwise deliver that seat's prompt to the wrong
- * channel with no signal. The bridge agent name is the comparand because it is the name the
- * Mezzanine branch already joins `protocol_agent_name` against (DL-380).
+ * channel with no signal. The caller passes the comparand; {@see IdleNudgeSources::recordAgentOf()}
+ * owns which name it is.
  *
  * ⚑ THE SEAT OWNS THE PATH, NOT THE BRIDGE. The record sits in the seat's home and is read by
  * the bridge's OS user, so it goes through {@see UntrustedPathContents} (a symlink is refused,
@@ -33,11 +33,11 @@ final class SeatRecordReader
     public const VERSION = 1;
 
     /**
-     * @param  string  $agent  the agent whose YAML declared the record
+     * @param  string  $recordAgent  the `agent` the record must carry
      *
      * @throws SeatRecordUnmeasured
      */
-    public function read(string $path, string $agent): SeatOffer
+    public function read(string $path, string $recordAgent): SeatOffer
     {
         if (! PathVisibility::ancestorIsTraversable($path)) {
             throw new SeatRecordUnmeasured('seat_record_not_visible');
@@ -65,7 +65,7 @@ final class SeatRecordReader
         }
 
         $offer = $this->v1($record) ?? throw new SeatRecordUnmeasured('seat_record_malformed');
-        if ($record['agent'] !== $agent) {
+        if ($record['agent'] !== $recordAgent) {
             throw new SeatRecordUnmeasured('seat_record_agent_mismatch');
         }
 
