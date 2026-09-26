@@ -8,6 +8,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#10566 / DL-425** — **a generated table of which reference channel-server version first declared each board tool and argument, and the reader over it.** `resources/client-capabilities.json` is written by the new `bin/gen-client-capabilities.mjs` from the git history of `examples/channel-servers/` (each tool's and argument's `since` / `removed_in`, the current client version) plus hand-declared, test-guarded `features`; `App\Bridge\Tools\ClientCapabilities` answers `since()`, `declares()` (yes / no / unknown) and `gapFor()` against it, comparing through `ChannelSnapshotManifest::compareVersions()`. **Nothing reads it at runtime yet** — no refusal, remedy or `bridge:check` line changes; the capability-aware text that will use it is a later, separate change.
+  - Every version the table stores is bare `X.Y.Z`: the generator refuses any other manifest version by commit, and the reader refuses one at load. A reported client version outside that shape, or newer than the current client, answers *unknown* and is never compared.
+  - The generator is **hard pass/fail**: a release commit whose `TOOL_DEFINITIONS` cannot be evaluated, or not identically twice, stops it with exit 2 naming the commit — never skipped. A shallow clone is refused the same way.
+  - ⚠ **CI: the required `PHPUnit + Pint + PHPStan (SQLite)` job now checks out the full history and runs `node bin/gen-client-capabilities.mjs --check`.** A PR that changes `TOOL_DEFINITIONS`, the table or the generator without regenerating goes red there; regenerate with `node bin/gen-client-capabilities.mjs` and commit the result. Nothing an install runs changes.
+
 ### Fixed
 
 - **card#10566** — **the reference channel server's MCP handshake now announces the version it actually runs, not `0.1.0`.** `examples/channel-servers/agent-webhook-bridge-channel.mjs` hard-coded `version: '0.1.0'` in its `initialize` `serverInfo` while `package.json` had moved on to `0.9.26`, so the server stated two versions at once: the literal to the MCP client, and the manifest version it already sends as `client_version` on every board-tools call (card#8974 / DL-364). The handshake now reads that **same once-read manifest value** — one source, the field the DL-038 bump guard maintains. `serverInfo.version` cannot be omitted the way `client_version` is, so a snapshot whose `package.json` is unreadable announces the explicit sentinel **`0.0.0-unreadable-manifest`** rather than a plausible number; `client_version` keeps its DL-364 fail-soft omission unchanged. New `tests/handshake-version.test.mjs` covers both.

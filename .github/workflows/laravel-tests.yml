@@ -1,8 +1,9 @@
 name: Laravel Tests
 
 # CI for the v0.12 Laravel app (the sole test workflow since the Python tree
-# was removed in Phase 3). Four checks: Pint (style), PHPStan/larastan level 7
-# on app/Bridge, doc-sync (bin/check-doc-refs.php), and PHPUnit across SQLite
+# was removed in Phase 3). Pint (style), PHPStan/larastan level 7 on app/Bridge,
+# doc-sync (bin/check-doc-refs.php), the client capability table's drift check
+# (bin/gen-client-capabilities.mjs --check, DL-425), and PHPUnit across SQLite
 # plus the MariaDB matrix below.
 #
 # No runtime version literals in this comment, deliberately — a restated version
@@ -48,7 +49,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The whole history: the capability-table check below dates every tool and
+          # argument from the history of examples/channel-servers/, and refuses a
+          # shallow clone rather than dating everything to the one commit it has.
+          fetch-depth: 0
       - uses: ./.github/actions/setup-app
+
+      # HERE and not in channel-server-supply-chain.yml (DL-425): that workflow is
+      # path-filtered to examples/channel-servers/** and is not a required check, so a
+      # PR hand-editing resources/client-capabilities.json or the generator would never
+      # run it. This job has no path filter and is required on dev and main.
+      - name: Client capability table is what history derives
+        run: node bin/gen-client-capabilities.mjs --check
 
       - name: Pint (code style)
         run: vendor/bin/pint --test
