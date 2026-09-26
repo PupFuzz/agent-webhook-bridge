@@ -14,8 +14,10 @@ use App\Bridge\Support\FileContents;
  * write it. The job row's `last_summary` carries the same facts as PROSE; a check never parses
  * prose, so the structure lives here and the row stays the record of WHEN and WHETHER.
  *
- * ⛔ BRIDGE VOCABULARY ONLY: verdict codes, bucket names, counts, local agent names and the
- * {@see IdleNudgeUnmeasured} reason. No snapshot value.
+ * ⛔ BRIDGE VOCABULARY ONLY: verdict codes, bucket names, counts, local agent names, the
+ * {@see IdleNudgeUnmeasured} reason, and each seat-record agent's path as the pass resolved it
+ * and the name it compared the record's `agent` against — both from the operator's own YAML
+ * values. No snapshot value, and nothing a seat record holds.
  */
 final class IdleNudgePassRecord
 {
@@ -32,9 +34,24 @@ final class IdleNudgePassRecord
     }
 
     /**
+     * `seats` is null when no fleet snapshot was read; `fleet_unmeasured` is the reason a read
+     * that WAS needed did not measure (the Mezzanine-sourced agents then read `fleet_unmeasured`),
+     * and null otherwise.
+     *
+     * ⚑ `seat_records` IS THE PATH THIS PASS READ, resolved in the TICK's process — the one
+     * `bridge:check` must print, since it may run as another OS user with another home. Null for
+     * an agent whose `~` could not be resolved (`seat_record_home_unresolved`), or which was not
+     * read because another agent claims the same seat (`seat_record_seat_claimed_twice`).
+     *
+     * ⚑ `record_agents` IS THE NAME THIS PASS COMPARED EACH RECORD'S `agent` AGAINST
+     * ({@see IdleNudgeSources::recordAgentOf()}), so a verdict printed after the YAML changed
+     * still names the value that produced it.
+     *
      * @param  list<string>  $failedAgents  agents whose push in THIS pass threw
+     * @param  array<string, ?string>  $seatRecords  seat-record agent => the path the pass read
+     * @param  array<string, string>  $recordAgents  seat-record agent => the name its record had to carry
      */
-    public static function measured(Evaluation $evaluation, int $accepted, array $failedAgents): void
+    public static function measured(Evaluation $evaluation, int $accepted, array $failedAgents, ?string $fleetUnmeasured = null, array $seatRecords = [], array $recordAgents = []): void
     {
         $agents = [];
         foreach ($evaluation->verdicts as $v) {
@@ -44,6 +61,9 @@ final class IdleNudgePassRecord
         self::write([
             'measured' => true,
             'seats' => $evaluation->seatTally,
+            'fleet_unmeasured' => $fleetUnmeasured,
+            'seat_records' => (object) $seatRecords,
+            'record_agents' => (object) $recordAgents,
             'verdicts' => $evaluation->verdictTally(),
             'agents' => (object) $agents,
             'pushes' => ['accepted_by_transport' => $accepted, 'failed' => count($failedAgents)],

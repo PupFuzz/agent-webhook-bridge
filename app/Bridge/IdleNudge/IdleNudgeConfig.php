@@ -17,6 +17,11 @@ use App\Bridge\Support\UrlValidator;
  * ⛔ THE INSTALL ID IS REQUIRED. Mezzanine's fleet token reads the WHOLE fleet, and agent names
  * recur across installs; with no install to filter on, a foreign seat named like a local agent
  * would nudge the local seat on somebody else's idleness.
+ *
+ * ⚑ `problem` IS ABOUT THE MEZZANINE KEYS ONLY, and binds only when some agent needs Mezzanine
+ * ({@see IdleNudgeSources::mezzanineNeeded()}): an install whose agents are all seat-record-
+ * sourced (rt#562) sets `BRIDGE_IDLE_NUDGE_ENABLED` and nothing else. The value is computed
+ * either way so the two readers ask the same question of the same object.
  */
 final class IdleNudgeConfig
 {

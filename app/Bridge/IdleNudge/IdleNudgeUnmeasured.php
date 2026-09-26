@@ -15,8 +15,15 @@ use RuntimeException;
  */
 final class IdleNudgeUnmeasured extends RuntimeException
 {
-    public function __construct(public readonly string $reason)
-    {
+    public function __construct(
+        public readonly string $reason,
+        /**
+         * True when the pass already wrote its own record before throwing — a fleet read that
+         * did not measure on a pass that still judged every seat-record agent. The job then
+         * must not overwrite that record with a bare unmeasured one.
+         */
+        public readonly bool $passRecorded = false,
+    ) {
         parent::__construct('idle nudge pass UNMEASURED: '.$reason);
     }
 }

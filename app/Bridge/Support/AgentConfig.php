@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\IdleNudge\SeatRecordPath;
 use App\Bridge\Validation\SocketPath;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Yaml\Exception\ParseException;
@@ -24,7 +25,8 @@ use Symfony\Component\Yaml\Yaml;
  * AgentRegistry and auto-seed self echo-suppression), `subscriptions`,
  * `echo_suppression` (lists OTHER agents only; self is derived from the filename
  * + identity ids), `classifier`, `channel`, `surface`, `board_tools` (DL-217 —
- * the channel-identity-scoped board window; absent ⇒ no-op).
+ * the channel-identity-scoped board window; absent ⇒ no-op), `idle_nudge` (the
+ * seat's own offer record the idle nudge reads; absent ⇒ Mezzanine-sourced).
  */
 final class AgentConfig
 {
@@ -32,7 +34,7 @@ final class AgentConfig
      * @var list<string>
      */
     private const KNOWN_TOP_LEVEL_KEYS = [
-        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api', 'board_tools',
+        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api', 'board_tools', 'idle_nudge',
     ];
 
     /**
@@ -52,6 +54,10 @@ final class AgentConfig
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
         public readonly ?BoardToolsConfig $boardTools = null,
+        /** `idle_nudge.seat_record` as declared (`~` unresolved); null ⇒ the agent declares no seat record. */
+        public readonly ?string $idleNudgeSeatRecord = null,
+        /** `idle_nudge.seat_agent` — the `agent` the seat record must carry; null ⇒ the agent name. */
+        public readonly ?string $idleNudgeSeatAgent = null,
     ) {}
 
     public static function load(string $agentName, string $configDir): self
@@ -134,6 +140,10 @@ final class AgentConfig
         // can default to the channel token; fromArray never re-parses $raw['channel'].
         $boardTools = BoardToolsConfig::fromArray($raw, $channel);
 
+        $idleNudge = self::requireMapping($raw, 'idle_nudge');
+        $seatRecord = self::declaredIdleNudgeSeatRecord($idleNudge);
+        $seatAgent = self::declaredIdleNudgeSeatAgent($idleNudge, $seatRecord, $agentName);
+
         return new self(
             agentName: $agentName,
             identity: $identity,
@@ -146,7 +156,63 @@ final class AgentConfig
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
             boardTools: $boardTools,
+            idleNudgeSeatRecord: $seatRecord,
+            idleNudgeSeatAgent: $seatAgent,
         );
+    }
+
+    /**
+     * `idle_nudge.seat_agent` — the name the seat record's own `agent` must equal, for a seat
+     * whose `$COORD_AGENT` is not this bridge agent's name.
+     *
+     * @param  array<mixed>  $section
+     */
+    private static function declaredIdleNudgeSeatAgent(array $section, ?string $seatRecord, string $agentName): ?string
+    {
+        $declared = self::idleNudgeString($section, 'seat_agent', 'idle_nudge.seat_agent must be a non-empty agent name');
+        if ($declared !== null && $seatRecord === null) {
+            Log::warning("{$agentName}.yml: idle_nudge.seat_agent has no effect without idle_nudge.seat_record — this agent stays Mezzanine-sourced");
+        }
+
+        return $declared;
+    }
+
+    /**
+     * `idle_nudge.seat_record` — the file the seat's own Stop hook writes its wake offer to. Kept
+     * AS DECLARED: only its shape is judged here, and `~` is resolved when the pass reads it —
+     * {@see SeatRecordPath} owns why.
+     *
+     * @param  array<mixed>  $section
+     */
+    private static function declaredIdleNudgeSeatRecord(array $section): ?string
+    {
+        $declared = self::idleNudgeString($section, 'seat_record', 'idle_nudge.seat_record must be a non-empty path');
+        if ($declared !== null && ! SeatRecordPath::isDeclarable($declared)) {
+            throw new ConfigException('idle_nudge.seat_record must be an absolute path or start with ~/, with no \'..\' segment or null byte');
+        }
+
+        return $declared;
+    }
+
+    /**
+     * The one whitespace rule for the `idle_nudge` section's string keys: absent ⇒ null, surrounding
+     * whitespace trimmed, and a non-string or blank value refused. Trimmed rather than refused
+     * because a refusal here fails every delivery, and a value kept padded could only ever
+     * mismatch.
+     *
+     * @param  array<mixed>  $section
+     */
+    private static function idleNudgeString(array $section, string $key, string $refusal): ?string
+    {
+        $raw = $section[$key] ?? null;
+        if ($raw === null) {
+            return null;
+        }
+        if (! is_string($raw) || trim($raw) === '') {
+            throw new ConfigException($refusal);
+        }
+
+        return trim($raw);
     }
 
     /**
