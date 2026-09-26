@@ -338,6 +338,32 @@ function render(table) {
   return JSON.stringify(canonical(table), null, 2) + '\n';
 }
 
+// The changed lines only, each with its line number in the file it comes from.
+function lineDiff(before, after) {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      i++;
+      j++;
+    } else if (j < b.length && (i === a.length || lcs[i][j + 1] >= lcs[i + 1][j])) {
+      out.push(`+${j + 1}: ${b[j++]}`);
+    } else {
+      out.push(`-${i + 1}: ${a[i++]}`);
+    }
+  }
+  return out.join('\n') + '\n';
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const current = workingTreeState(opts.repo);
@@ -382,7 +408,7 @@ function main() {
     process.stderr.write(
       `${TABLE_PATH} is NOT what the history of ${SUBJECT_DIR}/ derives. Regenerate it with ` +
         '`node bin/gen-client-capabilities.mjs` and commit the result; hand edits to it are overwritten.\n' +
-        `--- committed\n${committed}+++ derived\n${generated}`,
+        `--- committed\n+++ derived\n${lineDiff(committed, generated)}`,
     );
     return 1;
   }
