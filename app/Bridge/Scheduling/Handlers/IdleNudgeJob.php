@@ -18,6 +18,7 @@ use App\Bridge\IdleNudge\InboxUnreadable;
 use App\Bridge\IdleNudge\NudgePlan;
 use App\Bridge\IdleNudge\PushTimeUnreadable;
 use App\Bridge\IdleNudge\SeatOfferPlan;
+use App\Bridge\IdleNudge\SeatRecordPath;
 use App\Bridge\IdleNudge\SeatRecordReader;
 use App\Bridge\IdleNudge\SeatRecordUnmeasured;
 use App\Bridge\Scheduling\JobCapability;
@@ -54,9 +55,10 @@ use Throwable;
  * threw is recorded per agent in {@see IdleNudgePassRecord}, which the check leg reads.
  *
  * ⭐ A SEAT-RECORD AGENT IS NEVER HOSTAGE TO MEZZANINE (rt#562). Its own offer record is read
- * and judged whatever the fleet read did; a fleet read that was needed and did not measure
- * turns only the Mezzanine-sourced agents into `fleet_unmeasured`, and the pass still throws
- * at the end — after its record is written — so the row keeps the failure streak it had.
+ * and judged first, before the Mezzanine-sourced half runs at all; a needed fleet read that did
+ * not measure — or anything on that half that threw — turns only the Mezzanine-sourced agents
+ * into `fleet_unmeasured`, and the pass still throws at the end — after its record is written —
+ * so the row keeps the failure streak it had.
  */
 final class IdleNudgeJob implements JobHandler
 {
@@ -125,29 +127,25 @@ final class IdleNudgeJob implements JobHandler
         $state = IdleNudgeState::load();
         $evaluator = new IdleNudgeEvaluator;
 
-        [$snapshot, $fleetUnmeasured] = $this->fleet($cfg, $sources);
-        $evaluation = $evaluator->evaluate(
-            $snapshot,
-            (string) $cfg->install,
-            $sources->mezzanine,
-            $state->nudged(),
-            $this->unseenLines(...),
-            $this->pushTimes(...),
-            $snapshot === null ? 0.0 : (float) DbClock::now()->format('U.u'),
-            $cfg->defaultAfterS,
-        );
-
+        // Judged BEFORE anything Mezzanine-side runs, so nothing that half throws can cost a
+        // seat-record agent its verdict.
         $nowMs = Carbon::now()->getTimestampMs();
         $seatVerdicts = [];
+        $seatRecordPaths = [];
         $reader = new SeatRecordReader;
-        foreach ($sources->seatRecords as $agent => $path) {
+        foreach ($sources->seatRecords as $agent => $declared) {
+            $agent = (string) $agent;
+            $seatRecordPaths[$agent] = null;
             try {
-                $offer = $reader->read($path);
+                $seatRecordPaths[$agent] = SeatRecordPath::resolve($declared);
+                $offer = $reader->read($seatRecordPaths[$agent], $agent);
             } catch (SeatRecordUnmeasured $e) {
                 $offer = $e->verdict;
             }
-            $seatVerdicts[] = $evaluator->seatRecord((string) $agent, $offer, $state->slotOf((string) $agent), $nowMs);
+            $seatVerdicts[] = $evaluator->seatRecord($agent, $offer, $state->slotOf($agent), $nowMs);
         }
+
+        [$evaluation, $fleetUnmeasured] = $this->mezzanine($cfg, $sources, $state, $evaluator);
         $evaluation = $evaluation->with($seatVerdicts);
 
         $accepted = 0;
@@ -172,7 +170,7 @@ final class IdleNudgeJob implements JobHandler
         }
 
         $state->forgetUndeclared($sources->declared());
-        IdleNudgePassRecord::measured($evaluation, $accepted, $failed, $fleetUnmeasured);
+        IdleNudgePassRecord::measured($evaluation, $accepted, $failed, $fleetUnmeasured, $seatRecordPaths);
 
         Log::info('idle nudge pass', [
             'seats' => $evaluation->seatTally,
@@ -189,23 +187,42 @@ final class IdleNudgeJob implements JobHandler
     }
 
     /**
-     * The fleet snapshot, read only when some agent needs it. Null with a reason: it was needed
-     * and did not measure. Null with none: nothing needed it.
+     * The Mezzanine-sourced agents' verdicts, with the reason a fleet read that was needed did
+     * not measure (null when it measured, or nothing needed it).
      *
-     * @return array{0: ?FleetSnapshot, 1: ?string}
+     * ⛔ NOTHING ON THIS HALF ESCAPES IT. A throw anywhere in it — the read, the database clock,
+     * the evaluation — turns every push-routed Mezzanine-sourced agent `fleet_unmeasured` and
+     * names the throw's class, so the seat-record agents are still pushed and recorded.
+     *
+     * @return array{0: Evaluation, 1: ?string}
      */
-    private function fleet(IdleNudgeConfig $cfg, IdleNudgeSources $sources): array
+    private function mezzanine(IdleNudgeConfig $cfg, IdleNudgeSources $sources, IdleNudgeState $state, IdleNudgeEvaluator $evaluator): array
     {
+        $judge = fn (?FleetSnapshot $snapshot): Evaluation => $evaluator->evaluate(
+            $snapshot,
+            (string) $cfg->install,
+            $sources->mezzanine,
+            $state->nudged(),
+            $this->unseenLines(...),
+            $this->pushTimes(...),
+            $snapshot === null ? 0.0 : (float) DbClock::now()->format('U.u'),
+            $cfg->defaultAfterS,
+        );
+
         if (! $sources->mezzanineNeeded()) {
-            return [null, null];
+            return [$judge(null), null];
         }
         if ($cfg->problem !== null) {
-            return [null, 'misconfigured — '.$cfg->problem];
+            return [$judge(null), 'misconfigured — '.$cfg->problem];
         }
         try {
-            return [(new FleetSnapshotReader)->read($cfg), null];
+            return [$judge((new FleetSnapshotReader)->read($cfg)), null];
         } catch (IdleNudgeUnmeasured $e) {
-            return [null, $e->reason];
+            return [$judge(null), $e->reason];
+        } catch (Throwable $e) {
+            Log::warning('idle nudge: the Mezzanine-sourced half of the pass threw; its agents read fleet_unmeasured', ['exception' => $e::class]);
+
+            return [$judge(null), 'the Mezzanine-sourced half of the pass threw '.$e::class.' before it finished — see the log'];
         }
     }
 

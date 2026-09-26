@@ -382,8 +382,9 @@ Mezzanine-sourced agent sets `channel.route_intents: true` — no other one can 
 is a schema-v1 offer with work on it (`lanes` non-empty, a `prompt`) and the bridge's clock has
 passed `turn_ended_at + horizon_s`. At most one notice per `(agent, session_id, turn_ended_at)` — a
 later turn end re-arms it — and at least the record's own `cooldown_s` between two notices to the
-agent. `lanes: []` sends nothing; `lanes: null` (the seat's census could not measure), and an absent,
-unreadable, not-visible, malformed or unknown-`v` record, are **unmeasured** and send nothing. The
+agent. `lanes: []` sends nothing; `lanes: null` (the seat's census could not measure), and every way
+of not reading a v1 offer written for THIS agent (each its own verdict in `AgentVerdict::UNMEASURED`),
+are **unmeasured** and send nothing. The
 event's `summary` is the record's `prompt`, verbatim. ⚠ **`turn_ended_at` is on the seat's clock
 and "now" on the bridge host's**: across two hosts the horizon moves by their skew. ⚠ The record is
 overwritten only at the next turn END, so a turn that starts after an offer and runs past `horizon_s`
@@ -416,9 +417,10 @@ changed for a whole horizon since its notice (`offer_stale`).
 
 ⚠ **A Mezzanine-sourced agent reads `unmeasured` until Mezzanine ships `protocol_agent_name`
 (card#9375) and `idle_since` / `idle_nudge_after_s` (card#9418)** — `no_declaring_seat`, by design.
-A seat-record agent does not wait on either. ⚠ A needed fleet read that does not measure makes only
-the Mezzanine-sourced agents `fleet_unmeasured`: seat-record agents are still judged, and the pass
-still fails the job row afterwards.
+A seat-record agent does not wait on either. ⚠ A needed fleet read that does not measure — or
+anything on the Mezzanine-sourced half that throws — makes only the Mezzanine-sourced agents
+`fleet_unmeasured`: seat-record agents are judged before that half runs, and the pass still fails the
+job row afterwards.
 ⚠ **One bridge per (install, agent name).** Two bridges declaring the same agent names against one
 install each nudge; nothing here can see the other.
 

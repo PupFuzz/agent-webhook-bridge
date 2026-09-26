@@ -13,8 +13,15 @@ use JsonException;
  *
  * ⛔ EVERY WAY TO NOT GET A V1 OFFER IS {@see SeatRecordUnmeasured}, each with its own verdict,
  * never an offer with nothing in it (consumer contract rule 5). Absent, not visible, unreadable,
- * not a JSON object, an unknown `v`, and a v1 record that breaks its own field contract are six
- * different facts about the install, and only the operator can tell which one to fix.
+ * not a JSON object, an unknown `v`, a v1 record that breaks its own field contract, and one
+ * written for another agent are different facts about the install, and only the operator can
+ * tell which one to fix.
+ *
+ * ⚑ THE RECORD'S `agent` MUST BE THE AGENT WHOSE YAML DECLARED IT. A record is written for one
+ * seat (rt#562: its `agent` matches the `<agent>` in its path); one YAML pointed at another
+ * seat's file — or two YAMLs at one — would otherwise deliver that seat's prompt to the wrong
+ * channel with no signal. The bridge agent name is the comparand because it is the name the
+ * Mezzanine branch already joins `protocol_agent_name` against (DL-380).
  *
  * ⚑ THE SEAT OWNS THE PATH, NOT THE BRIDGE. The record sits in the seat's home and is read by
  * the bridge's OS user, so it goes through {@see UntrustedPathContents} (a symlink is refused,
@@ -26,9 +33,11 @@ final class SeatRecordReader
     public const VERSION = 1;
 
     /**
+     * @param  string  $agent  the agent whose YAML declared the record
+     *
      * @throws SeatRecordUnmeasured
      */
-    public function read(string $path): SeatOffer
+    public function read(string $path, string $agent): SeatOffer
     {
         if (! PathVisibility::ancestorIsTraversable($path)) {
             throw new SeatRecordUnmeasured('seat_record_not_visible');
@@ -55,7 +64,12 @@ final class SeatRecordReader
             throw new SeatRecordUnmeasured('seat_record_unknown_version');
         }
 
-        return $this->v1($record) ?? throw new SeatRecordUnmeasured('seat_record_malformed');
+        $offer = $this->v1($record) ?? throw new SeatRecordUnmeasured('seat_record_malformed');
+        if ($record['agent'] !== $agent) {
+            throw new SeatRecordUnmeasured('seat_record_agent_mismatch');
+        }
+
+        return $offer;
     }
 
     /**

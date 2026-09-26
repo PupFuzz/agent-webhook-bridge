@@ -78,7 +78,7 @@ final class IdleNudgePostureCheck implements Check
             if (! is_file($tokenPath)) {
                 yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is absent or unreachable — every Mezzanine-sourced agent is unmeasured.");
             } elseif (SecretFile::isInsecure($tokenPath)) {
-                yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is group/world-readable — chmod 600; every pass refuses to read it.");
+                yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is group/world-readable — chmod 600; the fleet read refuses it, so every Mezzanine-sourced agent is unmeasured.");
             }
         }
 
@@ -150,16 +150,17 @@ final class IdleNudgePostureCheck implements Check
                 .' — not retried for that idle period. Check the seat\'s channel server.');
         }
 
-        if (is_string($record['fleet_unmeasured'] ?? null)) {
-            yield Finding::warn('idle_nudge: the last pass could not read the fleet snapshot — '.$record['fleet_unmeasured']
-                .'. No Mezzanine-sourced agent was judged, so the absence of their nudges says nothing about idle seats.');
+        $tally = $this->tally($agents);
+        $fleetUnmeasured = is_string($record['fleet_unmeasured'] ?? null) ? $record['fleet_unmeasured'] : null;
+        if ($fleetUnmeasured !== null) {
+            yield Finding::warn('idle_nudge: the last pass could not read the fleet snapshot — '.$fleetUnmeasured
+                .'. No Mezzanine-sourced agent was judged, so the absence of their nudges says nothing about idle seats. ('.$tally.')');
         }
 
-        yield from $this->seatRecordFaults($agents, $sources);
+        yield from $this->seatRecordFaults($agents, $record, $sources);
 
         $routed = array_filter($agents, fn (mixed $code): bool => $code !== 'not_push_routed');
         $measured = array_filter($routed, fn (mixed $code): bool => ! in_array($code, AgentVerdict::UNMEASURED, true));
-        $tally = $this->tally($agents);
 
         if ($routed === []) {
             yield Finding::warn('idle_nudge: no declared agent declares `idle_nudge.seat_record` or sets `channel.route_intents: true`, so no agent is measurable. ('.$tally.')');
@@ -178,38 +179,52 @@ final class IdleNudgePostureCheck implements Check
 
             return;
         }
-        if ($measured === []) {
+        // The fleet line above already said why nothing Mezzanine-side measured; the reading
+        // below would call that the expected `no_declaring_seat` state, which it is not.
+        if ($measured === [] && $fleetUnmeasured === null) {
             yield Finding::warn('idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass ('.$tally
                 .'). On a Mezzanine agent, `no_declaring_seat` on every agent is the expected reading until Mezzanine seats publish `protocol_agent_name`.');
 
             return;
         }
 
-        if ($failed === []) {
+        if ($failed === [] && $measured !== []) {
             yield Finding::ok('idle_nudge: last pass measured '.count($measured).' of '.count($routed).' push-routed or seat-record agent(s) ('.$tally.')');
         }
     }
 
     /**
      * One line per seat-record agent whose declared record the last pass could not act on, or
-     * which has not moved since its notice (`offer_stale`) — each names the path the TICK read.
+     * which has not moved since its notice (`offer_stale`). Each names the path the TICK read, as
+     * the pass recorded it — never one resolved here, where `~` may be another user's home.
      *
      * @param  array<mixed>  $agents
+     * @param  array<mixed>  $record
      * @return iterable<Finding>
      */
-    private function seatRecordFaults(array $agents, IdleNudgeSources $sources): iterable
+    private function seatRecordFaults(array $agents, array $record, IdleNudgeSources $sources): iterable
     {
+        $read = is_array($record['seat_records'] ?? null) ? $record['seat_records'] : null;
         foreach ($agents as $agent => $code) {
             if (! in_array($code, AgentVerdict::SEAT_RECORD_FAULTS, true)) {
                 continue;
             }
-            $path = $sources->seatRecords[(string) $agent] ?? '(no longer declared)';
+            $agent = (string) $agent;
+            $declared = $sources->seatRecords[$agent] ?? null;
+            $path = match (true) {
+                is_string($read[$agent] ?? null) => $read[$agent],
+                $declared === null => '(no longer declared)',
+                $read === null => "declared as {$declared} (the last-pass record predates the resolved path, so the path the tick read is not known)",
+                default => "declared as {$declared}",
+            };
             yield Finding::warn("idle_nudge: {$agent}'s seat record {$path} ".match ($code) {
-                'seat_record_absent' => 'was ABSENT on the last pass. The seat writes it at every turn end only while its `lanes.wake.enabled` is exactly `true`; `~` in the YAML resolves against the BRIDGE\'s home, so a bridge running as another OS user needs the seat\'s absolute path.',
+                'seat_record_home_unresolved' => 'could not be resolved on the last pass: it starts with `~/` and the process the pass ran in has no usable HOME. Write the seat\'s absolute path, or give the tick a HOME.',
+                'seat_record_absent' => 'was ABSENT on the last pass. The seat writes it at every turn end only while its `lanes.wake.enabled` is exactly `true`; `~` in the YAML resolves against the home of the process the pass ran in, so a tick running as another OS user needs the seat\'s absolute path.',
                 'seat_record_not_visible' => 'could not be looked for on the last pass: a directory above it is not traversable by the OS user the pass ran as. Give that user +x on each directory down to the file (and read on the file).',
                 'seat_record_unreadable' => 'was present but not read on the last pass: not readable by the pass\'s OS user, a symbolic link (refused), or past the size bound.',
                 'seat_record_malformed' => 'is not a valid schema-v1 offer record (not a JSON object, or a member outside its contract).',
                 'seat_record_unknown_version' => 'carries a schema version this build does not read (only `v: 1`) — upgrade the bridge or pin the seat\'s writer.',
+                'seat_record_agent_mismatch' => "was written for another agent: its `agent` is not `{$agent}`. Point this YAML at {$agent}'s own record — no other seat's prompt is delivered here.",
                 default => 'has NOT CHANGED for a whole horizon since its notice was pushed: the notice produced no turn end, or the seat stopped writing the record (its wake switched off, or the Stop hook no longer firing). No further notice is sent for it.',
             }.' This seat is not nudged.');
         }

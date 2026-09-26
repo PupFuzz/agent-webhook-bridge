@@ -19,7 +19,7 @@ use App\Bridge\Support\AgentConfig;
 final class IdleNudgeSources
 {
     /**
-     * @param  array<string, string>  $seatRecords  agent => its seat record path
+     * @param  array<string, string>  $seatRecords  agent => its seat record path AS DECLARED ({@see SeatRecordPath::resolve()} at use)
      * @param  array<string, bool>  $mezzanine  agent => its `channel.route_intents`
      */
     private function __construct(

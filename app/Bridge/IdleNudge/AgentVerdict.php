@@ -27,11 +27,13 @@ final class AgentVerdict
         // A Mezzanine-sourced agent on a pass whose fleet read did not measure.
         'fleet_unmeasured',
         // A seat-record agent (rt#562 consumer contract rule 5, and `lanes: null`).
+        'seat_record_home_unresolved',
         'seat_record_absent',
         'seat_record_not_visible',
         'seat_record_unreadable',
         'seat_record_malformed',
         'seat_record_unknown_version',
+        'seat_record_agent_mismatch',
         'offer_unmeasured',
     ];
 
@@ -40,11 +42,13 @@ final class AgentVerdict
      * declared is not one the pass could act on, or has not moved since its notice.
      */
     public const SEAT_RECORD_FAULTS = [
+        'seat_record_home_unresolved',
         'seat_record_absent',
         'seat_record_not_visible',
         'seat_record_unreadable',
         'seat_record_malformed',
         'seat_record_unknown_version',
+        'seat_record_agent_mismatch',
         'offer_stale',
     ];
 

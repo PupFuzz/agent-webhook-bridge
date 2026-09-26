@@ -43,6 +43,8 @@ class IdleNudgeSeatRecordJobTest extends TestCase
 
     private int $channelStatus = 200;
 
+    private bool $fleetThrows = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -71,6 +73,10 @@ class IdleNudgeSeatRecordJobTest extends TestCase
                 return Http::response('ok', $this->channelStatus);
             }
             if (str_starts_with($request->url(), 'https://mezzanine.example/')) {
+                if ($this->fleetThrows) {
+                    throw new \LogicException('an unnamed fault on the Mezzanine-sourced half');
+                }
+
                 return Http::response(['error' => 'unauthenticated', 'message' => 'bad token '.FleetSnapshotReaderTest::CANARY], 401);
             }
 
@@ -259,16 +265,7 @@ class IdleNudgeSeatRecordJobTest extends TestCase
 
     public function test_a_seat_record_agent_is_judged_even_when_mezzanine_is_needed_and_refuses(): void
     {
-        $this->agent('impl', 8789, routeIntents: true);
-        File::put($this->dir.'/fleet-token', FleetSnapshotReaderTest::CANARY);
-        chmod($this->dir.'/fleet-token', 0o600);
-        config([
-            'bridge.idle_nudge.base_url' => 'https://mezzanine.example',
-            'bridge.idle_nudge.token_path' => $this->dir.'/fleet-token',
-            'bridge.idle_nudge.install' => 'inst-a',
-            'bridge.idle_nudge.timeout' => '5',
-            'bridge.idle_nudge.default_after' => '1800',
-        ]);
+        $this->needsMezzanine();
         $this->app->make(JobRegistry::class)->insert(new JobSpec(
             name: 'idle-nudge',
             handler: 'idle_nudge',
@@ -322,5 +319,97 @@ class IdleNudgeSeatRecordJobTest extends TestCase
         $this->assertSame('fleet_unmeasured', $record['agents']['impl']);
         $this->assertSame('nudge', $record['agents']['pm']);
         $this->assertStringStartsWith('misconfigured — ', (string) $record['fleet_unmeasured']);
+    }
+
+    private function needsMezzanine(): void
+    {
+        $this->agent('impl', 8789, routeIntents: true);
+        File::put($this->dir.'/fleet-token', FleetSnapshotReaderTest::CANARY);
+        chmod($this->dir.'/fleet-token', 0o600);
+        config([
+            'bridge.idle_nudge.base_url' => 'https://mezzanine.example',
+            'bridge.idle_nudge.token_path' => $this->dir.'/fleet-token',
+            'bridge.idle_nudge.install' => 'inst-a',
+            'bridge.idle_nudge.timeout' => '5',
+            'bridge.idle_nudge.default_after' => '1800',
+        ]);
+    }
+
+    public function test_an_unnamed_throw_on_the_mezzanine_half_still_judges_pushes_and_records_the_seat_record_agent(): void
+    {
+        $this->needsMezzanine();
+        $this->fleetThrows = true;
+        $this->offer();
+
+        try {
+            $this->pass();
+            $this->fail('a Mezzanine half that threw must still fail the pass');
+        } catch (IdleNudgeUnmeasured $e) {
+            $this->assertTrue($e->passRecorded);
+        }
+
+        $this->assertCount(1, $this->pushes());
+        $record = IdleNudgePassRecord::read();
+        $this->assertTrue($record['measured']);
+        $this->assertSame(['impl' => 'fleet_unmeasured', 'pm' => 'nudge', 'quiet' => 'not_push_routed'], $record['agents']);
+        $this->assertSame('the Mezzanine-sourced half of the pass threw LogicException before it finished — see the log', $record['fleet_unmeasured']);
+    }
+
+    public function test_the_path_the_pass_read_is_recorded(): void
+    {
+        $this->offer();
+
+        $this->pass();
+
+        $this->assertSame(['pm' => $this->dir.'/seat/pm-lane-wake-offer.json'], IdleNudgePassRecord::read()['seat_records']);
+    }
+
+    public function test_a_tilde_record_resolves_against_the_home_of_the_process_running_the_pass(): void
+    {
+        $this->agent('pm', 8788, "idle_nudge:\n  seat_record: ~/pm-lane-wake-offer.json\n");
+        $this->offer();
+        $home = getenv('HOME');
+        putenv('HOME='.$this->dir.'/seat');
+        try {
+            $this->pass();
+        } finally {
+            putenv($home === false ? 'HOME' : 'HOME='.$home);
+        }
+
+        $this->assertCount(1, $this->pushes());
+        $this->assertSame(['pm' => $this->dir.'/seat/pm-lane-wake-offer.json'], IdleNudgePassRecord::read()['seat_records']);
+    }
+
+    /**
+     * The receiver loads these same YAMLs under PHP-FPM, whose `clear_env` default leaves it no
+     * HOME: the load must not throw, and a pass with no HOME reads the record as unresolved.
+     */
+    public function test_a_tilde_record_in_a_process_with_no_home_is_unmeasured_by_name_and_every_yaml_still_loads(): void
+    {
+        $this->agent('pm', 8788, "idle_nudge:\n  seat_record: ~/pm-lane-wake-offer.json\n");
+        $this->offer();
+        $home = getenv('HOME');
+        putenv('HOME');
+        try {
+            $this->pass();
+        } finally {
+            putenv($home === false ? 'HOME' : 'HOME='.$home);
+        }
+
+        $this->assertSame([], $this->pushes());
+        $record = IdleNudgePassRecord::read();
+        $this->assertTrue($record['measured']);
+        $this->assertSame(['pm' => 'seat_record_home_unresolved', 'quiet' => 'not_push_routed'], $record['agents']);
+        $this->assertSame(['pm' => null], $record['seat_records']);
+    }
+
+    public function test_a_record_written_for_another_agent_is_never_delivered(): void
+    {
+        $this->offer(['agent' => 'impl']);
+
+        $this->pass();
+
+        $this->assertSame([], $this->pushes());
+        $this->assertSame('seat_record_agent_mismatch', $this->verdictOf('pm'));
     }
 }

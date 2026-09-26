@@ -73,7 +73,7 @@ class SeatRecordReaderTest extends TestCase
     private function verdictOf(string $path): string
     {
         try {
-            (new SeatRecordReader)->read($path);
+            (new SeatRecordReader)->read($path, 'pm');
         } catch (SeatRecordUnmeasured $e) {
             return $e->verdict;
         }
@@ -82,7 +82,7 @@ class SeatRecordReaderTest extends TestCase
 
     public function test_a_v1_offer_is_read_with_turn_ended_at_in_milliseconds(): void
     {
-        $offer = (new SeatRecordReader)->read($this->write((string) json_encode(self::record())));
+        $offer = (new SeatRecordReader)->read($this->write((string) json_encode(self::record())), 'pm');
 
         $this->assertSame('sess-1', $offer->sessionId);
         $this->assertSame(1789387200125, $offer->turnEndedAtMs);
@@ -94,7 +94,7 @@ class SeatRecordReaderTest extends TestCase
 
     public function test_an_integer_turn_ended_at_and_a_null_session_are_v1(): void
     {
-        $offer = (new SeatRecordReader)->read($this->write((string) json_encode(self::record(['turn_ended_at' => 1789387200, 'session_id' => null]))));
+        $offer = (new SeatRecordReader)->read($this->write((string) json_encode(self::record(['turn_ended_at' => 1789387200, 'session_id' => null]))), 'pm');
 
         $this->assertNull($offer->sessionId);
         $this->assertSame(1789387200000, $offer->turnEndedAtMs);
@@ -102,8 +102,8 @@ class SeatRecordReaderTest extends TestCase
 
     public function test_the_two_nothing_to_offer_states_stay_apart(): void
     {
-        $empty = (new SeatRecordReader)->read($this->write((string) json_encode(self::record(['lanes' => [], 'prompt' => null, 'reason' => 'no lane idle with pullable work']))));
-        $unmeasured = (new SeatRecordReader)->read($this->write((string) json_encode(self::record(['lanes' => null, 'waivers' => null, 'prompt' => null, 'reason' => 'census timed out'])), 'u.json'));
+        $empty = (new SeatRecordReader)->read($this->write((string) json_encode(self::record(['lanes' => [], 'prompt' => null, 'reason' => 'no lane idle with pullable work']))), 'pm');
+        $unmeasured = (new SeatRecordReader)->read($this->write((string) json_encode(self::record(['lanes' => null, 'waivers' => null, 'prompt' => null, 'reason' => 'census timed out'])), 'u.json'), 'pm');
 
         $this->assertSame([], $empty->lanes);
         $this->assertNull($empty->prompt);
@@ -224,5 +224,26 @@ class SeatRecordReaderTest extends TestCase
     public function test_a_v1_record_outside_its_field_contract_is_malformed(array $over): void
     {
         $this->assertSame('seat_record_malformed', $this->verdictOf($this->write((string) json_encode(self::record($over), JSON_PRESERVE_ZERO_FRACTION))));
+    }
+
+    /** @return array<string, array{string}> */
+    public static function otherAgents(): array
+    {
+        return [
+            'another seat' => ['impl'],
+            'a case variant' => ['PM'],
+            'a padded name' => [' pm'],
+        ];
+    }
+
+    #[DataProvider('otherAgents')]
+    public function test_a_record_written_for_another_agent_is_its_own_verdict_not_an_offer(string $agent): void
+    {
+        $this->assertSame('seat_record_agent_mismatch', $this->verdictOf($this->write((string) json_encode(self::record(['agent' => $agent])))));
+    }
+
+    public function test_a_malformed_record_is_malformed_whatever_agent_it_names(): void
+    {
+        $this->assertSame('seat_record_malformed', $this->verdictOf($this->write((string) json_encode(self::record(['agent' => 'impl', 'horizon_s' => 0])))));
     }
 }

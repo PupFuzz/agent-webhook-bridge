@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\IdleNudge\SeatRecordPath;
 use App\Bridge\Validation\SocketPath;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Yaml\Exception\ParseException;
@@ -53,7 +54,7 @@ final class AgentConfig
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
         public readonly ?BoardToolsConfig $boardTools = null,
-        /** `idle_nudge.seat_record`, `~` expanded; null ⇒ the agent declares no seat record. */
+        /** `idle_nudge.seat_record` as declared (`~` unresolved); null ⇒ the agent declares no seat record. */
         public readonly ?string $idleNudgeSeatRecord = null,
     ) {}
 
@@ -149,22 +150,18 @@ final class AgentConfig
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
             boardTools: $boardTools,
-            idleNudgeSeatRecord: self::resolveIdleNudgeSeatRecord(self::requireMapping($raw, 'idle_nudge')),
+            idleNudgeSeatRecord: self::declaredIdleNudgeSeatRecord(self::requireMapping($raw, 'idle_nudge')),
         );
     }
 
     /**
-     * `idle_nudge.seat_record` — the file the seat's own Stop hook writes its wake offer to.
-     *
-     * ⚠ `~` EXPANDS AGAINST THE BRIDGE PROCESS'S HOME, like every other path key here, and the
-     * record lives in the SEAT's home. The two are the same account only when the bridge runs as
-     * the seat's OS user; otherwise the operator writes the seat's absolute path. A wrong home is
-     * not silent: the pass reads the record as absent or not visible and `idle_nudge.posture`
-     * names the resolved path.
+     * `idle_nudge.seat_record` — the file the seat's own Stop hook writes its wake offer to. Kept
+     * AS DECLARED: only its shape is judged here, and `~` is resolved when the pass reads it —
+     * {@see SeatRecordPath} owns why.
      *
      * @param  array<mixed>  $section
      */
-    private static function resolveIdleNudgeSeatRecord(array $section): ?string
+    private static function declaredIdleNudgeSeatRecord(array $section): ?string
     {
         $raw = $section['seat_record'] ?? null;
         if ($raw === null) {
@@ -173,12 +170,12 @@ final class AgentConfig
         if (! is_string($raw) || trim($raw) === '') {
             throw new ConfigException('idle_nudge.seat_record must be a non-empty path');
         }
-        $path = PathHelper::expandUser(trim($raw));
-        if (! SocketPath::isValid($path)) {
-            throw new ConfigException("idle_nudge.seat_record '{$path}' must be an absolute path (or start with ~/) with no '..' segment or null byte");
+        $declared = trim($raw);
+        if (! SeatRecordPath::isDeclarable($declared)) {
+            throw new ConfigException('idle_nudge.seat_record must be an absolute path or start with ~/, with no \'..\' segment or null byte');
         }
 
-        return $path;
+        return $declared;
     }
 
     /**

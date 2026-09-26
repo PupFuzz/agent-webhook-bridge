@@ -62,7 +62,9 @@ class SeatRecordEvaluatorTest extends TestCase
 
     public function test_a_read_that_reached_no_offer_passes_its_own_verdict_through_as_unmeasured(): void
     {
-        foreach (['seat_record_absent', 'seat_record_not_visible', 'seat_record_unreadable', 'seat_record_malformed', 'seat_record_unknown_version'] as $code) {
+        $codes = array_filter(AgentVerdict::UNMEASURED, fn (string $c): bool => str_starts_with($c, 'seat_record_'));
+        $this->assertContains('seat_record_agent_mismatch', $codes);
+        foreach ($codes as $code) {
             $v = $this->judge($code);
             $this->assertSame($code, $v->code);
             $this->assertNull($v->plan);
