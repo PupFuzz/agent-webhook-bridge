@@ -8,6 +8,7 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class AgentConfigTest extends TestCase
@@ -235,6 +236,132 @@ class AgentConfigTest extends TestCase
     {
         $this->expectException(ConfigException::class);
         AgentConfig::fromArray('a', $this->raw(['channel' => ['server_path' => "/opt/deploy\x00/channel-servers"]]));
+    }
+
+    public function test_idle_nudge_seat_record_defaults_null(): void
+    {
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw())->idleNudgeSeatRecord);
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw(['idle_nudge' => null]))->idleNudgeSeatRecord);
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw(['idle_nudge' => []]))->idleNudgeSeatRecord);
+    }
+
+    public function test_idle_nudge_seat_record_absolute_path_kept(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/.cache/coord/pm-lane-wake-offer.json']]));
+        $this->assertSame('/home/seat/.cache/coord/pm-lane-wake-offer.json', $cfg->idleNudgeSeatRecord);
+    }
+
+    public function test_idle_nudge_seat_record_tilde_is_kept_as_declared_not_expanded_at_load(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '~/.cache/coord/pm-lane-wake-offer.json']]));
+        $this->assertSame('~/.cache/coord/pm-lane-wake-offer.json', $cfg->idleNudgeSeatRecord);
+    }
+
+    /**
+     * PHP-FPM's `clear_env` defaults to yes, so the webhook receiver may load this YAML with no
+     * HOME at all — and a YAML that does not load fails every delivery.
+     */
+    public function test_idle_nudge_seat_record_tilde_loads_in_a_process_with_no_home(): void
+    {
+        $home = getenv('HOME');
+        putenv('HOME');
+        try {
+            $cfg = AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '~/.cache/coord/pm-lane-wake-offer.json']]));
+        } finally {
+            putenv($home === false ? 'HOME' : 'HOME='.$home);
+        }
+        $this->assertSame('~/.cache/coord/pm-lane-wake-offer.json', $cfg->idleNudgeSeatRecord);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function badSeatRecords(): array
+    {
+        return [
+            'relative' => ['.cache/coord/pm-lane-wake-offer.json'],
+            'bare tilde' => ['~'],
+            'another user\'s tilde' => ['~seat/.cache/coord/pm-lane-wake-offer.json'],
+            'tilde with a dotdot segment' => ['~/../seat/offer.json'],
+            'dotdot segment' => ['/home/seat/../other/offer.json'],
+            'null byte' => ["/home/seat\x00/offer.json"],
+            'empty' => ['  '],
+            'not a string' => [['/home/seat/offer.json']],
+            'a number' => [42],
+        ];
+    }
+
+    #[DataProvider('badSeatRecords')]
+    public function test_idle_nudge_seat_record_malformed_throws(mixed $value): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('idle_nudge.seat_record');
+        AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => $value]]));
+    }
+
+    public function test_idle_nudge_seat_agent_defaults_null(): void
+    {
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw())->idleNudgeSeatAgent);
+        $this->assertNull(AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json']]))->idleNudgeSeatAgent);
+    }
+
+    public function test_idle_nudge_seat_agent_is_kept(): void
+    {
+        $cfg = AgentConfig::fromArray('kanban-solo', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json', 'seat_agent' => 'kanban']]));
+        $this->assertSame('kanban', $cfg->idleNudgeSeatAgent);
+    }
+
+    /**
+     * One whitespace rule for the section: a quoted value padded by accident is trimmed, never a
+     * load failure — which would fail every delivery — nor a value the compare can only miss.
+     */
+    public function test_idle_nudge_padded_seat_record_and_seat_agent_are_both_trimmed(): void
+    {
+        $cfg = AgentConfig::fromArray('kanban-solo', $this->raw(['idle_nudge' => ['seat_record' => ' /home/seat/offer.json ', 'seat_agent' => " kanban\t"]]));
+        $this->assertSame('/home/seat/offer.json', $cfg->idleNudgeSeatRecord);
+        $this->assertSame('kanban', $cfg->idleNudgeSeatAgent);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function badSeatAgents(): array
+    {
+        return [
+            'empty' => [''],
+            'blank' => ['  '],
+            'not a string' => [['kanban']],
+            'a number' => [42],
+            'a boolean' => [true],
+        ];
+    }
+
+    #[DataProvider('badSeatAgents')]
+    public function test_idle_nudge_seat_agent_malformed_throws(mixed $value): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('idle_nudge.seat_agent');
+        AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json', 'seat_agent' => $value]]));
+    }
+
+    public function test_idle_nudge_seat_agent_without_a_seat_record_is_warned_not_fatal(): void
+    {
+        Log::spy();
+        $cfg = AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_agent' => 'kanban']]));
+
+        $this->assertNull($cfg->idleNudgeSeatRecord);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'idle_nudge.seat_agent')
+            && str_contains($message, 'has no effect without idle_nudge.seat_record'));
+    }
+
+    public function test_idle_nudge_section_must_be_a_mapping(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['idle_nudge' => '/home/seat/offer.json']));
+    }
+
+    public function test_idle_nudge_is_a_known_top_level_key(): void
+    {
+        Log::spy();
+        AgentConfig::fromArray('a', $this->raw(['idle_nudge' => ['seat_record' => '/home/seat/offer.json']]));
+
+        Log::shouldNotHaveReceived('warning');
     }
 
     public function test_channel_url_parsed(): void

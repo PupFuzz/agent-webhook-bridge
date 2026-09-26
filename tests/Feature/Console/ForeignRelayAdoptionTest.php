@@ -106,6 +106,12 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'silent github delivery record interpolates the subscription SCOPE, escaped as the leg that '
                 .'published it escapes its own (DL-382). No exception is involved.',
         ],
+        'Bridge/GitHubOwedCommand.php' => [
+            'relays' => 3, 'escaped' => 0,
+            'ruling' => '✔ NOT FOREIGN ×3 — an UnreadableFileException and a MalformedStateFileException over the '
+                .'owed GitHub-write record\'s own path: the path plus the fixed permissions-fault sentence, or the path plus a fixed phrase; '
+                .'and a config fault on this install\'s own writeback.json, read to ask whether an owed comment\'s repo is still mapped.',
+        ],
         'Bridge/JobsCommand.php' => [
             'relays' => 1, 'escaped' => 0,
             'ruling' => '✔ NOT FOREIGN ×1 — a `JobSpecException` over options the operator typed.',

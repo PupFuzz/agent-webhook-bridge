@@ -12,6 +12,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -268,6 +269,25 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         if ($disposition === 'terminal') {
             if ($stage === $mapping->coordCardTerminalStageId) {
                 return;   // already concluded — redelivery-safe no-op
+            }
+            // PARENT-CARD refusal (card#10068). ⛔ THIS LEG ONLY, and the two below are ruled
+            // the other way rather than left unconsidered: the revive leg moves a card OUT of
+            // the terminal and the relane leg moves lane to lane, so neither writes a terminal
+            // stage, which is what the predicate is about. `ProgramParentMoveCoverageTest`
+            // carries all three rulings over a DERIVED population, so this comment is not the
+            // record — that class is.
+            //
+            // Placed with the pin, after the already-concluded no-op above and for the same
+            // reason: a parent already IN the terminal has no write to refuse, and alerting
+            // there would report a permanent failure that did not happen. Before the pin, as on
+            // the PR-event path: the two refuse the same write and the parent is the more
+            // specific report ("cite a leg"), where the pin's is "a human is holding this".
+            if (ProgramCardGuard::refuses(
+                $this->alerts, $card, 'kanban_coord_card_move', 'terminal move', $id, $repo, self::ALERT_OUTCOME,
+                ['issue' => $issueNumber, 'sid' => $sid] + MappedBoardGuard::boardContext($card, $mapping),
+                $issueNumber,
+            )) {
+                return;
             }
             // The DL-178 human hold (card#8523, DL-340). Taken AFTER the already-concluded
             // no-op, exactly where the move and dependabot handlers take theirs: a pinned

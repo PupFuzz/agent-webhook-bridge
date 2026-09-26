@@ -1265,7 +1265,38 @@ class KanbanDependabotCardHandlerTest extends TestCase
     }
 
     /**
-     * The control for the leg above: the SAME fixture with an unrecognised tag moves.
+     * card#10068 / DL-420 — a `program` PARENT correlated to a dependabot pull request is not
+     * moved by it. The population here is derived by CORRELATION, not by what this handler
+     * minted, so a parent carrying that PR's ref reaches the survivor move; one dependency bump
+     * cannot speak for a card naming several legs. The control is the pin leg's no-pin twin
+     * below, on the same fixture minus the tag.
+     */
+    public function test_a_program_parent_is_not_moved_to_the_outcomes_stage(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['triaged', 'program'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');   // target stage 52 (terminal), card sits at 50
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'program_parent_card'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'kanban_dependabot_card: move REFUSED')
+            && $ctx['card_id'] === 7 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The control for the pin and program-parent legs above: the SAME fixture with an
+     * unrecognised tag moves.
      */
     public function test_the_same_move_fixture_without_a_pin_is_moved(): void
     {

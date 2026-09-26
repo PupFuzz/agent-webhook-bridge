@@ -15,6 +15,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -223,6 +224,15 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 // before this guard shipped, on the PR's next event.
                 $survivor = $this->collapseDuplicates($client, $cards, $mapping, $repo, $prNumber);
                 if (($survivor['workflow_stage_id'] ?? null) !== $stageId) {
+                    // The survivor is found by CORRELATION to this PR, not by what this handler
+                    // minted, so a `program` parent carrying the PR's ref reaches this move.
+                    if (ProgramCardGuard::refuses(
+                        $this->alerts, $survivor, 'kanban_dependabot_card', 'move', (int) $survivor['id'], $repo, self::ALERT_OUTCOME,
+                        ['pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping),
+                        $prNumber,
+                    )) {
+                        return;
+                    }
                     if ($this->refusedAsPinned($survivor, (int) $survivor['id'], $repo, $prNumber, $mapping, 'move')) {
                         return;
                     }

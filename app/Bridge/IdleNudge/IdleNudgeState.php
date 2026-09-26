@@ -29,15 +29,21 @@ use JsonException;
  *
  * ⚑ ONE WRITER. Only the job writes this file, and every ingress runs the job inside the
  * scheduler's non-blocking pass lock, so no read-modify-write interleaves.
+ *
+ * ⭐ A SEAT-RECORD SLOT ALSO CARRIES `session_id` AND `nudged_at` (rt#562). `idle_since` holds
+ * the offer's `turn_ended_at`, `session_id` completes the `(agent, session_id, turn_ended_at)`
+ * key, and `nudged_at` — the bridge's own clock at the notice — is what the `cooldown_s` between
+ * two notices is measured from. A Mezzanine slot carries neither, so a file written before
+ * either existed loads unchanged.
  */
 final class IdleNudgeState
 {
     public const FILE = 'idle-nudge.json';
 
     /**
-     * @param  array<string, int>  $nudged  agent => idle_since, epoch ms
+     * @param  array<string, array{idle_since: int, nudged_at: ?int, session_id?: ?string}>  $slots  epoch ms
      */
-    private function __construct(private array $nudged) {}
+    private function __construct(private array $slots) {}
 
     public static function path(): string
     {
@@ -69,28 +75,63 @@ final class IdleNudgeState
             throw new IdleNudgeUnmeasured('the dedupe state file '.self::path().' is malformed — nothing is pushed until it is repaired or removed');
         }
 
-        $nudged = [];
+        $loaded = [];
         foreach ($slots as $agent => $slot) {
-            $ms = is_array($slot) ? FleetSnapshot::instantMs($slot['idle_since'] ?? null) : null;
-            if (! is_string($agent) || $ms === null) {
+            $parsed = is_string($agent) && is_array($slot) ? self::slot($slot) : null;
+            if ($parsed === null) {
                 throw new IdleNudgeUnmeasured('the dedupe state file '.self::path().' is malformed — nothing is pushed until it is repaired or removed');
             }
-            $nudged[$agent] = $ms;
+            $loaded[$agent] = $parsed;
         }
 
-        return new self($nudged);
+        return new self($loaded);
     }
 
-    /** @return array<string, int> */
+    /**
+     * @param  array<mixed>  $slot
+     * @return array{idle_since: int, nudged_at: ?int, session_id?: ?string}|null
+     */
+    private static function slot(array $slot): ?array
+    {
+        $idleSince = FleetSnapshot::instantMs($slot['idle_since'] ?? null);
+        $nudgedAt = array_key_exists('nudged_at', $slot) ? FleetSnapshot::instantMs($slot['nudged_at']) : null;
+        if ($idleSince === null || (array_key_exists('nudged_at', $slot) && $nudgedAt === null)) {
+            return null;
+        }
+        $parsed = ['idle_since' => $idleSince, 'nudged_at' => $nudgedAt];
+        if (array_key_exists('session_id', $slot)) {
+            if ($slot['session_id'] !== null && ! is_string($slot['session_id'])) {
+                return null;
+            }
+            $parsed['session_id'] = $slot['session_id'];
+        }
+
+        return $parsed;
+    }
+
+    /** @return array<string, int> agent => the `idle_since` it was last nudged for, epoch ms */
     public function nudged(): array
     {
-        return $this->nudged;
+        return array_map(fn (array $slot): int => $slot['idle_since'], $this->slots);
+    }
+
+    /** @return array{idle_since: int, nudged_at: ?int, session_id?: ?string}|null */
+    public function slotOf(string $agent): ?array
+    {
+        return $this->slots[$agent] ?? null;
     }
 
     /** Record the slot for this idle period and persist it — call BEFORE the push. */
     public function markAndSave(string $agent, int $idleSinceMs): void
     {
-        $this->nudged[$agent] = $idleSinceMs;
+        $this->slots[$agent] = ['idle_since' => $idleSinceMs, 'nudged_at' => null];
+        $this->save();
+    }
+
+    /** Record the slot for this seat offer and persist it — call BEFORE the push. */
+    public function markOfferAndSave(SeatOfferPlan $plan): void
+    {
+        $this->slots[$plan->agent] = ['idle_since' => $plan->turnEndedAtMs, 'nudged_at' => $plan->decidedAtMs, 'session_id' => $plan->sessionId];
         $this->save();
     }
 
@@ -101,19 +142,26 @@ final class IdleNudgeState
      */
     public function forgetUndeclared(array $declared): void
     {
-        $kept = array_intersect_key($this->nudged, array_flip($declared));
-        if (count($kept) !== count($this->nudged)) {
-            $this->nudged = $kept;
+        $kept = array_intersect_key($this->slots, array_flip($declared));
+        if (count($kept) !== count($this->slots)) {
+            $this->slots = $kept;
             $this->save();
         }
     }
 
     private function save(): void
     {
-        ksort($this->nudged);
+        ksort($this->slots);
         $slots = [];
-        foreach ($this->nudged as $agent => $ms) {
-            $slots[$agent] = ['idle_since' => FleetSnapshot::canonicalInstant($ms)];
+        foreach ($this->slots as $agent => $slot) {
+            $out = ['idle_since' => FleetSnapshot::canonicalInstant($slot['idle_since'])];
+            if (array_key_exists('session_id', $slot)) {
+                $out['session_id'] = $slot['session_id'];
+            }
+            if ($slot['nudged_at'] !== null) {
+                $out['nudged_at'] = FleetSnapshot::canonicalInstant($slot['nudged_at']);
+            }
+            $slots[$agent] = $out;
         }
 
         BridgePaths::ensureDir(BridgePaths::stateDir());

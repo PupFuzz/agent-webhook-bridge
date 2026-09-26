@@ -74,22 +74,39 @@ Some intents are composed by the bridge itself rather than by a classifier from 
 reach the seat over `channel_push` **only** — there is no webhook event behind them, so they are
 never staged to the inbox — and carry `provider: "bridge"` and a null actor.
 
-**`seat_idle_nudge`** (DL-380) — this seat has sat idle past its horizon on Mezzanine's fleet
-record while intents pushed at it since it went idle are still unseen. It is sent at most once per
-idle period, and only for an agent with `channel.route_intents: true`. `subject_id` is
-`idle-nudge:<agent>:<idle_since>`. `payload`:
+**`seat_idle_nudge`** (DL-380, DL-424) — this seat has sat idle past its horizon with work waiting.
+**Branch on `payload.source`**: the two sources send different evidence under the same kind.
+`subject_id` is `idle-nudge:<agent>:<idle_since>` for both.
+
+**`source: "seat_record"`** (DL-424) — the seat's OWN offer record (rt#562) said, at its last turn
+end, that lanes were idle with pullable work, and `horizon_s` has passed since. **`summary` is the
+record's `prompt`, verbatim** — the text the seat's own writer composed for this delivery. Sent at most
+once per `(agent, session_id, turn_ended_at)` and at least `cooldown_s` apart. `payload`:
 
 | key | meaning |
 |---|---|
-| `agent`, `install_id`, `seat_id` | the local agent and the Mezzanine seat it joined to |
+| `agent`, `source`, `session_id` | the local agent, `"seat_record"`, and the record's harness session id (or `null`) |
+| `verdict`, `horizon_source` | always `idle_past_declared_horizon` and `declared` — the record always declares its horizon |
+| `idle_since` | the record's `turn_ended_at`, as a UTC instant (milliseconds) |
+| `idle_age_s`, `horizon_s`, `cooldown_s` | seconds since the turn end on the BRIDGE's clock, and the record's own horizon and cooldown |
+| `pending_total`, `pending_shown`, `pending` | how many lanes the record offered, how many are listed, and the list — each `{lane, detail}` |
+
+**`source: "mezzanine"`** (DL-380) — this seat has sat idle past its horizon on Mezzanine's fleet
+record while intents pushed at it since it went idle are still unseen. It is sent at most once per
+idle period, and only for an agent with `channel.route_intents: true`. `payload`:
+
+| key | meaning |
+|---|---|
+| `agent`, `source`, `install_id`, `seat_id` | the local agent, `"mezzanine"` (added by DL-424), and the Mezzanine seat it joined to |
 | `verdict` | `idle_past_declared_horizon`, or `suspect` when the seat declared no horizon and the install default was used |
 | `idle_since`, `server_time` | Mezzanine instants (UTC, milliseconds) |
 | `idle_age_s`, `horizon_s`, `horizon_source` | the idle age on Mezzanine's clock, the horizon it was judged against, and `declared` / `default` |
 | `pending_total`, `pending_shown`, `pending` | how many unseen pushed intents qualified, how many are listed, and the list — oldest first, each `{id, kind, subject_id, summary, ts}` |
 
 ⚠ **It is a prompt to reconcile, not a work list.** `pending` is capped (`pending_total` is the
-denominator), and it names only work that reached the bridge inbox. Re-derive open work from the
-source of truth, as the model above says.
+denominator); on the Mezzanine source it names only work that reached the bridge inbox, and on the
+seat-record source it is the seat's census at its last turn end, not re-taken when the event fires.
+Re-derive open work from the source of truth, as the model above says.
 
 ## Consumption patterns
 

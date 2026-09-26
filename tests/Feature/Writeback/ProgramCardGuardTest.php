@@ -15,22 +15,25 @@ use Tests\TestCase;
  * this class pins the two things that live here rather than there.
  *
  * ⛔ THE SECOND LEG IS A SEAM CHECK, NOT A DOC-TIDINESS ONE. This refusal was designed as a
- * guarantee holding ACROSS a repo boundary, and ⛔ NO FAR END IMPLEMENTS IT TODAY — the
- * measurement behind that is {@see ProgramCardGuard}'s docblock and is deliberately not copied
- * here. So the `program` row of `docs/kanban-integration-contract.md` § 3 declares a REQUEST
- * for a counterpart, not a description of one — and a declaration with no check is a comment
+ * guarantee holding ACROSS a repo boundary, and ONE far end now implements it — FROM ONE
+ * COMMIT ON, not at every pin, which is the half a reader drops: the measurement behind that is
+ * {@see ProgramCardGuard}'s docblock and is deliberately not copied here. So the `program` row
+ * of `docs/kanban-integration-contract.md` § 3 declares the spelling a counterpart matches AND
+ * the version bound it is in force within — and a declaration with no check is a comment
  * rather than a contract, which is worse than silence in BOTH directions: a spelling that had
  * drifted would let a far-end maintainer audit their half and get confidence instead of a
- * question, and so would a row that kept asserting a counterpart nobody built. This leg is
- * that check, and it reads the very artifact the far end reads — the spelling AND the
- * unmet-request statement, so neither can be edited back out silently.
+ * question, and so would a row that kept asserting a counterpart nobody built, or one that
+ * dropped the bound and asserted protection an install's older pin does not carry. This leg
+ * is that check, and it reads the very artifact the far end reads — the spelling AND the
+ * version bound, so neither can be edited back out silently.
  *
  * ⚠ WHAT IT CANNOT ESTABLISH, and the check's correct output is to say so by name rather than
- * to imply otherwise by passing: nothing here can see a future far-end implementation's
- * spelling, and nothing on either side can establish that a parent card actually CARRIES the
- * tag. Both remainders are written into the contract row itself, where the far end reads them.
- * Nor can it see whether the far end has since implemented the rule — that stays a measurement
- * somebody makes against the framework, recorded on the row with the version that lands it.
+ * to imply otherwise by passing: nothing here can read the far end's spelling (it was measured
+ * equal by reading that repo's source, which this suite has no checkout of), and nothing on
+ * either side can establish that a parent card actually CARRIES the tag. Both remainders are
+ * written into the contract row itself, where the far end reads them. Nor can it see a far end
+ * change — a toolkit release that carries the withhold, or a revert of it — which stays a
+ * measurement somebody makes against that repo, recorded on the row with the version it names.
  */
 class ProgramCardGuardTest extends TestCase
 {
@@ -92,13 +95,23 @@ class ProgramCardGuardTest extends TestCase
         $this->assertStringContainsString('neither end can check', $row);
         // ⛔ AND THE TWO THINGS THAT WERE ASSERTED FALSELY BEFORE PR #762, pinned here so they
         // cannot be edited back out by a hand that finds the row's hedging untidy. (1) The row
-        // must not claim a far-end counterpart: none exists at any published framework version,
-        // and a row asserting one hands its reader confidence where it owes a question. (2) The
-        // refusal is the EVENT path's, and the row must keep saying so together with the NAME
-        // of the file where this repo keeps the list of writers that bypass it — because a far
-        // end relying on "a program card is never moved by this bridge on a PR outcome" would
-        // be relying on something untrue, and it cannot read that file from its own tree.
-        $this->assertStringContainsString('no far-end counterpart exists today', strtolower($row));
+        // must state the far-end counterpart at its true width: the toolkit's promote tool
+        // withholds on this spelling, but only from the commit that landed it, so the row must
+        // name that tool AND the bound an older toolkit pin falls outside — a row asserting the
+        // counterpart without the bound hands its reader confidence where it owes a question,
+        // and the pre-842cc4f claim that no counterpart exists must not come back either. (2)
+        // The refusal is the EVENT path's, and the row must keep saying so together with the
+        // NAME of the file where this repo keeps the list of writers that bypass it — because a
+        // far end relying on "a program card is never moved by this bridge on a PR outcome"
+        // would be relying on something untrue, and it cannot read that file from its own tree.
+        $this->assertStringContainsString('bin/promote-released-cards', $row);
+        $this->assertStringContainsString('whose toolkit pin does not contain', $row);
+        $this->assertStringContainsString('842cc4f', $row);
+        $this->assertStringContainsString('No tagged toolkit release contained', $row);
+        $this->assertStringNotContainsString('no far-end counterpart exists today', strtolower($row));
+        // The coordination framework is a far end with no implementation, so for it the row
+        // must stay a request rather than drift into describing a counterpart nobody built.
+        $this->assertStringContainsString('For that end this row is still a REQUEST', $row);
         $this->assertStringContainsString('EVENT-path', $row);
         $this->assertStringContainsString('docs/writeback.md', $row);
         // ⛔ A POINTER, NEVER A ROSTER OR A COUNT — this leg exists because the row carried

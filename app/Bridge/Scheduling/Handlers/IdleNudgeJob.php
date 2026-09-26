@@ -11,11 +11,16 @@ use App\Bridge\IdleNudge\FleetSnapshotReader;
 use App\Bridge\IdleNudge\IdleNudgeConfig;
 use App\Bridge\IdleNudge\IdleNudgeEvaluator;
 use App\Bridge\IdleNudge\IdleNudgePassRecord;
+use App\Bridge\IdleNudge\IdleNudgeSources;
 use App\Bridge\IdleNudge\IdleNudgeState;
 use App\Bridge\IdleNudge\IdleNudgeUnmeasured;
 use App\Bridge\IdleNudge\InboxUnreadable;
 use App\Bridge\IdleNudge\NudgePlan;
 use App\Bridge\IdleNudge\PushTimeUnreadable;
+use App\Bridge\IdleNudge\SeatOfferPlan;
+use App\Bridge\IdleNudge\SeatRecordPath;
+use App\Bridge\IdleNudge\SeatRecordReader;
+use App\Bridge\IdleNudge\SeatRecordUnmeasured;
 use App\Bridge\Scheduling\JobCapability;
 use App\Bridge\Scheduling\JobContext;
 use App\Bridge\Scheduling\JobHandler;
@@ -26,6 +31,7 @@ use App\Bridge\Support\DbClock;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -44,9 +50,15 @@ use Throwable;
  *
  * ⛔ TWO FAILURE CHANNELS, ONE PER KIND OF FACT. A pass that could not MEASURE throws
  * ({@see IdleNudgeUnmeasured}), so the row builds a failure streak `bridge:check` warns on. A
- * pass that measured returns ok — including today's live reality, where no seat publishes
- * `protocol_agent_name` and every agent reads `no_declaring_seat` — and a push that threw is
- * recorded per agent in {@see IdleNudgePassRecord}, which the check leg reads.
+ * pass that measured returns ok — including a Mezzanine install's live reality, where no seat
+ * publishes `protocol_agent_name` and every agent reads `no_declaring_seat` — and a push that
+ * threw is recorded per agent in {@see IdleNudgePassRecord}, which the check leg reads.
+ *
+ * ⭐ A SEAT-RECORD AGENT IS NEVER HOSTAGE TO MEZZANINE (rt#562). Its own offer record is read
+ * and judged first, before the Mezzanine-sourced half runs at all; a needed fleet read that did
+ * not measure — or anything on that half that threw — turns only the Mezzanine-sourced agents
+ * into `fleet_unmeasured`, and the pass still throws at the end — after its record is written —
+ * so the row keeps the failure streak it had.
  */
 final class IdleNudgeJob implements JobHandler
 {
@@ -80,9 +92,11 @@ final class IdleNudgeJob implements JobHandler
             // otherwise leave the PREVIOUS pass's record standing, and `bridge:check` would
             // report that verdict as this install's current state. Only the class is recorded
             // for an unnamed throw — its message is not bridge vocabulary.
-            $this->recordUnmeasured($e instanceof IdleNudgeUnmeasured
-                ? $e->reason
-                : 'the pass threw '.$e::class.' before it finished — see the job row\'s last_error');
+            if (! ($e instanceof IdleNudgeUnmeasured && $e->passRecorded)) {
+                $this->recordUnmeasured($e instanceof IdleNudgeUnmeasured
+                    ? $e->reason
+                    : 'the pass threw '.$e::class.' before it finished — see the job row\'s last_error');
+            }
 
             throw $e;
         }
@@ -101,45 +115,57 @@ final class IdleNudgeJob implements JobHandler
 
     private function measuredPass(IdleNudgeConfig $cfg): JobOutcome
     {
-        if ($cfg->problem !== null) {
-            throw new IdleNudgeUnmeasured('misconfigured — '.$cfg->problem);
-        }
-
         try {
             $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
         } catch (Throwable) {
             throw new IdleNudgeUnmeasured('the declared agent YAMLs could not be loaded, so which agents exist is unknown — run bridge:check');
         }
-        $agents = [];
-        foreach ($configs as $agentConfig) {
-            $agents[$agentConfig->agentName] = $agentConfig->channel->routeIntents;
+        $sources = IdleNudgeSources::of($configs);
+
+        // Loaded BEFORE any read: a state file this pass cannot parse costs no request, and is
+        // never written over.
+        $state = IdleNudgeState::load();
+        $evaluator = new IdleNudgeEvaluator;
+
+        // Judged BEFORE anything Mezzanine-side runs, so nothing that half throws can cost a
+        // seat-record agent its verdict.
+        $nowMs = Carbon::now()->getTimestampMs();
+        $seatVerdicts = [];
+        $seatRecordPaths = [];
+        $recordAgents = [];
+        $reader = new SeatRecordReader;
+        foreach ($sources->seatRecords as $agent => $declared) {
+            $agent = (string) $agent;
+            $seatRecordPaths[$agent] = null;
+            $recordAgents[$agent] = $sources->recordAgentOf($agent);
+            if (isset($sources->seatClaims[$agent])) {
+                // Not read: whatever it holds, delivering it here would wake a second channel.
+                $offer = 'seat_record_seat_claimed_twice';
+            } else {
+                try {
+                    $seatRecordPaths[$agent] = SeatRecordPath::resolve($declared);
+                    $offer = $reader->read($seatRecordPaths[$agent], $recordAgents[$agent]);
+                } catch (SeatRecordUnmeasured $e) {
+                    $offer = $e->verdict;
+                }
+            }
+            $seatVerdicts[] = $evaluator->seatRecord($agent, $offer, $state->slotOf($agent), $nowMs);
         }
 
-        // Loaded BEFORE the request: a state file this pass cannot parse costs no request, and
-        // is never written over.
-        $state = IdleNudgeState::load();
-
-        $snapshot = (new FleetSnapshotReader)->read($cfg);
-        $dbNowS = (float) DbClock::now()->format('U.u');
-
-        $evaluation = (new IdleNudgeEvaluator)->evaluate(
-            $snapshot,
-            (string) $cfg->install,
-            $agents,
-            $state->nudged(),
-            $this->unseenLines(...),
-            $this->pushTimes(...),
-            $dbNowS,
-            $cfg->defaultAfterS,
-        );
+        [$evaluation, $fleetUnmeasured] = $this->mezzanine($cfg, $sources, $state, $evaluator);
+        $evaluation = $evaluation->with($seatVerdicts);
 
         $accepted = 0;
         $failed = [];
         $pusher = new AuthoredIntentPush($this->handlers);
         foreach ($evaluation->plans() as $plan) {
-            $state->markAndSave($plan->agent, $plan->idleSinceMs);
+            if ($plan instanceof SeatOfferPlan) {
+                $state->markOfferAndSave($plan);
+            } else {
+                $state->markAndSave($plan->agent, $plan->idleSinceMs);
+            }
             try {
-                $pusher->send($this->intent($plan), $plan->agent);
+                $pusher->send($plan instanceof SeatOfferPlan ? $this->offerIntent($plan) : $this->intent($plan), $plan->agent);
                 $accepted++;
             } catch (Throwable $e) {
                 $failed[] = $plan->agent;
@@ -150,8 +176,8 @@ final class IdleNudgeJob implements JobHandler
             }
         }
 
-        $state->forgetUndeclared(array_keys($agents));
-        IdleNudgePassRecord::measured($evaluation, $accepted, $failed);
+        $state->forgetUndeclared($sources->declared());
+        IdleNudgePassRecord::measured($evaluation, $accepted, $failed, $fleetUnmeasured, $seatRecordPaths, $recordAgents);
 
         Log::info('idle nudge pass', [
             'seats' => $evaluation->seatTally,
@@ -160,7 +186,51 @@ final class IdleNudgeJob implements JobHandler
             'pushes_failed' => $failed,
         ]);
 
+        if ($fleetUnmeasured !== null) {
+            throw new IdleNudgeUnmeasured($fleetUnmeasured, passRecorded: true);
+        }
+
         return JobOutcome::ok($this->summary($evaluation, $accepted, count($failed)));
+    }
+
+    /**
+     * The Mezzanine-sourced agents' verdicts, with the reason a fleet read that was needed did
+     * not measure (null when it measured, or nothing needed it).
+     *
+     * ⛔ NOTHING ON THIS HALF ESCAPES IT. A throw anywhere in it — the read, the database clock,
+     * the evaluation — turns every push-routed Mezzanine-sourced agent `fleet_unmeasured` and
+     * names the throw's class, so the seat-record agents are still pushed and recorded.
+     *
+     * @return array{0: Evaluation, 1: ?string}
+     */
+    private function mezzanine(IdleNudgeConfig $cfg, IdleNudgeSources $sources, IdleNudgeState $state, IdleNudgeEvaluator $evaluator): array
+    {
+        $judge = fn (?FleetSnapshot $snapshot): Evaluation => $evaluator->evaluate(
+            $snapshot,
+            (string) $cfg->install,
+            $sources->mezzanine,
+            $state->nudged(),
+            $this->unseenLines(...),
+            $this->pushTimes(...),
+            $snapshot === null ? 0.0 : (float) DbClock::now()->format('U.u'),
+            $cfg->defaultAfterS,
+        );
+
+        if (! $sources->mezzanineNeeded()) {
+            return [$judge(null), null];
+        }
+        if ($cfg->problem !== null) {
+            return [$judge(null), 'misconfigured — '.$cfg->problem];
+        }
+        try {
+            return [$judge((new FleetSnapshotReader)->read($cfg)), null];
+        } catch (IdleNudgeUnmeasured $e) {
+            return [$judge(null), $e->reason];
+        } catch (Throwable $e) {
+            Log::warning('idle nudge: the Mezzanine-sourced half of the pass threw; its agents read fleet_unmeasured', ['exception' => $e::class]);
+
+            return [$judge(null), 'the Mezzanine-sourced half of the pass threw '.$e::class.' before it finished — see the log'];
+        }
     }
 
     /**
@@ -258,6 +328,7 @@ final class IdleNudgeJob implements JobHandler
             ),
             payload: [
                 'agent' => $plan->agent,
+                'source' => 'mezzanine',
                 'install_id' => $plan->installId,
                 'seat_id' => $plan->seatId,
                 'verdict' => $plan->suspect ? 'suspect' : 'idle_past_declared_horizon',
@@ -274,6 +345,37 @@ final class IdleNudgeJob implements JobHandler
     }
 
     /**
+     * `summary` IS the seat's own `prompt`, verbatim: the text its writer composed for exactly
+     * this delivery (rt#562). Everything else is bridge vocabulary or a value the reader typed.
+     */
+    private function offerIntent(SeatOfferPlan $plan): Intent
+    {
+        $turnEndedAt = FleetSnapshot::canonicalInstant($plan->turnEndedAtMs);
+
+        return new Intent(
+            kind: self::KIND,
+            subjectId: 'idle-nudge:'.$plan->agent.':'.$turnEndedAt,
+            provider: 'bridge',
+            actor: new Actor(id: null),
+            summary: $plan->prompt,
+            payload: [
+                'agent' => $plan->agent,
+                'source' => 'seat_record',
+                'verdict' => 'idle_past_declared_horizon',
+                'session_id' => $plan->sessionId,
+                'idle_since' => $turnEndedAt,
+                'idle_age_s' => $plan->idleAgeS,
+                'horizon_s' => $plan->horizonS,
+                'horizon_source' => 'declared',
+                'cooldown_s' => $plan->cooldownS,
+                'pending_total' => $plan->lanesTotal,
+                'pending_shown' => count($plan->lanes),
+                'pending' => $plan->lanes,
+            ],
+        );
+    }
+
+    /**
      * Counts FIRST and reasons last: the row column holds 255 characters and cuts the tail.
      */
     private function summary(Evaluation $evaluation, int $accepted, int $failed): string
@@ -285,13 +387,13 @@ final class IdleNudgeJob implements JobHandler
         $seats = $evaluation->seatTally;
 
         return sprintf(
-            'nudged %d (unconfirmed; failed %d) · agents %d · seats %d (foreign %d, unmapped %d) · %s',
+            'nudged %d (unconfirmed; failed %d) · agents %d · %s · %s',
             $accepted,
             $failed,
             count($evaluation->verdicts),
-            array_sum($seats),
-            $seats['foreign'],
-            $seats['unmapped'],
+            $seats === null
+                ? 'no fleet read'
+                : sprintf('seats %d (foreign %d, unmapped %d)', array_sum($seats), $seats['foreign'], $seats['unmapped']),
             implode(', ', $parts),
         );
     }

@@ -11,7 +11,9 @@ namespace App\Bridge\Writeback;
  * refusal, a timeout or a throw consumes the claim exactly as a success does. That is the point: the
  * dispatcher classifies one event once per subscribed agent and each of them emits the same write
  * target, so a second attempt inside one delivery could only repeat a failure just logged, or race a
- * write just made. The NEXT event for the same key tries again.
+ * write just made. A later event for the same key tries again — WHERE ONE EXISTS: a pull request
+ * merges once and a comment is created once, so a failed write no later event will re-attempt is
+ * what {@see GitHubWriteDebt} records for an operator to finish (card#10242, card#10365).
  *
  * ⛔ THE LIFETIME IS THE OWNING INSTANCE'S, and for these callers that is the handler singleton: one
  * delivery in the receiver (a process per request under FPM), one `bridge:replay` run. A persistent

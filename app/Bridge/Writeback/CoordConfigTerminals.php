@@ -28,10 +28,32 @@ use App\Bridge\Support\UntrustedPathContents;
  * WHY A SECOND IMPLEMENTATION. The rule's home is Python
  * (`coord.kanban_common.terminals_for_board` + `_terminal_columns_by_board`); the
  * bridge is PHP and cannot import it. This is a deliberate mirror of a rule the bridge
- * does not own. Its conformance is pinned by the framework's OWN vectors, ported verbatim
- * into tests/Feature/Writeback/CoordConfigTerminalsTest.php — re-port them if the
- * framework changes the rule. (Named in prose, not an @see: a production class must not
- * import a test class, which is what an FQCN reference here fixes itself into.)
+ * does not own — and DELETING IT IS NOT AVAILABLE: `bridge:check`'s DL-200 cross-config
+ * compare has to answer "what does the OTHER mover consider terminal" inside a PHP
+ * process, and there is no import, no package and no service to point a reader at
+ * instead. A pointer cannot reach this reader, so the copy is GUARDED rather than
+ * retired.
+ *
+ * ⭐ THE LOCKSTEP OBLIGATION IS A CHECKED CONTRACT, NOT THIS PARAGRAPH (card#10273).
+ * What used to stand here was a "re-port them if the framework changes the rule" note —
+ * a DECLARE with no CHECK, on a surface no framework maintainer can read, which is the
+ * defect DL-414 names. What holds it now, and what to change when the rule moves:
+ *   - docs/coord-terminals-parity-corpus.json — the PUBLISHED behaviour corpus: argument
+ *     vectors and the answers both ends give, never a text comparison (the two ends are
+ *     different languages, so a textual diff of them is undefined);
+ *   - tests/Unit/Writeback/CoordConfigTerminalsParityTest.php — holds THIS class against
+ *     that file in BOTH directions, so a new public member or constant with no published
+ *     vector reds as loudly as a changed answer;
+ *   - bin/coord-mirror-parity.py — the far-end half, which imports the Python from source
+ *     and runs the same corpus against it. It is NOT in CI: CI has no copy of the coord
+ *     plugin. Run it on a coord bump.
+ * ⚠ THE CONTRACT IS NARROWER THAN "THE TWO ANSWER ALIKE", and the corpus says exactly
+ * where: MALFORMED config is outside it — this class type-guards every value it reads out
+ * of a file it does not own and the authority does not — and `load()` and
+ * `issuePopulationsForBoardId()` carry no parity vectors at all. The corpus's
+ * `known_divergences` and `not_checked_by_this_repo` own that boundary; do not restate it
+ * here. (All named in prose, not `@see`: a production class must not import a test class,
+ * which is what an FQCN reference here fixes itself into.)
  *
  * READ-SITE SCOPE. `terminals_for_board` also folds deprecated `done_column=` /
  * `terminal_columns=` adapter kwargs for un-migrated callers. Its docstring is explicit
