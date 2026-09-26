@@ -111,4 +111,4 @@ php artisan migrate             # run DB migrations
 
 ## License
 
-[MIT](LICENSE).
+[PolyForm Noncommercial License 1.0.0](LICENSE) (SPDX `PolyForm-Noncommercial-1.0.0`). The terms in [`LICENSE`](LICENSE) govern; in short, they permit noncommercial purposes only. Anyone who passes on a copy must include the license terms (or their URL, <https://polyformproject.org/licenses/noncommercial/1.0.0>) and the `Required Notice:` line at the top of [`LICENSE`](LICENSE). Versions released before this change were distributed under MIT and keep those terms.
