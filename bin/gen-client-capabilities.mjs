@@ -24,12 +24,20 @@
 //     PR's check, and the PR's table is what dev derives once it lands;
 //   - main (a release PR, a push to main) reads the same line, cut at the release point, so it
 //     dates every argument as dev does — main's own first-parent line is one state per release.
+//     This assumes a channel-server bump only ever lands via a release PR; a hotfix PR straight
+//     to main is a bound (DL-425 bound 5), not a case this walk reads.
 // The line is read from refs/remotes/origin/dev, which must be present (CI's full-history
 // checkout fetches it). DL-425 owns the rest of the reasoning and the bounds.
 //
-// ⛔ A version introduced more than once (two branches bumping to the same number) declares only
-// what EVERY introducing tree declared: when the table cannot tell which copy a seat runs it
-// says "not declared", which costs a seat an update hint and never tells it an argument works.
+// ⛔ A version LANDED on dev's first-parent line more than once (a revert, then reintroduced)
+// declares only what EVERY landing declared: when the table cannot tell which copy a seat runs
+// it says "not declared", which costs a seat an update hint and never tells it an argument
+// works. Two SEPARATE branches bumping to the same number is a DIFFERENT shape: only the first
+// to land introduces that version (its manifest differs from its first parent; the second
+// branch's does not, since dev is already at that number), so the second branch's own arguments
+// date to whatever version lands next — one version later than they actually shipped, the
+// conservative direction. Reachable only past the non-required version-bump-guard job. DL-425
+// Decision 1 and bound 2.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -112,10 +120,11 @@ function bareVersion(raw, where) {
 }
 
 // Evaluate the TOOL_DEFINITIONS literal. It is a plain data literal; anything that makes its
-// value depend on WHEN or WHERE it is evaluated is refused, because --check compares two
-// evaluations of the same history and must never flap. Each evaluation is a fresh context with
-// no host globals and no clock, randomness, locale or string code generation, so nothing a
-// literal can reach differs between runs.
+// value depend on WHEN or WHERE it is evaluated is refused, because an author's regenerate and
+// CI's --check are two evaluations on two different hosts and must never disagree. The context
+// has no host globals, no clock, no randomness, and no string code generation; the locale-
+// sensitive prototype methods (toLocaleString, localeCompare, toLocale{Upper,Lower}Case) throw
+// too — deleting Intl alone leaves them reachable and reading the host's ICU default locale.
 function evaluateLiteral(literal, where) {
   const run = () => {
     const context = vm.createContext(Object.create(null), {
@@ -124,19 +133,22 @@ function evaluateLiteral(literal, where) {
     vm.runInContext(
       "'use strict';" +
         "for (const k of ['Date', 'WeakRef', 'FinalizationRegistry', 'SharedArrayBuffer', 'Atomics', 'Intl']) delete globalThis[k];" +
-        "Math.random = () => { throw new Error('Math.random is nondeterministic'); };",
+        "Math.random = () => { throw new Error('Math.random is nondeterministic'); };" +
+        "for (const [proto, names] of [[Number.prototype, ['toLocaleString']], [BigInt.prototype, ['toLocaleString']], " +
+        "[Array.prototype, ['toLocaleString']], [String.prototype, ['localeCompare', 'toLocaleUpperCase', 'toLocaleLowerCase']]]) " +
+        "for (const name of names) proto[name] = () => { throw new Error(name + ' is locale-dependent'); };",
       context,
     );
     const value = vm.runInContext(`'use strict'; (${literal});`, context, { timeout: 2000, filename: where });
     return JSON.stringify(value);
   };
-  let first;
+  let evaluated;
   try {
-    first = run();
+    evaluated = run();
   } catch (e) {
     throw new CannotMeasure(`${where}: TOOL_DEFINITIONS could not be evaluated deterministically: ${e.message}`);
   }
-  const defs = JSON.parse(first);
+  const defs = JSON.parse(evaluated);
   if (!Array.isArray(defs)) {
     throw new CannotMeasure(`${where}: TOOL_DEFINITIONS did not evaluate to an array`);
   }
@@ -449,7 +461,8 @@ function main() {
     }
     process.stderr.write(
       `${TABLE_PATH} is NOT what the history of ${SUBJECT_DIR}/ derives. Regenerate it with ` +
-        '`node bin/gen-client-capabilities.mjs` and commit the result; hand edits to it are overwritten.\n' +
+        '`git fetch origin dev && node bin/gen-client-capabilities.mjs` and commit the result ' +
+        '(a stale local origin/dev derives the wrong table with no warning); hand edits are overwritten.\n' +
         `--- committed\n+++ derived\n${lineDiff(committed, generated)}`,
     );
     return 1;

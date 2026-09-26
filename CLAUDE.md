@@ -30,10 +30,17 @@ python3 bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json
                                                     # never read as agreement. --control shows it fail.
                                                     # The bridge-side half IS in CI and reds BOTH ways — read
                                                     # each corpus's own not_checked_by_this_repo for the bound
-node bin/gen-client-capabilities.mjs                # regenerate resources/client-capabilities.json after ANY change to
-                                                    # the channel server's TOOL_DEFINITIONS (DL-425). --check is a step of
+git fetch origin dev && node bin/gen-client-capabilities.mjs
+                                                    # regenerate resources/client-capabilities.json after ANY change to
+                                                    # the channel server's TOOL_DEFINITIONS (DL-425). The fetch is not
+                                                    # cosmetic: the generator reads versions off refs/remotes/origin/dev,
+                                                    # and a STALE local origin/dev is not detected — it silently derives
+                                                    # from whatever that ref last pointed at (there is no cheap local
+                                                    # signal for "behind the real dev"; CI always has a live fetch, so
+                                                    # `--check` there is authoritative regardless). --check is a step of
                                                     # the required SQLite job: 0 = current · 1 = stale · 2 = could not
-                                                    # measure (a shallow clone, or a release commit it could not evaluate)
+                                                    # measure (a shallow clone, a missing origin/dev, or a landed commit
+                                                    # it could not evaluate)
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —

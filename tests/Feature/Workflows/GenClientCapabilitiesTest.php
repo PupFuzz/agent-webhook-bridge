@@ -393,6 +393,12 @@ class GenClientCapabilitiesTest extends TestCase
             'randomness' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: Math.random() } } } },\n];\n", 'Math.random is nondeterministic'],
             'no properties object' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards' },\n];\n", 'no inputSchema.properties object'],
             'unclosed at a line of its own' => ["const TOOL_DEFINITIONS = [{ name: 'my_cards', inputSchema: { properties: {} } }];\n", 'does not close at a line reading'],
+            // r2-MAJOR: deleting Intl does not remove locale — these prototype methods read the
+            // host's ICU default locale directly, so a literal that reaches one would flap
+            // between an author's machine and CI (or between two locales on the same host).
+            'number toLocaleString' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: (1234.5).toLocaleString() } } } },\n];\n", 'toLocaleString is locale-dependent'],
+            'string localeCompare' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: 'a'.localeCompare('b') } } } },\n];\n", 'localeCompare is locale-dependent'],
+            'string toLocaleUpperCase' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: 'a'.toLocaleUpperCase() } } } },\n];\n", 'toLocaleUpperCase is locale-dependent'],
         ];
     }
 
