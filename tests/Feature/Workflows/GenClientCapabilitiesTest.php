@@ -364,4 +364,35 @@ class GenClientCapabilitiesTest extends TestCase
         $runs = array_map(fn (array $s): string => (string) ($s['run'] ?? ''), $steps);
         $this->assertContains('node bin/gen-client-capabilities.mjs --check', $runs);
     }
+
+    /**
+     * Every PHPUnit job runs the generator (this class and `ClientCapabilityTableTest`), so
+     * each gets Node from the shared `setup-app` action — explicitly, and at the version the
+     * channel-server workflow runs the server's own suite on — rather than from whatever the
+     * runner image happens to carry.
+     */
+    public function test_every_phpunit_job_gets_node_at_the_channel_server_workflows_version(): void
+    {
+        $nodeOf = function (array $steps): ?string {
+            foreach ($steps as $step) {
+                if (str_starts_with((string) ($step['uses'] ?? ''), 'actions/setup-node@')) {
+                    return (string) $step['with']['node-version'];
+                }
+            }
+
+            return null;
+        };
+        $supply = Yaml::parseFile(base_path('.github/workflows/channel-server-supply-chain.yml'));
+        $expected = $nodeOf($supply['jobs']['channel-server-deps']['steps']);
+        $this->assertNotNull($expected, 'the channel-server workflow no longer sets up Node — re-anchor this test');
+
+        $action = Yaml::parseFile(base_path('.github/actions/setup-app/action.yml'));
+        $this->assertSame($expected, $nodeOf($action['runs']['steps']));
+
+        $wf = Yaml::parseFile(base_path('.github/workflows/laravel-tests.yml'));
+        foreach ($wf['jobs'] as $id => $job) {
+            $uses = array_map(fn (array $s): string => (string) ($s['uses'] ?? ''), $job['steps']);
+            $this->assertContains('./.github/actions/setup-app', $uses, "laravel-tests.yml job {$id} runs PHPUnit without the setup-app action, so without Node");
+        }
+    }
 }
