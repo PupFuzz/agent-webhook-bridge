@@ -8,6 +8,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **#799** — **`CLAUDE_AGENTBOARD.md` is no longer tracked.** It is the agent-framework solo orientation doc, which the coord plugin places in each agent machine's checkout. It is now in `.gitignore`, and history is not rewritten. `CLAUDE.md` marks its import of the file as local-only, and the two `CLAUDE_CONVENTIONS.md` links to it are now plain mentions. Docs only; no behaviour, config or CI change.
+  - ⚠ **An existing checkout that pulls this loses its local copy.** git removes a formerly tracked, unmodified file from the working tree. If the copy was modified locally, the pull aborts instead. Copy it aside before pulling, or re-run the coord orientation sync afterwards; from then on it stays ignored.
+
 ### Fixed
 
 - **card#10566** — **the reference channel server's MCP handshake now announces the version it actually runs, not `0.1.0`.** `examples/channel-servers/agent-webhook-bridge-channel.mjs` hard-coded `version: '0.1.0'` in its `initialize` `serverInfo` while `package.json` had moved on to `0.9.26`, so the server stated two versions at once: the literal to the MCP client, and the manifest version it already sends as `client_version` on every board-tools call (card#8974 / DL-364). The handshake now reads that **same once-read manifest value** — one source, the field the DL-038 bump guard maintains. `serverInfo.version` cannot be omitted the way `client_version` is, so a snapshot whose `package.json` is unreadable announces the explicit sentinel **`0.0.0-unreadable-manifest`** rather than a plausible number; `client_version` keeps its DL-364 fail-soft omission unchanged. New `tests/handshake-version.test.mjs` covers both.
