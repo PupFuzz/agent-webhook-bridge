@@ -32,13 +32,14 @@ export function scratch(t, prefix) {
 // Spawn the real channel server and connect an MCP client to it over stdio. `env` is
 // merged over a minimal base that gives the server a resolvable unix channel socket
 // (so it does not refuse-and-exit before the MCP handshake). The client + server are
-// torn down when the test ends.
+// torn down when the test ends. `opts.server` spawns a different entry point (a relocated
+// copy of the server) in place of the shipped one.
 export async function connectServer(t, env, opts = {}) {
   const runtime = scratch(t, opts.runtimePrefix || 'chan-rt-');
   const name = opts.name || 'harness-test';
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [SERVER],
+    args: [opts.server || SERVER],
     stderr: 'ignore',
     env: {
       PATH: process.env.PATH,
