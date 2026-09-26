@@ -10,11 +10,11 @@ use UnexpectedValueException;
  * Which reference channel-server version first declared each board tool and argument, and
  * which stopped — read from `resources/client-capabilities.json` (card#10566 / DL-425).
  *
- * ⛔ THE TABLE IS GENERATED, AND THIS CLASS DOES NOT DERIVE ANYTHING. `tools` and
- * `current_client_version` are written by `bin/gen-client-capabilities.mjs` from the git
- * history of `examples/channel-servers/`, and CI's `--check` step reds when the committed file is
- * not what history derives. `features` is hand-declared and held by `ClientCapabilityTableTest`.
- * DL-425 owns which history states are read and why.
+ * ⛔ THE TABLE IS GENERATED, AND THIS CLASS DOES NOT DERIVE ANYTHING. Every field is written by
+ * `bin/gen-client-capabilities.mjs` from the git history of `examples/channel-servers/` — a
+ * feature dated by the source markers the generator names — and CI's `--check` step reds when
+ * the committed file is not what history derives. DL-425 owns which history states are read and
+ * why.
  *
  * ⛔ EVERY STORED VERSION IS BARE `X.Y.Z`, REFUSED AT LOAD OTHERWISE. The comparator is
  * {@see ChannelSnapshotManifest::compareVersions()} — deliberately the one already held in

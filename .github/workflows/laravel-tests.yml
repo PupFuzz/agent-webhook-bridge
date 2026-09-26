@@ -53,6 +53,8 @@ jobs:
           # The whole history: the capability-table check below dates every tool and
           # argument from the history of examples/channel-servers/, and refuses a
           # shallow clone rather than dating everything to the one commit it has.
+          # fetch-depth 0 also fetches every branch, so origin/dev — the line the
+          # check reads versions from — is present; it refuses when it is not.
           fetch-depth: 0
       - uses: ./.github/actions/setup-app
 

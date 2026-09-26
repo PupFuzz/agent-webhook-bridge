@@ -13,15 +13,19 @@
 // Exit: 0 ok · 1 the committed table is stale (--check) · 2 COULD NOT MEASURE — never read a 2
 // as agreement. Every refusal says which commit and why on stderr.
 //
-// ⛔ WHICH STATES ARE WALKED, and why it is not `git log --first-parent`. A version's tool set is
-// read from the commit(s) that INTRODUCED it — a commit whose package.json version differs
-// from every parent's — plus the working tree for the current version. That set is the same
-// from any head whose tree carries the same history: main reaches dev's history only through
-// the second parent of each release merge, so a first-parent walk from main (a release PR, a
-// push to main) sees one state per RELEASE and would date every argument to the first bridge
-// release that shipped it, disagreeing with the table dev generated. It also ignores a PR
-// branch's work-in-progress commits, which carry the old version and are not a release of it.
-// DL-425 owns the rest of the reasoning and the bounds.
+// ⛔ WHICH STATES ARE WALKED. A version's tool set is read from the commit(s) that INTRODUCED it
+// on dev's FIRST-PARENT line — each commit there whose package.json version differs from its
+// first parent's — limited to ancestors of HEAD, plus the working tree for the current version.
+// Every commit on that line is one LANDING (a squash, or the merge commit of a merge-committed
+// PR or a main -> dev sync), whose tree passed CI as that PR's working tree. So:
+//   - a PR branch's own commits are never read, before or after it lands: a squash drops them
+//     and a merge commit hides them behind its first parent. A bump commit that did not
+//     evaluate, a bump later lowered, or a number another PR took first cannot wedge the
+//     PR's check, and the PR's table is what dev derives once it lands;
+//   - main (a release PR, a push to main) reads the same line, cut at the release point, so it
+//     dates every argument as dev does — main's own first-parent line is one state per release.
+// The line is read from refs/remotes/origin/dev, which must be present (CI's full-history
+// checkout fetches it). DL-425 owns the rest of the reasoning and the bounds.
 //
 // ⛔ A version introduced more than once (two branches bumping to the same number) declares only
 // what EVERY introducing tree declared: when the table cannot tell which copy a seat runs it
@@ -39,6 +43,17 @@ const LITERAL_OPEN = 'const TOOL_DEFINITIONS = [';
 const LITERAL_CLOSE = '\n];\n';
 // Bare X.Y.Z only. The PHP comparator this table is read with (ChannelSnapshotManifest::
 // compareVersions) reads a chunk with no leading digit as 0, so `v1.0.0` would order as 0.0.0.
+const INTEGRATION_REF = 'refs/remotes/origin/dev';
+
+// Behaviour the bridge keys on that is not a tool argument, each dated like an argument: the
+// first client version whose sources carry ANY of its markers. A marker must stay in the
+// working tree; when the code it names is rewritten, ADD the new form here and keep the old
+// one, or the feature re-dates to the rewrite.
+const FEATURE_MARKERS = {
+  client_version_report: ['client_version: CLIENT_VERSION'],
+  truthful_handshake_version: ['const HANDSHAKE_VERSION = CLIENT_VERSION ??'],
+};
+
 const BARE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 class CannotMeasure extends Error {}
@@ -98,7 +113,9 @@ function bareVersion(raw, where) {
 
 // Evaluate the TOOL_DEFINITIONS literal. It is a plain data literal; anything that makes its
 // value depend on WHEN or WHERE it is evaluated is refused, because --check compares two
-// evaluations of the same history and must never flap.
+// evaluations of the same history and must never flap. Each evaluation is a fresh context with
+// no host globals and no clock, randomness, locale or string code generation, so nothing a
+// literal can reach differs between runs.
 function evaluateLiteral(literal, where) {
   const run = () => {
     const context = vm.createContext(Object.create(null), {
@@ -116,9 +133,6 @@ function evaluateLiteral(literal, where) {
   let first;
   try {
     first = run();
-    if (run() !== first) {
-      throw new Error('two evaluations disagreed');
-    }
   } catch (e) {
     throw new CannotMeasure(`${where}: TOOL_DEFINITIONS could not be evaluated deterministically: ${e.message}`);
   }
@@ -140,9 +154,18 @@ function evaluateLiteral(literal, where) {
   return tools;
 }
 
-// One state of the subject directory: its version and its tool -> arguments map. `files` is
-// the directory's top-level .mjs sources. No literal at all is a state with no tools (the
-// server predates them); a literal that cannot be cut out or evaluated is a refusal.
+// One state of the subject directory: its tool -> arguments map and which features it carries.
+// `files` is the directory's top-level .mjs sources.
+function stateOf(files, where) {
+  const sources = Object.values(files);
+  const features = Object.fromEntries(
+    Object.entries(FEATURE_MARKERS).map(([name, markers]) => [name, markers.some((m) => sources.some((src) => src.includes(m)))]),
+  );
+  return { tools: toolsOf(files, where), features };
+}
+
+// No literal at all is a state with no tools (the server predates them); a literal that cannot
+// be cut out or evaluated is a refusal.
 function toolsOf(files, where) {
   const holders = Object.entries(files).filter(([, src]) => src.includes(LITERAL_OPEN));
   if (holders.length === 0) {
@@ -214,15 +237,24 @@ function historicalStates(repo) {
         'present. Fetch the whole history (actions/checkout fetch-depth: 0, or git fetch --unshallow).',
     );
   }
-  // Every commit whose manifest differs from some parent — a superset of the commits that
-  // introduce a version, which is what is asked of each below.
-  const lines = git(repo, ['log', '--full-history', '--format=%H %P', 'HEAD', '--', `${SUBJECT_DIR}/package.json`])
+  if (git(repo, ['for-each-ref', '--format=%(refname)', INTEGRATION_REF]).trim() !== INTEGRATION_REF) {
+    throw new CannotMeasure(
+      `${INTEGRATION_REF} is missing: the versions are read from dev's first-parent line. ` +
+        'Fetch it (git fetch origin dev; in CI, actions/checkout with fetch-depth: 0).',
+    );
+  }
+  const reachable = new Set(git(repo, ['rev-list', 'HEAD']).split('\n').filter(Boolean));
+  // Every commit on dev's line whose manifest differs from its first parent — a superset of the
+  // commits that introduce a version, which is what is asked of each below. Commits on dev
+  // that HEAD does not carry yet (a stale branch, main behind dev) are not HEAD's history.
+  const commits = git(repo, ['log', '--first-parent', '--full-history', '--format=%H %P', INTEGRATION_REF, '--', `${SUBJECT_DIR}/package.json`])
     .split('\n')
-    .filter(Boolean);
-  const commits = lines.map((l) => {
-    const [sha, ...parents] = l.split(' ');
-    return { sha, parents };
-  });
+    .filter(Boolean)
+    .map((l) => {
+      const [sha, parent] = l.split(' ');
+      return { sha, parents: parent === undefined ? [] : [parent] };
+    })
+    .filter((c) => reachable.has(c.sha));
   const shas = [...new Set(commits.flatMap((c) => [c.sha, ...c.parents]))];
   const versions = new Map();
   readBlobs(repo, shas.map((s) => `${s}:${SUBJECT_DIR}/package.json`)).forEach((blob, i) => versions.set(shas[i], versionAt(blob)));
@@ -245,7 +277,7 @@ function historicalStates(repo) {
       .filter((n) => n.endsWith('.mjs'));
     const blobs = readBlobs(repo, names.map((n) => `${sha}:${SUBJECT_DIR}/${n}`));
     const files = Object.fromEntries(names.map((n, i) => [n, blobs[i]]));
-    return { version, tools: toolsOf(files, `commit ${sha}`) };
+    return { version, ...stateOf(files, `commit ${sha}`) };
   });
 }
 
@@ -263,7 +295,7 @@ function workingTreeState(repo) {
       .filter((n) => n.endsWith('.mjs'))
       .map((n) => [n, fs.readFileSync(path.join(dir, n), 'utf8')]),
   );
-  return { version: bareVersion(version, 'working tree'), tools: toolsOf(files, 'working tree') };
+  return { version: bareVersion(version, 'working tree'), ...stateOf(files, 'working tree') };
 }
 
 // The table: per tool and per argument, the one contiguous run of versions that declared it.
@@ -271,7 +303,7 @@ function derive(historical, current) {
   const byVersion = new Map();
   for (const s of historical) {
     const prev = byVersion.get(s.version);
-    byVersion.set(s.version, prev === undefined ? s.tools : intersect(prev, s.tools));
+    byVersion.set(s.version, prev === undefined ? s : { tools: intersect(prev.tools, s.tools), features: both(prev.features, s.features) });
   }
   for (const v of byVersion.keys()) {
     if (compareBare(v, current.version) > 0) {
@@ -280,11 +312,11 @@ function derive(historical, current) {
   }
   // The version being worked on is what the working tree says: a branch that bumps first and
   // adds an argument in a later commit introduced its version without that argument.
-  byVersion.set(current.version, current.tools);
+  byVersion.set(current.version, current);
   const versions = [...byVersion.keys()].sort(compareBare);
 
   const argsOf = new Map();
-  for (const tools of byVersion.values()) {
+  for (const { tools } of byVersion.values()) {
     for (const [tool, args] of Object.entries(tools)) {
       argsOf.set(tool, new Set([...(argsOf.get(tool) ?? []), ...args]));
     }
@@ -303,15 +335,34 @@ function derive(historical, current) {
     return { since: versions[since], removed_in: gone === -1 ? null : versions[gone] };
   };
 
-  const table = {};
+  const tools = {};
   for (const [tool, args] of argsOf) {
     const argSpans = {};
     for (const arg of args) {
-      argSpans[arg] = span(`${tool}.${arg}`, (v) => byVersion.get(v)[tool]?.includes(arg) === true);
+      argSpans[arg] = span(`${tool}.${arg}`, (v) => byVersion.get(v).tools[tool]?.includes(arg) === true);
     }
-    table[tool] = { ...span(tool, (v) => byVersion.get(v)[tool] !== undefined), arguments: argSpans };
+    tools[tool] = { ...span(tool, (v) => byVersion.get(v).tools[tool] !== undefined), arguments: argSpans };
   }
-  return table;
+
+  const features = {};
+  for (const name of Object.keys(FEATURE_MARKERS)) {
+    if (!current.features[name]) {
+      throw new CannotMeasure(
+        `features.${name}: no marker (${FEATURE_MARKERS[name].map((m) => JSON.stringify(m)).join(', ')}) is in the working ` +
+          `tree's ${SUBJECT_DIR}/*.mjs. If the code was rewritten, add its new form to FEATURE_MARKERS and keep the old one.`,
+      );
+    }
+    const { since, removed_in } = span(`features.${name}`, (v) => byVersion.get(v).features[name]);
+    if (removed_in !== null) {
+      throw new CannotMeasure(`features.${name}: its marker is absent at ${removed_in} although the working tree carries it`);
+    }
+    features[name] = since;
+  }
+  return { tools, features };
+}
+
+function both(a, b) {
+  return Object.fromEntries(Object.keys(a).map((k) => [k, a[k] && b[k]]));
 }
 
 function intersect(a, b) {
@@ -381,23 +432,14 @@ function main() {
       throw new CannotMeasure(`${TABLE_PATH} did not read: ${e.message}`);
     }
   }
-  let features = {};
-  if (committed !== null) {
-    try {
-      features = JSON.parse(committed).features ?? {};
-    } catch (e) {
-      throw new CannotMeasure(`${TABLE_PATH} is not JSON: ${e.message}`);
-    }
-  }
-
+  const { tools, features } = derive(historicalStates(opts.repo), current);
   const generated = render({
     $comment:
       'GENERATED by bin/gen-client-capabilities.mjs from the git history of examples/channel-servers/ — ' +
-      'regenerate, never hand-edit, everything except "features". "features" is hand-declared and ' +
-      'held by tests/Unit/Tools/ClientCapabilityTableTest.php. DL-425.',
+      'regenerate, never hand-edit. A feature is dated by the markers the generator\'s FEATURE_MARKERS names. DL-425.',
     current_client_version: current.version,
     features,
-    tools: derive(historicalStates(opts.repo), current),
+    tools,
   });
 
   if (opts.mode === 'check') {

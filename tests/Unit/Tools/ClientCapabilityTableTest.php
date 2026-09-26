@@ -6,20 +6,19 @@ use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\ClientCapabilities;
 use App\Bridge\Tools\ClientVersion;
-use Closure;
 use Symfony\Component\Process\Process;
-use Tests\Support\BundledChannelServer;
 use Tests\TestCase;
 
 /**
  * The COMMITTED `resources/client-capabilities.json`, held against the three things it
  * restates (card#10566 / DL-425): the channel server this checkout bundles, the tools the
- * bridge registers, and — for the hand-declared `features` — the source that carries each.
+ * bridge registers, and `ClientVersion::FIRST_REPORTING_SNAPSHOT`.
  *
  * ⚠ WHAT THIS CANNOT SEE: whether a `since` is the RIGHT historical version. That needs the
  * git history, which a depth-1 CI checkout does not have; `bin/gen-client-capabilities.mjs
  * --check` owns it, as a step of the required SQLite job with the full history fetched. A
- * `since` re-dated to another version that already existed stays green here and reds there.
+ * `since` (a feature's included) re-dated to another version that already existed stays green
+ * here and reds there.
  */
 class ClientCapabilityTableTest extends TestCase
 {
@@ -86,44 +85,16 @@ class ClientCapabilityTableTest extends TestCase
     }
 
     /**
-     * Each hand-declared feature, and the one fact about the source that makes it true. The
-     * KEY SET is asserted first, so a feature added to the table without a guard here reds
-     * rather than riding in unchecked. Its version may not be newer than the current client —
-     * {@see ClientCapabilities} refuses that at load, which is why `self_update` is not
-     * declared until a client carries it.
-     *
-     * @return array<string, Closure(string): void>
+     * `features` is generated too — each dated by the markers `FEATURE_MARKERS` in the generator
+     * names, and held there by `--check`. `client_version_report` restates a fact PHP already
+     * carries, so the two copies are held equal here.
      */
-    private function featureGuards(): array
+    public function test_the_client_version_report_feature_is_the_first_reporting_snapshot(): void
     {
-        return [
-            // The field is the existing pin's subject; two copies of one historical fact are
-            // held equal rather than left to drift.
-            'client_version_report' => function (string $since): void {
-                $this->assertSame(ClientVersion::FIRST_REPORTING_SNAPSHOT, $since, 'features.client_version_report and ClientVersion::FIRST_REPORTING_SNAPSHOT name different first-reporting clients');
-                $this->assertStringContainsString('client_version: CLIENT_VERSION', BundledChannelServer::source(), 'the bundled server no longer sends client_version');
-            },
-            'truthful_handshake_version' => function (string $since): void {
-                $source = BundledChannelServer::source();
-                $this->assertStringContainsString('const HANDSHAKE_VERSION = CLIENT_VERSION ??', $source, 'the handshake version is no longer the manifest version');
-                $this->assertStringContainsString('{ name: SERVER_NAME, version: HANDSHAKE_VERSION }', $source, 'the MCP Server is no longer constructed with the manifest version');
-            },
-        ];
-    }
-
-    public function test_every_hand_declared_feature_is_guarded_and_holds(): void
-    {
-        $features = ClientCapabilities::bundled()->features();
-        $guards = $this->featureGuards();
-
-        $declared = array_keys($features);
-        $guarded = array_keys($guards);
-        sort($declared);
-        sort($guarded);
-        $this->assertSame($guarded, $declared, 'a feature is declared in resources/client-capabilities.json with no guard in this test, or guarded here and no longer declared');
-
-        foreach ($features as $name => $since) {
-            $guards[$name]($since);
-        }
+        $this->assertSame(
+            ClientVersion::FIRST_REPORTING_SNAPSHOT,
+            ClientCapabilities::bundled()->feature('client_version_report'),
+            'features.client_version_report and ClientVersion::FIRST_REPORTING_SNAPSHOT name different first-reporting clients',
+        );
     }
 }

@@ -16,11 +16,12 @@ use Tests\TestCase;
  * The hazards pinned here, each with a history that trips it:
  *   - a release merge on `main` must date a tool exactly as `dev` does (a first-parent walk
  *     from main sees one state per release and dates everything late);
- *   - a work-in-progress commit that carries the OLD version is not a release of it;
+ *   - a PR branch's own commits are never read: its table is what dev derives once it lands,
+ *     and a bump commit of its own — squashed away, merge-committed, unevaluable, or lowered
+ *     later — cannot wedge its check;
  *   - two trees introduced under one version declare only what both declared;
- *   - an introducing commit whose literal cannot be evaluated, or evaluates differently from
- *     run to run, or whose version is not bare X.Y.Z, is REFUSED BY NAME (exit 2) — never
- *     skipped, never guessed;
+ *   - an introducing commit on dev's line whose literal cannot be evaluated, or whose version
+ *     is not bare X.Y.Z, is REFUSED BY NAME (exit 2) — never skipped, never guessed;
  *   - a shallow clone is refused, because missing history dates everything to the oldest
  *     commit present.
  *
@@ -30,6 +31,8 @@ use Tests\TestCase;
 class GenClientCapabilitiesTest extends TestCase
 {
     private string $root;
+
+    private bool $autoPublish = true;
 
     protected function setUp(): void
     {
@@ -64,8 +67,13 @@ class GenClientCapabilitiesTest extends TestCase
         return $repo;
     }
 
-    /** @param array<string, list<string>> $tools */
-    private static function literal(array $tools): string
+    /**
+     * A server file carrying `$tools`, and — unless `$features` is false — the markers the
+     * generator dates each feature by, since every run refuses a working tree without them.
+     *
+     * @param  array<string, list<string>>  $tools
+     */
+    private static function literal(array $tools, bool $features = true): string
     {
         $entries = '';
         foreach ($tools as $tool => $args) {
@@ -73,7 +81,9 @@ class GenClientCapabilitiesTest extends TestCase
             $entries .= "  {\n    name: '{$tool}',\n    inputSchema: { type: 'object', properties: { {$props} } },\n  },\n";
         }
 
-        return "import fs from 'node:fs';\n\nconst TOOL_DEFINITIONS = [\n{$entries}];\n\nexport default TOOL_DEFINITIONS;\n";
+        $markers = $features ? "const HANDSHAKE_VERSION = CLIENT_VERSION ?? '0';\nconst report = { client_version: CLIENT_VERSION };\n" : '';
+
+        return "import fs from 'node:fs';\n\n{$markers}const TOOL_DEFINITIONS = [\n{$entries}];\n\nexport default TOOL_DEFINITIONS;\n";
     }
 
     /**
@@ -93,9 +103,21 @@ class GenClientCapabilitiesTest extends TestCase
         return $this->git($repo, ['rev-parse', 'HEAD']);
     }
 
+    /**
+     * Point `origin/dev` — the line the generator reads — at the fixture's `dev` branch, as a
+     * full-history CI checkout has it.
+     */
+    private function publishDev(string $repo): void
+    {
+        $this->git($repo, ['update-ref', 'refs/remotes/origin/dev', 'refs/heads/dev']);
+    }
+
     /** @return array{0: int, 1: string, 2: string} exit code, stdout, stderr */
     private function gen(string $repo, string ...$flags): array
     {
+        if ($this->autoPublish) {
+            $this->publishDev($repo);
+        }
         $p = new Process(['node', base_path('bin/gen-client-capabilities.mjs'), '--repo', $repo, ...$flags]);
         $p->run();
 
@@ -212,16 +234,112 @@ class GenClientCapabilitiesTest extends TestCase
         $repo = $this->newRepo();
         $this->commit($repo, '0.1.0', null);
         $this->commit($repo, '0.2.0', ['my_cards' => []]);
-        $this->git($repo, ['checkout', '-q', '-b', 'a']);
         $this->commit($repo, '0.3.0', ['my_cards' => ['limit']]);
-        $this->git($repo, ['checkout', '-q', 'dev']);
-        // The other branch bumps to the same number and adds nothing.
-        file_put_contents($repo.'/examples/channel-servers/README.md', "b\n");
+        // Reverted, then 0.3.0 introduced again on dev's line by a tree without `limit`.
+        $this->commit($repo, '0.2.0', ['my_cards' => []], message: 'revert');
         $this->commit($repo, '0.3.0', ['my_cards' => []]);
-        $this->git($repo, ['merge', '-q', '--no-ff', '-X', 'theirs', '-m', 'merge a', 'a']);
         $this->commit($repo, '0.4.0', ['my_cards' => ['limit']]);
 
         $this->assertSame(['0.4.0', null], self::spans($this->generated($repo))['my_cards.limit']);
+    }
+
+    /**
+     * r1-M1, the reviewer's reproduction: pr1 and pr2 both bump to 0.9.29, pr1 is squashed first,
+     * pr2 merges dev and re-bumps to 0.9.30. pr2's own 0.9.29 commit is never on dev, so the
+     * table pr2 commits must be the one dev derives after pr2 is squashed.
+     */
+    public function test_a_pr_whose_bump_lost_the_race_commits_the_table_dev_derives_after_its_squash(): void
+    {
+        $repo = $this->newRepo();
+        $this->commit($repo, '0.9.28', ['t' => ['a']]);
+        $this->git($repo, ['checkout', '-q', '-b', 'pr2']);
+        $this->commit($repo, '0.9.29', ['t' => ['a', 'foo']]);
+        $this->git($repo, ['checkout', '-q', 'dev']);
+        $this->commit($repo, '0.9.29', ['t' => ['a', 'bar']], message: 'pr1 (squash)');
+        $this->git($repo, ['checkout', '-q', 'pr2']);
+        $this->git($repo, ['merge', '-q', '-s', 'ours', '-m', 'merge dev', 'dev']);
+        $this->commit($repo, '0.9.30', ['t' => ['a', 'bar', 'foo']], message: 're-bump');
+
+        $onPr = self::spans($this->generated($repo));
+        $this->git($repo, ['add', '-A']);
+        $this->git($repo, ['commit', '-q', '-m', 'regenerate']);
+        $this->assertSame(['0.9.29', null], $onPr['t.bar']);
+        $this->assertSame(['0.9.30', null], $onPr['t.foo']);
+
+        $this->git($repo, ['checkout', '-q', 'dev']);
+        $this->git($repo, ['merge', '-q', '--squash', 'pr2']);
+        $this->git($repo, ['commit', '-q', '-m', 'pr2 (squash)']);
+        [$rc, , $err] = $this->gen($repo, '--check');
+
+        $this->assertSame(0, $rc, $err);
+    }
+
+    /**
+     * r1-M1: a bump commit on the branch whose literal does not evaluate, fixed by a later commit,
+     * cannot wedge the PR's check — nor dev's when the PR lands by MERGE COMMIT, which hides the
+     * branch's commits behind the merge's first parent.
+     */
+    public function test_an_unevaluable_bump_on_a_branch_wedges_neither_the_pr_nor_dev_after_a_merge_commit(): void
+    {
+        $repo = $this->newRepo();
+        $this->devHistory($repo);
+        $this->git($repo, ['checkout', '-q', '-b', 'pr']);
+        $this->commit($repo, '0.11.0', null, "const TOOL_DEFINITIONS = [\n  { name: 'my_cards', \n];\n", 'half-written bump');
+        $this->commit($repo, '0.11.0', ['my_cards' => ['limit', 'tag']], message: 'fixed');
+
+        $this->assertSame(['0.11.0', null], self::spans($this->generated($repo))['my_cards.tag']);
+        $this->git($repo, ['add', '-A']);
+        $this->git($repo, ['commit', '-q', '-m', 'regenerate']);
+
+        $this->git($repo, ['checkout', '-q', 'dev']);
+        $this->git($repo, ['merge', '-q', '--no-ff', '-m', 'merge pr', 'pr']);
+        [$rc, , $err] = $this->gen($repo, '--check');
+
+        $this->assertSame(0, $rc, $err);
+    }
+
+    /** r1-M1: a branch that bumps and then lowers its version is read at its final version only. */
+    public function test_a_branch_that_bumps_then_lowers_its_version_is_read_at_the_final_version(): void
+    {
+        $repo = $this->newRepo();
+        $this->devHistory($repo);
+        $this->git($repo, ['checkout', '-q', '-b', 'pr']);
+        $this->commit($repo, '0.12.0', ['my_cards' => ['limit', 'tag']], message: 'overshoot');
+        $this->commit($repo, '0.11.0', ['my_cards' => ['limit', 'tag']], message: 'lowered');
+
+        $table = $this->generated($repo);
+
+        $this->assertSame('0.11.0', $table['current_client_version']);
+        $this->assertSame(['0.11.0', null], self::spans($table)['my_cards.tag']);
+    }
+
+    /** A branch that has not merged the latest dev reads dev's line only as far as it carries it. */
+    public function test_a_branch_behind_dev_reads_only_the_dev_history_it_carries(): void
+    {
+        $repo = $this->newRepo();
+        $this->devHistory($repo);
+        $this->git($repo, ['checkout', '-q', '-b', 'pr']);
+        $this->commit($repo, '0.11.0', ['my_cards' => ['limit', 'tag']]);
+        $this->git($repo, ['checkout', '-q', 'dev']);
+        $this->commit($repo, '0.12.0', ['my_cards' => ['limit', 'other']]);
+        $this->git($repo, ['checkout', '-q', 'pr']);
+
+        $table = $this->generated($repo);
+
+        $this->assertSame('0.11.0', $table['current_client_version']);
+        $this->assertArrayNotHasKey('my_cards.other', self::spans($table));
+    }
+
+    public function test_a_missing_origin_dev_is_refused_by_name(): void
+    {
+        $this->autoPublish = false;
+        $repo = $this->newRepo();
+        $this->devHistory($repo);
+
+        [$rc, , $err] = $this->gen($repo);
+
+        $this->assertSame(2, $rc);
+        $this->assertStringContainsString('refs/remotes/origin/dev is missing', $err);
     }
 
     public function test_check_passes_on_the_derived_table_and_fails_on_a_hand_edit(): void
@@ -240,15 +358,29 @@ class GenClientCapabilitiesTest extends TestCase
         $this->assertStringContainsString('is NOT what the history of examples/channel-servers/ derives', $err);
     }
 
-    public function test_hand_declared_features_survive_regeneration(): void
+    /** r1-M2: a feature is dated like an argument, by the first version whose sources carry its marker. */
+    public function test_a_feature_is_dated_by_the_first_version_carrying_its_marker(): void
     {
         $repo = $this->newRepo();
-        $this->devHistory($repo);
-        $table = $this->generated($repo);
-        $table['features'] = ['client_version_report' => '0.3.0'];
-        file_put_contents($repo.'/resources/client-capabilities.json', json_encode($table));
+        $dir = $repo.'/examples/channel-servers';
+        $this->commit($repo, '0.1.0', ['my_cards' => []], self::literal(['my_cards' => []], features: false));
+        $this->commit($repo, '0.2.0', ['my_cards' => []], self::literal(['my_cards' => []], features: false)."const report = { client_version: CLIENT_VERSION };\n");
+        $this->commit($repo, '0.3.0', ['my_cards' => []]);
 
-        $this->assertSame(['client_version_report' => '0.3.0'], $this->generated($repo)['features']);
+        $table = $this->generated($repo);
+        $this->assertSame(['client_version_report' => '0.2.0', 'truthful_handshake_version' => '0.3.0'], $table['features']);
+
+        // A hand edit to a feature is a stale table, like any other.
+        $table['features']['truthful_handshake_version'] = '0.2.0';
+        file_put_contents($repo.'/resources/client-capabilities.json', json_encode($table, JSON_PRETTY_PRINT)."\n");
+        [$rc] = $this->gen($repo, '--check');
+        $this->assertSame(1, $rc);
+
+        // A marker gone from the working tree is refused, not silently re-dated.
+        file_put_contents($dir.'/agent-webhook-bridge-channel.mjs', self::literal(['my_cards' => []], features: false));
+        [$rc, , $err] = $this->gen($repo);
+        $this->assertSame(2, $rc);
+        $this->assertStringContainsString('features.client_version_report: no marker', $err);
     }
 
     /** @return array<string, array{string, string}> */
@@ -265,7 +397,7 @@ class GenClientCapabilitiesTest extends TestCase
     }
 
     /**
-     * The hard pass/fail: a release whose literal cannot be evaluated, or not the same way twice,
+     * The hard pass/fail: a version introduced on dev's line whose literal cannot be evaluated
      * stops the run and NAMES the commit — the table is never written around it.
      */
     #[DataProvider('unevaluable')]
@@ -361,8 +493,14 @@ class GenClientCapabilitiesTest extends TestCase
         $this->assertStringStartsWith('actions/checkout@', $checkout['uses']);
         $this->assertSame(0, $checkout['with']['fetch-depth'] ?? null, 'the checkout must fetch the whole history, or --check refuses a shallow clone');
 
-        $runs = array_map(fn (array $s): string => (string) ($s['run'] ?? ''), $steps);
-        $this->assertContains('node bin/gen-client-capabilities.mjs --check', $runs);
+        $check = array_values(array_filter($steps, fn (array $s): bool => ($s['run'] ?? null) === 'node bin/gen-client-capabilities.mjs --check'));
+        $this->assertCount(1, $check);
+        // Either key would let the step fail and the job still pass (or skip, which a required
+        // check also reads as passing).
+        foreach (['continue-on-error', 'if'] as $key) {
+            $this->assertArrayNotHasKey($key, $check[0], "the --check step carries `{$key}:`, so it cannot block a merge");
+            $this->assertArrayNotHasKey($key, $job, "the SQLite job carries `{$key}:`, so --check cannot block a merge");
+        }
     }
 
     /**
