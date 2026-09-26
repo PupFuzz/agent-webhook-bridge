@@ -124,6 +124,13 @@ function readClientVersion() {
 
 const CLIENT_VERSION = readClientVersion();
 
+// The version announced in the MCP `initialize` handshake (serverInfo) is that same
+// once-read value — never a literal of its own, which is free to drift from the manifest
+// the bump guard maintains. Unlike `client_version`, serverInfo.version cannot be omitted, so an
+// unreadable manifest announces this sentinel: plainly not a release, never a plausible
+// stale number.
+const HANDSHAKE_VERSION = CLIENT_VERSION ?? '0.0.0-unreadable-manifest';
+
 // Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
 // explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
 // FILE SHORT-CIRCUITS to '' (never silently falling through to the channel token),
@@ -694,7 +701,7 @@ if (ADVERTISE_ANY_TOOL) {
 }
 
 const mcp = new Server(
-  { name: SERVER_NAME, version: '0.1.0' },
+  { name: SERVER_NAME, version: HANDSHAKE_VERSION },
   {
     capabilities,
     instructions: INSTRUCTIONS,
