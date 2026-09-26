@@ -10,7 +10,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
-- **License: MIT → PolyForm Noncommercial License 1.0.0** (SPDX `PolyForm-Noncommercial-1.0.0`). [`LICENSE`](../LICENSE) now carries the license text verbatim from <https://polyformproject.org/licenses/noncommercial/1.0.0.txt>, preceded by the licensor's `Required Notice:` line; `composer.json` `license` and the README § License move with it. ⚠ **It applies from the first release that carries it**: every version released before it was distributed under MIT and keeps those terms. A downstream that copies files out of this repo (for example `examples/channel-servers/`) and passes them on must now include the license terms or their URL, and the `Required Notice:` line. No code, config, route or behaviour change.
+- **License: MIT → PolyForm Noncommercial License 1.0.0** (SPDX `PolyForm-Noncommercial-1.0.0`). [`LICENSE`](../LICENSE) now carries the license text verbatim from <https://polyformproject.org/licenses/noncommercial/1.0.0.txt>, preceded by the licensor's `Required Notice:` line; `composer.json` `license` and the README § License move with it. ⚠ **These terms apply to every copy that carries this LICENSE file**: commits from this change onward, and every release from the next one; copies obtained before this change (released versions and earlier commits) were distributed under MIT and keep those terms. A downstream that copies files out of this repo (for example `examples/channel-servers/`, whose own README now says so) and passes them on must include the license terms or their URL, and the `Required Notice:` line, and must carry `LICENSE` itself alongside the files it copies. No code, config, route or behaviour change.
 
 ### Fixed
 
