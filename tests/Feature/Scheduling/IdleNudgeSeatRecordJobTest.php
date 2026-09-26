@@ -446,4 +446,44 @@ class IdleNudgeSeatRecordJobTest extends TestCase
         $this->assertSame([], $this->pushes());
         $this->assertSame('seat_record_agent_mismatch', $this->verdictOf('kanban-solo'));
     }
+
+    /**
+     * DL-424 Decision 9: one seat's record wakes at most one channel. A second YAML claiming the
+     * same seat — a copied `idle_nudge:` block — refuses BOTH, by name, rather than waking two.
+     */
+    public function test_two_yamls_claiming_one_seat_through_seat_agent_wake_neither(): void
+    {
+        $this->kanbanSolo('kanban');
+        $this->agent('prod-agent', 8792, "idle_nudge:\n  seat_record: {$this->dir}/seat/kanban-lane-wake-offer.json\n  seat_agent: kanban\n");
+
+        $this->pass();
+
+        $this->assertSame([], $this->pushes());
+        $record = IdleNudgePassRecord::read();
+        $this->assertSame('seat_record_seat_claimed_twice', $record['agents']['kanban-solo']);
+        $this->assertSame('seat_record_seat_claimed_twice', $record['agents']['prod-agent']);
+        $this->assertSame(['kanban-solo' => 'kanban', 'pm' => 'pm', 'prod-agent' => 'kanban'], $record['record_agents']);
+    }
+
+    public function test_a_yaml_named_for_the_seat_and_one_adopting_it_through_seat_agent_wake_neither(): void
+    {
+        $this->kanbanSolo('kanban');
+        $this->agent('kanban', 8793, "idle_nudge:\n  seat_record: {$this->dir}/seat/kanban-lane-wake-offer.json\n");
+
+        $this->pass();
+
+        $this->assertSame([], $this->pushes());
+        $this->assertSame('seat_record_seat_claimed_twice', $this->verdictOf('kanban'));
+        $this->assertSame('seat_record_seat_claimed_twice', $this->verdictOf('kanban-solo'));
+    }
+
+    public function test_the_comparand_each_seat_record_agent_was_judged_against_is_recorded(): void
+    {
+        $this->kanbanSolo('kanban-solo');
+        $this->offer();
+
+        $this->pass();
+
+        $this->assertSame(['kanban-solo' => 'kanban', 'pm' => 'pm'], IdleNudgePassRecord::read()['record_agents']);
+    }
 }

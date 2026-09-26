@@ -34,6 +34,7 @@ final class AgentVerdict
         'seat_record_malformed',
         'seat_record_unknown_version',
         'seat_record_agent_mismatch',
+        'seat_record_seat_claimed_twice',
         'offer_unmeasured',
     ];
 
@@ -49,6 +50,7 @@ final class AgentVerdict
         'seat_record_malformed',
         'seat_record_unknown_version',
         'seat_record_agent_mismatch',
+        'seat_record_seat_claimed_twice',
         'offer_stale',
     ];
 

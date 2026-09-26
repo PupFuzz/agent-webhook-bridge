@@ -163,26 +163,18 @@ final class AgentConfig
 
     /**
      * `idle_nudge.seat_agent` — the name the seat record's own `agent` must equal, for a seat
-     * whose `$COORD_AGENT` is not this bridge agent's name. Compared EXACTLY, so a value the
-     * compare could only ever miss on (empty, padded) is refused here rather than read as a
-     * mismatch on every pass.
+     * whose `$COORD_AGENT` is not this bridge agent's name.
      *
      * @param  array<mixed>  $section
      */
     private static function declaredIdleNudgeSeatAgent(array $section, ?string $seatRecord, string $agentName): ?string
     {
-        $raw = $section['seat_agent'] ?? null;
-        if ($raw === null) {
-            return null;
-        }
-        if (! is_string($raw) || $raw === '' || trim($raw) !== $raw) {
-            throw new ConfigException('idle_nudge.seat_agent must be a non-empty agent name with no surrounding whitespace');
-        }
-        if ($seatRecord === null) {
+        $declared = self::idleNudgeString($section, 'seat_agent', 'idle_nudge.seat_agent must be a non-empty agent name');
+        if ($declared !== null && $seatRecord === null) {
             Log::warning("{$agentName}.yml: idle_nudge.seat_agent has no effect without idle_nudge.seat_record — this agent stays Mezzanine-sourced");
         }
 
-        return $raw;
+        return $declared;
     }
 
     /**
@@ -194,19 +186,33 @@ final class AgentConfig
      */
     private static function declaredIdleNudgeSeatRecord(array $section): ?string
     {
-        $raw = $section['seat_record'] ?? null;
-        if ($raw === null) {
-            return null;
-        }
-        if (! is_string($raw) || trim($raw) === '') {
-            throw new ConfigException('idle_nudge.seat_record must be a non-empty path');
-        }
-        $declared = trim($raw);
-        if (! SeatRecordPath::isDeclarable($declared)) {
+        $declared = self::idleNudgeString($section, 'seat_record', 'idle_nudge.seat_record must be a non-empty path');
+        if ($declared !== null && ! SeatRecordPath::isDeclarable($declared)) {
             throw new ConfigException('idle_nudge.seat_record must be an absolute path or start with ~/, with no \'..\' segment or null byte');
         }
 
         return $declared;
+    }
+
+    /**
+     * The one whitespace rule for the `idle_nudge` section's string keys: absent ⇒ null, surrounding
+     * whitespace trimmed, and a non-string or blank value refused. Trimmed rather than refused
+     * because a refusal here fails every delivery, and a value kept padded could only ever
+     * mismatch.
+     *
+     * @param  array<mixed>  $section
+     */
+    private static function idleNudgeString(array $section, string $key, string $refusal): ?string
+    {
+        $raw = $section[$key] ?? null;
+        if ($raw === null) {
+            return null;
+        }
+        if (! is_string($raw) || trim($raw) === '') {
+            throw new ConfigException($refusal);
+        }
+
+        return trim($raw);
     }
 
     /**

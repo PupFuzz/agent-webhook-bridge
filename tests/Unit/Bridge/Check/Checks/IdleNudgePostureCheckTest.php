@@ -311,6 +311,7 @@ class IdleNudgePostureCheckTest extends TestCase
             'malformed' => ['seat_record_malformed', 'is not a valid schema-v1 offer record'],
             'unknown version' => ['seat_record_unknown_version', 'carries a schema version this build does not read'],
             'another agent\'s record' => ['seat_record_agent_mismatch', 'was written for another agent: its `agent` is not `pm`, this YAML\'s agent name'],
+            'claimed twice' => ['seat_record_seat_claimed_twice', 'each compare their seat record\'s `agent` against `pm`, and one seat\'s record wakes at most one channel'],
             'stale' => ['offer_stale', 'has NOT CHANGED for a whole horizon since its notice was pushed'],
         ];
     }
@@ -330,19 +331,21 @@ class IdleNudgePostureCheckTest extends TestCase
     {
         $this->seatRecordOnly();
         $this->nudgeInstance(lastRunAt: Carbon::now());
-        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['pm' => '/home/seat/.cache/coord/pm-lane-wake-offer.json'], 'agents' => ['pm' => $code, 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['pm' => '/home/seat/.cache/coord/pm-lane-wake-offer.json'], 'record_agents' => ['pm' => 'pm'], 'agents' => ['pm' => $code, 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
         $this->assertOne(Severity::Warn, $says);
         $this->assertOne(Severity::Warn, 'This seat is not nudged.');
     }
 
-    private function mismatch(string $yaml): string
+    /** @param  string|null  $compared  the pass record's `record_agents` member for the agent; null = a record from before it */
+    private function mismatch(string $yaml, ?string $compared): string
     {
         $this->seatRecordOnly();
         File::delete($this->dir.'/pm.yml');
         $this->agentYaml('kanban-solo', $yaml);
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['kanban-solo' => '/home/seat/.cache/coord/kanban-lane-wake-offer.json'],
+            ...($compared === null ? [] : ['record_agents' => ['kanban-solo' => $compared]]),
             'agents' => ['kanban-solo' => 'seat_record_agent_mismatch', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
         return $this->lines()[0];
@@ -354,7 +357,7 @@ class IdleNudgePostureCheckTest extends TestCase
             "Warn: idle_nudge: kanban-solo's seat record /home/seat/.cache/coord/kanban-lane-wake-offer.json was written for another agent: its `agent` is not `kanban-solo`, "
             .'this YAML\'s agent name (no `idle_nudge.seat_agent` is set). If this file is the intended seat\'s record — the seat\'s own agent name differs from the bridge agent name — '
             .'set `idle_nudge.seat_agent` to the `agent` value inside it; otherwise point `idle_nudge.seat_record` at the intended seat\'s record. This seat is not nudged.',
-            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n"),
+            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n", 'kanban-solo'),
         );
     }
 
@@ -364,8 +367,54 @@ class IdleNudgePostureCheckTest extends TestCase
             "Warn: idle_nudge: kanban-solo's seat record /home/seat/.cache/coord/kanban-lane-wake-offer.json was written for another agent: its `agent` is not `kanban`, "
             .'the value of this YAML\'s `idle_nudge.seat_agent`. If this file is the intended seat\'s record, set `idle_nudge.seat_agent` to the `agent` value inside it; '
             .'otherwise point `idle_nudge.seat_record` at the intended seat\'s record. This seat is not nudged.',
-            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n"),
+            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n", 'kanban'),
         );
+    }
+
+    /**
+     * The adoption path: the operator sees the mismatch, adds `seat_agent`, and runs bridge:check
+     * before the next tick. The verdict is the last pass's, so its reason must be too.
+     */
+    public function test_a_mismatch_after_the_yaml_changed_names_the_comparand_the_pass_used_and_the_one_it_will_use(): void
+    {
+        $this->assertSame(
+            "Warn: idle_nudge: kanban-solo's seat record /home/seat/.cache/coord/kanban-lane-wake-offer.json was written for another agent: its `agent` is not `kanban-solo`, "
+            .'the name the last pass compared it against. This YAML has changed since: the record must now carry `kanban`, the value of this YAML\'s `idle_nudge.seat_agent`, '
+            .'which the next pass judges. This seat is not nudged.',
+            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n", 'kanban-solo'),
+        );
+    }
+
+    public function test_a_mismatch_on_a_pass_record_from_before_the_comparand_was_recorded_says_so(): void
+    {
+        $this->assertSame(
+            "Warn: idle_nudge: kanban-solo's seat record /home/seat/.cache/coord/kanban-lane-wake-offer.json was written for another agent (the last-pass record predates the recorded comparand, "
+            .'so the name that pass compared against is not known; as declared now it is `kanban`, the value of this YAML\'s `idle_nudge.seat_agent`). '
+            .'If this file is the intended seat\'s record, set `idle_nudge.seat_agent` to the `agent` value inside it; '
+            .'otherwise point `idle_nudge.seat_record` at the intended seat\'s record. This seat is not nudged.',
+            $this->mismatch("idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n", null),
+        );
+    }
+
+    public function test_two_agents_claiming_one_seat_are_each_named_with_every_claimant_and_the_remedy(): void
+    {
+        $this->seatRecordOnly();
+        File::delete($this->dir.'/pm.yml');
+        $this->agentYaml('kanban-solo', "idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n");
+        $this->agentYaml('prod-agent', "idle_nudge:\n  seat_record: /home/seat/.cache/coord/kanban-lane-wake-offer.json\n  seat_agent: kanban\n");
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['kanban-solo' => null, 'prod-agent' => null],
+            'record_agents' => ['kanban-solo' => 'kanban', 'prod-agent' => 'kanban'],
+            'agents' => ['kanban-solo' => 'seat_record_seat_claimed_twice', 'prod-agent' => 'seat_record_seat_claimed_twice', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+
+        $line = fn (string $agent): string => "Warn: idle_nudge: {$agent}'s seat record declared as /home/seat/.cache/coord/kanban-lane-wake-offer.json was not read on the last pass: "
+            .'`kanban-solo`, `prod-agent` each compare their seat record\'s `agent` against `kanban`, and one seat\'s record wakes at most one channel, so none of them is sent it. '
+            .'Keep that seat\'s `idle_nudge.seat_record` (and `idle_nudge.seat_agent`) in exactly one of those YAMLs and remove it from the others. This seat is not nudged.';
+        $this->assertSame([
+            $line('kanban-solo'),
+            $line('prod-agent'),
+            'Warn: idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass (not_push_routed 1, seat_record_seat_claimed_twice 2).',
+        ], $this->lines());
     }
 
     public function test_a_fleet_read_that_did_not_measure_is_named_beside_the_verdicts(): void

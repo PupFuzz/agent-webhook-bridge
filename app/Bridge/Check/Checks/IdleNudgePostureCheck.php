@@ -37,10 +37,12 @@ use Throwable;
  * an install with no adopted tick are `jobs.posture`'s to report.
  *
  * ⚑ THE AGENT YAMLS ARE READ HERE, not taken from the context: this slot runs before the
- * per-agent loop publishes `CheckContext::$configs`. They decide one thing — whether any agent
- * needs Mezzanine ({@see IdleNudgeSources}), which is what makes the Mezzanine keys and the
- * token file binding. A seat record's own state is read off the last pass, never stat-ed here:
- * this process may not be the OS user the tick runs as, and would answer for the wrong one.
+ * per-agent loop publishes `CheckContext::$configs`. They decide whether any agent needs
+ * Mezzanine ({@see IdleNudgeSources}), which is what makes the Mezzanine keys and the token file
+ * binding, and supply the DECLARED values a seat-record fault line compares with, or falls back
+ * to where the last pass recorded none. A seat record's own state is read off the last pass,
+ * never stat-ed here: this process may not be the OS user the tick runs as, and would answer for
+ * the wrong one.
  */
 final class IdleNudgePostureCheck implements Check
 {
@@ -214,6 +216,7 @@ final class IdleNudgePostureCheck implements Check
     private function seatRecordFaults(array $agents, array $record, IdleNudgeSources $sources): iterable
     {
         $read = is_array($record['seat_records'] ?? null) ? $record['seat_records'] : null;
+        $compared = is_array($record['record_agents'] ?? null) ? $record['record_agents'] : null;
         foreach ($agents as $agent => $code) {
             if (! in_array($code, AgentVerdict::SEAT_RECORD_FAULTS, true)) {
                 continue;
@@ -233,30 +236,70 @@ final class IdleNudgePostureCheck implements Check
                 'seat_record_unreadable' => 'was present but not read on the last pass: not readable by the pass\'s OS user, a symbolic link (refused), or past the size bound.',
                 'seat_record_malformed' => 'is not a valid schema-v1 offer record (not a JSON object, or a member outside its contract).',
                 'seat_record_unknown_version' => 'carries a schema version this build does not read (only `v: 1`) — upgrade the bridge or pin the seat\'s writer.',
-                'seat_record_agent_mismatch' => $this->mismatch($agent, $declared, $sources),
+                'seat_record_agent_mismatch' => $this->mismatch($agent, $declared, $compared, $sources),
+                'seat_record_seat_claimed_twice' => $this->claimedTwice($agent, $agents, $compared),
                 'offer_stale' => 'has NOT CHANGED for a whole horizon since its notice was pushed: the notice produced no turn end, or the seat stopped writing the record (its wake switched off, or the Stop hook no longer firing). No further notice is sent for it.',
             }.' This seat is not nudged.');
         }
     }
 
     /**
-     * What the record's `agent` was compared against and where that value came from, then the
-     * remedy for each way the two can disagree. Read from the agent YAMLs as they are now — the
-     * comparand is the operator's own value, the same in every process, unlike the path.
+     * What the record's `agent` was compared against, as the last pass RECORDED it — the verdict
+     * is that pass's, so a YAML edited since must not rewrite its reason — then the remedy for
+     * each way the two can disagree. A pass record from before the comparand was recorded falls
+     * back to the YAMLs as they are now, and says so.
+     *
+     * @param  array<mixed>|null  $compared  the pass record's `record_agents`
      */
-    private function mismatch(string $agent, ?string $declared, IdleNudgeSources $sources): string
+    private function mismatch(string $agent, ?string $declared, ?array $compared, IdleNudgeSources $sources): string
     {
         $remedy = "set `idle_nudge.seat_agent` to the `agent` value inside it; otherwise point `idle_nudge.seat_record` at the intended seat's record.";
+        $then = is_string($compared[$agent] ?? null) ? $compared[$agent] : null;
         if ($declared === null) {
-            return 'was written for another agent; the agent is no longer declared, so the name it was compared against is not known.';
+            return $then === null
+                ? 'was written for another agent; the agent is no longer declared, so the name it was compared against is not known.'
+                : "was written for another agent: its `agent` is not `{$then}`, the name the last pass compared it against. The agent is no longer declared.";
         }
-        if (array_key_exists($agent, $sources->seatAgents)) {
-            return "was written for another agent: its `agent` is not `{$sources->recordAgentOf($agent)}`, the value of this YAML's `idle_nudge.seat_agent`. "
-                ."If this file is the intended seat's record, {$remedy}";
+        $now = $sources->recordAgentOf($agent);
+        $source = array_key_exists($agent, $sources->seatAgents)
+            ? "the value of this YAML's `idle_nudge.seat_agent`"
+            : "this YAML's agent name (no `idle_nudge.seat_agent` is set)";
+        $ifIntended = array_key_exists($agent, $sources->seatAgents)
+            ? "If this file is the intended seat's record, {$remedy}"
+            : "If this file is the intended seat's record — the seat's own agent name differs from the bridge agent name — {$remedy}";
+
+        if ($then === null) {
+            return 'was written for another agent (the last-pass record predates the recorded comparand, so the name that pass compared against is not known; '
+                ."as declared now it is `{$now}`, {$source}). {$ifIntended}";
+        }
+        if ($then !== $now) {
+            return "was written for another agent: its `agent` is not `{$then}`, the name the last pass compared it against. "
+                ."This YAML has changed since: the record must now carry `{$now}`, {$source}, which the next pass judges.";
         }
 
-        return "was written for another agent: its `agent` is not `{$agent}`, this YAML's agent name (no `idle_nudge.seat_agent` is set). "
-            ."If this file is the intended seat's record — the seat's own agent name differs from the bridge agent name — {$remedy}";
+        return "was written for another agent: its `agent` is not `{$then}`, {$source}. {$ifIntended}";
+    }
+
+    /**
+     * Every agent claiming the same seat as `$agent` on the last pass, from the comparands that
+     * pass recorded — the one pass that wrote this verdict wrote `record_agents` beside it.
+     *
+     * @param  array<mixed>  $agents
+     * @param  array<mixed>|null  $compared  the pass record's `record_agents`
+     */
+    private function claimedTwice(string $agent, array $agents, ?array $compared): string
+    {
+        $seat = (string) ($compared[$agent] ?? '');
+        $claimants = array_keys(array_filter(
+            $agents,
+            fn (mixed $code, int|string $other): bool => $code === 'seat_record_seat_claimed_twice' && ($compared[$other] ?? null) === $seat,
+            ARRAY_FILTER_USE_BOTH,
+        ));
+        $names = implode(', ', array_map(fn (int|string $a): string => '`'.$a.'`', $claimants));
+
+        return "was not read on the last pass: {$names} each compare their seat record's `agent` against `{$seat}`, "
+            .'and one seat\'s record wakes at most one channel, so none of them is sent it. '
+            .'Keep that seat\'s `idle_nudge.seat_record` (and `idle_nudge.seat_agent`) in exactly one of those YAMLs and remove it from the others.';
     }
 
     /** @param  array<mixed>  $agents */

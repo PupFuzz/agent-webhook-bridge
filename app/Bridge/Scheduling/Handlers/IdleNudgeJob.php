@@ -132,15 +132,22 @@ final class IdleNudgeJob implements JobHandler
         $nowMs = Carbon::now()->getTimestampMs();
         $seatVerdicts = [];
         $seatRecordPaths = [];
+        $recordAgents = [];
         $reader = new SeatRecordReader;
         foreach ($sources->seatRecords as $agent => $declared) {
             $agent = (string) $agent;
             $seatRecordPaths[$agent] = null;
-            try {
-                $seatRecordPaths[$agent] = SeatRecordPath::resolve($declared);
-                $offer = $reader->read($seatRecordPaths[$agent], $sources->recordAgentOf($agent));
-            } catch (SeatRecordUnmeasured $e) {
-                $offer = $e->verdict;
+            $recordAgents[$agent] = $sources->recordAgentOf($agent);
+            if (isset($sources->seatClaims[$agent])) {
+                // Not read: whatever it holds, delivering it here would wake a second channel.
+                $offer = 'seat_record_seat_claimed_twice';
+            } else {
+                try {
+                    $seatRecordPaths[$agent] = SeatRecordPath::resolve($declared);
+                    $offer = $reader->read($seatRecordPaths[$agent], $recordAgents[$agent]);
+                } catch (SeatRecordUnmeasured $e) {
+                    $offer = $e->verdict;
+                }
             }
             $seatVerdicts[] = $evaluator->seatRecord($agent, $offer, $state->slotOf($agent), $nowMs);
         }
@@ -170,7 +177,7 @@ final class IdleNudgeJob implements JobHandler
         }
 
         $state->forgetUndeclared($sources->declared());
-        IdleNudgePassRecord::measured($evaluation, $accepted, $failed, $fleetUnmeasured, $seatRecordPaths);
+        IdleNudgePassRecord::measured($evaluation, $accepted, $failed, $fleetUnmeasured, $seatRecordPaths, $recordAgents);
 
         Log::info('idle nudge pass', [
             'seats' => $evaluation->seatTally,

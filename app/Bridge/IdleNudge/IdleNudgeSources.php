@@ -15,9 +15,26 @@ use App\Bridge\Support\AgentConfig;
  * ⭐ MEZZANINE IS NEEDED ONLY FOR A MEZZANINE-SOURCED AGENT THAT IS PUSH-ROUTED. Any other one
  * is `not_push_routed` whatever the snapshot says (DL-380 Decision 1), so an install with none
  * reads no snapshot and owes none of the `BRIDGE_IDLE_NUDGE_*` Mezzanine keys.
+ *
+ * ⛔ ONE SEAT'S RECORD WAKES AT MOST ONE CHANNEL (DL-424 Decision 9). Two seat-record agents
+ * whose {@see recordAgentOf()} is the same name both claim that seat — a copied `idle_nudge:`
+ * block, or a YAML named for the seat beside one adopting it through `seat_agent` — and each
+ * would deliver its prompt. Every agent in such a claim is found here ({@see $seatClaims}), and
+ * the pass refuses each by name without reading its record. Keyed on the compared NAME, not the
+ * path: a record carries one `agent`, so two agents
+ * reading one file under different names can never both match it, and the path is resolved only
+ * at use ({@see SeatRecordPath}).
  */
 final class IdleNudgeSources
 {
+    /**
+     * seat-record agent => every seat-record agent (itself included, sorted) claiming the same
+     * seat; present only for an agent in a claim of two or more.
+     *
+     * @var array<string, list<string>>
+     */
+    public readonly array $seatClaims;
+
     /**
      * @param  array<string, string>  $seatRecords  agent => its seat record path AS DECLARED ({@see SeatRecordPath::resolve()} at use)
      * @param  array<string, bool>  $mezzanine  agent => its `channel.route_intents`
@@ -27,7 +44,22 @@ final class IdleNudgeSources
         public readonly array $seatRecords,
         public readonly array $mezzanine,
         public readonly array $seatAgents,
-    ) {}
+    ) {
+        $claimants = [];
+        foreach (array_keys($seatRecords) as $agent) {
+            $claimants[$this->recordAgentOf((string) $agent)][] = (string) $agent;
+        }
+        $claims = [];
+        foreach ($claimants as $agents) {
+            if (count($agents) > 1) {
+                sort($agents);
+                foreach ($agents as $agent) {
+                    $claims[$agent] = $agents;
+                }
+            }
+        }
+        $this->seatClaims = $claims;
+    }
 
     /** @param  list<AgentConfig>  $configs */
     public static function of(array $configs): self

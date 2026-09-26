@@ -309,13 +309,23 @@ class AgentConfigTest extends TestCase
         $this->assertSame('kanban', $cfg->idleNudgeSeatAgent);
     }
 
+    /**
+     * One whitespace rule for the section: a quoted value padded by accident is trimmed, never a
+     * load failure — which would fail every delivery — nor a value the compare can only miss.
+     */
+    public function test_idle_nudge_padded_seat_record_and_seat_agent_are_both_trimmed(): void
+    {
+        $cfg = AgentConfig::fromArray('kanban-solo', $this->raw(['idle_nudge' => ['seat_record' => ' /home/seat/offer.json ', 'seat_agent' => " kanban\t"]]));
+        $this->assertSame('/home/seat/offer.json', $cfg->idleNudgeSeatRecord);
+        $this->assertSame('kanban', $cfg->idleNudgeSeatAgent);
+    }
+
     /** @return array<string, array{mixed}> */
     public static function badSeatAgents(): array
     {
         return [
             'empty' => [''],
             'blank' => ['  '],
-            'padded' => [' kanban'],
             'not a string' => [['kanban']],
             'a number' => [42],
             'a boolean' => [true],

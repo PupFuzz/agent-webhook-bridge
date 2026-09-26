@@ -19,9 +19,10 @@ use JsonException;
  *
  * ⚑ THE RECORD'S `agent` MUST BE THE SEAT THE DECLARING YAML NAMES. A record is written for one
  * seat (rt#562: its `agent` matches the `<agent>` in its path); one YAML pointed at another
- * seat's file — or two YAMLs at one — would otherwise deliver that seat's prompt to the wrong
- * channel with no signal. The caller passes the comparand; {@see IdleNudgeSources::recordAgentOf()}
- * owns which name it is.
+ * seat's file would otherwise deliver that seat's prompt to the wrong channel with no signal.
+ * The caller passes the comparand; {@see IdleNudgeSources::recordAgentOf()} owns which name it
+ * is. This compare alone cannot stop two YAMLs that name the SAME seat — both would match — so
+ * those are refused before any read, by {@see IdleNudgeSources::$seatClaims}.
  *
  * ⚑ THE SEAT OWNS THE PATH, NOT THE BRIDGE. The record sits in the seat's home and is read by
  * the bridge's OS user, so it goes through {@see UntrustedPathContents} (a symlink is refused,
