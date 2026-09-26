@@ -97,3 +97,8 @@ _ide_helper.php
 # the pint.json entry alone leaves that scratch stageable. Two mechanisms, two
 # homes; removing either re-opens a different hole.
 _stage/
+
+# The agent-framework solo orientation doc. Placed in each checkout by the coord
+# plugin's `coord:init-solo` and re-synced by it; local to the machine that runs the agent, not
+# part of this project's published source. CLAUDE.md imports it where present.
+/CLAUDE_AGENTBOARD.md
