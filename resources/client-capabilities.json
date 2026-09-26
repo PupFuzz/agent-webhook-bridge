@@ -76,7 +76,7 @@
         },
         "limit": {
           "removed_in": null,
-          "since": "0.9.12"
+          "since": "0.9.16"
         },
         "stage": {
           "removed_in": null,
