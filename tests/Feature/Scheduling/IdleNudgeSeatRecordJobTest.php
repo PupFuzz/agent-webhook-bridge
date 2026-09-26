@@ -463,6 +463,8 @@ class IdleNudgeSeatRecordJobTest extends TestCase
         $this->assertSame('seat_record_seat_claimed_twice', $record['agents']['kanban-solo']);
         $this->assertSame('seat_record_seat_claimed_twice', $record['agents']['prod-agent']);
         $this->assertSame(['kanban-solo' => 'kanban', 'pm' => 'pm', 'prod-agent' => 'kanban'], $record['record_agents']);
+        // Both records are present and valid, so only the unresolved path shows neither was read.
+        $this->assertSame(['kanban-solo' => null, 'pm' => $this->dir.'/seat/pm-lane-wake-offer.json', 'prod-agent' => null], $record['seat_records']);
     }
 
     public function test_a_yaml_named_for_the_seat_and_one_adopting_it_through_seat_agent_wake_neither(): void

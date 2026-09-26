@@ -21,9 +21,13 @@ use App\Bridge\Support\AgentConfig;
  * block, or a YAML named for the seat beside one adopting it through `seat_agent` — and each
  * would deliver its prompt. Every agent in such a claim is found here ({@see $seatClaims}), and
  * the pass refuses each by name without reading its record. Keyed on the compared NAME, not the
- * path: a record carries one `agent`, so two agents
- * reading one file under different names can never both match it, and the path is resolved only
- * at use ({@see SeatRecordPath}).
+ * path: a record carries one `agent`, so two agents reading one file under different names can
+ * never both match it, and the path is resolved only at use ({@see SeatRecordPath}).
+ *
+ * ⚠ SEAT-RECORD AGENTS ONLY. A push-routed Mezzanine-sourced agent is not a claimant, so a
+ * Mezzanine agent named for a seat beside a seat-record agent adopting it could wake that seat
+ * on two channels — once Mezzanine publishes seat names (card#9375); until then it cannot occur.
+ * Out of scope until card#9375 lands; the reopen condition is DL-424 Decision 9's.
  */
 final class IdleNudgeSources
 {

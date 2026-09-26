@@ -417,6 +417,32 @@ class IdleNudgePostureCheckTest extends TestCase
         ], $this->lines());
     }
 
+    public function test_each_claim_line_names_only_the_agents_of_its_own_claim(): void
+    {
+        $this->seatRecordOnly();
+        File::delete($this->dir.'/pm.yml');
+        foreach (['kanban-solo' => 'kanban', 'prod-agent' => 'kanban', 'pm-a' => 'pm', 'pm-b' => 'pm'] as $agent => $seat) {
+            $this->agentYaml($agent, "idle_nudge:\n  seat_record: /home/seat/.cache/coord/{$seat}-lane-wake-offer.json\n  seat_agent: {$seat}\n");
+        }
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null,
+            'seat_records' => ['kanban-solo' => null, 'pm-a' => null, 'pm-b' => null, 'prod-agent' => null],
+            'record_agents' => ['kanban-solo' => 'kanban', 'pm-a' => 'pm', 'pm-b' => 'pm', 'prod-agent' => 'kanban'],
+            'agents' => ['kanban-solo' => 'seat_record_seat_claimed_twice', 'pm-a' => 'seat_record_seat_claimed_twice', 'pm-b' => 'seat_record_seat_claimed_twice', 'prod-agent' => 'seat_record_seat_claimed_twice', 'quiet' => 'not_push_routed'],
+            'failed_agents' => []]);
+
+        $line = fn (string $agent, string $seat, string $claimants): string => "Warn: idle_nudge: {$agent}'s seat record declared as /home/seat/.cache/coord/{$seat}-lane-wake-offer.json was not read on the last pass: "
+            ."{$claimants} each compare their seat record's `agent` against `{$seat}`, and one seat's record wakes at most one channel, so none of them is sent it. "
+            .'Keep that seat\'s `idle_nudge.seat_record` (and `idle_nudge.seat_agent`) in exactly one of those YAMLs and remove it from the others. This seat is not nudged.';
+        $this->assertSame([
+            $line('kanban-solo', 'kanban', '`kanban-solo`, `prod-agent`'),
+            $line('pm-a', 'pm', '`pm-a`, `pm-b`'),
+            $line('pm-b', 'pm', '`pm-a`, `pm-b`'),
+            $line('prod-agent', 'kanban', '`kanban-solo`, `prod-agent`'),
+            'Warn: idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass (not_push_routed 1, seat_record_seat_claimed_twice 4).',
+        ], $this->lines());
+    }
+
     public function test_a_fleet_read_that_did_not_measure_is_named_beside_the_verdicts(): void
     {
         $this->nudgeInstance(lastRunAt: Carbon::now());
