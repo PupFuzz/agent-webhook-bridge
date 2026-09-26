@@ -2,7 +2,7 @@
 
 A minimal Node + `@modelcontextprotocol/sdk` server that bridges the bridge's `channel_push` handler to a Claude Code session as a [channel](https://code.claude.com/docs/en/channels-reference).
 
-This is a worked example, not a production daemon. Copy it into your own deployment, adjust the env vars and gating to fit your trust boundaries, and own the lifecycle (Claude Code spawns the server on session start and reaps it on close). **Copy `LICENSE` from the repo root alongside it** — it carries the licensor's `Required Notice:` line — or keep that line and the license URL (<https://polyformproject.org/licenses/noncommercial/1.0.0>) in your own deployment's NOTICE.
+This is a worked example, not a production daemon. Copy it into your own deployment, adjust the env vars and gating to fit your trust boundaries, and own the lifecycle (Claude Code spawns the server on session start and reaps it on close). **Carry the license too**: `cp LICENSE <deploy-dir>/LICENSE.agent-webhook-bridge` (a name that won't collide with your own deployment's LICENSE) — it carries the `Required Notice:` line — or skip the copy and keep that line plus the license URL (<https://polyformproject.org/licenses/noncommercial/1.0.0>) in your own deployment's NOTICE instead. Either satisfies what the license requires you to pass on (the terms or their URL, plus the notice) — carrying `LICENSE` just does both in one file.
 
 ## Topology
 
