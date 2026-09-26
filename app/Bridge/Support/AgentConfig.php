@@ -24,7 +24,8 @@ use Symfony\Component\Yaml\Yaml;
  * AgentRegistry and auto-seed self echo-suppression), `subscriptions`,
  * `echo_suppression` (lists OTHER agents only; self is derived from the filename
  * + identity ids), `classifier`, `channel`, `surface`, `board_tools` (DL-217 —
- * the channel-identity-scoped board window; absent ⇒ no-op).
+ * the channel-identity-scoped board window; absent ⇒ no-op), `idle_nudge` (the
+ * seat's own offer record the idle nudge reads; absent ⇒ Mezzanine-sourced).
  */
 final class AgentConfig
 {
@@ -32,7 +33,7 @@ final class AgentConfig
      * @var list<string>
      */
     private const KNOWN_TOP_LEVEL_KEYS = [
-        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api', 'board_tools',
+        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api', 'board_tools', 'idle_nudge',
     ];
 
     /**
@@ -52,6 +53,8 @@ final class AgentConfig
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
         public readonly ?BoardToolsConfig $boardTools = null,
+        /** `idle_nudge.seat_record`, `~` expanded; null ⇒ the agent declares no seat record. */
+        public readonly ?string $idleNudgeSeatRecord = null,
     ) {}
 
     public static function load(string $agentName, string $configDir): self
@@ -146,7 +149,36 @@ final class AgentConfig
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
             boardTools: $boardTools,
+            idleNudgeSeatRecord: self::resolveIdleNudgeSeatRecord(self::requireMapping($raw, 'idle_nudge')),
         );
+    }
+
+    /**
+     * `idle_nudge.seat_record` — the file the seat's own Stop hook writes its wake offer to.
+     *
+     * ⚠ `~` EXPANDS AGAINST THE BRIDGE PROCESS'S HOME, like every other path key here, and the
+     * record lives in the SEAT's home. The two are the same account only when the bridge runs as
+     * the seat's OS user; otherwise the operator writes the seat's absolute path. A wrong home is
+     * not silent: the pass reads the record as absent or not visible and `idle_nudge.posture`
+     * names the resolved path.
+     *
+     * @param  array<mixed>  $section
+     */
+    private static function resolveIdleNudgeSeatRecord(array $section): ?string
+    {
+        $raw = $section['seat_record'] ?? null;
+        if ($raw === null) {
+            return null;
+        }
+        if (! is_string($raw) || trim($raw) === '') {
+            throw new ConfigException('idle_nudge.seat_record must be a non-empty path');
+        }
+        $path = PathHelper::expandUser(trim($raw));
+        if (! SocketPath::isValid($path)) {
+            throw new ConfigException("idle_nudge.seat_record '{$path}' must be an absolute path (or start with ~/) with no '..' segment or null byte");
+        }
+
+        return $path;
     }
 
     /**

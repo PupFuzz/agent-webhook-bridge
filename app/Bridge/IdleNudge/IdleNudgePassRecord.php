@@ -32,9 +32,13 @@ final class IdleNudgePassRecord
     }
 
     /**
+     * `seats` is null when no fleet snapshot was read; `fleet_unmeasured` is the reason a read
+     * that WAS needed did not measure (the Mezzanine-sourced agents then read `fleet_unmeasured`),
+     * and null otherwise.
+     *
      * @param  list<string>  $failedAgents  agents whose push in THIS pass threw
      */
-    public static function measured(Evaluation $evaluation, int $accepted, array $failedAgents): void
+    public static function measured(Evaluation $evaluation, int $accepted, array $failedAgents, ?string $fleetUnmeasured = null): void
     {
         $agents = [];
         foreach ($evaluation->verdicts as $v) {
@@ -44,6 +48,7 @@ final class IdleNudgePassRecord
         self::write([
             'measured' => true,
             'seats' => $evaluation->seatTally,
+            'fleet_unmeasured' => $fleetUnmeasured,
             'verdicts' => $evaluation->verdictTally(),
             'agents' => (object) $agents,
             'pushes' => ['accepted_by_transport' => $accepted, 'failed' => count($failedAgents)],

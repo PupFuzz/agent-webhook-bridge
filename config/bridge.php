@@ -256,7 +256,10 @@ return [
     | ⛔ The numbers are deliberately NOT cast: a value outside its bound is refused,
     | never clamped, and a cast would turn `ten` into 0 before anything could say so.
     |
-    | install — REQUIRED when enabled: the Mezzanine install id this bridge serves. The
+    | Mezzanine is read only for an agent that declares no `idle_nudge.seat_record` and sets
+    | `channel.route_intents: true`; the keys below bind only then (DL-424).
+    |
+    | install — REQUIRED when Mezzanine is: the Mezzanine install id this bridge serves. The
     | fleet token reads every install. ⚠ One bridge per (install, agent name): two
     | bridges declaring the same agent names against one install each nudge.
     | token_path — a FILE holding the fleet_read token (0600), never the value.

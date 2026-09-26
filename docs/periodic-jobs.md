@@ -351,23 +351,45 @@ backstop, not permission.
 | handler | capability | what it does |
 |---|---|---|
 | `standup_digest` | `read_and_alert` | Asks `App\Bridge\Standup\StandupGate::runPass()` — the PM digest (DL-306), on a wall clock instead of a delivery cadence. Both ingresses share the digest's own interval marker, so the digest is still pushed at most once per `BRIDGE_STANDUP_INTERVAL` however many things asked. The instance's `interval_s` is how often the scheduler **asks**; `BRIDGE_STANDUP_INTERVAL` is how often it **pushes**. |
-| `idle_nudge` | `read_and_alert` | Reads Mezzanine's fleet snapshot and pushes ONE nudge at a seat that has sat idle past its horizon while intents pushed at it since it went idle remain unseen (DL-380). **Off and inert until configured** — see [*The idle nudge*](#the-idle-nudge-idle_nudge) below. |
+| `idle_nudge` | `read_and_alert` | Pushes ONE live event at a seat that has sat idle past its horizon with work waiting — judged from the seat's own offer record where its YAML declares one (DL-424), otherwise from Mezzanine's fleet snapshot and the intents pushed at it since it went idle (DL-380). **Off and inert until configured** — see [*The idle nudge*](#the-idle-nudge-idle_nudge) below. |
 
 ### The idle nudge (`idle_nudge`)
 
 The watchdog DL-325 Decision 9 recorded as a binding contract and could not build for want of a
 seat-state record — § *Staleness of things that are NOT the tick* below, applied to Mezzanine's
 per-seat state (card#9422 / DL-380). **Why it is a job:** an idle seat makes no webhook traffic,
-and the record lives in a system that sends this bridge none, so step 4 of the decision order is
-the only one that holds.
+and neither record it is judged from — Mezzanine's snapshot, or the seat's own offer file — sends
+this bridge any, so step 4 of the decision order is the only one that holds.
 
-**Adopting it** — all three, or it does nothing:
+**Two sources, one verdict per agent (DL-424).** An agent whose YAML declares
+`idle_nudge.seat_record` is **seat-record-sourced**: it is judged from the offer record its own coord
+`Stop` hook writes at every turn end (rt#562), and nothing about Mezzanine or `route_intents` applies
+to it. Every other agent is **Mezzanine-sourced** and judged as below. Mezzanine is read only when a
+Mezzanine-sourced agent sets `channel.route_intents: true` — no other one can be judged from it.
 
-1. Set the `BRIDGE_IDLE_NUDGE_*` keys ([`config-schema.md`](config-schema.md) § 1 owns them). The
-   install id is required: the fleet token reads every install.
-2. Place the `fleet_read` token in a `0600` file and point `BRIDGE_IDLE_NUDGE_TOKEN_PATH` at it —
-   [`config-schema.md`](config-schema.md) § *Handling a secret VALUE* owns how.
+**Adopting it** — all of these, or it does nothing:
+
+1. Set `BRIDGE_IDLE_NUDGE_ENABLED=true`. The other `BRIDGE_IDLE_NUDGE_*` keys are Mezzanine's and
+   bind only while some agent needs Mezzanine ([`config-schema.md`](config-schema.md) § 1 owns them;
+   the install id is then required, because the fleet token reads every install).
+2. Per seat-record agent: `idle_nudge.seat_record` in its YAML ([`config-schema.md`](config-schema.md)
+   § 2 owns the key and the `~` caveat). Per Mezzanine install: place the `fleet_read` token in a
+   `0600` file and point `BRIDGE_IDLE_NUDGE_TOKEN_PATH` at it — [`config-schema.md`](config-schema.md)
+   § *Handling a secret VALUE* owns how.
 3. Insert ONE instance (`bridge:jobs add … --handler=idle_nudge`); `bridge:check` fails on two.
+
+**A seat-record agent (DL-424, contract on rt#562).** It gets one `seat_idle_nudge` when its record
+is a schema-v1 offer with work on it (`lanes` non-empty, a `prompt`) and the bridge's clock has
+passed `turn_ended_at + horizon_s`. At most one notice per `(agent, session_id, turn_ended_at)` — a
+later turn end re-arms it — and at least the record's own `cooldown_s` between two notices to the
+agent. `lanes: []` sends nothing; `lanes: null` (the seat's census could not measure), and an absent,
+unreadable, not-visible, malformed or unknown-`v` record, are **unmeasured** and send nothing. The
+event's `summary` is the record's `prompt`, verbatim. ⚠ **`turn_ended_at` is on the seat's clock
+and "now" on the bridge host's**: across two hosts the horizon moves by their skew. ⚠ The record is
+overwritten only at the next turn END, so a turn that starts after an offer and runs past `horizon_s`
+can get one notice while it works — rt#562's *Known limits* owns that and the others.
+
+**A Mezzanine-sourced agent (DL-380)** — the rest of this section, up to *Where the rules live*.
 
 **What it acts on.** Only an agent whose YAML sets `channel.route_intents: true` is measurable:
 that is the operator's declared intent that the agent be woken for its intents, and a nudge is a
@@ -385,12 +407,18 @@ at most once per `(agent, idle_since)`. DL-380 lists what that definition of pen
 among them a per-agent → shared inbox layout flip, and an old event replayed at an already-idle seat.
 
 **Where the rules live, deliberately not restated here:** the verdict set and the join in
-`App\Bridge\IdleNudge\IdleNudgeEvaluator` and `AgentVerdict`; every unmeasured pass reason in
-`FleetSnapshotReader`; the dedupe record in `IdleNudgeState`. `bridge:check`'s `idle_nudge.posture`
-leg reads the last pass's structured record and says why no nudge fired.
+`App\Bridge\IdleNudge\IdleNudgeEvaluator` and `AgentVerdict`; which agent reads which source in
+`IdleNudgeSources`; the offer record's field contract in `SeatRecordReader`; every unmeasured fleet
+reason in `FleetSnapshotReader`; the dedupe record in `IdleNudgeState`. `bridge:check`'s
+`idle_nudge.posture` leg reads the last pass's structured record and says why no nudge fired —
+including, per seat-record agent, a record that was absent, unreadable or malformed, or that has not
+changed for a whole horizon since its notice (`offer_stale`).
 
-⚠ **The live output is `unmeasured` until Mezzanine ships `protocol_agent_name` (card#9375) and
-`idle_since` / `idle_nudge_after_s` (card#9418)** — every agent reads `no_declaring_seat`, by design.
+⚠ **A Mezzanine-sourced agent reads `unmeasured` until Mezzanine ships `protocol_agent_name`
+(card#9375) and `idle_since` / `idle_nudge_after_s` (card#9418)** — `no_declaring_seat`, by design.
+A seat-record agent does not wait on either. ⚠ A needed fleet read that does not measure makes only
+the Mezzanine-sourced agents `fleet_unmeasured`: seat-record agents are still judged, and the pass
+still fails the job row afterwards.
 ⚠ **One bridge per (install, agent name).** Two bridges declaring the same agent names against one
 install each nudge; nothing here can see the other.
 
@@ -425,7 +453,10 @@ gets an age and no verdict.
 `idle_nudge_after_s`; an ABSENT one takes the install default and the weaker `suspect` verdict,
 and a present-but-malformed one is `unmeasured`, never `suspect`; an absent record, name or
 `idle_since` is `unmeasured`; the only action is a nudge; and age is `server_time − idle_since`,
-both on the record writer's clock.
+both on the record writer's clock. **For a seat's own offer record (DL-424)** the horizon is the
+record's `horizon_s`, always declared by its writer, so there is no `suspect` arm; an absent or
+malformed record is `unmeasured`; the only action is a nudge; and age is the bridge's clock minus
+`turn_ended_at` — two clocks, stated where the handler is described above.
 
 ## Config
 

@@ -12,6 +12,7 @@ use App\Models\ScheduledJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -34,6 +35,8 @@ class IdleNudgePostureCheckTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/state');
         File::put($this->dir.'/fleet-token', 'mzr_canary.a~b/c-9');   // gitleaks:allow — test fixture
         chmod($this->dir.'/fleet-token', 0o600);
+        // A push-routed Mezzanine-sourced agent: what makes the Mezzanine keys binding.
+        $this->agentYaml('pm', "channel:\n  url: http://127.0.0.1:8788/\n  route_intents: true\n");
         config([
             'bridge.config_dir' => $this->dir,
             'bridge.state_dir' => $this->dir.'/state',
@@ -51,6 +54,11 @@ class IdleNudgePostureCheckTest extends TestCase
         Carbon::setTestNow();
         File::deleteDirectory($this->dir);
         parent::tearDown();
+    }
+
+    private function agentYaml(string $name, string $body): void
+    {
+        File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: 5\nsubscriptions: []\n".$body);
     }
 
     private function nudgeInstance(string $name = 'idle-nudge', ?Carbon $lastRunAt = null): void
@@ -174,7 +182,7 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'agents' => ['impl' => 'no_declaring_seat', 'pm' => 'no_declaring_seat', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
-        $this->assertOne(Severity::Warn, 'every push-routed agent was UNMEASURED on the last pass (no_declaring_seat 2, not_push_routed 1)');
+        $this->assertOne(Severity::Warn, 'every push-routed or seat-record agent was UNMEASURED on the last pass (no_declaring_seat 2, not_push_routed 1)');
     }
 
     public function test_every_agent_unreadable_on_push_time_names_the_migration_and_the_receiver_config(): void
@@ -195,7 +203,7 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'agents' => ['impl' => 'push_time_unreadable', 'pm' => 'no_declaring_seat'], 'failed_agents' => []]);
 
-        $this->assertOne(Severity::Warn, 'every push-routed agent was UNMEASURED on the last pass');
+        $this->assertOne(Severity::Warn, 'every push-routed or seat-record agent was UNMEASURED on the last pass');
         $this->assertSame([], array_filter($this->findings(), fn (Finding $f) => str_contains($f->message, 'reload PHP-FPM')));
     }
 
@@ -204,7 +212,7 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'agents' => ['quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
-        $this->assertOne(Severity::Warn, 'no declared agent sets `channel.route_intents: true`');
+        $this->assertOne(Severity::Warn, 'no declared agent declares `idle_nudge.seat_record` or sets `channel.route_intents: true`');
     }
 
     public function test_a_push_that_failed_this_pass_warns_and_is_not_also_reported_ok(): void
@@ -221,6 +229,73 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'agents' => ['impl' => 'no_declaring_seat', 'pm' => 'not_idle', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
-        $this->assertOne(Severity::Ok, 'last pass measured 1 of 2 push-routed agent(s) (no_declaring_seat 1, not_idle 1, not_push_routed 1)');
+        $this->assertOne(Severity::Ok, 'last pass measured 1 of 2 push-routed or seat-record agent(s) (no_declaring_seat 1, not_idle 1, not_push_routed 1)');
+    }
+
+    private function seatRecordOnly(): void
+    {
+        File::delete($this->dir.'/pm.yml');
+        $this->agentYaml('pm', "idle_nudge:\n  seat_record: /home/seat/.cache/coord/pm-lane-wake-offer.json\n");
+        $this->agentYaml('quiet', "channel:\n  url: http://127.0.0.1:8790/\n");
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.base_url' => null, 'bridge.idle_nudge.token_path' => null]);
+    }
+
+    public function test_the_mezzanine_keys_do_not_bind_on_an_install_where_no_agent_needs_mezzanine(): void
+    {
+        $this->seatRecordOnly();
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'agents' => ['pm' => 'idle_within_horizon', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+
+        $findings = $this->findings();
+        $this->assertSame([], array_filter($findings, fn (Finding $f): bool => $f->severity === Severity::Fail));
+        $this->assertOne(Severity::Ok, 'last pass measured 1 of 1 push-routed or seat-record agent(s) (idle_within_horizon 1, not_push_routed 1)');
+    }
+
+    public function test_the_mezzanine_keys_still_bind_while_any_agent_needs_mezzanine(): void
+    {
+        $this->seatRecordOnly();
+        $this->agentYaml('impl', "channel:\n  url: http://127.0.0.1:8789/\n  route_intents: true\n");
+
+        $this->assertOne(Severity::Fail, 'idle_nudge: enabled but MISCONFIGURED — BRIDGE_IDLE_NUDGE_BASE_URL');
+    }
+
+    /** @return array<string, array{string, string}> */
+    public static function seatRecordFaults(): array
+    {
+        return [
+            'absent' => ['seat_record_absent', "pm's seat record /home/seat/.cache/coord/pm-lane-wake-offer.json was ABSENT on the last pass"],
+            'not visible' => ['seat_record_not_visible', 'a directory above it is not traversable by the OS user the pass ran as'],
+            'unreadable' => ['seat_record_unreadable', 'was present but not read on the last pass'],
+            'malformed' => ['seat_record_malformed', 'is not a valid schema-v1 offer record'],
+            'unknown version' => ['seat_record_unknown_version', 'carries a schema version this build does not read'],
+            'stale' => ['offer_stale', 'has NOT CHANGED for a whole horizon since its notice was pushed'],
+        ];
+    }
+
+    #[DataProvider('seatRecordFaults')]
+    public function test_a_declared_seat_record_the_pass_could_not_act_on_is_named_per_agent(string $code, string $says): void
+    {
+        $this->seatRecordOnly();
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'agents' => ['pm' => $code, 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, $says);
+        $this->assertOne(Severity::Warn, 'This seat is not nudged.');
+    }
+
+    public function test_a_fleet_read_that_did_not_measure_is_named_beside_the_verdicts(): void
+    {
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => 'the fleet snapshot answered HTTP 401 (token_expired)', 'agents' => ['pm' => 'fleet_unmeasured'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, 'the last pass could not read the fleet snapshot — the fleet snapshot answered HTTP 401 (token_expired)');
+    }
+
+    public function test_agent_yamls_that_do_not_load_leave_the_source_question_unvalidated(): void
+    {
+        $this->agentYaml('broken', "idle_nudge:\n  seat_record: relative/offer.json\n");
+
+        $this->assertOne(Severity::Unvalidated, 'the agent YAMLs could not be loaded');
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => $f->severity === Severity::Fail));
     }
 }

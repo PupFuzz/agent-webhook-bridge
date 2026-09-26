@@ -103,6 +103,16 @@ subscriptions:
 #   # server_path: /home/you/agent-webhook-bridge-prod/examples/channel-servers
 
 # ----------------------------------------------------------------------------
+# idle_nudge (optional, DL-424): the seat's OWN wake-offer record, written by the
+# coord Stop hook at every turn end. Declared ⇒ the idle nudge judges this agent
+# from that file alone (no Mezzanine, no route_intents). `~` expands against the
+# BRIDGE's home — if the bridge runs as another OS user, write the seat's
+# absolute path and let the bridge's user traverse to and read it.
+# ----------------------------------------------------------------------------
+# idle_nudge:
+#   seat_record: ~/.cache/coord/your-agent-lane-wake-offer.json
+
+# ----------------------------------------------------------------------------
 # surface (optional): inbox/surfacing behaviour.
 # ----------------------------------------------------------------------------
 # surface:

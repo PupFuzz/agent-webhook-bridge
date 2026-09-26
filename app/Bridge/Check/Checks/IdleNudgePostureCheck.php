@@ -8,11 +8,13 @@ use App\Bridge\Check\Silence;
 use App\Bridge\IdleNudge\AgentVerdict;
 use App\Bridge\IdleNudge\IdleNudgeConfig;
 use App\Bridge\IdleNudge\IdleNudgePassRecord;
+use App\Bridge\IdleNudge\IdleNudgeSources;
 use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
 use App\Bridge\Scheduling\TickPosture;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Support\SubscriptionRegistry;
 use App\Models\ScheduledJob;
 use Illuminate\Support\Carbon;
 use Throwable;
@@ -33,6 +35,12 @@ use Throwable;
  *
  * ⚑ WHAT IT DELIBERATELY DOES NOT REPEAT. A failure streak on the row and an enabled instance on
  * an install with no adopted tick are `jobs.posture`'s to report.
+ *
+ * ⚑ THE AGENT YAMLS ARE READ HERE, not taken from the context: this slot runs before the
+ * per-agent loop publishes `CheckContext::$configs`. They decide one thing — whether any agent
+ * needs Mezzanine ({@see IdleNudgeSources}), which is what makes the Mezzanine keys and the
+ * token file binding. A seat record's own state is read off the last pass, never stat-ed here:
+ * this process may not be the OS user the tick runs as, and would answer for the wrong one.
  */
 final class IdleNudgePostureCheck implements Check
 {
@@ -51,17 +59,27 @@ final class IdleNudgePostureCheck implements Check
             return;
         }
 
-        if ($cfg->problem !== null) {
-            yield Finding::fail('idle_nudge: enabled but MISCONFIGURED — '.$cfg->problem.'. Every pass is unmeasured and nothing is pushed.');
+        try {
+            $sources = IdleNudgeSources::of((new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs());
+        } catch (Throwable $e) {
+            yield Finding::unvalidated('idle_nudge: the agent YAMLs could not be loaded ('.RedactedErrorText::of($e).'), so which agents it judges, and whether any of them needs Mezzanine, is unknown — every pass is unmeasured until they load.');
 
             return;
         }
 
-        $tokenPath = (string) $cfg->tokenPath;
-        if (! is_file($tokenPath)) {
-            yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is absent or unreachable — every pass is unmeasured.");
-        } elseif (SecretFile::isInsecure($tokenPath)) {
-            yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is group/world-readable — chmod 600; every pass refuses to read it.");
+        if ($sources->mezzanineNeeded()) {
+            if ($cfg->problem !== null) {
+                yield Finding::fail('idle_nudge: enabled but MISCONFIGURED — '.$cfg->problem.'. Every Mezzanine-sourced agent is unmeasured and none is nudged.');
+
+                return;
+            }
+
+            $tokenPath = (string) $cfg->tokenPath;
+            if (! is_file($tokenPath)) {
+                yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is absent or unreachable — every Mezzanine-sourced agent is unmeasured.");
+            } elseif (SecretFile::isInsecure($tokenPath)) {
+                yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is group/world-readable — chmod 600; every pass refuses to read it.");
+            }
         }
 
         try {
@@ -98,11 +116,11 @@ final class IdleNudgePostureCheck implements Check
                 .TickPosture::graceS($instance->interval_s).'s — the result below is old, and idle seats since then have not been looked at.');
         }
 
-        yield from $this->lastPass();
+        yield from $this->lastPass($sources);
     }
 
     /** @return iterable<Finding> */
-    private function lastPass(): iterable
+    private function lastPass(IdleNudgeSources $sources): iterable
     {
         try {
             $record = IdleNudgePassRecord::read();
@@ -132,12 +150,19 @@ final class IdleNudgePostureCheck implements Check
                 .' — not retried for that idle period. Check the seat\'s channel server.');
         }
 
+        if (is_string($record['fleet_unmeasured'] ?? null)) {
+            yield Finding::warn('idle_nudge: the last pass could not read the fleet snapshot — '.$record['fleet_unmeasured']
+                .'. No Mezzanine-sourced agent was judged, so the absence of their nudges says nothing about idle seats.');
+        }
+
+        yield from $this->seatRecordFaults($agents, $sources);
+
         $routed = array_filter($agents, fn (mixed $code): bool => $code !== 'not_push_routed');
         $measured = array_filter($routed, fn (mixed $code): bool => ! in_array($code, AgentVerdict::UNMEASURED, true));
         $tally = $this->tally($agents);
 
         if ($routed === []) {
-            yield Finding::warn('idle_nudge: no declared agent sets `channel.route_intents: true`, so no agent is measurable — the nudge only acts on intents that were pushed at the seat. ('.$tally.')');
+            yield Finding::warn('idle_nudge: no declared agent declares `idle_nudge.seat_record` or sets `channel.route_intents: true`, so no agent is measurable. ('.$tally.')');
 
             return;
         }
@@ -154,14 +179,39 @@ final class IdleNudgePostureCheck implements Check
             return;
         }
         if ($measured === []) {
-            yield Finding::warn('idle_nudge: every push-routed agent was UNMEASURED on the last pass ('.$tally
-                .'). `no_declaring_seat` on every agent is the expected reading until Mezzanine seats publish `protocol_agent_name`.');
+            yield Finding::warn('idle_nudge: every push-routed or seat-record agent was UNMEASURED on the last pass ('.$tally
+                .'). On a Mezzanine agent, `no_declaring_seat` on every agent is the expected reading until Mezzanine seats publish `protocol_agent_name`.');
 
             return;
         }
 
         if ($failed === []) {
-            yield Finding::ok('idle_nudge: last pass measured '.count($measured).' of '.count($routed).' push-routed agent(s) ('.$tally.')');
+            yield Finding::ok('idle_nudge: last pass measured '.count($measured).' of '.count($routed).' push-routed or seat-record agent(s) ('.$tally.')');
+        }
+    }
+
+    /**
+     * One line per seat-record agent whose declared record the last pass could not act on, or
+     * which has not moved since its notice (`offer_stale`) — each names the path the TICK read.
+     *
+     * @param  array<mixed>  $agents
+     * @return iterable<Finding>
+     */
+    private function seatRecordFaults(array $agents, IdleNudgeSources $sources): iterable
+    {
+        foreach ($agents as $agent => $code) {
+            if (! in_array($code, AgentVerdict::SEAT_RECORD_FAULTS, true)) {
+                continue;
+            }
+            $path = $sources->seatRecords[(string) $agent] ?? '(no longer declared)';
+            yield Finding::warn("idle_nudge: {$agent}'s seat record {$path} ".match ($code) {
+                'seat_record_absent' => 'was ABSENT on the last pass. The seat writes it at every turn end only while its `lanes.wake.enabled` is exactly `true`; `~` in the YAML resolves against the BRIDGE\'s home, so a bridge running as another OS user needs the seat\'s absolute path.',
+                'seat_record_not_visible' => 'could not be looked for on the last pass: a directory above it is not traversable by the OS user the pass ran as. Give that user +x on each directory down to the file (and read on the file).',
+                'seat_record_unreadable' => 'was present but not read on the last pass: not readable by the pass\'s OS user, a symbolic link (refused), or past the size bound.',
+                'seat_record_malformed' => 'is not a valid schema-v1 offer record (not a JSON object, or a member outside its contract).',
+                'seat_record_unknown_version' => 'carries a schema version this build does not read (only `v: 1`) — upgrade the bridge or pin the seat\'s writer.',
+                default => 'has NOT CHANGED for a whole horizon since its notice was pushed: the notice produced no turn end, or the seat stopped writing the record (its wake switched off, or the Stop hook no longer firing). No further notice is sent for it.',
+            }.' This seat is not nudged.');
         }
     }
 
