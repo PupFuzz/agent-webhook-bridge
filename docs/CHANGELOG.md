@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-09-26
+
 ### Added
 
 - **card#10242 / DL-419** — **a `protocol:invalid` label write the install DECIDED on and could not land is now REMEMBERED, and `php artisan bridge:github-owed` finishes it** (named `bridge:relabel` until card#10365 / DL-422, below, widened it to both GitHub writes before either shipped). ⛔ **The defect:** the realistic failure is the placed GitHub token without **Issues** or **Pull requests** write, so the first real call answers `403`. That was logged (`reason: add_refused, status: 403`) and then forgotten — and **both routes that look like a retry are closed**: a GitHub redelivery is recognised as the same delivery and a processed dispatch is not re-run, `bridge:replay` skips processed rows without `--force`, and the trigger is a comment being *created*, so no later event for that comment re-attempts it. So after the operator granted the permission **nothing re-applied the label**, the arbiter's sweep — which keys on the label — never saw that thread, and there was no surface to ask *which threads did we fail to label*: the outcome of the write lived only in a log line.
