@@ -154,7 +154,7 @@ class ClientCapabilitiesTest extends TestCase
     {
         return [
             'since newer than current' => [['tools' => ['my_cards' => ['arguments' => ['limit' => ['since' => '0.9.30']]]]], 'newer than the current client'],
-            'feature newer than current' => [['features' => ['self_update' => '0.9.28']], 'newer than the current client'],
+            'feature newer than current' => [['features' => ['not_yet_shipped' => '0.9.28']], 'newer than the current client'],
             'removed before added' => [['tools' => ['list_cards' => ['removed_in' => '0.5.0']]], 'no later than it is added'],
             'argument before its tool' => [['tools' => ['my_cards' => ['arguments' => ['limit' => ['since' => '0.4.0']]]]], 'before its tool'],
         ];
