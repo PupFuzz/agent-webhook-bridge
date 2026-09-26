@@ -248,10 +248,12 @@ return [
     | Idle-with-pending-work nudge (DL-380) — OFF by default, a periodic-job handler
     |--------------------------------------------------------------------------
     |
-    | The `idle_nudge` job handler reads Mezzanine's fleet snapshot and pushes ONE nudge
-    | at a seat that has sat idle past its horizon while intents pushed at it since it
-    | went idle remain unseen. Read-and-alert only. Inert until ENABLED here AND an
-    | `idle_nudge` instance is inserted (`bridge:jobs add`). docs/periodic-jobs.md.
+    | The `idle_nudge` job handler pushes ONE nudge at a seat that has sat idle past its
+    | horizon with work waiting — judged from the seat's own offer record where its YAML
+    | declares `idle_nudge.seat_record` (DL-424), otherwise from Mezzanine's fleet snapshot
+    | and the intents pushed at it since it went idle. Read-and-alert only. Inert until
+    | ENABLED here AND an `idle_nudge` instance is inserted (`bridge:jobs add`).
+    | docs/periodic-jobs.md.
     |
     | ⛔ The numbers are deliberately NOT cast: a value outside its bound is refused,
     | never clamped, and a cast would turn `ten` into 0 before anything could say so.

@@ -171,8 +171,11 @@ final class IdleNudgePostureCheck implements Check
         // not shipped yet": the receiver writes the stamp and the tick reads it, in separate
         // processes, so either the column is missing or the receiver does not see the nudge as
         // enabled (a stale cached config, or an env var only the tick's environment carries).
-        if (array_filter($routed, fn (mixed $code): bool => $code !== 'push_time_unreadable') === []) {
-            yield Finding::warn('idle_nudge: every push-routed agent read push_time_unreadable on the last pass ('.$tally
+        // Judged over the Mezzanine-sourced agents alone: a seat-record agent never reads a push
+        // time, so counting it would hide this cause on any mixed install.
+        $mezzanineRouted = array_diff_key($routed, $sources->seatRecords);
+        if ($mezzanineRouted !== [] && array_filter($mezzanineRouted, fn (mixed $code): bool => $code !== 'push_time_unreadable') === []) {
+            yield Finding::warn('idle_nudge: every push-routed Mezzanine-sourced agent read push_time_unreadable on the last pass ('.$tally
                 .'), so no pending work could be aged. Two causes: (a) `php artisan migrate` was not run, so `agent_dispatches.push_attempted_at` does not exist; '
                 .'(b) the webhook receiver\'s resolved config does not have the nudge enabled, so it writes no push time — rebuild the config cache (`php artisan config:cache`) and reload PHP-FPM. '
                 .'Deliveries made before either is fixed stay unreadable until the seat\'s idle period ends.');
@@ -225,7 +228,7 @@ final class IdleNudgePostureCheck implements Check
                 'seat_record_malformed' => 'is not a valid schema-v1 offer record (not a JSON object, or a member outside its contract).',
                 'seat_record_unknown_version' => 'carries a schema version this build does not read (only `v: 1`) — upgrade the bridge or pin the seat\'s writer.',
                 'seat_record_agent_mismatch' => "was written for another agent: its `agent` is not `{$agent}`. Point this YAML at {$agent}'s own record — no other seat's prompt is delivered here.",
-                default => 'has NOT CHANGED for a whole horizon since its notice was pushed: the notice produced no turn end, or the seat stopped writing the record (its wake switched off, or the Stop hook no longer firing). No further notice is sent for it.',
+                'offer_stale' => 'has NOT CHANGED for a whole horizon since its notice was pushed: the notice produced no turn end, or the seat stopped writing the record (its wake switched off, or the Stop hook no longer firing). No further notice is sent for it.',
             }.' This seat is not nudged.');
         }
     }

@@ -220,7 +220,7 @@ class UnvalidatedCallSiteTest extends TestCase
         // defect one level up. The MISCONFIGURED and OK arms are postures this process reads
         // straight out of its own config, so neither is here.
         'app/Bridge/Check/Checks/StandupPostureCheck.php' => 1,
-        // card#9422 / DL-380, card#10505 / DL-424 — FOUR sites, all limb (a), a measurement
+        // card#9422 / DL-380, card#10505 / DL-424 — all limb (a), a measurement
         // that did not happen:
         //   1. the `scheduled_jobs` table could not be READ, so whether anything runs the
         //      nudge is unknown — the JobsPostureCheck shape.

@@ -3,6 +3,7 @@
 namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\Checks\IdleNudgePostureCheck;
+use App\Bridge\IdleNudge\AgentVerdict;
 use App\Bridge\IdleNudge\IdleNudgePassRecord;
 use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobSpec;
@@ -190,12 +191,24 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->nudgeInstance(lastRunAt: Carbon::now());
         $this->record(['measured' => true, 'agents' => ['impl' => 'push_time_unreadable', 'pm' => 'push_time_unreadable', 'quiet' => 'not_push_routed'], 'failed_agents' => []]);
 
-        $this->assertOne(Severity::Warn, 'every push-routed agent read push_time_unreadable on the last pass (not_push_routed 1, push_time_unreadable 2)');
+        $this->assertOne(Severity::Warn, 'every push-routed Mezzanine-sourced agent read push_time_unreadable on the last pass (not_push_routed 1, push_time_unreadable 2)');
         $message = $this->findings()[0]->message;
         $this->assertStringContainsString('(a) `php artisan migrate` was not run', $message);
         $this->assertStringContainsString("(b) the webhook receiver's resolved config does not have the nudge enabled", $message);
         $this->assertStringContainsString('reload PHP-FPM', $message);
         $this->assertStringNotContainsString('no_declaring_seat', $message);
+    }
+
+    public function test_a_seat_record_agent_does_not_hide_the_push_time_cause_from_the_mezzanine_agents(): void
+    {
+        // A seat-record agent never reads push_time_unreadable; it must not dilute the predicate.
+        $this->agentYaml('seat', "idle_nudge:\n  seat_record: /home/seat/.cache/coord/seat-lane-wake-offer.json\n");
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null, 'seat_records' => ['seat' => '/home/seat/.cache/coord/seat-lane-wake-offer.json'],
+            'agents' => ['impl' => 'push_time_unreadable', 'pm' => 'push_time_unreadable', 'quiet' => 'not_push_routed', 'seat' => 'nudge'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, 'reload PHP-FPM');
+        $this->assertOne(Severity::Warn, 'read push_time_unreadable on the last pass (not_push_routed 1, nudge 1, push_time_unreadable 2)');
     }
 
     public function test_a_mix_of_unmeasured_reasons_keeps_the_generic_warning(): void
@@ -272,6 +285,16 @@ class IdleNudgePostureCheckTest extends TestCase
             'another agent\'s record' => ['seat_record_agent_mismatch', 'was written for another agent: its `agent` is not `pm`'],
             'stale' => ['offer_stale', 'has NOT CHANGED for a whole horizon since its notice was pushed'],
         ];
+    }
+
+    public function test_every_seat_record_fault_has_its_own_line(): void
+    {
+        $codes = array_column(self::seatRecordFaults(), 0);
+        $faults = AgentVerdict::SEAT_RECORD_FAULTS;
+        sort($codes);
+        sort($faults);
+
+        $this->assertSame($faults, $codes);
     }
 
     #[DataProvider('seatRecordFaults')]
