@@ -8,6 +8,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#10566** — **the reference channel server's MCP handshake now announces the version it actually runs, not `0.1.0`.** `examples/channel-servers/agent-webhook-bridge-channel.mjs` hard-coded `version: '0.1.0'` in its `initialize` `serverInfo` while `package.json` had moved on to `0.9.26`, so the server stated two versions at once: the literal to the MCP client, and the manifest version it already sends as `client_version` on every board-tools call (card#8974 / DL-364). The handshake now reads that **same once-read manifest value** — one source, the field the DL-038 bump guard maintains. `serverInfo.version` cannot be omitted the way `client_version` is, so a snapshot whose `package.json` is unreadable announces the explicit sentinel **`0.0.0-unreadable-manifest`** rather than a plausible number; `client_version` keeps its DL-364 fail-soft omission unchanged. New `tests/handshake-version.test.mjs` covers both.
+  - ⚠ **THE CHANNEL-SERVER SNAPSHOT MOVES, 0.9.26 → 0.9.27, so `bridge:check` WARNs for every seat still on 0.9.26** until it re-copies `examples/channel-servers/`, runs `npm ci` and restarts its session. It is a `warn` and **`bridge:check`'s exit code does not move**; a seat that does not re-deploy loses no function — the tool set, schemas, arguments and transport are byte-unchanged, and only the handshake's `serverInfo.version` string differs.
+  - **No migration, no config key, no `.env` change, no route change, no token-scope change, no new `bridge:check` leg**; `--format=json` `schema` stays **1**.
+
 ## [0.90.0] - 2026-09-26
 
 ### Added
