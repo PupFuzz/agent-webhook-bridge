@@ -169,4 +169,5 @@ An ergonomic snapshot of the **last 10 releases**, trimmed each release (doc-ret
 For the system overview, see [`CLAUDE_ARCHITECTURE.md`](CLAUDE_ARCHITECTURE.md). For why anything is the way it is, see [`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md).
 
 ## Agent Board Framework — solo orientation
+<!-- `CLAUDE_AGENTBOARD.md` is LOCAL-ONLY and untracked (`.gitignore`): the coord plugin's `coord:init-solo` places it in each agent machine's checkout and its orientation sync keeps it current. A fresh clone has no such file, so this import resolves to nothing there. -->
 @CLAUDE_AGENTBOARD.md
