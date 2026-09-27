@@ -97,7 +97,7 @@ final class BoardCreateCardTool implements Tool
      */
     private const TITLE_REFUSAL = 'board_create_card: `title` is required and must be a non-empty string';
 
-    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
+    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $title = $this->requireTitle($args);
         $description = $this->optionalDescription($args);
@@ -200,9 +200,6 @@ final class BoardCreateCardTool implements Tool
             + $this->placement($client, $cfg, $newId, $agentName, 'created');
     }
 
-    /** Every argument this tool accepts, in the order the refusals list them, with its schema type ({@see Tool::argumentTypes()}). */
-    private const ARGUMENT_TYPES = ['title' => 'string', 'description' => 'string', 'tags' => 'string[]', 'idempotency_key' => 'string'];
-
     public function name(): string
     {
         return 'board_create_card';
@@ -210,12 +207,7 @@ final class BoardCreateCardTool implements Tool
 
     public function acceptedArguments(): array
     {
-        return array_keys(self::ARGUMENT_TYPES);
-    }
-
-    public function argumentTypes(): array
-    {
-        return self::ARGUMENT_TYPES;
+        return ['title', 'description', 'tags', 'idempotency_key'];
     }
 
     public function refusedArgumentReason(string $key): ?string

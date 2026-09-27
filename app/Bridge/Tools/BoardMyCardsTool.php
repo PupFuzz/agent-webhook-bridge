@@ -169,9 +169,6 @@ final class BoardMyCardsTool implements Tool
     /** The tag read stopped at the client's page ceiling, so its rows are not the population: no count over them could be checked, and none was asked. */
     public const UNMEASURED_TAG_READ_INCOMPLETE = 'tag_read_incomplete';
 
-    /** Every argument this tool accepts, in the order the refusals list them, with its schema type ({@see Tool::argumentTypes()}). */
-    private const ARGUMENT_TYPES = ['include_description' => 'boolean', 'stage' => 'integer|string', 'limit' => 'integer', 'tag' => 'string', 'include_terminal' => 'boolean'];
-
     public function name(): string
     {
         return 'board_my_cards';
@@ -179,12 +176,7 @@ final class BoardMyCardsTool implements Tool
 
     public function acceptedArguments(): array
     {
-        return array_keys(self::ARGUMENT_TYPES);
-    }
-
-    public function argumentTypes(): array
-    {
-        return self::ARGUMENT_TYPES;
+        return ['include_description', 'stage', 'limit', 'tag', 'include_terminal'];
     }
 
     public function refusedArgumentReason(string $key): ?string
@@ -192,7 +184,7 @@ final class BoardMyCardsTool implements Tool
         return null;
     }
 
-    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
+    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $descriptionCap = $this->descriptionCap($args, $cfg);
         // Validated BEFORE the first read: it needs nothing from the board, and a
@@ -261,7 +253,7 @@ final class BoardMyCardsTool implements Tool
             implode('+', array_keys(array_filter(['own' => true, 'shared' => $sharedRead !== null, 'tag' => $tagRead !== null]))),
         );
 
-        [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($ownRead, $stageFilter), $limit, $stageFilter, $caller);
+        [$ownCards, $ownWindow] = $this->filteredWindow($this->onStage($ownRead, $stageFilter), $limit, $stageFilter);
         $result = [
             'board_id' => $observedBoard,
             'board_observed' => $boardObserved,
@@ -273,7 +265,7 @@ final class BoardMyCardsTool implements Tool
         ];
 
         if ($sharedRead !== null) {
-            [$sharedCards, $sharedWindow] = $this->filteredWindow($this->onStage($sharedRead, $stageFilter), $limit, $stageFilter, $caller);
+            [$sharedCards, $sharedWindow] = $this->filteredWindow($this->onStage($sharedRead, $stageFilter), $limit, $stageFilter);
             $result['shared_swimlane'] = [
                 'swimlane_id' => (int) $cfg->sharedSwimlaneId,
                 'cards_by_stage' => $this->groupByStage($sharedCards, $stageNames, $descriptionCap),
@@ -282,7 +274,7 @@ final class BoardMyCardsTool implements Tool
         }
 
         if ($tag !== null) {
-            $result['tag_cards'] = $this->tagBlock($client, $structure, $tagRead, $tag, $includeTerminal, $stageFilter, $limit, $descriptionCap, $boardId, $swimlaneId, $agentName, $caller);
+            $result['tag_cards'] = $this->tagBlock($client, $structure, $tagRead, $tag, $includeTerminal, $stageFilter, $limit, $descriptionCap, $boardId, $swimlaneId, $agentName);
         }
 
         if ($cfg->coordBoardId !== null && $cfg->addressTags !== []) {
@@ -290,7 +282,7 @@ final class BoardMyCardsTool implements Tool
             // already holds, so a future key added to the literal above would drop
             // the observed coord block with nothing red. Naming each key also puts
             // coordBlock()'s declared shape under phpstan.
-            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit, $caller);
+            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit);
             $result['coord_board_id'] = $coord['coord_board_id'];
             $result['coord_board_observed'] = $coord['coord_board_observed'];
             $result['configured_coord_board_id'] = $coord['configured_coord_board_id'];
@@ -474,11 +466,11 @@ final class BoardMyCardsTool implements Tool
      *
      * @return array{tag: string, include_terminal: bool, terminal_basis: string, excluded_terminal_stage_ids: list<int>, cards: list<array<string, mixed>>, cards_window: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string, total_is_lower_bound: bool}, other_swimlanes: ?int, other_swimlanes_unmeasured: ?string, no_swimlane: ?int, no_swimlane_unmeasured: ?string}
      */
-    private function tagBlock(KanbanClient $client, BoardStructure $structure, BoardRead $read, string $tag, bool $includeTerminal, ?int $stageFilter, int $limit, ?int $descriptionCap, int $boardId, int $swimlaneId, string $agentName, CallerClient $caller): array
+    private function tagBlock(KanbanClient $client, BoardStructure $structure, BoardRead $read, string $tag, bool $includeTerminal, ?int $stageFilter, int $limit, ?int $descriptionCap, int $boardId, int $swimlaneId, string $agentName): array
     {
         $excluded = $includeTerminal ? [] : $structure->terminalStageIds;
         $population = $this->onStage($this->offStages($read->cards, $excluded), $stageFilter);
-        [$cards, $window] = $this->filteredWindow($population, $limit, $stageFilter, $caller);
+        [$cards, $window] = $this->filteredWindow($population, $limit, $stageFilter);
         $window += ['total_is_lower_bound' => $read->truncated];
 
         // The same narrowing, spelled as kanban column ids for the two server counts. `[]` means
@@ -902,7 +894,7 @@ final class BoardMyCardsTool implements Tool
      * @param  list<array<string, mixed>>  $rows
      * @return array{0: list<array<string, mixed>>, 1: array{total: int, returned: int, limit: int, truncated: bool, stage_filter: ?int, remedy?: string}}
      */
-    private function filteredWindow(array $rows, int $limit, ?int $stageFilter, CallerClient $caller): array
+    private function filteredWindow(array $rows, int $limit, ?int $stageFilter): array
     {
         [$cards, $window] = $this->cardWindow($rows, $limit);
         $remedy = $stageFilter === null
@@ -915,7 +907,7 @@ final class BoardMyCardsTool implements Tool
             'limit' => $window['limit'],
             'truncated' => $window['truncated'],
             'stage_filter' => $stageFilter,
-            ...$this->remedy($window['truncated'], $remedy, $caller),
+            ...$this->remedy($window['truncated'], $remedy),
         ]];
     }
 
@@ -930,23 +922,17 @@ final class BoardMyCardsTool implements Tool
      * seat. A seat on a snapshot older than those arguments is still capped here — the cap is
      * enforced bridge-side for every caller — and was told `truncated: true` with nothing to do
      * about it. The bridge accepts the arguments from any caller; whether an old client sends a
-     * key its own schema lacks is NOT measured (DL-426 residual). A response body reaches every
-     * caller at every version.
-     *
-     * ⭐ card#10566: the sentence goes through {@see RemedyText::advise()}, so a caller whose
-     * client reports a version that does not declare `stage`/`limit` (or no usable version) is
-     * told that too, with each argument's type and that updating the client is the reliable
-     * fix — a caller told only "raise `limit`" by a schema-less client sends `"50"`. A client
-     * that declares both gets this sentence byte for byte.
+     * key its own schema lacks is NOT measured (DL-426). A response body reaches every caller at
+     * every version.
      *
      * `$how` is built from {@see NARROW_WITH_STAGE} / {@see RAISE_LIMIT}, and the `limit` refusal
      * reads the first of them, so the two surfaces cannot name different escapes.
      *
      * @return array{remedy?: string}
      */
-    private function remedy(bool $truncated, string $how, CallerClient $caller): array
+    private function remedy(bool $truncated, string $how): array
     {
-        return $truncated ? ['remedy' => RemedyText::advise($caller, $this, 'this list was cut to the newest `limit` of `total` cards; to see more, '.$how)] : [];
+        return $truncated ? ['remedy' => 'this list was cut to the newest `limit` of `total` cards; to see more, '.$how] : [];
     }
 
     /**
@@ -1160,7 +1146,7 @@ final class BoardMyCardsTool implements Tool
      *
      * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>, coord_cards_window: array{total: int, returned: int, limit: int, truncated: bool, remedy?: string}}
      */
-    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit, CallerClient $caller): array
+    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit): array
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
@@ -1194,7 +1180,7 @@ final class BoardMyCardsTool implements Tool
         [$coordCards, $coordWindow] = $this->cardWindow($rows, $limit);
         // ⛔ NOT the product-board remedy: `stage` never reaches this block (see above), so
         // naming it here would send a caller to an argument that cannot narrow these cards.
-        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours', $caller)];
+        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours')];
 
         return [
             'coord_board_id' => $observedBoard,

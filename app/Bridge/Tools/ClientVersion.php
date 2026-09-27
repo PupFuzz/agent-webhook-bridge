@@ -18,7 +18,7 @@ namespace App\Bridge\Tools;
  * otherwise unusable value becomes NULL — "not reported". Turning any of those into a
  * refusal would break every client older than {@see self::FIRST_REPORTING_SNAPSHOT} for a
  * field that is an audit observation, not a credential. Whether NULL, or a version, may
- * change the call's TEXT is {@see RemedyText}'s to say (card#10566 / DL-426) — not
+ * change a refusal's TEXT is {@see ClientUpdateClause}'s to say (card#10566 / DL-426) — not
  * restated here.
  *
  * ⛔ THE OUTPUT IS PRINTED VERBATIM INTO A `bridge:check` LINE, so the shape is a

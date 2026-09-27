@@ -99,6 +99,16 @@ final class ClientCapabilities
         return $this->spanOf($tool, $argument)['since'];
     }
 
+    /**
+     * Whether the table carries `$tool`'s `$argument` at all — the non-throwing question to ask
+     * before {@see since()} or {@see declares()} about a tool this bridge may not ship (an
+     * operator-registered one).
+     */
+    public function tables(string $tool, string $argument): bool
+    {
+        return isset($this->tools[$tool]['arguments'][$argument]);
+    }
+
     public function removedIn(string $tool, ?string $argument = null): ?string
     {
         return $this->spanOf($tool, $argument)['removed_in'];

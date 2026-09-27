@@ -10,6 +10,7 @@ use App\Bridge\Writeback\WritebackClientFactory;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
+use UnexpectedValueException;
 
 /**
  * The post-agent-resolution body of a board-tools call (Finding A, card 4952),
@@ -60,14 +61,10 @@ use Illuminate\Support\Facades\Log;
  *
  * ⭐ card#8974 THREADS A SECOND SUCH FACT — the CALLER's own snapshot version, which each
  * door reads out of its own request shape ({@see ClientVersion}). ⛔ It is an OBSERVATION and
- * never a precondition. Since card#10566 (DL-426, superseding this paragraph's earlier "no
- * branch here reads it") the version is READ — for TEXT ONLY, never to refuse: it becomes a
- * {@see CallerClient} the tool receives, and {@see RemedyText} uses it to tell a caller whose
- * client is too old to have declared an argument so, and that updating the client is the
- * reliable fix. No refusal
- * turns on it, no status changes with it, and a call that reports no version reaches exactly
- * the outcome a call reporting a current one does — only the sentence explaining a refusal or
- * a truncated list may differ.
+ * never a precondition: no refusal turns on it, and a call that reports no version reaches
+ * exactly the outcome and status of one that reports a current one. Since card#10566 (DL-426,
+ * superseding this paragraph's earlier "no branch here reads it") it is read on a REFUSAL, for
+ * text only: {@see clientUpdateClause()} may add one sentence to the refusal's message.
  */
 final class BoardToolDispatcher
 {
@@ -129,25 +126,23 @@ final class BoardToolDispatcher
             return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (writeback token)');
         }
 
-        $caller = CallerClient::reporting($clientVersion);
-        $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs, $caller);
+        $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs);
         if ($refusal !== null) {
+            $refusal .= $this->clientUpdateClause($tool, $rawArgs, $clientVersion);
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
             return DispatchOutcome::failure(422, $refusal);
         }
 
         try {
-            $result = $tool->call($rawArgs, $cfg, $client, $agentName, $caller);
+            $result = $tool->call($rawArgs, $cfg, $client, $agentName);
         } catch (ToolRefusalException $e) {
-            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $e->getMessage()]);
+            // An install-fault read refusal names an argument only to say which read failed;
+            // "update your channel client" is the wrong fix for it (DL-426).
+            $refusal = $e->installFault ? $e->getMessage() : $e->getMessage().$this->clientUpdateClause($tool, $rawArgs, $clientVersion);
+            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
-            // card#10566 / DL-426: every tool refusal, in ONE place, rather than at each of the
-            // throw sites that name an argument — a refusal added later cannot ship without it.
-            // r3-m3: EXCEPT an install-fault read refusal — the argument is named only to say
-            // which read failed, and "update your client" is the wrong fix for a board or
-            // install fault. Skipped by the exception's own marker, never by matching text.
-            return DispatchOutcome::failure(422, $e->installFault ? $e->getMessage() : RemedyText::advise($caller, $tool, $e->getMessage()));
+            return DispatchOutcome::failure(422, $refusal);
         } catch (RequestException $e) {
             // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
             // leak the upstream body.
@@ -185,26 +180,16 @@ final class BoardToolDispatcher
      * the 503 install fault first. Building the client sends no request, so the refusal still
      * precedes every board read and write.
      *
-     * ⭐ card#10566 — THE SAFETY NET. A call refused here may also carry ACCEPTED keys its client
-     * does not declare (an old client passing `limit` because a remedy told it to, beside a
-     * typo); the refusal ends with the gap clause, with type, for exactly those keys, so a
-     * caller with no schema learns the key it did get right is real. The accepted-set list is
-     * NOT fed to the clause: naming every argument a client lacks is the schema's job, and the
-     * clause is about what this call sent.
-     *
      * @param  array<array-key, mixed>  $args
      */
-    private function undeclaredArgumentsRefusal(Tool $tool, array $args, CallerClient $caller): ?string
+    private function undeclaredArgumentsRefusal(Tool $tool, array $args): ?string
     {
         $accepted = $tool->acceptedArguments();
         $reasons = [];
         $unknown = [];
-        $present = [];
         foreach (array_keys($args) as $key) {
             $key = (string) $key;
             if (in_array($key, $accepted, true)) {
-                $present[] = $key;
-
                 continue;
             }
             $reason = $tool->refusedArgumentReason($key);
@@ -227,7 +212,32 @@ final class BoardToolDispatcher
         $reasons = array_map(static fn (string $r, int $i): string => $i === 0 ? $r : ucfirst($r), $reasons, array_keys($reasons));
         $acceptedList = $accepted === [] ? 'no arguments' : implode(', ', array_map(static fn (string $k): string => "`{$k}`", $accepted));
 
-        return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written."
-            .RemedyText::gapClause($caller, $tool, $present);
+        return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written.";
+    }
+
+    /**
+     * {@see ClientUpdateClause} for the accepted keys this call sent, or ''. Called only on a
+     * refusal, so a call that is not refused never reads the capability table. An unreadable
+     * table is a broken deploy: it is logged, and the refusal goes out without the clause rather
+     * than as a failed call.
+     *
+     * @param  array<array-key, mixed>  $args
+     */
+    private function clientUpdateClause(Tool $tool, array $args, ?string $clientVersion): string
+    {
+        $sent = array_values(array_intersect(array_map(strval(...), array_keys($args)), $tool->acceptedArguments()));
+        if ($sent === []) {
+            return '';
+        }
+
+        try {
+            $caps = ClientCapabilities::bundled();
+        } catch (UnexpectedValueException $e) {
+            Log::warning('agent-tools: client capability table unreadable; refusal carries no client-update clause', ['tool' => $tool->name(), 'error' => $e->getMessage()]);
+
+            return '';
+        }
+
+        return ClientUpdateClause::for($caps, $clientVersion, $tool->name(), $sent);
     }
 }

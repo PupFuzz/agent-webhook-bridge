@@ -2046,7 +2046,7 @@ class AgentToolsCallTest extends TestCase
         Http::fake();
 
         // A client that declares `limit` and `stage`: an older one (or none) is told that as well,
-        // after this sentence — CapabilityAwareRemedyTest owns that half (card#10566).
+        // after this sentence — ClientUpdateClauseTest owns that half (card#10566).
         $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 0], 'client_version' => ClientCapabilities::bundled()->currentClientVersion])->assertStatus(422);
 
         $this->assertStringEndsWith('Raising it raises the response size in proportion; narrow with `stage` instead where you can.', (string) $res->json('error'));

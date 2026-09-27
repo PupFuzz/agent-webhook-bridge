@@ -83,9 +83,6 @@ final class BoardCommentCardTool implements Tool
      */
     private const EDIT_ARGS = ['comment_id', 'edit', 'update', 'replace', 'delete', 'remove'];
 
-    /** Every argument this tool accepts, in the order the refusals list them, with its schema type ({@see Tool::argumentTypes()}). */
-    private const ARGUMENT_TYPES = ['card_id' => 'integer', 'content' => 'string'];
-
     public function name(): string
     {
         return 'board_comment_card';
@@ -93,12 +90,7 @@ final class BoardCommentCardTool implements Tool
 
     public function acceptedArguments(): array
     {
-        return array_keys(self::ARGUMENT_TYPES);
-    }
-
-    public function argumentTypes(): array
-    {
-        return self::ARGUMENT_TYPES;
+        return ['card_id', 'content'];
     }
 
     public function refusedArgumentReason(string $key): ?string
@@ -114,7 +106,7 @@ final class BoardCommentCardTool implements Tool
         return null;
     }
 
-    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
+    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         // Arguments first, then the board — so a refused call reads nothing and writes nothing.
         $cardId = $this->requireCardId($args);

@@ -5,7 +5,6 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
-use App\Bridge\Tools\CallerClient;
 use App\Bridge\Tools\CallingSeat;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\Tool;
@@ -325,11 +324,6 @@ class BoardToolDispatcherTest extends TestCase
                 return ['wanted'];
             }
 
-            public function argumentTypes(): array
-            {
-                return ['wanted' => 'string'];
-            }
-
             public function refusedArgumentReason(string $key): ?string
             {
                 return match ($key) {
@@ -339,7 +333,7 @@ class BoardToolDispatcherTest extends TestCase
                 };
             }
 
-            public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
+            public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
             {
                 $this->calls++;
 

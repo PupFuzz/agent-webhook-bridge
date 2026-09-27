@@ -216,9 +216,6 @@ final class BoardCorrectCardTool implements Tool
         'assignee' => '`board_take_card` claims a card for you, and it resolves WHICH user you are from your bridge identity — no tool on this door takes a user id as an argument',
     ];
 
-    /** Every argument this tool accepts, in the order the refusals list them, with its schema type ({@see Tool::argumentTypes()}). */
-    private const ARGUMENT_TYPES = ['card_id' => 'integer', 'name' => 'string', 'description' => 'string', 'tags' => 'string[]'];
-
     public function name(): string
     {
         return 'board_correct_card';
@@ -226,12 +223,7 @@ final class BoardCorrectCardTool implements Tool
 
     public function acceptedArguments(): array
     {
-        return array_keys(self::ARGUMENT_TYPES);
-    }
-
-    public function argumentTypes(): array
-    {
-        return self::ARGUMENT_TYPES;
+        return ['card_id', 'name', 'description', 'tags'];
     }
 
     public function refusedArgumentReason(string $key): ?string
@@ -241,7 +233,7 @@ final class BoardCorrectCardTool implements Tool
         return $owner === null ? null : "`{$key}` is not correctable here — {$owner}.";
     }
 
-    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
+    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         // EVERY argument is validated before any request is made, so a refused
         // call reads nothing and writes nothing.
