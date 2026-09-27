@@ -119,6 +119,10 @@ final class PrCorrelationComment
         private readonly bool $prNumberUnconfirmed,
         /** the stamp withdrew this pull request's `pr_url` because it dropped the `pr_number` (DL-429) */
         private readonly bool $prUrlWithdrawn,
+        /** the card's kept `pr_url` is a repo-only `.../pull/0` placeholder: it names no pull request (DL-429) */
+        private readonly bool $prUrlPlaceholderKept,
+        /** the card's `pr_number` is not a pull-request number at all (DL-429, DL-309) */
+        private readonly bool $prNumberNamesNoPr,
     ) {}
 
     public static function isCause(string $reason): bool
@@ -170,7 +174,8 @@ final class PrCorrelationComment
      *
      * @param  array<string, mixed>  $payload
      * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped;
-     *                                                `pr_number_unconfirmed` / `pr_url_withdrawn` => why (DL-429)
+     *                                                `pr_number_unconfirmed` / `pr_url_withdrawn` /
+     *                                                `pr_url_placeholder_kept` / `pr_number_names_no_pr` => why (DL-429)
      */
     public static function fromPayload(array $payload, string $cause, WritebackMapping $mapping, array $refusalContext = []): ?self
     {
@@ -206,6 +211,8 @@ final class PrCorrelationComment
             self::dl($payload['stamp_dl'] ?? null),
             ($refusalContext['pr_number_unconfirmed'] ?? null) === true,
             ($refusalContext['pr_url_withdrawn'] ?? null) === true,
+            ($refusalContext['pr_url_placeholder_kept'] ?? null) === true,
+            ($refusalContext['pr_number_names_no_pr'] ?? null) === true,
         );
     }
 
@@ -384,17 +391,21 @@ final class PrCorrelationComment
         $prRefDropped = $this->droppedRefs === [] || array_intersect(['pr_number', 'pr_url'], $this->droppedRefs) !== [];
 
         // What the card answers DIFFERENTLY excludes a pr_number equal to this pull request's
-        // (unconfirmed, not different) and a pr_url the stamp withdrew with the dropped number
-        // (the card may carry none) — DL-429. Calling either "different" is false on a public page.
-        $differing = array_values(array_diff(
-            $this->droppedRefs,
-            array_merge($this->prNumberUnconfirmed ? ['pr_number'] : [], $this->prUrlWithdrawn ? ['pr_url'] : []),
-        ));
+        // (unconfirmed, not different) or naming no pull request, a kept pr_url that is a
+        // repo-only placeholder (it names no pull request), and a pr_url the stamp withdrew with
+        // the dropped number (the card may carry none) — DL-429. Calling any of them "different"
+        // is false on a public page, and on a close it would say the card tracks another PR.
+        $differing = array_values(array_diff($this->droppedRefs, array_merge(
+            $this->prNumberUnconfirmed || $this->prNumberNamesNoPr ? ['pr_number'] : [],
+            $this->prUrlWithdrawn || $this->prUrlPlaceholderKept ? ['pr_url'] : [],
+        )));
         $reasons = array_filter([
             $differing !== [] || $this->droppedRefs === []
                 ? "{$card} already carries a different ".($differing === [] ? $keys : self::keyList($differing)).', and the first value written wins'
                 : '',
+            $this->prUrlPlaceholderKept ? "{$card} carries a repo-only placeholder `pr_url`, which names a repository and no pull request, and the first value written wins" : '',
             $this->prNumberUnconfirmed ? "{$card} already carries this pull request's `pr_number`, but no `pr_url` confirming which repository that number belongs to" : '',
+            $this->prNumberNamesNoPr ? "{$card}'s `pr_number` holds a value that is not a pull-request number, and a stamp never overwrites a value a card holds" : '',
             $this->prUrlWithdrawn ? "a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request's" : '',
         ]);
         $why = implode('; ', $reasons).", so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";

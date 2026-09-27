@@ -2896,7 +2896,7 @@ pull request it already names', $notes[0]);
         $this->assertCount(1, $notes);
         $this->assertStringContainsString('carries no `pr_url` confirming WHICH repo', $notes[0]);
         $this->assertStringContainsString('the card keeps `148`; this pull request offered `148`', $notes[0]);
-        $this->assertStringContainsString('the card keeps `null`; this pull request offered `https://github.com/owner/repo/pull/148`', $notes[0]);
+        $this->assertStringContainsString('the card keeps none; this pull request offered `https://github.com/owner/repo/pull/148`', $notes[0]);
     }
 
     /**
@@ -2927,16 +2927,90 @@ pull request it already names', $notes[0]);
         $notes = $this->noteContents();
         $this->assertCount(1, $notes);
         $this->assertStringContainsString('the card keeps `148`; this pull request offered `7`', $notes[0]);
-        $this->assertStringContainsString('the card keeps `'.$keptUrl.'`; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
-        $this->assertStringContainsString('different correlation ref — and a card carries one of each, first write wins', $notes[0]);
+        $this->assertStringContainsString('the card keeps '.$keptUrl.'; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
+        // Neither card names a pull request (DL-429 Decision 1: a bare number names none, and
+        // a placeholder does not qualify it), so the default heading's "the pull request it
+        // already names" would be false here.
+        $this->assertStringContainsString("already carries a\ndifferent `pr_number` — a bare number no `pr_url` attributes to a repo, so it\nnames no pull request.", $notes[0]);
+        $this->assertStringContainsString('this card keeps the number it holds:', $notes[0]);
+        $this->assertStringNotContainsString('pull request it already names', $notes[0]);
+        $this->assertStringNotContainsString('`null`', $notes[0]);
     }
 
     /** @return array<string, array{array<string, mixed>, string}> */
     public static function mismatchedNumberCards(): array
     {
         return [
-            'no stored pr_url' => [['pr_number' => 148], 'null'],
-            'this repo\'s placeholder' => [['pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/0'], 'https://github.com/owner/repo/pull/0'],
+            'no stored pr_url' => [['pr_number' => 148], 'none'],
+            'this repo\'s placeholder' => [['pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/0'], '`https://github.com/owner/repo/pull/0`'],
+        ];
+    }
+
+    /**
+     * CONTROL for the test above: where the card's differing `pr_number` sits beside a
+     * `pr_url` naming a real pull request, the card DOES name one, and the default heading
+     * is true. (Use the bare-number heading for every mismatch ⇒ RED.)
+     */
+    public function test_a_mismatched_pr_number_beside_a_real_pr_url_keeps_the_default_heading(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/148',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 7, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/7']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("this card stays correlated to the\npull request it already names", $notes[0]);
+        $this->assertStringNotContainsString('names no pull request', $notes[0]);
+    }
+
+    /**
+     * DL-429 r3 — a stored `pr_number` that names no pull request at all (`0`, free text, a
+     * `#`-decorated number the bridge's admission refuses — DL-309) is not a number that
+     * DIFFERS: the mismatch arm is gated on the stored value naming a pull request. It still
+     * keeps this event's `pr_url` off the card, deliberately (DL-429 Decision 4): a stamp never
+     * overwrites the card's `pr_number`, and a `pr_url` written beside a value it does not name
+     * breaks the pair — kanban derives the card's `github_pr` ref from `pr_number` and its
+     * repo from `pr_url`, so `#148` would be indexed as THIS repo's #148. The note says what
+     * the card holds instead of calling it a different pull request.
+     * (Send such a value through the mismatch arm's heading ⇒ RED; gate the mismatch arm
+     * without withholding the url ⇒ a payload PATCH is sent ⇒ RED.)
+     */
+    #[DataProvider('storedNumbersNamingNoPullRequest')]
+    public function test_a_stored_pr_number_naming_no_pull_request_keeps_the_pr_url_off_and_says_so(mixed $stored): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => $stored]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 7, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/7']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("the card's `pr_number`\nholds a value that is not a pull-request number", $notes[0]);
+        $this->assertStringContainsString('- `pr_url` — the card keeps none; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
+        $this->assertStringNotContainsString('different', $notes[0]);
+        $this->assertStringNotContainsString('pull request it already names', $notes[0]);
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function storedNumbersNamingNoPullRequest(): array
+    {
+        return [
+            'zero' => ['0'],
+            'free text' => ['PR 12 of 34'],
+            'a #-decorated number' => ['#148'],
         ];
     }
 

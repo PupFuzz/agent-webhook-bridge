@@ -64,8 +64,10 @@ final class CardNote
     ) {}
 
     /**
-     * A correlation ref this event offered that the card already answers with a
-     * DIFFERENT value, so the stamp was not written.
+     * Correlation refs this event offered that the stamp did not write: the card already
+     * answers with a different value, or with a `pr_number` no `pr_url` confirms or that
+     * names no pull request, or a `pr_url` was withdrawn with its dropped `pr_number`
+     * (DL-429). The flags below pick the heading that is true of the card.
      *
      * $dropped is keyed by ref name (`pr_number` / `pr_url` / `dl_number`), each entry
      * `['card' => <what the card stores>, 'offered' => <what this event carried>]`.
@@ -99,6 +101,17 @@ final class CardNote
      * exclusive with $withheldPrNumber by construction: one fires only when the card had NO
      * `pr_number`, the other only when it already had one.
      *
+     * $keptNumberNamesNoRepo is true when the card's `pr_number` DIFFERS from this event's
+     * and no `pr_url` of the card's names a real pull request: a bare number names no pull
+     * request (DL-429 Decision 1), so the default heading's "the pull request it already
+     * names" would be false, for the reason given for $keptNamesNoPullRequest above.
+     *
+     * $storedNumberNamesNoPr is true when the card's `pr_number` is not a pull-request
+     * number at all (`0`, free text — DL-309): it does not DIFFER from this one, it names
+     * none, and the heading says so.
+     *
+     * A value the card does not hold renders as "none", never as `null`.
+     *
      * @param  array<string, array{card: mixed, offered: mixed}>  $dropped
      */
     public static function droppedCorrelationRef(
@@ -108,6 +121,8 @@ final class CardNote
         bool $keptNamesNoPullRequest = false,
         ?int $withheldPrNumber = null,
         bool $keptNumberUnverifiedRepo = false,
+        bool $keptNumberNamesNoRepo = false,
+        bool $storedNumberNamesNoPr = false,
     ): self {
         ksort($dropped);
 
@@ -119,8 +134,9 @@ final class CardNote
 
         $lines = '';
         foreach ($dropped as $key => $pair) {
-            $lines .= '- `'.$key.'` — the card keeps `'.self::render($pair['card'])
-                .'`; this pull request offered `'.self::render($pair['offered'])."`\n";
+            $kept = ($pair['card'] ?? '') === '' ? 'none' : '`'.self::render($pair['card']).'`';
+            $lines .= '- `'.$key.'` — the card keeps '.$kept
+                .'; this pull request offered `'.self::render($pair['offered'])."`\n";
         }
         if ($withheldPrNumber !== null) {
             $lines .= '- `pr_number` — not written either: a number is written only beside a `pr_url`'
@@ -155,6 +171,36 @@ final class CardNote
                 Nothing else about the card was changed. If this pull request really is the
                 one this card already tracks, stamp its `pr_url` by hand
                 (`kbcard patch --task {$cardId} --pr-url <url>`) so a future event can verify it.
+                BODY);
+        }
+
+        if ($storedNumberNamesNoPr) {
+            return new self($marker, <<<BODY
+                A pull request in `{$repo}` names this card, but the card's `pr_number`
+                holds a value that is not a pull-request number, and a stamp never
+                overwrites a value a card holds. A `pr_url` is written only beside a
+                `pr_number` it names, so the refs below were **not** written, and this
+                card is left as it was:
+
+                {$lines}
+                Nothing else about the card was changed. If this pull request is the one
+                this card tracks, correct both refs by hand
+                (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`).
+                BODY);
+        }
+
+        if ($keptNumberNamesNoRepo) {
+            return new self($marker, <<<BODY
+                A pull request in `{$repo}` names this card, but the card already carries a
+                different `pr_number` — a bare number no `pr_url` attributes to a repo, so it
+                names no pull request. A card carries one of each, first write wins, so the
+                refs below were **not** written, and this card keeps the number it holds:
+
+                {$lines}
+                Nothing else about the card was changed. If this pull request is the one
+                this card tracks, replace both refs by hand
+                (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`); if not,
+                stamp the `pr_url` of the pull request the card's number belongs to.
                 BODY);
         }
 

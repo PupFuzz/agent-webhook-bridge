@@ -406,6 +406,55 @@ class PrCorrelationCommentTest extends TestCase
     }
 
     /**
+     * DL-429 r3 — card#9850's legacy shape: another repo's `.../pull/0` placeholder beside a
+     * bare `pr_number` equal to this pull request's. The stamp drops both refs, but the kept
+     * `pr_url` names a repository and no pull request, and the number is unconfirmed, not
+     * different — so a close must not say the card "tracks a different pull request".
+     * (Count a kept placeholder as a `pr_url` that differs ⇒ the "Check card#5" headline ⇒ RED.)
+     */
+    public function test_a_kept_foreign_placeholder_is_not_called_a_different_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 719);
+        $card['payload']['pr_url'] = 'https://github.com/otherorg/elsewhere/pull/0';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
+        $this->assertStringContainsString('**Correlation incomplete: the `pr_number` and `pr_url` this pull request carries were not recorded on card#5.**', $body);
+        $this->assertStringContainsString('card#5 carries a repo-only placeholder `pr_url`, which names a repository and no pull request, and the first value written wins', $body);
+        $this->assertStringNotContainsString('different', $body);
+        $this->assertStringNotContainsString('supersedes', $body);
+        $this->assertStringNotContainsString('otherorg', $body);   // the placeholder's repo is not disclosed
+    }
+
+    /**
+     * DL-429 r3 — a stored `pr_number` that names no pull request (free text, DL-309) is not
+     * a different pull request either: the stamp keeps this pull request's `pr_url` off the
+     * card rather than write it beside a value it does not name, and the comment says why.
+     */
+    public function test_a_stored_pr_number_naming_no_pull_request_is_not_called_a_different_one(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5);
+        $card['payload'] = ['pr_number' => 'PR 12 of 34'];
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
+        $this->assertStringContainsString("card#5's `pr_number` holds a value that is not a pull-request number, and a stamp never overwrites a value a card holds; a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request's, so the `pr_number` and `pr_url` this pull request carries were not recorded on card#5.", $body);
+        $this->assertStringNotContainsString('different', $body);
+        $this->assertStringNotContainsString('PR 12', $body);   // the card's value is not disclosed
+        $this->assertStringNotContainsString('pr_url', (string) json_encode($this->cards->patchesTo(5)));
+    }
+
+    /**
      * DL-429 r2 — the title-only refusal of a card whose bare `pr_number` equals this pull
      * request's: refused (the number names no repo), but not "a different pull request".
      * `test_merged_with_an_uncorroborated_title_token_on_a_card_tracking_another_pr_posts_one_comment`
