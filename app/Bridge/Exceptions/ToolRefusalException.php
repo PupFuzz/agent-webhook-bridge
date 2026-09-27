@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Exceptions;
 
+use App\Bridge\Tools\BoardCallRefusal;
+use App\Bridge\Tools\BoardToolDispatcher;
 use RuntimeException;
 
 /**
@@ -12,5 +14,16 @@ use RuntimeException;
  * as a structured refusal (HTTP 422) naming the offending input; distinct from a
  * ConfigException (an install/provisioning fault → the tool is unavailable) and
  * from a transient kanban 5xx (which the caller may retry).
+ *
+ * `$installFault` marks a refusal built by {@see BoardCallRefusal::readRefusal()}: the board or
+ * the install refused a READ, which the caller's arguments cannot fix. {@see BoardToolDispatcher}
+ * adds no "update your channel client" sentence to one (card#10566 / DL-426), deciding by this
+ * marker rather than by the message text.
  */
-final class ToolRefusalException extends RuntimeException {}
+final class ToolRefusalException extends RuntimeException
+{
+    public function __construct(string $message, public readonly bool $installFault = false)
+    {
+        parent::__construct($message);
+    }
+}

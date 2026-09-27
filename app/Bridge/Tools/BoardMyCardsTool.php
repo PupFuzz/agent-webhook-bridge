@@ -919,11 +919,11 @@ final class BoardMyCardsTool implements Tool
      *
      * ⛔ THE TOOL SCHEMA IS NOT ENOUGH, AND THAT IS WHY THIS EXISTS: `stage` and `limit` are
      * advertised by the CHANNEL SERVER's tool description, a separately-versioned snapshot per
-     * seat whose version this bridge cannot see. A seat on a snapshot older than those arguments
-     * is still capped here — the cap is enforced bridge-side for every caller — and was told
-     * `truncated: true` with nothing to do about it, although the arguments work from it (the
-     * channel server forwards args verbatim). A response body reaches every caller at every
-     * version.
+     * seat. A seat on a snapshot older than those arguments is still capped here — the cap is
+     * enforced bridge-side for every caller — and was told `truncated: true` with nothing to do
+     * about it. The bridge accepts the arguments from any caller; whether an old client sends a
+     * key its own schema lacks is NOT measured (DL-426). A response body reaches every caller at
+     * every version.
      *
      * `$how` is built from {@see NARROW_WITH_STAGE} / {@see RAISE_LIMIT}, and the `limit` refusal
      * reads the first of them, so the two surfaces cannot name different escapes.

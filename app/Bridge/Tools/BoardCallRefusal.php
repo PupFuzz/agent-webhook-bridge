@@ -131,7 +131,7 @@ final class BoardCallRefusal
      */
     public static function readRefusal(string $tool, BoardReadRoute $route, int $status, string $what, string $consequence): ToolRefusalException
     {
-        return new ToolRefusalException("{$tool}: the bridge could not read {$what} (the board answered {$status}) — {$consequence}. This is an INSTALL fault, not something your arguments can fix: ".self::readCause($route, $status).'. Retrying will not change it; report it to your operator.');
+        return new ToolRefusalException("{$tool}: the bridge could not read {$what} (the board answered {$status}) — {$consequence}. This is an INSTALL fault, not something your arguments can fix: ".self::readCause($route, $status).'. Retrying will not change it; report it to your operator.', installFault: true);
     }
 
     /**
