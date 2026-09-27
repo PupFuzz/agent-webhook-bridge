@@ -2,8 +2,6 @@
 
 namespace App\Bridge\Writeback;
 
-use App\Bridge\Support\ExternalReferenceNormalizer;
-
 /**
  * A card-visible record of something the writeback deliberately did NOT write
  * (card#7064) — the body of a kanban card comment, plus the marker line that makes
@@ -51,12 +49,23 @@ final class CardNote
 
     /**
      * Why a `pr_number` EQUAL to this pull request's is still not taken as its own (DL-429,
-     * {@see CardTokenCorroboration::matchesNumberUnconfirmed}) — one wording for both notes
+     * {@see StoredPrRef::numberUnconfirmed}) — one wording for both notes
      * that report it, the stamp's dropped match and the corroboration refusal.
      */
     private const NUMBER_UNCONFIRMED = 'the card carries no `pr_url` confirming WHICH repo that number belongs to.'
         .' A number alone does not identify a pull request (two repos can share one, and a repo'
         .' moved to a new GitHub org restarts its numbers)';
+
+    /**
+     * What a bare `pr_number` that differs from this pull request's is (DL-429 Decision 1) — one
+     * wording for every surface that reports one: the corroboration refusal's note here and the
+     * pull-request comment ({@see PrCorrelationComment}). The stamp's drop heading carries the
+     * same words wrapped for its heredoc; `StoredPrRefTest` holds the three together.
+     */
+    public const BARE_NUMBER = 'a bare number no `pr_url` attributes to a repo, so it names no pull request';
+
+    /** The hand remedy for a card whose `pr_number` names no pull request this one could be. */
+    private const PATCH_BOTH_REFS = '`kbcard patch --task %d --pr <number> --pr-url <url>`';
 
     private function __construct(
         public readonly string $marker,
@@ -67,48 +76,38 @@ final class CardNote
      * Correlation refs this event offered that the stamp did not write: the card already
      * answers with a different value, or with a `pr_number` no `pr_url` confirms or that
      * names no pull request, or a `pr_url` was withdrawn with its dropped `pr_number`
-     * (DL-429). The flags below pick the heading that is true of the card.
+     * (DL-429). The heading is chosen from $stored — what the card's refs actually name —
+     * read against which refs were dropped, in one place below.
      *
      * $dropped is keyed by ref name (`pr_number` / `pr_url` / `dl_number`), each entry
      * `['card' => <what the card stores>, 'offered' => <what this event carried>]`.
      * Both are rendered, because "which PR won" is the first question a reader has and
      * neither value alone answers it.
      *
-     * $keptNamesNoPullRequest is true for exactly one shape: the card's kept `pr_url` is
-     * the `.../pull/0` source-only placeholder of ANOTHER repo — a repo, not a pull request.
-     * The default heading claims "this card stays correlated to the pull request it already
-     * names", which is false for that card: it names a REPO it was deliberately qualified
-     * to, and no pull request at all. A `pr_number` beside the placeholder does not change
-     * that — a bare number names no pull request (DL-429) — so that shape gets its own
-     * heading whatever else was dropped. Asserting a PR that does not exist inside the note
-     * that exists to stop this handler asserting PRs that do not exist would re-mint the
-     * defect the note is for.
+     * The headings, first match wins:
+     *  - a dropped `pr_url` the card keeps as ANOTHER repo's `.../pull/0` placeholder: the card
+     *    names a REPO it was deliberately qualified to, and no pull request. A `pr_number`
+     *    beside it does not change that — a bare number names no pull request (DL-429) — so
+     *    this heading wins whatever else was dropped. Asserting a PR that does not exist inside
+     *    the note that exists to stop this handler asserting PRs that do not exist would re-mint
+     *    the defect the note is for;
+     *  - a dropped `pr_number` EQUAL to this event's with no `pr_url` confirming its repo: the
+     *    refused ref is the SAME value, so "different correlation ref" would be false. A number
+     *    alone never identifies a pull request (two repos can share one, and a repo moved to a
+     *    new GitHub org restarts its numbers), so the match cannot be told apart from a
+     *    same-numbered pull request in another repo;
+     *  - a dropped `pr_number` that is not a pull-request number at all (`0`, free text —
+     *    DL-309): it does not DIFFER from this one, it names none;
+     *  - a dropped `pr_number` that differs and that no `pr_url` of the card's attributes to a
+     *    repo: it names no pull request (DL-429 Decision 1), so "the pull request it already
+     *    names" would be false;
+     *  - otherwise the default heading.
      *
      * $withheldPrNumber is this pull request's number when the stamp did NOT write it to a
      * card that had none (DL-429 r1): `pr_number` is written only beside a `pr_url` naming
      * this pull request, and the ref dropped above means the card will not carry one. It
      * gets its own line so the note says what the card is left without. It is not part of
      * the marker: the marker identifies the drop, and the withheld number follows from it.
-     *
-     * $keptNumberUnverifiedRepo is true for the shape $withheldPrNumber does not cover: the
-     * card ALREADY had a `pr_number`, numerically IDENTICAL to the value this event offered
-     * — the ref that was refused is the SAME value, not a different one, so the default
-     * heading's "different correlation ref" would be false rather than merely imprecise. It
-     * is refused anyway because a number alone never identifies a pull request (two repos
-     * can share one, and a repo moved to a new GitHub org restarts its numbers) and the card
-     * carries no `pr_url` confirming which repo its number belongs to, so an apparent match
-     * cannot be told apart from a same-numbered pull request in another repo. Mutually
-     * exclusive with $withheldPrNumber by construction: one fires only when the card had NO
-     * `pr_number`, the other only when it already had one.
-     *
-     * $keptNumberNamesNoRepo is true when the card's `pr_number` DIFFERS from this event's
-     * and no `pr_url` of the card's names a real pull request: a bare number names no pull
-     * request (DL-429 Decision 1), so the default heading's "the pull request it already
-     * names" would be false, for the reason given for $keptNamesNoPullRequest above.
-     *
-     * $storedNumberNamesNoPr is true when the card's `pr_number` is not a pull-request
-     * number at all (`0`, free text — DL-309): it does not DIFFER from this one, it names
-     * none, and the heading says so.
      *
      * A value the card does not hold renders as "none", never as `null`.
      *
@@ -118,11 +117,8 @@ final class CardNote
         int $cardId,
         string $repo,
         array $dropped,
-        bool $keptNamesNoPullRequest = false,
+        StoredPrRef $stored,
         ?int $withheldPrNumber = null,
-        bool $keptNumberUnverifiedRepo = false,
-        bool $keptNumberNamesNoRepo = false,
-        bool $storedNumberNamesNoPr = false,
     ): self {
         ksort($dropped);
 
@@ -143,7 +139,7 @@ final class CardNote
                 .' naming this pull request; this pull request offered `'.$withheldPrNumber."`\n";
         }
 
-        if ($keptNamesNoPullRequest) {
+        if (isset($dropped['pr_url']) && $stored->url === StoredPrUrlKind::PlaceholderOtherRepo) {
             return new self($marker, <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a
                 different correlation ref — a repo-only placeholder set before any pull
@@ -157,7 +153,9 @@ final class CardNote
                 BODY);
         }
 
-        if ($keptNumberUnverifiedRepo) {
+        $numberDropped = isset($dropped['pr_number']);
+
+        if ($numberDropped && $stored->number === StoredPrNumberKind::SameNumber) {
             $why = self::NUMBER_UNCONFIRMED;
 
             return new self($marker, <<<BODY
@@ -174,7 +172,7 @@ final class CardNote
                 BODY);
         }
 
-        if ($storedNumberNamesNoPr) {
+        if ($numberDropped && $stored->number === StoredPrNumberKind::NamesNoPr) {
             return new self($marker, <<<BODY
                 A pull request in `{$repo}` names this card, but the card's `pr_number`
                 holds a value that is not a pull-request number, and a stamp never
@@ -189,7 +187,7 @@ final class CardNote
                 BODY);
         }
 
-        if ($keptNumberNamesNoRepo) {
+        if ($numberDropped && $stored->numberIsBare()) {
             return new self($marker, <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a
                 different `pr_number` — a bare number no `pr_url` attributes to a repo, so it
@@ -222,21 +220,19 @@ final class CardNote
      * (DL-270). The refusal is the right outcome — the note exists so the card shows that an event
      * claiming to be about it was turned away, rather than that nothing happened.
      *
-     * What the card tracks is shown by its `pr_url` where that names a pull request — two
+     * What the card holds is said from $stored, in one place below. Only a `pr_url` naming a
+     * real pull request makes it "a different pull request", shown by that url — two
      * same-numbered PRs differ only by repo (DL-429), and "`148` is not `148`" would explain
-     * nothing — else by its `pr_number`. A bare `pr_number` EQUAL to this event's is not "a
-     * different pull request": the gate refused it because nothing confirms its repo
-     * ({@see CardTokenCorroboration::matchesNumberUnconfirmed}), and the note says that
-     * instead, in the stamp's own unconfirmed-number words.
+     * nothing. Otherwise the card holds only a `pr_number`, which names no pull request
+     * (DL-429 Decision 1), and the note says which kind: EQUAL to this event's with nothing
+     * confirming its repo (in the stamp's own unconfirmed-number words), not a pull-request
+     * number at all (DL-309), or a bare number. The gate refuses only a card that tracks
+     * something ({@see CardTokenCorroboration::refuses}), so the last arm is the bare number.
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
      */
-    public static function refusedUncorroboratedMove(int $cardId, string $repo, array $card, mixed $eventPr): self
+    public static function refusedUncorroboratedMove(int $cardId, string $repo, array $card, mixed $eventPr, StoredPrRef $stored): self
     {
-        $url = PrUrlRef::parse(CardTokenCorroboration::cardPrUrl($card), new ExternalReferenceNormalizer);
-        [$cardKey, $tracked] = $url !== null && $url->namesPr()
-            ? ['pr_url', $url->raw]
-            : ['pr_number', self::render(CardTokenCorroboration::cardPr($card))];
         // The event legitimately carries NO pull-request number — that is the fail-closed
         // arm of the gate (nothing corroborates the title, so the move is refused). Saying
         // `pr_number null` would read as a value; say what actually happened instead.
@@ -248,29 +244,37 @@ final class CardNote
 
         $marker = self::marker('move-refused-uncorroborated-card-token', ['card' => (string) $cardId, 'pr_number' => $event]);
 
-        if (CardTokenCorroboration::matchesNumberUnconfirmed($card, $eventPr)) {
-            $tracks = "{$which} with nothing in its head branch agreeing, and this card already tracks `pr_number` `{$tracked}` — the same number — but "
-                .self::NUMBER_UNCONFIRMED.', so the card cannot be shown to track THIS pull request.';
-
-            return new self($marker, <<<BODY
-                {$tracks} A title is prose — a descriptive
-                citation of somebody else's card is written exactly like a claim to own this one —
-                so the move was **refused** and nothing on this card was changed.
-
-                If that pull request really is work on this card, name the card in its head branch
-                (`card-{$cardId}-…`) so the token is corroborated, or stamp its `pr_url` by hand
-                (`kbcard patch --task {$cardId} --pr-url <url>`) so this card names it.
-                BODY);
-        }
+        $number = self::render(CardTokenCorroboration::cardPr($card));
+        $patchBoth = sprintf(self::PATCH_BOTH_REFS, $cardId);
+        [$tracks, $orFix] = match (true) {
+            $stored->namesPr() => [
+                "{$which} with nothing in its head branch agreeing, and this card already tracks a\n"
+                    .'different pull request (`pr_url` `'.self::render(CardTokenCorroboration::cardPrUrl($card)).'`).',
+                '',
+            ],
+            $stored->numberUnconfirmed() => [
+                "{$which} with nothing in its head branch agreeing, and this card already tracks `pr_number` `{$number}` — the same number — but "
+                    .self::NUMBER_UNCONFIRMED.', so the card cannot be shown to track THIS pull request.',
+                ", or stamp its `pr_url` by hand\n(`kbcard patch --task {$cardId} --pr-url <url>`) so this card names it",
+            ],
+            $stored->number === StoredPrNumberKind::NamesNoPr => [
+                "{$which} with nothing in its head branch agreeing, and this card's `pr_number` (`{$number}`) holds a value that is not a pull-request number, so the card cannot be shown to track THIS pull request.",
+                ", or correct both refs by hand\n({$patchBoth}) so this card names it",
+            ],
+            default => [
+                "{$which} with nothing in its head branch agreeing, and this card already carries `pr_number` `{$number}` — "
+                    .self::BARE_NUMBER.' — and the card cannot be shown to track THIS pull request.',
+                ", or correct both refs by hand\n({$patchBoth}) so this card names it",
+            ],
+        };
 
         return new self($marker, <<<BODY
-            {$which} with nothing in its head branch agreeing, and this card already tracks a
-            different pull request (`{$cardKey}` `{$tracked}`). A title is prose — a descriptive
+            {$tracks} A title is prose — a descriptive
             citation of somebody else's card is written exactly like a claim to own this one —
             so the move was **refused** and nothing on this card was changed.
 
             If that pull request really is work on this card, name the card in its head branch
-            (`card-{$cardId}-…`) so the token is corroborated.
+            (`card-{$cardId}-…`) so the token is corroborated{$orFix}.
             BODY);
     }
 

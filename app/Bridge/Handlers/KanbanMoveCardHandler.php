@@ -9,7 +9,6 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
-use App\Bridge\Writeback\BareRefNumber;
 use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
@@ -19,8 +18,9 @@ use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrUrlRef;
+use App\Bridge\Writeback\StoredPrNumberKind;
+use App\Bridge\Writeback\StoredPrRef;
 use App\Bridge\Writeback\TrackedCardRef;
-use App\Bridge\Writeback\TrackedRefKind;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -359,6 +359,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             return;
         }
 
+        // What the card's stored refs name relative to this event (DL-429 r4) — classified
+        // ONCE, here, for every surface below that reports on them: the refusal's log, note
+        // and PR comment, and the stamp's decision and drop note on the three stamp paths.
+        $storedRef = StoredPrRef::of($card, $repo, $payload['stamp_pr'] ?? null);
+
         // An UNCORROBORATED title-only `card#` (card#5287 / DL-270). The classifier
         // found the token in the PR TITLE and nothing agreeing with it in the head
         // branch — the only surface this install mints itself — so the PR's prose is
@@ -381,7 +386,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $repo, $payload['stamp_pr'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'move_card.card_token_uncorroborated',
-                'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause($card, $payload['stamp_pr'] ?? null),
+                'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause($storedRef),
                 [
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),
@@ -394,10 +399,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // visible to somebody reading the CARD, which is where the missing correlation
             // is looked for (card#7064). Recorded after the log, and never instead of it.
             $this->recordCardNote(
-                CardNote::refusedUncorroboratedMove($cardId, $repo, $card, $payload['stamp_pr'] ?? null),
+                CardNote::refusedUncorroboratedMove($cardId, $repo, $card, $payload['stamp_pr'] ?? null, $storedRef),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'card_token_uncorroborated', $mapping, ['pr_number_unconfirmed' => CardTokenCorroboration::matchesNumberUnconfirmed($card, $payload['stamp_pr'] ?? null)]);
+            $this->comments->report($payload, 'card_token_uncorroborated', $mapping, ['stored' => $storedRef]);
 
             return;
         }
@@ -405,7 +410,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
             // Self-heal: the move is a no-op (already here), but a card# fallback card
             // may still be missing its correlation refs — stamp add-if-missing (#3866).
-            $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
+            $this->stampCorrelationRefs($card, $storedRef, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;   // idempotent: already in the target stage
         }
@@ -470,7 +475,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // answers, so asking it about a move we are about to make anyway would alert on it.
         if (! $isUnpark && ! $isRevive
             && PinGuard::refuses($this->alerts, $card, 'kanban_move_card', "{$outcome} move", $cardId, $repo, $outcome, ['current_stage' => $current])) {
-            $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
+            $this->stampCorrelationRefs($card, $storedRef, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;
         }
@@ -589,7 +594,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // The card is now legitimately at its target stage (it passed every reject-guard
         // above) — stamp its correlation refs add-if-missing (#3866). Done AFTER the move
         // so a stale/redelivered/regressive event, which the guards no-op, never stamps.
-        $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
+        $this->stampCorrelationRefs($card, $storedRef, $mapping, $payload, $cardId, $client, $repo, $outcome);
         // `card_board` + `mapped_board`, the same pair the refusal arm emits and from the
         // same primitive (card#7212). The old single `board` key was the CONFIG's board —
         // the one we intended to write to — so a write that landed on an out-of-mapping
@@ -669,18 +674,15 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * without the pair that write's board would go unrecorded entirely.
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
+     * @param  StoredPrRef  $storedRef  what $card's stored refs name relative to this event's `stamp_pr`
      * @param  array<string, mixed>  $payload  the target payload (may carry stamp_dl/stamp_pr/stamp_pr_url)
      */
-    private function stampCorrelationRefs(array $card, WritebackMapping $mapping, array $payload, int $cardId, KanbanClient $client, string $repo, string $outcome): void
+    private function stampCorrelationRefs(array $card, StoredPrRef $storedRef, WritebackMapping $mapping, array $payload, int $cardId, KanbanClient $client, string $repo, string $outcome): void
     {
         $current = is_array($card['payload'] ?? null) ? $card['payload'] : [];
         $refs = [];
         /** @var array<string, array{card: mixed, offered: mixed}> $dropped */
         $dropped = [];
-        // Set true only inside the pr_url drop arm below, and only for a foreign-repo
-        // placeholder — the one case where the card's kept ref names no pull request.
-        $keptPrUrlIsPlaceholder = false;
-
         $stampDl = $payload['stamp_dl'] ?? null;
         if (is_string($stampDl) && $stampDl !== '') {
             // Canonical zero-padded form every kbcard-written card uses (DL-%04d), so the
@@ -712,10 +714,6 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 $writePrUrl = $stampPrUrl;
             } elseif (! self::samePrUrl($storedUrl, $stored, $offeredUrl, $stampPrUrl, $current)) {
                 $dropped['pr_url'] = ['card' => $stored, 'offered' => $stampPrUrl];
-                // A dropped pr_url that reaches here and is a placeholder is necessarily a
-                // FOREIGN-repo one (a same-repo placeholder took the $writePrUrl branch
-                // above), so this is the sole reachable "kept ref names no pull request" case.
-                $keptPrUrlIsPlaceholder = $storedUrl?->isSourceOnlyPlaceholder() === true;
             }
         }
 
@@ -755,34 +753,27 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // derives the card's `github_pr` ref from that key and its repo from `pr_url`, so a
         // url beside `#148` would index this repo's #148, and beside free text a card whose
         // url names this PR that no by-ref lookup for it finds.
+        // Which of those shapes the card is in is $storedRef's answer (DL-429 r4), the one
+        // classification every surface reporting this drop reads too.
         $withheldPr = null;
-        $numberMatchUnverified = false;
         $prUrlWithdrawn = false;
-        $storedNumberNamesNoPr = false;
-        $keptNumberNamesNoRepo = false;
         $stampPr = $payload['stamp_pr'] ?? null;
         if (is_numeric($stampPr)) {
-            $stored = $current['pr_number'] ?? null;
-            $storedEmpty = ($stored ?? '') === '';
-            if (! $storedEmpty && BareRefNumber::canonical(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $stored, $normalizer) === null) {
-                $dropped['pr_number'] = ['card' => $stored, 'offered' => (int) $stampPr];
-                $storedNumberNamesNoPr = true;
+            $dropNumber = match ($storedRef->number) {
+                StoredPrNumberKind::NamesNoPr, StoredPrNumberKind::DifferentNumber => true,
+                StoredPrNumberKind::SameNumber => $offeringUrl && $storedRef->numberUnconfirmed(),
+                StoredPrNumberKind::None => false,
+            };
+            if ($dropNumber) {
+                $dropped['pr_number'] = ['card' => $current['pr_number'] ?? null, 'offered' => (int) $stampPr];
                 $prUrlWithdrawn = self::withdrawPendingPrUrl($dropped, $writePrUrl, $current);
-            } elseif (! $storedEmpty && ! CardTokenCorroboration::tracksPr($stored, $stampPr)) {
-                $dropped['pr_number'] = ['card' => $stored, 'offered' => (int) $stampPr];
-                $keptNumberNamesNoRepo = TrackedCardRef::fromPayload($current, $normalizer)->kind !== TrackedRefKind::PrUrl;
-                $prUrlWithdrawn = self::withdrawPendingPrUrl($dropped, $writePrUrl, $current);
-            } elseif ($storedEmpty) {
+            } elseif ($storedRef->number === StoredPrNumberKind::None) {
                 $finalUrl = $writePrUrl ?? ($current['pr_url'] ?? null);
                 if (TrackedCardRef::fromPayload(['pr_url' => $finalUrl], $normalizer)->namesPr($repo, $stampPr, $normalizer)) {
                     $refs['pr_number'] = (int) $stampPr;
                 } else {
                     $withheldPr = (int) $stampPr;
                 }
-            } elseif ($offeringUrl && CardTokenCorroboration::matchesNumberUnconfirmed($card, $stampPr)) {
-                $dropped['pr_number'] = ['card' => $stored, 'offered' => (int) $stampPr];
-                $numberMatchUnverified = true;
-                $prUrlWithdrawn = self::withdrawPendingPrUrl($dropped, $writePrUrl, $current);
             }
         }
         if ($writePrUrl !== null) {
@@ -793,20 +784,19 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $this->alerts->warnAndNotify(
                 'move_card.correlation_ref_not_stamped',
                 'kanban_move_card: a correlation ref this event carries was NOT stamped — the card already answers with a different value, with a pr_number no pr_url confirms, or with a pr_number that names no pull request; a pr_url is withdrawn with its dropped pr_number (a card correlates ONE pull request; first write wins)',
-                ['card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped, 'withheld_pr_number' => $withheldPr, 'pr_number_unconfirmed' => $numberMatchUnverified, 'pr_url_withdrawn' => $prUrlWithdrawn, 'pr_number_names_no_pr' => $storedNumberNamesNoPr],
+                [
+                    'card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped, 'withheld_pr_number' => $withheldPr,
+                    'pr_number_unconfirmed' => isset($dropped['pr_number']) && $storedRef->number === StoredPrNumberKind::SameNumber,
+                    'pr_url_withdrawn' => $prUrlWithdrawn,
+                    'pr_number_names_no_pr' => isset($dropped['pr_number']) && $storedRef->number === StoredPrNumberKind::NamesNoPr,
+                ],
                 $repo, $outcome, $cardId, 'correlation_ref_not_stamped',
             );
             $this->recordCardNote(
-                CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptPrUrlIsPlaceholder, $withheldPr, $numberMatchUnverified, $keptNumberNamesNoRepo, $storedNumberNamesNoPr),
+                CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $storedRef, $withheldPr),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, [
-                'dropped' => array_keys($dropped),
-                'pr_number_unconfirmed' => $numberMatchUnverified,
-                'pr_url_withdrawn' => $prUrlWithdrawn,
-                'pr_url_placeholder_kept' => $keptPrUrlIsPlaceholder,
-                'pr_number_names_no_pr' => $storedNumberNamesNoPr,
-            ]);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, ['dropped' => array_keys($dropped), 'stored' => $storedRef]);
         }
 
         if ($refs === []) {

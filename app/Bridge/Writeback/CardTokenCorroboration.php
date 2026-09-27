@@ -71,34 +71,13 @@ final class CardTokenCorroboration
     }
 
     /**
-     * Does the card's stored `pr_number` EQUAL $eventPr with no `pr_url` of the card's own
-     * naming a real pull request to confirm which repo it belongs to (DL-429)? The one
-     * definition of the "equal but unconfirmed" number, for both readers: the move handler's
-     * stamp drops such a match rather than trusting it, and a refusal of such a card by
-     * {@see refuses} is reported as unconfirmed rather than as "a DIFFERENT PR" — the number
-     * is the same, only its repo is unknown.
-     *
-     * @param  array<string, mixed>  $card  the card as already read by getCard()
-     */
-    public static function matchesNumberUnconfirmed(array $card, mixed $eventPr): bool
-    {
-        $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
-        $refs = new ExternalReferenceNormalizer;
-
-        return self::tracksPr(self::cardPr($card), $eventPr)
-            && TrackedCardRef::fromPayload($payload, $refs)->kind !== TrackedRefKind::PrUrl;
-    }
-
-    /**
      * Why {@see refuses} refused this card, for the two refusal log lines: the card tracks a
-     * different pull request, or ({@see matchesNumberUnconfirmed}) the same number whose repo
-     * nothing on the card confirms.
-     *
-     * @param  array<string, mixed>  $card
+     * different pull request, or ({@see StoredPrRef::numberUnconfirmed}) the same number whose
+     * repo nothing on the card confirms.
      */
-    public static function refusalCause(array $card, mixed $eventPr): string
+    public static function refusalCause(StoredPrRef $stored): string
     {
-        return self::matchesNumberUnconfirmed($card, $eventPr)
+        return $stored->numberUnconfirmed()
             ? "the card's pr_number matches this PR's, but no pr_url confirms which repo it belongs to"
             : 'the card already tracks a DIFFERENT PR';
     }
@@ -133,10 +112,11 @@ final class CardTokenCorroboration
      * refuse a write, it ALLOWS one. A card storing `'1.5'` corroborated an event for PR 1
      * and took the title's word for it, which is the one thing this gate exists to stop.
      *
-     * Its consumer is the move handler's stamp, deciding whether an offered `pr_number`
-     * VALUE differs from the one the card stores (record the drop) or not (stay silent) — a
-     * question about one key's value, which is why the number alone answers it. The pr_url
-     * half of that stamp compares repos itself (`KanbanMoveCardHandler::samePrUrl`).
+     * Its consumers ask whether an offered `pr_number` VALUE differs from the one the card
+     * stores: {@see StoredPrRef}'s number axis, which the move handler's stamp decides its
+     * drop from, and `KanbanMoveCardHandler::samePrUrl` — a question about one key's value,
+     * which is why the number alone answers it. The pr_url half of that stamp compares repos
+     * itself (`samePrUrl`).
      */
     public static function tracksPr(mixed $cardPr, mixed $eventPr): bool
     {

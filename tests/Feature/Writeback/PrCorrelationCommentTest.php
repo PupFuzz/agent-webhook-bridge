@@ -340,8 +340,54 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertStringContainsString('cause=card_token_uncorroborated', $body);
         $this->assertStringContainsString('`card#5`', $body);
         $this->assertStringContainsString('title', $body);
-        $this->assertStringContainsString('card#5 already tracks a different pull request.', $body);
+        // DL-429 r4 — the card carries a BARE `pr_number` (900): a number no `pr_url` attributes
+        // to a repo names no pull request (Decision 1), so "already tracks a different pull
+        // request" was false here. The real-`pr_url` case below is the control.
+        $this->assertStringContainsString('card#5 is named only in the title, the head branch does not name it, and card#5 already carries a different `pr_number` — a bare number no `pr_url` attributes to a repo, so it names no pull request, and card#5 cannot be shown to track this pull request. A title can cite another card, so the move was refused.', $body);
+        $this->assertStringNotContainsString('different pull request', $body);
+        $this->assertStringContainsString("kbcard patch --task 5 --pr 702 --pr-url <this pull request's URL>\nkbcard move --task 5 --column <column>", $body);
         $this->assertStringNotContainsString('900', $body);   // the card's own PR is not disclosed
+    }
+
+    /**
+     * DL-429 r4 — CONTROL for the test above: a card whose `pr_url` names a real pull request
+     * that is not this one DOES track a different pull request, and the comment says so.
+     */
+    public function test_an_uncorroborated_title_token_on_a_card_whose_pr_url_names_another_pr_says_a_different_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 900);
+        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/900';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: a thing (closes card#5)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_token_uncorroborated', $body);
+        $this->assertStringContainsString('card#5 already tracks a different pull request.', $body);
+        $this->assertStringNotContainsString('900', $body);
+    }
+
+    /**
+     * DL-429 r4 — the title-only refusal of a card whose `pr_number` is not a pull-request
+     * number at all (DL-309): it names no pull request, different or otherwise.
+     */
+    public function test_an_uncorroborated_title_token_on_a_pr_number_naming_no_pull_request_says_so(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5);
+        $card['payload'] = ['pr_number' => 'PR 12 of 34'];
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'fix: a thing (closes card#5)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('cause=card_token_uncorroborated', $body);
+        $this->assertStringContainsString("card#5 is named only in the title, the head branch does not name it, and card#5's `pr_number` holds a value that is not a pull-request number, so card#5 cannot be shown to track this pull request. A title can cite another card, so the move was refused.", $body);
+        $this->assertStringNotContainsString('different', $body);
+        $this->assertStringNotContainsString('PR 12', $body);
     }
 
     public function test_merged_onto_a_card_that_tracks_another_pr_posts_one_comment_naming_the_unstamped_ref(): void
@@ -490,10 +536,76 @@ class PrCorrelationCommentTest extends TestCase
         $body = $this->onlyComment(719);
         $this->assertStringContainsString('outcome=closed_unmerged', $body);
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
-        $this->assertStringContainsString('Check card#5: it tracks a different pull request than the one just closed.', $body);
-        $this->assertStringContainsString('supersedes', $body);
+        // DL-429 r4 — the card's `pr_number` (739) is BARE: it names no pull request (Decision
+        // 1), so "it tracks a different pull request" was false. The warning itself stands —
+        // the number may well be the replacement's — and says what the card really carries.
+        $this->assertStringContainsString('Check card#5: it carries a different `pr_number` than the pull request just closed — a bare number no `pr_url` attributes to a repo, so it names no pull request.', $body);
+        $this->assertStringContainsString('If that number belongs to a pull request that supersedes this one, this close may have moved card#5 to workflow stage 49 even though its work continues there.', $body);
+        $this->assertStringNotContainsString('different pull request', $body);
         $this->assertStringContainsString('kbcard move --task 5', $body);
         $this->assertSame([['workflow_stage_id' => 49]], array_slice($this->cards->patchesTo(5), 0, 1));   // decline unchanged
+    }
+
+    /**
+     * DL-429 r4 — CONTROL for the test above: the card's `pr_url` names the replacement pull
+     * request, so the card really does track a different pull request, and the close says so.
+     */
+    public function test_closed_unmerged_on_a_card_whose_pr_url_names_the_replacement_says_a_different_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 739);
+        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/739';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('Check card#5: it tracks a different pull request than the one just closed.', $body);
+        $this->assertStringContainsString('If the pull request card#5 tracks supersedes this one, this close may have moved card#5 to workflow stage 49', $body);
+        $this->assertStringNotContainsString('739', $body);
+    }
+
+    /**
+     * DL-429 r4 — a close on a card whose `pr_url` is an operator's free text: the url names
+     * no pull request, so the close must not say the card tracks a different one.
+     */
+    public function test_closed_unmerged_on_a_card_whose_pr_url_is_free_text_does_not_claim_a_different_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5);
+        $card['payload'] = ['pr_url' => 'see the linked PR'];
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('Check card#5: its `pr_url` is not a pull-request URL, so it names no pull request, and this close may have moved it.', $body);
+        $this->assertStringContainsString("If card#5's work continues in a pull request that supersedes this one, this close may have moved card#5 to workflow stage 49 even though its work continues there.", $body);
+        $this->assertStringNotContainsString('different pull request', $body);
+        $this->assertStringNotContainsString('linked PR', $body);
+    }
+
+    /**
+     * DL-429 r4 — this repo's own `.../pull/0` placeholder beside a differing bare number: the
+     * stamp would have written this pull request's url over the placeholder, and withdrew it
+     * with the dropped number. The comment says the url was withdrawn — never that the card
+     * keeps a placeholder, which is the OTHER repo's shape.
+     */
+    public function test_a_withdrawn_url_over_this_repos_placeholder_is_reported_as_withdrawn(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 739);
+        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/0';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringContainsString('card#5 already carries a different `pr_number`, and the first value written wins; a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request\'s, so the `pr_number` and `pr_url` this pull request carries were not recorded on card#5.', $body);
+        $this->assertStringNotContainsString('placeholder', $body);
     }
 
     // --- success, redelivery, POST failure, scope ---------------------------------------------------

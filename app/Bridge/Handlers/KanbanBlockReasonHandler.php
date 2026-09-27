@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\StoredPrRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -216,7 +217,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $repo, $payload['pr_number'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'block_reason.card_token_uncorroborated',
-                'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause($card, $payload['pr_number'] ?? null),
+                'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause(StoredPrRef::of($card, $repo, $payload['pr_number'] ?? null)),
                 [
                     'card_id' => $cardId, 'repo' => $repo,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),

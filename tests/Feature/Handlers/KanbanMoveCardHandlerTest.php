@@ -2586,11 +2586,44 @@ class KanbanMoveCardHandlerTest extends TestCase
         $notes = $this->noteContents();
         $this->assertCount(1, $notes);
         $this->assertStringContainsString('[bridge:correlation-note move-refused-uncorroborated-card-token · card=5 · pr_number=148]', $notes[0]);
-        $this->assertStringContainsString('different pull request (`pr_number` `900`)', $notes[0]);
+        // DL-429 r4 — the card's `pr_number` (900) is BARE, so it names no pull request
+        // (Decision 1): "already tracks a different pull request" was false. The refusal
+        // itself is unchanged.
+        $this->assertStringContainsString('and this card already carries `pr_number` `900` — a bare number no `pr_url` attributes to a repo, so it names no pull request — and the card cannot be shown to track THIS pull request.', $notes[0]);
+        $this->assertStringContainsString('or correct both refs by hand', $notes[0]);
+        $this->assertStringContainsString('(`kbcard patch --task 5 --pr <number> --pr-url <url>`) so this card names it.', $notes[0]);
+        $this->assertStringNotContainsString('different pull request', $notes[0]);
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'and the card already tracks a DIFFERENT PR'))->once();
         // The pre-existing signal is ADDED TO, never replaced.
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'card_token_uncorroborated');
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'only in the PR title'))->once();
+    }
+
+    /**
+     * DL-429 r4 — the refusal of a card whose `pr_number` is not a pull-request number at all
+     * (DL-309): it names no pull request, so the note says what it holds rather than calling
+     * it a different one. `test_a_title_only_token_is_refused_when_the_card_tracks_the_same_number_in_another_repo`
+     * is the real-`pr_url` control.
+     */
+    public function test_an_uncorroborated_refusal_of_a_pr_number_naming_no_pull_request_says_so(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 'PR 12 of 34'],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("and this card's `pr_number` (`PR 12 of 34`) holds a value that is not a pull-request number, so the card cannot be shown to track THIS pull request.", $notes[0]);
+        $this->assertStringContainsString('(`kbcard patch --task 5 --pr <number> --pr-url <url>`) so this card names it.', $notes[0]);
+        $this->assertStringNotContainsString('different pull request', $notes[0]);
     }
 
     public function test_a_refused_card_note_alerts_with_its_own_reason_and_never_throws(): void
