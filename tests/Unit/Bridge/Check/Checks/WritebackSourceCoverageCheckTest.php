@@ -11,6 +11,7 @@ use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\KanbanSearchSim;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -160,10 +161,10 @@ class WritebackSourceCoverageCheckTest extends TestCase
      */
     public function test_a_truncated_board_read_reports_incomplete_and_withholds_the_all_clear(): void
     {
-        Http::fake(fn () => Http::response([
-            'data' => [$this->dlCard(1, ['pr_url' => 'https://github.com/owner/repo/pull/7'])],
-            'links' => ['next' => 'https://kanban.test/next'],
-        ]));
+        // A board one card past the page ceiling, so the walk stops there and says so.
+        $board = (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT)))
+            ->put($this->dlCard(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1, ['pr_url' => 'https://github.com/owner/repo/pull/7']));
+        Http::fake(['*/tasks/search.json*' => $board->responder()]);
 
         $findings = $this->findings();
 
