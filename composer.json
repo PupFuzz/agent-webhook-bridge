@@ -4,7 +4,7 @@
     "type": "project",
     "description": "Webhook receiver, classifier framework, and CLI for AI agents integrating with kanban-board (Laravel rewrite, v0.12+).",
     "keywords": ["kanban", "webhook", "bridge", "laravel"],
-    "license": "MIT",
+    "license": "PolyForm-Noncommercial-1.0.0",
     "require": {
         "php": "^8.5",
         "laravel/framework": "^13.8",

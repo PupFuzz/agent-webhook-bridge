@@ -10,6 +10,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\KanbanSearchSim;
 use Tests\Support\StraddlingRequestException;
 use Tests\TestCase;
 
@@ -285,7 +286,10 @@ class StandupServiceTest extends TestCase
         // A floor printed under the key `now_depth` is a wrong number, not a missing one —
         // and it is wrong in the reassuring direction.
         $page = $this->page(KanbanClient::SEARCH_LIMIT, 13, 'https://kanban.example.com/api/v3/tasks/search.json?page=2');
-        Http::fake(['kanban.example.com/*' => Http::response($page, 200)]);
+        Http::fake([
+            'kanban.example.com/*/tasks/search.json*' => (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->responder(),
+            'kanban.example.com/*' => Http::response($page, 200),
+        ]);
         $this->writeWriteback([
             'board_id' => 8,
             'stages' => ['merged' => 52],

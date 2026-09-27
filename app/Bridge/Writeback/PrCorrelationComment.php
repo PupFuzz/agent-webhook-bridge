@@ -4,6 +4,7 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\DlTokenGrammar;
+use LogicException;
 
 /**
  * The comment the bridge posts on a pull request whose merge or close could not be correlated to a
@@ -115,6 +116,11 @@ final class PrCorrelationComment
         private readonly ?string $dl,
         private readonly bool $titleClosesDl,
         private readonly ?string $stampDl,
+        /**
+         * what the card's stored refs name (DL-429 r4); null for a cause not decided against the
+         * card's refs, and required by the two that are ({@see cardRefs})
+         */
+        private readonly ?StoredPrRef $stored,
     ) {}
 
     public static function isCause(string $reason): bool
@@ -165,7 +171,8 @@ final class PrCorrelationComment
      * id this comment names are the ones the card's own board uses (card#9850 / DL-404).
      *
      * @param  array<string, mixed>  $payload
-     * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped
+     * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped;
+     *                                                `stored` => the card's {@see StoredPrRef} (DL-429)
      */
     public static function fromPayload(array $payload, string $cause, WritebackMapping $mapping, array $refusalContext = []): ?self
     {
@@ -199,6 +206,7 @@ final class PrCorrelationComment
             $dl,
             ($payload['title_closes_dl'] ?? null) === true,
             self::dl($payload['stamp_dl'] ?? null),
+            ($refusalContext['stored'] ?? null) instanceof StoredPrRef ? $refusalContext['stored'] : null,
         );
     }
 
@@ -305,7 +313,7 @@ final class PrCorrelationComment
         $board = "board {$this->boardId}";
         $card = $this->cardId === null ? 'the card' : "card#{$this->cardId}";
         $task = $this->cardId === null ? '<card-id>' : (string) $this->cardId;
-        $byHand = "kbcard patch --task <card-id> --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>";
+        $byHand = "kbcard patch --task <card-id> --pr {$this->prNumber} --pr-url <this pull request's URL>\nkbcard move --task <card-id> --column <column>";
         $notMoved = 'Board not updated: no card was moved for this pull request.';
 
         return match ($this->cause) {
@@ -314,7 +322,7 @@ final class PrCorrelationComment
                 "No card on {$board} carries `dl_number` {$this->dl}, and no card token parsed to fall back to."
                     .($this->titleClosesDl ? '' : " The title does not close {$this->dl}, so the remedy does not stamp it."),
                 $this->titleClosesDl
-                    ? "kbcard patch --task <card-id> --dl {$this->dl} --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>"
+                    ? "kbcard patch --task <card-id> --dl {$this->dl} --pr {$this->prNumber} --pr-url <this pull request's URL>\nkbcard move --task <card-id> --column <column>"
                     : $byHand,
             ],
             self::TOKEN_UNREADABLE => [
@@ -349,36 +357,165 @@ final class PrCorrelationComment
                 "{$card} is on a different board than {$board}, so it was not moved.",
                 $byHand,
             ],
-            'card_token_uncorroborated' => [
-                $notMoved,
-                "{$card} is named only in the title, the head branch does not name it, and {$card} already tracks a different pull request. A title can cite another card, so the move was refused.",
-                "# only if this pull request does finish {$card}:\nkbcard move --task {$task} --column <column>",
-            ],
-            default => $this->unstampedRef($card, $task),
+            'card_token_uncorroborated' => $this->uncorroborated($card, $task, $notMoved, $this->cardRefs()),
+            default => $this->unstampedRef($card, $task, $this->cardRefs()),
         };
     }
 
-    /** @return array{0: string, 1: string, 2: string} */
-    private function unstampedRef(string $card, string $task): array
+    /**
+     * The card's {@see StoredPrRef}, which the two causes decided against the card's refs are
+     * rendered from — required, not defaulted (DL-429 r5). Every production caller passes it
+     * (the move handler, beside the keys a stamp dropped), and the wording that stood in for its
+     * absence said "a different pull request" of a card nobody had read. A caller omitting it is
+     * a render failure, which the commenter logs and never owes.
+     */
+    private function cardRefs(): StoredPrRef
     {
-        $keys = $this->droppedRefs === [] ? 'correlation ref' : implode(' and ', array_map(static fn (string $k): string => "`{$k}`", $this->droppedRefs));
+        return $this->stored ?? throw new LogicException("the {$this->cause} comment is rendered from the card's StoredPrRef, and none was passed");
+    }
+
+    /** @param  list<string>  $keys */
+    private static function keyList(array $keys): string
+    {
+        return implode(' and ', array_map(static fn (string $k): string => "`{$k}`", $keys));
+    }
+
+    /**
+     * The title-only refusal: what the card holds, said from {@see StoredPrRef} in one place — the
+     * same four cases, in the same order, as the refusal's card note and log line. Only a `pr_url`
+     * naming another pull request is "a different pull request"; a `pr_number` alone names none
+     * (DL-429 Decision 1), so its three shapes say what it is instead. The gate never refuses a
+     * card whose `pr_url` names this pull request, nor one tracking nothing, so the last arm is
+     * the bare number.
+     *
+     * @return array{0: string, 1: string, 2: string}
+     */
+    private function uncorroborated(string $card, string $task, string $notMoved, StoredPrRef $stored): array
+    {
+        $titleOnly = "{$card} is named only in the title, the head branch does not name it, and ";
+        $refused = ' A title can cite another card, so the move was refused.';
+        $onlyIf = "# only if this pull request does finish {$card}:\n";
+        $move = "kbcard move --task {$task} --column <column>";
+        $patchBoth = "kbcard patch --task {$task} --pr {$this->prNumber} --pr-url <this pull request's URL>\n";
+
+        return match (true) {
+            $stored->url === StoredPrUrlKind::NamesOtherPr => [
+                $notMoved,
+                "{$titleOnly}{$card} already tracks a different pull request.{$refused}",
+                $onlyIf.$move,
+            ],
+            $stored->numberUnconfirmed() => [
+                $notMoved,
+                "{$titleOnly}{$card} carries this pull request's number but no `pr_url` confirming which repository that number belongs to, so it cannot be shown to track this pull request.{$refused}",
+                "{$onlyIf}kbcard patch --task {$task} --pr-url <this pull request's URL>\n{$move}",
+            ],
+            $stored->number === StoredPrNumberKind::NamesNoPr => [
+                $notMoved,
+                "{$titleOnly}{$card}'s `pr_number` holds a value that is not a pull-request number, so {$card} cannot be shown to track this pull request.{$refused}",
+                $onlyIf.$patchBoth.$move,
+            ],
+            default => [
+                $notMoved,
+                "{$titleOnly}{$card} already carries a different `pr_number` — ".CardNote::BARE_NUMBER.", and {$card} cannot be shown to track this pull request.{$refused}",
+                $onlyIf.$patchBoth.$move,
+            ],
+        };
+    }
+
+    /**
+     * A stamp's dropped refs, said from {@see StoredPrRef} and the dropped keys — both required,
+     * like {@see cardRefs} and for the same reason: the move handler reports this cause only for
+     * a stamp that dropped something, and a comment about "the refs" of no dropped key has
+     * nothing true to say.
+     *
+     * @return array{0: string, 1: string, 2: string}
+     */
+    private function unstampedRef(string $card, string $task, StoredPrRef $stored): array
+    {
+        if ($this->droppedRefs === []) {
+            throw new LogicException("the {$this->cause} comment is rendered from the ref keys the stamp dropped, and none was passed");
+        }
+        $keys = self::keyList($this->droppedRefs);
         $was = count($this->droppedRefs) > 1 ? 'were' : 'was';
         $notRecorded = "the {$keys} this pull request carries {$was} not recorded on {$card}";
-        $why = "{$card} already carries a different {$keys}, and the first value written wins, so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";
-        $prRefDropped = $this->droppedRefs === [] || array_intersect(['pr_number', 'pr_url'], $this->droppedRefs) !== [];
+        $prRefDropped = array_intersect(['pr_number', 'pr_url'], $this->droppedRefs) !== [];
 
-        if ($this->outcome === 'closed_unmerged' && $prRefDropped) {
+        // Why each dropped PR ref went, from what the card's refs name (DL-429). A dropped
+        // pr_number is EQUAL but unconfirmed, names no pull request, or differs; a dropped
+        // pr_url is kept as another repo's placeholder (it names no pull request), was
+        // WITHDRAWN with the dropped number (the card had none, or this repo's own
+        // placeholder, which the stamp would otherwise have written over), or differs.
+        $numberDropped = in_array('pr_number', $this->droppedRefs, true);
+        $urlDropped = in_array('pr_url', $this->droppedRefs, true);
+        $numberUnconfirmed = $numberDropped && $stored->number === StoredPrNumberKind::SameNumber;
+        $numberNamesNoPr = $numberDropped && $stored->number === StoredPrNumberKind::NamesNoPr;
+        $urlPlaceholderKept = $urlDropped && $stored->url === StoredPrUrlKind::PlaceholderOtherRepo;
+        $urlWithdrawn = $urlDropped && in_array($stored->url, [StoredPrUrlKind::None, StoredPrUrlKind::PlaceholderThisRepo], true);
+
+        // What the card answers DIFFERENTLY excludes all four: calling any of them "different"
+        // is false on a public page, and on a close it would say the card tracks another PR.
+        $differing = array_values(array_diff($this->droppedRefs, array_merge(
+            $numberUnconfirmed || $numberNamesNoPr ? ['pr_number'] : [],
+            $urlWithdrawn || $urlPlaceholderKept ? ['pr_url'] : [],
+        )));
+        $reasons = array_filter([
+            $differing !== [] ? "{$card} already carries a different ".self::keyList($differing).', and the first value written wins' : '',
+            $urlPlaceholderKept ? "{$card} carries a repo-only placeholder `pr_url`, which names a repository and no pull request, and the first value written wins" : '',
+            $numberUnconfirmed ? "{$card} already carries this pull request's `pr_number`, but no `pr_url` confirming which repository that number belongs to" : '',
+            $numberNamesNoPr ? "{$card}'s `pr_number` holds a value that is not a pull-request number, and a stamp never overwrites a value a card holds" : '',
+            $urlWithdrawn ? "a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request's" : '',
+        ]);
+        $why = implode('; ', $reasons).", so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";
+        $prRefDiffers = array_intersect(['pr_number', 'pr_url'], $differing) !== [];
+
+        if ($this->outcome === 'closed_unmerged' && $prRefDiffers) {
             $stage = $this->stageId === null ? 'its `closed_unmerged` stage' : "workflow stage {$this->stageId}";
+            // Only a `pr_url` naming ANOTHER pull request makes the card track "a different
+            // pull request"; one naming THIS pull request beside another number, a differing
+            // bare number, or a url that is free text does not (DL-429 Decision 1, r5) — yet the
+            // number or the work may still be the replacement's, so the close still warns, in
+            // words that are true of the card.
+            [$headline, $ifSuperseded] = match (true) {
+                // DL-429 r8, repo-gated by r9 — a `pr_number` that happens to equal this
+                // event's, beside a `pr_url` naming ANOTHER pull request of THIS EVENT'S OWN
+                // repo, is the card's OWN refs disagreeing with each other, mirrored from
+                // CardNote::droppedCorrelationRef's dedicated heading — the generic arm below
+                // never claims THIS is unreachable, but it also does not surface the collision,
+                // which is worth a reader's own look. Reads the SAME `StoredPrRef` predicate as
+                // the card note, so the two tables cannot diverge: a `pr_url` naming a
+                // same-numbered pull request of a DIFFERENT repo (a repo that moved org) is not
+                // this — the card's two refs agree, and the generic arm below is true of it.
+                $stored->otherPrSameRepoWithMatchingNumber() => [
+                    "Check {$card}: its `pr_number` matches this pull request's number, but its `pr_url` already names a different pull request.",
+                    "If the pull request {$card} tracks supersedes this one",
+                ],
+                $stored->url === StoredPrUrlKind::NamesOtherPr => [
+                    "Check {$card}: it tracks a different pull request than the one just closed.",
+                    "If the pull request {$card} tracks supersedes this one",
+                ],
+                $stored->url === StoredPrUrlKind::NamesThisPr => [
+                    "Check {$card}: its `pr_url` names this pull request, but its `pr_number` is a different number.",
+                    'If that number belongs to a pull request that supersedes this one',
+                ],
+                in_array('pr_number', $differing, true) => [
+                    "Check {$card}: it carries a different `pr_number` than the pull request just closed — ".CardNote::BARE_NUMBER.'.',
+                    'If that number belongs to a pull request that supersedes this one',
+                ],
+                default => [
+                    "Check {$card}: its `pr_url` is not a pull-request URL, so it names no pull request, and this close may have moved it.",
+                    "If {$card}'s work continues in a pull request that supersedes this one",
+                ],
+            };
 
             return [
-                "Check {$card}: it tracks a different pull request than the one just closed.",
-                $why." If the pull request {$card} tracks supersedes this one, this close may have moved {$card} to {$stage} even though its work continues there.",
+                $headline,
+                $why." {$ifSuperseded}, this close may have moved {$card} to {$stage} even though its work continues there.",
                 "kbcard show --task {$task}\n# if this close moved it, put it back:\nkbcard move --task {$task} --column <the column it was in>",
             ];
         }
 
         $flags = array_filter([
-            $prRefDropped ? "--pr {$this->prNumber}" : '',
+            $prRefDropped ? "--pr {$this->prNumber} --pr-url <this pull request's URL>" : '',
             in_array('dl_number', $this->droppedRefs, true) && $this->stampDl !== null ? '--dl '.$this->stampDl : '',
         ]);
 

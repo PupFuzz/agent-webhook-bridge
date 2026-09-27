@@ -28,7 +28,7 @@ class CardTokenCorroborationTest extends TestCase
         // "this card already tracks THIS PR" and let the title-only token write.
         $card = ['payload' => ['pr_number' => '1.5']];
 
-        $this->assertTrue(CardTokenCorroboration::refuses(true, $card, 1));
+        $this->assertTrue(CardTokenCorroboration::refuses(true, $card, 'owner/repo', 1));
     }
 
     public function test_the_legitimate_spellings_of_one_pull_request_still_corroborate(): void
@@ -41,7 +41,49 @@ class CardTokenCorroborationTest extends TestCase
         $this->assertTrue(CardTokenCorroboration::tracksPr('0148', 148));
         $this->assertTrue(CardTokenCorroboration::tracksPr(148.0, 148));
 
-        $this->assertFalse(CardTokenCorroboration::refuses(true, ['payload' => ['pr_number' => '0148']], 148));
+        $this->assertFalse(CardTokenCorroboration::refuses(
+            true,
+            ['payload' => ['pr_number' => '0148', 'pr_url' => 'https://github.com/owner/repo/pull/148']],
+            'owner/repo',
+            148,
+        ));
+    }
+
+    /**
+     * DL-429 — "the same PR" is (repo, number). After an org move the new repo's #148 and the
+     * old repo's #148 are two pull requests, and a number-only gate let a title citation of
+     * the old repo's card through. (Compare pr_number alone ⇒ the first assertion goes RED.)
+     */
+    public function test_the_same_number_in_another_repo_is_a_different_pull_request(): void
+    {
+        $card = ['payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/oldorg/repo/pull/148']];
+
+        $this->assertTrue(CardTokenCorroboration::refuses(true, $card, 'neworg/repo', 148));
+        $this->assertFalse(CardTokenCorroboration::refuses(true, $card, 'OldOrg/Repo', 148), 'control: its own repo, any case');
+    }
+
+    public function test_a_bare_pr_number_names_no_repo_so_it_corroborates_no_event(): void
+    {
+        // Fail-closed: a card that tracks a number with no repo can never show that its PR
+        // is this event's. (Let a bare number corroborate ⇒ RED.)
+        $this->assertTrue(CardTokenCorroboration::refuses(true, ['payload' => ['pr_number' => 148]], 'owner/repo', 148));
+        // The .../pull/0 placeholder names a repo but no pull request, so it qualifies nothing.
+        $this->assertTrue(CardTokenCorroboration::refuses(
+            true,
+            ['payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/0']],
+            'owner/repo',
+            148,
+        ));
+    }
+
+    public function test_a_card_tracking_no_pull_request_is_never_refused(): void
+    {
+        // The legitimate first PR on a card — the reason refuse-all was declined (DL-270). A
+        // bare placeholder names a repo and no pull request, so it tracks none either.
+        $this->assertFalse(CardTokenCorroboration::refuses(true, ['payload' => []], 'owner/repo', 148));
+        $this->assertFalse(CardTokenCorroboration::refuses(true, ['payload' => ['pr_url' => 'https://github.com/owner/repo/pull/0']], 'owner/repo', 148));
+        // …but a pr_url naming a real PR tracks it, even with no pr_number beside it.
+        $this->assertTrue(CardTokenCorroboration::refuses(true, ['payload' => ['pr_url' => 'https://github.com/oldorg/repo/pull/148']], 'owner/repo', 148));
     }
 
     public function test_fail_closed_on_a_value_that_names_no_pull_request_at_all(): void

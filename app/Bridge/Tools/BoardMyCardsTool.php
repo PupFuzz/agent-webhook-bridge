@@ -113,7 +113,7 @@ use Illuminate\Support\Facades\Log;
  * turned into a whole-board read. Without `tag` the call makes the same requests and returns the
  * same keys it did before.
  */
-final class BoardMyCardsTool implements Tool
+final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
 {
     /**
      * The number of cards each list in the response is cut to when the caller
@@ -168,6 +168,17 @@ final class BoardMyCardsTool implements Tool
 
     /** The tag read stopped at the client's page ceiling, so its rows are not the population: no count over them could be checked, and none was asked. */
     public const UNMEASURED_TAG_READ_INCOMPLETE = 'tag_read_incomplete';
+
+    /** The caller's reported channel-client version; null when none usable reached this instance. */
+    private ?string $clientVersion = null;
+
+    public function forCallerClientVersion(?string $clientVersion): static
+    {
+        $copy = clone $this;
+        $copy->clientVersion = $clientVersion;
+
+        return $copy;
+    }
 
     public function name(): string
     {
@@ -897,9 +908,9 @@ final class BoardMyCardsTool implements Tool
     private function filteredWindow(array $rows, int $limit, ?int $stageFilter): array
     {
         [$cards, $window] = $this->cardWindow($rows, $limit);
-        $remedy = $stageFilter === null
-            ? self::NARROW_WITH_STAGE.' (one column: an id or name from `board_stages`) or '.self::RAISE_LIMIT
-            : self::RAISE_LIMIT.' — this list is already narrowed to one column by `stage`';
+        [$remedy, $advised] = $stageFilter === null
+            ? [self::NARROW_WITH_STAGE.' (one column: an id or name from `board_stages`) or '.self::RAISE_LIMIT, ['stage', 'limit']]
+            : [self::RAISE_LIMIT.' — this list is already narrowed to one column by `stage`', ['limit']];
 
         return [$cards, [
             'total' => $window['total'],
@@ -907,7 +918,7 @@ final class BoardMyCardsTool implements Tool
             'limit' => $window['limit'],
             'truncated' => $window['truncated'],
             'stage_filter' => $stageFilter,
-            ...$this->remedy($window['truncated'], $remedy),
+            ...$this->remedy($window['truncated'], $remedy, $advised),
         ]];
     }
 
@@ -919,20 +930,31 @@ final class BoardMyCardsTool implements Tool
      *
      * ⛔ THE TOOL SCHEMA IS NOT ENOUGH, AND THAT IS WHY THIS EXISTS: `stage` and `limit` are
      * advertised by the CHANNEL SERVER's tool description, a separately-versioned snapshot per
-     * seat whose version this bridge cannot see. A seat on a snapshot older than those arguments
-     * is still capped here — the cap is enforced bridge-side for every caller — and was told
-     * `truncated: true` with nothing to do about it, although the arguments work from it (the
-     * channel server forwards args verbatim). A response body reaches every caller at every
-     * version.
+     * seat. A seat on a snapshot older than those arguments is still capped here — the cap is
+     * enforced bridge-side for every caller — and was told `truncated: true` with nothing to do
+     * about it. The bridge accepts the arguments from any caller; whether an old client sends a
+     * key its own schema lacks is NOT measured (DL-426). A response body reaches every caller at
+     * every version.
      *
      * `$how` is built from {@see NARROW_WITH_STAGE} / {@see RAISE_LIMIT}, and the `limit` refusal
      * reads the first of them, so the two surfaces cannot name different escapes.
      *
+     * ⭐ A CLIENT TOO OLD TO DECLARE WHAT `$how` ADVISES IS STILL ADVISED IT, AND TOLD WHICH VERSION
+     * DOES (operator ruling, card#10566 comment 7131): `$advised` is the arguments `$how` asks the
+     * caller to send, and {@see ClientUpdateClause} names each the caller's reported version does
+     * not declare. A client that declares them all gets `$how` unchanged.
+     *
+     * @param  list<string>  $advised
      * @return array{remedy?: string}
      */
-    private function remedy(bool $truncated, string $how): array
+    private function remedy(bool $truncated, string $how, array $advised): array
     {
-        return $truncated ? ['remedy' => 'this list was cut to the newest `limit` of `total` cards; to see more, '.$how] : [];
+        if (! $truncated) {
+            return [];
+        }
+        $clause = ClientUpdateClause::fromBundledTable($this->clientVersion, $this->name(), $advised);
+
+        return ['remedy' => 'this list was cut to the newest `limit` of `total` cards; to see more, '.$how.($clause === '' ? '' : '.'.$clause)];
     }
 
     /**
@@ -1180,7 +1202,7 @@ final class BoardMyCardsTool implements Tool
         [$coordCards, $coordWindow] = $this->cardWindow($rows, $limit);
         // ⛔ NOT the product-board remedy: `stage` never reaches this block (see above), so
         // naming it here would send a caller to an argument that cannot narrow these cards.
-        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours')];
+        $coordWindow = [...$coordWindow, ...$this->remedy($coordWindow['truncated'], self::RAISE_LIMIT.'. `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours', ['limit'])];
 
         return [
             'coord_board_id' => $observedBoard,

@@ -1,0 +1,60 @@
+name: Client pack builds
+
+# Does this pull request's tree still build a channel-server client pack? `bin/build-client-pack.py`
+# builds the pack a release publishes, but only from a release tag, and a tag exists only after the
+# release has merged, when a failure can no longer block anything. This asks the same question
+# before merge: `--verify-commit` runs every step, and every refusal that applies to an untagged
+# commit, against the commit under test, then discards the result. It writes nothing and uploads nothing, so this job
+# cannot become a way to publish a pack from an untagged tree.
+#
+# IT IS A BUILD-SUCCEEDS GATE, NOT A CONTENT-DIFF GATE. Each release builds its own pack from its own
+# tag, so there is no earlier pack to compare against, and a green run says only that the tree
+# builds.
+#
+# NO PATH FILTER, on purpose. The pack's inputs are spread across the tree: `examples/channel-servers/`,
+# `seat-tools.json`, every tool it declares under `bin/`, the root `VERSION` file, and this builder.
+# A filter listing them would be a second copy of the builder's input set, and a filter that missed
+# one would leave this gate absent on exactly the change that breaks it, with nothing reporting it.
+# The job costs one `npm ci`.
+#
+# The commit under test is the merge commit `actions/checkout` produces for a pull request, i.e.
+# what `dev` or `main` would hold after the merge.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    # `edited` fires on ANY title or body edit, and also on a retarget to another base, which
+    # changes the merge commit this job builds. The event does not say which, so every edit runs.
+    types: [opened, edited, reopened, synchronize]
+
+# A new push or a reopen cancels the run in flight. An `edited` run does not: it waits for the run
+# in flight to finish, so a body edit never turns a build into a cancelled check. (GitHub keeps one
+# pending run per group, so a later event still replaces a run that is only waiting.) Never skip `edited` with a job-level `if:` instead: a skipped job reports success to a
+# required check, which could let a red build through.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event.action != 'edited' }}
+
+permissions:
+  contents: read
+
+jobs:
+  client-pack-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Node 20
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Build the client pack from the commit under test (verify-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -VV
+          node --version
+          npm --version
+          python3 bin/build-client-pack.py --verify-commit HEAD

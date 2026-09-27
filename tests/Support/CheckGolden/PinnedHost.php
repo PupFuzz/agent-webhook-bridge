@@ -69,8 +69,6 @@ final class PinnedHost
     /** @var array<string, string|false> */
     private array $saved = [];
 
-    private bool $applied = false;
-
     public function __construct(private readonly string $root) {}
 
     /**
@@ -85,10 +83,7 @@ final class PinnedHost
      */
     public function apply(bool $fpmPresent = false, ?string $coordConfig = null): void
     {
-        foreach (self::PINNED as $var) {
-            $this->saved[$var] = getenv($var);
-        }
-        $this->applied = true;
+        $this->snapshotAmbient();
 
         $bin = $this->root.'/bin';
         File::ensureDirectoryExists($bin);
@@ -136,13 +131,28 @@ final class PinnedHost
 
     public function restore(): void
     {
-        if (! $this->applied) {
-            return;
-        }
         foreach ($this->saved as $var => $value) {
             $value === false ? putenv($var) : putenv("{$var}={$value}");
         }
-        $this->applied = false;
+        $this->saved = [];
+    }
+
+    /**
+     * Record the process's own values of the pinned variables, ONCE per host — before
+     * {@see perturbAmbient()} as well as before {@see apply()}. Snapshotting in `apply()` alone
+     * recorded the PERTURBED values as ambient whenever the immunity test perturbed first, so
+     * `restore()` left the rest of the process on `PATH=/usr/sbin:/usr/bin:/bin:/sbin` and a
+     * fake `GH_TOKEN`: every later test that shelled out to a binary outside those directories
+     * (the CI runner's `node`, for one) failed with exit 127. `PinnedHostTest` pins it.
+     */
+    private function snapshotAmbient(): void
+    {
+        if ($this->saved !== []) {
+            return;
+        }
+        foreach (self::PINNED as $var) {
+            $this->saved[$var] = getenv($var);
+        }
     }
 
     /**
@@ -152,6 +162,7 @@ final class PinnedHost
      */
     public function perturbAmbient(): void
     {
+        $this->snapshotAmbient();
         putenv('PATH=/usr/sbin:/usr/bin:/bin:/sbin');
         putenv('XDG_RUNTIME_DIR=/run/user/999999');
         putenv('COORD_CONFIG=/nonexistent/ambient-coordination.config.json');

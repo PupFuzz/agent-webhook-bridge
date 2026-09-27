@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Writeback\BoardReadRefused;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -30,6 +31,10 @@ use Illuminate\Support\Facades\Log;
  *    placement read-back, which reports no placement instead
  *    (DL-299). The body names no transport detail — the door's caller is a seat, and the
  *    message carries the board's URL — while the log line carries it redacted.
+ *  - {@see BoardReadRefused} (the board answered 2xx, and a paged search still could not be
+ *    reported complete — card#10653) → the SAME 502 body. The cause is the board's answer, not
+ *    the caller's input, and a retry is the right move for the causes it can have on a board
+ *    that is working; the log line names which of them fired.
  *  - {@see ConfigException} from {@see WritebackClientFactory::make} → 503 (install/provisioning fault).
  *
  * The one structured audit line per call moves here too, now carrying a
@@ -59,10 +64,13 @@ use Illuminate\Support\Facades\Log;
  * having the shared body infer a door from `$cfg->transport`.
  *
  * ⭐ card#8974 THREADS A SECOND SUCH FACT — the CALLER's own snapshot version, which each
- * door reads out of its own request shape ({@see ClientVersion}) and which this class only
- * carries to the ledger. ⛔ It is an OBSERVATION and never a precondition: no branch here
- * reads it, no refusal turns on it, and a call that reports no version dispatches exactly
- * as one that reports a current one.
+ * door reads out of its own request shape ({@see ClientVersion}). ⛔ It is an OBSERVATION and
+ * never a precondition: no refusal turns on it, and a call that reports no version reaches
+ * exactly the outcome and status of one that reports a current one. Since card#10566 (DL-426,
+ * superseding this paragraph's earlier "no branch here reads it") it is read for text only:
+ * {@see clientUpdateClause()} may add one sentence to a refusal's message, and a tool that
+ * implements {@see ReadsCallerClientVersion} is handed it so a success body's advice can carry
+ * the same sentence.
  */
 final class BoardToolDispatcher
 {
@@ -126,17 +134,21 @@ final class BoardToolDispatcher
 
         $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs);
         if ($refusal !== null) {
+            $refusal .= $this->clientUpdateClause($tool, $rawArgs, $clientVersion);
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
             return DispatchOutcome::failure(422, $refusal);
         }
 
         try {
-            $result = $tool->call($rawArgs, $cfg, $client, $agentName);
+            $result = ($tool instanceof ReadsCallerClientVersion ? $tool->forCallerClientVersion($clientVersion) : $tool)->call($rawArgs, $cfg, $client, $agentName);
         } catch (ToolRefusalException $e) {
-            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $e->getMessage()]);
+            // An install-fault read refusal names an argument only to say which read failed;
+            // "update your channel client" is the wrong fix for it (DL-426).
+            $refusal = $e->installFault ? $e->getMessage() : $e->getMessage().$this->clientUpdateClause($tool, $rawArgs, $clientVersion);
+            Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
-            return DispatchOutcome::failure(422, $e->getMessage());
+            return DispatchOutcome::failure(422, $refusal);
         } catch (RequestException $e) {
             // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
             // leak the upstream body.
@@ -147,6 +159,10 @@ final class BoardToolDispatcher
             // ⚠ For a write, the board may have acted before the answer was lost — the same
             // may-have-landed a 5xx carries, which docs/board-tools.md states per tool.
             Log::warning('agent-tools: the board did not answer', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
+
+            return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
+        } catch (BoardReadRefused $e) {
+            Log::warning('agent-tools: a board read could not be reported complete', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
 
             return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
         }
@@ -207,5 +223,18 @@ final class BoardToolDispatcher
         $acceptedList = $accepted === [] ? 'no arguments' : implode(', ', array_map(static fn (string $k): string => "`{$k}`", $accepted));
 
         return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written.";
+    }
+
+    /**
+     * {@see ClientUpdateClause} for the accepted keys this call sent, or ''. Called only on a
+     * refusal, so a call that is not refused never reads the capability table here.
+     *
+     * @param  array<array-key, mixed>  $args
+     */
+    private function clientUpdateClause(Tool $tool, array $args, ?string $clientVersion): string
+    {
+        $sent = array_values(array_intersect(array_map(strval(...), array_keys($args)), $tool->acceptedArguments()));
+
+        return ClientUpdateClause::fromBundledTable($clientVersion, $tool->name(), $sent);
     }
 }
