@@ -458,8 +458,8 @@ final class KanbanClient
      * (`orderByDesc('id')` before `paginate()`) and `QueryParser::applyStructuredFilter` (the
      * `^id(<=|>=|<|>|=)(\d+)$` arm → `where('id', …)`), and both CHECKED here where each is
      * load-bearing, never assumed: a page the walk continues FROM must be in strictly descending id
-     * order among its keyable rows (its last is the next cursor), and every keyable row of a keyed page
-     * must lie below the cursor it asked for. A page breaking either throws {@see BoardReadRefused}.
+     * order among its keyable rows, its LAST row must be keyable (it is the next cursor), and every
+     * keyable row of a keyed page must lie below the cursor it asked for. A page breaking either throws {@see BoardReadRefused}.
      * `docs/kanban-integration-contract.md` § 3 declares both as invariants the far end owns.
      *
      * ⛔ IT STOPS ONLY ON A SHORT OR EMPTY PAGE — never on `links.next`, `meta.last_page` or a count.
@@ -554,7 +554,11 @@ final class KanbanClient
             if ($batchSize < self::SEARCH_LIMIT) {
                 break;
             }
-            if ($ids === [] || ! self::strictlyDescending($ids)) {
+            $last = $batch[array_key_last($batch)];
+            if (! is_array($last) || ! is_int($last['id'] ?? null)) {
+                self::refuseRead($boardId, $label, "page {$page} is full but its last row carries no integer id, so it cannot key the next request — a cursor from an earlier row would deliver the rows after it again");
+            }
+            if (! self::strictlyDescending($ids)) {
                 self::refuseRead($boardId, $label, "page {$page} is full but not in strictly descending id order, so its last row cannot key the next request");
             }
             $cursor = $ids[count($ids) - 1];
@@ -571,6 +575,9 @@ final class KanbanClient
     /**
      * The integer ids of a page's rows, in the order kanban sent them. A row that is not an array, or
      * carries no integer `id`, cannot key the walk and is left out — it is counted, not positioned.
+     * It is counted once because it is delivered once: {@see keyedWalk} refuses a full page whose
+     * LAST row is such a row, since the cursor would then come from an earlier row and the next
+     * request would deliver it again. Anywhere else on the page it sits above the cursor.
      *
      * @return list<int>
      */
@@ -937,9 +944,10 @@ final class KanbanClient
     /**
      * Read a board's cards via the task-search endpoint (server-side board_id filter), paged to
      * completion by {@see pagedSearch}, which owns the stop condition and the ceiling flag (DL-028).
-     * (The default correlation path is `ref`, DL-031 — this scan read is the fallback.) Pure: no
-     * logging — {@see correlationCards} owns the signal on the correlation path, and
-     * {@see readBoardCards} passes the flag out for its callers to report.
+     * (The default correlation path is `ref`, DL-031 — this scan read is the fallback.) No
+     * degraded-read logging here — {@see correlationCards} owns that signal on the correlation path,
+     * and {@see readBoardCards} passes the flag out for its callers to report. {@see pagedSearch}
+     * itself still logs a re-walk and a refusal (card#10653).
      */
     private function readBoard(int $boardId): BoardRead
     {

@@ -267,9 +267,10 @@ class KanbanClientTest extends TestCase
     {
         // DL-028: a card past #200 must still correlate. Page 1 is a full 200
         // non-matching cards (incl. a junk row so the raw-batch-length break is
-        // exercised); the match sits on page 2.
+        // exercised); the match sits on page 2. The junk row is NOT last: a full page
+        // whose last row carries no id cannot key the next request (card#10653).
         $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1000, 1000 - KanbanClient::SEARCH_LIMIT + 2));
-        $page1[] = 'not-an-array-row';   // 200th raw row → still a full page
+        array_splice($page1, 100, 0, ['not-an-array-row']);   // a 200th raw row → still a full page
         $page2 = [['id' => 7, 'payload' => ['dl_number' => '9999']]];
         Http::fakeSequence('*/tasks/search.json*')->push(['data' => $page1])->push(['data' => $page2]);
         Log::spy();

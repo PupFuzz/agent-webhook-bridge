@@ -194,6 +194,22 @@ class KanbanPagedSearchWalkTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => ($c['catalog_id'] ?? null) === 'kanban_client.board_read_refused');
     }
 
+    /**
+     * A full page whose LAST row carries no integer id cannot key the next request: the cursor would
+     * come from an earlier row, and `id<` it would deliver the trailing rows again. Refused, like the
+     * order and window breaks. ⚑ RED before the guard: the walk answered complete, delivering row 251
+     * twice.
+     */
+    public function test_a_full_page_whose_last_row_cannot_key_the_walk_is_refused(): void
+    {
+        (new KanbanSearchSim(range(1, 450)))->put(['id' => '251', 'name' => 'id is a string'], 251)->install();
+
+        $this->expectException(BoardReadRefused::class);
+        $this->expectExceptionMessage('last row carries no integer id');
+
+        $this->client()->readBoardCards(8);
+    }
+
     /** A keyed page carrying a row at or above its cursor: the server did not apply `id<`. ⚑ RED on the `page=N` walk. */
     public function test_a_keyed_page_outside_its_id_window_is_refused(): void
     {
