@@ -63,7 +63,8 @@ use Illuminate\Support\Facades\Log;
  * never a precondition. Since card#10566 (DL-426, superseding this paragraph's earlier "no
  * branch here reads it") the version is READ — for TEXT ONLY, never to refuse: it becomes a
  * {@see CallerClient} the tool receives, and {@see RemedyText} uses it to tell a caller whose
- * client is too old to have declared an argument that the argument still works. No refusal
+ * client is too old to have declared an argument so, and that updating the client is the
+ * reliable fix. No refusal
  * turns on it, no status changes with it, and a call that reports no version reaches exactly
  * the outcome a call reporting a current one does — only the sentence explaining a refusal or
  * a truncated list may differ.

@@ -99,16 +99,6 @@ final class ClientCapabilities
         return $this->spanOf($tool, $argument)['since'];
     }
 
-    /**
-     * Whether the table records `$tool`'s `$argument` at all. Every SHIPPED board tool's arguments
-     * are tabled (`ClientCapabilityTableTest`); an operator-registered tool's are not, and no
-     * client version can be said to lack them.
-     */
-    public function knows(string $tool, string $argument): bool
-    {
-        return isset($this->tools[$tool]['arguments'][$argument]);
-    }
-
     public function removedIn(string $tool, ?string $argument = null): ?string
     {
         return $this->spanOf($tool, $argument)['removed_in'];

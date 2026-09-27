@@ -2,8 +2,10 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\BoardMyCardsTool;
+use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerClient;
 use App\Bridge\Tools\ClientCapabilities;
@@ -20,8 +22,9 @@ use Tests\TestCase;
 
 /**
  * card#10566 / DL-426 — a caller whose channel client is too old to have DECLARED an argument
- * is told so, in the text it already receives, WITHOUT losing the escape: the argument still
- * works when passed, because the channel server forwards arguments verbatim.
+ * is told so, in the text it already receives, WITHOUT losing the escape — and is told that
+ * updating the client is the reliable fix, never that passing the argument works: an old
+ * client's own schema (`additionalProperties: false`) may stop it being sent (DL-426).
  *
  * ⛔ TEXT ONLY. Every test here asserts on a message or a `remedy`, and every status it asserts
  * is the status the same call answered before this existed — the version is never a reason to
@@ -43,7 +46,8 @@ class CapabilityAwareRemedyTest extends TestCase
 
     private const TODAY_UNDECLARED_REFUSAL = 'board_my_cards: unknown argument `lmit`. This tool accepts: `include_description`, `stage`, `limit`, `tag`, `include_terminal`. Nothing was sent to the board — no card was read or written.';
 
-    private const CLAUSE = ' ⚠ Your channel client ';
+    /** How each form of the clause opens — the version-named one and the could-not-read one. */
+    private const CLAUSES = [' ⚠ Your channel client is version ', ' ⚠ This bridge could not read a client version '];
 
     private string $dir;
 
@@ -135,9 +139,14 @@ class CapabilityAwareRemedyTest extends TestCase
     /** The one sentence a test is about: the escape, then everything after it. */
     private static function splitAtClause(string $text): array
     {
-        $at = strpos($text, self::CLAUSE);
+        foreach (self::CLAUSES as $opening) {
+            $at = strpos($text, $opening);
+            if ($at !== false) {
+                return [substr($text, 0, $at), substr($text, $at)];
+            }
+        }
 
-        return $at === false ? [$text, ''] : [substr($text, 0, $at), substr($text, $at)];
+        return [$text, ''];
     }
 
     // ─── the design's four named cases ──────────────────────────────────────────────
@@ -156,11 +165,29 @@ class CapabilityAwareRemedyTest extends TestCase
 
         [$head, $clause] = self::splitAtClause($error);
         $this->assertSame(self::TODAY_LIMIT_REFUSAL, $head, 'the escape was reworded or removed');
-        $this->assertStringContainsString('reported no version (it is older than 0.9.15, or it cannot read its own package.json)', $clause);
+        $this->assertStringContainsString('This bridge could not read a client version for this call', $clause);
         $this->assertStringContainsString('`limit` (an unquoted integer; first declared by client 0.9.16)', $clause);
         $this->assertStringContainsString('`stage` (an unquoted integer or a string; first declared by client 0.9.16)', $clause);
-        $this->assertStringContainsString('the channel server forwards arguments verbatim', $clause);
+        $this->assertStringContainsString('update your channel client, which is the reliable fix', $clause);
+        $this->assertStringNotContainsString('works when passed', $clause, 'the clause may not assert what an old schema can falsify (r1-m3)');
         Http::assertNothingSent();
+    }
+
+    /**
+     * r1-m2: a version the door REFUSED as a value (over-long, a character outside the whitelist)
+     * reaches the bridge as null, exactly like none sent — and the clause says only what the
+     * bridge knows, so it is true for both, and for a hand-run caller with no client at all.
+     */
+    public function test_a_version_the_door_refused_gets_the_could_not_read_clause_naming_no_cause(): void
+    {
+        Http::fake();
+
+        foreach ([str_repeat('9', 40), '0.9.12 beta', null] as $version) {
+            [, $clause] = self::splitAtClause((string) $this->callTool('board_my_cards', ['limit' => '50'], $version)->assertStatus(422)->json('error'));
+            $this->assertStringStartsWith(' ⚠ This bridge could not read a client version for this call, so it cannot tell whether your tool schema offers ', $clause, var_export($version, true));
+            $this->assertStringNotContainsString('older than', $clause);
+            $this->assertStringNotContainsString('package.json', $clause);
+        }
     }
 
     public function test_a_client_reporting_0_9_12_is_told_its_own_version_and_the_one_that_declares_the_argument(): void
@@ -173,7 +200,7 @@ class CapabilityAwareRemedyTest extends TestCase
         $this->assertSame(self::TODAY_LIMIT_REFUSAL, $head);
         $this->assertStringContainsString('Your channel client is version 0.9.12, which does not declare', $clause);
         $this->assertStringContainsString('`limit` (an unquoted integer; first declared by client 0.9.16)', $clause);
-        $this->assertStringNotContainsString('reported no version', $clause);
+        $this->assertStringNotContainsString('could not read a client version', $clause);
     }
 
     public function test_a_truncated_window_for_an_old_client_keeps_the_escape_and_adds_the_gap_clause(): void
@@ -225,7 +252,7 @@ class CapabilityAwareRemedyTest extends TestCase
 
         [$head, $clause] = self::splitAtClause($error);
         $this->assertSame(self::TODAY_UNDECLARED_REFUSAL, $head);
-        $this->assertStringContainsString('does not declare `limit` (an unquoted integer; first declared by client 0.9.16), so your tool schema does not show it.', $clause);
+        $this->assertStringContainsString('does not declare `limit` (an unquoted integer; first declared by client 0.9.16), so your tool schema does not offer it.', $clause);
         $this->assertStringNotContainsString('`tag`', $clause);
         $this->assertStringNotContainsString('`include_terminal`', $clause);
         Http::assertNothingSent();
@@ -236,7 +263,7 @@ class CapabilityAwareRemedyTest extends TestCase
     /**
      * A reported version the table cannot answer for — newer than any this checkout records, or
      * not bare `X.Y.Z` — cannot be shown to lack anything, so it gets today's text. It is NOT the
-     * "reported no version" case: the client did report one.
+     * "could not read a client version" case: the client did report one the door kept.
      */
     public function test_a_version_the_table_cannot_answer_for_gets_todays_text(): void
     {
@@ -295,6 +322,55 @@ class CapabilityAwareRemedyTest extends TestCase
         }
     }
 
+    /**
+     * PR #801 r1-m1: `BoardToolsRegistry::register()` replaces a tool BY NAME, so an operator tool
+     * can shadow `board_my_cards` and declare types the clause cannot phrase — here, none for
+     * `limit`. Asking the table by NAME would call that tool shipped and throw out of the
+     * refusal arm, turning a 422 into a 500. Both refusal paths must answer exactly as they would
+     * without the clause.
+     */
+    public function test_an_operator_tool_shadowing_a_shipped_name_gets_its_refusal_unchanged(): void
+    {
+        $shadow = new class implements Tool
+        {
+            public function name(): string
+            {
+                return 'board_my_cards';
+            }
+
+            public function acceptedArguments(): array
+            {
+                return ['limit'];
+            }
+
+            public function argumentTypes(): array
+            {
+                return [];
+            }
+
+            public function refusedArgumentReason(string $key): ?string
+            {
+                return null;
+            }
+
+            public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
+            {
+                throw new ToolRefusalException('board_my_cards: the shadow refuses `limit`.');
+            }
+        };
+        $registry = new BoardToolsRegistry;
+        $registry->register($shadow);
+        $this->app->instance(BoardToolsRegistry::class, $registry);
+        $this->app->forgetInstance(BoardToolDispatcher::class);
+        Http::fake();
+
+        $this->assertSame('board_my_cards: the shadow refuses `limit`.', $this->callTool('board_my_cards', ['limit' => 5], '0.9.15')->assertStatus(422)->json('error'));
+        $this->assertSame(
+            'board_my_cards: unknown argument `lmit`. This tool accepts: `limit`. Nothing was sent to the board — no card was read or written.',
+            $this->callTool('board_my_cards', ['limit' => 5, 'lmit' => 5], '0.9.15')->assertStatus(422)->json('error'),
+        );
+    }
+
     // ─── the guard: every remedy, against the oldest client ─────────────────────────
 
     /**
@@ -322,10 +398,10 @@ class CapabilityAwareRemedyTest extends TestCase
         $caps = ClientCapabilities::bundled();
         $checked = 0;
 
-        $assertCovered = function (string $tool, string $text, ?array $only = null) use ($caps, &$checked): void {
+        $assertCovered = function (string $tool, string $text, ?array $only = null) use ($caps, $registry, &$checked): void {
             [$head, $clause] = self::splitAtClause($text);
             preg_match_all('/`([a-z_][a-z0-9_]*)(?=[`:])/', $head, $m);
-            $named = $only ?? array_values(array_unique(array_filter($m[1], fn (string $a): bool => $caps->knows($tool, $a))));
+            $named = $only ?? array_values(array_unique(array_filter($m[1], fn (string $a): bool => in_array($a, $registry->resolve($tool)?->acceptedArguments() ?? [], true))));
             foreach ($named as $argument) {
                 if ($caps->declares('0.5.0', $tool, $argument) === ClientDeclaration::Yes) {
                     continue;

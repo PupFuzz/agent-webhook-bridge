@@ -23,6 +23,15 @@ use App\Bridge\Support\HandlerRegistry;
 final class BoardToolsRegistry
 {
     /**
+     * The shipped set, by CLASS. Every one is `final`, so an operator tool can take a shipped
+     * tool's NAME through {@see register} but never its class — which is what lets
+     * {@see isShipped} answer for the instance rather than the name (DL-426).
+     *
+     * @var list<class-string<Tool>>
+     */
+    private const SHIPPED = [BoardMyCardsTool::class, BoardCreateCardTool::class, BoardCorrectCardTool::class, BoardTakeCardTool::class, BoardCommentCardTool::class];
+
+    /**
      * @var array<string, Tool>
      */
     private array $tools;
@@ -30,9 +39,16 @@ final class BoardToolsRegistry
     public function __construct()
     {
         $this->tools = [];
-        foreach ([new BoardMyCardsTool, new BoardCreateCardTool, new BoardCorrectCardTool, new BoardTakeCardTool, new BoardCommentCardTool] as $tool) {
+        foreach (self::SHIPPED as $class) {
+            $tool = new $class;
             $this->tools[$tool->name()] = $tool;
         }
+    }
+
+    /** Whether `$tool` IS one of the shipped tools — not merely registered under one's name. */
+    public static function isShipped(Tool $tool): bool
+    {
+        return in_array($tool::class, self::SHIPPED, true);
     }
 
     public function register(Tool $tool): void

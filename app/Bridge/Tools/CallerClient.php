@@ -12,8 +12,8 @@ use UnexpectedValueException;
  * {@see RemedyText} to read.
  *
  * ⛔ TEXT ONLY (DL-426). Nothing may branch on this to refuse, accept or reshape a call — it
- * exists to tell a caller whose client is too old to have declared an argument that the argument
- * works anyway. A caller at every version gets the same outcome it got before this existed.
+ * exists to tell a caller whose client is too old to have declared an argument so, without taking
+ * away the escape. A caller at every version gets the same outcome it got before this existed.
  *
  * `$caps` is null when the bundled table could not be read. That is a broken deploy, and it is
  * logged, but it degrades to today's text and never to a failed call: a table read that threw out

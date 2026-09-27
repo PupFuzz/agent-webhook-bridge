@@ -6,22 +6,25 @@ use UnexpectedValueException;
 
 /**
  * Remedy text that accounts for the caller's channel client (card#10566 / DL-426): when a
- * sentence tells a caller to pass an argument its client is too old to have DECLARED, the
- * sentence is kept whole and a clause is appended saying so — the running version, the version
- * that first declared the argument, and the argument's type.
+ * sentence names an argument the caller's client does not DECLARE, the sentence is kept whole
+ * and a clause is appended — the running version, the version that first declared the argument,
+ * and the argument's type.
  *
- * ⛔ THE CLAUSE NEVER REMOVES THE ESCAPE. The channel server forwards arguments verbatim, so an
- * argument missing from an old client's schema still reaches the bridge when the caller passes it;
- * the clause exists because such a caller has no schema to tell it the argument exists or what
- * type it takes (a caller told only "raise `limit`" sends `"50"`). ⚠ That Claude Code forwards an
- * argument its schema does not list is INFERRED from the channel server's forwarding, not
- * measured — DL-426 records it as the residual.
+ * ⛔ THE CLAUSE NEVER REMOVES THE ESCAPE, AND STATES ONLY WHAT THE BRIDGE KNOWS. The bridge
+ * accepts the argument if it arrives, and the channel server forwards what it is given. Whether
+ * an old client SENDS a key its schema lacks is not known — every pre-0.9.16 `board_my_cards`
+ * schema carries `additionalProperties: false` — so the clause says the bridge accepts it and
+ * that updating the client is the reliable fix, never that passing it works (DL-426 residual).
  *
- * WHEN THERE IS NO CLAUSE: the client declares every argument named; or the table cannot answer
- * for a REPORTED version (one newer than any this checkout records, or not bare `X.Y.Z`) — it
- * cannot be shown to lack anything, so nothing is claimed; or the tool is one the table does not
- * record (an operator-registered tool); or the table is unreadable ({@see CallerClient}). The
- * declared case is byte-identical to the text before this existed.
+ * WHEN THERE IS NO CLAUSE: the client declares every argument named; or the table cannot order
+ * a REPORTED version (newer than any this checkout records, or not bare `X.Y.Z`) — it cannot be
+ * shown to lack anything; or the tool is not a shipped one (an operator-registered tool, including
+ * one registered under a shipped name); or the table is unreadable ({@see CallerClient}). The
+ * declared case is byte-identical to the text before this existed. A call whose version
+ * {@see ClientVersion} reduced to null — none sent (an old client, a hand-run `bridge:tools-call`,
+ * `bridge:check --probe-tools`) or one it refused (wrong type, over-long, a character outside its
+ * whitelist) — gets the "could not read a client version" clause, which names no cause because
+ * the bridge cannot tell those apart.
  *
  * WHERE IT IS APPLIED — two places, deliberately not the N sentences that name an argument:
  * {@see BoardToolDispatcher} runs every tool refusal through {@see advise()} and ends its own
@@ -53,19 +56,18 @@ final class RemedyText
     public static function gapClause(CallerClient $caller, Tool $tool, array $arguments): string
     {
         $caps = $caller->caps;
-        if ($caps === null || $arguments === []) {
+        // Shipped is decided by the INSTANCE: an operator tool registered under a shipped name is
+        // in no client's history, and its types are nothing this class can phrase (r1-m1).
+        if ($caps === null || $arguments === [] || ! BoardToolsRegistry::isShipped($tool)) {
             return '';
         }
 
         $name = $tool->name();
         $gap = [];
         foreach ($arguments as $argument) {
-            if (! $caps->knows($name, $argument)) {
-                continue;   // an operator-registered tool: no client history to speak from
-            }
             $lacks = $caller->version === null
-                // No version: the table cannot say what this client declares, only whether every
-                // client able to call the tool does. Those that do need no clause.
+                // No usable version: the table cannot say what this client declares, only whether
+                // every client able to call the tool does. Those that do need no clause.
                 ? $caps->declares($caps->since($name), $name, $argument) !== ClientDeclaration::Yes
                 : $caps->declares($caller->version, $name, $argument) === ClientDeclaration::No;
             if ($lacks) {
@@ -78,20 +80,17 @@ final class RemedyText
 
         $one = count($gap) === 1;
         $list = $one ? $gap[0] : implode(', ', array_slice($gap, 0, -1)).' and '.$gap[count($gap) - 1];
-        [$it, $they, $them, $works] = $one ? ['it', 'it is', 'it', 'works'] : ['they', 'they are', 'them', 'work'];
-        // A statement of fact, not an instruction to pass: a remedy may name an argument only to
-        // say it does not apply here (the coord window's `stage`), and the clause must not
-        // contradict it.
-        $forwarded = "still {$works} when passed as typed here — the channel server forwards arguments verbatim — and updating the channel client adds {$them} to the schema.";
+        $it = $one ? 'it' : 'them';
+        // ⛔ TRUE WHETHER OR NOT THE CLIENT SENDS THE ARGUMENT (r1-m3). Every old `board_my_cards`
+        // schema declares `additionalProperties: false`, so a client may refuse to send a key its
+        // schema lacks; only the bridge's own acceptance is stated as fact.
+        $accepts = "This bridge accepts {$it} if your client sends {$it} as typed here, but a client may not send an argument its schema does not list — if passing {$it} has no effect, update your channel client, which is the reliable fix.";
 
         if ($caller->version === null) {
-            return ' ⚠ Your channel client reported no version (it is older than '.$caps->feature('client_version_report')
-                .", or it cannot read its own package.json), so this bridge cannot tell whether your tool schema shows {$list}."
-                ." If {$they} missing there, {$it} {$forwarded}";
+            return " ⚠ This bridge could not read a client version for this call, so it cannot tell whether your tool schema offers {$list}. {$accepts}";
         }
 
-        return " ⚠ Your channel client is version {$caller->version}, which does not declare {$list}, so your tool schema does not show {$them}. "
-            .ucfirst($it)." {$forwarded}";
+        return " ⚠ Your channel client is version {$caller->version}, which does not declare {$list}, so your tool schema does not offer {$it}. {$accepts}";
     }
 
     /** One of the type tokens {@see Tool::argumentTypes()} may carry, as the clause spells it. */

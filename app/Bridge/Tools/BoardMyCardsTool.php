@@ -933,8 +933,8 @@ final class BoardMyCardsTool implements Tool
      * A response body reaches every caller at every version.
      *
      * ⭐ card#10566: the sentence goes through {@see RemedyText::advise()}, so a caller whose
-     * client reports a version that does not declare `stage`/`limit` (or reports none) is told
-     * that too, with each argument's type — a caller told only "raise `limit`" by a schema-less
+     * client reports a version that does not declare `stage`/`limit` (or no usable version) is
+     * told that too, with each argument's type and that updating the client is the reliable fix — a caller told only "raise `limit`" by a schema-less
      * client sends `"50"`. A client that declares both gets this sentence byte for byte.
      *
      * `$how` is built from {@see NARROW_WITH_STAGE} / {@see RAISE_LIMIT}, and the `limit` refusal

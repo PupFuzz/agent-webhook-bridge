@@ -285,16 +285,19 @@ for, and the old response gave no hint it was oversized or partial.
   (card#10566 / DL-426).** When a `remedy`, a tool refusal or the unknown-argument refusal
   names an argument the caller's reported `client_version` does not declare, the sentence is
   kept whole and a clause is appended: the running version, the client version that first
-  declared the argument, and its type (`an unquoted integer`, `a string`, …) — ending that it
-  still works when passed, because the channel server forwards arguments verbatim. A caller
-  that reported **no** version (a client older than 0.9.15, or one that cannot read its own
-  `package.json`) is told the bridge cannot tell, for any argument newer than the tool itself.
-  A client that declares every argument named gets the sentence byte for byte; a reported
-  version the capability table cannot order (newer than this checkout records, or not bare
-  `X.Y.Z`) gets it unchanged too. ⛔ **Text only**: no status, refusal or accepted value moves
-  with the version. The unknown-argument refusal's clause covers the accepted keys the call
-  *sent*, not its whole accepted list. ⚠ That Claude Code forwards an argument missing from its
-  schema is inferred from the channel server's forwarding, not measured.
+  declared the argument, and its type (`an unquoted integer`, `a string`, …) — ending that the
+  bridge accepts it if the client sends it, and that updating the channel client is the reliable
+  fix. It does **not** say that passing the argument works: every pre-0.9.16 `board_my_cards`
+  schema declares `additionalProperties: false`, so whether an old client sends a key its schema
+  lacks is not known. A call with no usable `client_version` — none sent (an old client, a
+  hand-run `bridge:tools-call`, `bridge:check --probe-tools`) or one the door refused as a value
+  — is told the bridge could not read a client version, for any argument newer than the tool
+  itself. A client that declares every argument named gets the sentence byte for byte; a
+  well-formed reported version the capability table cannot order (newer than this checkout
+  records, or not bare `X.Y.Z`) gets it unchanged too, as does a tool that is not a shipped one.
+  ⛔ **Text only**: no status, refusal or accepted value moves with the version. The
+  unknown-argument refusal's clause covers the accepted keys the call *sent*, not its whole
+  accepted list ([§ An argument the tool does not declare](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379)).
 - **Narrow with `stage` before you raise `limit`.** `stage` answers about one column, and
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller
@@ -1153,6 +1156,11 @@ a question you did not ask.
   board_my_cards: unknown argument `status`. This tool accepts: `include_description`, `stage`, `limit`, `tag`, `include_terminal`. Nothing was sent to the board — no card was read or written.
   ```
 
+  ⚠ **It can carry one more sentence (DL-426):** when the call also sent an ACCEPTED key its
+  client does not declare (or reported no usable version), the refusal ends with the
+  client-version clause for exactly those keys — see the *too old to have DECLARED an argument*
+  bullet under `board_my_cards`. Branch on the status, never on the wording.
+
 - **A tool may give a key a reason** (`Tool::refusedArgumentReason()`), which replaces only the
   generic *unknown argument* clause for that key: `board_correct_card` names the authority that
   owns a field it will not write, and `board_take_card` gives every key a reason — why a
@@ -1163,7 +1171,8 @@ a question you did not ask.
   channel server, so a schema-side check would leave it open. The reference channel server's
   `inputSchema` for each tool advertises exactly the declared set with
   `additionalProperties: false`, and `ChannelServerToolSurfaceRestatementTest` fails when the
-  two differ.
+  two differ — in the key set, and since DL-426 in each argument's TYPE
+  (`Tool::argumentTypes()`, which the client-version clause quotes).
 - ⚠ **A call to an install with no writeback token still answers 503**, even when its keys
   are also wrong: the install fault is reported first, as it was before this refusal moved into
   the dispatcher.
