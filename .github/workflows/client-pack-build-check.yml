@@ -23,13 +23,17 @@ name: Client pack builds
 on:
   pull_request:
     branches: [dev, main]
-    # `edited` fires when a pull request is retargeted to another base, which changes the merge
-    # commit this job builds.
+    # `edited` fires on ANY title or body edit, and also on a retarget to another base, which
+    # changes the merge commit this job builds. The event does not say which, so every edit runs.
     types: [opened, edited, reopened, synchronize]
 
+# A new push or a reopen cancels the run in flight. An `edited` run does not: it waits for the run
+# in flight to finish, so a body edit never turns a build into a cancelled check. (GitHub keeps one
+# pending run per group, so a later event still replaces a run that is only waiting.) Never skip `edited` with a job-level `if:` instead: a skipped job reports success to a
+# required check, which could let a red build through.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action != 'edited' }}
 
 permissions:
   contents: read

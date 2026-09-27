@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for bin/build-client-pack.py, against a throwaway git repository built per test class.
+r"""Tests for bin/build-client-pack.py, against a throwaway git repository built per test class.
 
 The fixture's one dependency is a local tarball (`file:vendor/tiny-1.0.0.tgz`), so `npm ci`
 runs with no registry. Cases that reach `npm ci` skip LOUDLY where npm is not on PATH; every
@@ -19,9 +19,15 @@ refusal that happens before `npm ci`, including the release-tag gate, runs regar
 
         grep -nE 'raise Refused|parser\.error|return 1' bin/build-client-pack.py
 
-    prints. Each site was neutralized in turn (`raise Refused(` -> `Refused(`, `parser.error(` ->
-    `print(`, `return 1` -> `return 0`) and this whole file was run against the result. A refusal
-    added to the builder joins that population and owes a case here.
+    prints, plus the refusals argparse makes for the builder's mutually exclusive, required
+    source group (`grep -n 'add_mutually_exclusive_group' bin/build-client-pack.py`): no source
+    given, and both sources given. Each grep site was neutralized in turn (`raise Refused(` ->
+    `Refused(`, `parser.error(` -> `print(`, `return 1` -> `return 0`), the group was replaced
+    by the parser itself, and this whole file was run against each result. A refusal added to
+    the builder joins that population and owes a case here.
+    NOT in the population: an exception the builder does not catch (for example a tracked path
+    that is not UTF-8). It fails closed, with a traceback and exit 1, and writes nothing, but it
+    is a crash, not a refusal, and nothing here counts it as one.
 (v) --verify-commit builds any commit, writes nothing, and cannot be given --out.
 """
 
@@ -595,6 +601,16 @@ class VerifyCommit(unittest.TestCase):
         result = _run("--verify-commit", "main", "--out", os.path.join(self.tmp, "x"), "--repo", self.fx.repo)
         self.assertEqual(result.returncode, 2)
         self.assertIn("takes no --out", result.stderr)
+
+    def test_no_source_is_a_usage_error(self):
+        result = _run("--repo", self.fx.repo)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("one of the arguments --ref --verify-commit is required", result.stderr)
+
+    def test_both_sources_is_a_usage_error(self):
+        result = _run("--ref", "v1.2.3", "--verify-commit", "main", "--repo", self.fx.repo)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not allowed with argument", result.stderr)
 
     def test_a_ref_needs_an_out(self):
         result = _run("--ref", "v1.2.3", "--repo", self.fx.repo)
