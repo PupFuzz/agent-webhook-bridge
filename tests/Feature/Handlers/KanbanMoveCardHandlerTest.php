@@ -1741,11 +1741,12 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5]]),  // PATCH stamp
         ] + $this->fakePreload());
 
-        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
 
-        // dl_number stored zero-padded (DL-%04d); pr_number as an int.
+        // dl_number stored zero-padded (DL-%04d); pr_number as an int, beside the pr_url
+        // naming the same pull request (DL-429: a number is never written alone).
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r->data() === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
+            && $r->data() === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77, 'pr_url' => 'https://github.com/owner/repo/pull/77']]);
     }
 
     public function test_stamp_is_add_if_missing_never_overwrites_an_existing_dl(): void
@@ -1761,11 +1762,11 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5]]),  // stamp (pr only)
         ] + $this->fakePreload());
 
-        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
 
-        // only pr_number stamped — the existing dl_number is NOT overwritten.
+        // only the PR refs stamped — the existing dl_number is NOT overwritten.
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r->data() === ['payload' => ['pr_number' => 77]]);
+            && $r->data() === ['payload' => ['pr_number' => 77, 'pr_url' => 'https://github.com/owner/repo/pull/77']]);
     }
 
     public function test_stamp_is_add_if_missing_stamps_dl_when_only_pr_present(): void
@@ -1853,11 +1854,11 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5]]),  // stamp PATCH
         ]);
 
-        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
 
         Http::assertNotSent(fn (Request $r) => isset($r['workflow_stage_id']));  // no move
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r->data() === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
+            && $r->data() === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77, 'pr_url' => 'https://github.com/owner/repo/pull/77']]);
     }
 
     public function test_stamp_permanent_4xx_is_swallowed_move_still_succeeds(): void
@@ -2856,6 +2857,136 @@ pull request it already names', $notes[0]);
         $this->assertStringContainsString('the card keeps `https://github.com/owner/other-repo/pull/261`', $notes[0]);
     }
 
+    /**
+     * DL-429 — a stored `pr_number` that merely matches this event's NUMBER is not proof it
+     * is the SAME pull request: two repos can share one, and a repo moved to a new GitHub
+     * org restarts its numbers. Before this fix, `tracksPr(148, 148)` read the match as
+     * confirmed, recorded no drop, and silently added the offered `pr_url` — attributing the
+     * card's pre-existing, unverifiable `pr_number` to THIS repo with no trace anywhere. The
+     * card here carries no `pr_url` at all, so nothing distinguishes its stored 148 from
+     * `oldorg/repo`'s PR 148 pre-move. (Compare by number alone again ⇒ the PATCH is sent
+     * with no note ⇒ RED.)
+     */
+    public function test_a_bare_pr_number_that_merely_matches_is_not_a_confirmed_replay(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 148,
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 148, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/148']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('carries no `pr_url` confirming WHICH repo', $notes[0]);
+        $this->assertStringContainsString('the card keeps `148`; this pull request offered `148`', $notes[0]);
+        $this->assertStringContainsString('the card keeps `null`; this pull request offered `https://github.com/owner/repo/pull/148`', $notes[0]);
+    }
+
+    /**
+     * CONTROL for the test above: once the card's `pr_number` is confirmed by a real
+     * `pr_url` naming THIS repo, a later action on the same PR is a legitimate replay and
+     * must keep working exactly as it always did — nothing dropped, nothing re-stamped.
+     */
+    public function test_a_confirmed_pr_number_still_replays_silently(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/148',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 148, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/148']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame([], $this->noteContents());
+    }
+
+    /**
+     * DL-429 r1 — the write-site half of the same defect: `stampCorrelationRefs` used to
+     * write a FRESH `pr_number` add-if-missing regardless of what `pr_url` the card was
+     * left with, so an `opened` event on a card#7064 foreign-repo placeholder minted a bare
+     * number the corroboration gate then refused on this SAME pull request's `merged` event.
+     * The number is now withheld rather than minted beside a `pr_url` that names no pull
+     * request of this repo's. (Write `pr_number` unconditionally again ⇒ a PATCH is sent ⇒ RED.)
+     */
+    public function test_a_kept_foreign_placeholder_withholds_the_pr_number_too_and_the_note_says_so(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_url' => 'https://github.com/owner/other-repo/pull/0',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('- `pr_number` — not written either', $notes[0]);
+        $this->assertStringContainsString('this pull request offered `261`', $notes[0]);
+        $this->assertStringContainsString('this card stays correlated to the REPO', $notes[0]);
+    }
+
+    /**
+     * The same rule where the kept `pr_url` names ANOTHER pull request: the number this
+     * event offers would sit beside a url naming a different PR, so it is not written either.
+     * (Write `pr_number` whenever the card has none ⇒ a PATCH is sent ⇒ RED.)
+     */
+    public function test_a_kept_pr_url_naming_another_pull_request_withholds_the_pr_number(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_url' => 'https://github.com/owner/repo/pull/261',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/262']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('this pull request offered `262`', $notes[0]);
+        $this->assertStringContainsString("this card stays correlated to the\npull request it already names", $notes[0]);
+    }
+
+    /**
+     * CONTROL for the two above: a card whose `pr_url` already names THIS pull request and
+     * has no `pr_number` gets the number, silently — writing beside a CONFIRMING url is
+     * exactly the case this fix must keep working.
+     */
+    public function test_a_pr_url_naming_this_pull_request_gets_its_missing_pr_number(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                    'pr_url' => 'https://github.com/Owner/Repo/pull/261',
+                ]]])
+                ->push(['data' => ['id' => 5]]),   // stamp
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['payload' => ['pr_number' => 261]]);
+        $this->assertSame([], $this->noteContents());
+    }
+
     public function test_a_pr_url_the_card_answers_with_free_text_still_records_the_drop(): void
     {
         // A card whose pr_url is an operator's free text names no pull request the offered
@@ -2951,7 +3082,7 @@ pull request it already names', $notes[0]);
         ]);
         Log::spy();
 
-        $this->handle($this->payload(['stamp_pr' => 148]));
+        $this->handle($this->payload(['stamp_pr' => 148, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/148']));
 
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_move_card: stamped correlation refs'
             && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);

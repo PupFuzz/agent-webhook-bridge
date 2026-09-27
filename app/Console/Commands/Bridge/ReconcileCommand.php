@@ -53,8 +53,10 @@ use Throwable;
  *    ANY (mass movement means a bug, not drift);
  *  - a per-card GitHub 4xx/5xx warns + skips that card, never aborts the run.
  *
- * Only cards carrying a resolvable (repo, PR) are reconciled: a `pr_url` (yields
- * both) or a `pr_number` on a 1:1 board (the mapping supplies the repo). A
+ * Only cards carrying a resolvable (repo, PR) are reconciled: a `pr_url` naming a real
+ * pull request, which yields both. A bare `pr_number` names no repo on any board
+ * (DL-429) — the mapping no longer supplies it, since an org move re-maps the board to a
+ * DIFFERENT repo whose PR numbers restart — and is skipped with a line naming the card. A
  * dl_number-only card is skipped with an info line — DL→PR resolution needs a
  * GitHub search, out of v1 scope.
  */
@@ -283,7 +285,7 @@ class ReconcileCommand extends BridgeCommand
         [$repo, $mapping, $cardRepo, $prNumber, $prUrl] = $this->resolveTracked($card, $payload, $byCanonRepo, $refs);
         if ($mapping === null) {
             // resolveTracked already emitted the actionable info line (dl-only,
-            // ambiguous, unmapped repo) or determined it is simply not a tracked card.
+            // bare pr_number, unmapped repo) or determined it is simply not a tracked card.
             return;
         }
 

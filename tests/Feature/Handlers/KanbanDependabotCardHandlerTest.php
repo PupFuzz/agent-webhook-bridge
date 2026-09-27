@@ -633,6 +633,31 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['workflow_stage_id'] === 52);
     }
 
+    /**
+     * DL-429 — a `.../pull/0` placeholder names a repo and NO pull request (card#9850), so
+     * it is not evidence that a bare `pr_number` belongs to that repo: it declares "this
+     * card is source-qualified to owner/repo", never "this card's stored number IS
+     * owner/repo's PR of that number". `cardRepo()` used to extract a repo from ANY
+     * `pr_url`, placeholder included, so a legacy card carrying a stale/coincidental
+     * `pr_number` alongside a placeholder naming THIS repo was attributed to this repo's
+     * PR of that number and archived on its close — the exact cross-repo mis-attribution
+     * DL-429 refuses everywhere else. (Compare by raw pr_url-repo again ⇒ the archive PATCH
+     * is sent ⇒ RED.)
+     */
+    public function test_a_placeholder_pr_url_does_not_attribute_a_bare_pr_number_to_its_repo(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => null, 'payload' => [
+                'pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/0',
+            ]]]),
+        ]);
+
+        $this->handle('closed_unmerged');   // event repo/pr: owner/repo #42 (handle()'s default)
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
     public function test_already_in_target_stage_is_a_noop(): void
     {
         Http::fake([

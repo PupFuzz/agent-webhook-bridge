@@ -241,6 +241,31 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Log::shouldNotHaveReceived('warning', [\Mockery::any(), \Mockery::on(fn ($ctx) => ($ctx['card_id'] ?? null) === 5)]);
     }
 
+    /**
+     * The DL-429 bare-number alert must run AFTER `MappedBoardGuard::refuses` — a row this
+     * guard has not yet cleared must never be spoken about, on the same boundary discipline
+     * as every other guard in this scan (DL-298, card#7211). A card the board-scoped search
+     * should never have returned (another tenant's board) is refused SILENTLY by that guard;
+     * it must not ALSO get the bare-number alert, which would speak about a row the board
+     * gate exists to keep this handler from ever touching.
+     * (Move the bare-number check above the board guard again ⇒ the bare-number alert fires
+     * for card 6 ⇒ RED.)
+     */
+    public function test_the_bare_pr_number_alert_never_fires_for_a_row_off_the_mapped_board(): void
+    {
+        $this->fakeBoard([
+            ['id' => 6, 'board_id' => 99, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [],
+                'payload' => ['pr_number' => 100]],
+        ]);
+        Log::spy();
+
+        $this->handle();
+
+        $this->assertNotMoved(6);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg, $ctx = []) => ($ctx['catalog_id'] ?? null) === 'mapped_board_guard.card_not_on_mapped_board')->once();
+        Log::shouldNotHaveReceived('warning', [\Mockery::any(), \Mockery::on(fn ($ctx) => ($ctx['catalog_id'] ?? null) === 'promote_released.bare_pr_number')]);
+    }
+
     public function test_skips_pinned_shipped_card(): void
     {
         $this->fakeBoard([

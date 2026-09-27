@@ -63,21 +63,43 @@ final class CardNote
      * Both are rendered, because "which PR won" is the first question a reader has and
      * neither value alone answers it.
      *
-     * $keptNamesNoPullRequest is true for exactly one shape: the only PR-shaped ref
-     * dropped is `pr_url`, no `pr_number` was also dropped, and the card's kept `pr_url`
-     * is the `.../pull/0` source-only placeholder — a repo, not a pull request. The
-     * default heading claims "this card stays correlated to the pull request it already
+     * $keptNamesNoPullRequest is true for exactly one shape: the card's kept `pr_url` is
+     * the `.../pull/0` source-only placeholder of ANOTHER repo — a repo, not a pull request.
+     * The default heading claims "this card stays correlated to the pull request it already
      * names", which is false for that card: it names a REPO it was deliberately qualified
-     * to, and no pull request at all. Asserting a PR that does not exist inside the note
+     * to, and no pull request at all. A `pr_number` beside the placeholder does not change
+     * that — a bare number names no pull request (DL-429) — so that shape gets its own
+     * heading whatever else was dropped. Asserting a PR that does not exist inside the note
      * that exists to stop this handler asserting PRs that do not exist would re-mint the
-     * defect the note is for, so that shape gets its own heading instead of the shared
-     * one. Every other shape — including a placeholder alongside a dropped `pr_number`
-     * that DOES name a real PR — keeps the byte-identical default heading.
+     * defect the note is for.
+     *
+     * $withheldPrNumber is this pull request's number when the stamp did NOT write it to a
+     * card that had none (DL-429 r1): `pr_number` is written only beside a `pr_url` naming
+     * this pull request, and the ref dropped above means the card will not carry one. It
+     * gets its own line so the note says what the card is left without. It is not part of
+     * the marker: the marker identifies the drop, and the withheld number follows from it.
+     *
+     * $keptNumberUnverifiedRepo is true for the shape $withheldPrNumber does not cover: the
+     * card ALREADY had a `pr_number`, numerically IDENTICAL to the value this event offered
+     * — the ref that was refused is the SAME value, not a different one, so the default
+     * heading's "different correlation ref" would be false rather than merely imprecise. It
+     * is refused anyway because a number alone never identifies a pull request (two repos
+     * can share one, and a repo moved to a new GitHub org restarts its numbers) and the card
+     * carries no `pr_url` confirming which repo its number belongs to, so an apparent match
+     * cannot be told apart from a same-numbered pull request in another repo. Mutually
+     * exclusive with $withheldPrNumber by construction: one fires only when the card had NO
+     * `pr_number`, the other only when it already had one.
      *
      * @param  array<string, array{card: mixed, offered: mixed}>  $dropped
      */
-    public static function droppedCorrelationRef(int $cardId, string $repo, array $dropped, bool $keptNamesNoPullRequest = false): self
-    {
+    public static function droppedCorrelationRef(
+        int $cardId,
+        string $repo,
+        array $dropped,
+        bool $keptNamesNoPullRequest = false,
+        ?int $withheldPrNumber = null,
+        bool $keptNumberUnverifiedRepo = false,
+    ): self {
         ksort($dropped);
 
         $fields = ['card' => (string) $cardId];
@@ -91,13 +113,17 @@ final class CardNote
             $lines .= '- `'.$key.'` — the card keeps `'.self::render($pair['card'])
                 .'`; this pull request offered `'.self::render($pair['offered'])."`\n";
         }
+        if ($withheldPrNumber !== null) {
+            $lines .= '- `pr_number` — not written either: a number is written only beside a `pr_url`'
+                .' naming this pull request; this pull request offered `'.$withheldPrNumber."`\n";
+        }
 
         if ($keptNamesNoPullRequest) {
             return new self($marker, <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a
                 different correlation ref — a repo-only placeholder set before any pull
                 request existed, and a card carries one of each, first write wins. So the
-                ref below was **not** written, and this card stays correlated to the REPO
+                refs below were **not** written, and this card stays correlated to the REPO
                 it already names, not to this pull request:
 
                 {$lines}
@@ -106,10 +132,27 @@ final class CardNote
                 BODY);
         }
 
+        if ($keptNumberUnverifiedRepo) {
+            return new self($marker, <<<BODY
+                A pull request in `{$repo}` names this card, and its `pr_number` matches the
+                card's own — but the card carries no `pr_url` confirming WHICH repo that
+                number belongs to. A number alone does not identify a pull request (two repos
+                can share one, and a repo moved to a new GitHub org restarts its numbers), so
+                a matching number cannot be told apart from a same-numbered pull request in a
+                DIFFERENT repo. So the refs below were **not** written, and this card's
+                existing `pr_number` is left exactly as it was:
+
+                {$lines}
+                Nothing else about the card was changed. If this pull request really is the
+                one this card already tracks, stamp its `pr_url` by hand
+                (`kbcard patch --task {$cardId} --pr-url <url>`) so a future event can verify it.
+                BODY);
+        }
+
         return new self($marker, <<<BODY
             A pull request in `{$repo}` names this card, but the card already carries a
             different correlation ref — and a card carries one of each, first write wins.
-            So the ref below was **not** written, and this card stays correlated to the
+            So the refs below were **not** written, and this card stays correlated to the
             pull request it already names:
 
             {$lines}

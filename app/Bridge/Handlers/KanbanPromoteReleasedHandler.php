@@ -193,10 +193,26 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
                 continue;
             }
             $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : null;
+            if ($cardId === null) {
+                continue;
+            }
+            // DL-298 / card#7211: the row came out of a `q=board_id=<b>` search, and the
+            // scoping is honoured by the SERVER — so this re-check refuses nothing today.
+            // That is the point: it makes the scope a property of the RESULT rather than of
+            // the call, so a `q=`→top-level hoist (which filters in a manual test, because
+            // `board_id` happens to be recognised there too, and takes the next filter
+            // hoisted beside it silently out of the query) cannot promote a card off
+            // another tenant's board. Run BEFORE anything below reads or alerts on the row
+            // (including the DL-429 bare-number alert next) — a row this guard has not yet
+            // cleared must never be spoken about or acted on, on the same boundary
+            // discipline as everywhere else this guard is called.
+            if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
+                continue;
+            }
             $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
             $ref = TrackedCardRef::fromPayload($payload, $refs);
             $prNumber = $this->prForRepo($ref, $repo, $refs);
-            if ($cardId !== null && $ref->kind === TrackedRefKind::BarePrNumber) {
+            if ($ref->kind === TrackedRefKind::BarePrNumber) {
                 // DL-429: this card was promotable by its bare number until the number stopped
                 // being attributed to the board's sole repo. Skipped, never read against this
                 // repo — and said, because this leg has no reconcile backstop: a card that
@@ -208,18 +224,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
                     $repo, 'promote_on_release', $cardId, 'promote_bare_pr_number',
                 );
             }
-            if ($cardId === null || $prNumber === null) {
-                continue;
-            }
-            // DL-298 / card#7211: the row came out of a `q=board_id=<b>` search, and the
-            // scoping is honoured by the SERVER — so this re-check refuses nothing today.
-            // That is the point: it makes the scope a property of the RESULT rather than of
-            // the call, so a `q=`→top-level hoist (which filters in a manual test, because
-            // `board_id` happens to be recognised there too, and takes the next filter
-            // hoisted beside it silently out of the query) cannot promote a card off
-            // another tenant's board. Applied where a row BECOMES a candidate, so the
-            // refused set is exactly the set this handler would otherwise have written to.
-            if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
+            if ($prNumber === null) {
                 continue;
             }
             // PARENT-CARD refusal (card#10068): the row carries the `program` tag, so it names
