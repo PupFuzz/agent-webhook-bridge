@@ -6,8 +6,8 @@ use App\Bridge\Exceptions\MalformedStateFileException;
 use App\Bridge\Exceptions\UnreadableFileException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\FileContents;
-use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Support\StateWriterRefusal;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
@@ -269,69 +269,36 @@ final class GitHubWriteDebt
     }
 
     /**
-     * Why THIS process must not write the record, or null when it may. The one owner of that rule:
-     * {@see mutate()} refuses on it and `bridge:github-owed` refuses on it before reading anything.
+     * Why THIS process must not write the record, or null when it may. {@see mutate()} refuses on it
+     * and `bridge:github-owed` refuses on it before reading anything. The rule itself — root never
+     * writes, a present file is written only by its owner, and what neither can catch — is
+     * {@see StateWriterRefusal}'s; this names the record's files for it.
      *
-     * ⛔ A RECORD IS OWNED BY WHOEVER LAST WROTE IT, `0600` (`writeFileAtomic()`'s `tempnam`), and
-     * only the receiver's user writes the refused writes into it. So a writer running as anyone else
-     * does not merely write a row — it takes the file off the receiver, whose every later refused
-     * write is then logged and lost, while the new owner reads the record fine and is told nothing is
-     * owed (r3 M1). Two refusals follow:
-     *  - ROOT NEVER WRITES IT, present or absent: root is never the receiver's user, and a record (or
-     *    a lock file) root creates is one the receiver cannot open;
-     *  - A PRESENT RECORD IS REPLACED ONLY BY ITS OWNER, since that owner is, by the rule above, the
-     *    last user that could write it — and every present file of {@see ownedFiles()} is held to
-     *    the same rule, since a lock the receiver cannot open stops its writes as surely as a record
-     *    it cannot open. $includeRepairLock asks it of the repair lock too: only `bridge:github-owed` opens
-     *    that one, so the receiver's own writes are never refused over it.
-     * ⚑ An ABSENT record created by a non-root user other than the receiver's is NOT refused: nothing
-     * this process can read says which user the receiver runs as. `CLAUDE_DEPLOYMENT.md` names it.
-     * An effective uid this process cannot read (no posix extension) is unmeasured and refuses
-     * nothing, the `bridge:jobs install-tick` root refusal's reading of the same fact.
+     * What it costs HERE (r3 M1): only the receiver's user writes the refused writes into the record,
+     * so a record taken off the receiver loses every later refused write to the log, while the new
+     * owner reads it fine and is told nothing is owed. Every present file of {@see ownedFiles()} is
+     * held to the rule, since a lock the receiver cannot open stops its writes as surely as a record
+     * it cannot open. $includeRepairLock asks it of the repair lock too: only `bridge:github-owed`
+     * opens that one, so the receiver's own writes are never refused over it. `CLAUDE_DEPLOYMENT.md`
+     * names the absent-record write the rule cannot refuse.
      */
     public static function writerRefusal(bool $includeRepairLock = false): ?string
     {
-        $identity = app(ProcessIdentity::class);
-        $euid = $identity->euid();
-        if ($euid === null) {
-            return null;
-        }
-        $path = self::path();
-        $owner = $identity->ownerOf($path);
-        $ownerName = $owner === null ? null : ($identity->accountName($owner) ?? "uid {$owner}");
-        // ⛔ A ROOT-OWNED RECORD HAS NO USER TO RUN AS — root is refused below — so the only
-        // remedy is to hand the file back; "run it as root" would send the operator in a circle.
-        $giveBack = self::giveBackRemedy();
-
-        if ($euid === 0) {
-            return 'this process runs as root, and a record root writes is one the receiver cannot open — every refused write after it would go unrecorded; '
-                .match (true) {
-                    $owner === null => 'run it as the user the receiver runs as',
-                    $owner === 0 => "{$path} is already owned by root: {$giveBack}",
-                    default => "{$path} is owned by {$ownerName}: run it as {$ownerName}",
-                };
-        }
         // The locks are asked the same question: a `.lock` the receiver cannot open fails every
         // write in withLock() while the record itself still reads fine to its owner (r4 MINOR-1).
+        $owned = [];
         foreach (self::ownedFiles() as $file => $receiverOpens) {
-            if (! $receiverOpens && ! $includeRepairLock) {
-                continue;
+            if ($receiverOpens || $includeRepairLock) {
+                $owned[] = $file;
             }
-            $fileOwner = $identity->ownerOf($file);
-            if ($fileOwner === null || $fileOwner === $euid) {
-                continue;
-            }
-            $fileOwnerName = $identity->accountName($fileOwner) ?? "uid {$fileOwner}";
-            $me = $identity->accountName($euid) ?? "uid {$euid}";
-
-            // The same sentence reaches the operator's terminal and the receiver's log, so it
-            // names both remedies: the owner may be the receiver's user, or may be the one write
-            // this method cannot refuse (above).
-            return "{$file} is owned by {$fileOwnerName} and this process runs as {$me}; replacing it would hand it to {$me} — "
-                .($fileOwner === 0 ? $giveBack : "run it as {$fileOwnerName}, or, if {$fileOwnerName} is not the user the receiver runs as, {$giveBack}");
         }
 
-        return null;
+        return StateWriterRefusal::check(
+            self::path(),
+            $owned,
+            'a record root writes is one the receiver cannot open — every refused write after it would go unrecorded',
+            self::giveBackRemedy(),
+        );
     }
 
     /**

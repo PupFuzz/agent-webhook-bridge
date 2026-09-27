@@ -4,13 +4,14 @@ namespace Tests\Feature\ClientUpdate;
 
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
-use App\Bridge\ClientUpdate\ClientPackStoreUnwritable;
+use App\Bridge\ClientUpdate\ClientPackStoreFault;
 use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\SystemProcessIdentity;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\ClientPackFixture;
 use Tests\TestCase;
 
@@ -364,21 +365,72 @@ class ClientPackInstallCommandTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_a_store_owned_by_another_user_is_not_taken_from_it(): void
+    /**
+     * Each path the owner rule covers, owned by someone else, is refused by name and changes
+     * nothing. The release directory is checked only by publish(), after the GitHub reads.
+     */
+    #[DataProvider('ownedPaths')]
+    public function test_a_store_path_owned_by_another_user_is_not_taken_from_it(string $which, bool $asksGithub): void
     {
-        $f = new ClientPackFixture('0.1.0');
-        (new ClientPackStore)->publish(ClientPackManifest::parse($f->manifest), $f->manifest, $f->pack, '2026-09-27T00:00:00Z');
-        $published = (new ClientPackStore)->publishedPath();
+        $old = new ClientPackFixture('0.1.0');
+        $store = new ClientPackStore;
+        $store->publish(ClientPackManifest::parse($old->manifest), $old->manifest, $old->pack, '2026-09-27T00:00:00Z');
+        File::ensureDirectoryExists($store->dir().'/'.$this->release, 0o700);
+        $path = [
+            'store directory' => $store->dir(),
+            'published.json' => $store->publishedPath(),
+            'its lock' => $store->publishedPath().'.lock',
+            'release directory' => $store->dir().'/'.$this->release,
+        ][$which];
+        $this->assertTrue(file_exists($path), "{$path} must be present for its owner to be asked");
         $me = (int) (new SystemProcessIdentity)->euid();
-        $this->actAs($me, [$published => $me + 1], [$me + 1 => 'receiver']);
-        Http::fake();
+        $this->actAs($me, [$path => $me + 1], [$me + 1 => 'receiver']);
+        $this->release($this->assetsOf(new ClientPackFixture($this->release)));
 
         [$exit, $out] = $this->install();
 
-        $this->assertSame(2, $exit);
-        $this->assertStringContainsString("{$published} is owned by receiver", $out);
-        $this->assertStringContainsString('run it as receiver', $out);
-        Http::assertNothingSent();
+        $this->assertSame(2, $exit, $out);
+        $this->assertStringContainsString("{$path} is owned by receiver", $out);
+        $this->assertStringContainsString('run it as receiver, or, if receiver is not the user the receiver runs as, give '.$store->dir().' and everything under it back to the user the receiver runs as', $out);
+        $this->assertStringNotContainsString('TRUNCATED', $out);
+        $this->assertSame('0.1.0', $this->published());
+        $this->assertFileDoesNotExist($store->dir().'/'.$this->release.'/'.(new ClientPackFixture($this->release))->packName());
+        if (! $asksGithub) {
+            Http::assertNothingSent();
+        }
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: bool}>
+     */
+    public static function ownedPaths(): array
+    {
+        return [
+            'store directory' => ['store directory', false],
+            'published.json' => ['published.json', false],
+            'its lock' => ['its lock', false],
+            'release directory' => ['release directory', true],
+        ];
+    }
+
+    /**
+     * A publication record that cannot be parsed is could-not-measure, not a refusal of the pack:
+     * "never lower" cannot be applied without it. The run names the recovery.
+     */
+    public function test_a_malformed_publication_record_is_could_not_measure_with_a_recovery(): void
+    {
+        $store = new ClientPackStore;
+        File::ensureDirectoryExists($store->dir(), 0o700);
+        file_put_contents($store->publishedPath(), '{"bridge_release": "0.1.0"}');
+        $this->release($this->assetsOf(new ClientPackFixture($this->release)));
+
+        [$exit, $out] = $this->install();
+
+        $this->assertSame(2, $exit, $out);
+        $this->assertStringContainsString('is malformed', $out);
+        $this->assertStringContainsString('Restore '.$store->publishedPath().' from a backup, or, to republish from scratch, remove it and run bridge:client-pack:install again', $out);
+        $this->assertStringNotContainsString('TRUNCATED', $out);
+        $this->assertSame('{"bridge_release": "0.1.0"}', file_get_contents($store->publishedPath()));
     }
 
     /**
@@ -390,7 +442,7 @@ class ClientPackInstallCommandTest extends TestCase
         $this->actAs(0);
         $f = new ClientPackFixture($this->release);
 
-        $this->expectException(ClientPackStoreUnwritable::class);
+        $this->expectException(ClientPackStoreFault::class);
         (new ClientPackStore)->publish(ClientPackManifest::parse($f->manifest), $f->manifest, $f->pack, '2026-09-27T00:00:00Z');
     }
 
@@ -420,7 +472,7 @@ class ClientPackInstallCommandTest extends TestCase
         }
 
         $this->assertSame(2, $exit, $out);
-        $this->assertStringContainsString('could not write the client pack store', $out);
+        $this->assertStringContainsString('the client pack store could not be used — a store write failed', $out);
         $this->assertStringContainsString("release 0.1.0's client pack stays in service", $out);
         $this->assertFileExists($store->dir().'/'.$this->release.'/'.$f->packName());
         $published = $store->published();

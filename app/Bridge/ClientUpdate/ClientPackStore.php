@@ -4,9 +4,8 @@ namespace App\Bridge\ClientUpdate;
 
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotManifest;
-use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
-use App\Bridge\Writeback\GitHubWriteDebt;
+use App\Bridge\Support\StateWriterRefusal;
 use RuntimeException;
 
 /**
@@ -28,8 +27,10 @@ use RuntimeException;
  * assets immutable, so this is a loud check, not a guarantee — design review r3-m9.)
  *
  * Every writer runs as the receiver's OS user, as every other state file here requires
- * (CLAUDE_DEPLOYMENT.md § Where things land): the files are 0600, and the doors read them as that
- * user.
+ * (CLAUDE_DEPLOYMENT.md § Where things land; {@see writerRefusal()}): the data files are `0600` and
+ * the directories `0700`, and the doors read them as that user. The ssh door runs as the forced
+ * command's account, which is that same user on a working install: it reads the agent YAMLs from
+ * the owner-only config dir before it reaches the client-update branch.
  */
 final class ClientPackStore
 {
@@ -81,7 +82,7 @@ final class ClientPackStore
      * @return bool true when published, false when this exact pack was already the published one
      *
      * @throws ClientPackRefused the pack or the publication rules refuse it
-     * @throws ClientPackStoreUnwritable this process may not, or could not, write the store
+     * @throws ClientPackStoreFault this process may not, or could not, write the store, or cannot read its publication record
      */
     public function publish(ClientPackManifest $manifest, string $manifestBytes, string $packBytes, string $publishedAt): bool
     {
@@ -90,7 +91,7 @@ final class ClientPackStore
         }
         $refusal = $this->writerRefusal($manifest->bridgeRelease);
         if ($refusal !== null) {
-            throw new ClientPackStoreUnwritable($refusal);
+            throw new ClientPackStoreFault($refusal);
         }
 
         $published = null;
@@ -98,62 +99,51 @@ final class ClientPackStore
             $ran = BridgePaths::withLockIfFree($this->publishedPath(), function () use ($manifest, $manifestBytes, $packBytes, $publishedAt, &$published): void {
                 $published = $this->publishLocked($manifest, $manifestBytes, $packBytes, $publishedAt);
             });
-        } catch (ClientPackRefused $e) {
+        } catch (ClientPackRefused|ClientPackStoreFault $e) {
             throw $e;
         } catch (RuntimeException $e) {
-            throw new ClientPackStoreUnwritable('could not write the client pack store: '.RedactedErrorText::of($e), 0, $e);
+            throw new ClientPackStoreFault('a store write failed: '.RedactedErrorText::of($e), previous: $e);
         }
         if (! $ran) {
-            throw new ClientPackStoreUnwritable('another bridge:client-pack:install holds '.$this->publishedPath().'.lock; nothing was changed — run it again when that one has finished');
+            throw new ClientPackStoreFault('another bridge:client-pack:install holds '.$this->publishedPath().'.lock; nothing was changed — run it again when that one has finished');
         }
 
         return (bool) $published;
     }
 
     /**
-     * Why THIS process must not write the store, or null when it may — the rule
-     * {@see GitHubWriteDebt::writerRefusal()} states for its record, applied
-     * here. Every file here is `0600` and every directory `0700`, owned by whoever wrote it, and the
-     * doors read them as the receiver's user; so a write as anyone else takes the store off every
-     * seat, which is then answered 503.
-     *  - ROOT NEVER WRITES IT: root is never the receiver's user.
-     *  - A PRESENT FILE OR DIRECTORY IS REPLACED ONLY BY ITS OWNER.
-     * ⚑ Where nothing is present yet, a non-root user other than the receiver's is NOT refused:
-     * nothing this process can read says which user the receiver runs as. An effective uid this
-     * process cannot read (no posix extension) refuses nothing.
+     * Why THIS process must not write the store, or null when it may — {@see StateWriterRefusal}'s
+     * rule over the store's own paths. Its data files are `0600` and its directories `0700`, owned
+     * by whoever wrote them, and the doors read them as the receiver's user, so a store written by
+     * anyone else answers every seat 503. Checked over the store directory, `published.json` and
+     * its lock; `publish()` adds the release directory it is about to write into. Files inside a
+     * release directory are not checked: the directory's owner is the only user that can replace
+     * them.
      */
     public function writerRefusal(?string $release = null): ?string
     {
-        $identity = app(ProcessIdentity::class);
-        $euid = $identity->euid();
-        if ($euid === null) {
-            return null;
-        }
-        if ($euid === 0) {
-            return 'this process runs as root, and a client pack store root writes is one the receiver cannot read — every seat would be answered 503; run it as the user the receiver runs as';
-        }
-        $paths = [$this->dir(), $this->publishedPath(), $this->publishedPath().'.lock'];
+        $owned = [$this->dir(), $this->publishedPath(), $this->publishedPath().'.lock'];
         if ($release !== null) {
-            $paths[] = $this->dir().'/'.$release;
-        }
-        foreach ($paths as $path) {
-            $owner = $identity->ownerOf($path);
-            if ($owner === null || $owner === $euid) {
-                continue;
-            }
-            $ownerName = $identity->accountName($owner) ?? "uid {$owner}";
-            $me = $identity->accountName($euid) ?? "uid {$euid}";
-
-            return "{$path} is owned by {$ownerName} and this process runs as {$me}; writing the store would take it off {$ownerName} — "
-                .($owner === 0 ? 'give it back to the receiver\'s user (chown) and run this as that user' : "run it as {$ownerName}");
+            $owned[] = $this->dir().'/'.$release;
         }
 
-        return null;
+        return StateWriterRefusal::check(
+            $this->publishedPath(),
+            $owned,
+            'a client pack store root writes is one the receiver cannot read — every seat would be answered 503',
+            'give '.$this->dir().' and everything under it back to the user the receiver runs as',
+        );
     }
 
     private function publishLocked(ClientPackManifest $manifest, string $manifestBytes, string $packBytes, string $publishedAt): bool
     {
-        $current = $this->published();
+        try {
+            $current = $this->published();
+        } catch (ClientPackRefused $e) {
+            // Not a verdict on the pack: the record that says what is published cannot be read,
+            // so "never lower" and "one release, one pack" cannot be applied.
+            throw new ClientPackStoreFault(RedactedErrorText::of($e), 'restore '.$this->publishedPath().' from a backup, or, to republish from scratch, remove it and run bridge:client-pack:install again (the release it named is then not held against a lower one)', $e);
+        }
         if ($current !== null) {
             $order = ChannelSnapshotManifest::compareVersions($manifest->bridgeRelease, $current->bridgeRelease);
             if ($order < 0) {

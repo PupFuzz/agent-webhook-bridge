@@ -153,7 +153,9 @@ class ClientUpdateDoorTest extends TestCase
         if ($publish) {
             $f = new ClientPackFixture;
             $this->publish($f);
-            if ($tamper !== null) {
+            if ($tamper === 'record') {
+                file_put_contents($this->dir.'/state/client-packs/published.json', '{"bridge_release": "0.91.0"}');
+            } elseif ($tamper !== null) {
                 file_put_contents($this->dir.'/state/client-packs/0.91.0/'.($tamper === 'pack' ? $f->packName() : $f->manifestName()), 'tampered after publication');
             }
         }
@@ -186,6 +188,8 @@ class ClientUpdateDoorTest extends TestCase
             // Every stored file is re-checked against published.json before it is served.
             'stored pack altered after publication' => [true, ['op' => 'client_pack', 'bridge_release' => '0.91.0'], 503, 2, 'cannot be served', 'pack'],
             'stored manifest altered after publication' => [true, ['op' => 'client_manifest'], 503, 2, 'cannot be served', 'manifest'],
+            'publication record malformed, manifest' => [true, ['op' => 'client_manifest'], 503, 2, 'cannot be served', 'record'],
+            'publication record malformed, pack' => [true, ['op' => 'client_pack', 'bridge_release' => '0.91.0'], 503, 2, 'cannot be served', 'record'],
         ];
     }
 

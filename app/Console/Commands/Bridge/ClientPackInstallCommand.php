@@ -5,7 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackRefused;
 use App\Bridge\ClientUpdate\ClientPackStore;
-use App\Bridge\ClientUpdate\ClientPackStoreUnwritable;
+use App\Bridge\ClientUpdate\ClientPackStoreFault;
 use App\Bridge\ClientUpdate\ClientUpdateDoor;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
@@ -69,7 +69,9 @@ class ClientPackInstallCommand extends BridgeCommand
 
         $unwritable = $store->writerRefusal();
         if ($unwritable !== null) {
-            $this->error('bridge:client-pack:install: will not write the client pack store — '.UntrustedText::forOperator($unwritable).'. Nothing was changed.');
+            // Composed from this install's own paths and account names, as `bridge:github-owed` prints the
+            // same rule's sentence: not foreign, and the escape's length bound would cut the remedy.
+            $this->error("bridge:client-pack:install: will not write the client pack store — {$unwritable}. Nothing was changed.");
 
             return 2;
         }
@@ -141,8 +143,12 @@ class ClientPackInstallCommand extends BridgeCommand
             $this->error('bridge:client-pack:install: refused — '.UntrustedText::forOperator(RedactedErrorText::of($e)).". Nothing was changed; {$current}.");
 
             return 1;
-        } catch (ClientPackStoreUnwritable $e) {
-            $this->error('bridge:client-pack:install: could not write the client pack store — '.UntrustedText::forOperator(RedactedErrorText::of($e)).". What seats are served is unchanged; {$current}.");
+        } catch (ClientPackStoreFault $e) {
+            // A store fault is composed from this install's own paths, account names and local file faults
+            // (ClientPackStoreFault), never from a GitHub byte, so it is not escaped or cut.
+            $this->error('bridge:client-pack:install: the client pack store could not be used — '.RedactedErrorText::of($e).'. '
+                .($e->recovery === null ? '' : ucfirst($e->recovery).'. ')
+                ."What seats are served is unchanged; {$current}.");
 
             return 2;
         }
