@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
 use UnexpectedValueException;
 
 /**
@@ -19,8 +20,12 @@ use UnexpectedValueException;
  * WHEN THERE IS NO CLAUSE: the client declares every argument named; or the table cannot order
  * a REPORTED version (newer than any this checkout records, or not bare `X.Y.Z`) — it cannot be
  * shown to lack anything; or the tool is not a shipped one (an operator-registered tool, including
- * one registered under a shipped name); or the table is unreadable ({@see CallerClient}). The
- * declared case is byte-identical to the text before this existed. A call whose version
+ * one registered under a shipped name); or the table is unreadable ({@see CallerClient}); or the
+ * refusal is an INSTALL-fault read refusal ({@see ToolRefusalException::$installFault}), which
+ * {@see BoardToolDispatcher} never hands to {@see advise()} — such a refusal names an argument
+ * only to say which read failed, and "update your client" is the wrong fix for a fault that is
+ * the board's or the install's (r3-m3). The declared case is byte-identical to the text before
+ * this existed. A call whose version
  * {@see ClientVersion} reduced to null — none sent (an old client, a hand-run `bridge:tools-call`,
  * `bridge:check --probe-tools`) or one it refused (wrong type, over-long, a character outside its
  * whitelist) — gets the "could not read a client version" clause, which names no cause because

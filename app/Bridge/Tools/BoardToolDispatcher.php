@@ -144,7 +144,10 @@ final class BoardToolDispatcher
 
             // card#10566 / DL-426: every tool refusal, in ONE place, rather than at each of the
             // throw sites that name an argument — a refusal added later cannot ship without it.
-            return DispatchOutcome::failure(422, RemedyText::advise($caller, $tool, $e->getMessage()));
+            // r3-m3: EXCEPT an install-fault read refusal — the argument is named only to say
+            // which read failed, and "update your client" is the wrong fix for a board or
+            // install fault. Skipped by the exception's own marker, never by matching text.
+            return DispatchOutcome::failure(422, $e->installFault ? $e->getMessage() : RemedyText::advise($caller, $tool, $e->getMessage()));
         } catch (RequestException $e) {
             // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
             // leak the upstream body.

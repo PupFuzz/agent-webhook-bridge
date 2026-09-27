@@ -126,6 +126,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#3' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Tools/BoardToolDispatcher.php::dispatch#4' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/CallerClient.php::reporting#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/SeatKanbanUser.php::lookup#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/ToolCallBody.php::parse#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

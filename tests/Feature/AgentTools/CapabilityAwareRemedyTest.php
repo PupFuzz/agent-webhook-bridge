@@ -503,4 +503,37 @@ class CapabilityAwareRemedyTest extends TestCase
     {
         $this->assertStringContainsString('(default '.BoardMyCardsTool::DEFAULT_MAX_CARDS.')', self::TODAY_LIMIT_REFUSAL);
     }
+
+    /**
+     * r3-m3: the `tag` read refusal names `` `tag` `` only to say which read failed — the
+     * failure is the board's (a 403 on the search) or the install's, never the caller's
+     * arguments. An old client must NOT be told to update its client over a fault it cannot fix
+     * that way; it gets exactly the pre-DL-426 text, unchanged since `origin/dev` 20f3d70.
+     */
+    public function test_a_tag_read_that_the_board_refuses_gets_todays_text_with_no_update_client_clause(): void
+    {
+        $today = 'board_my_cards: the bridge could not read the cards carrying your `tag` on your board 10 (the board answered 403) — so NO cards were returned — this is not an empty window. This is an INSTALL fault, not something your arguments can fix: '
+            ."the bridge's writeback token was recognised but not permitted to READ — kanban gates the API on per-token abilities, and this one lacks `read` (on a card SEARCH board membership does NOT produce a 403: kanban floors the query to the caller's own boards and answers zero rows instead). Retrying will not change it; report it to your operator.";
+
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 50, 'name' => 'Backlog', 'position' => 1, 'lane_type' => 'backlog_inventory'],
+            ]]]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $url = urldecode($request->url());
+
+                return str_contains($url, 'tags:"lane:A"') ? Http::response(['message' => 'Forbidden'], 403) : Http::response(['data' => [], 'links' => ['next' => null]]);
+            },
+        ]);
+
+        foreach ([null, '0.9.12'] as $version) {
+            $error = (string) $this->callTool('board_my_cards', ['tag' => 'lane:A'], $version)->assertStatus(422)->json('error');
+            $this->assertSame($today, $error, var_export($version, true));
+            $this->assertStringNotContainsString('update your channel client', $error);
+            $this->assertStringNotContainsString('This bridge accepts', $error);
+            foreach (self::CLAUSES as $opening) {
+                $this->assertStringNotContainsString($opening, $error);
+            }
+        }
+    }
 }
