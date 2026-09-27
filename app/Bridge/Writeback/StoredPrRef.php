@@ -12,8 +12,11 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  * Until this existed each of them re-answered the question through its own boolean flags,
  * threaded from the handler in a fixed order, and three of them said "a different pull
  * request" of a card that carried only a bare `pr_number` — which, under DL-429 Decision 1,
- * names none. A card names a pull request only through a `pr_url` naming a real one
- * ({@see StoredPrUrlKind::NamesPr}); every wording that asserts a pull request reads that case.
+ * names none. A card names a pull request only through a `pr_url` naming a real one — this
+ * event's ({@see StoredPrUrlKind::NamesThisPr}) or another ({@see StoredPrUrlKind::NamesOtherPr}) —
+ * and only the second is "a different pull request": every wording that asserts one reads that
+ * case (DL-429 r5 split the two, after a card whose `pr_url` names THIS pull request was told it
+ * stays correlated to "the pull request it already names" as though that were another).
  *
  * TWO AXES, NOT ONE ENUM, because the card's two refs vary independently and a surface can owe
  * a sentence about each: a foreign repo's `.../pull/0` placeholder beside an unconfirmed equal
@@ -45,8 +48,10 @@ final class StoredPrRef
 
         $storedUrl = $payload['pr_url'] ?? null;
         $parsedUrl = PrUrlRef::parse($storedUrl, $refs);
+        $tracked = TrackedCardRef::fromPayload($payload, $refs);
         $url = match (true) {
-            TrackedCardRef::fromPayload($payload, $refs)->kind === TrackedRefKind::PrUrl => StoredPrUrlKind::NamesPr,
+            $tracked->namesPr($repo, $eventPr, $refs) => StoredPrUrlKind::NamesThisPr,
+            $tracked->kind === TrackedRefKind::PrUrl => StoredPrUrlKind::NamesOtherPr,
             ($storedUrl ?? '') === '' => StoredPrUrlKind::None,
             $parsedUrl === null => StoredPrUrlKind::NotAPrUrl,
             $parsedUrl->canonRepo === $refs->canonicalizeSource($repo) => StoredPrUrlKind::PlaceholderThisRepo,
@@ -64,10 +69,10 @@ final class StoredPrRef
         return new self($url, $number);
     }
 
-    /** Does the card name a pull request at all — a `pr_url` naming a real one, of any repo? */
+    /** Does the card name a pull request at all — a `pr_url` naming a real one, this event's or another? */
     public function namesPr(): bool
     {
-        return $this->url === StoredPrUrlKind::NamesPr;
+        return $this->url === StoredPrUrlKind::NamesThisPr || $this->url === StoredPrUrlKind::NamesOtherPr;
     }
 
     /**

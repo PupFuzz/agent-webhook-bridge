@@ -2564,6 +2564,59 @@ class KanbanMoveCardHandlerTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'the card\'s pr_number matches this PR\'s, but no pr_url confirms which repo it belongs to'))->once();
     }
 
+    /**
+     * DL-429 r5 — CONTROL for the bare-number log line in the test below: a card whose `pr_url`
+     * names a real pull request that is not this one DOES track a different PR, and both the
+     * log line and the note say so.
+     */
+    public function test_an_uncorroborated_refusal_of_a_card_whose_pr_url_names_another_pr_logs_a_different_pr(): void
+    {
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49,
+                'payload' => ['pr_number' => 900, 'pr_url' => 'https://github.com/owner/repo/pull/900'],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("this card already tracks a\ndifferent pull request (`pr_url` `https://github.com/owner/repo/pull/900`).", $notes[0]);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'head branch, and the card already tracks a DIFFERENT PR'))->once();
+    }
+
+    /**
+     * DL-429 r5 — a title-only refusal of a card whose `pr_number` is not a pull-request number
+     * at all (DL-309): the note and the PR comment already said so, and the log line said "the
+     * card already tracks a DIFFERENT PR". (Log the different-PR words for it ⇒ RED.)
+     */
+    public function test_an_uncorroborated_refusal_of_a_pr_number_naming_no_pull_request_logs_that(): void
+    {
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 'PR 12 of 34'],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, "head branch, and the card's pr_number is not a pull-request number, so it names no pull request"))->once();
+        Log::shouldNotHaveReceived('warning', [\Mockery::on(fn ($msg) => str_contains((string) $msg, 'DIFFERENT PR')), \Mockery::any()]);
+    }
+
     public function test_the_uncorroborated_refusal_is_recorded_on_the_card(): void
     {
         // The already-logged path (DL-270). The log and the alert are the OPERATOR's
@@ -2593,7 +2646,10 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertStringContainsString('or correct both refs by hand', $notes[0]);
         $this->assertStringContainsString('(`kbcard patch --task 5 --pr <number> --pr-url <url>`) so this card names it.', $notes[0]);
         $this->assertStringNotContainsString('different pull request', $notes[0]);
-        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'and the card already tracks a DIFFERENT PR'))->once();
+        // DL-429 r5 — the log line said "the card already tracks a DIFFERENT PR" of this same
+        // bare number; it now says what the note says, in the shared words.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'head branch, and the card carries a different pr_number — a bare number no `pr_url` attributes to a repo, so it names no pull request'))->once();
+        Log::shouldNotHaveReceived('warning', [\Mockery::on(fn ($msg) => str_contains((string) $msg, 'DIFFERENT PR')), \Mockery::any()]);
         // The pre-existing signal is ADDED TO, never replaced.
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'card_token_uncorroborated');
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'only in the PR title'))->once();
@@ -3168,6 +3224,89 @@ pull request it already names', $notes[0]);
         $this->assertCount(1, $notes);
         $this->assertStringContainsString('the card keeps `see the linked PR`', $notes[0]);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * DL-429 r5 — the card's `pr_url` names THIS pull request and its `pr_number` another
+     * number. The stamp keeps the number (it never overwrites a value a card holds), and the
+     * default heading said the card "stays correlated to the pull request it already names" and
+     * called this one a "second pull request" — the pull request its `pr_url` names IS this
+     * one. (Send it through the default heading ⇒ RED.)
+     */
+    public function test_a_differing_pr_number_beside_a_pr_url_naming_this_pull_request_says_so(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/7',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 7, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/7']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("A pull request in `owner/repo` names this card, and the card's `pr_url`\nalready names this pull request — but its `pr_number` holds a different\nnumber, and a stamp never overwrites a value a card holds.", $notes[0]);
+        $this->assertStringContainsString('- `pr_number` — the card keeps `148`; this pull request offered `7`', $notes[0]);
+        $this->assertStringContainsString('(`kbcard patch --task 5 --pr <number>`)', $notes[0]);
+        $this->assertStringNotContainsString('it already names', $notes[0]);
+        $this->assertStringNotContainsString('second pull request', $notes[0]);
+    }
+
+    /**
+     * DL-429 r5 — a card whose `pr_url` is an operator's free text names no pull request, so
+     * the default heading's "stays correlated to the pull request it already names" was false.
+     * `test_a_kept_pr_url_naming_another_pull_request_withholds_the_pr_number` is the control.
+     */
+    public function test_a_free_text_pr_url_is_not_called_the_pull_request_the_card_names(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_url' => 'see the linked PR',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("A pull request in `owner/repo` names this card, but the card's `pr_url` holds a\nvalue that is not a pull-request URL, so it names no pull request, and a stamp\nnever overwrites a value a card holds.", $notes[0]);
+        $this->assertStringContainsString('this card keeps the `pr_url` it holds:', $notes[0]);
+        $this->assertStringContainsString('- `pr_number` — not written either', $notes[0]);
+        $this->assertStringNotContainsString('it already names', $notes[0]);
+        $this->assertStringNotContainsString('second pull request', $notes[0]);
+    }
+
+    /**
+     * DL-429 r5 — only the `dl_number` was dropped. The default heading said the card "stays
+     * correlated to the pull request it already names" and called this one a "second pull
+     * request" — of a card here naming no pull request at all, and in general of a card whose
+     * pull-request refs this drop says nothing about.
+     */
+    public function test_a_dropped_dl_number_alone_says_nothing_about_a_pull_request(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['dl_number' => 'DL-0099']]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42']));
+
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("A pull request in `owner/repo` names this card, but the card already carries a\ndifferent `dl_number` — and a card carries one of each, first write wins. So\nits `dl_number` was **not** written, and this card keeps the one it holds:", $notes[0]);
+        $this->assertStringContainsString('(`kbcard patch --task 5 --dl <DL>`)', $notes[0]);
+        $this->assertStringNotContainsString('pull request it already names', $notes[0]);
+        $this->assertStringNotContainsString('second pull request', $notes[0]);
     }
 
     // --- card#7212: the success record names the board the write LANDED on ---

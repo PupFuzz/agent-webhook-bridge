@@ -32,8 +32,10 @@ class StoredPrRefTest extends TestCase
         return [
             'absent' => [[], StoredPrUrlKind::None],
             'empty' => [['pr_url' => ''], StoredPrUrlKind::None],
-            'this pull request' => [['pr_url' => 'https://github.com/owner/repo/pull/7'], StoredPrUrlKind::NamesPr],
-            'another repo\'s pull request' => [['pr_url' => 'https://github.com/other/repo/pull/7'], StoredPrUrlKind::NamesPr],
+            'this pull request' => [['pr_url' => 'https://github.com/owner/repo/pull/7'], StoredPrUrlKind::NamesThisPr],
+            'this pull request, compared canonically' => [['pr_url' => 'https://github.com/Owner/Repo/pull/7/files'], StoredPrUrlKind::NamesThisPr],
+            'another pull request of this repo' => [['pr_url' => 'https://github.com/owner/repo/pull/8'], StoredPrUrlKind::NamesOtherPr],
+            'the same number in another repo' => [['pr_url' => 'https://github.com/other/repo/pull/7'], StoredPrUrlKind::NamesOtherPr],
             'this repo\'s placeholder, compared canonically' => [['pr_url' => 'https://github.com/OWNER/repo/pull/0'], StoredPrUrlKind::PlaceholderThisRepo],
             'another repo\'s placeholder' => [['pr_url' => 'https://github.com/other/repo/pull/0'], StoredPrUrlKind::PlaceholderOtherRepo],
             'free text' => [['pr_url' => 'see the linked PR'], StoredPrUrlKind::NotAPrUrl],

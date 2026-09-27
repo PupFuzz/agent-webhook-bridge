@@ -609,7 +609,12 @@ class KanbanBlockReasonHandlerTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'the card\'s pr_number matches this PR\'s, but no pr_url confirms which repo it belongs to'))->once();
     }
 
-    public function test_an_uncorroborated_set_on_a_different_number_still_says_different_pr(): void
+    /**
+     * DL-429 r5 — a card carrying only a differing BARE `pr_number` names no pull request
+     * (Decision 1), so the log line's "the card already tracks a DIFFERENT PR" was false. It now
+     * says what the card carries, in the note's shared words. The `pr_url` card below is the control.
+     */
+    public function test_an_uncorroborated_set_on_a_different_bare_number_says_it_names_no_pr(): void
     {
         $this->writeWriteback();
         $this->writeToken();
@@ -617,6 +622,24 @@ class KanbanBlockReasonHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::response(['data' => [
                 'id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'head branch, and the card carries a different pr_number — a bare number no `pr_url` attributes to a repo, so it names no pull request'))->once();
+        Log::shouldNotHaveReceived('warning', [\Mockery::on(fn ($msg) => str_contains((string) $msg, 'DIFFERENT PR')), \Mockery::any()]);
+    }
+
+    public function test_an_uncorroborated_set_on_a_card_whose_pr_url_names_another_pr_still_says_different_pr(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'block_reason' => null,
+                'payload' => ['pr_number' => 900, 'pr_url' => 'https://github.com/owner/repo/pull/900'],
             ]]),
         ]);
 

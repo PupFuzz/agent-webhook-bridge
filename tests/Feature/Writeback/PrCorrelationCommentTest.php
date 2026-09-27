@@ -14,6 +14,7 @@ use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\GitHubWriteDebt;
 use App\Bridge\Writeback\PrCorrelationComment;
 use App\Bridge\Writeback\PrCorrelationCommenter;
+use App\Bridge\Writeback\StoredPrRef;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Models\AgentDispatch;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -606,6 +607,69 @@ class PrCorrelationCommentTest extends TestCase
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('card#5 already carries a different `pr_number`, and the first value written wins; a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request\'s, so the `pr_number` and `pr_url` this pull request carries were not recorded on card#5.', $body);
         $this->assertStringNotContainsString('placeholder', $body);
+    }
+
+    /**
+     * DL-429 r5 — a close of a card whose `pr_url` names THIS pull request but whose `pr_number`
+     * holds another number: the card names this pull request, so "it tracks a different pull
+     * request" was false. The warning stands — the number may be a replacement's — in words
+     * true of the card. `test_closed_unmerged_on_a_card_whose_pr_url_names_the_replacement_says_a_different_pull_request`
+     * is the control.
+     */
+    public function test_closed_unmerged_on_a_card_whose_pr_url_names_this_pull_request_does_not_claim_a_different_one(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 739);
+        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/719';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
+        $this->assertStringContainsString('**Check card#5: its `pr_url` names this pull request, but its `pr_number` is a different number.**', $body);
+        $this->assertStringContainsString('If that number belongs to a pull request that supersedes this one, this close may have moved card#5 to workflow stage 49 even though its work continues there.', $body);
+        $this->assertStringNotContainsString('different pull request', $body);
+        $this->assertStringNotContainsString('739', $body);
+    }
+
+    /**
+     * DL-429 r5 — the two causes decided against the card's refs are rendered only from the
+     * card's `StoredPrRef` (and, for a dropped ref, the keys it dropped). There was a fallback
+     * wording for a caller passing neither, and it said "a different pull request" of a card
+     * nobody had read; no production caller builds one, so it is now a render failure —
+     * logged, not posted, not owed. (Restore a fallback wording ⇒ a comment is posted ⇒ RED.)
+     */
+    /** @param  array<string, mixed>  $refusalContext */
+    #[DataProvider('cardSideCauses')]
+    public function test_a_card_side_cause_without_the_cards_stored_refs_is_not_rendered(string $cause, array $refusalContext): void
+    {
+        $this->fakePeers();
+        Log::spy();
+        $mapping = WritebackConfig::loadDefault()?->mappingFor(self::REPO);
+        $this->assertNotNull($mapping);
+        $payload = ['repo' => self::REPO, 'outcome' => 'closed_unmerged', 'card_id' => 5]
+            + PrCorrelationComment::evidence('closed_unmerged', 702, 'feat/thing', 'feat: a thing (closes card#5)');
+
+        (new PrCorrelationCommenter)->report($payload, $cause, $mapping, $refusalContext);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []) => str_starts_with($message, 'pr_correlation_comment: NOT posted')
+            && ($context['reason'] ?? null) === 'unexpected')->once();
+        $this->assertSame([], $this->github->requests, 'nothing rendered, so nothing reached GitHub');
+        $this->assertSame([], $this->owedComments());
+    }
+
+    /** @return array<string, array{string, array<string, mixed>}> */
+    public static function cardSideCauses(): array
+    {
+        $stored = StoredPrRef::of(['payload' => ['pr_number' => 739]], self::REPO, 702);
+
+        return [
+            'title-only refusal, no stored refs' => ['card_token_uncorroborated', []],
+            'dropped ref, no stored refs' => ['correlation_ref_not_stamped', ['dropped' => ['pr_number']]],
+            'dropped ref, no dropped key' => ['correlation_ref_not_stamped', ['stored' => $stored]],
+        ];
     }
 
     // --- success, redelivery, POST failure, scope ---------------------------------------------------

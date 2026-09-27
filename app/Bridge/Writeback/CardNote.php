@@ -58,9 +58,10 @@ final class CardNote
 
     /**
      * What a bare `pr_number` that differs from this pull request's is (DL-429 Decision 1) — one
-     * wording for every surface that reports one: the corroboration refusal's note here and the
-     * pull-request comment ({@see PrCorrelationComment}). The stamp's drop heading carries the
-     * same words wrapped for its heredoc; `StoredPrRefTest` holds the three together.
+     * wording for every surface that reports one: the corroboration refusal's note here, its log
+     * line ({@see CardTokenCorroboration::refusalCause}) and the pull-request comment
+     * ({@see PrCorrelationComment}). The stamp's drop heading carries the same words wrapped for
+     * its heredoc; `StoredPrRefTest` holds it to this constant.
      */
     public const BARE_NUMBER = 'a bare number no `pr_url` attributes to a repo, so it names no pull request';
 
@@ -84,7 +85,11 @@ final class CardNote
      * Both are rendered, because "which PR won" is the first question a reader has and
      * neither value alone answers it.
      *
-     * The headings, first match wins:
+     * The headings, one table, first match wins. Only the sixth says the card names a pull
+     * request, and it is reached only when the card's `pr_url` names ANOTHER one
+     * ({@see StoredPrUrlKind::NamesOtherPr}); every other shape gets a heading saying what the
+     * card really holds (DL-429 r5 — the sixth used to be the fallback, and so said "the pull
+     * request it already names" of cards naming none):
      *  - a dropped `pr_url` the card keeps as ANOTHER repo's `.../pull/0` placeholder: the card
      *    names a REPO it was deliberately qualified to, and no pull request. A `pr_number`
      *    beside it does not change that — a bare number names no pull request (DL-429) — so
@@ -98,10 +103,17 @@ final class CardNote
      *    same-numbered pull request in another repo;
      *  - a dropped `pr_number` that is not a pull-request number at all (`0`, free text —
      *    DL-309): it does not DIFFER from this one, it names none;
+     *  - a dropped `pr_number` that differs beside a `pr_url` naming THIS pull request: the card
+     *    already names this one, so it is neither "a second pull request" nor correlated to
+     *    another — its two refs disagree;
      *  - a dropped `pr_number` that differs and that no `pr_url` of the card's attributes to a
-     *    repo: it names no pull request (DL-429 Decision 1), so "the pull request it already
-     *    names" would be false;
-     *  - otherwise the default heading.
+     *    repo: it names no pull request (DL-429 Decision 1);
+     *  - a dropped PR ref beside a `pr_url` naming ANOTHER pull request: the card stays
+     *    correlated to the pull request it already names;
+     *  - a dropped `pr_url` (with no `pr_number` dropped) that is not a pull-request URL — an
+     *    operator's free text, the one remaining shape the stamp drops rather than writes over;
+     *  - otherwise only the `dl_number` was dropped, and the heading says nothing about a pull
+     *    request: the card's pull-request refs are not what this drop is about.
      *
      * $withheldPrNumber is this pull request's number when the stamp did NOT write it to a
      * card that had none (DL-429 r1): `pr_number` is written only beside a `pr_url` naming
@@ -139,8 +151,13 @@ final class CardNote
                 .' naming this pull request; this pull request offered `'.$withheldPrNumber."`\n";
         }
 
-        if (isset($dropped['pr_url']) && $stored->url === StoredPrUrlKind::PlaceholderOtherRepo) {
-            return new self($marker, <<<BODY
+        $numberDropped = isset($dropped['pr_number']);
+        $urlDropped = isset($dropped['pr_url']);
+        $patchBoth = sprintf(self::PATCH_BOTH_REFS, $cardId);
+        $unconfirmed = self::NUMBER_UNCONFIRMED;
+
+        $body = match (true) {
+            $urlDropped && $stored->url === StoredPrUrlKind::PlaceholderOtherRepo => <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a
                 different correlation ref — a repo-only placeholder set before any pull
                 request existed, and a card carries one of each, first write wins. So the
@@ -150,17 +167,10 @@ final class CardNote
                 {$lines}
                 Nothing else about the card was changed. This pull request is not
                 reachable by a by-ref lookup on this card; record the link by hand if you need it.
-                BODY);
-        }
-
-        $numberDropped = isset($dropped['pr_number']);
-
-        if ($numberDropped && $stored->number === StoredPrNumberKind::SameNumber) {
-            $why = self::NUMBER_UNCONFIRMED;
-
-            return new self($marker, <<<BODY
+                BODY,
+            $numberDropped && $stored->number === StoredPrNumberKind::SameNumber => <<<BODY
                 A pull request in `{$repo}` names this card, and its `pr_number` matches the
-                card's own — but {$why}, so
+                card's own — but {$unconfirmed}, so
                 a matching number cannot be told apart from a same-numbered pull request in a
                 DIFFERENT repo. So the refs below were **not** written, and this card's
                 existing `pr_number` is left exactly as it was:
@@ -169,11 +179,8 @@ final class CardNote
                 Nothing else about the card was changed. If this pull request really is the
                 one this card already tracks, stamp its `pr_url` by hand
                 (`kbcard patch --task {$cardId} --pr-url <url>`) so a future event can verify it.
-                BODY);
-        }
-
-        if ($numberDropped && $stored->number === StoredPrNumberKind::NamesNoPr) {
-            return new self($marker, <<<BODY
+                BODY,
+            $numberDropped && $stored->number === StoredPrNumberKind::NamesNoPr => <<<BODY
                 A pull request in `{$repo}` names this card, but the card's `pr_number`
                 holds a value that is not a pull-request number, and a stamp never
                 overwrites a value a card holds. A `pr_url` is written only beside a
@@ -184,11 +191,18 @@ final class CardNote
                 Nothing else about the card was changed. If this pull request is the one
                 this card tracks, correct both refs by hand
                 (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`).
-                BODY);
-        }
+                BODY,
+            $numberDropped && $stored->url === StoredPrUrlKind::NamesThisPr => <<<BODY
+                A pull request in `{$repo}` names this card, and the card's `pr_url`
+                already names this pull request — but its `pr_number` holds a different
+                number, and a stamp never overwrites a value a card holds. So the refs
+                below were **not** written, and this card keeps the number it holds:
 
-        if ($numberDropped && $stored->numberIsBare()) {
-            return new self($marker, <<<BODY
+                {$lines}
+                If this pull request is the one this card tracks, correct its `pr_number` by
+                hand (`kbcard patch --task {$cardId} --pr <number>`).
+                BODY,
+            $numberDropped && $stored->numberIsBare() => <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a
                 different `pr_number` — a bare number no `pr_url` attributes to a repo, so it
                 names no pull request. A card carries one of each, first write wins, so the
@@ -199,19 +213,39 @@ final class CardNote
                 this card tracks, replace both refs by hand
                 (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`); if not,
                 stamp the `pr_url` of the pull request the card's number belongs to.
-                BODY);
-        }
+                BODY,
+            ($numberDropped || $urlDropped) && $stored->url === StoredPrUrlKind::NamesOtherPr => <<<BODY
+                A pull request in `{$repo}` names this card, but the card already carries a
+                different correlation ref — and a card carries one of each, first write wins.
+                So the refs below were **not** written, and this card stays correlated to the
+                pull request it already names:
 
-        return new self($marker, <<<BODY
-            A pull request in `{$repo}` names this card, but the card already carries a
-            different correlation ref — and a card carries one of each, first write wins.
-            So the refs below were **not** written, and this card stays correlated to the
-            pull request it already names:
+                {$lines}
+                Nothing else about the card was changed. This second pull request is not
+                reachable by a by-ref lookup on this card; record the link by hand if you need it.
+                BODY,
+            $urlDropped => <<<BODY
+                A pull request in `{$repo}` names this card, but the card's `pr_url` holds a
+                value that is not a pull-request URL, so it names no pull request, and a stamp
+                never overwrites a value a card holds. So the refs below were **not** written,
+                and this card keeps the `pr_url` it holds:
 
-            {$lines}
-            Nothing else about the card was changed. This second pull request is not
-            reachable by a by-ref lookup on this card; record the link by hand if you need it.
-            BODY);
+                {$lines}
+                If this pull request is the one this card tracks, correct both refs by hand
+                ({$patchBoth}).
+                BODY,
+            default => <<<BODY
+                A pull request in `{$repo}` names this card, but the card already carries a
+                different `dl_number` — and a card carries one of each, first write wins. So
+                its `dl_number` was **not** written, and this card keeps the one it holds:
+
+                {$lines}
+                If this pull request's DL is the one this card should carry, replace it by
+                hand (`kbcard patch --task {$cardId} --dl <DL>`).
+                BODY,
+        };
+
+        return new self($marker, $body);
     }
 
     /**
@@ -220,10 +254,12 @@ final class CardNote
      * (DL-270). The refusal is the right outcome — the note exists so the card shows that an event
      * claiming to be about it was turned away, rather than that nothing happened.
      *
-     * What the card holds is said from $stored, in one place below. Only a `pr_url` naming a
-     * real pull request makes it "a different pull request", shown by that url — two
-     * same-numbered PRs differ only by repo (DL-429), and "`148` is not `148`" would explain
-     * nothing. Otherwise the card holds only a `pr_number`, which names no pull request
+     * What the card holds is said from $stored, in one place below — the same four cases, in the
+     * same order, as the refusal's log line ({@see CardTokenCorroboration::refusalCause}) and PR
+     * comment. Only a `pr_url` naming ANOTHER pull request ({@see StoredPrUrlKind::NamesOtherPr};
+     * the gate never refuses a card whose `pr_url` names this one) makes it "a different pull
+     * request", shown by that url — two same-numbered PRs differ only by repo (DL-429), and
+     * "`148` is not `148`" would explain nothing. Otherwise the card holds only a `pr_number`, which names no pull request
      * (DL-429 Decision 1), and the note says which kind: EQUAL to this event's with nothing
      * confirming its repo (in the stamp's own unconfirmed-number words), not a pull-request
      * number at all (DL-309), or a bare number. The gate refuses only a card that tracks
@@ -247,7 +283,7 @@ final class CardNote
         $number = self::render(CardTokenCorroboration::cardPr($card));
         $patchBoth = sprintf(self::PATCH_BOTH_REFS, $cardId);
         [$tracks, $orFix] = match (true) {
-            $stored->namesPr() => [
+            $stored->url === StoredPrUrlKind::NamesOtherPr => [
                 "{$which} with nothing in its head branch agreeing, and this card already tracks a\n"
                     .'different pull request (`pr_url` `'.self::render(CardTokenCorroboration::cardPrUrl($card)).'`).',
                 '',

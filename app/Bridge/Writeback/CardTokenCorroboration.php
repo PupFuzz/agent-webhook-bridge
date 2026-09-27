@@ -71,15 +71,23 @@ final class CardTokenCorroboration
     }
 
     /**
-     * Why {@see refuses} refused this card, for the two refusal log lines: the card tracks a
-     * different pull request, or ({@see StoredPrRef::numberUnconfirmed}) the same number whose
-     * repo nothing on the card confirms.
+     * Why {@see refuses} refused this card, for the two refusal log lines — the same four cases,
+     * in the same order, as the refusal's card note ({@see CardNote::refusedUncorroboratedMove})
+     * and PR comment: only a `pr_url` naming another pull request is "a DIFFERENT PR"; otherwise
+     * the card holds only a `pr_number`, which names no pull request (DL-429 Decision 1) — the
+     * same number with nothing confirming its repo ({@see StoredPrRef::numberUnconfirmed}), a
+     * value that is not a pull-request number (DL-309), or a bare different number. The gate
+     * never refuses a card whose `pr_url` names this pull request, nor one tracking nothing, so
+     * the last arm is the bare number.
      */
     public static function refusalCause(StoredPrRef $stored): string
     {
-        return $stored->numberUnconfirmed()
-            ? "the card's pr_number matches this PR's, but no pr_url confirms which repo it belongs to"
-            : 'the card already tracks a DIFFERENT PR';
+        return match (true) {
+            $stored->url === StoredPrUrlKind::NamesOtherPr => 'the card already tracks a DIFFERENT PR',
+            $stored->numberUnconfirmed() => "the card's pr_number matches this PR's, but no pr_url confirms which repo it belongs to",
+            $stored->number === StoredPrNumberKind::NamesNoPr => "the card's pr_number is not a pull-request number, so it names no pull request",
+            default => 'the card carries a different pr_number — '.CardNote::BARE_NUMBER,
+        };
     }
 
     /**
