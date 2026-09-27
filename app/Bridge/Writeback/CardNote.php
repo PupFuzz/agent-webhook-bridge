@@ -49,6 +49,15 @@ final class CardNote
      */
     public const PREFIX = '[bridge:correlation-note';
 
+    /**
+     * Why a `pr_number` EQUAL to this pull request's is still not taken as its own (DL-429,
+     * {@see CardTokenCorroboration::matchesNumberUnconfirmed}) — one wording for both notes
+     * that report it, the stamp's dropped match and the corroboration refusal.
+     */
+    private const NUMBER_UNCONFIRMED = 'the card carries no `pr_url` confirming WHICH repo that number belongs to.'
+        .' A number alone does not identify a pull request (two repos can share one, and a repo'
+        .' moved to a new GitHub org restarts its numbers)';
+
     private function __construct(
         public readonly string $marker,
         private readonly string $body,
@@ -133,11 +142,11 @@ final class CardNote
         }
 
         if ($keptNumberUnverifiedRepo) {
+            $why = self::NUMBER_UNCONFIRMED;
+
             return new self($marker, <<<BODY
                 A pull request in `{$repo}` names this card, and its `pr_number` matches the
-                card's own — but the card carries no `pr_url` confirming WHICH repo that
-                number belongs to. A number alone does not identify a pull request (two repos
-                can share one, and a repo moved to a new GitHub org restarts its numbers), so
+                card's own — but {$why}, so
                 a matching number cannot be told apart from a same-numbered pull request in a
                 DIFFERENT repo. So the refs below were **not** written, and this card's
                 existing `pr_number` is left exactly as it was:
@@ -163,13 +172,16 @@ final class CardNote
 
     /**
      * The move REFUSED because the `card#` token was title-only, uncorroborated by the
-     * head branch, and this card already tracks a different pull request (DL-270). The
+     * head branch, and this card already tracks a pull request not provably this one (DL-270). The
      * refusal is the right outcome — the note exists so the card shows that an event
      * claiming to be about it was turned away, rather than that nothing happened.
      *
      * What the card tracks is shown by its `pr_url` where that names a pull request — two
      * same-numbered PRs differ only by repo (DL-429), and "`148` is not `148`" would explain
-     * nothing — else by its `pr_number`.
+     * nothing — else by its `pr_number`. A bare `pr_number` EQUAL to this event's is not "a
+     * different pull request": the gate refused it because nothing confirms its repo
+     * ({@see CardTokenCorroboration::matchesNumberUnconfirmed}), and the note says that
+     * instead, in the stamp's own unconfirmed-number words.
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
      */
@@ -188,9 +200,24 @@ final class CardNote
             ? "A pull request in `{$repo}` (`pr_number` `{$event}`) cited this card in its TITLE"
             : "An event from `{$repo}` carrying no pull-request number cited this card in a TITLE";
 
-        return new self(
-            self::marker('move-refused-uncorroborated-card-token', ['card' => (string) $cardId, 'pr_number' => $event]),
-            <<<BODY
+        $marker = self::marker('move-refused-uncorroborated-card-token', ['card' => (string) $cardId, 'pr_number' => $event]);
+
+        if (CardTokenCorroboration::matchesNumberUnconfirmed($card, $eventPr)) {
+            $tracks = "{$which} with nothing in its head branch agreeing, and this card already tracks `pr_number` `{$tracked}` — the same number — but "
+                .self::NUMBER_UNCONFIRMED.', so the card cannot be shown to track THIS pull request.';
+
+            return new self($marker, <<<BODY
+                {$tracks} A title is prose — a descriptive
+                citation of somebody else's card is written exactly like a claim to own this one —
+                so the move was **refused** and nothing on this card was changed.
+
+                If that pull request really is work on this card, name the card in its head branch
+                (`card-{$cardId}-…`) so the token is corroborated, or stamp its `pr_url` by hand
+                (`kbcard patch --task {$cardId} --pr-url <url>`) so this card names it.
+                BODY);
+        }
+
+        return new self($marker, <<<BODY
             {$which} with nothing in its head branch agreeing, and this card already tracks a
             different pull request (`{$cardKey}` `{$tracked}`). A title is prose — a descriptive
             citation of somebody else's card is written exactly like a claim to own this one —
@@ -198,8 +225,7 @@ final class CardNote
 
             If that pull request really is work on this card, name the card in its head branch
             (`card-{$cardId}-…`) so the token is corroborated.
-            BODY
-        );
+            BODY);
     }
 
     /**

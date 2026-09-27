@@ -6,9 +6,10 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 
 /**
  * The single authority for "which (repo, PR) does a card's payload reference" — the
- * PR-reference precedence shared by bridge:reconcile (ReconcileCommand::resolveTracked),
- * the DL-207 promote-on-release board scan (KanbanPromoteReleasedHandler) and the DL-270
- * title-only corroboration gate ({@see CardTokenCorroboration}). Extracted so the consumers
+ * PR-reference precedence shared by every consumer that asks it (bridge:reconcile, the
+ * DL-207 promote-on-release scan, the DL-270 corroboration gate, the dependabot handler's
+ * repo attribution and the move handler's correlation stamp among them —
+ * `grep -rn 'TrackedCardRef::' app/` prints the population). Extracted so the consumers
  * can't diverge on it (canon #5): a card's PR is derived from the SAME reference resolution
  * whichever leg touched it last.
  *
@@ -28,8 +29,9 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  *      Parsed by {@see PrUrlRef}, the shared "which PR does this URL name" primitive. A
  *      `.../pull/0` placeholder (the source-only qualifier `kbcard --pr-url` stamps) is
  *      NOT a real PR: it falls through to `pr_number` — and does NOT qualify it (card#9850:
- *      the stamp writes `pr_number` add-if-missing while keeping a FOREIGN-repo placeholder,
- *      so the placeholder's repo is not evidence of which repo the number came from).
+ *      until DL-429 the stamp wrote `pr_number` add-if-missing while keeping a FOREIGN-repo
+ *      placeholder, cards stamped then still carry that shape, and `kbcard --pr` can still
+ *      write a bare number, so the placeholder's repo is not evidence of the number's).
  *   2. bare `pr_number` ⇒ {@see TrackedRefKind::BarePrNumber}: the number is recorded for the
  *      caller's report, and no consumer may read it as a pull request.
  *   3. `dl_number` with no PR reference ({@see TrackedRefKind::DlOnly}) — DL→PR resolution

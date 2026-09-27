@@ -115,6 +115,10 @@ final class PrCorrelationComment
         private readonly ?string $dl,
         private readonly bool $titleClosesDl,
         private readonly ?string $stampDl,
+        /** the card's `pr_number` EQUALS this pull request's and no `pr_url` confirms its repo (DL-429) */
+        private readonly bool $prNumberUnconfirmed,
+        /** the stamp withdrew this pull request's `pr_url` because it dropped the `pr_number` (DL-429) */
+        private readonly bool $prUrlWithdrawn,
     ) {}
 
     public static function isCause(string $reason): bool
@@ -165,7 +169,8 @@ final class PrCorrelationComment
      * id this comment names are the ones the card's own board uses (card#9850 / DL-404).
      *
      * @param  array<string, mixed>  $payload
-     * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped
+     * @param  array<string, mixed>  $refusalContext  `dropped` => the ref keys a stamp dropped;
+     *                                                `pr_number_unconfirmed` / `pr_url_withdrawn` => why (DL-429)
      */
     public static function fromPayload(array $payload, string $cause, WritebackMapping $mapping, array $refusalContext = []): ?self
     {
@@ -199,6 +204,8 @@ final class PrCorrelationComment
             $dl,
             ($payload['title_closes_dl'] ?? null) === true,
             self::dl($payload['stamp_dl'] ?? null),
+            ($refusalContext['pr_number_unconfirmed'] ?? null) === true,
+            ($refusalContext['pr_url_withdrawn'] ?? null) === true,
         );
     }
 
@@ -305,7 +312,7 @@ final class PrCorrelationComment
         $board = "board {$this->boardId}";
         $card = $this->cardId === null ? 'the card' : "card#{$this->cardId}";
         $task = $this->cardId === null ? '<card-id>' : (string) $this->cardId;
-        $byHand = "kbcard patch --task <card-id> --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>";
+        $byHand = "kbcard patch --task <card-id> --pr {$this->prNumber} --pr-url <this pull request's URL>\nkbcard move --task <card-id> --column <column>";
         $notMoved = 'Board not updated: no card was moved for this pull request.';
 
         return match ($this->cause) {
@@ -314,7 +321,7 @@ final class PrCorrelationComment
                 "No card on {$board} carries `dl_number` {$this->dl}, and no card token parsed to fall back to."
                     .($this->titleClosesDl ? '' : " The title does not close {$this->dl}, so the remedy does not stamp it."),
                 $this->titleClosesDl
-                    ? "kbcard patch --task <card-id> --dl {$this->dl} --pr {$this->prNumber}\nkbcard move --task <card-id> --column <column>"
+                    ? "kbcard patch --task <card-id> --dl {$this->dl} --pr {$this->prNumber} --pr-url <this pull request's URL>\nkbcard move --task <card-id> --column <column>"
                     : $byHand,
             ],
             self::TOKEN_UNREADABLE => [
@@ -349,7 +356,11 @@ final class PrCorrelationComment
                 "{$card} is on a different board than {$board}, so it was not moved.",
                 $byHand,
             ],
-            'card_token_uncorroborated' => [
+            'card_token_uncorroborated' => $this->prNumberUnconfirmed ? [
+                $notMoved,
+                "{$card} is named only in the title, the head branch does not name it, and {$card} carries this pull request's number but no `pr_url` confirming which repository that number belongs to, so it cannot be shown to track this pull request. A title can cite another card, so the move was refused.",
+                "# only if this pull request does finish {$card}:\nkbcard patch --task {$task} --pr-url <this pull request's URL>\nkbcard move --task {$task} --column <column>",
+            ] : [
                 $notMoved,
                 "{$card} is named only in the title, the head branch does not name it, and {$card} already tracks a different pull request. A title can cite another card, so the move was refused.",
                 "# only if this pull request does finish {$card}:\nkbcard move --task {$task} --column <column>",
@@ -358,16 +369,38 @@ final class PrCorrelationComment
         };
     }
 
+    /** @param  list<string>  $keys */
+    private static function keyList(array $keys): string
+    {
+        return implode(' and ', array_map(static fn (string $k): string => "`{$k}`", $keys));
+    }
+
     /** @return array{0: string, 1: string, 2: string} */
     private function unstampedRef(string $card, string $task): array
     {
-        $keys = $this->droppedRefs === [] ? 'correlation ref' : implode(' and ', array_map(static fn (string $k): string => "`{$k}`", $this->droppedRefs));
+        $keys = $this->droppedRefs === [] ? 'correlation ref' : self::keyList($this->droppedRefs);
         $was = count($this->droppedRefs) > 1 ? 'were' : 'was';
         $notRecorded = "the {$keys} this pull request carries {$was} not recorded on {$card}";
-        $why = "{$card} already carries a different {$keys}, and the first value written wins, so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";
         $prRefDropped = $this->droppedRefs === [] || array_intersect(['pr_number', 'pr_url'], $this->droppedRefs) !== [];
 
-        if ($this->outcome === 'closed_unmerged' && $prRefDropped) {
+        // What the card answers DIFFERENTLY excludes a pr_number equal to this pull request's
+        // (unconfirmed, not different) and a pr_url the stamp withdrew with the dropped number
+        // (the card may carry none) — DL-429. Calling either "different" is false on a public page.
+        $differing = array_values(array_diff(
+            $this->droppedRefs,
+            array_merge($this->prNumberUnconfirmed ? ['pr_number'] : [], $this->prUrlWithdrawn ? ['pr_url'] : []),
+        ));
+        $reasons = array_filter([
+            $differing !== [] || $this->droppedRefs === []
+                ? "{$card} already carries a different ".($differing === [] ? $keys : self::keyList($differing)).', and the first value written wins'
+                : '',
+            $this->prNumberUnconfirmed ? "{$card} already carries this pull request's `pr_number`, but no `pr_url` confirming which repository that number belongs to" : '',
+            $this->prUrlWithdrawn ? "a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request's" : '',
+        ]);
+        $why = implode('; ', $reasons).", so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";
+        $prRefDiffers = $this->droppedRefs === [] || array_intersect(['pr_number', 'pr_url'], $differing) !== [];
+
+        if ($this->outcome === 'closed_unmerged' && $prRefDiffers) {
             $stage = $this->stageId === null ? 'its `closed_unmerged` stage' : "workflow stage {$this->stageId}";
 
             return [
@@ -378,7 +411,7 @@ final class PrCorrelationComment
         }
 
         $flags = array_filter([
-            $prRefDropped ? "--pr {$this->prNumber}" : '',
+            $prRefDropped ? "--pr {$this->prNumber} --pr-url <this pull request's URL>" : '',
             in_array('dl_number', $this->droppedRefs, true) && $this->stampDl !== null ? '--dl '.$this->stampDl : '',
         ]);
 

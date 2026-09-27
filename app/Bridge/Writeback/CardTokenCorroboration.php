@@ -71,6 +71,39 @@ final class CardTokenCorroboration
     }
 
     /**
+     * Does the card's stored `pr_number` EQUAL $eventPr with no `pr_url` of the card's own
+     * naming a real pull request to confirm which repo it belongs to (DL-429)? The one
+     * definition of the "equal but unconfirmed" number, for both readers: the move handler's
+     * stamp drops such a match rather than trusting it, and a refusal of such a card by
+     * {@see refuses} is reported as unconfirmed rather than as "a DIFFERENT PR" — the number
+     * is the same, only its repo is unknown.
+     *
+     * @param  array<string, mixed>  $card  the card as already read by getCard()
+     */
+    public static function matchesNumberUnconfirmed(array $card, mixed $eventPr): bool
+    {
+        $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
+        $refs = new ExternalReferenceNormalizer;
+
+        return self::tracksPr(self::cardPr($card), $eventPr)
+            && TrackedCardRef::fromPayload($payload, $refs)->kind !== TrackedRefKind::PrUrl;
+    }
+
+    /**
+     * Why {@see refuses} refused this card, for the two refusal log lines: the card tracks a
+     * different pull request, or ({@see matchesNumberUnconfirmed}) the same number whose repo
+     * nothing on the card confirms.
+     *
+     * @param  array<string, mixed>  $card
+     */
+    public static function refusalCause(array $card, mixed $eventPr): string
+    {
+        return self::matchesNumberUnconfirmed($card, $eventPr)
+            ? "the card's pr_number matches this PR's, but no pr_url confirms which repo it belongs to"
+            : 'the card already tracks a DIFFERENT PR';
+    }
+
+    /**
      * The card's stored `pr_url` as kanban returned it, or null when absent — {@see cardPr}'s
      * sibling, logged beside it by both refusal sites because the repo is what tells two
      * same-numbered pull requests apart (DL-429).

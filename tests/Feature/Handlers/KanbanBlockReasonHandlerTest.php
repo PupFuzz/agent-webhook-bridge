@@ -587,6 +587,44 @@ class KanbanBlockReasonHandlerTest extends TestCase
             && $r['card_id'] === 5);
     }
 
+    /**
+     * DL-429 r2 — the overlay's twin of the move handler's equal-but-unconfirmed refusal: the
+     * log line says the number matches and its repo is unconfirmed, not "a DIFFERENT PR".
+     * The control is the different-PR card beside it.
+     */
+    public function test_an_uncorroborated_set_on_an_equal_but_unconfirmed_number_says_so(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 148],
+            ]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'the card\'s pr_number matches this PR\'s, but no pr_url confirms which repo it belongs to'))->once();
+    }
+
+    public function test_an_uncorroborated_set_on_a_different_number_still_says_different_pr(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'and the card already tracks a DIFFERENT PR'))->once();
+    }
+
     public function test_uncorroborated_set_lands_when_the_card_tracks_no_pr(): void
     {
         // The legitimate title-only draft PR — the reason refuse-all was declined on

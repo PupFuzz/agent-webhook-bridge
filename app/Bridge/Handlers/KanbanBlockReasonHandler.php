@@ -216,7 +216,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $repo, $payload['pr_number'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'block_reason.card_token_uncorroborated',
-                'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
+                'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause($card, $payload['pr_number'] ?? null),
                 [
                     'card_id' => $cardId, 'repo' => $repo,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),

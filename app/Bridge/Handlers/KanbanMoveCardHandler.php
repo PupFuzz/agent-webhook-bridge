@@ -62,7 +62,7 @@ use Throwable;
  *    is therefore a PARENT naming several legs that no one pull request may speak for
  *    (card#9929 — {@see ProgramCardGuard}, the one refusal here that withholds the STAMP as
  *    well as the move), an uncorroborated title-only
- *    `card#` names a card that already tracks a different PR, or the subject carried
+ *    `card#` names a card that already tracks a PR not provably this one (DL-270/DL-429), or the subject carried
  *    an unreadable card-shaped token naming some other card — DL-287) → alert + log + NO-OP.
  *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
@@ -371,13 +371,15 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // NOTE below is the one thing it does write (card#7064), and deliberately:
         // it appends a comment ROW, touching no value any correlation reader keys on,
         // so the refusal is reported without being weakened. Reachable only when the
-        // card already tracks a DIFFERENT PR — the gate's own predicate — so a title
-        // citing an uncorrelated card still writes nothing whatsoever.
+        // card already tracks a pull request not provably THIS one — a different one, or
+        // a bare pr_number equal to this PR's whose repo nothing confirms (DL-429); the
+        // gate's own predicate — so a title citing an uncorrelated card still writes
+        // nothing whatsoever.
         // Permanent refusal: log + no-op, never retry.
         if (CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $repo, $payload['stamp_pr'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'move_card.card_token_uncorroborated',
-                'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
+                'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and '.CardTokenCorroboration::refusalCause($card, $payload['stamp_pr'] ?? null),
                 [
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),
@@ -393,7 +395,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 CardNote::refusedUncorroboratedMove($cardId, $repo, $card, $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'card_token_uncorroborated', $mapping);
+            $this->comments->report($payload, 'card_token_uncorroborated', $mapping, ['pr_number_unconfirmed' => CardTokenCorroboration::matchesNumberUnconfirmed($card, $payload['stamp_pr'] ?? null)]);
 
             return;
         }
@@ -628,7 +630,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * whoever later wonders why that PR never correlated (card#7064). Which PR ends up
      * stamped changes in exactly ONE case, below: a `pr_url` holding the `.../pull/0`
      * source-only qualifier FOR THIS PR'S OWN REPO is now written over, because it names
-     * no pull request to preserve. The distinction that matters is DIFFERS, not
+     * no pull request to preserve — unless DL-429's pairing rule below withdraws it. The distinction that matters is DIFFERS, not
      * nothing-to-write: an idempotent replay of the card's OWN pull request offers exactly
      * what the card stores and stays silent, which is why the comparison is
      * {@see CardTokenCorroboration::tracksPr} rather than an empty-$refs test.
@@ -641,15 +643,21 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * being reported as the second PR it collides with. Only its own repo:
      * {@see placeholderThisPrMayReplace} (card#7064).
      *
-     * ⛔ `pr_number` IS WRITTEN, OR LEFT STANDING, ONLY BESIDE A `pr_url` NAMING THIS PULL
-     * REQUEST (DL-429) — the one this call writes, or the one the card already stores. A
-     * bare number names no pull request, so writing (or trusting) one with no such `pr_url`
-     * behind it minted a card every consumer skips and the corroboration gate refuses —
-     * refusing this very PR's next event. Where the url is not this PR's, or is absent
-     * altogether, the number is WITHHELD rather than minted; where the card already had a
-     * number that merely MATCHES this event's, with no `pr_url` to confirm it, that match is
-     * dropped as unverifiable rather than trusted, and any `pr_url` this event was about to
-     * add on the strength of that match is withdrawn with it.
+     * ⛔ THIS PULL REQUEST'S TWO REFS ARE STAMPED AS A PAIR OR NOT AT ALL (DL-429): on an
+     * event offering both (the classifier takes both from one pull request), this call writes
+     * a ref only where the card ends up with both naming this pull request. Its
+     * `pr_number` is written, or a stored one trusted as its own, only beside a `pr_url`
+     * naming this pull request — the one this call writes, or the one the card already
+     * stores. A bare number names no pull request, so writing (or trusting) one with no such
+     * `pr_url` behind it minted a card every consumer skips and the corroboration gate
+     * refuses — refusing this very PR's next event. Where the url is not this PR's, or is
+     * absent altogether, the number is WITHHELD rather than minted; where the card already
+     * had a number that merely MATCHES this event's, with no `pr_url` to confirm it, that
+     * match is dropped as unverifiable rather than trusted. And whenever this event's
+     * `pr_number` is dropped — that unverifiable match, or a stored number that DIFFERS —
+     * the `pr_url` it was about to add is withdrawn with it ({@see withdrawPendingPrUrl}),
+     * so a url for this pull request never lands beside a number that is not provably its
+     * own.
      *
      * $repo / $outcome are threaded in for the alert's dedup tuple only — the stamp itself
      * is keyed on the card. $mapping is threaded in for the success record's board pair
@@ -708,8 +716,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
         }
 
-        // pr_number — ⛔ WRITTEN, OR LEFT STANDING, ONLY BESIDE A pr_url NAMING THIS PULL
-        // REQUEST (DL-429). A number carries no repo, so on its own it names no pull request
+        // pr_number — ⛔ WRITTEN, OR TRUSTED AS THIS PULL REQUEST'S, ONLY BESIDE A pr_url
+        // NAMING THIS PULL REQUEST (DL-429). A stored number that DIFFERS is kept (first write
+        // wins) and the pr_url decided above is withdrawn with the dropped one. A number carries no repo, so on its own it names no pull request
         // (`TrackedRefKind::BarePrNumber`) — every consumer skips or refuses the card that
         // carries one, including this very gate on THIS pull request's next event. Two shapes:
         //
@@ -736,12 +745,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         //    `pr_url` this event was about to add alongside it.
         $withheldPr = null;
         $numberMatchUnverified = false;
+        $prUrlWithdrawn = false;
         $stampPr = $payload['stamp_pr'] ?? null;
         if (is_numeric($stampPr)) {
             $stored = $current['pr_number'] ?? null;
             $storedEmpty = ($stored ?? '') === '';
             if (! $storedEmpty && ! CardTokenCorroboration::tracksPr($stored, $stampPr)) {
                 $dropped['pr_number'] = ['card' => $stored, 'offered' => (int) $stampPr];
+                $prUrlWithdrawn = self::withdrawPendingPrUrl($dropped, $writePrUrl, $current);
             } elseif ($storedEmpty) {
                 $finalUrl = $writePrUrl ?? ($current['pr_url'] ?? null);
                 if (TrackedCardRef::fromPayload(['pr_url' => $finalUrl], $normalizer)->namesPr($repo, $stampPr, $normalizer)) {
@@ -749,13 +760,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 } else {
                     $withheldPr = (int) $stampPr;
                 }
-            } elseif ($offeringUrl && TrackedCardRef::fromPayload($current, $normalizer)->kind !== TrackedRefKind::PrUrl) {
+            } elseif ($offeringUrl && CardTokenCorroboration::matchesNumberUnconfirmed($card, $stampPr)) {
                 $dropped['pr_number'] = ['card' => $stored, 'offered' => (int) $stampPr];
                 $numberMatchUnverified = true;
-                if ($writePrUrl !== null) {
-                    $dropped['pr_url'] = ['card' => $current['pr_url'] ?? null, 'offered' => $writePrUrl];
-                    $writePrUrl = null;
-                }
+                $prUrlWithdrawn = self::withdrawPendingPrUrl($dropped, $writePrUrl, $current);
             }
         }
         if ($writePrUrl !== null) {
@@ -765,15 +773,15 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if ($dropped !== []) {
             $this->alerts->warnAndNotify(
                 'move_card.correlation_ref_not_stamped',
-                'kanban_move_card: a correlation ref this event carries was NOT stamped — the card already answers with a different value (a card correlates ONE pull request; first write wins)',
-                ['card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped, 'withheld_pr_number' => $withheldPr],
+                'kanban_move_card: a correlation ref this event carries was NOT stamped — the card already answers with a different value, or with a pr_number no pr_url confirms (a card correlates ONE pull request; first write wins)',
+                ['card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped, 'withheld_pr_number' => $withheldPr, 'pr_number_unconfirmed' => $numberMatchUnverified, 'pr_url_withdrawn' => $prUrlWithdrawn],
                 $repo, $outcome, $cardId, 'correlation_ref_not_stamped',
             );
             $this->recordCardNote(
                 CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptPrUrlIsPlaceholder, $withheldPr, $numberMatchUnverified),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
-            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, ['dropped' => array_keys($dropped)]);
+            $this->comments->report($payload, 'correlation_ref_not_stamped', $mapping, ['dropped' => array_keys($dropped), 'pr_number_unconfirmed' => $numberMatchUnverified, 'pr_url_withdrawn' => $prUrlWithdrawn]);
         }
 
         if ($refs === []) {
@@ -796,6 +804,31 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
         }
+    }
+
+    /**
+     * A `pr_number` this event offered was dropped, so the `pr_url` it was about to add
+     * beside it is dropped too (DL-429): written alone it would sit next to a number that is
+     * not this pull request's (a mismatch) or not provably so (an unverified match), and
+     * kanban's by-ref index would read the two refs off one card as two different pull
+     * requests. Recorded in the drop so the note names it; a no-op when no url was pending.
+     * True when it withdrew one, so the PR comment can say why the url went rather than call
+     * it a url the card already answers differently.
+     *
+     * @param  array<string, array{card: mixed, offered: mixed}>  $dropped
+     * @param  array<string, mixed>  $current
+     *
+     * @param-out null $writePrUrl
+     */
+    private static function withdrawPendingPrUrl(array &$dropped, ?string &$writePrUrl, array $current): bool
+    {
+        if ($writePrUrl === null) {
+            return false;
+        }
+        $dropped['pr_url'] = ['card' => $current['pr_url'] ?? null, 'offered' => $writePrUrl];
+        $writePrUrl = null;
+
+        return true;
     }
 
     /**
