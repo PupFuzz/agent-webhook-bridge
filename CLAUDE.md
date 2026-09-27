@@ -101,6 +101,9 @@ php artisan bridge:tick                  # ONE bounded pass over that registry �
                                          # inbound webhook's after-response gate. docs/periodic-jobs.md
 php artisan bridge:sign --scope=<scope>  # sign a raw body (on stdin) with this install's HMAC secret — the secret
                                          # never becomes an argv token (DL-322); used by the deployment smoke test
+php artisan bridge:client-pack:install   # publish THIS release's channel-server client pack from its GitHub release,
+                                         # checked, for the client-update door to serve seats (DL-430) — exit codes
+                                         # and what it checks: CLAUDE_DEPLOYMENT.md § Commands
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
 check-channel-snapshot.py <deployed channel-server dir>
