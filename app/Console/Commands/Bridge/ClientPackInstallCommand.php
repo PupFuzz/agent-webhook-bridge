@@ -34,9 +34,10 @@ use Throwable;
  *
  * EXIT: 0 published, or this exact pack was already published · 1 refused, nothing changed ·
  * 2 could not measure or could not write, nothing changed: no or malformed `VERSION`, a malformed
- * `bridge.client_pack.repo`, no GitHub token, GitHub unreachable or unreadable, or a store this
- * process may not or could not write ({@see ClientPackStore::writerRefusal()}, another run holding
- * its lock, a failed write — a failure part-way leaves the previous publication in service).
+ * `bridge.client_pack.repo`, no GitHub token, GitHub unreachable or unreadable, a publication
+ * record it cannot read, or a store this process may not or could not write
+ * ({@see ClientPackStore::writerRefusal()}, another run holding its lock, a failed write — a
+ * failure part-way leaves the previous publication in service).
  *
  * Run it as the receiver's OS user, like every command here that writes state
  * (CLAUDE_DEPLOYMENT.md § Where things land).
@@ -144,9 +145,9 @@ class ClientPackInstallCommand extends BridgeCommand
 
             return 1;
         } catch (ClientPackStoreFault $e) {
-            // A store fault is composed from this install's own paths, account names and local file faults
-            // (ClientPackStoreFault), never from a GitHub byte, so it is not escaped or cut.
-            $this->error('bridge:client-pack:install: the client pack store could not be used — '.RedactedErrorText::of($e).'. '
+            // The fault can carry a store file's parse error, so it is escaped; the recovery is composed
+            // only from this install's own paths and account names, and is printed whole (ClientPackStoreFault).
+            $this->error('bridge:client-pack:install: the client pack store could not be used — '.UntrustedText::forOperator(RedactedErrorText::of($e)).'. '
                 .($e->recovery === null ? '' : ucfirst($e->recovery).'. ')
                 ."What seats are served is unchanged; {$current}.");
 
@@ -178,7 +179,7 @@ class ClientPackInstallCommand extends BridgeCommand
         try {
             $published = $store->published();
         } catch (ClientPackRefused $e) {
-            return 'the published client pack record could not be read ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')';
+            return 'seats are answered 503 until the published client pack record is repaired ('.UntrustedText::forOperator(RedactedErrorText::of($e)).')';
         }
 
         return $published === null

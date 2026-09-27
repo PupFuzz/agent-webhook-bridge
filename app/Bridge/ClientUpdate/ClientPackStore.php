@@ -91,7 +91,8 @@ final class ClientPackStore
         }
         $refusal = $this->writerRefusal($manifest->bridgeRelease);
         if ($refusal !== null) {
-            throw new ClientPackStoreFault($refusal);
+            // The refusal is the remedy, composed from this install's own paths and account names.
+            throw new ClientPackStoreFault('this process may not write the client pack store', $refusal);
         }
 
         $published = null;
@@ -105,7 +106,7 @@ final class ClientPackStore
             throw new ClientPackStoreFault('a store write failed: '.RedactedErrorText::of($e), previous: $e);
         }
         if (! $ran) {
-            throw new ClientPackStoreFault('another bridge:client-pack:install holds '.$this->publishedPath().'.lock; nothing was changed — run it again when that one has finished');
+            throw new ClientPackStoreFault('another bridge:client-pack:install holds '.$this->publishedPath().'.lock', 'run it again when that one has finished');
         }
 
         return (bool) $published;

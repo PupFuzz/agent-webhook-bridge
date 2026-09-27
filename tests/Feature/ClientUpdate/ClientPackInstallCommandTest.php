@@ -415,10 +415,14 @@ class ClientPackInstallCommandTest extends TestCase
 
     /**
      * A publication record that cannot be parsed is could-not-measure, not a refusal of the pack:
-     * "never lower" cannot be applied without it. The run names the recovery.
+     * "never lower" cannot be applied without it. The fault can carry a store file's text, so it is
+     * escaped and bounded; the recovery is this install's own text and prints whole. A long store
+     * path makes the difference observable: the message is cut, the recovery naming the same path
+     * is not.
      */
-    public function test_a_malformed_publication_record_is_could_not_measure_with_a_recovery(): void
+    public function test_a_malformed_publication_record_is_could_not_measure_with_a_whole_recovery(): void
     {
+        config(['bridge.state_dir' => $this->dir.'/state-'.str_repeat('x', 160)]);
         $store = new ClientPackStore;
         File::ensureDirectoryExists($store->dir(), 0o700);
         file_put_contents($store->publishedPath(), '{"bridge_release": "0.1.0"}');
@@ -427,9 +431,11 @@ class ClientPackInstallCommandTest extends TestCase
         [$exit, $out] = $this->install();
 
         $this->assertSame(2, $exit, $out);
-        $this->assertStringContainsString('is malformed', $out);
-        $this->assertStringContainsString('Restore '.$store->publishedPath().' from a backup, or, to republish from scratch, remove it and run bridge:client-pack:install again', $out);
-        $this->assertStringNotContainsString('TRUNCATED', $out);
+        $this->assertStringContainsString('the client pack store could not be used — the published client pack record ', $out);
+        // Scoped to the fault's own segment: the closing "what stays in service" clause escapes the
+        // same record error, and would carry a marker even if the fault did not.
+        $this->assertMatchesRegularExpression('/could not be used — [^\n]*\[TRUNCATED, \d+ SOURCE CHARS\]\. Restore /', $out, 'the fault text goes through the foreign-text escape');
+        $this->assertStringContainsString('. Restore '.$store->publishedPath().' from a backup, or, to republish from scratch, remove it and run bridge:client-pack:install again (the release it named is then not held against a lower one). ', $out);
         $this->assertSame('{"bridge_release": "0.1.0"}', file_get_contents($store->publishedPath()));
     }
 

@@ -107,15 +107,15 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'published it escapes its own (DL-382). No exception is involved.',
         ],
         'Bridge/ClientPackInstallCommand.php' => [
-            'relays' => 5, 'escaped' => 5,
+            'relays' => 5, 'escaped' => 6,
             'ruling' => '⛔ FOREIGN ×3 (card#10567 / DL-430) — the GitHub release read and the asset download, relaying '
                 .'a GitHub response body or the read client\'s own unreadable-body text; and a `ClientPackRefused` '
                 .'from checking the downloaded assets, which interpolates values read out of the release\'s manifest '
                 .'and SHA256SUMS. All three escaped. ✔ NOT FOREIGN ×2 — a `ClientPackRefused` over this install\'s own '
-                .'published-pack record (its path plus a JSON parse fault or a fixed phrase; escaped, as a file '
-                .'another account could have written), and a `ClientPackStoreFault` composed by the store from this '
-                .'install\'s own paths, account names and local file faults — printed unescaped, as `bridge:github-owed` '
-                .'prints the same writer rule, because the escape\'s length bound would cut the remedy (review r2). '
+                .'published-pack record, and a `ClientPackStoreFault`, which can wrap that same record\'s parse fault. '
+                .'Both escaped, as text from a file another account could have written (review r3). The fault\'s '
+                .'`recovery` is NOT a relay and is printed whole: the store composes it only from this install\'s '
+                .'own paths and account names, and the escape\'s length bound would cut it. '
                 .'⚑ THE OTHER ESCAPE IS NOT A RELAY and carries no `×` token: the GitHub token resolver\'s `problem` '
                 .'text, which can name a credential-helper path or a store message. No exception is involved.',
         ],
