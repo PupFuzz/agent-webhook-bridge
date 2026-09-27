@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Writeback\KanbanClient;
 use App\Models\WritebackBoardDivergence;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -11,6 +12,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\KanbanCardStub;
+use Tests\Support\KanbanSearchSim;
 use Tests\TestCase;
 
 /**
@@ -355,11 +357,10 @@ class ReconcileCommandTest extends TestCase
     public function test_truncated_board_read_aborts_that_board(): void
     {
         $this->writeWriteback();
-        $fullPage = array_fill(0, 200, ['id' => 1, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => []]);
-        // No `links` key + a full 200-row page every time → the page walk hits the
-        // ceiling → readBoardCards reports truncated=true → the board is aborted.
+        // A board one card past the ceiling → the page walk hits it → readBoardCards reports
+        // truncated=true → the board is aborted.
         Http::fake([
-            '*tasks/search.json*' => Http::response(['data' => $fullPage]),
+            '*tasks/search.json*' => (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->responder(),
             'https://api.github.com/*' => Http::response([], 200),
         ]);
 

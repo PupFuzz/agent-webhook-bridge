@@ -171,7 +171,7 @@ class BoardMyCardsTagReadTest extends TestCase
         $this->assertTrue($tagged['ok'], json_encode($tagged['body']));
         $block = $tagged['body']['result']['tag_cards'];
         $this->assertSame('lane:A', $block['tag']);
-        $this->assertSame([11, 12, 13], array_column($block['cards'], 'id'));
+        $this->assertSame([13, 12, 11], array_column($block['cards'], 'id'), 'in the order kanban answers: id descending');
         foreach ($block['cards'] as $card) {
             $this->assertArrayHasKey('swimlane_id', $card);
             $this->assertNull($card['swimlane_id'], 'a laneless card is named laneless BY NAME');
@@ -193,7 +193,7 @@ class BoardMyCardsTagReadTest extends TestCase
 
         $this->assertSame(2, $block['other_swimlanes']);
         $this->assertSame(1, $block['no_swimlane']);
-        $this->assertSame([9, 9, 4, null], array_column($block['cards'], 'swimlane_id'));
+        $this->assertSame([null, 4, 9, 9], array_column($block['cards'], 'swimlane_id'));
         $this->assertContains('board_id=10 swimlane_id=9 tags:"lane:A" workflow_stage_id=50,51 [count]', self::sentSearches(), 'the complement of the configured lane, from the board\'s own lane list, and nothing else');
         $this->assertContains('board_id=10 swimlane_id=none tags:"lane:A" workflow_stage_id=50,51 [count]', self::sentSearches());
         $this->assertContains('board_id=10 '.KanbanClient::FREE_TEXT_PROBE_TERM.' [count]', self::sentSearches(), 'the laneless count is reported only after the board was shown to disclose free text');
@@ -224,7 +224,7 @@ class BoardMyCardsTagReadTest extends TestCase
         $this->assertNull($block['no_swimlane']);
         $this->assertSame(BoardMyCardsTool::UNMEASURED_FILTER_NOT_HONOURED, $block['no_swimlane_unmeasured']);
         $this->assertSame(1, $block['other_swimlanes'], 'a digit list is honoured by every parser, so its count still stands');
-        $this->assertNull($block['cards'][0]['swimlane_id'], 'the card itself is still named laneless — that is read off the row, not the count');
+        $this->assertNull(array_column($block['cards'], null, 'id')[31]['swimlane_id'], 'the card itself is still named laneless — that is read off the row, not the count');
     }
 
     /**
@@ -336,10 +336,10 @@ class BoardMyCardsTagReadTest extends TestCase
     public function test_a_row_that_carries_no_lane_field_gets_no_swimlane_key_rather_than_a_null(): void
     {
         $this->fakeTaggedBoard([], [self::taggedRow(48, 50, false), self::taggedRow(49, 50, null)]);
-        $cards = $this->tagCards(['tag' => 'lane:A'])['cards'];
-        $this->assertArrayNotHasKey('swimlane_id', $cards[0], 'absent is UNREAD — a null would call the card laneless');
-        $this->assertArrayHasKey('swimlane_id', $cards[1]);
-        $this->assertNull($cards[1]['swimlane_id']);
+        $cards = array_column($this->tagCards(['tag' => 'lane:A'])['cards'], null, 'id');
+        $this->assertArrayNotHasKey('swimlane_id', $cards[48], 'absent is UNREAD — a null would call the card laneless');
+        $this->assertArrayHasKey('swimlane_id', $cards[49]);
+        $this->assertNull($cards[49]['swimlane_id']);
     }
 
     // ─── terminal columns and `stage` ────────────────────────────────────────
@@ -365,7 +365,7 @@ class BoardMyCardsTagReadTest extends TestCase
 
         $this->assertTrue($block['include_terminal']);
         $this->assertSame([], $block['excluded_terminal_stage_ids']);
-        $this->assertSame([51, 52], array_column($block['cards'], 'id'));
+        $this->assertSame([52, 51], array_column($block['cards'], 'id'));
         $this->assertSame(2, $block['no_swimlane']);
         $this->assertContains('board_id=10 swimlane_id=none tags:"lane:A" [count]', self::sentSearches(), 'no column narrowing when nothing is excluded');
     }
@@ -376,7 +376,7 @@ class BoardMyCardsTagReadTest extends TestCase
 
         $block = $this->tagCards(['tag' => 'lane:A', 'stage' => 51]);
 
-        $this->assertSame([62, 63], array_column($block['cards'], 'id'));
+        $this->assertSame([63, 62], array_column($block['cards'], 'id'));
         $this->assertSame(51, $block['cards_window']['stage_filter']);
         $this->assertSame(1, $block['no_swimlane']);
         $this->assertSame(1, $block['other_swimlanes']);
@@ -543,7 +543,7 @@ class BoardMyCardsTagReadTest extends TestCase
         $this->assertFalse($block['cards_window']['total_is_lower_bound']);
         $this->assertSame(3, $block['other_swimlanes']);
         $this->assertSame(2, $block['no_swimlane']);
-        $this->assertCount(KanbanClient::MAX_PAGES, array_filter(self::sentSearches(), fn (string $q): bool => $q === 'board_id=10 tags:"lane:A"'), 'the fake answers a page at a time, so the read walked every page');
+        $this->assertCount(KanbanClient::MAX_PAGES + 1, array_filter(self::sentSearches(), fn (string $q): bool => (bool) preg_match('/^board_id=10 (id<\d+ )?tags:"lane:A"$/', $q)), 'the fake answers a page at a time, so the read walked every page, and made the one request that confirms the ceiling was not passed');
     }
 
     /**

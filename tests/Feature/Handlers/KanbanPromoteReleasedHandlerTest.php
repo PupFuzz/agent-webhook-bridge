@@ -6,12 +6,14 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Tests\Support\KanbanCardStub;
+use Tests\Support\KanbanSearchSim;
 use Tests\TestCase;
 
 /**
@@ -258,14 +260,12 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     public function test_truncated_board_read_is_loud_but_still_promotes_the_visible_cards(): void
     {
         $row = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]];
-        // A non-null links.next on every page drives readBoard past MAX_PAGES → truncated=true.
+        // A board one card past the ceiling drives readBoard to MAX_PAGES → truncated=true.
         // The scan must proceed on the partial view AND warn (no reconcile backstop for this leg).
         Log::spy();
+        $board = (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->put($row);
         Http::fake([
-            '*/tasks/search.json*' => Http::response([
-                'data' => [$row],
-                'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
-            ]),
+            '*/tasks/search.json*' => $board->responder(),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
         ] + (new KanbanCardStub([5 => $row]))->stub());
@@ -420,10 +420,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         $this->writeWritebackWithAlert(['promote_on_release' => true]);
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
-            '*/tasks/search.json*' => Http::response([
-                'data' => [$row],
-                'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
-            ]),
+            '*/tasks/search.json*' => (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->put($row)->responder(),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
         ] + (new KanbanCardStub([5 => $row]))->stub());

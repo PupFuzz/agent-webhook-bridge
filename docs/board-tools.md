@@ -494,21 +494,20 @@ claimed:** a kanban that dropped or renamed the `swimlane_id=` filter still answ
 well-formed empty collection, which the bridge cannot tell from a genuinely empty lane
 (`docs/kanban-integration-contract.md` §2 owns that hazard, on the far end).
 
-⚠ **The `tag` read pages through the same walk, and `tag_cards` cannot tell you when a page
-went unreadable.** Your lane lists, the coord cards and the tag read all page through
-`KanbanClient::pagedSearch()`. A page
-answered `200` with no card collection in its body adds no rows and logs the warning above for
-that page (*"the tag-row-search lane:A page 2 read returned a 200 whose body carried no card
-collection"*). Unless that body still carries a non-null `links.next`, the walk stops there and
-calls itself **complete**. `tag_cards` then answers from the rows read before that page:
-`cards_window.total` under-counts (it is `0` when the first page was the unreadable one), and
-`cards_window.total_is_lower_bound` stays `false`, because it reports only the page ceiling. The
-two counts do not check completeness. Each is its own search compared with those rows, so a count
-can show the gap (as `disagrees_with_rows`) only when an unread card sits in another lane or in
-none. An unread card in your own lane moves neither count. Nothing in the response tells this case
-apart from a complete read, so the bridge log is where it shows. Kanban's own search endpoint
-answers every page as a paginated collection carrying both `data` and `links`. A page with
-neither means something in front of kanban answered.
+⚠ **The `tag` read pages through the same walk.** Your lane lists, the coord cards and the tag
+read all page through `KanbanClient::pagedSearch()`. A page answered `200` with no card collection
+in its body adds no rows, logs the warning above for that page (*"the tag-row-search lane:A page 2
+read returned a 200 whose body carried no card collection"*), and ends the walk. What happens next
+depends on the page:
+- **A LATER page.** The first page declared how many cards the search matches (`meta.total`; every
+  kanban answer does), and the walk now holds fewer. It reads the whole search once more, and if
+  that falls short too the call fails with the `502` `upstream board error` a board 5xx gets
+  (card#10653). It is never answered as a complete but shorter window.
+- **The FIRST page.** Nothing was read and there is no total to check against, so the window is
+  empty, exactly as a lane or tag with no cards is. The bridge log is where this shows.
+
+Kanban's own search endpoint answers every page as a paginated collection carrying both `data` and
+`links`. A page with neither means something in front of kanban answered.
 
 ## `board_create_card`
 
@@ -1058,7 +1057,7 @@ no write on a not-on-board refusal.
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
 | 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
-| 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
+| 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387), **or a paged board read kanban answered `2xx` that the bridge could not report complete** (card#10653; see the **2xx, read refused** row of the mapping table below). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
 ### Did the call reach the bridge?
@@ -1202,6 +1201,7 @@ two route classes are authorized differently:
 | **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. Nothing of the board's body is relayed. |
 | **any other 4xx** — **400**, 408, 429 … | **502** (retryable) | outside the permanent sets on purpose: the bridge has no diagnosis to offer for them, and a rate limit really does clear. |
 | **5xx** | **502** (retryable) | it may clear. This is the one you may retry — ⚠ **except a write with no key to correlate on**: `board_comment_card`'s POST has no idempotency key, so a 502 there may follow a comment that landed and a retry can post a duplicate; a `board_create_card` sent **without an `idempotency_key`** may follow a card that landed the same way, and a retry can create a second one. |
+| **2xx, read refused** — a paged search (`board_my_cards`' lane, coord and `tag` reads; `board_create_card`'s archived-side idempotency read and its post-create duplicate read) that the bridge could not report complete | **502** (retryable), the same body a 5xx gets — over ssh exit **2** (card#10653) | kanban answered, but the page walk could not use the answer. Which answers do that is owned by `KanbanClient::pagedSearch`'s docblock (*THE REFUSALS*), not restated here. One of them — two walks in a row falling short of the total kanban declared — is also what a card leaving the board mid-read looks like; the bridge re-reads once to absorb that, and a retry absorbs a second. The bridge log's `kanban_client.board_read_refused` line names which cause fired. On `board_create_card` it depends on which read was refused. The archived-side read runs before the create, so a refusal there created nothing. The duplicate read runs AFTER the card exists, so a 502 there follows a create that landed. Retrying with the same `idempotency_key` returns that card rather than making a second. |
 | **no answer** — the connection failed or timed out | **502** (retryable), the same body a 5xx gets — over ssh the same envelope and exit **2** (DL-387) | the bridge's HTTP client raises one exception class for every request that got no response, and the dispatcher maps it beside the 5xx. The board may or may not have acted before the answer was lost — for a write, assume it may have landed. The `5xx` row's warnings hold here too: a retried `board_comment_card` can post twice, and a retried `board_create_card` without an `idempotency_key` can create twice. ⚠ One call keeps its own answer: `board_create_card`'s placement read-back runs after the card exists and reports `placement_observed: false` instead. |
 
 ⚠ **Every 422 above writes and creates NOTHING** — the refusal is the whole outcome.

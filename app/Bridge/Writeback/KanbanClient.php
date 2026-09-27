@@ -426,11 +426,10 @@ final class KanbanClient
      * the URL, and the operator's next action differs completely between those two facts. It
      * still returns `[]` rather than throwing (DL-020); it just stops being silent.
      *
-     * ⚠ THE SIGNAL IS PER PAGE, deliberately and boundedly: each page is its own read, and *which*
-     * page went unreadable is the difference between a lane nobody can read and a lane that was
-     * TRUNCATED mid-walk (rows already read are still returned). A body that carries a non-null
-     * `links.next` while carrying no `data` therefore emits one line per page up to MAX_PAGES —
-     * loud, bounded, and the honest count of reads that answered nothing.
+     * ⚠ THE SIGNAL IS PER PAGE, deliberately: each page is its own read, and *which* page went
+     * unreadable is the difference between a lane nobody can read and one cut short mid-walk. An
+     * unreadable page ends the walk; on a later page {@see pagedSearch}'s total cross-check then
+     * refuses the read rather than returning the rows before it as the whole lane (card#10653).
      *
      * @return list<array<string, mixed>>
      */
@@ -440,56 +439,187 @@ final class KanbanClient
     }
 
     /**
-     * Every row a board-scoped search answers, page by page until kanban says there is no next page,
-     * and whether the walk stopped at the MAX_PAGES ceiling instead — the ONE page walk behind
-     * {@see readBoard}, {@see swimlaneCards} and {@see tagRowsRead} (DL-028). `$terms` are the `q`
-     * terms after the board scope, which this method writes itself, each led by a space as
-     * {@see stageTerm} spells one; `''` sends the bare scope.
+     * Every row a board-scoped search answers, and whether the walk stopped at the MAX_PAGES ceiling
+     * instead — the ONE page walk behind {@see readBoard}, {@see swimlaneCards} and {@see tagRowsRead}
+     * (DL-028). `$terms` are the `q` terms after the board scope, which this method writes itself, each
+     * led by a space as {@see stageTerm} spells one; `''` sends the bare scope.
      *
-     * The stop condition follows the documented board-read contract: a DL-146 kanban serves
-     * `links.next`, so the walk stops when it is null — authoritative, with no extra request even when
-     * the total is an exact multiple of SEARCH_LIMIT. A pre-DL-146 kanban omits `links`, so a page
-     * shorter than SEARCH_LIMIT is the last. That fallback and the ceiling flag are decided on the RAW
-     * batch length (rows kanban returned), NOT the filtered row count: a non-array row would otherwise
-     * desync the decision (a missed-truncation false negative, the DL-026 silent-loss class). The
-     * fallback MUST stay `< SEARCH_LIMIT` (continue while `>=`): an `=== SEARCH_LIMIT` test would loop
-     * forever against an upstream that ever returned an over-full page. The flag assumes kanban honours
-     * `page` (it does — server-side `forPage` over a total `id`-desc order, so pages don't skip/dup).
+     * ⛔ THE WALK IS KEYED ON ID, NOT ON PAGE NUMBER (card#10653). Page 1 is the request this walk has
+     * always sent. Every later request is page 1 of the same search narrowed by `id<C`, C the lowest id
+     * read so far. It used to ask for `page=N` — "rows 201-400 of the set as it stands NOW" — so a card
+     * leaving the set between two requests (an archive, a delete, a move to another board) moved every
+     * unread card back one place and the first card of the next page was on no page; a card created or
+     * restored above the boundary moved them forward and delivered one twice. The read then called
+     * itself complete. Keyed on id, a write during the walk cannot move an unread card past the cursor,
+     * so every card on the board for the WHOLE walk is delivered exactly once. A card created during the
+     * walk takes an id above the cursor and is not read — the answer a walk begun a moment earlier gives.
+     *
+     * The server properties that carry it were read in kanban's `TasksController::search`
+     * (`orderByDesc('id')` before `paginate()`), `QueryParser::applyStructuredFilter` (the
+     * `^id(<=|>=|<|>|=)(\d+)$` arm → `where('id', …)`) and its task resource (an integer `id` on every
+     * row). Each is CHECKED here where it is load-bearing, never assumed — see THE REFUSALS below.
+     * `docs/kanban-integration-contract.md` § 3 declares them as invariants the far end owns.
+     *
+     * ⛔ IT STOPS ONLY ON A SHORT OR EMPTY PAGE — never on `links.next`, `meta.last_page` or a count.
+     * kanban's `paginate()` runs a COUNT and then a separate SELECT, with no transaction around them, so
+     * a window holding exactly SEARCH_LIMIT rows at COUNT time can gain one (a restore or a move-in
+     * below the cursor) before the SELECT: the page is still full, `links.next` says it is the last,
+     * and the row the LIMIT cut is the lowest — a card on the board all along. A full page therefore
+     * always costs one more request, keyed below it, which either comes back short or delivers that row.
+     * The short-page test is on the RAW batch length (rows kanban returned), not the filtered row count
+     * (DL-028: a non-array row would otherwise desync it); it MUST stay `< SEARCH_LIMIT`.
+     *
+     * ⚠ THE CEILING KEEPS ITS MEANING. After MAX_PAGES full pages the walk makes ONE confirming request.
+     * Empty ⇒ the board ended exactly at the ceiling and the read is complete. Any row ⇒ the population
+     * is past the ceiling: `truncated`, and that page's rows are not returned (the cards are the first
+     * MAX_PAGES × SEARCH_LIMIT, as they always were).
+     *
+     * ⚠ THE TOTAL IS THE CROSS-CHECK. Page 1's `meta.total` is the match count as the walk began. A walk
+     * that is not truncated and delivered fewer distinct cards than that is not reported complete. It has
+     * a benign cause the count cannot tell from a lost card — a card leaving the part not yet read — so
+     * the walk runs ONCE more, from page 1, and only a second shortfall throws {@see BoardReadRefused}.
+     * What it catches that the page checks cannot: a server that treated `id<C` as free text (a
+     * keyed request then matches nothing and ends the walk on an empty page), and a later page whose body
+     * carried no card collection. Where page 1 carries no readable `meta.total` there is no cross-check.
+     *
+     * ⛔ THE REFUSALS — THIS LIST IS THE ONE OWNER of what throws {@see BoardReadRefused} (each is a
+     * {@see refuseRead} call in {@see keyedWalk} or here; every other surface points at this list and
+     * must not restate or count it). A read is refused when:
+     *  - a FULL page's last row is not an array carrying an integer `id` — it is the next cursor, and a
+     *    cursor taken from an earlier row would make the next request deliver the rows after it again;
+     *  - a FULL page's keyable rows are not in strictly descending id order — its last row would not be
+     *    its lowest, and `id<` it would skip rows;
+     *  - a page after the first carries a keyable row at or above the cursor it asked for (`id<C`) —
+     *    the server did not apply the walk's key;
+     *  - two walks in a row fall short of their page 1 `meta.total` (THE TOTAL IS THE CROSS-CHECK, above).
      *
      * ⚠ A NULL `$read` IS A PURE WALK: a page whose body carries no card collection adds no rows and logs
      * nothing, and the signal is the caller's ({@see correlationCards}). A named `$read` reports each
      * such page through {@see correlationRows}, labelled `<read> page <n>` — which page went unreadable
-     * is the difference between a read nobody can make and one cut short mid-walk.
+     * is the difference between a read nobody can make and one cut short mid-walk. A refusal is logged
+     * whatever `$read` is: it is not a degraded answer, it is no answer.
      */
     private function pagedSearch(int $boardId, string $terms, bool $archivedOnly, ?string $read): BoardRead
     {
+        $label = $read ?? 'board-read';
+        [$walk, $shortfall] = $this->keyedWalk($boardId, $terms, $archivedOnly, $read);
+        if ($shortfall === null) {
+            return $walk;
+        }
+        Log::info("writeback board read: the {$label} walk of board {$boardId} {$shortfall}; walking it once more, since a card leaving the part not yet read does this too", ['catalog_id' => 'kanban_client.board_read_rewalked', 'board_id' => $boardId, 'read' => $label]);
+
+        [$walk, $shortfall] = $this->keyedWalk($boardId, $terms, $archivedOnly, $read);
+        if ($shortfall === null) {
+            return $walk;
+        }
+        self::refuseRead($boardId, $label, "{$shortfall}, on two walks in a row — the read is incomplete, and the count cannot say which card it is missing");
+    }
+
+    /**
+     * One pass of {@see pagedSearch}'s walk: the read, and — when it is not truncated and fell short of
+     * page 1's `meta.total` — the shortfall in words; null when the cross-check passed or could not run.
+     *
+     * @return array{0: BoardRead, 1: ?string}
+     */
+    private function keyedWalk(int $boardId, string $terms, bool $archivedOnly, ?string $read): array
+    {
+        $label = $read ?? 'board-read';
         $cards = [];
-        for ($page = 1; $page <= self::MAX_PAGES; $page++) {
-            $query = ['q' => "board_id={$boardId}{$terms}", 'limit' => self::SEARCH_LIMIT, 'page' => $page];
+        $delivered = [];
+        $unkeyed = 0;
+        $total = null;
+        $cursor = null;
+        for ($page = 1; ; $page++) {
+            $query = ['q' => "board_id={$boardId}".($cursor === null ? '' : " id<{$cursor}").$terms, 'limit' => self::SEARCH_LIMIT, 'page' => 1];
             if ($archivedOnly) {
                 $query['archived'] = 1;
             }
             $json = $this->http()->get('/tasks/search.json', $query)->throw()->json();
             $batch = is_array($json) ? ($json['data'] ?? null) : null;
+            $batchSize = is_array($batch) ? count($batch) : 0;
+            $ids = self::keyableIds($batch);
+            if ($page === 1 && is_array($json) && is_array($json['meta'] ?? null) && is_int($json['meta']['total'] ?? null)) {
+                $total = $json['meta']['total'];
+            }
+            if ($cursor !== null && $ids !== [] && max($ids) >= $cursor) {
+                self::refuseRead($boardId, $label, "page {$page} answered a row at or above the id window it asked for (id<{$cursor}) — the server did not apply the walk's key");
+            }
+            if ($page > self::MAX_PAGES) {
+                if ($batchSize > 0) {
+                    return [new BoardRead($cards, true), null];
+                }
+                break;
+            }
+
             $rows = self::rowList($batch);
             foreach ($read === null ? $rows ?? [] : self::correlationRows($rows, "{$read} page {$page}", $boardId) as $row) {
                 $cards[] = $row;
             }
-            $batchSize = is_array($batch) ? count($batch) : 0;
+            foreach ($ids as $id) {
+                $delivered[$id] = true;
+            }
+            $unkeyed += $batchSize - count($ids);
 
-            $links = is_array($json) ? ($json['links'] ?? null) : null;
-            if (is_array($links) && array_key_exists('next', $links)) {
-                if ($links['next'] === null) {
-                    return new BoardRead($cards, false);   // DL-146: no next page ⇒ fully read
-                }
-            } elseif ($batchSize < self::SEARCH_LIMIT) {
-                return new BoardRead($cards, false);   // pre-DL-146 fallback: short/empty page ⇒ fully read
+            if ($batchSize < self::SEARCH_LIMIT) {
+                break;
+            }
+            $last = $batch[array_key_last($batch)];
+            if (! is_array($last) || ! is_int($last['id'] ?? null)) {
+                self::refuseRead($boardId, $label, "page {$page} is full but its last row carries no integer id, so it cannot key the next request — a cursor from an earlier row would deliver the rows after it again");
+            }
+            if (! self::strictlyDescending($ids)) {
+                self::refuseRead($boardId, $label, "page {$page} is full but not in strictly descending id order, so its last row cannot key the next request");
+            }
+            $cursor = $ids[count($ids) - 1];
+        }
+
+        $got = count($delivered) + $unkeyed;
+        $shortfall = $total !== null && $got < $total
+            ? "delivered {$got} distinct cards where its first page declared {$total}"
+            : null;
+
+        return [new BoardRead($cards, false), $shortfall];
+    }
+
+    /**
+     * The integer ids of a page's rows, in the order kanban sent them. A row that is not an array, or
+     * carries no integer `id`, cannot key the walk and is left out — it is counted, not positioned.
+     * It is counted once because it is delivered once: {@see keyedWalk} refuses a full page whose
+     * LAST row is such a row, since the cursor would then come from an earlier row and the next
+     * request would deliver it again. Anywhere else on the page it sits above the cursor.
+     *
+     * @return list<int>
+     */
+    private static function keyableIds(mixed $batch): array
+    {
+        $ids = [];
+        foreach (is_array($batch) ? $batch : [] as $row) {
+            if (is_array($row) && is_int($row['id'] ?? null)) {
+                $ids[] = $row['id'];
             }
         }
 
-        // Ran all MAX_PAGES pages and never hit a stop ⇒ the population is at or beyond the ceiling and
-        // rows past it were not read.
-        return new BoardRead($cards, true);
+        return $ids;
+    }
+
+    /** @param list<int> $ids */
+    private static function strictlyDescending(array $ids): bool
+    {
+        for ($i = 1, $n = count($ids); $i < $n; $i++) {
+            if ($ids[$i - 1] <= $ids[$i]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function refuseRead(int $boardId, string $read, string $why): never
+    {
+        $message = "writeback board read: the {$read} walk of board {$boardId} is refused — {$why}";
+        Log::warning($message, ['catalog_id' => 'kanban_client.board_read_refused', 'board_id' => $boardId, 'read' => $read]);
+
+        throw new BoardReadRefused($message);
     }
 
     /**
@@ -519,9 +649,9 @@ final class KanbanClient
      *
      * ⛔ IT PAGES (card#9260). It read ONE page of SEARCH_LIMIT rows until then, so a tag on more
      * cards than that answered a silently short list — to `board_my_cards`' coord leg as much as to
-     * the writers. The walk is {@see pagedSearch}, and a population past SEARCH_LIMIT costs one request
-     * per page. ⚠ This projection drops the walk's ceiling flag; a caller that reports a size over
-     * these rows reads {@see tagRowsRead} instead.
+     * the writers. The walk is {@see pagedSearch}: a population past SEARCH_LIMIT costs one request
+     * per page, plus one when the last page is full. ⚠ This projection drops the walk's ceiling flag;
+     * a caller that reports a size over these rows reads {@see tagRowsRead} instead.
      *
      * @return list<array<string, mixed>>
      */
@@ -823,9 +953,10 @@ final class KanbanClient
     /**
      * Read a board's cards via the task-search endpoint (server-side board_id filter), paged to
      * completion by {@see pagedSearch}, which owns the stop condition and the ceiling flag (DL-028).
-     * (The default correlation path is `ref`, DL-031 — this scan read is the fallback.) Pure: no
-     * logging — {@see correlationCards} owns the signal on the correlation path, and
-     * {@see readBoardCards} passes the flag out for its callers to report.
+     * (The default correlation path is `ref`, DL-031 — this scan read is the fallback.) No
+     * degraded-read logging here — {@see correlationCards} owns that signal on the correlation path,
+     * and {@see readBoardCards} passes the flag out for its callers to report. {@see pagedSearch}
+     * itself still logs a re-walk and a refusal (card#10653).
      */
     private function readBoard(int $boardId): BoardRead
     {

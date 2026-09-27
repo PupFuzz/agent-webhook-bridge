@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Writeback\BoardReadRefused;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -31,6 +32,10 @@ use UnexpectedValueException;
  *    placement read-back, which reports no placement instead
  *    (DL-299). The body names no transport detail — the door's caller is a seat, and the
  *    message carries the board's URL — while the log line carries it redacted.
+ *  - {@see BoardReadRefused} (the board answered 2xx, and a paged search still could not be
+ *    reported complete — card#10653) → the SAME 502 body. The cause is the board's answer, not
+ *    the caller's input, and a retry is the right move for the causes it can have on a board
+ *    that is working; the log line names which of them fired.
  *  - {@see ConfigException} from {@see WritebackClientFactory::make} → 503 (install/provisioning fault).
  *
  * The one structured audit line per call moves here too, now carrying a
@@ -153,6 +158,10 @@ final class BoardToolDispatcher
             // ⚠ For a write, the board may have acted before the answer was lost — the same
             // may-have-landed a 5xx carries, which docs/board-tools.md states per tool.
             Log::warning('agent-tools: the board did not answer', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
+
+            return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
+        } catch (BoardReadRefused $e) {
+            Log::warning('agent-tools: a board read could not be reported complete', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'error' => RedactedErrorText::of($e)]);
 
             return DispatchOutcome::failure(502, self::UPSTREAM_ERROR);
         }
