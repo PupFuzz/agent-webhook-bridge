@@ -101,8 +101,11 @@ final class CardNote
      * `pr_number` coincidentally equal, but its two refs AGREE with each other and the sixth's
      * "disagree … correct both refs by hand" would be false of it and would tell an operator to
      * re-point a card that already tracks the right pull request; the seventh is where it now
-     * lands, and "not reachable" is true of it because kanban's derived ref uses `oldorg/repo`,
-     * never this event's `owner/repo`):
+     * lands, and "not reachable" holds of it under a repo-qualified by-ref lookup on a card with
+     * no explicit `payload.repo` override — kanban's `pr_url`-derived ref there uses
+     * `oldorg/repo`, never this event's `owner/repo` (DL-429 r10 bound: an explicit
+     * `payload.repo` naming `owner/repo`, or an unqualified lookup on a 1:1 board mapping
+     * per DL-174, could still land on the card — neither is what this class classifies):
      *  - a dropped `pr_url` the card keeps as ANOTHER repo's `.../pull/0` placeholder: the card
      *    names a REPO it was deliberately qualified to, and no pull request. A `pr_number`
      *    beside it does not change that — a bare number names no pull request (DL-429) — so
@@ -128,9 +131,11 @@ final class CardNote
      *    the remedy is to correct both refs by hand;
      *  - a dropped PR ref beside a `pr_url` naming ANOTHER pull request — of a DIFFERENT repo
      *    (any `pr_number`), or of this repo with a different or absent `pr_number`: the card
-     *    stays correlated to the pull request it already names, and this one really is not
-     *    reachable by a by-ref lookup on this card (DL-429 r9: a same-numbered pull request in
-     *    ANOTHER repo derives a `github_pr` ref under that OTHER repo, never this event's);
+     *    stays correlated to the pull request it already names, and this one is not reachable by
+     *    a REPO-QUALIFIED by-ref lookup on a card with no explicit `payload.repo` override
+     *    (DL-429 r9/r10: a same-numbered pull request in ANOTHER repo derives a `github_pr` ref
+     *    under that OTHER repo, never this event's, in that scope — the rendered note's own
+     *    "not reachable" wording makes no such qualification; DL-429 records that as a residual);
      *  - a dropped `pr_url` (with no `pr_number` dropped) that is not a pull-request URL — an
      *    operator's free text, the one remaining shape the stamp drops rather than writes over;
      *  - otherwise only the `dl_number` was dropped, and the heading says nothing about a pull

@@ -109,9 +109,14 @@ final class StoredPrRef
      * `(repo, number)` even though nothing was written (DL-429 r9). FALSE for a card whose
      * `pr_url` names a same-numbered pull request of a DIFFERENT repo (a repo that moved to a
      * new GitHub org restarts its numbers, so `oldorg/repo#7` and `owner/repo#7` sharing a
-     * number is coincidence, not disagreement) — the derived ref there uses the OTHER repo, so
-     * a by-ref lookup for this event never lands on the card, and the generic `NamesOtherPr`
-     * heading's "not reachable" claim stays true of it.
+     * number is coincidence, not disagreement) — the derived ref there uses the OTHER repo,
+     * so under a REPO-QUALIFIED by-ref lookup, on a card with no explicit `payload.repo`
+     * override, a lookup for this event never lands on the card, and the generic `NamesOtherPr`
+     * heading's "not reachable" claim stays true of it in that scope (DL-429 r10 bound: an
+     * explicit `payload.repo` naming this event's repo would make `ExternalReferenceNormalizer
+     * ::sourceFor` prefer that override over the `pr_url`-derived repo, `bridge:check`'s
+     * `source` field is unqualified on a 1:1 board mapping per DL-174, and this class does not
+     * read `payload.repo` at all — neither is what this predicate answers).
      */
     public function otherPrSameRepoWithMatchingNumber(): bool
     {
