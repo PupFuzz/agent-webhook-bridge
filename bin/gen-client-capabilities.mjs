@@ -24,8 +24,11 @@
 //     PR's check, and the PR's table is what dev derives once it lands;
 //   - main (a release PR, a push to main) reads the same line, cut at the release point, so it
 //     dates every argument as dev does — main's own first-parent line is one state per release.
-//     This assumes a channel-server bump only ever lands via a release PR; a hotfix PR straight
-//     to main is a bound (DL-425 bound 5), not a case this walk reads.
+//     A hotfix bumped straight on main IS read once its sync/main-to-dev-* merge lands on dev's
+//     line (that merge is itself a landing, named above) — UNLESS dev already landed its own
+//     tree at the same number first, in which case the sync merge matches its first parent and
+//     introduces nothing, so dev's (colliding) tree answers for that number instead. That
+//     collision is the residual DL-425 bound 5 names, not "a hotfix is never read".
 // The line is read from refs/remotes/origin/dev, which must be present (CI's full-history
 // checkout fetches it). DL-425 owns the rest of the reasoning and the bounds.
 //
@@ -121,12 +124,18 @@ function bareVersion(raw, where) {
   return raw;
 }
 
-// Evaluate the TOOL_DEFINITIONS literal. It is a plain data literal; anything that makes its
-// value depend on WHEN or WHERE it is evaluated is refused, because an author's regenerate and
-// CI's --check are two evaluations on two different hosts and must never disagree. The context
-// has no host globals, no clock, no randomness, and no string code generation; the locale-
-// sensitive prototype methods (toLocaleString, localeCompare, toLocale{Upper,Lower}Case) throw
-// too — deleting Intl alone leaves them reachable and reading the host's ICU default locale.
+// Evaluate the TOOL_DEFINITIONS literal. It is a plain data literal, and the KNOWN sources of
+// evaluation-site dependence are refused: no host globals (Date / WeakRef / FinalizationRegistry
+// / SharedArrayBuffer / Atomics / Intl deleted), no randomness (Math.random throws), no string
+// code generation, and the locale-reading prototype methods (Number/BigInt/Array toLocaleString,
+// String localeCompare/toLocaleUpperCase/toLocaleLowerCase) throw too — deleting Intl alone
+// leaves them reachable and reading the host's ICU default locale. THIS LIST IS NOT THE CLASS:
+// it is open, and a literal reaching an unlisted source of evaluation-site dependence (for
+// example a computed property key deriving from `new Error().stack`, which carries the eval
+// filename — "working tree:<file>" here, "commit <sha>:<file>" in history — and is not refused)
+// produces a --check that will not converge between an author's regenerate and CI. The bound
+// that makes this acceptable: only `name` and property KEYS ever reach the table; `description`
+// and every other value are read and discarded (design review r4-MAJOR).
 function evaluateLiteral(literal, where) {
   const run = () => {
     const context = vm.createContext(Object.create(null), {
