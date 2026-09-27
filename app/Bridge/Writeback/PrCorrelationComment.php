@@ -476,6 +476,15 @@ final class PrCorrelationComment
             // number or the work may still be the replacement's, so the close still warns, in
             // words that are true of the card.
             [$headline, $ifSuperseded] = match (true) {
+                // DL-429 r8 — a `pr_number` that happens to equal this event's, beside a
+                // `pr_url` naming ANOTHER pull request, is the card's OWN refs disagreeing with
+                // each other, mirrored from CardNote::droppedCorrelationRef's dedicated
+                // heading — the generic arm below never claims THIS is unreachable, but it also
+                // does not surface the collision, which is worth a reader's own look.
+                $stored->url === StoredPrUrlKind::NamesOtherPr && $stored->number === StoredPrNumberKind::SameNumber => [
+                    "Check {$card}: its `pr_number` matches this pull request's number, but its `pr_url` already names a different pull request.",
+                    "If the pull request {$card} tracks supersedes this one",
+                ],
                 $stored->url === StoredPrUrlKind::NamesOtherPr => [
                     "Check {$card}: it tracks a different pull request than the one just closed.",
                     "If the pull request {$card} tracks supersedes this one",

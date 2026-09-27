@@ -84,11 +84,17 @@ final class CardNote
      * Both are rendered, because "which PR won" is the first question a reader has and
      * neither value alone answers it.
      *
-     * The headings, one table, first match wins. Only the sixth says the card names a pull
-     * request, and it is reached only when the card's `pr_url` names ANOTHER one
-     * ({@see StoredPrUrlKind::NamesOtherPr}); every other shape gets a heading saying what the
-     * card really holds (DL-429 r5 — the sixth used to be the fallback, and so said "the pull
-     * request it already names" of cards naming none):
+     * The headings, one table, first match wins. Two arms say the card already names ANOTHER
+     * pull request ({@see StoredPrUrlKind::NamesOtherPr}) — the sixth when its `pr_number` also
+     * happens to equal this event's, the seventh otherwise; every other shape gets a heading
+     * saying what the card really holds, or (the fourth) that it already names THIS pull
+     * request (DL-429 r5 — the seventh used to be the fallback, and so said "the pull request
+     * it already names" of cards naming none; DL-429 r8 split the sixth out of the seventh — a
+     * card whose bare `pr_number` equals this event's is not merely "correlated to another PR",
+     * its OWN two refs disagree with EACH OTHER, and kanban's by-ref derivation (repo from
+     * `pr_url`, number from `pr_number`) can index such a card under THIS event's own
+     * `(repo, number)` even though nothing was written — the seventh's "not reachable by a
+     * by-ref lookup" remedy line is false of it and does not belong on the sixth):
      *  - a dropped `pr_url` the card keeps as ANOTHER repo's `.../pull/0` placeholder: the card
      *    names a REPO it was deliberately qualified to, and no pull request. A `pr_number`
      *    beside it does not change that — a bare number names no pull request (DL-429) — so
@@ -107,8 +113,13 @@ final class CardNote
      *    another — its two refs disagree;
      *  - a dropped `pr_number` that differs and that no `pr_url` of the card's attributes to a
      *    repo: it names no pull request (DL-429 Decision 1);
-     *  - a dropped PR ref beside a `pr_url` naming ANOTHER pull request: the card stays
-     *    correlated to the pull request it already names;
+     *  - a dropped PR ref beside a `pr_url` naming ANOTHER pull request whose `pr_number` also
+     *    equals this event's (DL-429 r8): the card's own two refs disagree with each other, so
+     *    the heading says exactly that instead of calling the number "different" or asserting
+     *    the offered pull request is unreachable — the remedy is to correct both refs by hand;
+     *  - a dropped PR ref beside a `pr_url` naming ANOTHER pull request with a different or
+     *    absent `pr_number`: the card stays correlated to the pull request it already names,
+     *    and this one really is not reachable by a by-ref lookup on this card;
      *  - a dropped `pr_url` (with no `pr_number` dropped) that is not a pull-request URL — an
      *    operator's free text, the one remaining shape the stamp drops rather than writes over;
      *  - otherwise only the `dl_number` was dropped, and the heading says nothing about a pull
@@ -210,6 +221,18 @@ final class CardNote
                 If this pull request is the one this card tracks, replace both refs by hand
                 (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`); if not,
                 stamp the `pr_url` of the pull request the card's number belongs to.
+                BODY,
+            ($numberDropped || $urlDropped) && $stored->url === StoredPrUrlKind::NamesOtherPr
+                && $stored->number === StoredPrNumberKind::SameNumber => <<<BODY
+                A pull request in `{$repo}` names this card, and its `pr_number` matches this
+                pull request's number — but the card's `pr_url` already names a DIFFERENT pull
+                request, and a stamp never overwrites a value a card holds. So the refs below
+                were **not** written, and this card stays correlated to the pull request its
+                `pr_url` already names:
+
+                {$lines}
+                This card's `pr_number` and `pr_url` disagree about which pull request it
+                tracks; correct both refs by hand ({$patchBoth}).
                 BODY,
             ($numberDropped || $urlDropped) && $stored->url === StoredPrUrlKind::NamesOtherPr => <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a

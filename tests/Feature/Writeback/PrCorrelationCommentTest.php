@@ -568,6 +568,29 @@ class PrCorrelationCommentTest extends TestCase
     }
 
     /**
+     * DL-429 r8 — the card's `pr_number` matches the CLOSING pull request's own number, while
+     * its `pr_url` names a DIFFERENT pull request of the same repo: the card's own two refs
+     * disagree with each other, mirrored here from `CardNote::droppedCorrelationRef`'s
+     * dedicated heading for the same shape. The generic NamesOtherPr headline above is not
+     * FALSE of this card, but it also does not surface the number collision — this one does.
+     */
+    public function test_closed_unmerged_on_a_card_whose_pr_number_matches_but_whose_pr_url_names_another_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 719);
+        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/999';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString("Check card#5: its `pr_number` matches this pull request's number, but its `pr_url` already names a different pull request.", $body);
+        $this->assertStringContainsString('If the pull request card#5 tracks supersedes this one, this close may have moved card#5 to workflow stage 49', $body);
+        $this->assertStringNotContainsString('it tracks a different pull request than the one just closed', $body);
+    }
+
+    /**
      * DL-429 r4 — a close on a card whose `pr_url` is an operator's free text: the url names
      * no pull request, so the close must not say the card tracks a different one.
      */

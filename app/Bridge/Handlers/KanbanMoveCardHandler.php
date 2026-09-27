@@ -713,7 +713,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $offeredUrl = PrUrlRef::parse($stampPrUrl, $normalizer);
             if (($stored ?? '') === '' || self::placeholderThisPrMayReplace($storedUrl, $offeredUrl)) {
                 $writePrUrl = $stampPrUrl;
-            } elseif (! self::samePrUrl($storedUrl, $stored, $offeredUrl, $stampPrUrl, $current, $storedRef)) {
+            } elseif (! self::samePrUrl($storedUrl, $stored, $offeredUrl, $stampPrUrl)) {
                 $dropped['pr_url'] = ['card' => $stored, 'offered' => $stampPrUrl];
             }
         }
@@ -893,42 +893,40 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * `pr_url` is the one ref whose value has many spellings for one pull request, so the
      * question it has to answer is PR identity and not byte equality (card#7064) — a raw
      * compare reports "a second pull request correlates to this card" for a card that has
-     * only ever had one. Two ways the card already answers with this PR:
-     *
-     *  - its stored `pr_url` names the same {@see PrUrlRef} — a re-spelling (repo case,
-     *    a `/files` suffix) of the URL it already holds;
-     *  - its stored `pr_number` names this PR, through the writeback's one definition of
-     *    "same PR" ({@see CardTokenCorroboration::tracksPr}) — but only where the stored
-     *    `pr_url` names no pull request of its own (absent, or a placeholder). A card whose
-     *    `pr_url` names ANOTHER pull request ({@see StoredPrUrlKind::NamesOtherPr}) names that
-     *    one, whatever its bare `pr_number` says (DL-429 Decision 1), so this event's url is a
-     *    dropped leg — the same answer every surface reporting it reads from `StoredPrRef`
-     *    (DL-429 r6; card#7064 (B) used to read the matching number as the card's own PR).
-     *
-     * A stored `pr_number` carries no repo — which is why a bare one names no pull request
-     * on any board (`TrackedRefKind::BarePrNumber`, DL-429) — so that second test is
-     * repo-qualified wherever the card gives us a repo to qualify with: its own `pr_url`'s.
-     * Same number, DIFFERENT repo is two pull requests — on a board mapped by >1 repo, or
-     * after a repo moves org and its PR numbers restart — and that collision is the one this
-     * note must not swallow.
+     * only ever had one. The only way the card already answers with this PR is that its
+     * stored `pr_url` names the same {@see PrUrlRef} — a re-spelling (repo case, a `/files`
+     * suffix) of the URL it already holds.
      *
      * When the offered value does not parse as a pull-request URL there is no identity to
      * compare and the byte test stands, as before. A stored value that does not parse
      * (an operator's free text) names no pull request the offer could BE, so it keeps
      * recording the drop — and it is never overwritten.
      *
-     * @param  array<string, mixed>  $current  the card's payload as kanban returned it
+     * ⛔ DL-429 r8 DELETED a second leg this docblock used to describe: a matching bare
+     * `pr_number`, trusted as confirmation wherever the stored `pr_url` did not itself name a
+     * real pull request. A stored `pr_number` carries no repo (`TrackedRefKind::BarePrNumber`,
+     * DL-429), so it can never confirm which PULL REQUEST a `pr_url` is — that question is
+     * repo-scoped by definition, and a bare number answers a DIFFERENT, repo-unqualified
+     * question ("does the card track ANY pull request", {@see CardTokenCorroboration::tracksPr})
+     * that a caller wanting THIS one must not reuse. The leg was already excluded for a
+     * `pr_url` naming ANOTHER pull request (DL-429 r6: {@see StoredPrUrlKind::NamesOtherPr}
+     * fails the canonRepo compare or, since r6, the leg's own explicit guard) and for every
+     * other kind a bare number could sit beside — a same-repo placeholder is decided upstream
+     * by {@see placeholderThisPrMayReplace} before this call, and an empty stored value never
+     * reaches this call at all. Its one live shape was an operator's free-text `pr_url`
+     * ({@see StoredPrUrlKind::NotAPrUrl}) beside a bare `pr_number` that happened to equal this
+     * event's — and there it was WRONG, silently treating the two as one pull request and
+     * contradicting the very next paragraph's claim that free text "keeps recording the drop".
+     * Untested (mutating the leg to `false` stayed green): no test offered a free-text `pr_url`
+     * beside a matching bare number, the one shape it changed.
      */
-    private static function samePrUrl(?PrUrlRef $storedUrl, mixed $stored, ?PrUrlRef $offeredUrl, string $offered, array $current, StoredPrRef $storedRef): bool
+    private static function samePrUrl(?PrUrlRef $storedUrl, mixed $stored, ?PrUrlRef $offeredUrl, string $offered): bool
     {
         if ($offeredUrl === null || ! $offeredUrl->namesPr()) {
             return $stored === $offered;
         }
 
-        return $offeredUrl->sameAs($storedUrl)
-            || ($storedRef->url !== StoredPrUrlKind::NamesOtherPr
-                && CardTokenCorroboration::tracksPr($current['pr_number'] ?? null, $offeredUrl->number)
-                && ($storedUrl === null || $storedUrl->canonRepo === $offeredUrl->canonRepo));
+        return $offeredUrl->sameAs($storedUrl);
     }
 
     /**

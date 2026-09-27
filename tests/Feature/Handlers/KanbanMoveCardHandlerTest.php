@@ -2871,6 +2871,12 @@ pull request it already names', $notes[0]);
      * leg, and the stamp now agrees with `StoredPrRef` (`NamesOtherPr`). Replaces
      * `test_the_cards_own_pull_request_is_not_recorded_as_a_second_one`, which asserted the
      * silence. (Trust the bare number beside a url naming another PR again ⇒ no note ⇒ RED.)
+     *
+     * DL-429 r8 — this exact shape gets its OWN heading, not the generic NamesOtherPr one: the
+     * generic heading's "not reachable by a by-ref lookup" tail is FALSE here, because kanban
+     * derives `github_pr` from `pr_number` + the repo `pr_url` names — both this card's own —
+     * so a by-ref lookup for `owner/repo#7` (this very event) finds this card, even though
+     * nothing was written. (Route this shape through the generic heading again ⇒ RED.)
      */
     public function test_a_matching_bare_number_beside_a_pr_url_naming_another_pull_request_records_the_drop(): void
     {
@@ -2891,8 +2897,12 @@ pull request it already names', $notes[0]);
         $this->assertCount(1, $notes);
         $this->assertStringContainsString('pr_url=https://github.com/owner/repo/pull/7]', $notes[0]);
         $this->assertStringContainsString('- `pr_url` — the card keeps `https://github.com/owner/repo/pull/9`; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
-        $this->assertStringContainsString("this card stays correlated to the\npull request it already names", $notes[0]);
-        $this->assertStringNotContainsString('`pr_number`', $notes[0]);
+        $this->assertStringContainsString("A pull request in `owner/repo` names this card, and its `pr_number` matches this\npull request's number — but the card's `pr_url` already names a DIFFERENT pull\nrequest", $notes[0]);
+        $this->assertStringContainsString("this card stays correlated to the pull request its\n`pr_url` already names", $notes[0]);
+        $this->assertStringContainsString("This card's `pr_number` and `pr_url` disagree about which pull request it\ntracks; correct both refs by hand (`kbcard patch --task 5 --pr <number> --pr-url <url>`).", $notes[0]);
+        // The FALSE claim the generic heading would have made about this exact shape.
+        $this->assertStringNotContainsString('not reachable', $notes[0]);
+        $this->assertStringNotContainsString('second pull request', $notes[0]);
     }
 
     public function test_a_repo_case_difference_is_not_a_second_pull_request(): void
@@ -3234,6 +3244,37 @@ pull request it already names', $notes[0]);
         $this->assertCount(1, $notes);
         $this->assertStringContainsString('the card keeps `see the linked PR`', $notes[0]);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * DL-429 r8 — `samePrUrl`'s deleted bare-number leg's one live shape: a free-text `pr_url`
+     * ({@see StoredPrUrlKind::NotAPrUrl}) beside a bare `pr_number` that happens to equal this
+     * event's. The `pr_number` drop (the "unconfirmed" heading above) fires either way — its
+     * condition never looked at the url's kind — but the deleted leg made `samePrUrl` read the
+     * matching number as confirming the offered `pr_url`, so `pr_url` never joined `$dropped`
+     * at all: free text was silently treated as the SAME pull request, contradicting this
+     * class's own docblock ("an unparseable stored value ... keeps recording its drop"). (Trust
+     * a matching bare number beside free text again ⇒ `pr_url` drops out of the note ⇒ RED.)
+     */
+    public function test_a_free_text_pr_url_beside_a_matching_bare_number_still_records_the_url_drop(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 7, 'pr_url' => 'see the linked PR',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 7, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/7']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('- `pr_url` — the card keeps `see the linked PR`; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
+        $this->assertStringContainsString('- `pr_number` — the card keeps `7`; this pull request offered `7`', $notes[0]);
+        $this->assertStringContainsString("this card's\nexisting `pr_number` is left exactly as it was:", $notes[0]);
     }
 
     /**
