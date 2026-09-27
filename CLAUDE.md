@@ -43,6 +43,11 @@ git fetch origin dev && node bin/gen-client-capabilities.mjs
                                                     # could not evaluate, or a version LOWER than one dev already
                                                     # introduced — versions only move forward: undo a release with a
                                                     # forward bump, never a revert; DL-425 Decision 1a)
+python3 bin/build-client-pack.py --verify-commit HEAD
+                                                    # does this tree still build a channel-server client pack?
+                                                    # Writes nothing. A publishable pack is built only from a
+                                                    # release tag (--ref v<X.Y.Z> --out <dir>); the script's
+                                                    # docstring owns the pack format and refusals (DL-428)
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —
