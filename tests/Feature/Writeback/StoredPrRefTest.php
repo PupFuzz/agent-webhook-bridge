@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\Writeback;
 
-use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\StoredPrNumberKind;
 use App\Bridge\Writeback\StoredPrRef;
 use App\Bridge\Writeback\StoredPrUrlKind;
@@ -89,22 +88,5 @@ class StoredPrRefTest extends TestCase
     {
         $this->assertTrue(StoredPrRef::of(['payload' => ['pr_number' => 148]], self::REPO, 7)->numberIsBare());
         $this->assertFalse(StoredPrRef::of(['payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/148']], self::REPO, 7)->numberIsBare());
-    }
-
-    /**
-     * The stamp's drop heading carries the bare-number words inside a wrapped heredoc, so it
-     * cannot interpolate {@see CardNote::BARE_NUMBER}; this holds the copies together so the
-     * three surfaces keep saying the same thing. (Reword either side alone ⇒ RED.)
-     */
-    public function test_the_stamp_heading_says_the_bare_number_in_the_shared_words(): void
-    {
-        $note = CardNote::droppedCorrelationRef(
-            5,
-            'owner/repo',
-            ['pr_number' => ['card' => 148, 'offered' => 7]],
-            StoredPrRef::of(['payload' => ['pr_number' => 148]], self::REPO, 7),
-        );
-
-        $this->assertStringContainsString(CardNote::BARE_NUMBER, (string) preg_replace('/\s+/', ' ', $note->content()));
     }
 }

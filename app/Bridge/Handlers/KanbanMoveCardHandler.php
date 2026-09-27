@@ -20,6 +20,7 @@ use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\StoredPrNumberKind;
 use App\Bridge\Writeback\StoredPrRef;
+use App\Bridge\Writeback\StoredPrUrlKind;
 use App\Bridge\Writeback\TrackedCardRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -712,7 +713,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $offeredUrl = PrUrlRef::parse($stampPrUrl, $normalizer);
             if (($stored ?? '') === '' || self::placeholderThisPrMayReplace($storedUrl, $offeredUrl)) {
                 $writePrUrl = $stampPrUrl;
-            } elseif (! self::samePrUrl($storedUrl, $stored, $offeredUrl, $stampPrUrl, $current)) {
+            } elseif (! self::samePrUrl($storedUrl, $stored, $offeredUrl, $stampPrUrl, $current, $storedRef)) {
                 $dropped['pr_url'] = ['card' => $stored, 'offered' => $stampPrUrl];
             }
         }
@@ -897,12 +898,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      *  - its stored `pr_url` names the same {@see PrUrlRef} — a re-spelling (repo case,
      *    a `/files` suffix) of the URL it already holds;
      *  - its stored `pr_number` names this PR, through the writeback's one definition of
-     *    "same PR" ({@see CardTokenCorroboration::tracksPr}). That is a real card state,
-     *    not a hypothetical: the stamp is per-ref add-if-missing, so a card whose
-     *    `pr_number` was written by PR 261 and whose `pr_url` was later filled in by PR
-     *    262 answers 261 for one ref and 262 for the other, and PR 261's next outcome
-     *    would otherwise be recorded as a second PR under a heading asserting the card
-     *    stays correlated to 261 — the PR being reported.
+     *    "same PR" ({@see CardTokenCorroboration::tracksPr}) — but only where the stored
+     *    `pr_url` names no pull request of its own (absent, or a placeholder). A card whose
+     *    `pr_url` names ANOTHER pull request ({@see StoredPrUrlKind::NamesOtherPr}) names that
+     *    one, whatever its bare `pr_number` says (DL-429 Decision 1), so this event's url is a
+     *    dropped leg — the same answer every surface reporting it reads from `StoredPrRef`
+     *    (DL-429 r6; card#7064 (B) used to read the matching number as the card's own PR).
      *
      * A stored `pr_number` carries no repo — which is why a bare one names no pull request
      * on any board (`TrackedRefKind::BarePrNumber`, DL-429) — so that second test is
@@ -918,14 +919,15 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      *
      * @param  array<string, mixed>  $current  the card's payload as kanban returned it
      */
-    private static function samePrUrl(?PrUrlRef $storedUrl, mixed $stored, ?PrUrlRef $offeredUrl, string $offered, array $current): bool
+    private static function samePrUrl(?PrUrlRef $storedUrl, mixed $stored, ?PrUrlRef $offeredUrl, string $offered, array $current, StoredPrRef $storedRef): bool
     {
         if ($offeredUrl === null || ! $offeredUrl->namesPr()) {
             return $stored === $offered;
         }
 
         return $offeredUrl->sameAs($storedUrl)
-            || (CardTokenCorroboration::tracksPr($current['pr_number'] ?? null, $offeredUrl->number)
+            || ($storedRef->url !== StoredPrUrlKind::NamesOtherPr
+                && CardTokenCorroboration::tracksPr($current['pr_number'] ?? null, $offeredUrl->number)
                 && ($storedUrl === null || $storedUrl->canonRepo === $offeredUrl->canonRepo));
     }
 

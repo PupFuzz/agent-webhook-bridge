@@ -2863,29 +2863,36 @@ class KanbanMoveCardHandlerTest extends TestCase
 pull request it already names', $notes[0]);
     }
 
-    public function test_the_cards_own_pull_request_is_not_recorded_as_a_second_one(): void
+    /**
+     * DL-429 r6 — a card whose `pr_url` names ANOTHER pull request of this repo (#9) and whose
+     * bare `pr_number` equals this event's (#7). card#7064 (B) read the matching number as the
+     * card's own pull request and recorded nothing, which pinned the stamp to a bare number
+     * DL-429 Decision 1 says names none: the card names #9, so #7's `pr_url` is a dropped
+     * leg, and the stamp now agrees with `StoredPrRef` (`NamesOtherPr`). Replaces
+     * `test_the_cards_own_pull_request_is_not_recorded_as_a_second_one`, which asserted the
+     * silence. (Trust the bare number beside a url naming another PR again ⇒ no note ⇒ RED.)
+     */
+    public function test_a_matching_bare_number_beside_a_pr_url_naming_another_pull_request_records_the_drop(): void
     {
-        // card#7064 (B), and NOT hypothetical: the stamp is add-if-missing PER REF, so the
-        // dropped-leg-beside-a-missing-one test above leaves exactly this card — pr_number
-        // written by PR 261, pr_url later filled in by PR 262. PR 261's next outcome then
-        // offers its own url, which differs from the stored one BYTE-wise, and the note
-        // would say the card keeps `.../262` while `this pull request offered .../261`
-        // under a heading asserting the card stays correlated to the PR it already names.
-        // It already names 261 — the pull request being reported as the intruder.
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
             self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
             '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
-                'pr_number' => 261, 'pr_url' => 'https://github.com/owner/repo/pull/262',
+                'pr_number' => 7, 'pr_url' => 'https://github.com/owner/repo/pull/9',
             ]]]),
         ]);
 
-        $this->handle($this->payload(['stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261']));
+        $this->handle($this->payload(['stamp_pr' => 7, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/7']));
 
-        $this->assertSame([], $this->noteContents());
-        // The guard is untouched: the card's stored pr_url is NOT re-pointed to 261 either.
-        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        // The guard is untouched: the card's stored pr_url is NOT re-pointed.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('pr_url=https://github.com/owner/repo/pull/7]', $notes[0]);
+        $this->assertStringContainsString('- `pr_url` — the card keeps `https://github.com/owner/repo/pull/9`; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
+        $this->assertStringContainsString("this card stays correlated to the\npull request it already names", $notes[0]);
+        $this->assertStringNotContainsString('`pr_number`', $notes[0]);
     }
 
     public function test_a_repo_case_difference_is_not_a_second_pull_request(): void
@@ -3020,7 +3027,7 @@ pull request it already names', $notes[0]);
         // Neither card names a pull request (DL-429 Decision 1: a bare number names none, and
         // a placeholder does not qualify it), so the default heading's "the pull request it
         // already names" would be false here.
-        $this->assertStringContainsString("already carries a\ndifferent `pr_number` — a bare number no `pr_url` attributes to a repo, so it\nnames no pull request.", $notes[0]);
+        $this->assertStringContainsString("already carries a\ndifferent `pr_number` — a bare number no `pr_url` attributes to a repo, so it names no pull request.", $notes[0]);
         $this->assertStringContainsString('this card keeps the number it holds:', $notes[0]);
         $this->assertStringNotContainsString('pull request it already names', $notes[0]);
         $this->assertStringNotContainsString('`null`', $notes[0]);

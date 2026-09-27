@@ -60,8 +60,7 @@ final class CardNote
      * What a bare `pr_number` that differs from this pull request's is (DL-429 Decision 1) — one
      * wording for every surface that reports one: the corroboration refusal's note here, its log
      * line ({@see CardTokenCorroboration::refusalCause}) and the pull-request comment
-     * ({@see PrCorrelationComment}). The stamp's drop heading carries the same words wrapped for
-     * its heredoc; `StoredPrRefTest` holds it to this constant.
+     * ({@see PrCorrelationComment}), and the stamp's drop heading, which interpolates it.
      */
     public const BARE_NUMBER = 'a bare number no `pr_url` attributes to a repo, so it names no pull request';
 
@@ -155,6 +154,7 @@ final class CardNote
         $urlDropped = isset($dropped['pr_url']);
         $patchBoth = sprintf(self::PATCH_BOTH_REFS, $cardId);
         $unconfirmed = self::NUMBER_UNCONFIRMED;
+        $bare = self::BARE_NUMBER;
 
         $body = match (true) {
             $urlDropped && $stored->url === StoredPrUrlKind::PlaceholderOtherRepo => <<<BODY
@@ -165,8 +165,8 @@ final class CardNote
                 it already names, not to this pull request:
 
                 {$lines}
-                Nothing else about the card was changed. This pull request is not
-                reachable by a by-ref lookup on this card; record the link by hand if you need it.
+                This pull request is not reachable by a by-ref lookup on this card; record the
+                link by hand if you need it.
                 BODY,
             $numberDropped && $stored->number === StoredPrNumberKind::SameNumber => <<<BODY
                 A pull request in `{$repo}` names this card, and its `pr_number` matches the
@@ -176,9 +176,9 @@ final class CardNote
                 existing `pr_number` is left exactly as it was:
 
                 {$lines}
-                Nothing else about the card was changed. If this pull request really is the
-                one this card already tracks, stamp its `pr_url` by hand
-                (`kbcard patch --task {$cardId} --pr-url <url>`) so a future event can verify it.
+                If this pull request really is the one this card already tracks, stamp its
+                `pr_url` by hand (`kbcard patch --task {$cardId} --pr-url <url>`) so a future
+                event can verify it.
                 BODY,
             $numberDropped && $stored->number === StoredPrNumberKind::NamesNoPr => <<<BODY
                 A pull request in `{$repo}` names this card, but the card's `pr_number`
@@ -188,8 +188,7 @@ final class CardNote
                 card is left as it was:
 
                 {$lines}
-                Nothing else about the card was changed. If this pull request is the one
-                this card tracks, correct both refs by hand
+                If this pull request is the one this card tracks, correct both refs by hand
                 (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`).
                 BODY,
             $numberDropped && $stored->url === StoredPrUrlKind::NamesThisPr => <<<BODY
@@ -204,13 +203,11 @@ final class CardNote
                 BODY,
             $numberDropped && $stored->numberIsBare() => <<<BODY
                 A pull request in `{$repo}` names this card, but the card already carries a
-                different `pr_number` — a bare number no `pr_url` attributes to a repo, so it
-                names no pull request. A card carries one of each, first write wins, so the
-                refs below were **not** written, and this card keeps the number it holds:
+                different `pr_number` — {$bare}. A card carries one of each, first write wins,
+                so the refs below were **not** written, and this card keeps the number it holds:
 
                 {$lines}
-                Nothing else about the card was changed. If this pull request is the one
-                this card tracks, replace both refs by hand
+                If this pull request is the one this card tracks, replace both refs by hand
                 (`kbcard patch --task {$cardId} --pr <number> --pr-url <url>`); if not,
                 stamp the `pr_url` of the pull request the card's number belongs to.
                 BODY,
@@ -221,8 +218,8 @@ final class CardNote
                 pull request it already names:
 
                 {$lines}
-                Nothing else about the card was changed. This second pull request is not
-                reachable by a by-ref lookup on this card; record the link by hand if you need it.
+                This second pull request is not reachable by a by-ref lookup on this card;
+                record the link by hand if you need it.
                 BODY,
             $urlDropped => <<<BODY
                 A pull request in `{$repo}` names this card, but the card's `pr_url` holds a
