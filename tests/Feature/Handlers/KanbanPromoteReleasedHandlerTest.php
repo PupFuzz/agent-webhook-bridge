@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Writeback\KanbanClient;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
@@ -25,9 +26,18 @@ use Tests\TestCase;
  * board 8 is refused — and kanban returns `board_id` on every task row, so a fixture
  * omitting it was never a realistic search result. The refusal leg itself lives in
  * `tests/Feature/Writeback/ResolvedRowBoardGuardTest.php`, with its paired witness.
+ *
+ * `RefreshDatabase` (DL-429): a foreign-`board_id` row here is now genuinely REFUSED
+ * (the ordering fix that runs `MappedBoardGuard::refuses` before the bare-`pr_number`
+ * alert), which is a DL-300 write to `writeback_board_divergences` — the first row this
+ * class's tests ever committed. Without the trait that row OUTLIVES this class on a real
+ * DB connection (MariaDB CI legs; SQLite `:memory:` never shows it) — CLAUDE_TESTING.md
+ * § Isolation.
  */
 class KanbanPromoteReleasedHandlerTest extends TestCase
 {
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void
