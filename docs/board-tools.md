@@ -1170,9 +1170,10 @@ board_my_cards: `limit` must be an integer of at least 1 when provided — … n
 
 - It is built from the keys the call **sent**, never from the refusal's wording, and it is the
   same on the unknown-argument refusal and on a tool's own refusals.
-- **No usable version** (none sent — an old client, a hand-run `bridge:tools-call`,
-  `bridge:check --probe-tools` — or one the door refused): an argument is named only when a
-  client too old to report a version can lack it, and the sentence says so in those terms.
+- **No usable version** (none sent — an old client, a hand-run `bridge:tools-call` — or one
+  the door refused): an argument is named only when a client too old to report a version can
+  lack it, and the sentence says so in those terms. `bridge:check --probe-tools` sends no
+  arguments, so its calls never carry the sentence.
 - **No sentence** when the client declares every argument it sent, when the capability table
   cannot order the reported version, on an install-fault read refusal (*"This is an INSTALL
   fault"*), for a tool or argument the table does not carry, or when the table cannot be read
