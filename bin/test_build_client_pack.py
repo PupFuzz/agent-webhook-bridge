@@ -14,7 +14,14 @@ refusal that happens before `npm ci`, including the release-tag gate, runs regar
     identical bytes from two builds.
 (d) FILES.json IDENTIFIES CLIENT CONTENT, NOT A RELEASE: two tags with the same client bytes
     give the same digest; a client change moves it.
-(r) EVERY REFUSAL THE DESIGN NAMES FIRES, and writes nothing.
+(r) EVERY REFUSAL PATH IN THE BUILDER HAS A CASE HERE THAT GOES RED WHEN THAT PATH IS REMOVED.
+    The population is derived, never listed: it is every line
+
+        grep -nE 'raise Refused|parser\.error|return 1' bin/build-client-pack.py
+
+    prints. Each site was neutralized in turn (`raise Refused(` -> `Refused(`, `parser.error(` ->
+    `print(`, `return 1` -> `return 0`) and this whole file was run against the result. A refusal
+    added to the builder joins that population and owes a case here.
 (v) --verify-commit builds any commit, writes nothing, and cannot be given --out.
 """
 
@@ -26,6 +33,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -344,6 +352,14 @@ class PackFromTag(unittest.TestCase):
     def test_the_client_digest_moves_when_the_client_changes(self):
         self.assertNotEqual(self.manifest("v1.2.4")["files_json_sha256"], self.manifest("v1.2.5")["files_json_sha256"])
 
+    def test_a_write_failure_after_the_build_is_reported_as_failed(self):
+        blocker = os.path.join(self.tmp, "a-file")
+        with open(blocker, "w") as fh:
+            fh.write("x")
+        result = _run("--ref", "v1.2.3", "--out", os.path.join(blocker, "out"), "--repo", self.fx.repo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAILED while writing", result.stderr)
+
     def test_a_non_empty_out_is_refused(self):
         result = _run("--ref", "v1.2.3", "--out", self.out["v1.2.3"], "--repo", self.fx.repo)
         self.assertEqual(result.returncode, 1)
@@ -361,8 +377,9 @@ class Refusals(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def assert_refused(self, needle):
-        self.fx.commit()
+    def assert_refused(self, needle, commit=True):
+        if commit:
+            self.fx.commit()
         self.fx.tag("v1.2.3")
         out = os.path.join(self.tmp, "out")
         result = _run("--ref", "v1.2.3", "--out", out, "--repo", self.fx.repo)
@@ -403,6 +420,123 @@ class Refusals(unittest.TestCase):
         self.fx.write("bin/check-channel-snapshot.py", "#!/usr/bin/env python3\n", 0o644)
         self.assert_refused("must be tracked at 100755")
 
+    def test_a_version_file_that_is_not_bare(self):
+        self.fx.write("VERSION", "1.2.3-rc\n")
+        self.assert_refused("not bare X.Y.Z")
+
+    def test_a_missing_version_file(self):
+        os.unlink(os.path.join(self.fx.repo, "VERSION"))
+        self.assert_refused("VERSION is unreadable")
+
+    def test_a_submodule_in_the_channel_dir(self):
+        self.fx.commit()
+        head = _git(self.fx.repo, "rev-parse", "HEAD")
+        _git(self.fx.repo, "update-index", "--add", "--cacheinfo", f"160000,{head},examples/channel-servers/vendored")
+        _git(self.fx.repo, "commit", "-q", "-m", "a gitlink under the channel dir")
+        self.assert_refused("is git mode 160000", commit=False)
+
+    def test_no_tracked_channel_server_files(self):
+        shutil.rmtree(os.path.join(self.fx.repo, "examples"))
+        self.assert_refused("holds no tracked files")
+
+    def test_a_missing_seat_tools_declaration(self):
+        os.unlink(os.path.join(self.fx.repo, "seat-tools.json"))
+        self.assert_refused("unreadable or has no `tools` list")
+
+    def test_a_seat_tools_declaration_with_no_tools(self):
+        self.fx.write("seat-tools.json", json.dumps({"schema": 1, "tools": []}))
+        self.assert_refused("declares no tools")
+
+    def test_a_seat_tool_outside_bin(self):
+        self.fx.write("tools/check-channel-snapshot.py", "#!/usr/bin/env python3\n", 0o755)
+        self.fx.write("seat-tools.json", json.dumps({"schema": 1, "tools": ["tools/check-channel-snapshot.py"]}))
+        self.assert_refused("is not a file directly under bin/")
+
+    def test_two_seat_tools_with_one_install_name(self):
+        tool = "bin/check-channel-snapshot.py"
+        self.fx.write("seat-tools.json", json.dumps({"schema": 1, "tools": [tool, tool]}))
+        self.assert_refused("two tools with one install name")
+
+    def test_a_missing_lockfile(self):
+        os.unlink(os.path.join(self.fx.repo, "examples/channel-servers/package-lock.json"))
+        self.assert_refused("package-lock.json is not tracked")
+
+    def test_a_package_json_that_is_not_json(self):
+        self.fx.write("examples/channel-servers/package.json", "{not json")
+        self.assert_refused("package.json is not JSON")
+
+    def test_a_lockfile_with_no_packages_map(self):
+        self.fx.write("examples/channel-servers/package-lock.json", json.dumps({"lockfileVersion": 1, "dependencies": {}}))
+        self.assert_refused("has no `packages` map")
+
+    def test_npm_not_on_path(self):
+        shim = os.path.join(self.tmp, "shim")
+        os.makedirs(shim)
+        os.symlink(shutil.which("git"), os.path.join(shim, "git"))
+        self.fx.commit()
+        self.fx.tag("v1.2.3")
+        out = os.path.join(self.tmp, "out")
+        result = subprocess.run(
+            [sys.executable, _SCRIPT, "--ref", "v1.2.3", "--out", out, "--repo", self.fx.repo],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env={**os.environ, "PATH": shim},
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("npm is not on PATH", result.stderr)
+        self.assertFalse(os.path.exists(out))
+
+    @unittest.skipIf(_NPM is None, _NO_NPM)
+    def test_npm_ci_failing(self):
+        lock = _lockfile("0.9.40", self.fx.tarball)
+        lock["packages"]["node_modules/tiny"]["integrity"] = "sha512-" + base64.b64encode(b"\0" * 64).decode()
+        self.fx.write("examples/channel-servers/package-lock.json", json.dumps(lock))
+        self.assert_refused("npm ci exited")
+
+    @unittest.skipIf(_NPM is None, _NO_NPM)
+    def test_a_symlink_npm_ci_creates(self):
+        base = "examples/channel-servers/"
+        self.fx.write(base + "localdep/package.json", json.dumps({"name": "localdep", "version": "1.0.0"}))
+        package = json.loads(open(os.path.join(self.fx.repo, base + "package.json")).read())
+        package["dependencies"]["localdep"] = "file:localdep"
+        self.fx.write(base + "package.json", json.dumps(package))
+        lock = _lockfile("0.9.40", self.fx.tarball)
+        lock["packages"][""]["dependencies"]["localdep"] = "file:localdep"
+        lock["packages"]["localdep"] = {"version": "1.0.0"}
+        lock["packages"]["node_modules/localdep"] = {"resolved": "localdep", "link": True}
+        self.fx.write(base + "package-lock.json", json.dumps(lock))
+        self.assert_refused("client/node_modules/localdep is a symlink after npm ci")
+
+    @unittest.skipIf(_NPM is None, _NO_NPM)
+    def test_a_path_ustar_cannot_hold(self):
+        self.fx.write("examples/channel-servers/" + "n" * 120 + ".mjs", "export {};\n")
+        self.assert_refused("cannot be stored in a ustar archive")
+
+    @unittest.skipIf(_NPM is None, _NO_NPM)
+    def test_a_tracked_node_modules_file_does_not_reach_the_pack(self):
+        self.fx.write("examples/channel-servers/node_modules/vendored/stale.js", "stale\n")
+        self.fx.commit()
+        self.fx.tag("v1.2.3")
+        out = os.path.join(self.tmp, "out")
+        result = _run("--ref", "v1.2.3", "--out", out, "--repo", self.fx.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        members = _members(os.path.join(out, "client-pack-v1.2.3.tar.gz"))
+        self.assertNotIn("client/node_modules/vendored/stale.js", members)
+        self.assertIn("client/node_modules/tiny/lib.js", members)
+
+    def test_an_out_that_is_a_symlink(self):
+        self.fx.commit()
+        self.fx.tag("v1.2.3")
+        target = os.path.join(self.tmp, "target")
+        os.makedirs(target)
+        out = os.path.join(self.tmp, "out-link")
+        os.symlink(target, out)
+        result = _run("--ref", "v1.2.3", "--out", out, "--repo", self.fx.repo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is a symlink", result.stderr)
+        self.assertEqual(os.listdir(target), [])
+
     @unittest.skipIf(_NPM is None, _NO_NPM)
     def test_a_native_addon(self):
         self.fx.write("examples/channel-servers/addon.node", b"\x7fELF")
@@ -412,6 +546,24 @@ class Refusals(unittest.TestCase):
     def test_a_binding_gyp(self):
         self.fx.write("examples/channel-servers/binding.gyp", "{}")
         self.assert_refused("is native code")
+
+
+class InstalledTreeSpecialFile(unittest.TestCase):
+    """The installed-tree walk refuses a special file. No `npm ci` run here was found to produce
+    one, so this drives `installed_files` directly over a tree holding a Unix socket. A socket and
+    not a FIFO: with the refusal removed, reading a FIFO blocks forever, so the control would hang
+    instead of going red. Opening a socket fails at once."""
+
+    def test_a_socket_in_the_installed_tree_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="bcp-sock-") as client:
+            os.makedirs(os.path.join(client, "node_modules", "x"))
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                server.bind(os.path.join(client, "node_modules", "x", "sock"))
+                with self.assertRaisesRegex(bcp.Refused, r"client/node_modules/x/sock is not a regular file"):
+                    bcp.installed_files(client, {}, set())
+            finally:
+                server.close()
 
 
 class VerifyCommit(unittest.TestCase):

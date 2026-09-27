@@ -3,8 +3,8 @@ name: Client pack builds
 # Does this pull request's tree still build a channel-server client pack? `bin/build-client-pack.py`
 # builds the pack a release publishes, but only from a release tag, and a tag exists only after the
 # release has merged, when a failure can no longer block anything. This asks the same question
-# before merge: `--verify-commit` runs every step and every refusal of a real build against the
-# commit under test, then discards the result. It writes nothing and uploads nothing, so this job
+# before merge: `--verify-commit` runs every step, and every refusal that applies to an untagged
+# commit, against the commit under test, then discards the result. It writes nothing and uploads nothing, so this job
 # cannot become a way to publish a pack from an untagged tree.
 #
 # IT IS A BUILD-SUCCEEDS GATE, NOT A CONTENT-DIFF GATE. Each release builds its own pack from its own

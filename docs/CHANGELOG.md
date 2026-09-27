@@ -19,7 +19,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - ⛔ **Only a release tag builds a pack.** `--ref` must name `v<X.Y.Z>` under `refs/tags/`, and `VERSION` at that tag must agree. A branch (including one named like a tag), a commit, `HEAD` or a working tree is refused, and every input is read from git objects at the tag. Also refused: install scripts, platform-specific packages, native addons, symlinks, and a client version that is not bare `X.Y.Z`. Nothing is signed (operator ruling); integrity is the sha256 values and the tagged release.
   - **FILES.json never names the release**, so two releases shipping the same client bytes produce the same digest, and a client change moves it. Client approval is keyed on that digest.
   - Two builds of one tag on one host are byte-identical. That is an audit property of one toolchain, not a cross-host guarantee.
-  - ⚠ **CI: new workflow `client-pack-build-check.yml` (`Client pack builds`) runs on every pull request to `dev` and `main`, with no path filter.** It runs `--verify-commit HEAD`, which builds the merge commit through every step and refusal and writes nothing. It is **not** a required check. Nothing an install runs changes.
+  - ⚠ **CI: new workflow `client-pack-build-check.yml` (`Client pack builds`) runs on every pull request to `dev` and `main`, with no path filter.** It runs `--verify-commit HEAD`, which builds the merge commit through every step, and every refusal that applies to an untagged commit, and writes nothing. It is **not** a required check. Nothing an install runs changes.
 
 ### Changed
 

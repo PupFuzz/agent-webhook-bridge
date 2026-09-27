@@ -15,8 +15,8 @@ branch, a commit id, `HEAD`, a full refname, or a branch that merely LOOKS like 
 refused. Every input is read from git objects at the tagged commit, never from the working
 tree or the index, so uncommitted edits and later commits cannot reach a pack.
 
-`--verify-commit` IS NOT A SECOND WAY TO MAKE A PACK. It runs every step and every refusal
-against any commit, then discards the result: it takes no `--out` and writes nothing. It
+`--verify-commit` IS NOT A SECOND WAY TO MAKE A PACK. It runs every step, and every refusal
+that applies to an untagged commit, against any commit, then discards the result: it takes no `--out` and writes nothing. It
 exists so a pull request can prove its tree still builds before it merges.
 
 INPUTS, at the one commit: the tracked files under `examples/channel-servers/` except its
