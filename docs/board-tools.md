@@ -280,7 +280,11 @@ for, and the old response gave no hint it was oversized or partial.
   the list: your own lane, the shared lane and `tag_cards`
   name `stage` and `limit`; a list already narrowed by `stage` names `limit` alone;
   `coord_cards_window` names `limit` alone, because `stage` does not reach the coordination
-  board. An untruncated window carries **no** `remedy` key — not a null one. ⚠ The sentence is
+  board. An untruncated window carries **no** `remedy` key — not a null one. **When your reported
+  `client_version` does not declare an argument the remedy names, the remedy still names it and
+  ends with the client-update sentence for it** (operator ruling on card#10566; see
+  [§ A refusal can tell you to update your channel client](#a-refusal-can-tell-you-to-update-your-channel-client-dl-426),
+  whose rules for no usable version and for an unreadable table apply unchanged). ⚠ The sentence is
   for a reader; branch on `truncated`, never on the wording.
 - **Narrow with `stage` before you raise `limit`.** `stage` answers about one column, and
   `total` then reports **that column's** size. Raising `limit` grows the response in
@@ -1179,6 +1183,10 @@ board_my_cards: `limit` must be an integer of at least 1 when provided — … n
   (logged as a warning).
 - ⛔ **Text only.** No status, exit code or accepted value moves with the version. Branch on the
   status, never on the wording.
+- **A truncated `board_my_cards` window's `remedy` carries the same sentence** for the arguments
+  the remedy ADVISES rather than the ones sent — a success, not a refusal (see § The default is
+  capped). For example, a `0.9.12` client's own-lane remedy ends
+  `` … or raise `limit` (the response grows in proportion). Your channel client, version 0.9.12, does not declare `stage` (first declared by client 0.9.16) and `limit` (first declared by client 0.9.16); update your channel client so its tool schema describes them. ``
 
 ### A PERMANENT board 4xx is a refusal, on every tool (DL-339)
 
