@@ -16,6 +16,7 @@ use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\ProgramCardGuard;
+use App\Bridge\Writeback\TrackedCardRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -167,11 +168,15 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         try {
             // Repo-qualified correlation (DL-167) only on a SHARED board (DL-174):
             // there kanban's `source` dimension (kanban DL-163) returns only THIS
-            // repo's cards in `ref` mode. On a 1:1 board the qualifier is omitted so
-            // null-source refs (operator-stamped pr_number cards) still correlate.
+            // repo's cards in `ref` mode. On a 1:1 board the qualifier is omitted, so a
+            // null-source ref (an operator-stamped BARE `pr_number`, no `pr_url`) is
+            // still FOUND by this search — but `cardsForRepo`'s repo gate then drops
+            // it (DL-429: a bare number is not evidence of which repo it belongs to,
+            // on any board), so it is never moved, archived or collapsed here. Only a
+            // card whose `pr_url` names $repo's pull request survives that gate.
             // cardsForRepo stays as the `scan`-mode guard and a belt-and-suspenders
-            // confirm — it attributes each card by its pr_url and drops any
-            // foreign-repo card a bare-number match surfaced.
+            // confirm in `ref` mode — it attributes each card by {@see TrackedCardRef}
+            // and drops any card a bare-number match surfaced that it cannot attribute.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
             $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo, $mapping, $prNumber);
 
@@ -492,9 +497,14 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      *
      * The REPO gate: correlatePr is repo-qualified at the source in `ref` mode
      * (DL-167 → kanban `source`, DL-163), so this is a confirm there; in `scan`
-     * mode it's the actual cross-repo guard. Attribution is by the
-     * `github.com/<repo>/pull/` segment of a card's stored `pr_url`; a card whose
-     * repo can't be read is dropped — never moved or archived on a guess.
+     * mode it's the actual cross-repo guard. Attribution is by
+     * {@see TrackedCardRef::namesPr} — the one "is this the card's PR" answer
+     * (canon #5) — never a raw `pr_url`-repo compare: that compare accepted a
+     * `.../pull/0` SOURCE-ONLY placeholder as repo evidence for a BARE `pr_number`,
+     * which is exactly the attribution DL-429 (card#9850) refuses everywhere
+     * else — a placeholder names a repo and no pull request, so it is not
+     * evidence of which repo a bare number's PR belongs to. A card whose PR
+     * can't be read this way is dropped — never moved or archived on a guess.
      *
      * @param  list<int>  $cardIds
      * @return array<int, array<string, mixed>>
@@ -502,7 +512,6 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     private function cardsForRepo(KanbanClient $client, array $cardIds, string $repo, WritebackMapping $mapping, int $prNumber): array
     {
         $refs = new ExternalReferenceNormalizer;
-        $wantRepo = $refs->canonicalizeSource($repo);   // canon-compare: GitHub owner/repo is case-insensitive
         $cards = [];
         foreach ($cardIds as $id) {
             $card = $client->getCard($id);
@@ -512,28 +521,13 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_dependabot_card', $id, $repo, self::ALERT_OUTCOME, $prNumber)) {
                 continue;
             }
-            if ($this->cardRepo($refs, $card) === $wantRepo) {
+            $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
+            if (TrackedCardRef::fromPayload($payload, $refs)->namesPr($repo, $prNumber, $refs)) {
                 $cards[$id] = $card;
             }
         }
 
         return $cards;
-    }
-
-    /**
-     * The canonical `owner/repo` a dependabot card belongs to, parsed from its
-     * stored `pr_url` (`https://github.com/<owner>/<repo>/pull/<n>`), or null when
-     * the url is absent/unparseable. Canonicalized via the vendored normalizer so
-     * attribution matches the kanban server's `source` semantics.
-     *
-     * @param  array<string, mixed>  $card
-     */
-    private function cardRepo(ExternalReferenceNormalizer $refs, array $card): ?string
-    {
-        $payload = $card['payload'] ?? null;
-        $url = is_array($payload) ? ($payload['pr_url'] ?? null) : null;
-
-        return is_string($url) ? $refs->repoFromGitHubUrl($url) : null;
     }
 
     /**

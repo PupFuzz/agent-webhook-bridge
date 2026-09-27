@@ -8,9 +8,9 @@ use App\Bridge\Writeback\TrackedRefKind;
 use Tests\TestCase;
 
 /**
- * TrackedCardRef — the shared PR-reference precedence used by bridge:reconcile and the
- * DL-207 promote-on-release scan. These pin the precedence so the two consumers can't
- * drift; reconcile's end-to-end behavior is covered by ReconcileCommandTest.
+ * TrackedCardRef — the shared PR-reference precedence used by bridge:reconcile, the
+ * DL-207 promote-on-release scan and the DL-270 corroboration gate. These pin the precedence
+ * so the consumers can't drift; their end-to-end behavior is covered at each surface.
  */
 class TrackedCardRefTest extends TestCase
 {
@@ -26,7 +26,6 @@ class TrackedCardRefTest extends TestCase
     {
         $ref = TrackedCardRef::fromPayload(
             ['pr_url' => 'https://github.com/Owner/Repo/pull/42', 'pr_number' => 99],
-            false,
             $this->refs,
         );
 
@@ -36,32 +35,50 @@ class TrackedCardRefTest extends TestCase
         $this->assertNotNull($ref->canonRepo);
     }
 
-    public function test_pull_zero_placeholder_falls_through_to_pr_number(): void
+    public function test_pull_zero_placeholder_falls_through_to_a_bare_pr_number_it_does_not_qualify(): void
     {
+        // card#9850: the placeholder's repo is not evidence of which repo the number came
+        // from (the stamp writes `pr_number` beside a kept FOREIGN placeholder), so the card
+        // names no pull request — not even the placeholder repo's #42.
         $ref = TrackedCardRef::fromPayload(
             ['pr_url' => 'https://github.com/Owner/Repo/pull/0', 'pr_number' => 42],
-            false,
             $this->refs,
         );
 
-        $this->assertSame(TrackedRefKind::PrNumber, $ref->kind);
+        $this->assertSame(TrackedRefKind::BarePrNumber, $ref->kind);
         $this->assertSame(42, $ref->prNumber);
+        $this->assertNull($ref->canonRepo);
+        $this->assertFalse($ref->namesPr('owner/repo', 42, $this->refs));
     }
 
-    public function test_bare_pr_number_is_pr_number_on_a_solo_board(): void
+    /**
+     * DL-429 — a bare pr_number names no repo on ANY board. It used to be attributed to a
+     * 1:1 board's sole mapping, which an org move falsifies: the mapping becomes the new
+     * repo, whose restarted PR numbers collide with the old repo's.
+     */
+    public function test_a_bare_pr_number_names_no_pull_request_in_any_repo(): void
     {
-        $ref = TrackedCardRef::fromPayload(['pr_number' => 7], false, $this->refs);
+        $ref = TrackedCardRef::fromPayload(['pr_number' => 7], $this->refs);
 
-        $this->assertSame(TrackedRefKind::PrNumber, $ref->kind);
+        $this->assertSame(TrackedRefKind::BarePrNumber, $ref->kind);
         $this->assertSame(7, $ref->prNumber);
+        $this->assertNull($ref->canonRepo);
+        $this->assertFalse($ref->namesPr('owner/repo', 7, $this->refs));
     }
 
-    public function test_bare_pr_number_is_ambiguous_on_a_shared_board(): void
+    /**
+     * DL-429 — the collision itself: OLD/repo#N and NEW/repo#N are two pull requests. A card
+     * names only the one its pr_url names, whatever spelling the repo or number arrive in.
+     */
+    public function test_a_pr_url_names_its_own_repos_pull_request_and_no_other_repos_same_number(): void
     {
-        $ref = TrackedCardRef::fromPayload(['pr_number' => 7], true, $this->refs);
+        $ref = TrackedCardRef::fromPayload(['pr_url' => 'https://github.com/OldOrg/Repo/pull/148', 'pr_number' => 148], $this->refs);
 
-        $this->assertSame(TrackedRefKind::Ambiguous, $ref->kind);
-        $this->assertSame(7, $ref->prNumber);
+        $this->assertFalse($ref->namesPr('neworg/repo', 148, $this->refs), 'same number, other repo');
+        $this->assertTrue($ref->namesPr('oldorg/repo', 148, $this->refs), 'control: its own repo');
+        $this->assertTrue($ref->namesPr('OLDORG/REPO', '0148', $this->refs), 'control: repo case and number spelling are not identity');
+        $this->assertFalse($ref->namesPr('oldorg/repo', 149, $this->refs), 'same repo, other number');
+        $this->assertFalse($ref->namesPr('oldorg/repo', null, $this->refs), 'an event naming no number names nothing');
     }
 
     /**
@@ -76,22 +93,11 @@ class TrackedCardRefTest extends TestCase
         // A number-typed kanban field decodes to a PHP float; the durable inbox / a JSON
         // round-trip can hand back the same value as a string. Both must answer alike.
         foreach ([1.5, '1.5'] as $value) {
-            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], false, $this->refs);
+            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], $this->refs);
 
             $this->assertSame(TrackedRefKind::None, $ref->kind, 'value: '.var_export($value, true));
             $this->assertNull($ref->prNumber);
         }
-    }
-
-    public function test_a_non_integer_pr_number_is_not_ambiguous_either_on_a_shared_board(): void
-    {
-        // The shared-board arm truncated identically, and `Ambiguous` is the kind
-        // bridge:reconcile prints an operator-facing skip line for — one that would have
-        // named the fabricated number as the card's PR.
-        $ref = TrackedCardRef::fromPayload(['pr_number' => 1.5], true, $this->refs);
-
-        $this->assertSame(TrackedRefKind::None, $ref->kind);
-        $this->assertNull($ref->prNumber);
     }
 
     public function test_an_integral_pr_number_is_still_tracked_whatever_its_json_type(): void
@@ -99,9 +105,9 @@ class TrackedCardRefTest extends TestCase
         // Control: the refusal is scoped to values naming no single integer, not to floats
         // or numeric strings generally.
         foreach ([85, 85.0, '85', '085'] as $value) {
-            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], false, $this->refs);
+            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], $this->refs);
 
-            $this->assertSame(TrackedRefKind::PrNumber, $ref->kind, 'value: '.var_export($value, true));
+            $this->assertSame(TrackedRefKind::BarePrNumber, $ref->kind, 'value: '.var_export($value, true));
             $this->assertSame(85, $ref->prNumber);
         }
     }
@@ -116,7 +122,7 @@ class TrackedCardRefTest extends TestCase
     public function test_a_negative_or_decorated_pr_number_is_still_not_a_bare_pr_number(): void
     {
         foreach ([-5, '-5', '#85', 'PR-85'] as $value) {
-            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], false, $this->refs);
+            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], $this->refs);
 
             $this->assertSame(TrackedRefKind::None, $ref->kind, 'value: '.var_export($value, true));
         }
@@ -124,7 +130,7 @@ class TrackedCardRefTest extends TestCase
 
     public function test_dl_only_is_dl_only(): void
     {
-        $ref = TrackedCardRef::fromPayload(['dl_number' => 'DL-0207'], false, $this->refs);
+        $ref = TrackedCardRef::fromPayload(['dl_number' => 'DL-0207'], $this->refs);
 
         $this->assertSame(TrackedRefKind::DlOnly, $ref->kind);
         $this->assertSame('DL-0207', $ref->dl);
@@ -132,7 +138,7 @@ class TrackedCardRefTest extends TestCase
 
     public function test_no_reference_is_none(): void
     {
-        $this->assertSame(TrackedRefKind::None, TrackedCardRef::fromPayload([], false, $this->refs)->kind);
-        $this->assertSame(TrackedRefKind::None, TrackedCardRef::fromPayload(['pr_number' => 0], false, $this->refs)->kind);
+        $this->assertSame(TrackedRefKind::None, TrackedCardRef::fromPayload([], $this->refs)->kind);
+        $this->assertSame(TrackedRefKind::None, TrackedCardRef::fromPayload(['pr_number' => 0], $this->refs)->kind);
     }
 }

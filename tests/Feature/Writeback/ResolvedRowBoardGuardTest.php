@@ -145,8 +145,8 @@ class ResolvedRowBoardGuardTest extends TestCase
             'promote_on_release' => true,
         ]);
         $rows = [
-            5 => ['id' => 5, 'board_id' => self::MAPPED_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
-            6 => ['id' => 6, 'board_id' => self::FOREIGN_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            5 => ['id' => 5, 'board_id' => self::MAPPED_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']],
+            6 => ['id' => 6, 'board_id' => self::FOREIGN_BOARD, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']],
         ];
         Http::fake([
             self::ALERT_URL.'*' => Http::response('', 204),

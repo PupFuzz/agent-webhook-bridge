@@ -180,23 +180,20 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
                 $repo, 'promote_on_release', null, 'promote_board_truncated',
             );
         }
-        $isShared = $writeback->boardIsShared($mapping->boardId);
         $refs = new ExternalReferenceNormalizer;
 
         // Candidates: at the Shipped stage EXACTLY, tooling-managed (a PR reference), not
-        // pinned (mirror the reconcile's human-hold skip), and — on a shared board —
-        // attributable to THIS repo (a bare pr_number on a shared board is ambiguous, skipped
-        // exactly as bridge:reconcile does). DL-only cards have no PR to read a merge_sha from
-        // (the same PR-driven boundary the reconcile draws).
+        // pinned (mirror the reconcile's human-hold skip), and attributable to THIS repo — a
+        // `pr_url` naming it. A bare pr_number names no repo on any board (DL-429) and is
+        // skipped exactly as bridge:reconcile skips it. DL-only cards have no PR to read a
+        // merge_sha from (the same PR-driven boundary the reconcile draws).
         $candidates = [];
         foreach ($read['cards'] as $card) {
             if (($card['workflow_stage_id'] ?? null) !== $shipped || PinGuard::isPinned($card)) {
                 continue;
             }
             $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : null;
-            $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
-            $prNumber = $this->prForRepo(TrackedCardRef::fromPayload($payload, $isShared, $refs), $repo, $refs);
-            if ($cardId === null || $prNumber === null) {
+            if ($cardId === null) {
                 continue;
             }
             // DL-298 / card#7211: the row came out of a `q=board_id=<b>` search, and the
@@ -205,9 +202,29 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             // the call, so a `q=`→top-level hoist (which filters in a manual test, because
             // `board_id` happens to be recognised there too, and takes the next filter
             // hoisted beside it silently out of the query) cannot promote a card off
-            // another tenant's board. Applied where a row BECOMES a candidate, so the
-            // refused set is exactly the set this handler would otherwise have written to.
+            // another tenant's board. Run BEFORE anything below reads or alerts on the row
+            // (including the DL-429 bare-number alert next) — a row this guard has not yet
+            // cleared must never be spoken about or acted on, on the same boundary
+            // discipline as everywhere else this guard is called.
             if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
+                continue;
+            }
+            $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
+            $ref = TrackedCardRef::fromPayload($payload, $refs);
+            $prNumber = $this->prForRepo($ref, $repo, $refs);
+            if ($ref->kind === TrackedRefKind::BarePrNumber) {
+                // DL-429: this card was promotable by its bare number until the number stopped
+                // being attributed to the board's sole repo. Skipped, never read against this
+                // repo — and said, because this leg has no reconcile backstop: a card that
+                // stays at Shipped in silence is the failure this handler's other skips name.
+                $this->alerts->warnAndNotify(
+                    'promote_released.bare_pr_number',
+                    'kanban_promote_released: a Shipped card carries a bare pr_number and no pr_url naming its pull request, so which repo that number belongs to is unknown — skipping card (stamp the pr_url, e.g. `kbcard patch --task <id> --pr-url <url>`)',
+                    ['card_id' => $cardId, 'repo' => $repo, 'pr_number' => $ref->prNumber],
+                    $repo, 'promote_on_release', $cardId, 'promote_bare_pr_number',
+                );
+            }
+            if ($prNumber === null) {
                 continue;
             }
             // PARENT-CARD refusal (card#10068): the row carries the `program` tag, so it names
@@ -408,17 +425,16 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
     /**
      * The PR number to read for a candidate, or null when the card can't be attributed to
-     * $repo. On a 1:1 board a bare pr_number is unambiguous (the board's sole repo IS $repo);
-     * a pr_url is honored only when it canonicalizes to $repo (a shared-board other-repo card
-     * is skipped — reading getPull($repo, itsNumber) would fetch the WRONG PR). Ambiguous /
-     * dl-only / no-ref cards are not promotable here.
+     * $repo. Only a pr_url that canonicalizes to $repo attributes it — reading
+     * getPull($repo, itsNumber) for any other card would fetch the WRONG PR. That includes
+     * a bare pr_number on a 1:1 board (DL-429): the board's sole repo is not evidence of the
+     * number's repo once a repo moves org and its PR numbers restart. Bare-number / dl-only /
+     * no-ref cards are not promotable here.
      */
     private function prForRepo(TrackedCardRef $ref, string $repo, ExternalReferenceNormalizer $refs): ?int
     {
-        return match ($ref->kind) {
-            TrackedRefKind::PrNumber => $ref->prNumber,
-            TrackedRefKind::PrUrl => $ref->canonRepo === $refs->canonicalizeSource($repo) ? $ref->prNumber : null,
-            default => null,
-        };
+        return $ref->kind === TrackedRefKind::PrUrl && $ref->canonRepo === $refs->canonicalizeSource($repo)
+            ? $ref->prNumber
+            : null;
     }
 }
