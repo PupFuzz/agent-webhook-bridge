@@ -40,6 +40,12 @@ class ClientUpdateClauseTest extends TestCase
 
     private const NO_VERSION_LIMIT = ' This call reported no channel-client version. Channel clients before 0.9.15 report none, and some of them do not declare `limit` (first declared by client 0.9.16); if yours is one, update your channel client so its tool schema describes it.';
 
+    private const TODAY_LANE_REMEDY = 'this list was cut to the newest `limit` of `total` cards; to see more, narrow with `stage` (one column: an id or name from `board_stages`) or raise `limit` (the response grows in proportion)';
+
+    private const TODAY_NARROWED_REMEDY = 'this list was cut to the newest `limit` of `total` cards; to see more, raise `limit` (the response grows in proportion) — this list is already narrowed to one column by `stage`';
+
+    private const TODAY_COORD_REMEDY = 'this list was cut to the newest `limit` of `total` cards; to see more, raise `limit` (the response grows in proportion). `stage` does not narrow this list: these cards are on the coordination board, whose columns are not yours';
+
     private string $dir;
 
     private string $token = 'tools-bearer-abc123';   // gitleaks:allow — test fixture
@@ -177,6 +183,80 @@ class ClientUpdateClauseTest extends TestCase
         }
     }
 
+    // ─── a truncated window's remedy (operator ruling, card comment 7131) ────────────
+
+    /**
+     * The remedy keeps naming `stage` and `limit` to a client too old to declare them, and adds
+     * the sentence naming the version that does — the arguments it ADVISES, not the ones sent.
+     */
+    public function test_a_truncated_window_tells_an_older_client_the_version_that_declares_the_arguments_its_remedy_names(): void
+    {
+        $this->fakeBoard(60);
+
+        $this->assertSame(
+            self::TODAY_LANE_REMEDY.'. Your channel client, version 0.9.12, does not declare `stage` (first declared by client 0.9.16) and `limit` (first declared by client 0.9.16); update your channel client so its tool schema describes them.',
+            $this->callTool('board_my_cards', [], '0.9.12')->assertStatus(200)->json('result.cards_window.remedy'),
+        );
+    }
+
+    /** A window already narrowed by `stage` advises `limit` alone, so the sentence names `limit` alone. */
+    public function test_a_stage_narrowed_window_tells_an_older_client_about_limit_alone(): void
+    {
+        $this->fakeBoard(60);
+
+        $this->assertSame(
+            self::TODAY_NARROWED_REMEDY.'. Your channel client, version 0.9.12, does not declare `limit` (first declared by client 0.9.16); update your channel client so its tool schema describes it.',
+            $this->callTool('board_my_cards', ['stage' => 50], '0.9.12')->assertStatus(200)->json('result.cards_window.remedy'),
+        );
+    }
+
+    /** The coord window names `stage` only to say it does not apply, so the sentence names `limit` alone. */
+    public function test_a_coord_window_tells_an_older_client_about_limit_alone(): void
+    {
+        File::append($this->dir.'/me.yml', "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]]),
+            '*/boards/12/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]]]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $coord = str_contains(urldecode($request->url()), 'tags:"repo:me"');
+                $rows = [];
+                for ($id = 1; $id <= ($coord ? 60 : 2); $id++) {
+                    $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => $coord ? 70 : 50, 'swimlane_id' => 4,
+                        'tags' => $coord ? ['repo:me'] : [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => $coord ? 12 : 10];
+                }
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            },
+        ]);
+
+        $this->assertSame(
+            self::TODAY_COORD_REMEDY.'. Your channel client, version 0.9.12, does not declare `limit` (first declared by client 0.9.16); update your channel client so its tool schema describes it.',
+            $this->callTool('board_my_cards', [], '0.9.12')->assertStatus(200)->json('result.coord_cards_window.remedy'),
+        );
+    }
+
+    /** A client that declares both arguments — the first that does, and the current one — gets today's remedy, byte for byte. */
+    public function test_a_truncated_window_for_a_client_that_declares_the_arguments_is_todays_remedy(): void
+    {
+        foreach (['0.9.16', ClientCapabilities::bundled()->currentClientVersion, '99.0.0'] as $version) {
+            $this->fakeBoard(60);
+            $this->assertSame(self::TODAY_LANE_REMEDY, $this->callTool('board_my_cards', [], $version)->assertStatus(200)->json('result.cards_window.remedy'), $version);
+        }
+    }
+
+    /** No usable version: the sentence true of the clients that report none. */
+    public function test_a_truncated_window_with_no_usable_version_gets_the_sentence_true_of_clients_that_report_none(): void
+    {
+        foreach ([null, '0.9.12 beta'] as $version) {
+            $this->fakeBoard(60);
+            $this->assertSame(
+                self::TODAY_LANE_REMEDY.'. This call reported no channel-client version. Channel clients before 0.9.15 report none, and some of them do not declare `stage` (first declared by client 0.9.16) and `limit` (first declared by client 0.9.16); if yours is one, update your channel client so its tool schema describes them.',
+                $this->callTool('board_my_cards', [], $version)->assertStatus(200)->json('result.cards_window.remedy'),
+                var_export($version, true),
+            );
+        }
+    }
+
     // ─── DL-364 Decision 2: the version never changes an outcome ─────────────────────
 
     /**
@@ -201,6 +281,10 @@ class ClientUpdateClauseTest extends TestCase
                 $body = (array) $res->json();
                 if (isset($body['error'])) {
                     $body['error'] = explode(' Your channel client, version ', explode(' This call reported no channel-client version.', (string) $body['error'])[0])[0];
+                }
+                // A remedy has no closing period of its own; the sentence brings one.
+                if (isset($body['result']['cards_window']['remedy'])) {
+                    $body['result']['cards_window']['remedy'] = explode('. Your channel client, version ', explode('. This call reported no channel-client version.', (string) $body['result']['cards_window']['remedy'])[0])[0];
                 }
                 $observed = [$res->status(), $body];
                 $baseline ??= $observed;
@@ -263,9 +347,32 @@ class ClientUpdateClauseTest extends TestCase
             $this->app->useStoragePath($base.'/storage');
         }
 
-        Log::shouldHaveReceived('warning')->times(count($calls))->withArgs(fn (string $message, array $context): bool => $message === 'agent-tools: client capability table unreadable; refusal carries no client-update clause'
+        Log::shouldHaveReceived('warning')->times(count($calls))->withArgs(fn (string $message, array $context): bool => $message === 'agent-tools: client capability table unreadable; the text carries no client-update clause'
             && str_contains((string) ($context['error'] ?? ''), ClientCapabilities::TABLE.' did not read'));
         Http::assertNothingSent();
+    }
+
+    /** The same broken deploy on a truncated window: today's remedy, logged, and the read still answers. */
+    public function test_an_unreadable_capability_table_leaves_a_truncated_window_with_todays_remedy(): void
+    {
+        $this->fakeBoard(60);
+        $this->assertNotSame(self::TODAY_LANE_REMEDY, $this->callTool('board_my_cards', [], '0.9.12')->assertStatus(200)->json('result.cards_window.remedy'), 'the control: with the table readable, the remedy carries the sentence');
+
+        $base = $this->app->basePath();
+        $bare = $this->dir.'/bare-base';
+        File::ensureDirectoryExists($bare);
+        Log::spy();
+        $this->app->setBasePath($bare);
+        $this->app->useStoragePath($base.'/storage');
+        try {
+            $this->assertSame(self::TODAY_LANE_REMEDY, $this->callTool('board_my_cards', [], '0.9.12')->assertStatus(200)->json('result.cards_window.remedy'));
+        } finally {
+            $this->app->setBasePath($base);
+            $this->app->useStoragePath($base.'/storage');
+        }
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message, array $context): bool => $message === 'agent-tools: client capability table unreadable; the text carries no client-update clause'
+            && ($context['tool'] ?? null) === 'board_my_cards');
     }
 
     /** A tool the table does not carry has no client history: its refusals are unchanged, never a 500. */
