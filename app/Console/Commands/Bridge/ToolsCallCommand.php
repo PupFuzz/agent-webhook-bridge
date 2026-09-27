@@ -9,6 +9,7 @@ use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
 use App\Bridge\Tools\DispatchOutcome;
+use App\Bridge\Tools\RemedyText;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Tools\ToolCallBody;
 use App\Bridge\Tools\ToolsCallStdio;
@@ -30,9 +31,10 @@ use App\Bridge\Tools\ToolsCallStdio;
  *
  * The STDIN request is `{tool, args?, client_version?}`. ⛔ The third key is an OPTIONAL
  * OBSERVATION and never part of what this door accepts (card#8974): the caller's own
- * snapshot version, recorded beside the call and used by nothing on the request path. A
- * request that omits it, or carries any value {@see ClientVersion} will not take, is
- * accepted exactly as it was before the field existed.
+ * snapshot version, recorded beside the call. A request that omits it, or carries any
+ * value {@see ClientVersion} will not take, is accepted exactly as it was before the
+ * field existed — what it may change is the response TEXT, which {@see RemedyText} owns
+ * (card#10566 / DL-426; not restated here).
  *
  * ⭐ THIS DOOR IS THE ONE THAT CAN TELL A PINNED FORCED COMMAND FROM A HAND-RUN (card#7836 /
  * DL-316), and it is the only place in the codebase that can — the HTTP door's peer is
@@ -130,10 +132,10 @@ class ToolsCallCommand extends BridgeCommand
         $args = $decoded['args'] ?? [];
         // ⛔ OPTIONAL, AND NOTHING ABOUT IT CAN REFUSE A CALL (card#8974 / DL-364). Absent —
         // which is what every client older than the first reporting snapshot sends — or of
-        // any shape {@see ClientVersion} will not take, it becomes null and the call
-        // proceeds byte-identically to how it did before the field existed. There is
-        // deliberately no arm above this that inspects it: what refuses a request before a
-        // tool runs is the body parse and the dispatcher's `tool` check, never this field.
+        // any shape {@see ClientVersion} will not take, it becomes null. What refuses a
+        // request before a tool runs is the body parse and the dispatcher's `tool` check,
+        // never this field. It IS read below the dispatch, for response TEXT only —
+        // {@see RemedyText}, card#10566 / DL-426, not restated here.
         $clientVersion = ClientVersion::fromCall($decoded['client_version'] ?? null);
 
         // Measured at the dispatch, not at boot: what is being recorded is a fact about the

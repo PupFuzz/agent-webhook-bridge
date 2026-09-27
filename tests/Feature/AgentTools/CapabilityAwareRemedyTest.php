@@ -435,10 +435,25 @@ class CapabilityAwareRemedyTest extends TestCase
         $caps = ClientCapabilities::bundled();
         $checked = 0;
 
-        $assertCovered = function (string $tool, string $text, ?array $only = null) use ($caps, $registry, &$checked): void {
+        // r4-M1: an INDEPENDENT oracle, not the subject's own regex — a shared bug in both would
+        // cancel out. For each of the tool's OWN accepted arguments, scan `$head` for a literal
+        // backtick immediately followed by that name, then require the next byte (if any) not
+        // continue an identifier — the same predicate stated in prose, checked by a different walk.
+        $backtickedAt = function (string $head, string $name): bool {
+            $at = 0;
+            while (($at = strpos($head, '`'.$name, $at)) !== false) {
+                $next = $head[$at + 1 + strlen($name)] ?? '';
+                if ($next === '' || preg_match('/[a-z0-9_]/i', $next) !== 1) {
+                    return true;
+                }
+                $at++;
+            }
+
+            return false;
+        };
+        $assertCovered = function (string $tool, string $text, ?array $only = null) use ($caps, $registry, $backtickedAt, &$checked): void {
             [$head, $clause] = self::splitAtClause($text);
-            preg_match_all('/`([a-z_][a-z0-9_]*)(?=[`:])/', $head, $m);
-            $named = $only ?? array_values(array_unique(array_filter($m[1], fn (string $a): bool => in_array($a, $registry->resolve($tool)?->acceptedArguments() ?? [], true))));
+            $named = $only ?? array_values(array_filter($registry->resolve($tool)?->acceptedArguments() ?? [], fn (string $a): bool => $backtickedAt($head, $a)));
             foreach ($named as $argument) {
                 if ($caps->declares('0.5.0', $tool, $argument) === ClientDeclaration::Yes) {
                     continue;
@@ -534,6 +549,44 @@ class CapabilityAwareRemedyTest extends TestCase
             foreach (self::CLAUSES as $opening) {
                 $this->assertStringNotContainsString($opening, $error);
             }
+        }
+    }
+
+    /**
+     * r4-M1: `advise()`'s regex, driven directly with hand-written spans — an INDEPENDENT oracle
+     * from `test_every_remedy_against_a_0_5_0_client_…`'s fixture walk, which samples remedies the
+     * source happens to produce today and would not construct any of the reviewer's three misses.
+     * `board_my_cards` + `limit` at `0.5.0` (which does not declare `limit`) means the gap clause
+     * fires exactly when the span counts as naming `limit`.
+     */
+    public function test_advise_matches_a_backticked_argument_name_at_a_word_boundary(): void
+    {
+        $tool = (new BoardToolsRegistry)->resolve('board_my_cards');
+        $this->assertNotNull($tool);
+        $caller = new CallerClient('0.5.0', ClientCapabilities::bundled());
+
+        $positive = [
+            '`limit`' => 'closing backtick immediately after the name',
+            '`limit: 100`' => 'colon, the other punctuation the original regex admitted',
+            '`limit 100`' => "reviewer's miss 1 — a space",
+            '`limit=100`' => "reviewer's miss 2 — an equals sign",
+            '`stage 50`' => "reviewer's miss 3 — a different argument, a space",
+            '`limit,`' => 'a comma',
+            '`limit)`' => 'a closing paren',
+        ];
+        foreach ($positive as $span => $why) {
+            $this->assertStringContainsString(' ⚠ ', RemedyText::advise($caller, $tool, "text {$span} text"), $why);
+        }
+
+        $negative = [
+            '`limits`' => 'the name is only a PREFIX of a longer identifier',
+            '`limit_include_terminal`' => 'the name is only a prefix of a longer, underscore-joined identifier',
+            '`unlimited`' => 'the name is only a SUFFIX of a longer identifier',
+            'limit` text' => 'no opening backtick immediately before the name',
+            'no backticks at all, just the word limit' => 'the name never follows a backtick',
+        ];
+        foreach ($negative as $span => $why) {
+            $this->assertStringNotContainsString(' ⚠ ', RemedyText::advise($caller, $tool, "text {$span} text"), $why);
         }
     }
 }

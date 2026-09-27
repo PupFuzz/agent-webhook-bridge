@@ -41,12 +41,15 @@ final class RemedyText
     /**
      * `$how`, plus the gap clause for every argument of `$tool` it backticks. The arguments are
      * READ OFF THE TEXT rather than listed by the caller, so a remedy that names an argument
-     * cannot forget to account for it — a backticked name is exactly what a caller would try to
-     * pass. A backticked span opening with an argument name counts (`include_terminal: true`).
+     * cannot forget to account for it. The regex matches a backtick immediately followed by a
+     * run of `[a-z0-9_]` characters, up to but not including the first character that cannot
+     * continue an identifier — so `` `limit` ``, `` `limit 100` ``, `` `limit=100` `` and
+     * `` `include_terminal: true` `` all count, and a longer identifier the name is only a
+     * prefix of (`` `limits` ``) does not (r4-M1).
      */
     public static function advise(CallerClient $caller, Tool $tool, string $how): string
     {
-        preg_match_all('/`([a-z_][a-z0-9_]*)(?=[`:])/', $how, $m);
+        preg_match_all('/`([a-z_][a-z0-9_]*)(?![a-z0-9_])/', $how, $m);
         $named = array_values(array_unique(array_intersect($m[1], $tool->acceptedArguments())));
 
         return $how.self::gapClause($caller, $tool, $named);

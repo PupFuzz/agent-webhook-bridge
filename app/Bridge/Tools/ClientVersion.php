@@ -15,10 +15,11 @@ namespace App\Bridge\Tools;
  *
  * ⛔ IT MAY NEVER CHANGE WHAT THE DOOR ACCEPTS. Both front doors call this on a value the
  * far end sent, and there is no failure exit: an absent, wrongly-typed, over-long or
- * otherwise unusable value becomes NULL — "not reported" — and the call proceeds exactly
- * as it did before the field existed. Turning any of those into a refusal would break every
- * client older than {@see self::FIRST_REPORTING_SNAPSHOT} for a field that is an audit
- * observation, not a credential.
+ * otherwise unusable value becomes NULL — "not reported". Turning any of those into a
+ * refusal would break every client older than {@see self::FIRST_REPORTING_SNAPSHOT} for a
+ * field that is an audit observation, not a credential. Whether NULL, or a version, may
+ * change the call's TEXT is {@see RemedyText}'s to say (card#10566 / DL-426) — not
+ * restated here.
  *
  * ⛔ THE OUTPUT IS PRINTED VERBATIM INTO A `bridge:check` LINE, so the shape is a
  * whitelist and not a sanitiser-by-removal. `[0-9A-Za-z.+-]`, anchored `^…\z`, admits every
