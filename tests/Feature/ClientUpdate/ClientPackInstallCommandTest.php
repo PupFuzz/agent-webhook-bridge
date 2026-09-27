@@ -4,6 +4,9 @@ namespace Tests\Feature\ClientUpdate;
 
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
+use App\Bridge\ClientUpdate\ClientPackStoreUnwritable;
+use App\Bridge\Support\ProcessIdentity;
+use App\Bridge\Support\SystemProcessIdentity;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
@@ -291,5 +294,169 @@ class ClientPackInstallCommandTest extends TestCase
         $this->assertStringContainsString('below the published', $out);
         $this->assertStringContainsString("release 999.0.0's client pack stays in service", $out);
         $this->assertSame('999.0.0', $this->published());
+    }
+
+    /**
+     * A 200 that carries no asset list is not "the release carries no pack": the read established
+     * nothing about the release, so the run is could-not-measure.
+     */
+    public function test_a_release_answer_with_no_readable_asset_list_is_could_not_measure(): void
+    {
+        Http::fake(['api.github.com/*' => Http::response(['tag_name' => 'v'.$this->release])]);
+
+        [$exit, $out] = $this->install();
+
+        $this->assertSame(2, $exit, $out);
+        $this->assertStringContainsString('carries no readable asset list', $out);
+        $this->assertStringNotContainsString('carries no client pack', $out);
+        $this->assertNull($this->published());
+    }
+
+    public function test_sha256sums_listing_one_file_twice_with_different_values_is_refused(): void
+    {
+        $f = new ClientPackFixture($this->release);
+        $assets = $this->assetsOf($f);
+        $assets['SHA256SUMS'] = $f->sums().str_repeat('0', 64).'  '.$f->packName()."\n";
+        $this->release($assets);
+
+        [$exit, $out] = $this->install();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString("SHA256SUMS lists {$f->packName()} twice with different sha256", $out);
+        $this->assertNull($this->published());
+    }
+
+    /**
+     * A second publish while one holds the store's lock is refused, never run alongside it.
+     */
+    public function test_a_publish_while_another_holds_the_store_lock_changes_nothing(): void
+    {
+        $f = new ClientPackFixture($this->release);
+        $this->release($this->assetsOf($f));
+        $lock = (new ClientPackStore)->publishedPath().'.lock';
+        File::ensureDirectoryExists(dirname($lock));
+        $held = fopen($lock, 'c');
+        $this->assertNotFalse($held);
+        $this->assertTrue(flock($held, LOCK_EX | LOCK_NB));
+
+        try {
+            [$exit, $out] = $this->install();
+        } finally {
+            flock($held, LOCK_UN);
+            fclose($held);
+        }
+
+        $this->assertSame(2, $exit, $out);
+        $this->assertStringContainsString('holds '.$lock, $out);
+        $this->assertNull($this->published());
+    }
+
+    public function test_a_run_as_root_writes_nothing_and_asks_github_nothing(): void
+    {
+        $this->actAs(0);
+        Http::fake();
+
+        [$exit, $out] = $this->install();
+
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString('runs as root', $out);
+        $this->assertDirectoryDoesNotExist($this->dir.'/state/client-packs');
+        Http::assertNothingSent();
+    }
+
+    public function test_a_store_owned_by_another_user_is_not_taken_from_it(): void
+    {
+        $f = new ClientPackFixture('0.1.0');
+        (new ClientPackStore)->publish(ClientPackManifest::parse($f->manifest), $f->manifest, $f->pack, '2026-09-27T00:00:00Z');
+        $published = (new ClientPackStore)->publishedPath();
+        $me = (int) (new SystemProcessIdentity)->euid();
+        $this->actAs($me, [$published => $me + 1], [$me + 1 => 'receiver']);
+        Http::fake();
+
+        [$exit, $out] = $this->install();
+
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString("{$published} is owned by receiver", $out);
+        $this->assertStringContainsString('run it as receiver', $out);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * The command's up-front check is not the only guard: publish() itself refuses a root run, so
+     * no other caller can write the store as root.
+     */
+    public function test_the_store_itself_refuses_a_root_publish(): void
+    {
+        $this->actAs(0);
+        $f = new ClientPackFixture($this->release);
+
+        $this->expectException(ClientPackStoreUnwritable::class);
+        (new ClientPackStore)->publish(ClientPackManifest::parse($f->manifest), $f->manifest, $f->pack, '2026-09-27T00:00:00Z');
+    }
+
+    /**
+     * A write that fails after the pack and manifest are in place leaves published.json naming the
+     * previous release, whose files were never touched — so seats keep being served it.
+     */
+    public function test_a_write_failing_part_way_leaves_the_previous_publication_served(): void
+    {
+        if ((new SystemProcessIdentity)->euid() === 0) {
+            $this->markTestSkipped('root ignores the directory mode this test relies on');
+        }
+        $old = new ClientPackFixture('0.1.0', packBytes: 'the old pack');
+        $store = new ClientPackStore;
+        $store->publish(ClientPackManifest::parse($old->manifest), $old->manifest, $old->pack, '2026-09-27T00:00:00Z');
+        $f = new ClientPackFixture($this->release);
+        $this->release($this->assetsOf($f));
+        // The release directory is writable and the store directory is not, so the pack and
+        // manifest land and published.json (written last, beside them) cannot.
+        File::ensureDirectoryExists($store->dir().'/'.$this->release, 0o700);
+        chmod($store->dir(), 0o500);
+
+        try {
+            [$exit, $out] = $this->install();
+        } finally {
+            chmod($store->dir(), 0o700);
+        }
+
+        $this->assertSame(2, $exit, $out);
+        $this->assertStringContainsString('could not write the client pack store', $out);
+        $this->assertStringContainsString("release 0.1.0's client pack stays in service", $out);
+        $this->assertFileExists($store->dir().'/'.$this->release.'/'.$f->packName());
+        $published = $store->published();
+        $this->assertNotNull($published);
+        $this->assertSame('0.1.0', $published->bridgeRelease);
+        $this->assertSame($old->pack, $store->packBytes($published));
+    }
+
+    /**
+     * @param  array<string, int>  $owners  path => the uid that owns it; any other present path is owned by $euid
+     * @param  array<int, string>  $names
+     */
+    private function actAs(int $euid, array $owners = [], array $names = []): void
+    {
+        $this->app->instance(ProcessIdentity::class, new class($euid, $owners, $names) implements ProcessIdentity
+        {
+            /**
+             * @param  array<string, int>  $owners
+             * @param  array<int, string>  $names
+             */
+            public function __construct(private int $euid, private array $owners, private array $names) {}
+
+            public function euid(): ?int
+            {
+                return $this->euid;
+            }
+
+            public function ownerOf(string $path): ?int
+            {
+                return (new SystemProcessIdentity)->ownerOf($path) === null ? null : ($this->owners[$path] ?? $this->euid);
+            }
+
+            public function accountName(int $uid): ?string
+            {
+                return $this->names[$uid] ?? null;
+            }
+        });
     }
 }

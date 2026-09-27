@@ -70,7 +70,7 @@ class ToolsCallCommand extends BridgeCommand
 {
     protected $signature = 'bridge:tools-call {--agent= : the identity, forced from the pinned authorized_keys command (trusted; NOT read from the caller)}';
 
-    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?} from STDIN, write one JSON envelope to STDOUT (card 4952)';
+    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?} — or a client-update {op, …} (DL-430) — from STDIN, write one JSON envelope to STDOUT (card 4952)';
 
     /** Refuse a stdin flood: a booted Laravel process must not buffer unbounded input. */
     private const MAX_STDIN_BYTES = 65536;   // 64 KiB

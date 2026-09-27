@@ -107,14 +107,16 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'published it escapes its own (DL-382). No exception is involved.',
         ],
         'Bridge/ClientPackInstallCommand.php' => [
-            'relays' => 4, 'escaped' => 5,
+            'relays' => 5, 'escaped' => 7,
             'ruling' => '⛔ FOREIGN ×3 (card#10567 / DL-430) — the GitHub release read and the asset download, relaying '
                 .'a GitHub response body or the read client\'s own unreadable-body text; and a `ClientPackRefused` '
                 .'from checking the downloaded assets, which interpolates values read out of the release\'s manifest '
-                .'and SHA256SUMS. ✔ NOT FOREIGN ×1 — a `ClientPackRefused` over this install\'s own published-pack '
-                .'record: its path plus a JSON parse fault or a fixed phrase. '
-                .'⚑ THE OTHER ESCAPE IS NOT A RELAY and carries no `×` token: the GitHub token resolver\'s `problem` '
-                .'text, which can name a credential-helper path or a store message. No exception is involved.',
+                .'and SHA256SUMS. ✔ NOT FOREIGN ×2 — a `ClientPackRefused` over this install\'s own published-pack '
+                .'record (its path plus a JSON parse fault or a fixed phrase), and a `ClientPackStoreUnwritable` over '
+                .'this install\'s own store (a path, an owner name, or a local write fault). '
+                .'⚑ THE OTHER ESCAPES ARE NOT RELAYS and carry no `×` token: the GitHub token resolver\'s `problem` '
+                .'text, which can name a credential-helper path or a store message, and the store\'s writer-refusal '
+                .'sentence, which names paths and account names. No exception is involved in either.',
         ],
         'Bridge/GitHubOwedCommand.php' => [
             'relays' => 3, 'escaped' => 0,

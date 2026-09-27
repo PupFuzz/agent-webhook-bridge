@@ -4,6 +4,10 @@ namespace App\Bridge\ClientUpdate;
 
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelSnapshotManifest;
+use App\Bridge\Support\ProcessIdentity;
+use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Writeback\GitHubWriteDebt;
+use RuntimeException;
 
 /**
  * The bridge's store of published channel-server client packs (DL-430), under
@@ -65,16 +69,90 @@ final class ClientPackStore
      * and both against the release's checksums; this re-checks the pack against the manifest,
      * because it is the last step before a seat can be served these bytes.
      *
+     * ONE PUBLISH AT A TIME: the read, the comparison and the writes run under `published.json.lock`
+     * ({@see BridgePaths::withLockIfFree()}). A second publish while one holds it is refused, not
+     * queued — it would only re-judge a publication the first is about to change.
+     *
+     * A FAILURE PART-WAY leaves the pack and manifest written under their release directory and
+     * `published.json` unchanged, because it is written last. The doors read only the files
+     * `published.json` names, so they keep serving the previous publication (or answer 503 when
+     * there was none); a later publish of that release rewrites the leftover files.
+     *
      * @return bool true when published, false when this exact pack was already the published one
      *
-     * @throws ClientPackRefused
+     * @throws ClientPackRefused the pack or the publication rules refuse it
+     * @throws ClientPackStoreUnwritable this process may not, or could not, write the store
      */
     public function publish(ClientPackManifest $manifest, string $manifestBytes, string $packBytes, string $publishedAt): bool
     {
         if (strlen($packBytes) !== $manifest->packSize || hash('sha256', $packBytes) !== $manifest->packSha256) {
             throw new ClientPackRefused("the client pack for release {$manifest->bridgeRelease} does not match its manifest's size and sha256");
         }
+        $refusal = $this->writerRefusal($manifest->bridgeRelease);
+        if ($refusal !== null) {
+            throw new ClientPackStoreUnwritable($refusal);
+        }
 
+        $published = null;
+        try {
+            $ran = BridgePaths::withLockIfFree($this->publishedPath(), function () use ($manifest, $manifestBytes, $packBytes, $publishedAt, &$published): void {
+                $published = $this->publishLocked($manifest, $manifestBytes, $packBytes, $publishedAt);
+            });
+        } catch (ClientPackRefused $e) {
+            throw $e;
+        } catch (RuntimeException $e) {
+            throw new ClientPackStoreUnwritable('could not write the client pack store: '.RedactedErrorText::of($e), 0, $e);
+        }
+        if (! $ran) {
+            throw new ClientPackStoreUnwritable('another bridge:client-pack:install holds '.$this->publishedPath().'.lock; nothing was changed — run it again when that one has finished');
+        }
+
+        return (bool) $published;
+    }
+
+    /**
+     * Why THIS process must not write the store, or null when it may — the rule
+     * {@see GitHubWriteDebt::writerRefusal()} states for its record, applied
+     * here. Every file here is `0600` and every directory `0700`, owned by whoever wrote it, and the
+     * doors read them as the receiver's user; so a write as anyone else takes the store off every
+     * seat, which is then answered 503.
+     *  - ROOT NEVER WRITES IT: root is never the receiver's user.
+     *  - A PRESENT FILE OR DIRECTORY IS REPLACED ONLY BY ITS OWNER.
+     * ⚑ Where nothing is present yet, a non-root user other than the receiver's is NOT refused:
+     * nothing this process can read says which user the receiver runs as. An effective uid this
+     * process cannot read (no posix extension) refuses nothing.
+     */
+    public function writerRefusal(?string $release = null): ?string
+    {
+        $identity = app(ProcessIdentity::class);
+        $euid = $identity->euid();
+        if ($euid === null) {
+            return null;
+        }
+        if ($euid === 0) {
+            return 'this process runs as root, and a client pack store root writes is one the receiver cannot read — every seat would be answered 503; run it as the user the receiver runs as';
+        }
+        $paths = [$this->dir(), $this->publishedPath(), $this->publishedPath().'.lock'];
+        if ($release !== null) {
+            $paths[] = $this->dir().'/'.$release;
+        }
+        foreach ($paths as $path) {
+            $owner = $identity->ownerOf($path);
+            if ($owner === null || $owner === $euid) {
+                continue;
+            }
+            $ownerName = $identity->accountName($owner) ?? "uid {$owner}";
+            $me = $identity->accountName($euid) ?? "uid {$euid}";
+
+            return "{$path} is owned by {$ownerName} and this process runs as {$me}; writing the store would take it off {$ownerName} — "
+                .($owner === 0 ? 'give it back to the receiver\'s user (chown) and run this as that user' : "run it as {$ownerName}");
+        }
+
+        return null;
+    }
+
+    private function publishLocked(ClientPackManifest $manifest, string $manifestBytes, string $packBytes, string $publishedAt): bool
+    {
         $current = $this->published();
         if ($current !== null) {
             $order = ChannelSnapshotManifest::compareVersions($manifest->bridgeRelease, $current->bridgeRelease);

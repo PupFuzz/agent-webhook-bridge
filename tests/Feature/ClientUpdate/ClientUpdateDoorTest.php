@@ -148,10 +148,14 @@ class ClientUpdateDoorTest extends TestCase
      * @param  array<string, mixed>  $request
      */
     #[DataProvider('refusals')]
-    public function test_each_refusal_is_the_same_on_both_doors(bool $publish, array $request, int $status, int $exit, string $says): void
+    public function test_each_refusal_is_the_same_on_both_doors(bool $publish, array $request, int $status, int $exit, string $says, ?string $tamper = null): void
     {
         if ($publish) {
-            $this->publish(new ClientPackFixture);
+            $f = new ClientPackFixture;
+            $this->publish($f);
+            if ($tamper !== null) {
+                file_put_contents($this->dir.'/state/client-packs/0.91.0/'.($tamper === 'pack' ? $f->packName() : $f->manifestName()), 'tampered after publication');
+            }
         }
 
         $http = $this->http($request);
@@ -163,10 +167,11 @@ class ClientUpdateDoorTest extends TestCase
         $body = self::decoded($http['raw']);
         $this->assertFalse($body['ok']);
         $this->assertStringContainsString($says, $body['error']);
+        $this->assertStringNotContainsString($this->dir, $http['raw'], 'a store fault names no path to a seat');
     }
 
     /**
-     * @return array<string, array{0: bool, 1: array<string, mixed>, 2: int, 3: int, 4: string}>
+     * @return array<string, array{0: bool, 1: array<string, mixed>, 2: int, 3: int, 4: string, 5?: string}>
      */
     public static function refusals(): array
     {
@@ -178,20 +183,10 @@ class ClientUpdateDoorTest extends TestCase
             'a v-prefixed release' => [true, ['op' => 'client_pack', 'bridge_release' => 'v0.91.0'], 422, 1, 'bare X.Y.Z'],
             'unknown op' => [true, ['op' => 'client_fleet'], 422, 1, 'serves client_manifest, client_pack'],
             'non-string op' => [true, ['op' => 7], 422, 1, 'unknown client-update `op` 7'],
+            // Every stored file is re-checked against published.json before it is served.
+            'stored pack altered after publication' => [true, ['op' => 'client_pack', 'bridge_release' => '0.91.0'], 503, 2, 'cannot be served', 'pack'],
+            'stored manifest altered after publication' => [true, ['op' => 'client_manifest'], 503, 2, 'cannot be served', 'manifest'],
         ];
-    }
-
-    public function test_a_stored_pack_that_no_longer_matches_is_a_503_that_names_no_path(): void
-    {
-        $f = new ClientPackFixture;
-        $this->publish($f);
-        file_put_contents($this->dir.'/state/client-packs/0.91.0/'.$f->packName(), 'tampered');
-
-        $http = $this->http(['op' => 'client_pack', 'bridge_release' => '0.91.0']);
-
-        $this->assertSame(503, $http['status']);
-        $this->assertStringContainsString('cannot be served', $http['raw']);
-        $this->assertStringNotContainsString($this->dir, $http['raw']);
     }
 
     /**
@@ -224,14 +219,30 @@ class ClientUpdateDoorTest extends TestCase
         $this->assertSame(403, $this->http(['op' => 'client_manifest'], null, ['REMOTE_ADDR' => '203.0.113.9'])['status']);
     }
 
-    public function test_the_http_door_refuses_a_body_that_is_not_json(): void
+    /**
+     * The route names ITS body shape, {op, …}, not the board-tools {tool, …} one.
+     */
+    public function test_the_http_door_refuses_a_body_that_is_not_json_naming_the_op_shape(): void
     {
         $response = $this->call('POST', '/agent-tools/client', [], [], [], [
             'REMOTE_ADDR' => '127.0.0.1', 'HTTP_AUTHORIZATION' => 'Bearer '.$this->bearer, 'CONTENT_TYPE' => 'application/json',
         ], '{"op": "client_manifest"');
 
         $this->assertSame(422, $response->getStatusCode());
-        $this->assertStringContainsString('not valid JSON', (string) $response->getContent());
+        $error = (string) $response->json('error');
+        $this->assertStringContainsString('not valid JSON', $error);
+        $this->assertStringEndsWith('expected a JSON object {op, …}', $error);
+        $this->assertStringNotContainsString('{tool', $error);
+    }
+
+    public function test_the_http_door_refuses_a_body_that_is_not_declared_json(): void
+    {
+        $response = $this->call('POST', '/agent-tools/client', [], [], [], [
+            'REMOTE_ADDR' => '127.0.0.1', 'HTTP_AUTHORIZATION' => 'Bearer '.$this->bearer, 'CONTENT_TYPE' => 'application/x-www-form-urlencoded',
+        ], 'op=client_manifest');
+
+        $this->assertSame(422, $response->getStatusCode());
+        $this->assertSame('request Content-Type must be application/json — the body is read as a JSON object {op, …}', $response->json('error'));
     }
 
     /**

@@ -92,9 +92,9 @@ final class AgentToolsController
             return $agent;
         }
         if (! $request->isJson()) {
-            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as a JSON object {op, …}');
+            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::CLIENT_UPDATE_SHAPE);
         }
-        $decoded = ToolCallBody::parse($request->getContent());
+        $decoded = ToolCallBody::parse($request->getContent(), ToolCallBody::CLIENT_UPDATE_SHAPE);
         if ($decoded instanceof DispatchOutcome) {
             return response()->json($decoded->body(), $decoded->status);
         }

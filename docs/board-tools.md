@@ -1301,7 +1301,11 @@ There are **two front doors** into the same dispatch machinery, selected per age
 by `board_tools.transport` (`http` | `ssh`, the default **since v0.68.0 / DL-225**;
 before v0.68.0 the default was `http`). Both resolve the caller's
 identity, then run the identical `BoardToolDispatcher` onto the shared least-privilege
-writeback client — so the response body is byte-identical whichever door served it.
+writeback client — so a TOOL CALL's response body is byte-identical whichever door served it.
+⚠ **Except a body carrying `op` (DL-430):** the ssh door answers it as a client-update request
+(see *The client-update door* above), while `POST /agent-tools/call` ignores the key and
+dispatches the body as a tool call. The client-update door has its own HTTP route; send `op`
+there, never to `/agent-tools/call`.
 
 > **⚠ Upgrading to v0.68.0:** the unset-`transport` default flipped `http` → `ssh`.
 > A block relying on the old implicit `http` default must set `transport: http`

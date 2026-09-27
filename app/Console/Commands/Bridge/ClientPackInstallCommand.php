@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackRefused;
 use App\Bridge\ClientUpdate\ClientPackStore;
+use App\Bridge\ClientUpdate\ClientPackStoreUnwritable;
 use App\Bridge\ClientUpdate\ClientUpdateDoor;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
@@ -32,7 +33,10 @@ use Throwable;
  *     one pack).
  *
  * EXIT: 0 published, or this exact pack was already published · 1 refused, nothing changed ·
- * 2 could not measure (no VERSION, no token, GitHub unreachable), nothing changed.
+ * 2 could not measure or could not write, nothing changed: no or malformed `VERSION`, a malformed
+ * `bridge.client_pack.repo`, no GitHub token, GitHub unreachable or unreadable, or a store this
+ * process may not or could not write ({@see ClientPackStore::writerRefusal()}, another run holding
+ * its lock, a failed write — a failure part-way leaves the previous publication in service).
  *
  * Run it as the receiver's OS user, like every command here that writes state
  * (CLAUDE_DEPLOYMENT.md § Where things land).
@@ -59,6 +63,13 @@ class ClientPackInstallCommand extends BridgeCommand
         $repo = config('bridge.client_pack.repo');
         if (! is_string($repo) || preg_match('#\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z#', $repo) !== 1) {
             $this->error('bridge:client-pack:install: bridge.client_pack.repo (BRIDGE_CLIENT_PACK_REPO) is not an owner/repo name. Nothing was changed.');
+
+            return 2;
+        }
+
+        $unwritable = $store->writerRefusal();
+        if ($unwritable !== null) {
+            $this->error('bridge:client-pack:install: will not write the client pack store — '.UntrustedText::forOperator($unwritable).'. Nothing was changed.');
 
             return 2;
         }
@@ -130,6 +141,10 @@ class ClientPackInstallCommand extends BridgeCommand
             $this->error('bridge:client-pack:install: refused — '.UntrustedText::forOperator(RedactedErrorText::of($e)).". Nothing was changed; {$current}.");
 
             return 1;
+        } catch (ClientPackStoreUnwritable $e) {
+            $this->error('bridge:client-pack:install: could not write the client pack store — '.UntrustedText::forOperator(RedactedErrorText::of($e)).". What seats are served is unchanged; {$current}.");
+
+            return 2;
         }
 
         $what = "release {$release} (client {$manifest->clientVersion}, pack sha256 {$manifest->packSha256}, {$manifest->packSize} bytes)";
