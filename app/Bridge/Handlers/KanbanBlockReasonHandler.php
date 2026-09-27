@@ -213,13 +213,14 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // set before this shipped — leaving the guard permanently pinning the card it
         // exists to protect. Accepted residual: a foreign PR's ready_for_review can
         // clear the marker (and release the DL-178 pin) that another PR's draft set.
-        if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['pr_number'] ?? null)) {
+        if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $repo, $payload['pr_number'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'block_reason.card_token_uncorroborated',
                 'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
                 [
                     'card_id' => $cardId, 'repo' => $repo,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),
+                    'card_pr_url' => CardTokenCorroboration::cardPrUrl($card),
                     'event_pr_number' => $payload['pr_number'] ?? null,
                 ],
                 $repo, self::ALERT_OUTCOME, $cardId, 'card_token_uncorroborated',

@@ -160,6 +160,7 @@
     {"id":"protocol_invalid_label.payload_invalid","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
     {"id":"protocol_invalid_label.repo_not_enabled","kind":"not_mapped","surface":["log"],"site":"ProtocolInvalidLabeler::label","since":"0.88.0"},
     {"id":"protocol_invalid_label.unexpected_failure","kind":"observability_fault","surface":["log"],"site":"ProtocolInvalidLabeler::apply","since":"0.88.0"},
+    {"id":"promote_released.bare_pr_number","kind":"refused","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.91.0"},
     {"id":"promote_released.board_truncated","kind":"partial_read","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.88.0"},
     {"id":"promote_released.candidate_cap","kind":"partial_read","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::handle","since":"0.88.0"},
     {"id":"promote_released.compare_4xx","kind":"upstream_refused","surface":["log","alert_channel"],"site":"KanbanPromoteReleasedHandler::promoteIfReleased","since":"0.88.0"},

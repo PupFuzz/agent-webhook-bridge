@@ -174,14 +174,15 @@ class KanbanMoveCardHandlerTest extends TestCase
 
     public function test_uncorroborated_title_only_token_moves_when_the_card_already_tracks_this_pr(): void
     {
-        // A later action on the SAME PR (or a redelivery): the card's own pr_number IS
-        // this PR, which corroborates the title rather than contradicting it. The
-        // numeric-string form is what a durable-inbox JSON round-trip produces.
+        // A later action on the SAME PR (or a redelivery): the card's own pr_url IS this
+        // PR (DL-429 — repo and number; the writeback stamps both), which corroborates the
+        // title rather than contradicting it. The numeric-string pr_number is what a
+        // durable-inbox JSON round-trip produces.
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '148']]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '148', 'pr_url' => 'https://github.com/owner/repo/pull/148']]])
                 ->push(['data' => ['id' => 5]])
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
         ] + $this->fakePreload());
@@ -293,13 +294,14 @@ class KanbanMoveCardHandlerTest extends TestCase
     public function test_uncorroborated_title_only_token_still_moves_on_a_leading_zero_pr_number(): void
     {
         // CONTROL for the test above: the refusal is scoped to values naming no single
-        // pull request, NOT to every spelling of one. `'0148'` and 148 are one PR to the
-        // kanban server and were one PR to the old cast; they must stay one here.
+        // pull request, NOT to every spelling of one. `'0148'` and 148 are one PR number to
+        // the kanban server and were one to the old cast; the card's pr_url supplies the
+        // repo that makes it one pull request (DL-429).
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '0148']]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '0148', 'pr_url' => 'https://github.com/owner/repo/pull/0148']]])
                 ->push(['data' => ['id' => 5]])
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
         ] + $this->fakePreload());
@@ -308,6 +310,83 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    // --- DL-429: a pull request is (repo, number), never a bare number ---
+
+    public function test_a_title_only_token_is_refused_when_the_card_tracks_the_same_number_in_another_repo(): void
+    {
+        // A repo moved to a new org restarts its PR numbers, so `oldorg/repo#148` and
+        // `owner/repo#148` are two pull requests. The card's pr_url says it tracks the old
+        // repo's; this event is the new repo's. A number-only compare read "the card already
+        // tracks THIS PR" and let a descriptive title citation move somebody else's card.
+        // (Compare pr_number alone again ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49,
+                'payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/oldorg/repo/pull/148'],
+            ]]),
+        ] + $this->fakePreload());
+        Log::spy();
+
+        $this->handle($this->payload([
+            'card_token_uncorroborated' => true, 'stamp_pr' => 148, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/148',
+        ]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'only in the PR title'))->once();
+        // The card note must name the two pull requests apart — "148 is not 148" is no reason.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/tasks/5/comments.json')
+            && str_contains((string) $r['content'], '(`pr_url` `https://github.com/oldorg/repo/pull/148`)'));
+    }
+
+    public function test_a_title_only_token_still_moves_a_card_tracking_the_same_repo_and_number(): void
+    {
+        // CONTROL for the refusal above: identical but for the repo in the card's pr_url
+        // (the repo's case differs too — GitHub owner/repo is case-insensitive).
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49,
+                    'payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/Owner/Repo/pull/148']]])
+                ->push(['data' => ['id' => 5]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),
+        ] + $this->fakePreload());
+
+        $this->handle($this->payload([
+            'card_token_uncorroborated' => true, 'stamp_pr' => 148, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/148',
+        ]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_a_title_only_token_is_refused_when_the_card_carries_only_a_bare_pr_number(): void
+    {
+        // A bare pr_number names no repo, so it cannot show that the card's PR is THIS
+        // event's: after an org move `148` is as likely the old repo's as the new one's.
+        // Fail-closed — unknown never reads as "same".
+        // (Let a bare number corroborate again ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 148],
+            ]]),
+        ] + $this->fakePreload());
+
+        $this->handle($this->payload([
+            'card_token_uncorroborated' => true, 'stamp_pr' => 148, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/148',
+        ]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
     // --- card#6027 / DL-287: the near-miss card-token refusal ---

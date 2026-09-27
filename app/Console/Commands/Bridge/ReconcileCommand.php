@@ -205,7 +205,7 @@ class ReconcileCommand extends BridgeCommand
         }
 
         foreach ($byBoard as $boardId => $boardMappings) {
-            $this->reconcileBoard((int) $boardId, $boardMappings, $writeback, $kanban, $refs);
+            $this->reconcileBoard((int) $boardId, $boardMappings, $kanban, $refs);
         }
 
         return $this->finish($fix, $maxMoves, $kanban);
@@ -214,7 +214,7 @@ class ReconcileCommand extends BridgeCommand
     /**
      * @param  array<string, WritebackMapping>  $boardMappings
      */
-    private function reconcileBoard(int $boardId, array $boardMappings, WritebackConfig $writeback, KanbanClient $kanban, ExternalReferenceNormalizer $refs): void
+    private function reconcileBoard(int $boardId, array $boardMappings, KanbanClient $kanban, ExternalReferenceNormalizer $refs): void
     {
         $repoList = implode(', ', array_keys($boardMappings));
         try {
@@ -252,9 +252,6 @@ class ReconcileCommand extends BridgeCommand
             $order = [];
         }
 
-        // A physically shared board (>1 repo mapping or declaring it in the FULL config, even
-        // if --repo filtered to one) can't attribute a bare pr_number to a repo.
-        $isShared = $writeback->boardIsShared($boardId);
         // canonical owner/repo → mapping, for pr_url attribution on this board.
         $byCanonRepo = [];
         foreach ($boardMappings as $repo => $mapping) {
@@ -265,17 +262,16 @@ class ReconcileCommand extends BridgeCommand
         }
 
         foreach ($read['cards'] as $card) {
-            $this->reconcileCard(is_array($card) ? $card : [], $boardMappings, $byCanonRepo, $isShared, $order, $refs);
+            $this->reconcileCard(is_array($card) ? $card : [], $byCanonRepo, $order, $refs);
         }
     }
 
     /**
      * @param  array<string, mixed>  $card
-     * @param  array<string, WritebackMapping>  $boardMappings
      * @param  array<string, array{repo: string, mapping: WritebackMapping}>  $byCanonRepo
      * @param  array<int, float>  $order
      */
-    private function reconcileCard(array $card, array $boardMappings, array $byCanonRepo, bool $isShared, array $order, ExternalReferenceNormalizer $refs): void
+    private function reconcileCard(array $card, array $byCanonRepo, array $order, ExternalReferenceNormalizer $refs): void
     {
         $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : null;
         if ($cardId === null) {
@@ -284,7 +280,7 @@ class ReconcileCommand extends BridgeCommand
         $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
 
         // Resolve the (repo, PR) this card tracks + which mapping owns it.
-        [$repo, $mapping, $cardRepo, $prNumber, $prUrl] = $this->resolveTracked($card, $payload, $boardMappings, $byCanonRepo, $isShared, $refs);
+        [$repo, $mapping, $cardRepo, $prNumber, $prUrl] = $this->resolveTracked($card, $payload, $byCanonRepo, $refs);
         if ($mapping === null) {
             // resolveTracked already emitted the actionable info line (dl-only,
             // ambiguous, unmapped repo) or determined it is simply not a tracked card.
@@ -501,20 +497,19 @@ class ReconcileCommand extends BridgeCommand
      *
      * @param  array<string, mixed>  $card
      * @param  array<string, mixed>  $payload
-     * @param  array<string, WritebackMapping>  $boardMappings
      * @param  array<string, array{repo: string, mapping: WritebackMapping}>  $byCanonRepo
      * @return array{0: ?string, 1: ?WritebackMapping, 2: string, 3: int, 4: ?string}
      */
-    private function resolveTracked(array $card, array $payload, array $boardMappings, array $byCanonRepo, bool $isShared, ExternalReferenceNormalizer $refs): array
+    private function resolveTracked(array $card, array $payload, array $byCanonRepo, ExternalReferenceNormalizer $refs): array
     {
         $none = [null, null, '', 0, null];
         $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : 0;
 
-        // The PR-reference precedence (pr_url → pr_number → dl-only) is the shared
+        // The PR-reference precedence (pr_url → bare pr_number → dl-only) is the shared
         // TrackedCardRef authority (canon #5) — kept single-sourced with the DL-207
         // promote-on-release scan so the two can't derive a card's PR differently. This
         // method maps each kind onto reconcile's own skip line + counter.
-        $ref = TrackedCardRef::fromPayload($payload, $isShared, $refs);
+        $ref = TrackedCardRef::fromPayload($payload, $refs);
         switch ($ref->kind) {
             case TrackedRefKind::PrUrl:
                 $owner = $byCanonRepo[$ref->canonRepo] ?? null;
@@ -540,16 +535,11 @@ class ReconcileCommand extends BridgeCommand
                 // author's. Its consumers escape it at each console write.
                 return [$owner['repo'], $owner['mapping'], $ref->canonRepo, $ref->prNumber, $ref->prUrl];
 
-            case TrackedRefKind::PrNumber:
-                // exactly one mapping on a 1:1 board
-                $repo = array_key_first($boardMappings);
-                $mapping = $boardMappings[$repo];
-                $canon = $refs->canonicalizeSource((string) $repo) ?? (string) $repo;
-
-                return [$repo, $mapping, $canon, $ref->prNumber, null];
-
-            case TrackedRefKind::Ambiguous:
-                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped");
+            case TrackedRefKind::BarePrNumber:
+                // DL-429: a bare number names no repo on ANY board. The 1:1 board's sole
+                // mapping used to supply one, which an org move makes false — the mapping
+                // becomes the new repo, whose restarted PR numbers collide with the old one's.
+                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} names no repo (needs a pr_url naming the card's actual PR); skipped");
                 $this->skipped++;
 
                 return $none;

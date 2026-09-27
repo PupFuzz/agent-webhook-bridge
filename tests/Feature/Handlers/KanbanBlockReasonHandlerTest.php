@@ -507,6 +507,44 @@ class KanbanBlockReasonHandlerTest extends TestCase
             && str_contains((string) $msg, 'only in the PR title'))->once();
     }
 
+    public function test_uncorroborated_set_is_refused_when_the_card_tracks_the_same_number_in_another_repo(): void
+    {
+        // DL-429: `oldorg/repo#148` and `owner/repo#148` are two pull requests (a repo moved
+        // to a new org restarts its PR numbers). A number-only compare read the card as
+        // already tracking THIS PR and let a title citation pin somebody else's card.
+        // (Compare pr_number alone again ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null,
+                    'payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/oldorg/repo/pull/148']]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_uncorroborated_set_lands_when_the_card_tracks_the_same_repo_and_number(): void
+    {
+        // CONTROL for the refusal above: identical but for the repo in the card's pr_url.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null,
+                    'payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/148']]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
     public function test_the_suppressed_set_would_otherwise_have_landed(): void
     {
         // The control for the refusal above: the IDENTICAL fixture with the flag absent
@@ -570,12 +608,13 @@ class KanbanBlockReasonHandlerTest extends TestCase
     public function test_uncorroborated_set_lands_when_the_card_already_tracks_this_pr(): void
     {
         // A later draft action on the SAME PR (or a redelivery). The numeric-string form
-        // is what a durable-inbox JSON round-trip produces.
+        // is what a durable-inbox JSON round-trip produces. The pr_url is what makes it the
+        // SAME pull request (DL-429) — the writeback stamps it beside the number.
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => '148']]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => '148', 'pr_url' => 'https://github.com/owner/repo/pull/148']]])
                 ->push(['data' => ['id' => 5]]),
         ]);
 

@@ -371,13 +371,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // card already tracks a DIFFERENT PR — the gate's own predicate — so a title
         // citing an uncorrelated card still writes nothing whatsoever.
         // Permanent refusal: log + no-op, never retry.
-        if (CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['stamp_pr'] ?? null)) {
+        if (CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $repo, $payload['stamp_pr'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'move_card.card_token_uncorroborated',
                 'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
                 [
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
                     'card_pr_number' => CardTokenCorroboration::cardPr($card),
+                    'card_pr_url' => CardTokenCorroboration::cardPrUrl($card),
                     'event_pr_number' => $payload['stamp_pr'] ?? null,
                 ],
                 $repo, $outcome, $cardId, 'card_token_uncorroborated',
@@ -386,7 +387,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // visible to somebody reading the CARD, which is where the missing correlation
             // is looked for (card#7064). Recorded after the log, and never instead of it.
             $this->recordCardNote(
-                CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
+                CardNote::refusedUncorroboratedMove($cardId, $repo, $card, $payload['stamp_pr'] ?? null),
                 $card, $mapping, $cardId, $client, $repo, $outcome,
             );
             $this->comments->report($payload, 'card_token_uncorroborated', $mapping);
@@ -791,11 +792,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      *    would otherwise be recorded as a second PR under a heading asserting the card
      *    stays correlated to 261 — the PR being reported.
      *
-     * A stored `pr_number` carries no repo — which is why a bare one is AMBIGUOUS on a
-     * shared board (`TrackedRefKind::Ambiguous`) — so that second test is repo-qualified
-     * wherever the card gives us a repo to qualify with: its own `pr_url`'s. Same number,
-     * DIFFERENT repo is two pull requests, and on a board mapped by >1 repo that collision
-     * is the one this note must not swallow.
+     * A stored `pr_number` carries no repo — which is why a bare one names no pull request
+     * on any board (`TrackedRefKind::BarePrNumber`, DL-429) — so that second test is
+     * repo-qualified wherever the card gives us a repo to qualify with: its own `pr_url`'s.
+     * Same number, DIFFERENT repo is two pull requests — on a board mapped by >1 repo, or
+     * after a repo moves org and its PR numbers restart — and that collision is the one this
+     * note must not swallow.
      *
      * When the offered value does not parse as a pull-request URL there is no identity to
      * compare and the byte test stands, as before. A stored value that does not parse

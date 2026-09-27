@@ -9,12 +9,13 @@ namespace App\Bridge\Writeback;
  */
 enum TrackedRefKind
 {
-    /** Repo-qualified `pr_url`: canonRepo + prNumber + prUrl are set. */
+    /** Repo-qualified `pr_url`: canonRepo + prNumber + prUrl are set. The only kind that names a pull request. */
     case PrUrl;
-    /** Bare `pr_number` on a 1:1 board: prNumber is set (repo is the sole board mapping). */
-    case PrNumber;
-    /** Bare `pr_number` on a board shared by >1 repo (`WritebackConfig::boardIsShared`): not attributable to a repo. */
-    case Ambiguous;
+    /**
+     * A bare `pr_number` with no `pr_url` naming a real pull request: prNumber is set, the repo
+     * is unknown on EVERY board (DL-429). Not attributable, so not correlatable.
+     */
+    case BarePrNumber;
     /** A `dl_number` with no PR reference: out of the writeback's PR-driven scope. */
     case DlOnly;
     /** No PR/DL reference: not a tracked card. */

@@ -6,22 +6,32 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 
 /**
  * The single authority for "which (repo, PR) does a card's payload reference" — the
- * PR-reference precedence shared by bridge:reconcile (ReconcileCommand::resolveTracked)
- * and the DL-207 promote-on-release board scan (KanbanPromoteReleasedHandler). Extracted
- * so the two consumers can't diverge on it (canon #5): a card's stage is derived from the
- * SAME reference resolution whether the reconcile or the promote leg touched it last.
+ * PR-reference precedence shared by bridge:reconcile (ReconcileCommand::resolveTracked),
+ * the DL-207 promote-on-release board scan (KanbanPromoteReleasedHandler) and the DL-270
+ * title-only corroboration gate ({@see CardTokenCorroboration}). Extracted so the consumers
+ * can't diverge on it (canon #5): a card's PR is derived from the SAME reference resolution
+ * whichever leg touched it last.
+ *
+ * ⛔ A PULL REQUEST IS `(repo, number)`, NEVER A NUMBER (DL-429). PR numbers are per-repo
+ * counters, and a repo moved to a new org is a fresh history whose numbers restart at 1 — so
+ * the new repo's #N and the old repo's #N are two pull requests on the SAME board. A card
+ * therefore names a pull request only through a `pr_url` that carries its repo; a bare
+ * `pr_number` names a number, and is attributed to no repo on any board. It used to be
+ * attributed to a 1:1 board's sole mapping, which is exactly the premise an org move
+ * breaks: the sole mapping becomes the new repo, and every old bare-number card silently
+ * points at an unrelated new pull request.
  *
  * Pure: no logging, no counters, no I/O — the caller maps {@see TrackedRefKind} onto its
  * own output (reconcile emits a skip line + increments its counter; the handler logs +
- * no-ops). Precedence (most-authoritative first), mirroring resolveTracked:
+ * no-ops). Precedence (most-authoritative first):
  *   1. `pr_url` — repo-qualified, yields BOTH repo + number ⇒ {@see TrackedRefKind::PrUrl}.
  *      Parsed by {@see PrUrlRef}, the shared "which PR does this URL name" primitive. A
  *      `.../pull/0` placeholder (the source-only qualifier `kbcard --pr-url` stamps) is
- *      NOT a real PR: it falls through to `pr_number`.
- *   2. bare `pr_number` — needs the repo. Unambiguous only on a 1:1 board
- *      ({@see TrackedRefKind::PrNumber}); on a board SHARED by >1 repo mapping (by `board_id`
- *      or `boards` — {@see WritebackConfig::boardIsShared}) the number
- *      can't be attributed to a repo ({@see TrackedRefKind::Ambiguous}).
+ *      NOT a real PR: it falls through to `pr_number` — and does NOT qualify it (card#9850:
+ *      the stamp writes `pr_number` add-if-missing while keeping a FOREIGN-repo placeholder,
+ *      so the placeholder's repo is not evidence of which repo the number came from).
+ *   2. bare `pr_number` ⇒ {@see TrackedRefKind::BarePrNumber}: the number is recorded for the
+ *      caller's report, and no consumer may read it as a pull request.
  *   3. `dl_number` with no PR reference ({@see TrackedRefKind::DlOnly}) — DL→PR resolution
  *      is out of the writeback's PR-driven scope (a documented boundary of BOTH consumers).
  *   4. otherwise ({@see TrackedRefKind::None}) — not a tracked card.
@@ -30,9 +40,9 @@ final class TrackedCardRef
 {
     public function __construct(
         public readonly TrackedRefKind $kind,
-        /** Canonical `owner/repo` — set for {@see TrackedRefKind::PrUrl} only. */
+        /** Canonical (lower-cased) `owner/repo` — set for {@see TrackedRefKind::PrUrl} only. */
         public readonly ?string $canonRepo = null,
-        /** The PR number — set for {@see TrackedRefKind::PrUrl} and {@see TrackedRefKind::PrNumber}. */
+        /** The PR number — set for {@see TrackedRefKind::PrUrl} and {@see TrackedRefKind::BarePrNumber}. */
         public readonly ?int $prNumber = null,
         /** The raw pr_url — set for {@see TrackedRefKind::PrUrl} only. */
         public readonly ?string $prUrl = null,
@@ -42,9 +52,8 @@ final class TrackedCardRef
 
     /**
      * @param  array<string, mixed>  $payload  the card's payload
-     * @param  bool  $isShared  whether the card's board is mapped or declared by >1 repo (WritebackConfig::boardIsShared)
      */
-    public static function fromPayload(array $payload, bool $isShared, ExternalReferenceNormalizer $refs): self
+    public static function fromPayload(array $payload, ExternalReferenceNormalizer $refs): self
     {
         // (1) pr_url — repo + number. A `.../pull/0` placeholder names no PR, so it falls through.
         $pu = $payload['pr_url'] ?? null;
@@ -53,7 +62,7 @@ final class TrackedCardRef
             return new self(TrackedRefKind::PrUrl, canonRepo: $url->canonRepo, prNumber: $url->number, prUrl: $url->raw);
         }
 
-        // (2) pr_number — repo-unqualified; usable only on a 1:1 board.
+        // (2) pr_number — repo-unqualified, so it names no pull request on any board (DL-429).
         //
         // WHICH pull request the value names is the normalizer's answer, never a
         // local cast (DL-309): a bare `(int)` truncates, so `1.5` named PR 1 while
@@ -70,9 +79,7 @@ final class TrackedCardRef
         // though the server indexes the refs they canonicalize to.
         $ref = BareRefNumber::canonical(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $payload['pr_number'] ?? null, $refs);
         if ($ref !== null) {
-            return $isShared
-                ? new self(TrackedRefKind::Ambiguous, prNumber: (int) $ref)
-                : new self(TrackedRefKind::PrNumber, prNumber: (int) $ref);
+            return new self(TrackedRefKind::BarePrNumber, prNumber: (int) $ref);
         }
 
         // (3) dl_number only — no PR reference.
@@ -83,5 +90,18 @@ final class TrackedCardRef
 
         // (4) not a tracked card.
         return new self(TrackedRefKind::None);
+    }
+
+    /**
+     * Does this card name pull request `$eventPr` of `$repo`? True only for a `pr_url` naming
+     * that repo (compared canonically — GitHub `owner/repo` is case-insensitive) and that
+     * number. A bare `pr_number` names no repo, so it names no pull request here (DL-429).
+     * Fail-closed: an `$eventPr` naming no single number is the same as nothing.
+     */
+    public function namesPr(string $repo, mixed $eventPr, ExternalReferenceNormalizer $refs): bool
+    {
+        return $this->kind === TrackedRefKind::PrUrl
+            && $this->canonRepo === $refs->canonicalizeSource($repo)
+            && BareRefNumber::namesSame(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $this->prNumber, $eventPr, $refs);
     }
 }

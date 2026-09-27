@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\ExternalReferenceNormalizer;
+
 /**
  * A card-visible record of something the writeback deliberately did NOT write
  * (card#7064) — the body of a kanban card comment, plus the marker line that makes
@@ -121,10 +123,19 @@ final class CardNote
      * head branch, and this card already tracks a different pull request (DL-270). The
      * refusal is the right outcome — the note exists so the card shows that an event
      * claiming to be about it was turned away, rather than that nothing happened.
+     *
+     * What the card tracks is shown by its `pr_url` where that names a pull request — two
+     * same-numbered PRs differ only by repo (DL-429), and "`148` is not `148`" would explain
+     * nothing — else by its `pr_number`.
+     *
+     * @param  array<string, mixed>  $card  the card as already read by getCard()
      */
-    public static function refusedUncorroboratedMove(int $cardId, string $repo, mixed $cardPr, mixed $eventPr): self
+    public static function refusedUncorroboratedMove(int $cardId, string $repo, array $card, mixed $eventPr): self
     {
-        $card = self::render($cardPr);
+        $url = PrUrlRef::parse(CardTokenCorroboration::cardPrUrl($card), new ExternalReferenceNormalizer);
+        [$cardKey, $tracked] = $url !== null && $url->namesPr()
+            ? ['pr_url', $url->raw]
+            : ['pr_number', self::render(CardTokenCorroboration::cardPr($card))];
         // The event legitimately carries NO pull-request number — that is the fail-closed
         // arm of the gate (nothing corroborates the title, so the move is refused). Saying
         // `pr_number null` would read as a value; say what actually happened instead.
@@ -138,7 +149,7 @@ final class CardNote
             self::marker('move-refused-uncorroborated-card-token', ['card' => (string) $cardId, 'pr_number' => $event]),
             <<<BODY
             {$which} with nothing in its head branch agreeing, and this card already tracks a
-            different pull request (`pr_number` `{$card}`). A title is prose — a descriptive
+            different pull request (`{$cardKey}` `{$tracked}`). A title is prose — a descriptive
             citation of somebody else's card is written exactly like a claim to own this one —
             so the move was **refused** and nothing on this card was changed.
 
