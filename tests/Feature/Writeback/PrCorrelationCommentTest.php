@@ -591,6 +591,30 @@ class PrCorrelationCommentTest extends TestCase
     }
 
     /**
+     * DL-429 r9 — CONTROL for the test above: the card's `pr_number` matches the closing
+     * pull request's own number, but its `pr_url` names a same-numbered pull request of a
+     * DIFFERENT repo — the card's two refs AGREE (`oldorg/widget#719` is exactly what both
+     * name), so the r8 headline's "disagree" is false of it. The generic headline is used
+     * instead, reading the same `StoredPrRef::otherPrSameRepoWithMatchingNumber` this class's
+     * mirror does, so the two tables cannot diverge.
+     */
+    public function test_closed_unmerged_on_a_card_whose_pr_number_matches_a_different_repos_pull_request(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $card = $this->card(5, pr: 719);
+        $card['payload']['pr_url'] = 'https://github.com/oldorg/widget/pull/719';
+        $this->cards = new KanbanCardStub([5 => $card]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+
+        $body = $this->onlyComment(719);
+        $this->assertStringContainsString('Check card#5: it tracks a different pull request than the one just closed.', $body);
+        $this->assertStringNotContainsString('disagree', $body);
+        $this->assertStringNotContainsString("matches this pull request's number", $body);
+    }
+
+    /**
      * DL-429 r4 — a close on a card whose `pr_url` is an operator's free text: the url names
      * no pull request, so the close must not say the card tracks a different one.
      */

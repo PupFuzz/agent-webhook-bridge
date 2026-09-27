@@ -2905,6 +2905,38 @@ pull request it already names', $notes[0]);
         $this->assertStringNotContainsString('second pull request', $notes[0]);
     }
 
+    /**
+     * DL-429 r9 — the r8 heading's missing repo gate. `NamesOtherPr` also covers a
+     * same-numbered pull request of a DIFFERENT repo (a repo that moved to a new GitHub org
+     * restarts its numbers), and there the card's two refs AGREE with each other:
+     * `oldorg/repo#7` is exactly what its `pr_number` (7) and `pr_url` both name. The r8
+     * heading's "disagree … correct both refs by hand" is false of it and would tell an
+     * operator to re-point a card that already tracks the right pull request. The generic
+     * heading's "not reachable" is TRUE here — kanban's derived `github_pr` ref uses
+     * `oldorg/repo`, never this event's `owner/repo`. (Route this shape through the r8 heading
+     * again — drop the repo gate on `otherPrSameRepoWithMatchingNumber` — ⇒ "disagree" appears ⇒ RED.)
+     */
+    public function test_a_matching_number_in_a_different_repo_is_not_a_disagreement(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 7, 'pr_url' => 'https://github.com/oldorg/repo/pull/7',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 7, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/7']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString("this card stays correlated to the\npull request it already names", $notes[0]);
+        $this->assertStringContainsString('This second pull request is not reachable by a by-ref lookup on this card', $notes[0]);
+        $this->assertStringNotContainsString('disagree', $notes[0]);
+    }
+
     public function test_a_repo_case_difference_is_not_a_second_pull_request(): void
     {
         // card#7064 (C): GitHub's `owner/repo` is case-insensitive — which is precisely why

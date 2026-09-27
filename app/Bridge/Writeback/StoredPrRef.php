@@ -34,6 +34,8 @@ final class StoredPrRef
     private function __construct(
         public readonly StoredPrUrlKind $url,
         public readonly StoredPrNumberKind $number,
+        /** @see otherPrSameRepoWithMatchingNumber — meaningless (and false) off `NamesOtherPr`. */
+        private readonly bool $otherPrSameRepo = false,
     ) {}
 
     /**
@@ -57,6 +59,14 @@ final class StoredPrRef
             $parsedUrl->canonRepo === $refs->canonicalizeSource($repo) => StoredPrUrlKind::PlaceholderThisRepo,
             default => StoredPrUrlKind::PlaceholderOtherRepo,
         };
+        // `NamesOtherPr` covers a real pull request in ANY repo, not just this event's (DL-429
+        // r9): a card correctly tracking `oldorg/repo#7` reads `NamesOtherPr` against an event
+        // for `owner/repo#7` too, because it is not THIS (repo, number). Whether the other PR's
+        // OWN repo is this event's is captured here, once, so `otherPrSameRepoWithMatchingNumber`
+        // below and every mirror of it read one answer.
+        $otherPrSameRepo = $url === StoredPrUrlKind::NamesOtherPr
+            && $parsedUrl !== null
+            && $parsedUrl->canonRepo === $refs->canonicalizeSource($repo);
 
         $storedPr = $payload['pr_number'] ?? null;
         $number = match (true) {
@@ -66,7 +76,7 @@ final class StoredPrRef
             default => StoredPrNumberKind::DifferentNumber,
         };
 
-        return new self($url, $number);
+        return new self($url, $number, $otherPrSameRepo);
     }
 
     /** Does the card name a pull request at all — a `pr_url` naming a real one, this event's or another? */
@@ -89,5 +99,22 @@ final class StoredPrRef
     public function numberIsBare(): bool
     {
         return $this->number === StoredPrNumberKind::DifferentNumber && ! $this->namesPr();
+    }
+
+    /**
+     * The card's `pr_url` names ANOTHER pull request of THIS EVENT'S OWN repo, and the card's
+     * bare `pr_number` happens to equal this event's number too — the card's own two refs
+     * disagree with EACH OTHER, not merely with this event, and kanban's by-ref derivation
+     * (repo from `pr_url`, number from `pr_number`) can index the card under this very
+     * `(repo, number)` even though nothing was written (DL-429 r9). FALSE for a card whose
+     * `pr_url` names a same-numbered pull request of a DIFFERENT repo (a repo that moved to a
+     * new GitHub org restarts its numbers, so `oldorg/repo#7` and `owner/repo#7` sharing a
+     * number is coincidence, not disagreement) — the derived ref there uses the OTHER repo, so
+     * a by-ref lookup for this event never lands on the card, and the generic `NamesOtherPr`
+     * heading's "not reachable" claim stays true of it.
+     */
+    public function otherPrSameRepoWithMatchingNumber(): bool
+    {
+        return $this->otherPrSameRepo && $this->number === StoredPrNumberKind::SameNumber;
     }
 }
