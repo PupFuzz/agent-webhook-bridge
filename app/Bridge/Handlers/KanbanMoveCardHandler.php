@@ -62,8 +62,9 @@ use Throwable;
  *    is therefore a PARENT naming several legs that no one pull request may speak for
  *    (card#9929 — {@see ProgramCardGuard}, the one refusal here that withholds the STAMP as
  *    well as the move), an uncorroborated title-only
- *    `card#` names a card that already tracks a PR not provably this one (DL-270/DL-429), or the subject carried
- *    an unreadable card-shaped token naming some other card — DL-287) → alert + log + NO-OP.
+ *    `card#` names a card that already tracks a PR not provably this one (DL-270/DL-429),
+ *    or the subject carried an unreadable card-shaped token naming some other card —
+ *    DL-287) → alert + log + NO-OP.
  *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
  *    security guard (belongs-to-mapped-board) and is logged as a refusal. Every
@@ -630,8 +631,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * whoever later wonders why that PR never correlated (card#7064). Which PR ends up
      * stamped changes in exactly ONE case, below: a `pr_url` holding the `.../pull/0`
      * source-only qualifier FOR THIS PR'S OWN REPO is now written over, because it names
-     * no pull request to preserve — unless DL-429's pairing rule below withdraws it. The distinction that matters is DIFFERS, not
-     * nothing-to-write: an idempotent replay of the card's OWN pull request offers exactly
+     * no pull request to preserve — unless DL-429's pairing rule below withdraws it. The
+     * distinction that matters is DIFFERS, not nothing-to-write: an idempotent replay of the card's OWN pull request offers exactly
      * what the card stores and stays silent, which is why the comparison is
      * {@see CardTokenCorroboration::tracksPr} rather than an empty-$refs test.
      *
@@ -718,7 +719,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         // pr_number — ⛔ WRITTEN, OR TRUSTED AS THIS PULL REQUEST'S, ONLY BESIDE A pr_url
         // NAMING THIS PULL REQUEST (DL-429). A stored number that DIFFERS is kept (first write
-        // wins) and the pr_url decided above is withdrawn with the dropped one. A number carries no repo, so on its own it names no pull request
+        // wins) and the pr_url decided above is withdrawn with the dropped one. A number
+        // carries no repo, so on its own it names no pull request
         // (`TrackedRefKind::BarePrNumber`) — every consumer skips or refuses the card that
         // carries one, including this very gate on THIS pull request's next event. Two shapes:
         //

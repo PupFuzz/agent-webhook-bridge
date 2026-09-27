@@ -172,8 +172,8 @@ final class CardNote
 
     /**
      * The move REFUSED because the `card#` token was title-only, uncorroborated by the
-     * head branch, and this card already tracks a pull request not provably this one (DL-270). The
-     * refusal is the right outcome — the note exists so the card shows that an event
+     * head branch, and this card already tracks a pull request not provably this one
+     * (DL-270). The refusal is the right outcome — the note exists so the card shows that an event
      * claiming to be about it was turned away, rather than that nothing happened.
      *
      * What the card tracks is shown by its `pr_url` where that names a pull request — two
