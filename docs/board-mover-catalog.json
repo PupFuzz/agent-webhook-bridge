@@ -104,6 +104,8 @@
     {"id":"github_write_debt.record_pruned","kind":"observability_fault","surface":["log"],"site":"GitHubWriteDebt::prune","since":"0.90.0"},
     {"id":"github_write_debt.record_unreadable","kind":"observability_fault","surface":["log"],"site":"GitHubWriteDebt::read","since":"0.90.0"},
     {"id":"github_write_debt.record_unwritable","kind":"observability_fault","surface":["log"],"site":"GitHubWriteDebt::mutate","since":"0.90.0"},
+    {"id":"kanban_client.board_read_refused","kind":"partial_read","surface":["log"],"site":"KanbanClient::refuseRead","since":"0.91.0"},
+    {"id":"kanban_client.board_read_rewalked","kind":"partial_read","surface":["log"],"site":"KanbanClient::pagedSearch","since":"0.91.0"},
     {"id":"kanban_client.card_collection_unreadable","kind":"partial_read","surface":["log"],"site":"KanbanClient::warnUnreadableCollection","since":"0.88.0"},
     {"id":"kanban_client.correlation_board_empty","kind":"partial_read","surface":["log"],"site":"KanbanClient::correlationCards","since":"0.88.0"},
     {"id":"kanban_client.correlation_page_ceiling","kind":"partial_read","surface":["log"],"site":"KanbanClient::correlationCards","since":"0.88.0"},

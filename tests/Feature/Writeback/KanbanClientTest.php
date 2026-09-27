@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Writeback;
 
+use App\Bridge\Writeback\BoardReadRefused;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\TerminalBasis;
 use Illuminate\Http\Client\Request;
@@ -9,6 +10,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\KanbanSearchSim;
 use Tests\TestCase;
 
 class KanbanClientTest extends TestCase
@@ -266,60 +268,69 @@ class KanbanClientTest extends TestCase
         // DL-028: a card past #200 must still correlate. Page 1 is a full 200
         // non-matching cards (incl. a junk row so the raw-batch-length break is
         // exercised); the match sits on page 2.
-        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT - 1));
+        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1000, 1000 - KanbanClient::SEARCH_LIMIT + 2));
         $page1[] = 'not-an-array-row';   // 200th raw row → still a full page
-        $page2 = [['id' => 7777, 'payload' => ['dl_number' => '9999']]];
+        $page2 = [['id' => 7, 'payload' => ['dl_number' => '9999']]];
         Http::fakeSequence('*/tasks/search.json*')->push(['data' => $page1])->push(['data' => $page2]);
         Log::spy();
 
-        $this->assertSame([7777], $this->client()->correlateDl(8, 'DL-9999'));
+        $this->assertSame([7], $this->client()->correlateDl(8, 'DL-9999'));
         Http::assertSentCount(2);
         Log::shouldNotHaveReceived('warning');   // fully read across pages → silent
     }
 
     public function test_scan_truncation_warning_fires_at_the_max_pages_ceiling(): void
     {
-        $full = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full])]);
+        $sim = (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->install();
         Log::spy();
 
-        $this->assertSame([], $this->client()->correlateDl(8, 'DL-99999'));   // no match in 1..200
+        $this->assertSame([], $this->client()->correlateDl(8, 'DL-99999'));   // the sim's rows carry no payload
 
-        Http::assertSentCount(KanbanClient::MAX_PAGES);   // stopped at the ceiling, didn't run away
+        $this->assertSame(KanbanClient::MAX_PAGES + 1, $sim->requests);   // the ceiling, plus the one request that confirms it
         Log::shouldHaveReceived('warning')->once()
             ->withArgs(fn (string $msg) => str_contains($msg, 'ceiling'));
     }
 
-    public function test_scan_stops_on_links_next_null_when_the_kanban_serves_links(): void
+    /**
+     * card#10653: the walk ends on a SHORT page and on nothing else. `links.next` is not read, in
+     * either direction — here a short page still says there is a next one, and the walk stops.
+     */
+    public function test_scan_ends_on_a_short_page_whatever_links_next_says(): void
     {
-        // DL-146: when the kanban serves pagination `links`, scan stops on
-        // links.next === null rather than the short-page heuristic. A FULL first
-        // page carrying a next link pages on; the second page's null next stops it.
-        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
-        $page2 = [['id' => 7777, 'payload' => ['dl_number' => '9999']]];
+        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1000, 1000 - KanbanClient::SEARCH_LIMIT + 1));
+        $page2 = [['id' => 7, 'payload' => ['dl_number' => '9999']]];
         Http::fakeSequence('*/tasks/search.json*')
             ->push(['data' => $page1, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
-            ->push(['data' => $page2, 'links' => ['next' => null]]);
+            ->push(['data' => $page2, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=3']]);
         Log::spy();
 
-        $this->assertSame([7777], $this->client()->correlateDl(8, 'DL-9999'));
+        $this->assertSame([7], $this->client()->correlateDl(8, 'DL-9999'));
         Http::assertSentCount(2);
         Log::shouldNotHaveReceived('warning');   // fully read across pages → silent
     }
 
-    public function test_scan_full_page_with_null_next_stops_without_an_extra_request(): void
+    /**
+     * card#10653: a FULL page is never the last, even with `links.next === null` — kanban's COUNT and
+     * SELECT are separate queries, so that null can be stale by the SELECT (the race is modelled in
+     * KanbanPagedSearchWalkTest). A board at an exact multiple of SEARCH_LIMIT costs one more request,
+     * which comes back empty, and the read is complete with no truncation warning.
+     */
+    public function test_scan_full_page_with_null_next_costs_one_confirming_request(): void
     {
-        // A board sized at an exact multiple of SEARCH_LIMIT: links.next === null on
-        // a FULL page stops immediately — no wasted extra request, and no false
-        // truncation warning (the short-page heuristic alone couldn't distinguish
-        // this from a truncated read).
-        $full = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => null]])]);
+        $full = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(KanbanClient::SEARCH_LIMIT, 1));
+        Http::fakeSequence('*/tasks/search.json*')
+            ->push(['data' => $full, 'links' => ['next' => null], 'meta' => ['total' => KanbanClient::SEARCH_LIMIT]])
+            ->push(['data' => [], 'links' => ['next' => null], 'meta' => ['total' => 0]]);
         Log::spy();
 
         $this->assertSame([42], $this->client()->correlateDl(8, 'DL-42'));
-        Http::assertSentCount(1);                // stopped on links.next, no page 2
-        Log::shouldNotHaveReceived('warning');   // full page + null next ⇒ not truncated
+        Http::assertSentCount(2);
+        Http::assertSent(function (Request $r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return ($query['q'] ?? null) === 'board_id=8 id<1' && ($query['page'] ?? null) === '1';
+        });
+        Log::shouldNotHaveReceived('warning');   // full page + empty confirmation ⇒ not truncated
     }
 
     public function test_scan_genuine_no_match_logs_nothing(): void
@@ -647,7 +658,7 @@ class KanbanClientTest extends TestCase
      */
     public function test_card_rows_by_tag_reads_every_page(): void
     {
-        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1200, 1200 - KanbanClient::SEARCH_LIMIT + 1));
         Http::fakeSequence()
             ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
             ->push(['data' => [['id' => 999, 'tags' => ['lane:A']]], 'links' => ['next' => null]]);
@@ -656,7 +667,7 @@ class KanbanClientTest extends TestCase
 
         $this->assertCount(KanbanClient::SEARCH_LIMIT + 1, $rows);
         Http::assertSentCount(2);
-        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=8 tags:"lane:A"') && str_contains($r->url(), 'page=2'));
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=8 id<1001 tags:"lane:A"') && str_contains($r->url(), 'page=1'));
     }
 
     /**
@@ -665,19 +676,18 @@ class KanbanClientTest extends TestCase
      */
     public function test_the_tag_row_read_says_when_its_page_walk_stopped_at_the_ceiling(): void
     {
-        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])]);
+        $sim = (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->install();
 
         $read = $this->client()->tagRowsRead(8, 'lane:A');
 
         $this->assertTrue($read->truncated);
         $this->assertCount(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT, $read->cards);
-        Http::assertSentCount(KanbanClient::MAX_PAGES);
+        $this->assertSame(KanbanClient::MAX_PAGES + 1, $sim->requests);
     }
 
-    public function test_the_tag_row_read_is_complete_when_kanban_says_there_is_no_next_page(): void
+    public function test_the_tag_row_read_is_complete_when_it_ends_on_a_short_page(): void
     {
-        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1, KanbanClient::SEARCH_LIMIT));
+        $full = array_map(fn (int $i) => ['id' => $i, 'tags' => ['lane:A']], range(1200, 1200 - KanbanClient::SEARCH_LIMIT + 1));
         Http::fakeSequence()
             ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
             ->push(['data' => [['id' => 999, 'tags' => ['lane:A']]], 'links' => ['next' => null]]);
@@ -694,20 +704,19 @@ class KanbanClientTest extends TestCase
      */
     public function test_read_board_cards_flags_a_walk_that_stopped_at_the_ceiling(): void
     {
-        $full = array_map(fn (int $i) => ['id' => $i], range(1, KanbanClient::SEARCH_LIMIT));
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])]);
+        $sim = (new KanbanSearchSim(range(1, KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT + 1)))->install();
 
         $read = $this->client()->readBoardCards(8);
 
         $this->assertTrue($read['truncated']);
         $this->assertCount(KanbanClient::MAX_PAGES * KanbanClient::SEARCH_LIMIT, $read['cards']);
-        Http::assertSentCount(KanbanClient::MAX_PAGES);
+        $this->assertSame(KanbanClient::MAX_PAGES + 1, $sim->requests);
         Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/tasks/search.json?q=board_id%3D8&limit=200&page=1'));
     }
 
-    public function test_read_board_cards_is_not_truncated_when_kanban_says_there_is_no_next_page(): void
+    public function test_read_board_cards_is_not_truncated_when_it_ends_on_a_short_page(): void
     {
-        $full = array_map(fn (int $i) => ['id' => $i], range(1, KanbanClient::SEARCH_LIMIT));
+        $full = array_map(fn (int $i) => ['id' => $i], range(1200, 1200 - KanbanClient::SEARCH_LIMIT + 1));
         Http::fakeSequence()
             ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
             ->push(['data' => [['id' => 999]], 'links' => ['next' => null]]);
@@ -1107,7 +1116,8 @@ class KanbanClientTest extends TestCase
     /**
      * The page walk is unchanged by the warning, and the page a body went unreadable ON is in
      * the log line: a first page kanban served fine followed by a second it could not is a
-     * TRUNCATED lane, not an empty one, and the rows that did arrive are still returned.
+     * TRUNCATED lane, not an empty one. Where page 1 declared no `meta.total` there is nothing to
+     * check the walk against, and the rows that did arrive are returned.
      */
     public function test_a_swimlane_page_that_carries_no_collection_names_its_page_and_keeps_the_rows_already_read(): void
     {
@@ -1115,7 +1125,7 @@ class KanbanClientTest extends TestCase
             ->once()
             ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
                 && str_contains($c['read'], 'swimlane-search 31 page 2'));
-        $full = array_map(fn (int $i) => ['id' => $i, 'swimlane_id' => 31], range(1, KanbanClient::SEARCH_LIMIT));
+        $full = array_map(fn (int $i) => ['id' => $i, 'swimlane_id' => 31], range(1200, 1200 - KanbanClient::SEARCH_LIMIT + 1));
         Http::fakeSequence()
             ->push(['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
             ->push(['meta' => []]);
@@ -1123,6 +1133,30 @@ class KanbanClientTest extends TestCase
         $rows = $this->client()->swimlaneCards(8, 31);
 
         $this->assertCount(KanbanClient::SEARCH_LIMIT, $rows);
+    }
+
+    /**
+     * card#10653: the same unreadable second page under a page 1 that declared its total — every
+     * kanban answer does. The walk is short of that total, the re-walk is too, and the read is
+     * refused rather than reported as a complete lane. ⚑ Before card#10653 this returned the first
+     * page's rows as the whole lane.
+     */
+    public function test_an_unreadable_later_page_under_a_declared_total_is_refused_not_read_as_complete(): void
+    {
+        Log::spy();
+        $full = array_map(fn (int $i) => ['id' => $i, 'swimlane_id' => 31], range(1200, 1200 - KanbanClient::SEARCH_LIMIT + 1));
+        $page1 = ['data' => $full, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2'], 'meta' => ['total' => 300]];
+        Http::fakeSequence()->push($page1)->push(['meta' => []])->push($page1)->push(['meta' => []]);
+
+        try {
+            $this->client()->swimlaneCards(8, 31);
+            $this->fail('a lane read short of its declared total was reported complete');
+        } catch (BoardReadRefused $e) {
+            $this->assertStringContainsString('delivered 200 distinct cards where its first page declared 300', $e->getMessage());
+        }
+        Http::assertSentCount(4);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => ($c['read'] ?? null) === 'swimlane-search 31 page 2');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => ($c['catalog_id'] ?? null) === 'kanban_client.board_read_refused');
     }
 
     public function test_board_stage_ids_by_name_maps_names_to_ids(): void

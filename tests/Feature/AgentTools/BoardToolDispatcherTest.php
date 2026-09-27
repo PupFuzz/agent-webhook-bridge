@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use LogicException;
 use Tests\Support\CallingSeatSeal;
+use Tests\Support\KanbanSearchSim;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
 
@@ -159,6 +160,25 @@ class BoardToolDispatcherTest extends TestCase
 
         $this->assertSame(502, $outcome->status);
         $this->assertSame(2, $outcome->exitCode());
+    }
+
+    /**
+     * card#10653: a lane read the walk refuses — here a board answering in ASCENDING id order, so no
+     * full page can key the next request — is the board's fault and is answered as one, with the
+     * same body as a board 5xx, never as a crash of the door.
+     */
+    public function test_a_refused_board_read_is_502_exit_2_with_the_upstream_body(): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
+        ]);
+        (new KanbanSearchSim(range(1, 450), order: 'asc'))->install();
+
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+
+        $this->assertSame(502, $outcome->status);
+        $this->assertSame(2, $outcome->exitCode());
+        $this->assertSame(['ok' => false, 'error' => 'upstream board error'], $outcome->body());
     }
 
     public function test_writeback_unavailable_is_503_exit_2(): void

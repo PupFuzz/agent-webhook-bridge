@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
+use Tests\Support\KanbanSearchSim;
 use Tests\TestCase;
 
 /**
@@ -1717,21 +1718,20 @@ class AgentToolsCallTest extends TestCase
     // ─── board_my_cards: the capped default window (card#8985 / DL-365) ──────
 
     /**
-     * A lane of $count cards, ids 1..$count, all in the one stage. `links.next: null`
-     * ends the client's pagination after this one page — without it the fake answers
-     * the same oversized page for every page the client asks for, and the test would
-     * be measuring a duplication the real client never produces.
+     * A lane of $count cards, ids 1..$count, all in the one stage, served the way kanban's search
+     * serves it — id-descending, SEARCH_LIMIT rows at a time — so the client walks it exactly as it
+     * walks a real lane (card#10653: a single over-full page is a server kanban is not).
      *
      * @param  array<int, array<string, mixed>>  $rowOverridesById  merged into the row with that id
      */
     private function fakeLaneOf(int $count, array $rowOverridesById = []): void
     {
-        $rows = [];
+        $lane = new KanbanSearchSim([]);
         for ($id = 1; $id <= $count; $id++) {
-            $rows[] = array_merge([
+            $lane->put(array_merge([
                 'id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => 4,
                 'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10,
-            ], $rowOverridesById[$id] ?? []);
+            ], $rowOverridesById[$id] ?? []), $id);
         }
 
         Http::fake([
@@ -1741,7 +1741,7 @@ class AgentToolsCallTest extends TestCase
                     ['id' => 51, 'name' => 'In Review', 'position' => 2],
                 ]],
             ]]]),
-            '*/tasks/search.json*' => Http::response(['data' => $rows, 'links' => ['next' => null]]),
+            '*/tasks/search.json*' => $lane->responder(),
         ]);
     }
 
@@ -1803,11 +1803,11 @@ class AgentToolsCallTest extends TestCase
         $this->assertCount(BoardMyCardsTool::DEFAULT_MAX_CARDS, $ids);
         $this->assertSame(500, max($ids), 'the newest card in the lane must survive the cut');
         $this->assertSame(500 - BoardMyCardsTool::DEFAULT_MAX_CARDS + 1, min($ids), 'the cut must take the newest N, contiguously');
-        // Emission still follows the board's own answer order, so an uncut list is
-        // byte-identical to what this tool has always returned.
-        $sorted = $ids;
-        sort($sorted);
-        $this->assertSame($sorted, $ids, 'the kept rows keep their original positions');
+        // Emission still follows the board's own answer order (id-descending, as kanban
+        // answers), so an uncut list is byte-identical to what this tool has always returned.
+        $answered = $ids;
+        rsort($answered);
+        $this->assertSame($answered, $ids, 'the kept rows keep their original positions');
     }
 
     public function test_my_cards_default_read_shows_the_live_column_not_a_wall_of_done(): void
@@ -1827,7 +1827,7 @@ class AgentToolsCallTest extends TestCase
         $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
 
         $this->assertArrayHasKey('In Review', $result['cards_by_stage'], 'the live column must be reachable from the DEFAULT call');
-        $this->assertSame([56, 57, 58, 59, 60], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertSame([60, 59, 58, 57, 56], array_column($result['cards_by_stage']['In Review'], 'id'));
         $this->assertTrue($result['cards_window']['truncated']);
     }
 
@@ -1929,7 +1929,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)->json('result');
 
         $this->assertSame(
-            [2, 4, 6],
+            [6, 4, 2],
             array_map(static fn (array $card): mixed => $card['id'], $result['cards_by_stage']['Backlog'])
         );
         $this->assertSame(6, $result['cards_window']['total']);
@@ -2084,7 +2084,7 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200)->json('result');
 
         $this->assertSame(['In Review'], array_keys($result['cards_by_stage']));
-        $this->assertSame([3, 5], array_column($result['cards_by_stage']['In Review'], 'id'));
+        $this->assertSame([5, 3], array_column($result['cards_by_stage']['In Review'], 'id'));
         $this->assertSame(2, $result['cards_window']['total']);
         $this->assertSame(51, $result['cards_window']['stage_filter']);
     }
@@ -2115,7 +2115,7 @@ class AgentToolsCallTest extends TestCase
             'total' => 500, 'returned' => 4, 'limit' => 4, 'truncated' => true, 'stage_filter' => 50,
             'remedy' => $result['cards_window']['remedy'] ?? null,
         ], $result['cards_window']);
-        $this->assertSame([497, 498, 499, 500], array_column($result['cards_by_stage']['Backlog'], 'id'));
+        $this->assertSame([500, 499, 498, 497], array_column($result['cards_by_stage']['Backlog'], 'id'));
     }
 
     public function test_my_cards_refuses_an_ambiguous_stage_name_rather_than_guessing(): void
@@ -2312,20 +2312,21 @@ class AgentToolsCallTest extends TestCase
         $this->writeAgent('me', $this->token, [
             'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
         ], "  shared_swimlane_id: 9\n");
+        $lanes = [];
+        foreach ([9 => 200, 4 => 2] as $lane => $count) {
+            $sim = new KanbanSearchSim([]);
+            for ($id = 1; $id <= $count; $id++) {
+                $sim->put(['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50,
+                    'swimlane_id' => $lane, 'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10]);
+            }
+            $lanes[$lane] = $sim->responder();
+        }
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
-            '*/tasks/search.json*' => function ($request) {
-                $url = urldecode($request->url());
-                $lane = str_contains($url, 'swimlane_id=9') ? 9 : 4;
-                $rows = [];
-                for ($id = 1; $id <= ($lane === 9 ? 200 : 2); $id++) {
-                    $rows[] = ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50,
-                        'swimlane_id' => $lane, 'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10];
-                }
-
-                return Http::response(['data' => $rows, 'links' => ['next' => null]]);
+            '*/tasks/search.json*' => function ($request) use ($lanes) {
+                return $lanes[str_contains(urldecode($request->url()), 'swimlane_id=9') ? 9 : 4]($request);
             },
         ]);
 
