@@ -301,15 +301,16 @@ class ReconcileCommandTest extends TestCase
      * card#9850: a bare `pr_number` on a SHARED board names no repo, so the card is skipped —
      * and the skip line's remedy must be one that works. The fixture carries the `.../pull/0`
      * placeholder on purpose: it IS repo-qualified, names no pull request, and so falls
-     * through to the same ambiguity (`TrackedCardRef::fromPayload()`). A remedy reading
-     * "a repo-qualified pr_url" is satisfied by exactly the value on this card.
+     * through to the bare number (`TrackedCardRef::fromPayload()`). A remedy reading
+     * "a repo-qualified pr_url" is satisfied by exactly the value on this card. Since DL-429
+     * the same line is printed on a 1:1 board too (the org-move test below).
      *
      * `docs/writeback.md` quotes this line verbatim with the numbers elided (`…`), and nothing
      * else holds the quote to the code, so the same literal is asserted against both.
      */
     public function test_a_bare_pr_number_on_a_shared_board_is_skipped_with_a_remedy_naming_a_real_pr(): void
     {
-        $remedy = "on shared board — ambiguous repo (needs a pr_url naming the card's actual PR); skipped";
+        $remedy = "names no repo (needs a pr_url naming the card's actual PR); skipped";
         $stages = ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49];
         $this->writeWriteback([
             'owner/repo' => ['board_id' => 8, 'stages' => $stages],
@@ -328,6 +329,31 @@ class ReconcileCommandTest extends TestCase
             File::get(base_path('docs/writeback.md')),
             'bridge:reconcile\'s shared-board skip line changed: update its verbatim quote in docs/writeback.md § Optional: a repo whose PRs cite cards on SEVERAL boards.',
         );
+    }
+
+    /**
+     * DL-429 — the org-move collision, on a 1:1 board. `owner/repo` is the board's only
+     * mapping and a new repo whose PR numbers restarted: its #5 is not the #5 an old card was
+     * stamped with. A bare `pr_number` names no repo, so reading it against the mapping's repo
+     * attributes an old card to an unrelated new pull request — and `--fix` then moves it.
+     * The card whose pr_url names another repo was already skipped; the bare one was not.
+     * (Attribute a bare pr_number to the board's sole mapping again ⇒ `/pulls/5` is read ⇒ RED.)
+     */
+    public function test_a_bare_pr_number_on_a_one_to_one_board_is_skipped_and_never_read_against_the_mapped_repo(): void
+    {
+        $this->writeWriteback();
+        $this->fake([
+            $this->card(5, 50, ['pr_number' => 5]),
+            $this->card(6, 50, ['pr_number' => 5, 'pr_url' => 'https://github.com/oldorg/repo/pull/5']),
+        ], [5 => $this->mergedToDevPr()]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain("card 5: bare pr_number 5 names no repo (needs a pr_url naming the card's actual PR); skipped")
+            ->expectsOutputToContain('card 6: pr_url repo oldorg/repo is not in scope for this board')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
     /**

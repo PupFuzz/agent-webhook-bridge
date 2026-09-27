@@ -11,7 +11,6 @@ use App\Bridge\Writeback\WritebackClientFactory;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
-use UnexpectedValueException;
 
 /**
  * The post-agent-resolution body of a board-tools call (Finding A, card 4952),
@@ -68,8 +67,10 @@ use UnexpectedValueException;
  * door reads out of its own request shape ({@see ClientVersion}). ⛔ It is an OBSERVATION and
  * never a precondition: no refusal turns on it, and a call that reports no version reaches
  * exactly the outcome and status of one that reports a current one. Since card#10566 (DL-426,
- * superseding this paragraph's earlier "no branch here reads it") it is read on a REFUSAL, for
- * text only: {@see clientUpdateClause()} may add one sentence to the refusal's message.
+ * superseding this paragraph's earlier "no branch here reads it") it is read for text only:
+ * {@see clientUpdateClause()} may add one sentence to a refusal's message, and a tool that
+ * implements {@see ReadsCallerClientVersion} is handed it so a success body's advice can carry
+ * the same sentence.
  */
 final class BoardToolDispatcher
 {
@@ -140,7 +141,7 @@ final class BoardToolDispatcher
         }
 
         try {
-            $result = $tool->call($rawArgs, $cfg, $client, $agentName);
+            $result = ($tool instanceof ReadsCallerClientVersion ? $tool->forCallerClientVersion($clientVersion) : $tool)->call($rawArgs, $cfg, $client, $agentName);
         } catch (ToolRefusalException $e) {
             // An install-fault read refusal names an argument only to say which read failed;
             // "update your channel client" is the wrong fix for it (DL-426).
@@ -226,27 +227,14 @@ final class BoardToolDispatcher
 
     /**
      * {@see ClientUpdateClause} for the accepted keys this call sent, or ''. Called only on a
-     * refusal, so a call that is not refused never reads the capability table. An unreadable
-     * table is a broken deploy: it is logged, and the refusal goes out without the clause rather
-     * than as a failed call.
+     * refusal, so a call that is not refused never reads the capability table here.
      *
      * @param  array<array-key, mixed>  $args
      */
     private function clientUpdateClause(Tool $tool, array $args, ?string $clientVersion): string
     {
         $sent = array_values(array_intersect(array_map(strval(...), array_keys($args)), $tool->acceptedArguments()));
-        if ($sent === []) {
-            return '';
-        }
 
-        try {
-            $caps = ClientCapabilities::bundled();
-        } catch (UnexpectedValueException $e) {
-            Log::warning('agent-tools: client capability table unreadable; refusal carries no client-update clause', ['tool' => $tool->name(), 'error' => $e->getMessage()]);
-
-            return '';
-        }
-
-        return ClientUpdateClause::for($caps, $clientVersion, $tool->name(), $sent);
+        return ClientUpdateClause::fromBundledTable($clientVersion, $tool->name(), $sent);
     }
 }
