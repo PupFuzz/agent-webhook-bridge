@@ -52,8 +52,9 @@ trait BootsGoldenInstall
     {
         // TEAR THE PREVIOUS ONE DOWN FIRST, so a nested boot is unrepresentable rather than
         // something each test has to remember. {@see PinnedHost} snapshots the ambient values
-        // in `apply()`, not in its constructor, so a second boot inside one test method —
-        // several callers walk a list of shapes — reaches `apply()` while the first host is
+        // once per host, in `perturbAmbient()` or `apply()` and not in its constructor, so a
+        // second boot inside one test method — several callers walk a list of shapes —
+        // reaches `apply()` while the first host is
         // still applied and saves the PINNED `PATH` as if it were ambient. `tearDown()` then
         // "restores" the process to a fixture bin dir that no longer exists, and every later
         // test in the process that shells out runs with it.

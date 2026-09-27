@@ -153,6 +153,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Bridge/Tools/{BoardToolDispatcher,DispatchOutcome}.php` | The shared post-agent-resolution machinery BOTH front doors single-source (tool/args-shape validation → writeback client → the one refusal for an argument key the tool does not declare → invoke → exception→status), returning a transport-neutral outcome |
 | `app/Http/Controllers/AgentTools/AgentToolsController.php` + `app/Bridge/Tools/BoardToolAgentResolver.php` | **HTTP front door**: loopback-gated `POST /agent-tools/call`; resolves the agent by bearer (ssh agents excluded from the index), then dispatches |
 | `app/Console/Commands/Bridge/ToolsCallCommand.php` (`bridge:tools-call`) + `app/Bridge/Tools/ToolsCallStdio.php` | **SSH front door** (card 4952): identity from the pinned `--agent`, `{tool,args}` from STDIN, one JSON envelope to raw STDOUT; same dispatcher |
+| `app/Bridge/Tools/{ClientCapabilities,ClientDeclaration}.php` + `resources/client-capabilities.json` | Which reference channel-server version first declared (and dropped) each board tool and argument. The table is GENERATED from git history by `bin/gen-client-capabilities.mjs` and checked in the required SQLite CI job; the class only reads it (DL-425) |
 | `app/Bridge/Tools/{AuthorizedKeysLine,SshTransportProbe,SshProbeEnvironment,SystemSshProbeEnvironment}.php` | `bridge:check`'s offline pinned-line + sshd-posture probe (outcome-based capability model, FIPS key-algo gate) |
 
 ### The check registry (`bridge:check`)
