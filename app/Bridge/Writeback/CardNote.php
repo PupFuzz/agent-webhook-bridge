@@ -185,7 +185,7 @@ final class CardNote
                 holds a value that is not a pull-request number, and a stamp never
                 overwrites a value a card holds. A `pr_url` is written only beside a
                 `pr_number` it names, so the refs below were **not** written, and this
-                card is left as it was:
+                card keeps the `pr_number` it holds:
 
                 {$lines}
                 If this pull request is the one this card tracks, correct both refs by hand

@@ -3095,6 +3095,9 @@ pull request it already names', $notes[0]);
         $notes = $this->noteContents();
         $this->assertCount(1, $notes);
         $this->assertStringContainsString("the card's `pr_number`\nholds a value that is not a pull-request number", $notes[0]);
+        // DL-429 r7: the heading vouches only for the ref it keeps — the same event may move the card.
+        $this->assertStringContainsString('card keeps the `pr_number` it holds:', $notes[0]);
+        $this->assertStringNotContainsString('left as it was', $notes[0]);
         $this->assertStringContainsString('- `pr_url` — the card keeps none; this pull request offered `https://github.com/owner/repo/pull/7`', $notes[0]);
         $this->assertStringNotContainsString('different', $notes[0]);
         $this->assertStringNotContainsString('pull request it already names', $notes[0]);
