@@ -29,15 +29,17 @@
 // The line is read from refs/remotes/origin/dev, which must be present (CI's full-history
 // checkout fetches it). DL-425 owns the rest of the reasoning and the bounds.
 //
-// ⛔ A version LANDED on dev's first-parent line more than once (a revert, then reintroduced)
-// declares only what EVERY landing declared: when the table cannot tell which copy a seat runs
-// it says "not declared", which costs a seat an update hint and never tells it an argument
-// works. Two SEPARATE branches bumping to the same number is a DIFFERENT shape: only the first
-// to land introduces that version (its manifest differs from its first parent; the second
-// branch's does not, since dev is already at that number), so the second branch's own arguments
-// date to whatever version lands next — one version later than they actually shipped, the
-// conservative direction. Reachable only past the non-required version-bump-guard job. DL-425
-// Decision 1 and bound 2.
+// ⛔ Versions on dev only move FORWARD (DL-425): a published version is immutable, so a release
+// is undone by a forward bump, never a revert. A working tree LOWER than a version its history
+// introduced is refused (exit 2, naming the forward bump). A version landed on dev's line more
+// than once is therefore reachable only past an admin bypass (a lowering merged anyway, then
+// raised back); if it happens it declares only what EVERY landing declared — "not declared"
+// costs a seat an update hint and never tells it an argument works. Two SEPARATE branches
+// bumping to the same number is a DIFFERENT shape: only the first to land introduces that
+// version (its manifest differs from its first parent; the second branch's does not, since dev
+// is already at that number), so the second branch's own arguments date to whatever version
+// lands next — one version later than they actually shipped, the conservative direction.
+// Reachable only past the non-required version-bump-guard job. DL-425 Decision 1 and bound 2.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -263,7 +265,10 @@ function historicalStates(repo) {
     .split('\n')
     .filter(Boolean)
     .map((l) => {
-      const [sha, parent] = l.split(' ');
+      // A root commit prints `<sha> ` — without the filter its parent is '', and `:path` reads
+      // the INDEX. Only the first parent counts: %P lists a merge's second parent too, and a
+      // merge landing a bump must still read as introducing it.
+      const [sha, parent] = l.split(' ').filter(Boolean);
       return { sha, parents: parent === undefined ? [] : [parent] };
     })
     .filter((c) => reachable.has(c.sha));
@@ -319,7 +324,11 @@ function derive(historical, current) {
   }
   for (const v of byVersion.keys()) {
     if (compareBare(v, current.version) > 0) {
-      throw new CannotMeasure(`history introduced ${v}, which is NEWER than the working tree's ${current.version}`);
+      throw new CannotMeasure(
+        `history introduced ${v}, which is NEWER than the working tree's ${current.version}. ` +
+          `Channel-server versions on dev only move forward (DL-425): undo a release with a FORWARD ` +
+          `bump above ${v} in ${SUBJECT_DIR}/package.json, never a revert that lowers it.`,
+      );
     }
   }
   // The version being worked on is what the working tree says: a branch that bumps first and

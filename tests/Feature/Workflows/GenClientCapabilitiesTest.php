@@ -229,13 +229,56 @@ class GenClientCapabilitiesTest extends TestCase
         $this->assertSame(['0.11.0', null], self::spans($this->generated($repo))['my_cards.tag']);
     }
 
+    /**
+     * r3-MAJOR-1 / DL-425: versions on dev only move forward. A revert that lowers the version
+     * below one its history introduced is refused, and the refusal names the remedy — a forward
+     * bump — which then measures cleanly.
+     */
+    public function test_a_revert_that_lowers_the_version_is_refused_naming_the_forward_bump(): void
+    {
+        $repo = $this->newRepo();
+        $this->devHistory($repo);
+        $this->commit($repo, '0.11.0', ['my_cards' => ['limit', 'tag']], message: 'release adding tag');
+        $this->commit($repo, '0.10.0', ['my_cards' => ['limit']], message: 'Revert "release adding tag"');
+
+        [$rc, , $err] = $this->gen($repo);
+
+        $this->assertSame(2, $rc, $err);
+        $this->assertStringContainsString("history introduced 0.11.0, which is NEWER than the working tree's 0.10.0", $err);
+        $this->assertStringContainsString('FORWARD bump above 0.11.0', $err);
+
+        $this->commit($repo, '0.12.0', ['my_cards' => ['limit']], message: 'forward bump');
+        $this->assertSame(['0.11.0', '0.12.0'], self::spans($this->generated($repo))['my_cards.tag']);
+    }
+
+    /**
+     * r3-MINOR: a ROOT commit has no parent. `%P` prints nothing for it, and a parent read as ''
+     * would resolve `:path` — the INDEX — so what is staged would decide whether the root
+     * introduced its version.
+     */
+    public function test_the_root_commit_introduces_its_version_whatever_the_index_holds(): void
+    {
+        $repo = $this->newRepo();
+        $this->commit($repo, '0.1.0', ['my_cards' => ['a']]);
+        $this->commit($repo, '0.2.0', ['my_cards' => ['a', 'b']]);
+        $manifest = $repo.'/examples/channel-servers/package.json';
+        $staged = $this->root.'/staged.json';
+        file_put_contents($staged, json_encode(['name' => 'fixture', 'version' => '0.1.0'], JSON_PRETTY_PRINT)."\n");
+        $blob = $this->git($repo, ['hash-object', '-w', $staged]);
+        $this->git($repo, ['update-index', '--cacheinfo', "100644,{$blob},examples/channel-servers/package.json"]);
+        $this->assertStringContainsString('"0.2.0"', (string) file_get_contents($manifest));
+
+        $this->assertSame(['0.1.0', null], self::spans($this->generated($repo))['my_cards.a']);
+    }
+
     public function test_a_version_introduced_twice_declares_only_what_both_trees_declared(): void
     {
         $repo = $this->newRepo();
         $this->commit($repo, '0.1.0', null);
         $this->commit($repo, '0.2.0', ['my_cards' => []]);
         $this->commit($repo, '0.3.0', ['my_cards' => ['limit']]);
-        // Reverted, then 0.3.0 introduced again on dev's line by a tree without `limit`.
+        // Lowered anyway (DL-425: reachable only past an admin bypass, since the lowered tree is
+        // refused), then 0.3.0 introduced again on dev's line by a tree without `limit`.
         $this->commit($repo, '0.2.0', ['my_cards' => []], message: 'revert');
         $this->commit($repo, '0.3.0', ['my_cards' => []]);
         $this->commit($repo, '0.4.0', ['my_cards' => ['limit']]);
@@ -399,6 +442,10 @@ class GenClientCapabilitiesTest extends TestCase
             'number toLocaleString' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: (1234.5).toLocaleString() } } } },\n];\n", 'toLocaleString is locale-dependent'],
             'string localeCompare' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: 'a'.localeCompare('b') } } } },\n];\n", 'localeCompare is locale-dependent'],
             'string toLocaleUpperCase' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: 'a'.toLocaleUpperCase() } } } },\n];\n", 'toLocaleUpperCase is locale-dependent'],
+            'string toLocaleLowerCase' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: 'I'.toLocaleLowerCase() } } } },\n];\n", 'toLocaleLowerCase is locale-dependent'],
+            'bigint toLocaleString' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: (12345n).toLocaleString() } } } },\n];\n", 'toLocaleString is locale-dependent'],
+            // String elements: a Number element would trip Number's guard and hide a missing Array one.
+            'array toLocaleString' => ["const TOOL_DEFINITIONS = [\n  { name: 'my_cards', inputSchema: { properties: { a: { d: ['a', 'b'].toLocaleString() } } } },\n];\n", 'toLocaleString is locale-dependent'],
         ];
     }
 

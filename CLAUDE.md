@@ -39,8 +39,10 @@ git fetch origin dev && node bin/gen-client-capabilities.mjs
                                                     # signal for "behind the real dev"; CI always has a live fetch, so
                                                     # `--check` there is authoritative regardless). --check is a step of
                                                     # the required SQLite job: 0 = current · 1 = stale · 2 = could not
-                                                    # measure (a shallow clone, a missing origin/dev, or a landed commit
-                                                    # it could not evaluate)
+                                                    # measure (a shallow clone, a missing origin/dev, a landed commit it
+                                                    # could not evaluate, or a version LOWER than one dev already
+                                                    # introduced — versions only move forward: undo a release with a
+                                                    # forward bump, never a revert; DL-425 Decision 1a)
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —
