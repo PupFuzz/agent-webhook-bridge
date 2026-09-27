@@ -274,9 +274,10 @@ for, and the old response gave no hint it was oversized or partial.
 - **A truncated window names its own remedy — `remedy`, present only when `truncated` is
   `true` (card#10150).** It is a sentence naming the argument that gets the rest, so a caller
   whose channel-server tool schema predates `stage` and `limit` can still act on a capped read
-  the same turn: those arguments are accepted from any snapshot (the channel server forwards
-  arguments verbatim), and only the tool description that advertises them is per-seat and
-  versioned. What it names depends on the list: your own lane, the shared lane and `tag_cards`
+  the same turn: the bridge accepts those arguments from any snapshot, and only the tool
+  description that advertises them is per-seat and versioned. Whether a client on an older
+  snapshot sends a key its own schema lacks is not measured (DL-426), which is why the clause
+  below names updating the client as the reliable fix. What it names depends on the list: your own lane, the shared lane and `tag_cards`
   name `stage` and `limit`; a list already narrowed by `stage` names `limit` alone;
   `coord_cards_window` names `limit` alone, because `stage` does not reach the coordination
   board. An untruncated window carries **no** `remedy` key — not a null one. ⚠ The sentence is

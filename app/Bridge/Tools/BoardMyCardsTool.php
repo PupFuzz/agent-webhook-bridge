@@ -929,13 +929,15 @@ final class BoardMyCardsTool implements Tool
      * advertised by the CHANNEL SERVER's tool description, a separately-versioned snapshot per
      * seat. A seat on a snapshot older than those arguments is still capped here — the cap is
      * enforced bridge-side for every caller — and was told `truncated: true` with nothing to do
-     * about it, although the arguments work from it (the channel server forwards args verbatim).
-     * A response body reaches every caller at every version.
+     * about it. The bridge accepts the arguments from any caller; whether an old client sends a
+     * key its own schema lacks is NOT measured (DL-426 residual). A response body reaches every
+     * caller at every version.
      *
      * ⭐ card#10566: the sentence goes through {@see RemedyText::advise()}, so a caller whose
      * client reports a version that does not declare `stage`/`limit` (or no usable version) is
-     * told that too, with each argument's type and that updating the client is the reliable fix — a caller told only "raise `limit`" by a schema-less
-     * client sends `"50"`. A client that declares both gets this sentence byte for byte.
+     * told that too, with each argument's type and that updating the client is the reliable
+     * fix — a caller told only "raise `limit`" by a schema-less client sends `"50"`. A client
+     * that declares both gets this sentence byte for byte.
      *
      * `$how` is built from {@see NARROW_WITH_STAGE} / {@see RAISE_LIMIT}, and the `limit` refusal
      * reads the first of them, so the two surfaces cannot name different escapes.

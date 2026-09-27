@@ -16,6 +16,7 @@ use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use Tests\Support\CallingSeatSeal;
 use Tests\TestCase;
@@ -211,7 +212,7 @@ class CapabilityAwareRemedyTest extends TestCase
 
         $this->assertTrue($window['truncated']);
         [$head, $clause] = self::splitAtClause((string) $window['remedy']);
-        $this->assertSame(self::TODAY_LANE_REMEDY, $head, 'the `stage`/`limit` escape must survive whole — the arguments work from this client');
+        $this->assertSame(self::TODAY_LANE_REMEDY, $head, 'the `stage`/`limit` escape must survive whole — the bridge accepts them from this client (whether it sends them is unmeasured, DL-426)');
         $this->assertStringContainsString('version 0.9.12', $clause);
         $this->assertStringContainsString('`limit` (an unquoted integer; first declared by client 0.9.16)', $clause);
         $this->assertStringContainsString('`stage` (an unquoted integer or a string; first declared by client 0.9.16)', $clause);
@@ -274,7 +275,43 @@ class CapabilityAwareRemedyTest extends TestCase
         }
     }
 
-    public function test_an_unreadable_capability_table_degrades_to_todays_text_not_a_failed_call(): void
+    /**
+     * r2-M1: the table fails to load INSIDE a real dispatch — `base_path()` re-pointed at a directory
+     * with no `resources/client-capabilities.json`, so `ClientCapabilities::bundled()` throws where
+     * the deploy would. The call keeps its status and today's bytes, and the broken deploy is logged.
+     * Each call is first made with the table present, so the clause the degrade drops is seen there.
+     */
+    public function test_an_unreadable_capability_table_degrades_a_real_dispatch_to_todays_text_not_a_failed_call(): void
+    {
+        Http::fake();
+        $calls = [[['limit' => '50'], null, self::TODAY_LIMIT_REFUSAL], [['limit' => '50'], '0.9.12', self::TODAY_LIMIT_REFUSAL], [['limit' => 5, 'lmit' => 5], '0.9.12', self::TODAY_UNDECLARED_REFUSAL]];
+        foreach ($calls as [$args, $version, $today]) {
+            $this->assertNotSame($today, $this->callTool('board_my_cards', $args, $version)->assertStatus(422)->json('error'), 'the control: with the table readable, this call carries a clause');
+        }
+
+        $base = $this->app->basePath();
+        $bare = $this->dir.'/bare-base';
+        File::ensureDirectoryExists($bare);
+        $this->assertFileDoesNotExist($bare.'/'.ClientCapabilities::TABLE);
+        Log::spy();
+        $this->app->setBasePath($bare);
+        $this->app->useStoragePath($base.'/storage');
+        try {
+            foreach ($calls as [$args, $version, $today]) {
+                $this->assertSame($today, $this->callTool('board_my_cards', $args, $version)->assertStatus(422)->json('error'), var_export($version, true));
+            }
+        } finally {
+            $this->app->setBasePath($base);
+            $this->app->useStoragePath($base.'/storage');
+        }
+
+        Log::shouldHaveReceived('warning')->times(count($calls))->withArgs(fn (string $message, array $context): bool => $message === 'agent-tools: client capability table unreadable; remedy text carries no client-version clause'
+            && str_contains((string) ($context['error'] ?? ''), ClientCapabilities::TABLE.' did not read'));
+        Http::assertNothingSent();
+    }
+
+    /** The unit half: `RemedyText` handed no table adds nothing, and handed one, adds the clause. */
+    public function test_remedy_text_adds_no_clause_when_handed_no_table(): void
     {
         $tool = (new BoardToolsRegistry)->resolve('board_my_cards');
         $this->assertNotNull($tool);

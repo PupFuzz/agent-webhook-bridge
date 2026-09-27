@@ -1955,7 +1955,8 @@ class AgentToolsCallTest extends TestCase
     /**
      * ⭐ THE CALLER THIS IS FOR HAS NO SCHEMA SAYING `stage` OR `limit` EXIST: a seat whose
      * channel-server snapshot predates those arguments is capped by the bridge all the same,
-     * and the arguments work from it — only the sentence naming them never reached it. The
+     * and the bridge accepts the arguments from it — only the sentence naming them never reached
+     * it (whether such a client sends a key its schema lacks is unmeasured: DL-426). The
      * response body is the one surface every caller reads, so the window names the arguments
      * itself, by their wire names, and names where a column id comes from.
      */
