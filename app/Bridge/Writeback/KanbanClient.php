@@ -454,13 +454,11 @@ final class KanbanClient
      * so every card on the board for the WHOLE walk is delivered exactly once. A card created during the
      * walk takes an id above the cursor and is not read — the answer a walk begun a moment earlier gives.
      *
-     * Two server properties carry that, both read in kanban's `TasksController::search`
-     * (`orderByDesc('id')` before `paginate()`) and `QueryParser::applyStructuredFilter` (the
-     * `^id(<=|>=|<|>|=)(\d+)$` arm → `where('id', …)`), and both CHECKED here where each is
-     * load-bearing, never assumed: a page the walk continues FROM must be in strictly descending id
-     * order among its keyable rows, its LAST row must be keyable (it is the next cursor), and every
-     * keyable row of a keyed page must lie below the cursor it asked for. A page breaking either throws {@see BoardReadRefused}.
-     * `docs/kanban-integration-contract.md` § 3 declares both as invariants the far end owns.
+     * The server properties that carry it were read in kanban's `TasksController::search`
+     * (`orderByDesc('id')` before `paginate()`), `QueryParser::applyStructuredFilter` (the
+     * `^id(<=|>=|<|>|=)(\d+)$` arm → `where('id', …)`) and its task resource (an integer `id` on every
+     * row). Each is CHECKED here where it is load-bearing, never assumed — see THE REFUSALS below.
+     * `docs/kanban-integration-contract.md` § 3 declares them as invariants the far end owns.
      *
      * ⛔ IT STOPS ONLY ON A SHORT OR EMPTY PAGE — never on `links.next`, `meta.last_page` or a count.
      * kanban's `paginate()` runs a COUNT and then a separate SELECT, with no transaction around them, so
@@ -480,9 +478,20 @@ final class KanbanClient
      * that is not truncated and delivered fewer distinct cards than that is not reported complete. It has
      * a benign cause the count cannot tell from a lost card — a card leaving the part not yet read — so
      * the walk runs ONCE more, from page 1, and only a second shortfall throws {@see BoardReadRefused}.
-     * What it catches that the two checks above cannot: a server that treated `id<C` as free text (a
+     * What it catches that the page checks cannot: a server that treated `id<C` as free text (a
      * keyed request then matches nothing and ends the walk on an empty page), and a later page whose body
      * carried no card collection. Where page 1 carries no readable `meta.total` there is no cross-check.
+     *
+     * ⛔ THE REFUSALS — THIS LIST IS THE ONE OWNER of what throws {@see BoardReadRefused} (each is a
+     * {@see refuseRead} call in {@see keyedWalk} or here; every other surface points at this list and
+     * must not restate or count it). A read is refused when:
+     *  - a FULL page's last row is not an array carrying an integer `id` — it is the next cursor, and a
+     *    cursor taken from an earlier row would make the next request deliver the rows after it again;
+     *  - a FULL page's keyable rows are not in strictly descending id order — its last row would not be
+     *    its lowest, and `id<` it would skip rows;
+     *  - a page after the first carries a keyable row at or above the cursor it asked for (`id<C`) —
+     *    the server did not apply the walk's key;
+     *  - two walks in a row fall short of their page 1 `meta.total` (THE TOTAL IS THE CROSS-CHECK, above).
      *
      * ⚠ A NULL `$read` IS A PURE WALK: a page whose body carries no card collection adds no rows and logs
      * nothing, and the signal is the caller's ({@see correlationCards}). A named `$read` reports each
