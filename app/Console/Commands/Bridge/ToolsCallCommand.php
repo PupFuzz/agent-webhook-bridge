@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\ClientUpdate\ClientUpdateDoor;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolDispatcher;
@@ -28,6 +29,10 @@ use App\Bridge\Tools\ToolsCallStdio;
  * sshd substitutes the forced command and puts the client's requested command in
  * SSH_ORIGINAL_COMMAND — which this command NEVER reads (identity is `--agent`,
  * action is STDIN, full stop).
+ *
+ * A STDIN body carrying `op` is not a tool call: it is a client-update request
+ * (`client_manifest` / `client_pack`), answered by {@see ClientUpdateDoor} after the same
+ * parse and the same agent checks, and never dispatched as a tool (DL-430).
  *
  * The STDIN request is `{tool, args?, client_version?}`. ⛔ The third key is an OPTIONAL
  * OBSERVATION and never part of what this door accepts (card#8974): the caller's own
@@ -65,7 +70,7 @@ class ToolsCallCommand extends BridgeCommand
 {
     protected $signature = 'bridge:tools-call {--agent= : the identity, forced from the pinned authorized_keys command (trusted; NOT read from the caller)}';
 
-    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?} from STDIN, write one JSON envelope to STDOUT (card 4952)';
+    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?} — or a client-update {op, …} (DL-430) — from STDIN, write one JSON envelope to STDOUT (card 4952)';
 
     /** Refuse a stdin flood: a booted Laravel process must not buffer unbounded input. */
     private const MAX_STDIN_BYTES = 65536;   // 64 KiB
@@ -73,7 +78,7 @@ class ToolsCallCommand extends BridgeCommand
     /** A client that opens the channel but never sends EOF must not pin the process. */
     private const STDIN_TIMEOUT_SECS = 30;
 
-    public function handle(BoardToolDispatcher $dispatcher, ToolsCallStdio $io, ServingProcessEnvironment $env): int
+    public function handle(BoardToolDispatcher $dispatcher, ClientUpdateDoor $clientUpdate, ToolsCallStdio $io, ServingProcessEnvironment $env): int
     {
         // Earliest userland point — keep any post-boot notice off fd 1 (the envelope
         // channel). Cannot cover a true startup error; the client parse is that guard.
@@ -123,6 +128,13 @@ class ToolsCallCommand extends BridgeCommand
         $decoded = ToolCallBody::parse($raw);
         if ($decoded instanceof DispatchOutcome) {
             return $this->emit($io, $decoded->body(), $decoded->exitCode());
+        }
+        // A body carrying `op` is a client-update request (DL-430), answered by the door the HTTP
+        // route `/agent-tools/client` also serves — never by the board-tools dispatcher.
+        if (array_key_exists('op', $decoded)) {
+            $outcome = $clientUpdate->handle($decoded, $agent->agentName, 'ssh');
+
+            return $this->emit($io, $outcome->body, $outcome->exitCode());
         }
         // A missing or non-string `tool` is the dispatcher's refusal, as it is for the HTTP door.
         $tool = $decoded['tool'] ?? null;

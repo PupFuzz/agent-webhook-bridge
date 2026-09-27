@@ -28,23 +28,29 @@ final class ToolCallBody
     /** The request shape every refusal here names, so a caller sees what WAS expected. */
     public const SHAPE = 'a JSON object {tool, args?, client_version?}';
 
+    /** The shape the client-update route (`/agent-tools/client`, DL-430) names in the same refusals. */
+    public const CLIENT_UPDATE_SHAPE = 'a JSON object {op, …}';
+
     /**
+     * @param  string  $shape  what the refusal says was expected — the caller's route decides it; the
+     *                         ssh door cannot tell a tool call from a client-update request in bytes
+     *                         that never parsed, so it names {@see SHAPE}
      * @return array<string, mixed>|DispatchOutcome the decoded object, or a 422 refusal
      */
-    public static function parse(string $raw): array|DispatchOutcome
+    public static function parse(string $raw, string $shape = self::SHAPE): array|DispatchOutcome
     {
         if (trim($raw) === '') {
-            return self::refuse('request body is empty');
+            return self::refuse('request body is empty', $shape);
         }
 
         try {
             $value = json_decode($raw, false, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
-            return self::refuse('request body is not valid JSON ('.$e->getMessage().')');
+            return self::refuse('request body is not valid JSON ('.$e->getMessage().')', $shape);
         }
 
         if (! $value instanceof stdClass) {
-            return self::refuse('request body is a JSON '.self::jsonType($value).', not an object');
+            return self::refuse('request body is a JSON '.self::jsonType($value).', not an object', $shape);
         }
 
         // Decoded a second time as an array because that is the shape every tool reads;
@@ -53,9 +59,9 @@ final class ToolCallBody
         return json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
     }
 
-    private static function refuse(string $what): DispatchOutcome
+    private static function refuse(string $what, string $shape): DispatchOutcome
     {
-        return DispatchOutcome::failure(422, $what.' — expected '.self::SHAPE);
+        return DispatchOutcome::failure(422, $what.' — expected '.$shape);
     }
 
     /**

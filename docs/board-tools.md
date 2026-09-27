@@ -1295,13 +1295,25 @@ A seat on a snapshot older than 0.9.8 gets the second message for **both** of th
 rows — see § Staying in sync in [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)
 for reading the deployed version.
 
+## The client-update door (DL-430)
+
+A seat's channel server will update itself from its own bridge at launch (card#10568). The bridge half of that is a separate door, **not a board tool**: `POST /agent-tools/client` behind the same loopback gate and bearer as `/agent-tools/call`, and, on the ssh transport, the same pinned `bridge:tools-call` forced command given a body carrying `op` instead of `tool`. Both transports answer the same bytes. It never goes through the board-tools dispatcher, so no tool refusal, board outage or client-version rule can stand between a seat and the pack that fixes it.
+
+It serves `client_manifest` (what this bridge publishes, and the release a seat should install) and `client_pack` (that release's pack, base64). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, both ops answer `503` and a seat keeps its installed client.
+
+⚠ **Not yet in this door:** the approval gate on the offer, the seat's install-log report and the fleet view. They arrive as new keys and ops; the keys above keep their meaning.
+
 ## How it is wired (operator view)
 
 There are **two front doors** into the same dispatch machinery, selected per agent
 by `board_tools.transport` (`http` | `ssh`, the default **since v0.68.0 / DL-225**;
 before v0.68.0 the default was `http`). Both resolve the caller's
 identity, then run the identical `BoardToolDispatcher` onto the shared least-privilege
-writeback client — so the response body is byte-identical whichever door served it.
+writeback client — so a TOOL CALL's response body is byte-identical whichever door served it.
+⚠ **Except a body carrying `op` (DL-430):** the ssh door answers it as a client-update request
+(see *The client-update door* above), while `POST /agent-tools/call` ignores the key and
+dispatches the body as a tool call. The client-update door has its own HTTP route; send `op`
+there, never to `/agent-tools/call`.
 
 > **⚠ Upgrading to v0.68.0:** the unset-`transport` default flipped `http` → `ssh`.
 > A block relying on the old implicit `http` default must set `transport: http`

@@ -6,6 +6,7 @@ use App\Bridge\Support\ForeignText;
 use App\Bridge\Support\ReceiverUrl;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Log;
+use UnexpectedValueException;
 
 /**
  * Read-only GitHub PR-state client for the reconciler (bridge:reconcile, DL-183).
@@ -425,6 +426,63 @@ final class GitHubReadClient
         }
 
         return $merged;
+    }
+
+    /**
+     * The assets of the published release tagged `$tag`, or null when GitHub answers 404 for that
+     * tag — no published release carries it, or this token cannot see the repo (GitHub answers
+     * both the same way). Read by `bridge:client-pack:install` (DL-430).
+     *
+     * ⛔ A 200 whose body carries no readable asset list THROWS rather than answering "no
+     * assets": the caller would otherwise report a release that carries no client pack, which is
+     * a claim about the release this read never established.
+     *
+     * @return ?list<array{id: int, name: string, size: int, digest: ?string}>
+     */
+    public function releaseAssets(string $repo, string $tag): ?array
+    {
+        $response = $this->http()->get(self::API_BASE."/repos/{$repo}/releases/tags/".rawurlencode($tag));
+        if ($response->status() === 404) {
+            return null;
+        }
+        $body = $response->throw()->json();
+        if (! is_array($body) || ! is_array($body['assets'] ?? null) || ! array_is_list($body['assets'])) {
+            throw new UnexpectedValueException("the release read for {$repo} {$tag} returned a 200 whose body carries no readable asset list; ".self::UNREADABLE_BODY_CAUSE);
+        }
+
+        $assets = [];
+        foreach ($body['assets'] as $asset) {
+            if (! is_array($asset) || ! is_int($asset['id'] ?? null) || ! is_string($asset['name'] ?? null) || ! is_int($asset['size'] ?? null)) {
+                throw new UnexpectedValueException("the release read for {$repo} {$tag} carries an asset without an integer id, a name and an integer size; ".self::UNREADABLE_BODY_CAUSE);
+            }
+            $assets[] = [
+                'id' => $asset['id'],
+                'name' => $asset['name'],
+                'size' => $asset['size'],
+                'digest' => is_string($asset['digest'] ?? null) ? $asset['digest'] : null,
+            ];
+        }
+
+        return $assets;
+    }
+
+    /**
+     * One release asset's bytes, by its id under `$repo`. The URL is built here from the repo and
+     * the id, never taken from a response body, so the token is sent only to the API base; GitHub
+     * redirects the download to its storage host, and the HTTP client drops the `Authorization`
+     * header on that cross-origin redirect.
+     *
+     * ⛔ `replaceHeaders`, NOT `accept()`: `accept()` APPENDS to the API's JSON `Accept`, and with
+     * both values GitHub answers the asset's JSON metadata instead of its bytes (measured against a
+     * live release, card#10567).
+     */
+    public function releaseAssetBytes(string $repo, int $assetId): string
+    {
+        return $this->http()
+            ->replaceHeaders(['Accept' => 'application/octet-stream'])
+            ->get(self::API_BASE."/repos/{$repo}/releases/assets/{$assetId}")
+            ->throw()
+            ->body();
     }
 
     /**

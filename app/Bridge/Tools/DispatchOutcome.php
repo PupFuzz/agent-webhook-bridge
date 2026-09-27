@@ -64,10 +64,16 @@ final class DispatchOutcome
      */
     public function exitCode(): int
     {
-        if ($this->ok) {
+        return self::exitCodeFor($this->ok, $this->status);
+    }
+
+    /** The one mapping from an outcome to the ssh door's exit code, for every outcome that door emits. */
+    public static function exitCodeFor(bool $ok, int $status): int
+    {
+        if ($ok) {
             return 0;
         }
 
-        return $this->status >= 500 ? 2 : 1;
+        return $status >= 500 ? 2 : 1;
     }
 }
