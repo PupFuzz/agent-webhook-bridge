@@ -81,6 +81,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Illuminate\Database\QueryException' => 'a PDO/driver error from this install\'s own database, with the SQL this app wrote',
         'JsonException' => 'PHP\'s own json_decode() diagnosis, from a fixed table (`Syntax error`, `Malformed UTF-8 characters, possibly incorrectly encoded`, `Control character error, …`, `Maximum stack depth exceeded`) — measured to carry none of the bytes it was decoding',
         'Symfony\Component\Yaml\Exception\ParseException' => 'the YAML parser\'s position and snippet of this install\'s own agent config file',
+        'UnexpectedValueException' => 'composed by ClientCapabilities from the checked-in resources/client-capabilities.json: a fixed phrase naming the table path or a field and the version string stored there (the one site catching it tries nothing else)',
     ];
 
     /**
@@ -125,6 +126,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardToolDispatcher.php::dispatch#3' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Tools/CallerClient.php::reporting#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/SeatKanbanUser.php::lookup#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/ToolCallBody.php::parse#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Writeback/GitHubWriteDebt.php::read#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

@@ -6,6 +6,7 @@ use App\Bridge\Tools\BoardCreateCardTool;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
+use App\Bridge\Tools\Tool;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\BundledChannelServer;
@@ -239,6 +240,49 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
                 $advertised,
                 "the channel server advertises {$tool}'s arguments as [".implode(', ', $advertised).'] but the bridge accepts ['.implode(', ', $accepted).'] — an advertised key the bridge does not accept is refused on a schema-valid call, and an accepted key the schema omits is undiscoverable',
             );
+        }
+    }
+
+    /**
+     * card#10566 / DL-426: each tool's {@see Tool::argumentTypes()} restates
+     * the channel server's `inputSchema` type for every property, because the gap clause tells a
+     * caller whose client does NOT carry that schema what to send. A drifted type would tell it
+     * the wrong one. Read from the same per-entry `properties` block as the key-set guard above,
+     * one property at a time (cut at the next key at eight spaces).
+     */
+    public function test_every_tool_states_the_argument_types_the_channel_server_advertises(): void
+    {
+        $src = BundledChannelServer::source();
+        $registry = new BoardToolsRegistry;
+
+        foreach ($registry->known() as $tool) {
+            $start = strpos($src, "\n    name: '{$tool}',\n");
+            $this->assertNotFalse($start, "the channel server no longer defines {$tool} at the entry indentation this test reads — re-anchor it");
+            $propsStart = strpos($src, "\n      properties: {\n", $start);
+            $this->assertNotFalse($propsStart);
+            $propsEnd = strpos($src, "\n      },\n", $propsStart);
+            $this->assertNotFalse($propsEnd);
+            $blocks = preg_split('/^ {8}(?=[A-Za-z_][A-Za-z0-9_]*: )/m', substr($src, $propsStart, $propsEnd - $propsStart));
+            $this->assertIsArray($blocks);
+
+            $advertised = [];
+            foreach (array_slice($blocks, 1) as $block) {
+                preg_match('/^([A-Za-z_][A-Za-z0-9_]*): /', $block, $key);
+                if (preg_match("/anyOf: \\[((?:\\{ type: '[a-z]+' \\},? ?)+)\\]/", $block, $any) === 1) {
+                    preg_match_all("/type: '([a-z]+)'/", $any[1], $types);
+                    $advertised[$key[1]] = implode('|', $types[1]);
+                } elseif (preg_match("/type: 'array'/", $block) === 1 && preg_match("/items: \\{ type: '([a-z]+)' \\}/", $block, $items) === 1) {
+                    $advertised[$key[1]] = $items[1].'[]';
+                } else {
+                    $this->assertSame(1, preg_match("/type: '([a-z]+)'/", $block, $type), "{$tool}.{$key[1]}: no `type:` this test can read — re-anchor it");
+                    $advertised[$key[1]] = $type[1];
+                }
+            }
+
+            $stated = $registry->resolve($tool)?->argumentTypes() ?? [];
+            ksort($advertised);
+            ksort($stated);
+            $this->assertSame($advertised, $stated, "{$tool}: the bridge states its argument types differently from the channel server's inputSchema — the gap clause would tell an old client to send the wrong type");
         }
     }
 

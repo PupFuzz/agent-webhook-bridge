@@ -59,10 +59,14 @@ use Illuminate\Support\Facades\Log;
  * having the shared body infer a door from `$cfg->transport`.
  *
  * ⭐ card#8974 THREADS A SECOND SUCH FACT — the CALLER's own snapshot version, which each
- * door reads out of its own request shape ({@see ClientVersion}) and which this class only
- * carries to the ledger. ⛔ It is an OBSERVATION and never a precondition: no branch here
- * reads it, no refusal turns on it, and a call that reports no version dispatches exactly
- * as one that reports a current one.
+ * door reads out of its own request shape ({@see ClientVersion}). ⛔ It is an OBSERVATION and
+ * never a precondition. Since card#10566 (DL-426, superseding this paragraph's earlier "no
+ * branch here reads it") the version is READ — for TEXT ONLY, never to refuse: it becomes a
+ * {@see CallerClient} the tool receives, and {@see RemedyText} uses it to tell a caller whose
+ * client is too old to have declared an argument that the argument still works. No refusal
+ * turns on it, no status changes with it, and a call that reports no version reaches exactly
+ * the outcome a call reporting a current one does — only the sentence explaining a refusal or
+ * a truncated list may differ.
  */
 final class BoardToolDispatcher
 {
@@ -124,7 +128,8 @@ final class BoardToolDispatcher
             return DispatchOutcome::failure(503, 'board tools are not fully configured on this bridge (writeback token)');
         }
 
-        $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs);
+        $caller = CallerClient::reporting($clientVersion);
+        $refusal = $this->undeclaredArgumentsRefusal($tool, $rawArgs, $caller);
         if ($refusal !== null) {
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
@@ -132,11 +137,13 @@ final class BoardToolDispatcher
         }
 
         try {
-            $result = $tool->call($rawArgs, $cfg, $client, $agentName);
+            $result = $tool->call($rawArgs, $cfg, $client, $agentName, $caller);
         } catch (ToolRefusalException $e) {
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $e->getMessage()]);
 
-            return DispatchOutcome::failure(422, $e->getMessage());
+            // card#10566 / DL-426: every tool refusal, in ONE place, rather than at each of the
+            // throw sites that name an argument — a refusal added later cannot ship without it.
+            return DispatchOutcome::failure(422, RemedyText::advise($caller, $tool, $e->getMessage()));
         } catch (RequestException $e) {
             // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
             // leak the upstream body.
@@ -174,16 +181,26 @@ final class BoardToolDispatcher
      * the 503 install fault first. Building the client sends no request, so the refusal still
      * precedes every board read and write.
      *
+     * ⭐ card#10566 — THE SAFETY NET. A call refused here may also carry ACCEPTED keys its client
+     * does not declare (an old client passing `limit` because a remedy told it to, beside a
+     * typo); the refusal ends with the gap clause, with type, for exactly those keys, so a
+     * caller with no schema learns the key it did get right is real. The accepted-set list is
+     * NOT fed to the clause: naming every argument a client lacks is the schema's job, and the
+     * clause is about what this call sent.
+     *
      * @param  array<array-key, mixed>  $args
      */
-    private function undeclaredArgumentsRefusal(Tool $tool, array $args): ?string
+    private function undeclaredArgumentsRefusal(Tool $tool, array $args, CallerClient $caller): ?string
     {
         $accepted = $tool->acceptedArguments();
         $reasons = [];
         $unknown = [];
+        $present = [];
         foreach (array_keys($args) as $key) {
             $key = (string) $key;
             if (in_array($key, $accepted, true)) {
+                $present[] = $key;
+
                 continue;
             }
             $reason = $tool->refusedArgumentReason($key);
@@ -206,6 +223,7 @@ final class BoardToolDispatcher
         $reasons = array_map(static fn (string $r, int $i): string => $i === 0 ? $r : ucfirst($r), $reasons, array_keys($reasons));
         $acceptedList = $accepted === [] ? 'no arguments' : implode(', ', array_map(static fn (string $k): string => "`{$k}`", $accepted));
 
-        return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written.";
+        return $tool->name().': '.implode(' ', $reasons)." This tool accepts: {$acceptedList}. Nothing was sent to the board — no card was read or written."
+            .RemedyText::gapClause($caller, $tool, $present);
     }
 }

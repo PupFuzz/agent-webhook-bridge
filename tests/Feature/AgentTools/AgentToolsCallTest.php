@@ -9,6 +9,7 @@ use App\Bridge\Tools\BoardMyCardsTool;
 use App\Bridge\Tools\BoardTakeCardTool;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ClientCapabilities;
 use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Http\Controllers\AgentTools\AgentToolsController;
@@ -2043,7 +2044,9 @@ class AgentToolsCallTest extends TestCase
         // the refusal's wording did not move when it was hoisted.
         Http::fake();
 
-        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 0]])->assertStatus(422);
+        // A client that declares `limit` and `stage`: an older one (or none) is told that as well,
+        // after this sentence — CapabilityAwareRemedyTest owns that half (card#10566).
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['limit' => 0], 'client_version' => ClientCapabilities::bundled()->currentClientVersion])->assertStatus(422);
 
         $this->assertStringEndsWith('Raising it raises the response size in proportion; narrow with `stage` instead where you can.', (string) $res->json('error'));
     }

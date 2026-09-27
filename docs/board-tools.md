@@ -50,7 +50,8 @@ The tools that ship today — the table is held against the bridge's own registr
 > accepted (as its trimmed self) over HTTP. **The same holds one level out, in the request
 > envelope rather than in `args`:** `TrimStrings` cleans the whole HTTP body, so a `tool`
 > key padded with a non-breaking space resolves over HTTP and is refused over ssh, and a
-> padded `client_version` is recorded over HTTP and dropped over ssh. Closing any of these
+> padded `client_version` is recorded over HTTP and dropped over ssh (so the DL-426 client-version
+> clause names it over HTTP and reads it as *no version* over ssh). Closing any of these
 > means making the ssh door accept input it refuses today, which is a separate change to
 > what the system accepts and is not made here. Nothing wrong is written in the meantime:
 > the strict door refuses. **The list is deliberately not presented as complete** — an
@@ -280,6 +281,20 @@ for, and the old response gave no hint it was oversized or partial.
   `coord_cards_window` names `limit` alone, because `stage` does not reach the coordination
   board. An untruncated window carries **no** `remedy` key — not a null one. ⚠ The sentence is
   for a reader; branch on `truncated`, never on the wording.
+- **A caller whose channel client is too old to have DECLARED an argument is told so
+  (card#10566 / DL-426).** When a `remedy`, a tool refusal or the unknown-argument refusal
+  names an argument the caller's reported `client_version` does not declare, the sentence is
+  kept whole and a clause is appended: the running version, the client version that first
+  declared the argument, and its type (`an unquoted integer`, `a string`, …) — ending that it
+  still works when passed, because the channel server forwards arguments verbatim. A caller
+  that reported **no** version (a client older than 0.9.15, or one that cannot read its own
+  `package.json`) is told the bridge cannot tell, for any argument newer than the tool itself.
+  A client that declares every argument named gets the sentence byte for byte; a reported
+  version the capability table cannot order (newer than this checkout records, or not bare
+  `X.Y.Z`) gets it unchanged too. ⛔ **Text only**: no status, refusal or accepted value moves
+  with the version. The unknown-argument refusal's clause covers the accepted keys the call
+  *sent*, not its whole accepted list. ⚠ That Claude Code forwards an argument missing from its
+  schema is inferred from the channel server's forwarding, not measured.
 - **Narrow with `stage` before you raise `limit`.** `stage` answers about one column, and
   `total` then reports **that column's** size. Raising `limit` grows the response in
   proportion to the cards it lets through; it is the deliberate escape hatch for a caller

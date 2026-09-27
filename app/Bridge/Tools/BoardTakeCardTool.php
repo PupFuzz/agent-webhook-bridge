@@ -165,6 +165,9 @@ final class BoardTakeCardTool implements Tool
      */
     private const OVERRIDE_ARGS = ['steal', 'force', 'override', 'unassign', 'release'];
 
+    /** Every argument this tool accepts, in the order the refusals list them, with its schema type ({@see Tool::argumentTypes()}). */
+    private const ARGUMENT_TYPES = ['card_id' => 'integer'];
+
     public function name(): string
     {
         return 'board_take_card';
@@ -177,7 +180,12 @@ final class BoardTakeCardTool implements Tool
      */
     public function acceptedArguments(): array
     {
-        return ['card_id'];
+        return array_keys(self::ARGUMENT_TYPES);
+    }
+
+    public function argumentTypes(): array
+    {
+        return self::ARGUMENT_TYPES;
     }
 
     public function refusedArgumentReason(string $key): string
@@ -194,7 +202,7 @@ final class BoardTakeCardTool implements Tool
         return "unknown argument `{$key}` — the assignee is resolved from your bridge identity, never from your arguments.";
     }
 
-    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
+    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array
     {
         // Arguments first, then identity, then the board — so a refused call reads
         // nothing and writes nothing, and an install fault is reported as itself rather

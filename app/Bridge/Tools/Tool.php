@@ -38,6 +38,17 @@ interface Tool
     public function acceptedArguments(): array;
 
     /**
+     * Each accepted argument's type, in {@see acceptedArguments} order: `integer`, `boolean`,
+     * `string`, `string[]` or `integer|string` — the reference channel server's `inputSchema`
+     * type for that property, held equal to it by `ChannelServerToolSurfaceRestatementTest`.
+     * Read by {@see RemedyText} only, to tell a caller whose client does not declare an argument
+     * what to pass; it never changes what the tool accepts.
+     *
+     * @return array<string, string>
+     */
+    public function argumentTypes(): array;
+
+    /**
      * Why `$key` — already known to be outside {@see acceptedArguments} — is refused, when the
      * tool has something more useful to tell the caller than that the key is unknown; null for
      * the dispatcher's generic wording. It changes the MESSAGE, never the outcome: the key is
@@ -53,10 +64,12 @@ interface Tool
      * the shared least-privilege writeback client (the kanban token never leaves
      * the bridge). Returns the JSON-serializable result the caller receives
      * verbatim. Throws {@see ToolRefusalException} on a
-     * caller-fixable bad request (422-class).
+     * caller-fixable bad request (422-class). `$caller` is the calling channel client as the
+     * door read it, for {@see RemedyText} — TEXT ONLY: no tool may refuse, accept or reshape a
+     * call on it (DL-426).
      *
      * @param  array<string, mixed>  $args
      * @return array<string, mixed>
      */
-    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array;
+    public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName, CallerClient $caller): array;
 }
