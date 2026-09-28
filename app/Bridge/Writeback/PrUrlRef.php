@@ -70,11 +70,13 @@ final class PrUrlRef
             return null;
         }
 
-        // ONE match gives both halves (card#10735): {@see PATTERN} selects the same first match
-        // `repoFromGitHubUrl` takes the repo from. The segment is compared case-sensitively, as
+        // ONE match gives both halves (card#10735). The segment is compared case-sensitively, as
         // the number always was: `.../PULL/179` names no pull request.
-        $repo = $refs->repoFromGitHubUrl($url);
-        if ($repo === null || preg_match(self::PATTERN, $url, $m) !== 1 || $m[2] !== 'pull' || $m[3] === '') {
+        if (preg_match(self::PATTERN, $url, $m) !== 1 || $m[2] !== 'pull' || $m[3] === '') {
+            return null;
+        }
+        $repo = $refs->canonicalizeSource($m[1]);
+        if ($repo === null) {
             return null;
         }
 

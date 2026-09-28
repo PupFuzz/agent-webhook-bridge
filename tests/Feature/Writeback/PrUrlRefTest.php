@@ -53,6 +53,7 @@ class PrUrlRefTest extends TestCase
             // Classifies differently from before card#10735: the number used to be the first
             // `/pull/<digits>` anywhere, here the non-GitHub URL's 7.
             'a non-GitHub /pull/ before the GitHub URL' => ['https://example.com/pull/7 https://github.com/o/r/pull/9', 'o/r', 9],
+            'a non-GitHub owner/repo/pull/ before the GitHub URL' => ['https://example.com/x/pull/9 https://github.com/acme/widget/pull/179', 'acme/widget', 179],
         ];
     }
 
