@@ -75,10 +75,20 @@ class WritebackSourceCoverageCheckTest extends TestCase
     /**
      * card#10734: with no `pr_number` the `.../pull/0` placeholder is still the remedy — it
      * names a repo and no pull request, and there is no number on the card for a URL to name.
+     * A stored blank is no `pr_number` too.
+     *
+     * @return array<string, array{array<string, mixed>}>
      */
-    public function test_a_source_less_card_holding_no_pr_number_is_told_to_stamp_the_placeholder(): void
+    public static function noPrNumber(): array
     {
-        $this->fakeBoard(self::BOARD, [$this->dlCard(1, [])]);
+        return ['key absent' => [[]], 'blank string' => [['pr_number' => '']]];
+    }
+
+    /** @param array<string, mixed> $payload */
+    #[DataProvider('noPrNumber')]
+    public function test_a_source_less_card_holding_no_pr_number_is_told_to_stamp_the_placeholder(array $payload): void
+    {
+        $this->fakeBoard(self::BOARD, [$this->dlCard(1, $payload)]);
 
         $findings = $this->findings($this->sharedBoardMappings());
 

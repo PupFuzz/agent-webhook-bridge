@@ -10,7 +10,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
-- **card#10734** — **`bridge:check`'s `writeback.source_coverage` warning for a source-less DL card on a shared board now names a remedy kbcard accepts for that card.** It used to advise the `.../pull/0` placeholder for every card, and kbcard (toolkit v0.38.0) refuses that write on a card holding a `pr_number`, rc 2 with nothing written. The remedy now depends on the card's `pr_number`, normalised as `BareRefNumber::canonical` normalises it:
+- **card#10734** — **`bridge:check`'s `writeback.source_coverage` warning for a source-less DL card on a shared board now names a remedy kbcard accepts for that card.** It used to advise the `.../pull/0` placeholder for every card, and kbcard (toolkit v0.38.0) refuses that write on a card holding a `pr_number` that names a positive number, rc 2 with nothing written. The remedy now depends on the card's `pr_number`, normalised as `BareRefNumber::canonical` normalises it:
   - **none** — unchanged: `Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).`
   - **a pull-request number N** (`'085'` and `85` are both 85) — `It holds pr_number N, so stamp the pr_url naming that pull request with it (kbcard patch --task <id> --pr N --pr-url https://github.com/<owner>/<repo>/pull/N).`
   - **a value naming no pull request** (`PR 12 of 34`, `#148`, `0`, `-5`) — `Its pr_number is not a pull-request number, so correct both refs (kbcard patch --task <id> --pr <number> --pr-url https://github.com/<owner>/<repo>/pull/<number>).` kbcard reads `#148` as 148 and refuses the placeholder over it, so the placeholder is not advised here either.
