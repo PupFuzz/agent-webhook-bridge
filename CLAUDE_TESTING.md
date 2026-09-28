@@ -360,6 +360,16 @@ plain `git merge` in a fixture *does* fast-forward there, and the resulting one-
 a tree GitHub would never hand a gate — so a fixture without `--no-ff` tests a shape that does not
 exist, and the script refuses it, correctly.
 
+## The seat updater's suite (card#10568, DL-434)
+
+`examples/channel-servers/tests/client-update.test.mjs` runs the REAL `entry.mjs`, `client-update.mjs` and `channel-lib.mjs` against a local fixture bridge (`tests/client-update-fixture.mjs`), in a real seat root per test.
+
+- **Packs are built in the fixture, not by `bin/build-client-pack.py`**: the refusal cases need packs that builder never produces (a symlink, `../x`, a FILES.json that lies). The good pack has the builder's layout and manifest format; `bin/test_build_client_pack.py` holds the builder to that format. The channel server inside a fixture pack is a stub that records which release started — except in the one case that roots the seat under `tests/.client-root-*` and ships the REAL server, whose bare `@modelcontextprotocol/sdk` import then resolves through the package's own `node_modules`.
+- **Every failure case asserts the same four things**: the installed release still starts, `versions/` and `current.json` are byte-unchanged, `state.json` names the failure, and the install log (and the fixture's received report) carries it.
+- **`launch()` deletes `launch.json` first**: every launch is spawned by the one test process, which the session guard would rightly read as the same live parent. The guard has its own cases with explicit records (`{reconnect: true}`).
+- **Crash hooks** (`AWB_CLIENT_CRASH_AT=after-extract|before-rename|after-rename|after-pointer|budget-exceeded`) kill or hang the updater at a named point; the lock a killed launch leaves is back-dated, not waited out.
+- **The `client-update-windows` job** in `channel-server-supply-chain.yml` runs this file on `windows-latest`. It is not a required check, and a green run is not Windows validation of the seat (a real Claude Code session on Windows) — see card#10568.
+
 ## The channel-server live-state sandbox (DL-269)
 
 `examples/channel-servers/tests/` spawns the REAL channel server, and the server's

@@ -1,2 +1,6 @@
 # `npm ci` installs here; the committed package-lock.json is the source of truth.
 node_modules/
+
+# client-update.test.mjs roots a fixture seat here, so the real server resolves ../node_modules;
+# removed by the test, and ignored if a killed run leaves one.
+tests/.client-root-*/

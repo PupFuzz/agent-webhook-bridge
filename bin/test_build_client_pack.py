@@ -38,6 +38,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -152,6 +153,8 @@ class Fixture:
         self.write("bin/not-a-seat-tool.py", "#!/usr/bin/env python3\n", 0o755)
         self.write("examples/channel-servers/agent-webhook-bridge-channel.mjs", "#!/usr/bin/env node\n", 0o755)
         self.write("examples/channel-servers/channel-lib.mjs", "export const x = 1;\n")
+        self.write("examples/channel-servers/entry.mjs", "#!/usr/bin/env node\n", 0o755)
+        self.write("examples/channel-servers/client-update.mjs", "#!/usr/bin/env node\n", 0o755)
         self.write("examples/channel-servers/tests/some.test.mjs", "// never shipped\n")
         self.channel()
 
@@ -304,6 +307,8 @@ class PackFromTag(unittest.TestCase):
                 "FILES.json",
                 "client/agent-webhook-bridge-channel.mjs",
                 "client/channel-lib.mjs",
+                "client/client-update.mjs",
+                "client/entry.mjs",
                 "client/node_modules/tiny/bin/tiny.js",
                 "client/node_modules/tiny/lib.js",
                 "client/node_modules/tiny/package.json",
@@ -317,6 +322,8 @@ class PackFromTag(unittest.TestCase):
     def test_entries_are_regular_files_with_fixed_metadata_and_declared_modes(self):
         executable = {
             "client/agent-webhook-bridge-channel.mjs",
+            "client/client-update.mjs",
+            "client/entry.mjs",
             "client/node_modules/tiny/bin/tiny.js",
             "seat-tools/bin/check-channel-snapshot.py",
         }
@@ -440,6 +447,28 @@ class Refusals(unittest.TestCase):
         _git(self.fx.repo, "update-index", "--add", "--cacheinfo", f"160000,{head},examples/channel-servers/vendored")
         _git(self.fx.repo, "commit", "-q", "-m", "a gitlink under the channel dir")
         self.assert_refused("is git mode 160000", commit=False)
+
+    def test_no_entry_point(self):
+        os.unlink(os.path.join(self.fx.repo, "examples/channel-servers/entry.mjs"))
+        self.assert_refused("entry.mjs is not tracked")
+
+    def test_no_updater(self):
+        os.unlink(os.path.join(self.fx.repo, "examples/channel-servers/client-update.mjs"))
+        self.assert_refused("client-update.mjs is not tracked")
+
+    def test_no_server(self):
+        os.unlink(os.path.join(self.fx.repo, "examples/channel-servers/agent-webhook-bridge-channel.mjs"))
+        self.assert_refused("agent-webhook-bridge-channel.mjs is not tracked")
+
+    def test_the_required_files_are_the_ones_the_seat_updater_requires(self):
+        # Two lists of one set, in two languages: the builder refuses what a seat would refuse.
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "channel-servers", "client-update.mjs"), encoding="utf-8") as fh:
+            source = fh.read()
+        match = re.search(r"const REQUIRED_ENTRIES = \[(.*?)\];", source)
+        self.assertIsNotNone(match, "client-update.mjs no longer declares REQUIRED_ENTRIES")
+        declared = set(re.findall(r"'client/([^']+)'|`client/\$\{(\w+)\}`", match.group(1)))
+        names = {literal or {"UPDATER_FILE": "client-update.mjs", "SERVER_FILE": "agent-webhook-bridge-channel.mjs"}[const] for literal, const in declared}
+        self.assertEqual(names - {"package.json"}, set(bcp.REQUIRED_CLIENT_FILES))
 
     def test_no_tracked_channel_server_files(self):
         shutil.rmtree(os.path.join(self.fx.repo, "examples"))

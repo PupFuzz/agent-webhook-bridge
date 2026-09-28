@@ -1,0 +1,19 @@
+{
+  "$comment": "THE SHARED VERSION-COMPARATOR VECTORS (DL-229; joined by the seat updater, card#10568). One table, read by all three implementations of one ordering: bin/provision-board-tools.py `_version_tuple` (the declared authority; bin/test_provision_board_tools.py VersionComparatorLockstep), App\\Bridge\\Support\\ChannelSnapshotManifest::compareVersions (tests/Unit/Support/ChannelSnapshotManifestTest.php), and examples/channel-servers/entry.mjs compareReleases (examples/channel-servers/tests/client-update.test.mjs). Each row is [a, b, sign of compare(a, b)]; every reader also asserts the reverse pair. `php_version_compare_diverges` marks the rows where PHP's version_compare() disagrees (it honours pre-release/build tags the tuple drops), which is why the PHP side may not use it. Edit a row here and all three suites hold it; there is no second copy to re-sync.",
+  "vectors": [
+    ["0.8.0", "0.8.0", 0],
+    ["0.8.0-rc1", "0.8.0", 0],
+    ["0.8", "0.8.0", -1],
+    ["0.10.0", "0.9.0", 1],
+    ["0.8.0", "0.8.0+build5", 0],
+    ["1.0.0-alpha", "1.0.0", 0],
+    ["", "0.8.0", -1],
+    ["1.0.0", "0.91.0", 1],
+    ["0.91.0", "0.90.9", 1]
+  ],
+  "php_version_compare_diverges": [
+    ["0.8.0-rc1", "0.8.0"],
+    ["0.8.0", "0.8.0+build5"],
+    ["1.0.0-alpha", "1.0.0"]
+  ]
+}
