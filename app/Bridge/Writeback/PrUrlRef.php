@@ -15,8 +15,9 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  * is `pull` followed by digits. The
  * number used to be the first `/pull/<digits>` ANYWHERE in the value, so
  * `…/a/x/issues/5 …/b/y/pull/179` read as `a/x#179`, a pull request neither URL names, and
- * `…/o/r/tree/main/pull/179` as `o/r#179`. The toolkit's `KB_JQ_PR_URL_REF` mirrors this
- * rule (card#10736).
+ * `…/o/r/tree/main/pull/179` as `o/r#179`. The rule is published as
+ * `docs/pr-url-ref-parity-corpus.json`, which the toolkit vendors for its own copy of it
+ * (card#10736).
  *
  * Extracted rather than copied (canon #5, and the same move `pr_number` already made onto
  * {@see CardTokenCorroboration::tracksPr}): a `pr_url` is the one correlation ref whose

@@ -15,8 +15,10 @@ use Tests\TestCase;
  * {@see ExternalReferenceNormalizer::repoFromGitHubUrl} reads the repo from. It names a pull
  * request only when that URL's own segment is `pull` followed by digits.
  *
- * The toolkit's `KB_JQ_PR_URL_REF` mirrors this rule (card#10736); these two corpora are the
- * ones its side mirrors, so an edit to either list is an edit to both.
+ * The corpus is PUBLISHED, not written here: both data providers read
+ * `docs/pr-url-ref-parity-corpus.json`, the file the toolkit vendors for its own copy of the
+ * rule (card#10736), so what the bridge tests and what it publishes are one file. This test
+ * checks only the bridge's half; the corpus's `not_checked_by_this_repo` names the rest.
  */
 class PrUrlRefTest extends TestCase
 {
@@ -28,33 +30,23 @@ class PrUrlRefTest extends TestCase
         $this->refs = new ExternalReferenceNormalizer;
     }
 
+    private const CORPUS = 'docs/pr-url-ref-parity-corpus.json';
+
     /**
-     * The spellings of one pull request that are accepted, before and after card#10735.
+     * The published vectors whose `expect` names a pull request.
      *
      * @return array<string, array{string, string, int}>
      */
     public static function namesAPullRequest(): array
     {
-        return [
-            'plain' => ['https://github.com/owner/repo/pull/179', 'owner/repo', 179],
-            'owner and repo case' => ['https://github.com/Owner/Repo/pull/179', 'owner/repo', 179],
-            'host case' => ['https://GitHub.com/owner/repo/pull/179', 'owner/repo', 179],
-            '.git' => ['https://github.com/owner/repo.git/pull/179', 'owner/repo', 179],
-            '.GIT' => ['https://github.com/owner/repo.GIT/pull/179', 'owner/repo', 179],
-            'trailing /files' => ['https://github.com/owner/repo/pull/179/files', 'owner/repo', 179],
-            'trailing /commits/<sha>' => ['https://github.com/owner/repo/pull/179/commits/abc123', 'owner/repo', 179],
-            'trailing #discussion_r' => ['https://github.com/owner/repo/pull/179#discussion_r123456', 'owner/repo', 179],
-            'www.' => ['https://www.github.com/owner/repo/pull/179', 'owner/repo', 179],
-            'http' => ['http://github.com/owner/repo/pull/179', 'owner/repo', 179],
-            'leading zero' => ['https://github.com/owner/repo/pull/0179', 'owner/repo', 179],
-            'text before the URL' => ['PR: https://github.com/owner/repo/pull/179', 'owner/repo', 179],
-            'a second pull URL after the first' => ['https://github.com/a/x/pull/5 https://github.com/b/y/pull/179', 'a/x', 5],
-            'placeholder' => ['https://github.com/owner/repo/pull/0', 'owner/repo', 0],
-            // Classifies differently from before card#10735: the number used to be the first
-            // `/pull/<digits>` anywhere, here the non-GitHub URL's 7.
-            'a non-GitHub /pull/ before the GitHub URL' => ['https://example.com/pull/7 https://github.com/o/r/pull/9', 'o/r', 9],
-            'a non-GitHub owner/repo/pull/ before the GitHub URL' => ['https://example.com/x/pull/9 https://github.com/acme/widget/pull/179', 'acme/widget', 179],
-        ];
+        $rows = [];
+        foreach (self::vectors() as $name => $v) {
+            if ($v['expect'] !== null) {
+                $rows[$name] = [$v['input'], $v['expect']['repo'], $v['expect']['number']];
+            }
+        }
+
+        return $rows;
     }
 
     #[DataProvider('namesAPullRequest')]
@@ -68,33 +60,57 @@ class PrUrlRefTest extends TestCase
     }
 
     /**
-     * Values naming no pull request. The first group classified differently before
-     * card#10735, when the repo came from the first GitHub URL and the number from the first
-     * `/pull/<digits>` anywhere in the value, so the two could come from different URLs.
+     * The published vectors whose `expect` is null: values naming no pull request.
      *
      * @return array<string, array{mixed}>
      */
     public static function namesNoPullRequest(): array
     {
-        return [
-            // Before card#10735 each of these named a pull request.
-            'issue URL then another repo\'s pull URL' => ['https://github.com/a/x/issues/5 https://github.com/b/y/pull/179'],
-            '/tree/main/pull/179' => ['https://github.com/o/r/tree/main/pull/179'],
-            '/blob/main/pull/179' => ['https://github.com/o/r/blob/main/pull/179'],
-            '/commit/<sha>/pull/179' => ['https://github.com/o/r/commit/abc123/pull/179'],
-            'numberless pull URL then a numbered one' => ['https://github.com/o/r/pull/ https://github.com/o/r/pull/5'],
-            'upper-case PULL URL then a lower-case one' => ['https://github.com/o/r/PULL/1 https://github.com/o/r/pull/5'],
-            // These named none before either.
-            'issue URL' => ['https://github.com/o/r/issues/179'],
-            'upper-case PULL' => ['https://github.com/o/r/PULL/179'],
-            'pull with no digits' => ['https://github.com/o/r/pull/abc'],
-            'bare repo URL' => ['https://github.com/o/r'],
-            'not GitHub' => ['https://gitlab.com/o/r/pull/179'],
-            'free text' => ['see the linked PR'],
-            'empty' => [''],
-            'null' => [null],
-            'a number' => [179],
-        ];
+        $rows = [];
+        foreach (self::vectors() as $name => $v) {
+            if ($v['expect'] === null) {
+                $rows[$name] = [$v['input']];
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * The corpus's vectors keyed by their input, so a failing data set names the value.
+     *
+     * @return array<string, array{input: mixed, expect: array{repo: string, number: int, names_pr: bool}|null}>
+     */
+    private static function vectors(): array
+    {
+        $doc = json_decode((string) file_get_contents(dirname(__DIR__, 3).'/'.self::CORPUS), true, flags: JSON_THROW_ON_ERROR);
+        $rows = [];
+        foreach ($doc['vectors'] as $v) {
+            $rows[json_encode($v['input'], JSON_UNESCAPED_SLASHES)] = $v;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * `names_pr` is published beside the number, so it is held to `namesPr()` rather than
+     * left as a claim only the far end reads; and the file is the one its own `corpus` key
+     * names, with a vector on each side of the rule.
+     */
+    public function test_the_published_corpus_is_the_one_this_test_reads_and_its_names_pr_holds(): void
+    {
+        $doc = json_decode((string) file_get_contents(dirname(__DIR__, 3).'/'.self::CORPUS), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(self::CORPUS, $doc['authority']['corpus']);
+        $this->assertSame(PrUrlRef::class, $doc['authority']['class']);
+        $this->assertSame(count($doc['vectors']), count(self::vectors()), 'two vectors share an input, so one of them is never run');
+        $this->assertNotSame([], self::namesAPullRequest());
+        $this->assertNotSame([], self::namesNoPullRequest());
+
+        foreach (self::vectors() as $name => $v) {
+            if ($v['expect'] !== null) {
+                $this->assertSame($v['expect']['names_pr'], PrUrlRef::parse($v['input'], $this->refs)?->namesPr(), $name);
+            }
+        }
     }
 
     #[DataProvider('namesNoPullRequest')]
