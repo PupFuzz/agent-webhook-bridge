@@ -17,6 +17,15 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - The toolkit's copies of the rule move in the same release pair (card#10736).
   - **No migration, no config key, no `.env` change, no route change, no token-scope change, no new `bridge:check` leg**; `--format=json` `schema` stays **1**.
 
+### Fixed
+
+- **card#10734** — **`bridge:check`'s `writeback.source_coverage` warning for a source-less DL card on a shared board now names a remedy kbcard accepts for that card.** It used to advise the `.../pull/0` placeholder for every card, and kbcard (toolkit v0.38.0) refuses that write on a card holding a `pr_number` that names a positive number, rc 2 with nothing written. The remedy now depends on the card's `pr_number`, normalised as `BareRefNumber::canonical` normalises it:
+  - **none** — unchanged: `Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).`
+  - **a pull-request number N** (`'085'` and `85` are both 85) — `It holds pr_number N, so stamp the pr_url naming that pull request with it (kbcard patch --task <id> --pr N --pr-url https://github.com/<owner>/<repo>/pull/N).`
+  - **a value naming no pull request** (`PR 12 of 34`, `#148`, `0`, `-5`) — `Its pr_number is not a pull-request number, so correct both refs (kbcard patch --task <id> --pr <number> --pr-url https://github.com/<owner>/<repo>/pull/<number>).` kbcard reads `#148` as 148 and refuses the placeholder over it, so the placeholder is not advised here either.
+  - ⚠ **Operator-facing wording changed** on that warning's last sentence only. Severity, the rest of the message, the check id and the exit code are unchanged. No other bridge remedy advises `.../pull/0`.
+  - **No migration, no config key, no `.env` change, no route change, no token-scope change**; `--format=json` `schema` stays **1**.
+
 ### Upgrade warnings
 
 - **card#10735 / DL-431 — these `pr_url` values classify differently.** Exactly the values where the first `/pull/<digits>` is not the one directly after the first GitHub URL's `owner/repo`. The full published corpus, with each value's old reading, is `docs/pr-url-ref-parity-corpus.json`. Examples, not a complete list:
