@@ -1000,7 +1000,8 @@ function settleRoot(ctx, release) {
   // The tool list comes from the verified FILES.json listing, never a directory read (design
   // review rule 6), at the REQUIRED scope a launch already pays — the listing is checked against
   // `.verified` at that scope; the full scope is for commitInstall and importFailure only. When
-  // the release does not classify `ok`, every existing shim is left untouched.
+  // the release does not classify `ok` (only if it was damaged after the launch's own resolve), no
+  // shim is touched — untested, since a launch reaches here only with a release it just found `ok`.
   const classified = classifyRelease(root, release, 'required');
   if (classified.status !== 'ok') {
     ctx.say(`seat-tool shims not updated: release ${release} is not intact (${classified.status === 'bad' ? classified.message : `${release} is not a valid X.Y.Z`})`);

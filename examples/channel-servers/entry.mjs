@@ -27,8 +27,8 @@
 //      installed release still starts. Under its lock the updater re-resolves step 1 itself and
 //      repoints `current.json` to what THAT resolve selects whenever it names anything else.
 //   3. IMPORT the release step 1's resolution picks (re-run after step 2); current.json names it
-//      once the update reaches recoverRoot — a reconnect, a held lock, an invalid budget or a
-//      failed pointer write leave current.json naming another release, so a seat-tool shim can run
+//      once the update reaches recoverRoot — anything that stops the update short of it (e.g. a reconnect, a held lock, an invalid budget or a
+//      failed pointer write) leaves current.json naming another release, so a seat-tool shim can run
 //      from a different release than the server until the next update reaches recoverRoot.
 //      AWB_CLIENT_ROOT, AWB_LAUNCH_ID and AWB_BRIDGE_RELEASE are set to what is imported. An import
 //      that throws does not try another release (DL-434 bound 4): it is not started (step 5),
