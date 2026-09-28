@@ -219,11 +219,21 @@ export function sshRoundTrip({ target, key = '', port = '', input, deadlineMs, s
   });
 }
 
+// `err.message`, with `err.cause`'s own message appended when present. `fetch` with
+// `redirect: 'error'` rejects a redirect with a generic `TypeError: fetch failed` — the actual
+// reason ("unexpected redirect") is on `.cause`, one level down, and is lost if a caller reads
+// only `.message` (review r2 minor 5).
+export function errorDetail(err) {
+  const message = err && err.message ? err.message : String(err);
+  const cause = err && err.cause && err.cause.message ? err.cause.message : null;
+  return cause ? `${message}: ${cause}` : message;
+}
+
 // One HTTP POST to a bridge door with the agent's bearer. Resolves {status, ok, text}; REJECTS
 // when no response arrived (connection refused, DNS, an abort through `signal`) and when the
 // answer is a REDIRECT — a bearer call is never re-sent elsewhere (DL-217: the doors are
 // loopback, and a redirect off them would carry the bearer to wherever it points). The caller
-// words that failure — the two callers say different things about it.
+// words that failure with {@see errorDetail} — the two callers say different things around it.
 export async function httpRoundTrip({ url, token, body, signal }) {
   const res = await fetch(url, {
     method: 'POST',
@@ -299,7 +309,13 @@ function updateStateLine(state, { launchId, root }) {
         `CLIENT UPDATE FAILED (${state.error || 'no reason recorded'}): this seat runs channel-server release ${running}` +
         (state.published && state.published !== state.running ? `; published release ${state.published} was not applied` : '') +
         `. Tell your operator; the install log is ${log}. ` +
-        'The update is tried again at the next launch; an updater that fails at every launch is replaced when the bridge publishes a newer release.'
+        'The update is tried again at the next launch' +
+        // review r2 minor 4: an installed updater that cannot even run is not fixed by a newer
+        // published release — it can never run to fetch one. Only a failure caused by what was
+        // OFFERED (a refused pack, an unreachable bridge, a slow budget) self-heals that way.
+        (state.updater_broken
+          ? "; the installed updater itself cannot run, so re-bootstrap this seat's client from the bridge's published pack."
+          : '; it succeeds once the bridge publishes a release this seat accepts.')
       );
     default:
       return (

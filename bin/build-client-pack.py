@@ -96,7 +96,7 @@ EXCLUDED_CHANNEL_SUBTREES = ("tests/",)
 # The files a seat refuses a pack without and will not start a release without
 # (`REQUIRED_CLIENT_FILES` in examples/channel-servers/entry.mjs, minus package.json, which
 # client_metadata already requires). bin/test_build_client_pack.py holds the two lists equal.
-REQUIRED_CLIENT_FILES = ("entry.mjs", "client-update.mjs", "agent-webhook-bridge-channel.mjs")
+REQUIRED_CLIENT_FILES = ("entry.mjs", "client-update.mjs", "agent-webhook-bridge-channel.mjs", "channel-lib.mjs")
 SEAT_TOOLS_MANIFEST = "seat-tools.json"
 REGULAR_MODES = {"100644": 0o644, "100755": 0o755}
 LOCKFILE_REFUSED_KEYS = ("hasInstallScript", "os", "cpu")

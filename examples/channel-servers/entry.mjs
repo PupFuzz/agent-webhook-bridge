@@ -67,7 +67,7 @@ export const UPDATER_FILE = 'client-update.mjs';
  * `bin/build-client-pack.py` refuses to build a tree without them (bin/test_build_client_pack.py
  * holds its list equal to this one).
  */
-export const REQUIRED_CLIENT_FILES = ['entry.mjs', 'client-update.mjs', 'agent-webhook-bridge-channel.mjs', 'package.json'];
+export const REQUIRED_CLIENT_FILES = ['entry.mjs', 'client-update.mjs', 'agent-webhook-bridge-channel.mjs', 'channel-lib.mjs', 'package.json'];
 export const DEFAULT_BUDGET_MS = 20000;
 
 /**
@@ -200,49 +200,93 @@ function sha256Of(bytes) {
 }
 
 /**
- * Why a verified release cannot be trusted to start, or null when it can: its FILES.json must hash
- * to what `.verified` recorded, and every REQUIRED_CLIENT_FILES entry must match its FILES.json
- * line. This is what a power cut after the install leaves detectable — the staged files are not
- * fsynced one by one (DL-434 bound), so on ext4 a switched pointer can name files the kernel never
- * wrote. Only the required files are hashed, not the whole tree: a damaged dependency is still
- * caught by the import, loudly.
+ * `null` when `filePath` (a path FILES.json lists, e.g. `client/entry.mjs`) matches on disk,
+ * otherwise `{reason, established}`. `established` is false for a read fault that is not ENOENT —
+ * a permission or I/O error says nothing about whether the file is actually damaged (review r2
+ * minor 2): the caller must read that as "could not confirm", never as proven damage.
  */
-export function releaseDamage(root, release) {
-  const record = verifiedRecord(root, release);
-  if (record === null) {
-    return 'it has no readable .verified record';
+function fileDamage(dir, lines, filePath) {
+  let bytes;
+  try {
+    bytes = fs.readFileSync(path.join(dir, filePath));
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { reason: `${filePath} is missing`, established: true };
+    }
+    return { reason: `${filePath} could not be checked (${err && err.code ? err.code : err})`, established: false };
   }
+  const line = lines.get(filePath);
+  if (!line || line.size !== bytes.length || line.sha256 !== sha256Of(bytes)) {
+    return { reason: `${filePath} does not match its FILES.json line`, established: true };
+  }
+  return null;
+}
+
+/**
+ * `null` when every one of `paths` (FILES.json-listed paths under `versions/<release>`) matches,
+ * otherwise `{reason, established}` for the first that does not. Assumes the caller already knows
+ * `release` has a readable `.verified` record — every caller checks `verifiedRecord` itself first,
+ * so that branch would be dead code here (review r2 minor 3).
+ */
+function treeDamage(root, release, paths) {
+  const record = verifiedRecord(root, release);
   const dir = path.join(root, 'versions', release);
   let listing;
   try {
     const bytes = fs.readFileSync(path.join(dir, 'FILES.json'));
     if (sha256Of(bytes) !== record.filesJsonSha256) {
-      return 'its FILES.json does not hash to the digest it was installed with';
+      return { reason: 'its FILES.json does not hash to the digest it was installed with', established: true };
     }
     listing = JSON.parse(bytes.toString('utf8'));
   } catch (err) {
-    return `its FILES.json cannot be read (${err && err.code ? err.code : err})`;
+    if (err && err.code === 'ENOENT') {
+      return { reason: 'its FILES.json is missing', established: true };
+    }
+    return { reason: `its FILES.json cannot be read (${err && err.code ? err.code : err})`, established: false };
   }
   const lines = new Map(Array.isArray(listing) ? listing.map((l) => [l && l.path, l]) : []);
-  for (const name of REQUIRED_CLIENT_FILES) {
-    const line = lines.get(`client/${name}`);
-    let bytes;
-    try {
-      bytes = fs.readFileSync(path.join(dir, 'client', name));
-    } catch {
-      return `client/${name} is missing`;
-    }
-    if (!line || line.size !== bytes.length || line.sha256 !== sha256Of(bytes)) {
-      return `client/${name} does not match its FILES.json line`;
+  for (const filePath of paths ?? lines.keys()) {
+    const bad = fileDamage(dir, lines, filePath);
+    if (bad) {
+      return bad;
     }
   }
   return null;
 }
 
 /**
- * Step 1: the installed release — `{release, current, recovered, damaged}`, with `release` null
- * when no intact release is. `current` is current.json's content when it named the release returned, else
- * null; `damaged` lists `{release, reason}` for every verified release passed over as not intact.
+ * Why a verified release cannot be trusted to start, or null when it can: its FILES.json must hash
+ * to what `.verified` recorded, and every REQUIRED_CLIENT_FILES entry must match its FILES.json
+ * line. This is what a power cut after the install leaves detectable — the staged files are not
+ * fsynced one by one (DL-434 bound), so on ext4 a switched pointer can name files the kernel never
+ * wrote. Cheap enough for every launch (a handful of files); {@see fullTreeDamage} hashes the
+ * whole tree and costs a real pack's thousands of files, so it runs only where that cost is a
+ * one-time install/bootstrap step, or a launch's last resort after an import failure — never on
+ * the per-launch happy path.
+ */
+export function releaseDamage(root, release) {
+  return treeDamage(root, release, REQUIRED_CLIENT_FILES.map((name) => `client/${name}`));
+}
+
+/**
+ * Like {@see releaseDamage}, but every file FILES.json lists, not only REQUIRED_CLIENT_FILES —
+ * the check a bootstrap re-install now repeats (`commitInstall`'s reuse check), so "repaired by a
+ * bootstrap" is true of a file outside REQUIRED_CLIENT_FILES too, and entry.mjs's last resort when
+ * starting a release throws (review r2 MAJOR / DL-434 Decision 9).
+ */
+export function fullTreeDamage(root, release) {
+  return treeDamage(root, release, null);
+}
+
+/**
+ * Step 1: the installed release — `{release, current, recovered, damaged, unconfirmed}`, with
+ * `release` null when no intact release is. `current` is current.json's raw content whenever it
+ * was read (whether or not the release it names turned out intact), or null when it is missing,
+ * unreadable or malformed — `recoverRoot`'s own message tells the two apart (review r2 minor 3).
+ * `damaged` lists `{release, reason}` for every verified release CONFIRMED not intact (ENOENT or a
+ * hash mismatch); `unconfirmed` lists the same shape for one this launch could not confirm either
+ * way (a permission or I/O fault) — skipped for this launch too, but never deleted (review r2
+ * minor 2).
  */
 export function resolveInstalled(root) {
   let current = null;
@@ -252,18 +296,23 @@ export function resolveInstalled(root) {
     current = null;
   }
   const damaged = [];
+  const unconfirmed = [];
   const intact = (release) => {
     if (verifiedRecord(root, release) === null) {
       return false;
     }
-    const reason = releaseDamage(root, release);
-    if (reason !== null && !damaged.some((d) => d.release === release)) {
-      damaged.push({ release, reason });
+    const damage = releaseDamage(root, release);
+    if (damage !== null) {
+      const list = damage.established ? damaged : unconfirmed;
+      if (!list.some((d) => d.release === release)) {
+        list.push({ release, reason: damage.reason });
+      }
     }
-    return reason === null;
+    return damage === null;
   };
-  if (current && typeof current === 'object' && intact(current.bridge_release)) {
-    return { release: current.bridge_release, current, recovered: false, damaged };
+  const namedRelease = current && typeof current === 'object' && typeof current.bridge_release === 'string' ? current.bridge_release : null;
+  if (namedRelease !== null && intact(namedRelease)) {
+    return { release: namedRelease, current, recovered: false, damaged, unconfirmed };
   }
   let names = [];
   try {
@@ -273,9 +322,9 @@ export function resolveInstalled(root) {
   }
   const verified = names.filter((name) => intact(name)).sort(compareReleases);
   if (verified.length === 0) {
-    return { release: null, current: null, recovered: true, damaged };
+    return { release: null, current, recovered: true, damaged, unconfirmed };
   }
-  return { release: verified[verified.length - 1], current: null, recovered: true, damaged };
+  return { release: verified[verified.length - 1], current, recovered: true, damaged, unconfirmed };
 }
 
 function pidAlive(pid) {
@@ -410,11 +459,56 @@ export function composeState({ launchId, outcome, before, after, budget }) {
     return { ...base, state: 'update_failed', published: null, offer: null, approval_owed: null, error: `the ${budget} ms update budget ran out` };
   }
   const message = outcome.error && outcome.error.message ? outcome.error.message : String(outcome.error);
-  return { ...base, state: 'update_failed', published: null, offer: null, approval_owed: null, error: `the installed updater failed: ${message}` };
+  // The ONE update_failed shape where the installed updater itself could not even run (its import
+  // threw, or `runLaunchUpdate` rejected instead of resolving) — every other shape means the
+  // updater ran fine and refused or deferred for its own reasons. `clientUpdateInstruction` reads
+  // this to say what actually repairs it: a re-bootstrap here, "a newer release" nowhere else
+  // (review r2 minor 4).
+  return { ...base, state: 'update_failed', published: null, offer: null, approval_owed: null, updater_broken: true, error: `the installed updater failed: ${message}` };
 }
 
 function say(channel, text) {
   process.stderr.write(`[${channel}] client update: ${text}\n`);
+}
+
+/**
+ * The newest OTHER verified release under `versions/` whose whole tree (not only
+ * REQUIRED_CLIENT_FILES) hashes clean, or null when there is none. Only reached from step 3's
+ * import-failure fallback (review r2 MAJOR) — already the expensive, exceptional path, so it is
+ * thorough rather than cheap.
+ */
+function fallbackRelease(root, exclude) {
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(root, 'versions'));
+  } catch {
+    names = [];
+  }
+  const candidates = names.filter((name) => name !== exclude && verifiedRecord(root, name) !== null && fullTreeDamage(root, name) === null);
+  candidates.sort(compareReleases);
+  return candidates.length > 0 ? candidates[candidates.length - 1] : null;
+}
+
+/**
+ * Patch state.json's `running` (and add a `recovered`-style note `clientUpdateInstruction` already
+ * knows how to show) after step 3 fell back to a release other than the one it just wrote. Every
+ * other field of the launch's normal state.json write is left as it was — best-effort, like every
+ * record here (r1 MUST-FIX 1): a failure to patch it never keeps the fallback release from
+ * starting, it just leaves state.json naming the release that failed to import.
+ */
+function noteFallback(root, launchId, from, to, why) {
+  try {
+    const prior = readJsonFile(path.join(root, 'state.json'));
+    writeJsonAtomic(path.join(root, 'state.json'), {
+      ...(prior && typeof prior === 'object' ? prior : {}),
+      launch_id: launchId,
+      running: to,
+      recovered: `release ${from} failed to start (${why}); release ${to} started instead`,
+      written_at: new Date().toISOString(),
+    });
+  } catch {
+    // Best-effort, like every state.json write.
+  }
 }
 
 function notStarted(root, channel, env, launchId, reason) {
@@ -466,10 +560,14 @@ export async function main({ env = process.env } = {}) {
     const before = resolveInstalled(root);
     if (before.release === null) {
       const damaged = before.damaged.map((d) => `; release ${d.release} is damaged (${d.reason})`).join('');
-      return notStarted(root, channel, env, launchId, `no verified client release is installed under ${path.join(root, 'versions')}${damaged} — bootstrap this seat's client from its bridge's published pack; THIS Claude Code session is deaf to live-wake until then`);
+      const unconfirmed = before.unconfirmed.map((d) => `; release ${d.release} could not be confirmed intact (${d.reason})`).join('');
+      return notStarted(root, channel, env, launchId, `no verified client release is installed under ${path.join(root, 'versions')}${damaged}${unconfirmed} — bootstrap this seat's client from its bridge's published pack; THIS Claude Code session is deaf to live-wake until then`);
     }
     for (const d of before.damaged) {
       say(channel, `release ${d.release} is damaged (${d.reason}); it is passed over and fetched again`);
+    }
+    for (const d of before.unconfirmed) {
+      say(channel, `release ${d.release} could not be confirmed intact (${d.reason}); it is passed over this launch only, not dropped`);
     }
     if (before.recovered) {
       say(channel, `current.json does not name an intact release; running the newest intact release, ${before.release}`);
@@ -495,10 +593,31 @@ export async function main({ env = process.env } = {}) {
     }
 
     step = `start release ${after.release}`;
+    let starting = after.release;
     env.AWB_CLIENT_ROOT = root;
     env.AWB_LAUNCH_ID = launchId;
-    env.AWB_BRIDGE_RELEASE = after.release;
-    await import(pathToFileURL(path.join(root, 'versions', after.release, 'client', SERVER_FILE)).href);
+    env.AWB_BRIDGE_RELEASE = starting;
+    try {
+      await import(pathToFileURL(path.join(root, 'versions', starting, 'client', SERVER_FILE)).href);
+    } catch (importErr) {
+      // REQUIRED_CLIENT_FILES is cheap and already checked at step 1; a file outside it (a
+      // dependency the check does not cover) can still fail only here. The full, whole-tree check
+      // names it when it can, and another kept intact release is tried before this seat gives up
+      // entirely (review r2 MAJOR / DL-434 Decision 9). versions/ itself is never touched here —
+      // only client-update.mjs, under the lock, deletes a release.
+      const damage = fullTreeDamage(root, starting);
+      const fallback = fallbackRelease(root, starting);
+      if (fallback === null) {
+        throw importErr;
+      }
+      const why = damage ? damage.reason : `${importErr && importErr.message ? importErr.message : importErr}`;
+      say(channel, `release ${starting} failed to start (${why}); falling back to the kept release ${fallback}`);
+      starting = fallback;
+      step = `start release ${starting} (fallback from ${after.release})`;
+      env.AWB_BRIDGE_RELEASE = starting;
+      noteFallback(root, launchId, after.release, starting, why);
+      await import(pathToFileURL(path.join(root, 'versions', starting, 'client', SERVER_FILE)).href);
+    }
   } catch (err) {
     notStarted(root, channel, env, launchId, `could not ${step}: ${err && err.message ? err.message : err} — THIS Claude Code session is deaf to live-wake`);
   }

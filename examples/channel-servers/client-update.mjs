@@ -27,7 +27,10 @@
 //   that were never written. That is DETECTED, not prevented: entry.mjs starts a release only when
 //   its FILES.json and required files hash as recorded (`releaseDamage`), falls back to the kept
 //   previous release otherwise, and this updater then drops the damaged release so it is fetched
-//   again.
+//   again. `releaseDamage` is the cheap, per-launch check (REQUIRED_CLIENT_FILES only); a file
+//   outside it can still fail only at import, and entry.mjs's own last resort there — and this
+//   updater's reuse check on a bootstrap re-install — both pay the full, whole-tree check instead
+//   (`fullTreeDamage`, review r2 MAJOR).
 //
 // ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
 // verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
@@ -59,11 +62,11 @@ import {
   fsyncDirectory,
   verifiedPackSha,
   verifiedRecord,
-  releaseDamage,
+  fullTreeDamage,
   resolveInstalled,
   REQUIRED_CLIENT_FILES,
 } from './entry.mjs';
-import { sshRoundTrip, httpRoundTrip, resolveToolsToken, scrubSnippet } from './channel-lib.mjs';
+import { sshRoundTrip, httpRoundTrip, resolveToolsToken, scrubSnippet, errorDetail } from './channel-lib.mjs';
 
 // ⚑ PINNED PROTOCOL CONSTANTS, checked against the bridge by
 // tests/Unit/ClientUpdate/ClientReportLimitsLockstepTest.php: `client_report` refuses a report
@@ -492,7 +495,7 @@ export function doorFromEnv(env) {
         try {
           r = await httpRoundTrip({ url, token, body: JSON.stringify(body), signal });
         } catch (err) {
-          throw new Failure(`bridge unreachable (${url}: ${err && err.message ? err.message : err})`);
+          throw new Failure(`bridge unreachable (${url}: ${errorDetail(err)})`);
         }
         return interpret(body.op, r.text, r.ok, () => `HTTP ${r.status}`);
       },
@@ -880,7 +883,12 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   crashAt(ctx, 'before-rename');
   fs.mkdirSync(path.join(root, 'versions'), { recursive: true });
   const held = fs.existsSync(target) ? verifiedPackSha(root, release) : undefined;
-  const damage = held === undefined ? null : held === null ? 'it holds no readable .verified record' : releaseDamage(root, release);
+  // A FULL FILES.json verification (every file, not only REQUIRED_CLIENT_FILES) — this is the
+  // reuse check an install/bootstrap pays for once, never a per-launch cost, so "repaired by a
+  // bootstrap" (DL-434 Decision 9) is true of a file outside REQUIRED_CLIENT_FILES too (review r2
+  // MAJOR: a re-install of the same release used to reuse a tree with a damaged non-required file
+  // untouched).
+  const damage = held === undefined ? null : held === null ? { reason: 'it holds no readable .verified record' } : fullTreeDamage(root, release);
   if (held !== undefined && damage === null && held !== packSha) {
     throw new Refusal(`versions/${release} already holds pack ${held}, not the verified pack ${packSha}; it is left as it is`);
   }
@@ -890,7 +898,7 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   } else {
     if (held !== undefined) {
       // Never the running release: resolveInstalled starts only an intact one.
-      ctx.say(`versions/${release} is damaged (${damage}); replacing it with the verified pack`);
+      ctx.say(`versions/${release} is damaged (${damage.reason}); replacing it with the verified pack`);
       fs.rmSync(target, { recursive: true, force: true });
     }
     renameWithRetry(staging, target, { deadline: ctx.deadline });
@@ -1162,9 +1170,19 @@ function recoverRoot(ctx, installed) {
   if (installed.recovered) {
     writePointer(root, installed.release, null, verifiedPackSha(root, installed.release));
   }
-  const reason = dropped.length > 0
-    ? `damaged, removed so it is fetched again: ${dropped.join('; ')}; current.json names ${installed.release}, the newest intact release`
-    : `current.json was unreadable; it now names ${installed.release}, the newest intact release`;
+  // What was actually found (review r2 minor 3): current.json can be genuinely unreadable, or
+  // perfectly readable and simply naming a release nothing here ever verified — those are
+  // different facts, and only the first one is "unreadable".
+  let cause;
+  if (dropped.length > 0) {
+    cause = `damaged, removed so it is fetched again: ${dropped.join('; ')}`;
+  } else if (installed.current === null) {
+    cause = 'current.json was unreadable';
+  } else {
+    const named = installed.current && typeof installed.current === 'object' ? installed.current.bridge_release : undefined;
+    cause = typeof named === 'string' ? `current.json named release ${named}, which is not installed intact` : 'current.json did not name a valid release';
+  }
+  const reason = `${cause}; current.json now names ${installed.release}, the newest intact release`;
   logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: installed.release, reason });
 }
 
@@ -1185,12 +1203,23 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
   } catch (err) {
     return { ...result, state: 'update_failed', error: err.message };
   }
+  // Re-resolve under the lock (review r2 minor 1): `installed` is entry.mjs's step 1, read BEFORE
+  // this lock, and another launch could have repaired — or further damaged — the tree in the gap.
+  // Every delete and write below acts on this fresh read, never the stale argument.
+  installed = resolveInstalled(root);
+  result.installed = installed.release;
   const known = { from: installed.release, to: null, manifest: null, manifestSha256: null };
   let head;
   let reachable = false;
   try {
     ctx.log = InstallLog.open(root, say);
     try {
+      if (installed.release === null) {
+        // Not a state entry.mjs's own pre-lock read can rule out (that is the race this re-resolve
+        // closes) — every release this launch knew about was dropped or damaged between step 1 and
+        // the lock.
+        throw new Failure(`no verified client release is installed under ${path.join(root, 'versions')} any more`);
+      }
       if (installed.recovered || (installed.damaged ?? []).length > 0) {
         recoverRoot(ctx, installed);
       }

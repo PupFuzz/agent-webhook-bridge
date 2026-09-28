@@ -53,6 +53,7 @@ import {
   httpRoundTrip,
   launchIdentity,
   clientUpdateInstruction,
+  errorDetail,
 } from './channel-lib.mjs';
 import { channelSocketPath, failureMarkerPath } from './entry.mjs';
 
@@ -761,7 +762,7 @@ async function callToolOverHttp(payload, token) {
       content: [
         {
           type: 'text',
-          text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${err && err.message ? err.message : err}`,
+          text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${errorDetail(err)}`,
         },
       ],
     };
