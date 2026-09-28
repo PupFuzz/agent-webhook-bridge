@@ -68,6 +68,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
      * @var array<class-string, string>
      */
     private const TYPE_BOUNDS = [
+        'App\Bridge\ClientUpdate\InstallLogRefused' => 'composed by InstallLogEntry / SeatClientLedger from their own refusal vocabulary over a client_report: an entry index, a field name, a seq number and fixed phrases — never the line itself (card#10567 / DL-432)',
         'App\Bridge\Exceptions\ChannelTokenException' => 'a local channel-token read fault, composed by ChannelToken from a path and a file-read fault',
         'App\Bridge\Exceptions\ConfigException' => 'composed by this app from its own config files and env; a wrap site that builds one from another exception is itself a site here',
         'App\Bridge\Exceptions\InsecureSecretPermsException' => 'a local secret-file mode check: the path and its octal mode',
@@ -79,6 +80,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'App\Bridge\Validation\EndpointValidationException' => 'composed by this app\'s own endpoint validators from a configured URL or socket path',
         'Error' => 'a PHP engine error (ArgumentCountError from `new $class`) about a classifier class this install configured',
         'Illuminate\Database\QueryException' => 'a PDO/driver error from this install\'s own database, with the SQL this app wrote',
+        'PDOException' => 'a PDO driver error opening or using this install\'s own database connection — the DSN host/port and the driver\'s own text, no SQL and no response body',
         'JsonException' => 'PHP\'s own json_decode() diagnosis, from a fixed table (`Syntax error`, `Malformed UTF-8 characters, possibly incorrectly encoded`, `Control character error, …`, `Maximum stack depth exceeded`) — measured to carry none of the bytes it was decoding',
         'Symfony\Component\Yaml\Exception\ParseException' => 'the YAML parser\'s position and snippet of this install\'s own agent config file',
         'UnexpectedValueException' => 'composed by ClientCapabilities from the checked-in resources/client-capabilities.json: a fixed phrase naming the table path or a field and the version string stored there (the one site catching it tries nothing else)',
@@ -102,6 +104,8 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Check/Checks/BoardToolsHttpProbeCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Check/Checks/ChannelTransportCheck.php::markerLeg#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Check/Checks/WritebackAlertChannelCheck.php::run#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/ClientUpdate/ClientUpdateDoor.php::report#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/ClientUpdate/SeatClientLedger.php::report#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Handlers/ChannelPushHandler.php::handle#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Handlers/ChannelPushHandler.php::validateLocalhostUrl#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Handlers/ChannelPushHandler.php::validateSocketPath#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

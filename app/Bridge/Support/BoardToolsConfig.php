@@ -92,6 +92,11 @@ use App\Bridge\Tools\BoardToolsRegistry;
  *                    (default: the invoking run-user). Parse-and-store; the probe
  *                    decides how to use it. Null ⇒ the invoking account (byte-identical
  *                    to pre-4977).
+ *  - fleetView       `fleet_view: true` — this agent may read the whole fleet through the
+ *                    client-update door's `client_fleet` op (card#10567 / DL-432).
+ *  - clientUpdateApprovalRequired  `client_update.approval_required: true` — the door
+ *                    offers this agent a published client pack only once its content is
+ *                    approved (DL-433).
  *  - descriptionMaxBytes  the PER-CARD byte cap board_my_cards cuts a description to
  *                    when a caller passes `include_description: true` (DL-245). Never
  *                    consulted on the default path — an absent argument omits the field
@@ -137,6 +142,12 @@ final class BoardToolsConfig
         // untouched: a retired block reaches it as enabled=false with no suppressedReason
         // and correctly owes no next step.
         public readonly ?string $retiredReason = null,
+        // card#10567 B4: `fleet_view: true` — this agent (the PM's seat) may read the whole fleet
+        // through the `client_fleet` op. False for everyone else, and for every non-enabled block.
+        public readonly bool $fleetView = false,
+        // card#10567 B4: `client_update.approval_required: true` — the client-update door offers this
+        // agent a published client pack only once `bridge:client-approve` has approved its content.
+        public readonly bool $clientUpdateApprovalRequired = false,
     ) {}
 
     /**
@@ -304,6 +315,8 @@ final class BoardToolsConfig
         $addressTags = self::parseAddressTags($block, $coordBoardId);
         $sshAccount = self::optionalString($block, 'ssh_account');
         $descriptionMaxBytes = self::optionalPositiveInt($block, 'description_max_bytes') ?? self::DEFAULT_DESCRIPTION_MAX_BYTES;
+        $fleetView = self::optionalBool($block, 'fleet_view', 'board_tools.fleet_view');
+        $approvalRequired = self::parseApprovalRequired($block);
 
         return new self(
             enabled: true,
@@ -319,6 +332,8 @@ final class BoardToolsConfig
             sshAccount: $sshAccount,
             transportExplicit: $transportExplicit,
             descriptionMaxBytes: $descriptionMaxBytes,
+            fleetView: $fleetView,
+            clientUpdateApprovalRequired: $approvalRequired,
         );
     }
 
@@ -450,6 +465,41 @@ final class BoardToolsConfig
         }
 
         return $value;
+    }
+
+    /**
+     * An optional strict boolean, false when absent. `yes`/`on` stay strings under symfony/yaml, so
+     * anything but true/false is a malformation like every other here — never read as either value.
+     *
+     * @param  array<mixed>  $block
+     */
+    private static function optionalBool(array $block, string $key, string $label): bool
+    {
+        if (! array_key_exists($key, $block) || $block[$key] === null) {
+            return false;
+        }
+        if (! is_bool($block[$key])) {
+            throw new ConfigException("{$label} must be true or false when set");
+        }
+
+        return $block[$key];
+    }
+
+    /**
+     * `client_update.approval_required` (card#10567 B4).
+     *
+     * @param  array<mixed>  $block
+     */
+    private static function parseApprovalRequired(array $block): bool
+    {
+        if (! array_key_exists('client_update', $block) || $block['client_update'] === null) {
+            return false;
+        }
+        if (! is_array($block['client_update'])) {
+            throw new ConfigException('board_tools.client_update must be a mapping when set');
+        }
+
+        return self::optionalBool($block['client_update'], 'approval_required', 'board_tools.client_update.approval_required');
     }
 
     /**

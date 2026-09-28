@@ -280,6 +280,14 @@ enum CheckSlot: string
      */
     case BoardToolsSshAdvisory = 'board-tools-ssh-advisory';
 
+    /**
+     * The fleet's channel-server CLIENT states (card#10567 B4): after the whole offline
+     * board-tools plane and before the opt-in probes, inside the enabled-subset guard — an agent
+     * with no enabled block has no client in the fleet. It reads this bridge's own database and
+     * pack store, nothing the board-tools kanban client produces.
+     */
+    case ClientFleet = 'client-fleet';
+
     /** The opt-in `--probe-tools` HTTP live round-trip, after the whole offline plane. */
     case ProbeTools = 'probe-tools';
 

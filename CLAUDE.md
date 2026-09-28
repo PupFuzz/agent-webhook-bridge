@@ -104,6 +104,11 @@ php artisan bridge:sign --scope=<scope>  # sign a raw body (on stdin) with this 
 php artisan bridge:client-pack:install   # publish THIS release's channel-server client pack from its GitHub release,
                                          # checked, for the client-update door to serve seats (DL-430) — exit codes
                                          # and what it checks: CLAUDE_DEPLOYMENT.md § Commands
+php artisan bridge:client-fleet [--json] # every board-tools seat's REPORTED channel-server client: running/installed release,
+                                         # last seen, capability gap, and one state from an ordered, total list (DL-432)
+php artisan bridge:client-approve <agent> <release> --reason=…
+                                         # approve the published client pack's CONTENT for one agent that requires
+                                         # approval; logged with the OS user (DL-433) — gates the offer, never enforced
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
 check-channel-snapshot.py <deployed channel-server dir>

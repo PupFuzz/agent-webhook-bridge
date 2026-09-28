@@ -26,7 +26,7 @@ use stdClass;
 final class ToolCallBody
 {
     /** The request shape every refusal here names, so a caller sees what WAS expected. */
-    public const SHAPE = 'a JSON object {tool, args?, client_version?}';
+    public const SHAPE = 'a JSON object {tool, args?, client_version?, caller?, launch?}';
 
     /** The shape the client-update route (`/agent-tools/client`, DL-430) names in the same refusals. */
     public const CLIENT_UPDATE_SHAPE = 'a JSON object {op, …}';

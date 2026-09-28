@@ -36,7 +36,7 @@ vendor/bin/pint                                      # fix in place
 | `tests/Feature/Provision/` | `bridge:provision` Artisan command end-to-end | Feature; `Http::fake`; tmp config + secret dir |
 | `tests/Feature/Handlers/` | `ChannelPushHandler`, `SpawnDetachedHandler`, `LogIntentHandler`, `RegistryAppendHandler` | Feature; `Http::fake` for HTTP-backed handlers |
 | `tests/Feature/Console/` | `bridge:check`, `bridge:inbox`, `bridge:inspect`, `bridge:replay`, `bridge:stats` | Feature; `RefreshDatabase` + tmp dirs |
-| `tests/Feature/ClientUpdate/` + `tests/Unit/ClientUpdate/` | The client-update door and the published-pack store (DL-430): `bridge:client-pack:install` against a faked GitHub release, the store's publication rules, and every op on BOTH doors held to the same bytes | Feature; `Http::fake`; tmp state dir; `Tests\Support\ClientPackFixture` builds a manifest/pack pair in the DL-428 shape |
+| `tests/Feature/ClientUpdate/` + `tests/Unit/ClientUpdate/` | The client-update door and the published-pack store (DL-430): `bridge:client-pack:install` against a faked GitHub release, the store's publication rules, and every op on BOTH doors held to the same bytes; the fleet ledger and approval (DL-432/433): `client_report`'s chain, the offer gate, `client_fleet`, every fleet state (`ClientFleetStateTest`) and the two static guards (`ExemptCallerSendersTest`, `SeatClientEventsNoWriterTest`) | Feature; `Http::fake`; tmp state dir; `Tests\Support\ClientPackFixture` builds a manifest/pack pair in the DL-428 shape |
 
 Run `vendor/bin/phpunit --list-tests 2>/dev/null | wc -l` for a live count. The number isn't quoted in any markdown file in this repo because it drifts every PR.
 

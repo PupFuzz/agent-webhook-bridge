@@ -6,6 +6,7 @@ use App\Bridge\Support\TerminalProbe;
 use Illuminate\Console\Command;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use PDOException;
 use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
@@ -116,8 +117,12 @@ abstract class BridgeCommand extends Command
     {
         try {
             return $body();
-        } catch (QueryException $e) {
-            $message = $this->databaseAnswers($e->getConnectionName())
+        } catch (QueryException|PDOException $e) {
+            // A connection that cannot be OPENED surfaces as a bare PDOException wherever the first
+            // statement is a transaction begin (`DB::transaction()` connects before any query runs),
+            // so it never becomes a QueryException and would otherwise escape as a stack trace.
+            $connection = $e instanceof QueryException ? $e->getConnectionName() : DB::getDefaultConnection();
+            $message = $this->databaseAnswers($connection)
                 ? 'database query failed, but the server ANSWERED — this is not connectivity. An install '
                     .'that has not run `php artisan migrate` is the usual cause ('.$e->getMessage().')'
                 : 'database unreachable — check DB_HOST / DB_DATABASE / credentials in .env ('.$e->getMessage().')';

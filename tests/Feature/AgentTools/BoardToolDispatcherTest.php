@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
@@ -90,7 +91,7 @@ class BoardToolDispatcherTest extends TestCase
         CallingSeat::establish('rogue');
 
         try {
-            $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+            $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
             $this->fail('the dispatcher accepted a process whose seat somebody else had already established.');
         } catch (LogicException $e) {
             $this->assertMatchesRegularExpression('/already established for this process \(as `rogue`\)/', $e->getMessage());
@@ -112,7 +113,7 @@ class BoardToolDispatcherTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => []]),
         ]);
 
-        $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null);
+        $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame('prod-agent', CallingSeat::name());
     }
@@ -124,7 +125,7 @@ class BoardToolDispatcherTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => []]),
         ]);
 
-        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertTrue($outcome->ok);
         $this->assertSame(200, $outcome->status);
@@ -139,7 +140,7 @@ class BoardToolDispatcherTest extends TestCase
     {
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
 
-        $outcome = $this->dispatcher()->dispatch('board_create_card', ['title' => 't', 'tags' => ['triaged']], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_create_card', ['title' => 't', 'tags' => ['triaged']], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertFalse($outcome->ok);
         $this->assertSame(422, $outcome->status);
@@ -156,7 +157,7 @@ class BoardToolDispatcherTest extends TestCase
             '*/tasks/search.json*' => Http::response('boom', 500),
         ]);
 
-        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame(502, $outcome->status);
         $this->assertSame(2, $outcome->exitCode());
@@ -174,7 +175,7 @@ class BoardToolDispatcherTest extends TestCase
         ]);
         (new KanbanSearchSim(range(1, 450), order: 'asc'))->install();
 
-        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame(502, $outcome->status);
         $this->assertSame(2, $outcome->exitCode());
@@ -186,7 +187,7 @@ class BoardToolDispatcherTest extends TestCase
         // No writeback token → WritebackClientFactory throws ConfigException → 503.
         File::delete($this->dir.'/kanban/writeback-token');
 
-        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame(503, $outcome->status);
         $this->assertSame(2, $outcome->exitCode());
@@ -194,19 +195,19 @@ class BoardToolDispatcherTest extends TestCase
 
     public function test_unknown_tool_is_422(): void
     {
-        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
         $this->assertSame(422, $outcome->status);
     }
 
     public function test_non_array_args_is_422(): void
     {
-        $outcome = $this->dispatcher()->dispatch('board_my_cards', 'not-an-object', $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', 'not-an-object', $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
         $this->assertSame(422, $outcome->status);
     }
 
     public function test_empty_tool_name_is_422(): void
     {
-        $outcome = $this->dispatcher()->dispatch('', [], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
         $this->assertSame(422, $outcome->status);
     }
 
@@ -225,7 +226,7 @@ class BoardToolDispatcherTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => []]),
         ]);
 
-        $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null);
+        $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $row = BoardToolsClientCall::query()->where('agent', 'prod-agent')->sole();
         $this->assertSame('ssh', $row->transport);
@@ -239,7 +240,7 @@ class BoardToolDispatcherTest extends TestCase
      */
     public function test_a_refused_call_records_nothing(): void
     {
-        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertFalse($outcome->ok);
         $this->assertSame(0, BoardToolsClientCall::query()->count());
@@ -252,7 +253,7 @@ class BoardToolDispatcherTest extends TestCase
             '*/tasks/search.json*' => Http::response('boom', 500),
         ]);
 
-        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame(502, $outcome->status);
         $this->assertSame(0, BoardToolsClientCall::query()->count());
@@ -276,7 +277,7 @@ class BoardToolDispatcherTest extends TestCase
         ]);
 
         $outcome = $this->withUnmigratedDatabase(
-            fn () => $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null),
+            fn () => $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported()),
         );
 
         // The call is byte-for-byte the healthy one: same ok, same status, same exit code,
@@ -310,7 +311,7 @@ class BoardToolDispatcherTest extends TestCase
      */
     public function test_a_dispatch_whose_tool_fails_still_records_the_block_sighting(): void
     {
-        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null);
+        $outcome = $this->dispatcher()->dispatch('board_delete_everything', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertFalse($outcome->ok);
         $this->assertSame(0, BoardToolsClientCall::query()->count(), 'a refused call recorded a successful one');
@@ -364,7 +365,7 @@ class BoardToolDispatcherTest extends TestCase
         $registry->register($tool);
         $dispatcher = new BoardToolDispatcher($registry);
 
-        $refused = $dispatcher->dispatch('operator_tool', ['wanted' => 1, 'explained' => 2, 'lowered' => 4, 'other' => 3], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $refused = $dispatcher->dispatch('operator_tool', ['wanted' => 1, 'explained' => 2, 'lowered' => 4, 'other' => 3], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame(0, $tool->calls, 'the tool ran on a call carrying undeclared keys');
         $this->assertSame(422, $refused->status);
@@ -375,7 +376,7 @@ class BoardToolDispatcherTest extends TestCase
         );
 
         CallingSeatSeal::forANewServingProcess();
-        $accepted = $dispatcher->dispatch('operator_tool', ['wanted' => 1], $this->cfg(), 'me', CallProvenance::NotSshd, null);
+        $accepted = $dispatcher->dispatch('operator_tool', ['wanted' => 1], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
 
         $this->assertSame(1, $tool->calls);
         $this->assertSame(200, $accepted->status);

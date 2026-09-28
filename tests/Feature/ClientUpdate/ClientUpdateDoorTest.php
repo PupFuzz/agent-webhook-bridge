@@ -183,7 +183,9 @@ class ClientUpdateDoorTest extends TestCase
             'another release' => [true, ['op' => 'client_pack', 'bridge_release' => '0.90.0'], 404, 1, 'for release 0.91.0 only, not 0.90.0'],
             'no release named' => [true, ['op' => 'client_pack'], 422, 1, 'needs `bridge_release`'],
             'a v-prefixed release' => [true, ['op' => 'client_pack', 'bridge_release' => 'v0.91.0'], 422, 1, 'bare X.Y.Z'],
-            'unknown op' => [true, ['op' => 'client_fleet'], 422, 1, 'serves client_manifest, client_pack'],
+            'unknown op' => [true, ['op' => 'client_bogus'], 422, 1, 'serves client_manifest, client_pack, client_report, client_fleet'],
+            // card#10567 B4: the fleet is the PM's view; neither fixture agent has `fleet_view`.
+            'client_fleet without fleet_view' => [true, ['op' => 'client_fleet'], 403, 1, 'only to an agent whose board_tools.fleet_view is true'],
             'non-string op' => [true, ['op' => 7], 422, 1, 'unknown client-update `op` 7'],
             // Every stored file is re-checked against published.json before it is served.
             'stored pack altered after publication' => [true, ['op' => 'client_pack', 'bridge_release' => '0.91.0'], 503, 2, 'cannot be served', 'pack'],

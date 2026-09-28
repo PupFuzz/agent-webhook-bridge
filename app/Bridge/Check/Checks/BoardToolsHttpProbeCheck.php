@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\OptInCheck;
+use App\Bridge\ClientUpdate\ExemptCaller;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\RedactedErrorText;
@@ -141,7 +142,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
             try {
                 $resp = Http::withToken($token)->acceptJson()->timeout(10)
-                    ->post($endpoint, ['tool' => 'board_my_cards', 'args' => (object) []]);
+                    ->post($endpoint, ExemptCaller::probeBody());
             } catch (ConnectionException $e) {
                 // ESCAPED PRECAUTIONARILY (card#9200, DL-366), and the reason is stated
                 // rather than claimed: this message is composed by the HTTP client, but

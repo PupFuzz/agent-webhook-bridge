@@ -1280,15 +1280,15 @@ class CheckGoldenTest extends TestCase
 
     public function test_the_baseline_install_names_why_each_plane_did_not_run(): void
     {
-        // "14 did not run" without a cause is alarming and un-actionable; with one it is
-        // information. These two reasons are the whole writeback plane (9 checks) and the
-        // board-tools plane (5, the fifth being DL-313's client-half leg) — the shape was
+        // "15 did not run" without a cause is alarming and un-actionable; with one it is
+        // information. These two reasons are the whole writeback plane and the board-tools
+        // plane (DL-313's client-half leg and card#10567's client_fleet leg among it) — the shape was
         // measured at 13 of 37 before stage 8 was built, which is what made an exact
         // inventory worth having; the total moves with the registered set, the PROPERTY
         // (every not-run check names its cause) does not.
         $minimal = $this->goldenFor('minimal');
 
-        $this->assertStringContainsString('14 did not run', $minimal);
+        $this->assertStringContainsString('15 did not run', $minimal);
         $this->assertStringContainsString('no readable writeback.json', $minimal);
         $this->assertStringContainsString('no agent has an enabled board_tools block', $minimal);
         // And never the internal-defect line: every not-run check here has a reason.

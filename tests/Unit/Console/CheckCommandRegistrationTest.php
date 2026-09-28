@@ -107,6 +107,9 @@ class CheckCommandRegistrationTest extends TestCase
         'board_tools.client_half',
         'board_tools.ssh_pinned_line',
         'board_tools.ssh_flipped_default',
+        // card#10567 B4 — the fleet's client states, over the same enabled subset, after the whole offline
+        // board-tools plane and before the opt-in probes.
+        'board_tools.client_fleet',
         // the two opt-in probes (stage 1)
         'board_tools.http_live_probe',
         'board_tools.ssh_live_probe',

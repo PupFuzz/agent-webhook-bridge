@@ -360,6 +360,11 @@ class UnvalidatedCallSiteTest extends TestCase
         // resolve (limb (c)). ⛔ THE SAME SHORT RECORD PAST THE FLOOR IS A `warn`, NOT A THIRD SITE
         // HERE: the floor alone establishes that silence, and a derived threshold is never lower.
         'app/Bridge/Check/Checks/GitHubDeliveryHistoryCheck.php' => 2,
+        // card#10567 B4: the fleet ledger could not be READ (an unmigrated install, a database that
+        // went away), so which seat needs the operator was never measured — limb (a). A seat
+        // whose state is unknown because it never REPORTED is a state (`needs_bootstrap`), not
+        // this; the leg did measure that.
+        'app/Bridge/Check/Checks/ClientFleetCheck.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

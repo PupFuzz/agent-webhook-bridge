@@ -5,6 +5,7 @@ namespace Tests\Feature\Console;
 use App\Console\Commands\Bridge\BridgeCommand;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
@@ -52,6 +53,29 @@ class BridgeCommandDbGuardTest extends TestCase
         $out = $buffer->fetch();
         $this->assertStringContainsString('database unreachable', $out);
         $this->assertStringNotContainsString('Stack trace', $out);   // no raw trace dumped (#2056)
+    }
+
+    /**
+     * `DB::transaction()` opens the connection before any query, so an unreachable server surfaces
+     * there as a bare PDOException, never wrapped in a QueryException — the guard must still catch it.
+     */
+    public function test_a_connection_that_cannot_be_opened_is_guarded_too(): void
+    {
+        config(['database.connections.dead-probe' => [
+            'driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 1,
+            'database' => 'nothing', 'username' => 'nobody', 'password' => '',
+        ]]);
+        $default = config('database.default');
+        config(['database.default' => 'dead-probe']);
+        try {
+            $cmd = $this->command($buffer = new BufferedOutput);
+            $result = $cmd->exposeGuard(fn (): int => DB::transaction(fn (): int => 0));
+        } finally {
+            config(['database.default' => $default]);
+        }
+
+        $this->assertSame(BridgeCommand::FAILURE, $result);
+        $this->assertStringContainsString('database unreachable', $buffer->fetch());
     }
 
     public function test_a_query_failure_on_a_server_that_answers_does_not_blame_connectivity(): void

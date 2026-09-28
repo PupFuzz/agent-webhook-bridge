@@ -141,8 +141,9 @@ class DatabaseRetentionStoreProbeTest extends TestCase
      * remove — and no amount of reading settles it, because it is a property of how the
      * engine accounts for its own pages.
      *
-     * 200 rows of 64 KiB is chosen to put the question at full magnitude: it is far above
-     * the InnoDB inline-row limit, so every payload is stored OFF-PAGE.
+     * Rows of 64 KiB (at least 200 of them, more when the schema already holds more — see the
+     * sizing note in the test) put the question at full magnitude: each is far above the InnoDB
+     * inline-row limit, so every payload is stored OFF-PAGE.
      *
      * ⛤ WHAT CI MEASURED (card#8374, run 33576949649), and why each arm asserts what it
      * does. On **MariaDB 10.6.28 and 11.8.9** the 13107200 bytes written left
@@ -160,15 +161,33 @@ class DatabaseRetentionStoreProbeTest extends TestCase
      */
     public function test_the_probes_declaration_about_the_two_figures_holds_on_this_engine(): void
     {
-        $written = $this->bulkPayloads(200, 65536);
+        // ⚑ THE PAYLOAD IS SIZED TO DOMINATE WHATEVER THE SCHEMA ALREADY HOLDS. The MariaDB figure
+        // sums every table, and a rollback returns rows but not pages, so the tables EARLIER TESTS
+        // in the same run grew are in it — and InnoDB refreshes their statistics asynchronously, so
+        // how much of that residue shows is timing. A fixed 12.5 MiB payload lost to it once:
+        // run 36376084510 read 13533184 bytes on MariaDB 11 (not on 10.6, same run) after a fuzz
+        // test filled another table (card#10567). So the probe is read once BEFORE the write and
+        // the payload is at least twice that figure plus 1 MiB (never less than the 200 × 64 KiB
+        // CI measured with), in whole 64 KiB rows. If the engine counts off-page bytes, the figure
+        // after the write is at least before + payload, above the payload whatever the residue; if
+        // it does not, the figure stays near `before`, and residue already allocated by then can
+        // surface through a stale statistic only up to that allocation, which the 2x margin covers.
+        $before = (new DatabaseRetentionStoreProbe)->measure()->storeBytes;
+        $this->assertNotNull($before);
+        $this->assertGreaterThan(0, $before, 'the probe read a real size figure before the write');
+        $rowBytes = 65536;
+        $rows = (int) ceil(max(200 * $rowBytes, 2 * $before + 1048576) / $rowBytes);
+        $countBefore = WebhookEvent::query()->count();
+        $written = $this->bulkPayloads($rows, $rowBytes);
+        $this->assertSame($rows, WebhookEvent::query()->count() - $countBefore, 'every payload row is stored (a query, not a statistic)');
 
         $footprint = (new DatabaseRetentionStoreProbe)->measure();
 
         // The numerator first, and exactly: `length()` over an off-page LOB must still
         // answer for the whole value on every engine. Without it, either arm below could
         // be satisfied by a numerator that silently lost the off-page bytes.
-        $this->assertSame(200, $footprint->rows);
-        $this->assertSame($written, $footprint->payloadBytes, '200 payloads of exactly 64 KiB each');
+        $this->assertSame($countBefore + $rows, $footprint->rows);
+        $this->assertSame($written, $footprint->payloadBytes, "{$rows} payloads of exactly 64 KiB each");
         $this->assertNotNull($footprint->storeBytes);
 
         if ($footprint->storeBytesContainsPayloadBytes) {
