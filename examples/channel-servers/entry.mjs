@@ -14,27 +14,27 @@
 //      release. Anything else is a new launch: a fresh launch id is written to launch.json.
 //   1. RESOLVE the installed release: `classifyRelease` (the one judge of a release's files —
 //      design review, card#10568 non-convergence re-derivation) says `ok` for the one `current.json`
-//      names, or, failing that, for the newest other release under `versions/` (a swap writes the
-//      version directory before the pointer, so the newest one that classifies `ok` is never older
-//      than the last good pointer) — said on stderr and in state.json's `recovered`. None ⇒ not
-//      started (step 5). Nothing is deleted here: a release that does not classify `ok` is merely
-//      passed over for this launch; only `client-update.mjs`, under the lock (step 2), ever removes
-//      one, on ITS OWN policy (a confirmed-bad release it is about to replace; a release the
-//      retention prune no longer needs to keep) — never because step 1 passed it over.
+//      names, or, failing that, for the newest other release under `versions/` — said on stderr
+//      and in state.json's `recovered`. None ⇒ not started (step 5). Nothing is deleted here: a
+//      release that does not classify `ok` is merely passed over for this launch; `client-update.mjs`,
+//      under its lock, is what removes one, on ITS OWN policy (a `bad` release it is about to
+//      replace; a release the retention prune does not keep).
 //   2. UPDATE, on a new launch only: the INSTALLED release's `client/client-update.mjs`
 //      `runLaunchUpdate({root, budgetMs, signal, launchId, installed})`, raced against
 //      `budgetMs` (AWB_CLIENT_UPDATE_BUDGET_MS, default 20 s). When the budget wins, the signal
 //      is aborted; the updater checks it before every irreversible step and never does network
 //      work after it. A throw, a rejection or a budget overrun costs nothing but the update: the
 //      installed release still starts. Under its lock the updater re-resolves step 1 itself and
-//      repoints `current.json` to what THAT resolve selects whenever it names anything else — so
-//      by the time step 3 runs, current.json always names what step 3 is about to import.
-//   3. IMPORT the release `current.json` names NOW — re-read after step 2 — with AWB_CLIENT_ROOT,
-//      AWB_LAUNCH_ID and AWB_BRIDGE_RELEASE set to what is actually imported. An import that throws
-//      does not try another release (DL-434 bound 4): it is not started (step 5), worded from one
-//      `classifyRelease('full')` pass over the release that failed.
+//      repoints `current.json` to what THAT resolve selects whenever it names anything else.
+//   3. IMPORT the release step 1's resolution picks (re-run after step 2); current.json names it
+//      once the update reaches recoverRoot — a reconnect, a held lock, an invalid budget or a
+//      failed pointer write leave current.json naming another release, so a seat-tool shim can run
+//      from a different release than the server until the next update reaches recoverRoot.
+//      AWB_CLIENT_ROOT, AWB_LAUNCH_ID and AWB_BRIDGE_RELEASE are set to what is imported. An import
+//      that throws does not try another release (DL-434 bound 4): it is not started (step 5),
+//      worded from one `classifyRelease('full')` pass over the release that failed.
 //   4. `<root>/state.json` is written by THIS file only, once per new launch, and its `running`
-//      is the release step 3 imports — never the one step 1 resolved (design review r3-M8). A
+//      is the release step 3 imports (design review r3-M8). A
 //      budget overrun is `update_failed` only when the pointer did not move; when it did, the
 //      release was installed before the overrun and the state is `current` with `late: true`.
 //      The launch.json (step 0) and state.json writes are each best-effort: a failure is said on
@@ -44,7 +44,8 @@
 //      by `clientUpdateInstruction` in the RUNNING release's OWN `channel-lib.mjs` — a release that
 //      may have shipped before or after the entry.mjs that wrote this particular file, since entry.mjs
 //      itself only changes with a new DL. A field is therefore never renamed or repurposed, only
-//      added: `state`, `running`, `installed`, `published`, `offer`, `approval_owed`, `error`,
+//      added: `launch_id` (channel-lib binds state.json to this launch by it), `written_at`,
+//      `state`, `running`, `installed`, `published`, `offer`, `approval_owed`, `error`,
 //      `recovered` (still-bad releases named, `recoverRoot`'s own release started instead),
 //      `late` (a budget overrun after the pointer already moved), `report_error`, `updater_broken`
 //      (the installed updater's own code threw — only a bootstrap onto a working updater repairs
@@ -200,13 +201,13 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
  * ⭐ THE ONE JUDGE OF A RELEASE'S FILES (design review, non-convergence re-derivation after r2→r4:
  * three rounds each fixed a read fault — EACCES, EIO, EISDIR, anything that is not ENOENT or a
  * hash mismatch — differently in one reader, and the next round found a sibling reader deciding it
- * another way). Every reader that needs to know whether `versions/<release>` can be trusted reads
- * it through THIS function, and only through it — `.verified`, FILES.json and every file scope
- * checks are inside it, nowhere else (a source-scanning test in the test suite enforces this: it
- * reds on an undeclared reader).
+ * another way). A test pins a direct fs read under versions/ from a function not on its allowlist,
+ * on a path the test exercises in-process; reads via fs.open/readSync, inside an allowlisted
+ * function, or in the child process (importFailure, main) are not pinned.
  *
  * Returns one of:
- *   `{status: 'not-a-release'}` — `release` is not a bare X.Y.Z (a stray directory under `versions/`).
+ *   `{status: 'not-a-release'}` — `release` is not a bare X.Y.Z (current.json naming one; a
+ *     `versions/` entry with such a name is not classified at all — resolveInstalled skips it).
  *   `{status: 'ok', packSha, filesJsonSha, listing}` — every file in `scope` matches its FILES.json
  *     line; `listing` is FILES.json's parsed array, for a caller that needs more of it (settleRoot's
  *     seat-tool list).
@@ -214,8 +215,9 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
  *     `FILES.json` for those two, else a FILES.json-listed path); `why` is `missing` (ENOENT),
  *     `mismatch` (a hash or size disagreement), `malformed` (unreadable as what it must be — JSON,
  *     two sha256 lines, a list) or `read-fault(<code>)` for anything else (a permission or I/O
- *     error — this release is NOT thereby proven bad, only unreadable; every caller treats `bad`
- *     uniformly regardless of `why`, per the operator ruling that reversed the earlier
+ *     error — this release is NOT thereby proven bad, only unreadable; callers decide on `bad` the
+ *     same way whatever its `why` (only the not-started messages word a read fault apart), per
+ *     the design review that reversed the earlier
  *     never-delete-on-a-read-fault rule: the split protected nothing reachable and blocked the one
  *     repair that mattered).
  *
@@ -302,7 +304,7 @@ function readCurrentJson(root) {
  * recovered, bad}`, with `release`, `packSha` and `filesJsonSha` null when nothing under
  * `versions/` classifies `ok`. `current` is current.json's parsed content, or null when
  * {@see readCurrentJson}'s `cause` says why (carried as `currentCause`, used only when `current`
- * names nothing — `recoverRoot`'s message). `bad` lists `{release, why, message}` for every release
+ * names nothing — `recoverRoot`'s message). `bad` lists `{release, why, file, message}` for every release
  * this launch classified and did not select — a release this launch never looked at (because the
  * selection was current.json's own, first try) is not in it.
  */
@@ -318,7 +320,7 @@ export function resolveInstalled(root) {
     const c = classifyRelease(root, release, 'required');
     judged.set(release, c);
     if (c.status !== 'ok') {
-      bad.push({ release, why: c.status === 'not-a-release' ? 'not-a-release' : c.why, message: c.status === 'not-a-release' ? `${release} is not a valid X.Y.Z release` : c.message });
+      bad.push({ release, why: c.status === 'not-a-release' ? 'not-a-release' : c.why, file: c.file, message: c.status === 'not-a-release' ? `${release} is not a valid X.Y.Z release` : c.message });
     }
     return c;
   };
@@ -335,9 +337,10 @@ export function resolveInstalled(root) {
   } catch {
     names = [];
   }
-  const ok = names.map((name) => [name, classify(name)]).filter(([, c]) => c.status === 'ok').sort((a, b) => compareReleases(a[0], b[0]));
+  // A name that is not a bare X.Y.Z is not a release: ignored here, not listed in `bad`.
+  const ok = names.filter((name) => STRICT_RELEASE.test(name)).map((name) => [name, classify(name)]).filter(([, c]) => c.status === 'ok').sort((a, b) => compareReleases(a[0], b[0]));
   if (ok.length === 0) {
-    return { release: null, packSha: null, current, currentCause, recovered: true, bad };
+    return { release: null, packSha: null, filesJsonSha: null, current, currentCause, recovered: true, bad };
   }
   const [release, c] = ok[ok.length - 1];
   return { release, packSha: c.packSha, filesJsonSha: c.filesJsonSha, current, currentCause, recovered: true, bad };
@@ -559,7 +562,8 @@ export async function main({ env = process.env } = {}) {
     const before = resolveInstalled(root);
     if (before.release === null) {
       const bad = before.bad.map((d) => `; release ${d.release} is not intact (${d.message})`).join('');
-      return notStarted(root, channel, env, launchId, `no verified client release is installed under ${path.join(root, 'versions')}${bad} — bootstrap this seat's client from its bridge's published pack; THIS Claude Code session is deaf to live-wake until then`);
+      const fixes = before.bad.filter((d) => d.why.startsWith('read-fault(')).map((d) => `, or fix versions/${d.release}/${d.file} (${d.why.slice('read-fault('.length, -1)})`).join('');
+      return notStarted(root, channel, env, launchId, `no verified client release is installed under ${path.join(root, 'versions')}${bad} — bootstrap this seat's client from its bridge's published pack${fixes}; THIS Claude Code session is deaf to live-wake until then`);
     }
     for (const d of before.bad) {
       say(channel, `release ${d.release} is not intact (${d.message}); it is passed over`);

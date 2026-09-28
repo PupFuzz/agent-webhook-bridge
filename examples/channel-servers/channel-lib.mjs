@@ -312,12 +312,12 @@ function updateStateLine(state, { launchId, root }) {
         'The update is tried again at the next launch' +
         // An installed updater that cannot run never fetches the fix itself, and re-bootstrapping
         // the same release reuses the same updater; an unreadable install log is a local fault no
-        // release fixes. Only a failure caused by what was OFFERED self-heals at a later launch.
+        // release fixes. Every other cause is named by the reason at the start of the line.
         (state.updater_broken
           ? "; the installed updater itself cannot run, so it cannot fetch a fix: once the bridge publishes a fixed release, re-bootstrap this seat's client from it."
           : state.log_unreadable
             ? '; the install log itself cannot be read — fix that file (its owner and permissions) and the next launch retries.'
-            : '; it succeeds once the bridge publishes a release this seat accepts.')
+            : '; the reason at the start of this line names the cause.')
       );
     default:
       return (

@@ -16,8 +16,8 @@
 // than the installed one — a lower one is a downgrade, the same one with other bytes a tamper
 // signal — and both are refused, logged, and leave the installed release running.
 //
-// ⛔ ANY FAILURE LEAVES THE INSTALLED RELEASE UNTOUCHED AND RUNNING. Nothing under
-// `versions/<installed>/` is ever written. A new release is extracted to
+// ⛔ A LAUNCH'S FAILED UPDATE LEAVES THE INSTALLED RELEASE UNTOUCHED AND RUNNING. A launch writes
+// nothing under `versions/<installed>/`. A new release is extracted to
 // `staging/<release>.partial`, renamed whole into `versions/`, and only then does `current.json`
 // point at it (temp file + fsync + rename) — so a process killed at any point leaves either the old
 // pointer or the new one, each naming a complete, verified release.
@@ -28,10 +28,10 @@
 //   `classifyRelease` says `ok` (the one judge of a release's files — design review, non-convergence
 //   re-derivation after review rounds r2 through r4 each fixed a read fault differently in one
 //   reader and the next found a sibling reader deciding it another way); a release that is not
-//   `ok` is simply not started, and this updater is what removes one — on ITS OWN policy, never
-//   because a launch passed it over. `classifyRelease`'s cheap scope (REQUIRED_CLIENT_FILES only)
-//   is what a launch pays; its full scope (every FILES.json-listed file) is what an install/bootstrap
-//   pays once, so a bootstrap repairs a file outside REQUIRED_CLIENT_FILES too.
+//   `ok` is simply not started, and this updater is what removes one, on its own policy.
+//   `classifyRelease`'s cheap scope (REQUIRED_CLIENT_FILES only) is what a launch pays; its full
+//   scope (every FILES.json-listed file) is what an install/bootstrap pays once, so a bootstrap
+//   repairs a file outside REQUIRED_CLIENT_FILES too.
 //
 // ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
 // verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
@@ -899,7 +899,6 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
     fs.rmSync(staging, { recursive: true, force: true });
   } else {
     if (exists) {
-      // Never the running release: resolveInstalled starts only an `ok` one.
       const why = c.status === 'bad' ? c.message : `${release} is not a valid X.Y.Z`;
       ctx.say(`versions/${release} is not intact (${why}); replacing it with the verified pack`);
       fs.rmSync(target, { recursive: true, force: true });
@@ -999,11 +998,12 @@ function settleRoot(ctx, release) {
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   // The tool list comes from the verified FILES.json listing, never a directory read (design
-  // review rule 6): a read fault on an unrelated file must never remove a working shim, so when
-  // the release does not classify `ok` at full scope, every existing shim is left untouched.
-  const classified = classifyRelease(root, release, 'full');
+  // review rule 6), at the REQUIRED scope a launch already pays — the listing is checked against
+  // `.verified` at that scope; the full scope is for commitInstall and importFailure only. When
+  // the release does not classify `ok`, every existing shim is left untouched.
+  const classified = classifyRelease(root, release, 'required');
   if (classified.status !== 'ok') {
-    ctx.say(`seat-tool shims not updated: release ${release} is not intact at full scope (${classified.status === 'bad' ? classified.message : `${release} is not a valid X.Y.Z`})`);
+    ctx.say(`seat-tool shims not updated: release ${release} is not intact (${classified.status === 'bad' ? classified.message : `${release} is not a valid X.Y.Z`})`);
   } else {
     const prefix = 'seat-tools/bin/';
     const tools = classified.listing
@@ -1049,9 +1049,8 @@ function settleRoot(ctx, release) {
   if (older.length > 0) {
     kept.add(older[older.length - 1]);
   }
-  // A failed removal is LOGGED, never fatal to the update (design review rule 5): what could not
-  // be removed is simply left, and no message anywhere claims a release is being KEPT for it —
-  // retention policy, not a guarantee, and it may remove a release nobody proved damaged.
+  // A failed removal is LOGGED as `skipped` (the bridge's ledger does not read `skipped` as a failed
+  // launch), never fatal to the update (design review rule 5): what could not be removed is left.
   const removed = [];
   const rmFailed = [];
   for (const name of names) {
@@ -1062,7 +1061,7 @@ function settleRoot(ctx, release) {
       fs.rmSync(path.join(root, 'versions', name), { recursive: true, force: true });
       removed.push(name);
     } catch (err) {
-      rmFailed.push(`${name} (${err && err.code ? err.code : err && err.message ? err.message : err})`);
+      rmFailed.push(`versions/${name} (${err && err.code ? err.code : err && err.message ? err.message : err})`);
     }
   }
   fs.rmSync(path.join(root, 'staging'), { recursive: true, force: true });
@@ -1071,7 +1070,7 @@ function settleRoot(ctx, release) {
   }
   if (rmFailed.length > 0) {
     ctx.say(`prune could not remove ${rmFailed.join(', ')}; left in place`);
-    logLine(ctx, { action: 'prune', result: 'failed', to_bridge_release: release, reason: `could not remove ${rmFailed.join(', ')}` });
+    logLine(ctx, { action: 'prune', result: 'skipped', to_bridge_release: release, reason: `could not remove ${rmFailed.join(', ')}` });
   }
 }
 
@@ -1178,10 +1177,9 @@ async function report(ctx, head) {
 
 /**
  * Repair current.json: point it at the release step 1 selected, whenever it names anything else
- * (design review rule 3, reversing the earlier "keepPointer" behavior — the frozen-contract header
- * says step 3 imports what current.json names NOW, which needs this to run unconditionally, and
- * an unconfirmable release exempted from it was the exact case the header's promise broke).
- * DELETES NOTHING — removing a release is `commitInstall`'s reuse check and `settleRoot`'s prune,
+ * (design review rule 3, reversing the earlier "keepPointer" behavior, which exempted an
+ * unconfirmable release). The seat-tool shims resolve current.json at run time, so this is what
+ * brings them back to the release the server runs. DELETES NOTHING — removing a release is `commitInstall`'s reuse check and `settleRoot`'s prune,
  * each on its own policy; this function only ever repoints. One `pointer_recovered` line says what
  * was found and what current.json names now.
  */
