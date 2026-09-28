@@ -19,11 +19,19 @@
 // ⛔ ANY FAILURE LEAVES THE INSTALLED RELEASE UNTOUCHED AND RUNNING. Nothing under
 // `versions/<installed>/` is ever written. A new release is extracted to
 // `staging/<release>.partial`, renamed whole into `versions/`, and only then does `current.json`
-// point at it (temp file + fsync + rename) — so an interruption at any point leaves either the old
+// point at it (temp file + fsync + rename) — so a process killed at any point leaves either the old
 // pointer or the new one, each naming a complete, verified release.
+//   ⚠ A POWER CUT IS WEAKER (DL-434 bound): the staged files are not fsynced one by one (a real
+//   pack is thousands of files, and fsyncing each was measured at seconds), while the rename and
+//   the pointer are, so on a filesystem that reorders them the pointer can survive naming files
+//   that were never written. That is DETECTED, not prevented: entry.mjs starts a release only when
+//   its FILES.json and required files hash as recorded (`releaseDamage`), falls back to the kept
+//   previous release otherwise, and this updater then drops the damaged release so it is fetched
+//   again.
 //
-// ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. Every irreversible step —
-// the rename into `versions/`, the `current.json` switch (with its install-log line), the
+// ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
+// verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
+// `versions/`, the `current.json` switch (with its install-log line), the
 // `entry.mjs` replace, the seat-tool shims, the prune — checks the signal AND the wall-clock
 // deadline immediately before it, and none of them awaits: each runs to completion or not at all,
 // so the deadline timer cannot fire half-way through one. After an abort the ONLY writes are
@@ -50,7 +58,10 @@ import {
   writeJsonAtomic,
   fsyncDirectory,
   verifiedPackSha,
+  verifiedRecord,
+  releaseDamage,
   resolveInstalled,
+  REQUIRED_CLIENT_FILES,
 } from './entry.mjs';
 import { sshRoundTrip, httpRoundTrip, resolveToolsToken, scrubSnippet } from './channel-lib.mjs';
 
@@ -74,8 +85,10 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const INSTALL_ID = /^[0-9a-z-]{1,64}$/;
 const FILES_JSON = 'FILES.json';
-const REQUIRED_ENTRIES = ['client/entry.mjs', `client/${UPDATER_FILE}`, `client/${SERVER_FILE}`, 'client/package.json'];
+const REQUIRED_ENTRIES = REQUIRED_CLIENT_FILES.map((name) => `client/${name}`);
 const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+/** How long a bootstrap (`install`) holds the lock before a launch may take it over. */
+const INSTALL_LOCK_MS = 10 * 60 * 1000;
 const SHIM_MARKER = 'agent-webhook-bridge client updater: seat-tool shim';
 
 /** The pack or the offer is refused: logged `refuse` / `refused`. */
@@ -103,7 +116,8 @@ export function clipBytes(text, max) {
 }
 
 function crashAt(ctx, point) {
-  // Test hooks named by design §3.6: kill this process at a named point, as a power cut would.
+  // Test hooks named by design §3.6: kill this process at a named point. A kill, not a power cut —
+  // the kernel still writes out what the process wrote; `releaseDamage` covers a power cut.
   if (ctx.env.AWB_CLIENT_CRASH_AT === point) {
     process.kill(process.pid, 'SIGKILL');
   }
@@ -151,6 +165,7 @@ export function readLog(root) {
 
 export class InstallLog {
   constructor({ file, lines, installId, torn }, say) {
+    this.io = { writeSync: fs.writeSync };
     this.file = file;
     this.lines = lines;
     this.torn = torn;
@@ -190,29 +205,71 @@ export class InstallLog {
         line[key] = fields[key];
       }
     }
-    if (fields.source) {
-      line.source = clipBytes(fields.source, SOURCE_MAX_BYTES);
+    const prev = last ? sha256(Buffer.from(last.text, 'utf8')) : null;
+    // Non-ASCII stays raw: the bridge's report byte bound assumes it (DL-432 Decision 3). The line
+    // must also fit the bridge's MAX_LINE_BYTES once JSON-escaped (a quote or a control character
+    // grows as it is escaped), so the free text is cut further — `reason` first, then `source` —
+    // until it does; every other field is fixed-width.
+    const render = (reasonMax, sourceMax) => {
+      const out = { ...line };
+      if (fields.source) {
+        out.source = clipBytes(fields.source, sourceMax);
+      }
+      if (fields.reason) {
+        out.reason = clipBytes(fields.reason, reasonMax);
+      }
+      out.prev_sha256 = prev;
+      return out;
+    };
+    let reasonMax = REASON_MAX_BYTES;
+    let sourceMax = SOURCE_MAX_BYTES;
+    let obj = render(reasonMax, sourceMax);
+    let text = JSON.stringify(obj);
+    while (Buffer.byteLength(text, 'utf8') > MAX_LINE_BYTES) {
+      if (fields.reason && reasonMax > 16) {
+        reasonMax = Math.max(16, Math.floor(reasonMax / 2));
+      } else if (fields.source && sourceMax > 16) {
+        sourceMax = Math.max(16, Math.floor(sourceMax / 2));
+      } else {
+        throw new Error(`an install-log line cannot be brought under ${MAX_LINE_BYTES} bytes`);
+      }
+      obj = render(reasonMax, sourceMax);
+      text = JSON.stringify(obj);
     }
-    if (fields.reason) {
-      line.reason = clipBytes(fields.reason, REASON_MAX_BYTES);
-    }
-    line.prev_sha256 = last ? sha256(Buffer.from(last.text, 'utf8')) : null;
-    // Non-ASCII stays raw: the bridge's report byte bound assumes it (DL-432 Decision 3).
-    const text = JSON.stringify(line);
+    this.write(`${this.torn ? '\n' : ''}${text}\n`);
+    // An interrupted write earlier left a fragment; the newline above ended it.
+    this.torn = false;
+    this.lines.push({ text, obj });
+    return obj;
+  }
+
+  /**
+   * Append `data` whole, or leave the file as it was: a write that throws or comes up short is cut
+   * back to the size before it, so no later line is written onto a fragment. If even that fails
+   * the log is marked torn, and the next line starts with a newline that ends the fragment.
+   */
+  write(data) {
+    const bytes = Buffer.from(data, 'utf8');
     const fd = fs.openSync(this.file, 'a', 0o600);
     try {
-      if (this.torn) {
-        // End the fragment an interrupted write left, so this line starts a line of its own.
-        fs.writeSync(fd, '\n');
-        this.torn = false;
+      const before = fs.fstatSync(fd).size;
+      try {
+        const written = this.io.writeSync(fd, bytes);
+        if (written !== bytes.length) {
+          throw new Error(`a short write (${written} of ${bytes.length} bytes)`);
+        }
+        fs.fsyncSync(fd);
+      } catch (err) {
+        try {
+          fs.ftruncateSync(fd, before);
+        } catch {
+          this.torn = true;
+        }
+        throw err;
       }
-      fs.writeSync(fd, `${text}\n`);
-      fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
-    this.lines.push({ text, obj: line });
-    return line;
   }
 
   /** The lines the bridge does not hold yet, given the `log_head` its manifest answered. */
@@ -249,18 +306,24 @@ export function reportBatches(lines) {
 // The lock
 
 /**
- * Take `<root>/.lock` by exclusive create. A lock older than `staleAfterMs` (twice the update
- * budget: a holder that ran out of budget has already let go) is taken over by renaming it aside —
- * and if what was renamed aside turns out to be fresh, another launch took it over first, so it is
- * put back and this launch gives way.
+ * Take `<root>/.lock` by exclusive create. The lock records its holder's own DEADLINE — when a
+ * launch's budget ends, or when a bootstrap gives up — and a later launch takes it over only once
+ * that deadline has passed (plus a grace for the few writes a holder makes after its deadline:
+ * dropping staging, one log line, the release). A lock whose record cannot be read (a holder killed
+ * mid-create) falls back to its age against `staleAfterMs`. The takeover renames the lock aside and
+ * re-reads what it moved: anything but the record it judged means another launch took it first, so
+ * it is put back and this launch gives way.
  */
-export function takeLock(root, staleAfterMs) {
+export const LOCK_GRACE_MS = 5000;
+
+export function takeLock(root, { deadline, staleAfterMs, now = Date.now }) {
   const lock = path.join(root, '.lock');
   const token = `${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  const record = JSON.stringify({ token, pid: process.pid, deadline_ms: Number.isFinite(deadline) ? deadline : null });
   const create = () => {
     const fd = fs.openSync(lock, 'wx', 0o600);
     try {
-      fs.writeSync(fd, token);
+      fs.writeSync(fd, record);
     } finally {
       fs.closeSync(fd);
     }
@@ -274,19 +337,38 @@ export function takeLock(root, staleAfterMs) {
       throw err;
     }
   }
-  let age;
-  try {
-    age = Date.now() - fs.statSync(lock).mtimeMs;
-  } catch {
-    age = Infinity;
-  }
-  if (age <= staleAfterMs) {
-    throw held(`, ${Math.round(age / 1000)} s old`);
+  const judge = (file) => {
+    let text;
+    let mtime;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+      mtime = fs.statSync(file).mtimeMs;
+    } catch {
+      return { text: null, stale: true, why: '' };
+    }
+    let holderDeadline;
+    try {
+      holderDeadline = JSON.parse(text).deadline_ms;
+    } catch {
+      holderDeadline = undefined;
+    }
+    if (holderDeadline === null) {
+      return { text, stale: false, why: ', held with no deadline' };
+    }
+    if (Number.isFinite(holderDeadline)) {
+      return { text, stale: now() > holderDeadline + LOCK_GRACE_MS, why: `, its holder's deadline ${new Date(holderDeadline).toISOString()}` };
+    }
+    const age = now() - mtime;
+    return { text, stale: age > staleAfterMs, why: `, ${Math.round(age / 1000)} s old, no readable deadline` };
+  };
+  const seen = judge(lock);
+  if (!seen.stale) {
+    throw held(seen.why);
   }
   const aside = `${lock}.stale-${token}`;
   try {
     fs.renameSync(lock, aside);
-    if (Date.now() - fs.statSync(aside).mtimeMs <= staleAfterMs) {
+    if (fs.readFileSync(aside, 'utf8') !== seen.text) {
       fs.renameSync(aside, lock);
       throw held(', just taken over by another launch');
     }
@@ -315,7 +397,7 @@ export function releaseLock(handle) {
     return;
   }
   try {
-    if (fs.readFileSync(handle.lock, 'utf8') === handle.token) {
+    if (JSON.parse(fs.readFileSync(handle.lock, 'utf8')).token === handle.token) {
       fs.rmSync(handle.lock, { force: true });
     }
   } catch {
@@ -647,7 +729,7 @@ export function checkAgainstFilesJson(entries, manifest) {
   return files;
 }
 
-/** The pack's files, after every check the pack itself can answer. */
+/** `{files, filesJson}`: the pack's files and its FILES.json entry, after every check the pack itself can answer. */
 export function readPack(packBytes, manifest) {
   if (packBytes.length !== manifest.pack.size) {
     throw new Refusal(`the pack is ${packBytes.length} bytes; its manifest says ${manifest.pack.size}`);
@@ -661,7 +743,8 @@ export function readPack(packBytes, manifest) {
   } catch (err) {
     throw new Refusal(`the pack does not decompress: ${err && err.message ? err.message : err}`);
   }
-  return checkAgainstFilesJson(readUstar(tar), manifest);
+  const entries = readUstar(tar);
+  return { files: checkAgainstFilesJson(entries, manifest), filesJson: entries.find((e) => e.path === FILES_JSON) };
 }
 
 /**
@@ -713,7 +796,7 @@ function compareTuples(a, b) {
 // ---------------------------------------------------------------------------------------------
 // Installing
 
-function stage(root, release, files, packSha) {
+function stage(root, release, files, packSha, filesJson) {
   const staging = path.join(root, 'staging', `${release}.partial`);
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
@@ -725,7 +808,10 @@ function stage(root, release, files, packSha) {
       fs.chmodSync(dest, f.mode);
     }
   }
-  fs.writeFileSync(path.join(staging, '.verified'), `${packSha}\n`);
+  // FILES.json stays with the release, and .verified records its digest beside the pack's, so
+  // entry.mjs can tell an intact release from one a power cut left half-written.
+  fs.writeFileSync(path.join(staging, 'FILES.json'), filesJson.data);
+  fs.writeFileSync(path.join(staging, '.verified'), `${packSha}\n${sha256(filesJson.data)}\n`);
   return staging;
 }
 
@@ -775,7 +861,7 @@ function writePointer(root, release, manifest, packSha) {
     client_version: manifest ? manifest.client_version : clientVersionOf(root, release),
     installed_at: new Date().toISOString(),
     pack_sha256: packSha,
-    files_json_sha256: manifest ? manifest.files_json_sha256 : null,
+    files_json_sha256: manifest ? manifest.files_json_sha256 : (verifiedRecord(root, release)?.filesJsonSha256 ?? null),
   });
 }
 
@@ -790,13 +876,20 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   checkBudget(ctx, `moving release ${release} into versions/`);
   crashAt(ctx, 'before-rename');
   fs.mkdirSync(path.join(root, 'versions'), { recursive: true });
-  if (fs.existsSync(target)) {
-    const held = verifiedPackSha(root, release);
-    if (held !== packSha) {
-      throw new Refusal(`versions/${release} already holds ${held === null ? 'an unverified tree' : `pack ${held}`}, not the verified pack ${packSha}; it is left as it is`);
-    }
+  const held = fs.existsSync(target) ? verifiedPackSha(root, release) : undefined;
+  const damage = held === undefined ? null : held === null ? 'it holds no readable .verified record' : releaseDamage(root, release);
+  if (held !== undefined && damage === null && held !== packSha) {
+    throw new Refusal(`versions/${release} already holds pack ${held}, not the verified pack ${packSha}; it is left as it is`);
+  }
+  if (held !== undefined && damage === null) {
+    // The same verified bytes are already there, intact: reuse them.
     fs.rmSync(staging, { recursive: true, force: true });
   } else {
+    if (held !== undefined) {
+      // Never the running release: resolveInstalled starts only an intact one.
+      ctx.say(`versions/${release} is damaged (${damage}); replacing it with the verified pack`);
+      fs.rmSync(target, { recursive: true, force: true });
+    }
     renameWithRetry(staging, target, { deadline: ctx.deadline });
     fsyncDirectory(path.join(root, 'versions'));
   }
@@ -973,11 +1066,14 @@ function recordUnloggedInstall(ctx, release, manifest, manifestSha256) {
 
 /** Stage and commit a pack whose bytes are in hand. The caller has decided it may be installed. */
 async function installPack(ctx, { manifest, manifestSha256, packBytes, from, action }) {
-  const files = readPack(packBytes, manifest);
+  // The verify-and-stage below is one synchronous stretch (the deadline timer cannot interrupt
+  // it), so it is not begun once the budget has run out.
+  checkBudget(ctx, `verifying and staging release ${manifest.bridge_release}`);
+  const { files, filesJson } = readPack(packBytes, manifest);
   if (!satisfiesEngines(manifest.node_engines, process.versions.node)) {
     throw new Refusal(`release ${manifest.bridge_release} needs node ${manifest.node_engines}; this seat runs ${process.versions.node}`);
   }
-  const staging = stage(ctx.root, manifest.bridge_release, files, manifest.pack.sha256);
+  const staging = stage(ctx.root, manifest.bridge_release, files, manifest.pack.sha256, filesJson);
   crashAt(ctx, 'after-extract');
   if (ctx.env.AWB_CLIENT_CRASH_AT === 'budget-exceeded') {
     // A step that hangs past the budget and ignores the signal: what must stop it is the check
@@ -1044,6 +1140,32 @@ async function report(ctx, head) {
 }
 
 /**
+ * Repair what entry.mjs's step 1 passed over: point current.json at the release it started, and
+ * drop every damaged release (a power cut's half-written tree, DL-434) so it counts as not
+ * installed and the offer fetches it again. The running release is never among them — step 1
+ * starts only an intact one. One `pointer_recovered` line says what was found and done.
+ */
+function recoverRoot(ctx, installed) {
+  const { root } = ctx;
+  checkBudget(ctx, 'repairing current.json');
+  const dropped = [];
+  for (const d of installed.damaged ?? []) {
+    if (d.release === installed.release) {
+      continue;
+    }
+    fs.rmSync(path.join(root, 'versions', d.release), { recursive: true, force: true });
+    dropped.push(`release ${d.release} (${d.reason})`);
+  }
+  if (installed.recovered) {
+    writePointer(root, installed.release, null, verifiedPackSha(root, installed.release));
+  }
+  const reason = dropped.length > 0
+    ? `damaged, removed so it is fetched again: ${dropped.join('; ')}; current.json names ${installed.release}, the newest intact release`
+    : `current.json was unreadable; it now names ${installed.release}, the newest intact release`;
+  logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: installed.release, reason });
+}
+
+/**
  * What entry.mjs runs at a new launch. Resolves with this launch's outcome —
  * `{state, installed, published, offer, approval_owed, error, report_error}` where `state` is
  * `current`, `approval_owed` or `update_failed` — and does not reject for anything it anticipated.
@@ -1056,7 +1178,7 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
 
   let lock;
   try {
-    lock = takeLock(root, 2 * budgetMs);
+    lock = takeLock(root, { deadline: ctx.deadline, staleAfterMs: 2 * budgetMs });
   } catch (err) {
     return { ...result, state: 'update_failed', error: err.message };
   }
@@ -1066,10 +1188,8 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
   try {
     ctx.log = InstallLog.open(root, say);
     try {
-      if (installed.recovered) {
-        checkBudget(ctx, 'repairing current.json');
-        writePointer(root, installed.release, null, verifiedPackSha(root, installed.release));
-        logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: installed.release, reason: `current.json was unreadable; it now names ${installed.release}, the newest verified release` });
+      if (installed.recovered || (installed.damaged ?? []).length > 0) {
+        recoverRoot(ctx, installed);
       }
       ctx.door = doorFromEnv(env);
       ctx.source = ctx.door.source;
@@ -1089,8 +1209,10 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
         }
         result.state = 'approval_owed';
         result.approval_owed = owed;
-        const last = ctx.log.last();
-        if (!(last && last.obj.action === 'approval_owed' && last.obj.to_bridge_release === owed && last.obj.files_json_sha256 === manifest.files_json_sha256)) {
+        // Once per owed content: the latest approval_owed line, wherever it sits in the log.
+        const owedLines = ctx.log.lines.filter((l) => l.obj.action === 'approval_owed');
+        const last = owedLines.length > 0 ? owedLines[owedLines.length - 1] : null;
+        if (!(last && last.obj.to_bridge_release === owed && last.obj.files_json_sha256 === manifest.files_json_sha256)) {
           logLine(ctx, { action: 'approval_owed', result: 'skipped', from_bridge_release: installed.release, to_bridge_release: owed, client_version: manifest.client_version, files_json_sha256: manifest.files_json_sha256, reason: 'this seat requires approval, and the published release is not approved for it' });
         }
         settleRoot(ctx, installed.release);
@@ -1157,7 +1279,7 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
   const say = (text) => process.stderr.write(`client-update install: ${text}\n`);
   fs.mkdirSync(root, { recursive: true });
   const ctx = { root, signal: new AbortController().signal, deadline: Infinity, launchId: null, actor: 'provision', env, source, door: null, log: null, say };
-  const lock = takeLock(root, 10 * 60 * 1000);
+  const lock = takeLock(root, { deadline: Date.now() + INSTALL_LOCK_MS, staleAfterMs: INSTALL_LOCK_MS });
   const known = { from: null, to: null, manifest: null, manifestSha256: null };
   try {
     ctx.log = InstallLog.open(root, say);
@@ -1167,7 +1289,8 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
       known.manifest = manifest;
       known.manifestSha256 = sha256(manifestBytes);
       known.to = manifest.bridge_release;
-      const installed = resolveInstalled(root);
+      const resolved = resolveInstalled(root);
+      const installed = resolved.release === null ? null : resolved;
       known.from = installed ? installed.release : null;
       if (installed) {
         refuseAgainstInstalled(root, installed.release, manifest);
@@ -1188,7 +1311,7 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
 }
 
 function usage() {
-  process.stderr.write('usage: client-update.mjs install --pack <file> --manifest <file> --root <dir> [--source <text>]\n');
+  process.stderr.write('usage: client-update.mjs install --pack <file> --manifest <file> --root <dir> [--actor provision] [--source <text>]\n');
   return 2;
 }
 
@@ -1200,12 +1323,14 @@ export async function cli(argv) {
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i];
     const value = argv[i + 1];
-    if (!['--pack', '--manifest', '--root', '--source'].includes(key) || value === undefined) {
+    if (!['--pack', '--manifest', '--root', '--source', '--actor'].includes(key) || value === undefined) {
       return usage();
     }
     opts[key.slice(2)] = value;
   }
-  if (!opts.pack || !opts.manifest || !opts.root) {
+  // `--actor provision` is what the design's bootstrap passes (§3.5 step 4). A bootstrap's lines
+  // are the provisioner's whether or not it says so; `launch` is entry.mjs's and needs a launch id.
+  if (!opts.pack || !opts.manifest || !opts.root || (opts.actor !== undefined && opts.actor !== 'provision')) {
     return usage();
   }
   try {

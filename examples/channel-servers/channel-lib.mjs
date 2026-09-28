@@ -220,7 +220,9 @@ export function sshRoundTrip({ target, key = '', port = '', input, deadlineMs, s
 }
 
 // One HTTP POST to a bridge door with the agent's bearer. Resolves {status, ok, text}; REJECTS
-// when no response arrived (connection refused, DNS, an abort through `signal`), and the caller
+// when no response arrived (connection refused, DNS, an abort through `signal`) and when the
+// answer is a REDIRECT — a bearer call is never re-sent elsewhere (DL-217: the doors are
+// loopback, and a redirect off them would carry the bearer to wherever it points). The caller
 // words that failure — the two callers say different things about it.
 export async function httpRoundTrip({ url, token, body, signal }) {
   const res = await fetch(url, {
@@ -231,6 +233,7 @@ export async function httpRoundTrip({ url, token, body, signal }) {
     },
     body,
     signal,
+    redirect: 'error',
   });
   return { status: res.status, ok: res.ok, text: await res.text() };
 }
@@ -260,6 +263,15 @@ export function launchIdentity(env) {
 // and the file is the previous launch's), so it is reported as unknown rather than believed —
 // "reported current, actually isn't" is the failure this line exists to prevent.
 export function clientUpdateInstruction(state, { launchId, root }) {
+  const base = updateStateLine(state, { launchId, root });
+  if (state && typeof state.recovered === 'string' && state.launch_id === launchId) {
+    const damage = `CLIENT RELEASE DAMAGED ON THIS SEAT: ${state.recovered}. Tell your operator; the damaged release is fetched again from the bridge.`;
+    return base ? `${damage} ${base}` : damage;
+  }
+  return base;
+}
+
+function updateStateLine(state, { launchId, root }) {
   const log = `${root}/install-log.jsonl`;
   if (!state || state.unreadable !== undefined || state.launch_id !== launchId) {
     const why = !state || state.unreadable !== undefined
@@ -287,7 +299,7 @@ export function clientUpdateInstruction(state, { launchId, root }) {
         `CLIENT UPDATE FAILED (${state.error || 'no reason recorded'}): this seat runs channel-server release ${running}` +
         (state.published && state.published !== state.running ? `; published release ${state.published} was not applied` : '') +
         `. Tell your operator; the install log is ${log}. ` +
-        'The update is tried again at the next launch; if the installed updater itself is broken, bootstrapping this seat\'s client again from the bridge\'s published pack repairs it.'
+        'The update is tried again at the next launch; an updater that fails at every launch is replaced when the bridge publishes a newer release.'
       );
     default:
       return (

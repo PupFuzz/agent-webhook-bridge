@@ -19,6 +19,7 @@ import { SOURCE_DIR, sha256, buildPack, clientFiles, goodPack, fixtureBridge } f
 import {
   compareReleases,
   decideLaunch,
+  bootTimeMs,
   failureMarkerPath,
   composeState,
   STRICT_RELEASE,
@@ -26,7 +27,9 @@ import {
 import {
   MAX_REPORT_ENTRIES,
   MAX_REPORT_BYTES,
+  MAX_LINE_BYTES,
   InstallLog,
+  takeLock,
   reportBatches,
   satisfiesEngines,
   checkPackPath,
@@ -36,7 +39,8 @@ import {
   clipBytes,
   Refusal,
 } from '../client-update.mjs';
-import { launchIdentity, clientUpdateInstruction } from '../channel-lib.mjs';
+import { launchIdentity, clientUpdateInstruction, httpRoundTrip } from '../channel-lib.mjs';
+import http from 'node:http';
 
 const UPDATER = path.join(SOURCE_DIR, 'client-update.mjs');
 const VECTORS = path.join(SOURCE_DIR, '..', '..', 'tests', 'Fixtures', 'version-comparator-vectors.json');
@@ -191,7 +195,8 @@ test('bootstrap installs a pack into an empty root: pointer, verified release, e
   assert.match(r.stdout, /release 1\.0\.0 installed/);
   assert.equal(read(root, 'current.json').bridge_release, '1.0.0');
   assert.equal(read(root, 'current.json').pack_sha256, built.manifest.pack.sha256);
-  assert.equal(fs.readFileSync(path.join(root, 'versions', '1.0.0', '.verified'), 'utf8').trim(), built.manifest.pack.sha256);
+  assert.equal(fs.readFileSync(path.join(root, 'versions', '1.0.0', '.verified'), 'utf8'), `${built.manifest.pack.sha256}\n${built.manifest.files_json_sha256}\n`);
+  assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '1.0.0', 'FILES.json')), built.filesJsonBytes, 'FILES.json is kept with the release');
   assert.deepEqual(fs.readFileSync(path.join(root, 'entry.mjs')), fs.readFileSync(path.join(SOURCE_DIR, 'entry.mjs')));
   const shim = process.platform === 'win32' ? 'check-channel-snapshot.py.cmd' : 'check-channel-snapshot.py';
   assert.ok(fs.existsSync(path.join(root, 'bin', shim)), 'the seat-tool shim is written');
@@ -506,7 +511,7 @@ test('state.json names the release that was imported, never the one resolved bef
 test('a reconnect inside a live session does no network and no disk step, and keeps its launch id', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
-  const launchJson = { launch_id: 'L-existing-1', ppid: process.pid, pid: 1, started_at: 'x' };
+  const launchJson = { launch_id: 'L-existing-1', ppid: process.pid, pid: 1, boot_ms: bootTimeMs(), started_at: 'x' };
   fs.writeFileSync(path.join(root, 'launch.json'), JSON.stringify(launchJson));
   const before = treeOf(root);
   const lines = logLines(root).length;
@@ -527,7 +532,7 @@ test('a launch record naming a dead parent is a new launch: a fresh id, and the 
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
   const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
-  fs.writeFileSync(path.join(root, 'launch.json'), JSON.stringify({ launch_id: 'L-old', ppid: Number(dead.stdout), pid: 1, started_at: 'x' }));
+  fs.writeFileSync(path.join(root, 'launch.json'), JSON.stringify({ launch_id: 'L-old', ppid: Number(dead.stdout), pid: 1, boot_ms: bootTimeMs(), started_at: 'x' }));
 
   const run = await launch(root, seatEnv(t, bridge), { reconnect: true });
 
@@ -535,17 +540,21 @@ test('a launch record naming a dead parent is a new launch: a fresh id, and the 
   assert.equal(run.started.release, '2.0.0');
 });
 
-test('decideLaunch: only a live, matching parent is a reconnect', () => {
-  const rec = { launch_id: 'L1', ppid: 4242 };
-  assert.deepEqual(decideLaunch(rec, { ppid: 4242, alive: () => true }), { newLaunch: false, launchId: 'L1' });
-  assert.equal(decideLaunch(rec, { ppid: 4242, alive: () => false }).newLaunch, true);
-  assert.equal(decideLaunch(rec, { ppid: 99, alive: () => true }).newLaunch, true);
-  assert.equal(decideLaunch({ launch_id: 'L1', ppid: 1 }, { ppid: 1, alive: () => true }).newLaunch, true, 'init is never a session');
-  assert.equal(decideLaunch({ launch_id: 'bad id!', ppid: 4242 }, { ppid: 4242, alive: () => true }).newLaunch, true);
+test('decideLaunch: only a live, matching parent in this boot is a reconnect', () => {
+  const boot = 1_700_000_000_000;
+  const rec = { launch_id: 'L1', ppid: 4242, boot_ms: boot };
+  const same = { ppid: 4242, alive: () => true, bootMs: boot + 800 };
+  assert.deepEqual(decideLaunch(rec, same), { newLaunch: false, launchId: 'L1' }, 'clock jitter inside the tolerance is one boot');
+  assert.equal(decideLaunch(rec, { ...same, alive: () => false }).newLaunch, true);
+  assert.equal(decideLaunch(rec, { ...same, ppid: 99 }).newLaunch, true);
+  assert.equal(decideLaunch(rec, { ...same, bootMs: boot + 3_600_000 }).newLaunch, true, 'a reboot that reuses the pid is a new launch');
+  assert.equal(decideLaunch({ launch_id: 'L1', ppid: 4242 }, same).newLaunch, true, 'a record with no boot time is not believed');
+  assert.equal(decideLaunch({ launch_id: 'L1', ppid: 1, boot_ms: boot }, { ...same, ppid: 1 }).newLaunch, true, 'init is never a session');
+  assert.equal(decideLaunch({ launch_id: 'bad id!', ppid: 4242, boot_ms: boot }, same).newLaunch, true);
   assert.equal(decideLaunch(null).newLaunch, true);
   assert.match(decideLaunch(null).launchId, /^[0-9a-f-]{36}$/);
-  // The real liveness probe: this process is alive; process.kill(pid, 0) is portable.
-  assert.equal(decideLaunch({ launch_id: 'L2', ppid: process.pid }, { ppid: process.pid }).newLaunch, false);
+  // The real probes: this process is alive (process.kill(pid, 0) is portable), and this boot is this boot.
+  assert.equal(decideLaunch({ launch_id: 'L2', ppid: process.pid, boot_ms: bootTimeMs() }, { ppid: process.pid }).newLaunch, false);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -559,10 +568,11 @@ for (const [point, startsNew] of [['after-extract', false], ['before-rename', fa
     const killed = await launch(root, seatEnv(t, bridge, { AWB_CLIENT_CRASH_AT: point }));
     assert.equal(killed.started, null, 'the kill happens before any server starts');
     assert.ok(killed.signal === 'SIGKILL' || killed.code !== 0, `the launch was killed (${killed.code}/${killed.signal})`);
-    // The dead launch's lock is stale by now as far as this test is concerned.
+    // The dead launch's lock names its own deadline; move it into the past rather than wait.
     if (fs.existsSync(path.join(root, '.lock'))) {
-      const old = (Date.now() - 600000) / 1000;
-      fs.utimesSync(path.join(root, '.lock'), old, old);
+      const held = JSON.parse(fs.readFileSync(path.join(root, '.lock'), 'utf8'));
+      assert.ok(Number.isFinite(held.deadline_ms), 'the lock records its holder\'s deadline');
+      fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ ...held, deadline_ms: Date.now() - 60000 }));
     }
 
     bridge.state.fail = { client_manifest: { status: 503, error: 'down for the test' } };
@@ -747,8 +757,8 @@ test('clientUpdateInstruction: silent when current, loud otherwise, and never be
   assert.equal(
     clientUpdateInstruction({ ...base, state: 'update_failed', error: 'bridge unreachable (x)', published: '2.0.0' }, { launchId: 'L', root }),
     'CLIENT UPDATE FAILED (bridge unreachable (x)): this seat runs channel-server release 1.0.0; published release 2.0.0 was not applied. ' +
-      'Tell your operator; the install log is /r/install-log.jsonl. The update is tried again at the next launch; if the installed updater itself is broken, ' +
-      "bootstrapping this seat's client again from the bridge's published pack repairs it.",
+      'Tell your operator; the install log is /r/install-log.jsonl. The update is tried again at the next launch; ' +
+      'an updater that fails at every launch is replaced when the bridge publishes a newer release.',
   );
   assert.doesNotMatch(clientUpdateInstruction({ ...base, state: 'update_failed', error: 'x', published: '1.0.0' }, { launchId: 'L', root }), /was not applied/);
   assert.match(clientUpdateInstruction({ ...base, state: 'approval_owed', approval_owed: '2.0.0' }, { launchId: 'L', root }), /^CLIENT RELEASE 2\.0\.0 IS PUBLISHED/);
@@ -812,4 +822,182 @@ test('Windows: a deep node_modules path installs (long paths)', async (t) => {
 
   assert.equal(run.started.release, '2.0.0', run.stderr);
   assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0', ...deep.split('/'))));
+});
+
+// ---------------------------------------------------------------------------------------------
+// r1 review: records that cannot be written, power-cut damage, the lock's own deadline, the log
+
+for (const record of ['state.json', 'launch.json']) {
+  test(`an unwritable ${record} is said on stderr and the verified release still starts`, async (t) => {
+    const root = await seatWith(t, '1.0.0');
+    const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
+    fs.rmSync(path.join(root, record), { force: true });
+    fs.mkdirSync(path.join(root, record, 'blocker'), { recursive: true });
+    const env = seatEnv(t, bridge);
+    const run = await launch(root, env, { reconnect: true });
+
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(run.started.release, '1.0.0', 'a record that cannot be written never keeps a release from starting');
+    assert.match(run.stderr, new RegExp(`could not write .*${record.replace('.', '\\.')}.*starting the channel server anyway`));
+    assert.ok(!fs.existsSync(failureMarkerPath(env)), 'no .FAILED marker: the channel did start');
+  });
+}
+
+/** Truncate one required file of an installed release to zero bytes — what a power cut can leave. */
+function damage(root, release, file = 'agent-webhook-bridge-channel.mjs') {
+  fs.writeFileSync(path.join(root, 'versions', release, 'client', file), '');
+}
+
+test('power-cut damage: a zero-length required file in the current release starts the previous one, loudly, and is fetched again', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await launch(root, seatEnv(t, bridge));
+  assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
+  damage(root, '2.0.0');
+
+  const offline = await launch(root, seatEnv(t, null));
+  assert.equal(offline.started.release, '1.0.0', 'the kept previous release starts');
+  assert.match(offline.stderr, /release 2\.0\.0 is damaged \(client\/agent-webhook-bridge-channel\.mjs does not match its FILES\.json line\)/);
+  const state = read(root, 'state.json');
+  assert.match(state.recovered, /release 2\.0\.0 is damaged .*release 1\.0\.0 started instead/);
+  assert.match(clientUpdateInstruction(state, { launchId: state.launch_id, root }), /^CLIENT RELEASE DAMAGED ON THIS SEAT: release 2\.0\.0 is damaged/);
+  const recovered = logObjs(root).find((l) => l.action === 'pointer_recovered');
+  assert.match(recovered.reason, /damaged, removed so it is fetched again: release 2\.0\.0/);
+  assert.equal(read(root, 'current.json').bridge_release, '1.0.0');
+  assert.ok(!fs.existsSync(path.join(root, 'versions', '2.0.0')), 'the damaged release counts as not installed');
+
+  const online = await launch(root, seatEnv(t, bridge));
+  assert.equal(online.started.release, '2.0.0', 'the damaged release is fetched again and runs');
+  assert.equal(read(root, 'state.json').state, 'current');
+  assert.equal(read(root, 'state.json').recovered, undefined, 'nothing to say once the release runs again');
+  assertChain(root);
+});
+
+test('power-cut damage: a release whose .verified record is empty is never started', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  await launch(root, seatEnv(t, bridge));
+  fs.writeFileSync(path.join(root, 'versions', '2.0.0', '.verified'), '');
+  const run = await launch(root, seatEnv(t, bridge));
+  assert.equal(run.started.release, '2.0.0', 'the unverified tree is replaced by the verified pack, not reused');
+  assert.equal(read(root, 'state.json').state, 'current');
+});
+
+test('bootstrap onto a damaged copy of the same release re-extracts it instead of reusing it', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  damage(root, '1.0.0', 'client-update.mjs');
+  const r = bootstrap(t, root, goodPack('1.0.0'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /versions\/1\.0\.0 is damaged/);
+  assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '1.0.0', 'client', 'client-update.mjs')), fs.readFileSync(UPDATER));
+});
+
+test('no intact release at all: not started, loudly', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  damage(root, '1.0.0');
+  const env = seatEnv(t, null);
+  const run = await launch(root, env);
+  assert.equal(run.code, 2);
+  assert.match(run.stderr, /release 1\.0\.0 is damaged/);
+  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /no verified client release is installed/);
+});
+
+test('a bootstrap\'s lock is honoured to its own deadline, not taken over at twice a launch budget', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ token: 'boot-1', pid: 1, deadline_ms: Date.now() + 5 * 60000 }));
+  const old = (Date.now() - 600000) / 1000;
+  fs.utimesSync(path.join(root, '.lock'), old, old);
+  const run = await launch(root, seatEnv(t, bridge, { AWB_CLIENT_UPDATE_BUDGET_MS: '1000' }));
+
+  assert.equal(run.started.release, '1.0.0');
+  assert.match(read(root, 'state.json').error, /^lock held: .*its holder's deadline/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.lock'), 'utf8')).token, 'boot-1', 'the holder\'s lock is untouched');
+});
+
+test('a lock past its holder\'s own deadline is taken over', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ token: 'dead', pid: 1, deadline_ms: Date.now() - 60000 }));
+  const run = await launch(root, seatEnv(t, bridge));
+  assert.equal(run.started.release, '2.0.0');
+});
+
+test('takeLock writes its deadline, and gives way to a live one', (t) => {
+  const root = newRoot(t);
+  const first = takeLock(root, { deadline: Date.now() + 60000, staleAfterMs: 1 });
+  assert.ok(JSON.parse(fs.readFileSync(first.lock, 'utf8')).deadline_ms > Date.now());
+  assert.throws(() => takeLock(root, { deadline: Date.now() + 60000, staleAfterMs: 1 }), /lock held/);
+});
+
+test('a write that fails half-way is cut back, so the next line never lands on a fragment', (t) => {
+  const root = newRoot(t);
+  const log = InstallLog.open(root, () => {});
+  log.append({ action: 'fail', result: 'failed', actor: 'provision', reason: 'first' });
+  const size = fs.statSync(log.file).size;
+  log.io.writeSync = (fd, bytes) => {
+    fs.writeSync(fd, bytes.subarray(0, 12));
+    throw new Error('ENOSPC: injected');
+  };
+  assert.throws(() => log.append({ action: 'fail', result: 'failed', actor: 'provision', reason: 'second' }), /injected/);
+  assert.equal(fs.statSync(log.file).size, size, 'the partial write was cut back');
+  log.io.writeSync = fs.writeSync;
+  log.append({ action: 'fail', result: 'failed', actor: 'provision', reason: 'third' });
+  const lines = fs.readFileSync(log.file, 'utf8').split('\n').filter(Boolean);
+  assert.equal(lines.length, 2);
+  assert.equal(JSON.parse(lines[1]).prev_sha256, sha256(Buffer.from(lines[0])));
+  assert.equal(JSON.parse(lines[1]).seq, 2);
+});
+
+test('a line whose free text grows past MAX_LINE_BYTES as it is escaped is cut to fit', (t) => {
+  const root = newRoot(t);
+  const log = InstallLog.open(root, () => {});
+  // Each control character escapes to six bytes: at the per-field caps the line would be ~4.9 KB.
+  const fields = { action: 'fail', result: 'failed', actor: 'provision', reason: '\u0001'.repeat(500), source: '\u0001'.repeat(255), pack_sha256: 'a'.repeat(64), files_json_sha256: 'b'.repeat(64), manifest_sha256: 'c'.repeat(64) };
+  const uncut = JSON.stringify({ ...fields, install_id: log.installId, seq: 1, time: new Date().toISOString(), prev_sha256: null });
+  assert.ok(Buffer.byteLength(uncut) > MAX_LINE_BYTES, 'the input is over the cap before cutting');
+  const line = log.append(fields);
+  const text = fs.readFileSync(log.file, 'utf8').trim();
+  assert.ok(Buffer.byteLength(text) <= MAX_LINE_BYTES, `line is ${Buffer.byteLength(text)} bytes`);
+  assert.equal(JSON.parse(text).reason, line.reason);
+});
+
+test('a redirect from the bridge is refused, never followed with the bearer', async (t) => {
+  let followed = 0;
+  const elsewhere = http.createServer((req, res) => {
+    followed += 1;
+    res.end('{}');
+  });
+  await new Promise((resolve) => elsewhere.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => elsewhere.close(resolve)));
+  const target = `http://127.0.0.1:${elsewhere.address().port}/agent-tools/client`;
+
+  await assert.rejects(httpRoundTrip({ url: target.replace(elsewhere.address().port, '9'), token: 't', body: '{}' }));
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), redirectTo: target });
+  const run = await launch(root, seatEnv(t, bridge));
+
+  assert.equal(run.started.release, '1.0.0');
+  assert.match(read(root, 'state.json').error, /^bridge unreachable/);
+  assert.equal(followed, 0, 'the redirect target never saw a request');
+});
+
+test('install accepts --actor provision (the design\'s bootstrap call) and refuses any other actor', async (t) => {
+  const files = writePack(t, goodPack('1.0.0'));
+  const root = newRoot(t);
+  const ok = spawnSync(process.execPath, [UPDATER, 'install', '--pack', files.pack, '--manifest', files.manifest, '--root', root, '--actor', 'provision'], { encoding: 'utf8' });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(logObjs(root)[0].actor, 'provision');
+  const bad = spawnSync(process.execPath, [UPDATER, 'install', '--pack', files.pack, '--manifest', files.manifest, '--root', newRoot(t), '--actor', 'launch'], { encoding: 'utf8' });
+  assert.equal(bad.status, 2);
+});
+
+test('approval_owed is logged once per owed content even with other lines in between', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0'), offer: null, owed: '2.0.0' });
+  await launch(root, seatEnv(t, bridge));
+  await launch(root, seatEnv(t, null));
+  await launch(root, seatEnv(t, bridge));
+
+  assert.deepEqual(logObjs(root).map((l) => l.action), ['bootstrap', 'approval_owed', 'fail']);
 });

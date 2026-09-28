@@ -153,6 +153,10 @@ export async function fixtureBridge(t, initial = {}) {
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(body));
       };
+      if (state.redirectTo) {
+        res.writeHead(307, { Location: state.redirectTo });
+        return res.end();
+      }
       if (req.headers.authorization !== `Bearer ${state.token}`) {
         return send(401, { ok: false, error: 'unauthenticated' });
       }

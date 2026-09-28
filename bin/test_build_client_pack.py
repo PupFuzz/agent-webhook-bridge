@@ -462,12 +462,12 @@ class Refusals(unittest.TestCase):
 
     def test_the_required_files_are_the_ones_the_seat_updater_requires(self):
         # Two lists of one set, in two languages: the builder refuses what a seat would refuse.
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "channel-servers", "client-update.mjs"), encoding="utf-8") as fh:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "channel-servers", "entry.mjs"), encoding="utf-8") as fh:
             source = fh.read()
-        match = re.search(r"const REQUIRED_ENTRIES = \[(.*?)\];", source)
-        self.assertIsNotNone(match, "client-update.mjs no longer declares REQUIRED_ENTRIES")
-        declared = set(re.findall(r"'client/([^']+)'|`client/\$\{(\w+)\}`", match.group(1)))
-        names = {literal or {"UPDATER_FILE": "client-update.mjs", "SERVER_FILE": "agent-webhook-bridge-channel.mjs"}[const] for literal, const in declared}
+        match = re.search(r"export const REQUIRED_CLIENT_FILES = \[(.*?)\];", source)
+        self.assertIsNotNone(match, "entry.mjs no longer declares REQUIRED_CLIENT_FILES")
+        names = set(re.findall(r"'([^']+)'", match.group(1)))
+        self.assertIn("client-update.mjs", names, "the reader parsed nothing it should have")
         self.assertEqual(names - {"package.json"}, set(bcp.REQUIRED_CLIENT_FILES))
 
     def test_no_tracked_channel_server_files(self):

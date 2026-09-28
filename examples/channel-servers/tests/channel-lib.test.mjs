@@ -1,4 +1,6 @@
-// Direct unit tests for the pure helpers extracted into ../channel-lib.mjs.
+// Direct unit tests for the pure helpers in ../channel-lib.mjs (scrubSnippet, relayBridgeResponse,
+// deriveMeta). Its transport primitives and the update helpers are exercised by
+// client-update.test.mjs and the ssh suites.
 //
 // These functions could not be unit-tested before: they lived in
 // agent-webhook-bridge-channel.mjs, which self-executes on import (it binds a real

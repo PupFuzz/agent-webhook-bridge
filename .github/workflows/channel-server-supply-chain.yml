@@ -18,11 +18,6 @@ name: Channel-server supply chain
 #   3. `npm audit` — FAILS loudly on a high/critical CVE in the pinned tree, so a
 #      vulnerable-but-pinned dependency can't rot silently (the "degraded states
 #      must be loud" posture). You then bump the dep + re-commit the lock.
-#   2b. client-update-windows — the seat updater's suite (tests/client-update.test.mjs)
-#      on windows-latest: directory renames and the EPERM retry, the %TEMP% marker path,
-#      long node_modules paths, and the process.kill(pid, 0) liveness check the session
-#      guard rests on (card#10568, design §3.6). Only that file: the other suites drive a
-#      unix socket or a bash fake `ssh`, which have no Windows form.
 #   4. version-bump-guard — consumers COPY this dir into their own deployment
 #      (per the README), so a downstream snapshot drifts silently when these
 #      files change. Two assertions: FAILS a PR that touches a shipped
@@ -30,6 +25,11 @@ name: Channel-server supply chain
 #      a snapshot can compare to detect drift (DL-038) — and FAILS whenever
 #      package-lock.json's version disagrees with it, since the field is a signal
 #      only while every file that states it agrees (DL-268).
+#   5. client-update-windows — the seat updater's suite (tests/client-update.test.mjs)
+#      on windows-latest: directory renames and the EPERM retry, the %TEMP% marker path,
+#      long node_modules paths, and the process.kill(pid, 0) liveness check the session
+#      guard rests on (card#10568, design §3.6). Only that file: the other suites drive a
+#      unix socket or a bash fake `ssh`, which have no Windows form.
 #
 # Cost-scoped on purpose: only fires when the example actually changes (PR path
 # filter) plus a weekly cron to catch newly-disclosed CVEs without a code change.
