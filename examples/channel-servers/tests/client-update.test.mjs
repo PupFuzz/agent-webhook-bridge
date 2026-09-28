@@ -22,7 +22,7 @@ import {
   bootTimeMs,
   failureMarkerPath,
   composeState,
-  fullTreeDamage,
+  classifyRelease,
   resolveInstalled,
   STRICT_RELEASE,
 } from '../entry.mjs';
@@ -41,6 +41,7 @@ import {
   clipBytes,
   Refusal,
   runLaunchUpdate,
+  installFromFiles,
 } from '../client-update.mjs';
 import { launchIdentity, clientUpdateInstruction, httpRoundTrip } from '../channel-lib.mjs';
 import http from 'node:http';
@@ -624,8 +625,9 @@ test('a release whose server does not load: not started, loudly', async (t) => {
 
   assert.equal(run.code, 2);
   assert.equal(read(root, 'state.json').state, 'not_started');
-  // Its whole tree verifies, so the fault is in the published release, not on this seat.
-  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /release 1\.0\.0 verifies but failed to start \(.+\): this is a defect in the published release; the bridge must publish a fixed release/);
+  // Its whole tree verifies, so the fault is not established as local: a published defect, or a
+  // Node runtime this seat's node_engines no longer describes (design review rule 6).
+  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /release 1\.0\.0 verifies but failed to start \(.+\): a defect in the published release, or this seat's Node runtime no longer matches its node_engines — the bridge must publish a fixed release/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -861,7 +863,7 @@ function damage(root, release, file = 'agent-webhook-bridge-channel.mjs') {
   fs.writeFileSync(path.join(root, 'versions', release, 'client', file), '');
 }
 
-test('power-cut damage: a zero-length required file in the current release starts the previous one, loudly, and is fetched again', async (t) => {
+test('power-cut damage: a zero-length required file in the current release starts the previous one, loudly, and current.json is repointed', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
   await launch(root, seatEnv(t, bridge));
@@ -870,17 +872,19 @@ test('power-cut damage: a zero-length required file in the current release start
 
   const offline = await launch(root, seatEnv(t, null));
   assert.equal(offline.started.release, '1.0.0', 'the kept previous release starts');
-  assert.match(offline.stderr, /release 2\.0\.0 is damaged \(client\/agent-webhook-bridge-channel\.mjs does not match its FILES\.json line\)/);
+  assert.match(offline.stderr, /release 2\.0\.0 is not intact \(client\/agent-webhook-bridge-channel\.mjs does not match its FILES\.json line\)/);
   const state = read(root, 'state.json');
-  assert.match(state.recovered, /release 2\.0\.0 is damaged .*release 1\.0\.0 started instead/);
-  assert.match(clientUpdateInstruction(state, { launchId: state.launch_id, root }), /^CLIENT RELEASE DAMAGED ON THIS SEAT: release 2\.0\.0 is damaged/);
+  assert.match(state.recovered, /release 2\.0\.0 is not intact .*release 1\.0\.0 started instead/);
+  assert.match(clientUpdateInstruction(state, { launchId: state.launch_id, root }), /^CLIENT RELEASE DAMAGED ON THIS SEAT: release 2\.0\.0 is not intact/);
   const recovered = logObjs(root).find((l) => l.action === 'pointer_recovered');
-  assert.match(recovered.reason, /damaged, removed so it is fetched again: release 2\.0\.0/);
+  assert.match(recovered.reason, /current\.json named release 2\.0\.0, which is not intact \(client\/agent-webhook-bridge-channel\.mjs does not match its FILES\.json line\); current\.json now names 1\.0\.0, the selected release/);
   assert.equal(read(root, 'current.json').bridge_release, '1.0.0');
-  assert.ok(!fs.existsSync(path.join(root, 'versions', '2.0.0')), 'the damaged release counts as not installed');
+  // recoverRoot (the pointer repair) deletes NOTHING (design review rule 3): the damaged tree is
+  // still on disk, and is replaced only when commitInstall next tries to install into it.
+  assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')), 'the damaged release is left in place, not deleted, by the pointer repair');
 
   const online = await launch(root, seatEnv(t, bridge));
-  assert.equal(online.started.release, '2.0.0', 'the damaged release is fetched again and runs');
+  assert.equal(online.started.release, '2.0.0', 'the damaged release is replaced by commitInstall and runs');
   assert.equal(read(root, 'state.json').state, 'current');
   assert.equal(read(root, 'state.json').recovered, undefined, 'nothing to say once the release runs again');
   assertChain(root);
@@ -901,14 +905,15 @@ test('bootstrap onto a damaged copy of the same release re-extracts it instead o
   damage(root, '1.0.0', 'client-update.mjs');
   const r = bootstrap(t, root, goodPack('1.0.0'));
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /versions\/1\.0\.0 is damaged/);
+  assert.match(r.stderr, /versions\/1\.0\.0 is not intact/);
   assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '1.0.0', 'client', 'client-update.mjs')), fs.readFileSync(UPDATER));
 });
 
 // r2 review MAJOR: a file outside REQUIRED_CLIENT_FILES could be damaged and never caught — not
 // at step 1 (cheap, required-only), not by a bootstrap re-install (the reuse check was the same
 // cheap check). `channel-lib.mjs` moved INTO REQUIRED_CLIENT_FILES to close the literal repro;
-// `packWithExtraDep` proves the general fix (fullTreeDamage) for a file that stays outside it.
+// `packWithExtraDep` proves the general fix (`classifyRelease`'s full scope) for a file that
+// stays outside it.
 
 /** A pack whose server also imports one file outside REQUIRED_CLIENT_FILES. */
 function packWithExtraDep(release, opts = {}) {
@@ -926,15 +931,15 @@ test('channel-lib.mjs is a required file: damage is caught at step 1, not silent
   const env = seatEnv(t, null);
   const run = await launch(root, env);
   assert.equal(run.code, 2);
-  assert.match(run.stderr, /release 1\.0\.0 is damaged \(client\/channel-lib\.mjs does not match its FILES\.json line\)/);
+  assert.match(run.stderr, /release 1\.0\.0 is not intact \(client\/channel-lib\.mjs does not match its FILES\.json line\)/);
   assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /no verified client release is installed/);
-  assert.equal(read(root, 'current.json').bridge_release, '1.0.0', 'the pointer is untouched: no other release to fall back to');
+  assert.equal(read(root, 'current.json').bridge_release, '1.0.0', 'the pointer is untouched: no other release exists');
 
   // Before the fix, re-installing the SAME pack reused the tree unchanged (commitInstall's reuse
   // check was REQUIRED_CLIENT_FILES-only too): rc 0, channel-lib.mjs still 0 bytes.
   const r = bootstrap(t, root, goodPack('1.0.0'));
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /versions\/1\.0\.0 is damaged/);
+  assert.match(r.stderr, /versions\/1\.0\.0 is not intact/);
   assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '1.0.0', 'client', 'channel-lib.mjs')), fs.readFileSync(path.join(SOURCE_DIR, 'channel-lib.mjs')));
 
   const online = await launch(root, seatEnv(t, null));
@@ -947,16 +952,16 @@ test('a damaged file outside REQUIRED_CLIENT_FILES: invisible to step 1, but a b
   damage(root, '1.0.0', 'extra-dep.mjs');
 
   // Still outside REQUIRED_CLIENT_FILES on purpose: step 1's cheap check does not catch this; the
-  // import failure is fatal for this launch, and its message names the damage and the repair.
+  // import failure is fatal for this launch, and its message names the fault and the repair.
   const run = await launch(root, seatEnv(t, null));
   assert.equal(run.code, 2, run.stderr);
-  assert.doesNotMatch(run.stderr, /release 1\.0\.0 is damaged \(/, 'the cheap per-launch check does not cover this file');
-  assert.match(run.stderr, /release 1\.0\.0 is damaged on this seat \(client\/extra-dep\.mjs does not match its FILES\.json line\): re-bootstrap from the bridge's pack — a bootstrap re-verifies the whole tree and replaces damaged files/);
+  assert.doesNotMatch(run.stderr, /release 1\.0\.0 is not intact \(/, 'the cheap per-launch check does not cover this file');
+  assert.match(run.stderr, /release 1\.0\.0 is not intact on this seat \(client\/extra-dep\.mjs does not match its FILES\.json line\): re-bootstrap from the bridge's pack — a bootstrap re-verifies the whole tree and replaces what is not intact/);
 
   // The reuse check on a bootstrap re-install is now the FULL FILES.json verification.
   const r = bootstrap(t, root, packWithExtraDep('1.0.0'));
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /versions\/1\.0\.0 is damaged/);
+  assert.match(r.stderr, /versions\/1\.0\.0 is not intact/);
   assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs')), Buffer.from('export const ok = true;\n'));
 
   const online = await launch(root, seatEnv(t, null));
@@ -976,7 +981,7 @@ test('an import failure is not started, even with an intact previous release kep
   assert.equal(run.code, 2, run.stderr);
   assert.equal(run.started, null, 'the kept 1.0.0 is not started in its place');
   assert.equal(read(root, 'state.json').state, 'not_started');
-  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /release 2\.0\.0 is damaged on this seat \(client\/extra-dep\.mjs does not match its FILES\.json line\): re-bootstrap/);
+  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /release 2\.0\.0 is not intact on this seat \(client\/extra-dep\.mjs does not match its FILES\.json line\): re-bootstrap/);
   assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')), 'entry.mjs never deletes a release');
 });
 
@@ -990,8 +995,25 @@ test('an import failure whose tree cannot be read says so, naming the file and t
   const run = await launch(root, env);
   assert.equal(run.code, 2, run.stderr);
   const marker = fs.readFileSync(failureMarkerPath(env), 'utf8');
-  assert.match(marker, /release 1\.0\.0 failed to start \(.+\), and whether it is damaged on this seat was not established: client\/extra-dep\.mjs could not be checked \(EISDIR\)/);
+  assert.match(marker, /release 1\.0\.0 failed to start \(.+\), and whether it is intact on this seat was not established: client\/extra-dep\.mjs could not be read \(EISDIR\) — fix client\/extra-dep\.mjs \(its owner, permissions or disk\) and the next launch retries/);
   assert.doesNotMatch(marker, /defect in the published release|re-bootstrap/);
+});
+
+test('a damaged file outside REQUIRED_CLIENT_FILES never removes an existing seat-tool shim (design review rule 6)', async (t) => {
+  const root = await seatWith(t, '1.0.0', { pack: packWithExtraDep('1.0.0') });
+  const shimPath = path.join(root, 'bin', process.platform === 'win32' ? 'check-channel-snapshot.py.cmd' : 'check-channel-snapshot.py');
+  assert.ok(fs.existsSync(shimPath), 'the bootstrap installed the shim');
+  const shimBefore = fs.readFileSync(shimPath, 'utf8');
+
+  // Still importable JS (the server keeps running), but its bytes no longer match FILES.json.
+  fs.writeFileSync(path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs'), 'export const ok = true; // tampered\n');
+  const bridge = await fixtureBridge(t, { published: packWithExtraDep('1.0.0') });
+  const run = await launch(root, seatEnv(t, bridge));
+
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(run.started.release, '1.0.0');
+  assert.match(run.stderr, /seat-tool shims not updated: release 1\.0\.0 is not intact at full scope \(client\/extra-dep\.mjs does not match its FILES\.json line\)/);
+  assert.equal(fs.readFileSync(shimPath, 'utf8'), shimBefore, 'the shim is untouched, not removed');
 });
 
 test('runLaunchUpdate re-resolves the installed release under the lock, not the caller\'s pre-lock argument (review r2 minor 1)', async (t) => {
@@ -1007,7 +1029,7 @@ test('runLaunchUpdate re-resolves the installed release under the lock, not the 
   // release already current, with the wrong from_bridge_release; acting on the fresh resolve logs
   // nothing new at all, because there is nothing to do.
   const before = logObjs(root).length;
-  const stale = { release: '1.0.0', current: { bridge_release: '1.0.0' }, recovered: false, damaged: [], unconfirmed: [] };
+  const stale = { release: '1.0.0' };
   const result = await runLaunchUpdate({ root, budgetMs: 10000, signal: new AbortController().signal, launchId: 'test-launch-stale', installed: stale, env: seatEnv(t, bridge) });
 
   assert.equal(result.installed, '2.0.0', 'the fresh on-disk resolve wins, not the stale pre-lock argument');
@@ -1015,9 +1037,12 @@ test('runLaunchUpdate re-resolves the installed release under the lock, not the 
   assert.equal(logObjs(root).length, before, 'nothing needed doing: no redundant install/bootstrap line from acting on the stale release');
 });
 
-// r2 review minor 2: a read fault that is not ENOENT (a permission or I/O error) says nothing
-// about whether the file is actually damaged, so it must not be treated as proven damage.
-test('releaseDamage / resolveInstalled: a non-ENOENT read fault is "could not be checked", never proven damage', (t) => {
+// design review (r2→r4 non-convergence re-derivation): classifyRelease is the one judge of a
+// release's files, and a read fault (EACCES, EIO, EISDIR — anything that is not ENOENT or a hash
+// mismatch) is reported as `bad` with `why: read-fault(<code>)`, the SAME status as a confirmed
+// hash mismatch — the earlier established/unconfirmed split is gone (operator ruling: it protected
+// nothing reachable and blocked the one repair that mattered).
+test('classifyRelease: a non-ENOENT read fault is `bad`, worded as a read fault, not a hash mismatch', (t) => {
   const root = newRoot(t);
   const release = '1.0.0';
   const sorted = [...clientFiles(release)].sort((a, b) => (a.path < b.path ? -1 : 1));
@@ -1035,18 +1060,20 @@ test('releaseDamage / resolveInstalled: a non-ENOENT read fault is "could not be
   fs.rmSync(path.join(dir, 'client', 'agent-webhook-bridge-channel.mjs'));
   fs.mkdirSync(path.join(dir, 'client', 'agent-webhook-bridge-channel.mjs'));
 
-  const damage = fullTreeDamage(root, release);
-  assert.equal(damage.established, false, 'an EISDIR read fault is not a confirmed hash mismatch');
-  assert.match(damage.reason, /could not be checked \(EISDIR\)/);
+  const c = classifyRelease(root, release, 'required');
+  assert.equal(c.status, 'bad');
+  assert.equal(c.file, 'client/agent-webhook-bridge-channel.mjs');
+  assert.equal(c.why, 'read-fault(EISDIR)');
+  assert.match(c.message, /could not be read \(EISDIR\)/);
 
-  // resolveInstalled routes it to `unconfirmed`, never `damaged` — skipped this launch, but the
-  // release is not a delete candidate the way a confirmed-damaged one is.
+  // resolveInstalled skips it for this launch (it is not `ok`, so it is not selected) exactly as
+  // it would a confirmed hash mismatch — there is no third outcome any more.
   fs.writeFileSync(path.join(root, 'current.json'), JSON.stringify({ bridge_release: release }));
   const resolved = resolveInstalled(root);
   assert.equal(resolved.release, null);
-  assert.deepEqual(resolved.damaged, []);
-  assert.equal(resolved.unconfirmed.length, 1);
-  assert.equal(resolved.unconfirmed[0].release, release);
+  assert.equal(resolved.bad.length, 1);
+  assert.equal(resolved.bad[0].release, release);
+  assert.equal(resolved.bad[0].why, 'read-fault(EISDIR)');
 });
 
 test('composeState marks updater_broken only when the installed updater itself threw', () => {
@@ -1079,20 +1106,19 @@ test('an unreadable install log names itself, and is not reported as a broken up
   assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
 });
 
-test('an install onto a release whose tree cannot be read fails, naming the file and the fault, and deletes nothing', async (t) => {
+test('an install onto a release whose tree cannot be read REPLACES it (design review rule 4: a read fault is `bad`, and `bad` is always replaced)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const file = path.join(root, 'versions', '1.0.0', 'seat-tools', 'bin', 'check-channel-snapshot.py');
   fs.rmSync(file);
   fs.mkdirSync(file);
 
   const r = bootstrap(t, root, goodPack('1.0.0'));
-  assert.notEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, /versions\/1\.0\.0 could not be checked \(seat-tools\/bin\/check-channel-snapshot\.py could not be checked \(EISDIR\)\); it is left as it is/);
-  assert.ok(fs.statSync(file).isDirectory(), 'the release was not replaced');
-  assert.doesNotMatch(r.stderr, /is damaged/);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /versions\/1\.0\.0 is not intact \(seat-tools\/bin\/check-channel-snapshot\.py could not be read \(EISDIR\)\); replacing it with the verified pack/);
+  assert.ok(fs.statSync(file).isFile(), 'the release was replaced: the directory is gone');
 });
 
-test('a release current.json names that cannot be confirmed intact keeps the pointer: passed over this launch only', async (t) => {
+test('a release current.json names that cannot be confirmed intact is repointed away from immediately (design review rule 3: recoverRoot always repoints, never keeps a pointer on an unconfirmable release)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const r = bootstrap(t, root, goodPack('2.0.0'));
   assert.equal(r.status, 0, r.stderr);
@@ -1103,16 +1129,135 @@ test('a release current.json names that cannot be confirmed intact keeps the poi
   const run = await launch(root, seatEnv(t, null));
   assert.equal(run.code, 0, run.stderr);
   assert.equal(run.started.release, '1.0.0');
-  assert.match(run.stderr, /release 2\.0\.0 could not be confirmed intact \(client\/package\.json could not be checked \(EISDIR\)\); it is passed over this launch only/);
-  assert.equal(read(root, 'current.json').bridge_release, '2.0.0', 'the pointer is not repointed away from it');
+  assert.match(run.stderr, /release 2\.0\.0 is not intact \(client\/package\.json could not be read \(EISDIR\)\); it is passed over/);
+  assert.equal(read(root, 'current.json').bridge_release, '1.0.0', 'the pointer is repointed away from it, same as any other non-ok release');
+  const recovered = logObjs(root).find((l) => l.action === 'pointer_recovered');
+  assert.match(recovered.reason, /current\.json named release 2\.0\.0, which is not intact \(client\/package\.json could not be read \(EISDIR\)\); current\.json now names 1\.0\.0, the selected release/);
+  // Deletes nothing — the read-fault release is still on disk, untouched, for a later install to judge.
   assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')));
 
-  // Once the fault clears, the next launch starts it again with nothing to repair.
+  // current.json now names 1.0.0, so a launch with no bridge to consult keeps running it — step 1
+  // trusts what current.json names without re-scanning once that release classifies `ok` (cheap by
+  // design). The fault clearing on disk alone is not itself an event; the bridge re-offering 2.0.0
+  // is what recovers it, through the ordinary update path.
   fs.rmdirSync(file);
-  fs.copyFileSync(path.join(root, 'versions', '1.0.0', 'client', 'package.json'), file); // the fixture's package.json does not vary by release
-  const again = await launch(root, seatEnv(t, null));
+  fs.copyFileSync(path.join(root, 'versions', '1.0.0', 'client', 'package.json'), file);
+  const stillOne = await launch(root, seatEnv(t, null));
+  assert.equal(stillOne.started.release, '1.0.0', 'current.json still names 1.0.0; nothing re-scanned it');
+
+  const bridge2 = await fixtureBridge(t, { published: goodPack('2.0.0') });
+  const again = await launch(root, seatEnv(t, bridge2));
   assert.equal(again.code, 0, again.stderr);
   assert.equal(again.started.release, '2.0.0');
+  assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
+});
+
+// design review, r4 M5: this refusal is reachable only when the OFFERED release is not the
+// currently running one (refuseAgainstInstalled's own same-release check fires first otherwise,
+// on both entry points) and `versions/<offer>` already holds a DIFFERENT pack than what is now
+// published under that release number — a re-publish under an unchanged release, while the seat
+// sits behind it. Removing commitInstall's own check left the suite green before this test existed.
+test('commitInstall refuses a non-running release already on disk under a different pack (design review rule 4 — r4 M5, previously untested)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const b1 = bootstrap(t, root, goodPack('2.0.0'));
+  assert.equal(b1.status, 0, b1.stderr);
+  const originalBytes = fs.readFileSync(path.join(root, 'versions', '2.0.0', 'client', 'agent-webhook-bridge-channel.mjs'));
+  // Roll the pointer back to 1.0.0 by hand (an administrative repoint): versions/2.0.0 is left
+  // exactly as the bootstrap wrote it, and the bridge now republishes 2.0.0 under different bytes.
+  fs.writeFileSync(path.join(root, 'current.json'), JSON.stringify({ ...read(root, 'current.json'), bridge_release: '1.0.0' }));
+
+  const bridge = await fixtureBridge(t, { published: buildPack({ release: '2.0.0', files: clientFiles('2.0.0', { marker: '// other bytes\n' }) }) });
+  const run = await launch(root, seatEnv(t, bridge));
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(run.started.release, '1.0.0', 'the refusal leaves 1.0.0 running');
+  assert.equal(read(root, 'state.json').state, 'update_failed');
+  assert.match(read(root, 'state.json').error, /refused: versions\/2\.0\.0 already holds pack [0-9a-f]{64}, not the verified pack [0-9a-f]{64}; it is left as it is/);
+  assert.deepEqual(fs.readFileSync(path.join(root, 'versions', '2.0.0', 'client', 'agent-webhook-bridge-channel.mjs')), originalBytes, 'versions/2.0.0 is untouched');
+});
+
+/**
+ * Instruments every `fs` read/stat/readdir call touching `<root>/versions` for the duration of
+ * `run()`, recording `{fn, path, caller}` — `caller` is the immediate calling function's name, read
+ * off a real stack trace (not a filename grep: the design review's own finding was that a
+ * same-line grep for "versions" MISSES a read through a variable assigned on an earlier line —
+ * `settleRoot`'s `const client = path.join(root, 'versions', release, 'client'); … fs.readFileSync
+ * (path.join(client, 'entry.mjs'))` is exactly that shape). Restores `fs` before returning.
+ */
+async function instrumentedVersionsReads(root, run) {
+  const targets = ['readFileSync', 'readdirSync', 'existsSync', 'statSync', 'lstatSync'];
+  const originals = {};
+  const calls = [];
+  const versionsDir = path.join(root, 'versions');
+  for (const name of targets) {
+    originals[name] = fs[name];
+    fs[name] = function patched(p, ...rest) {
+      const asStr = typeof p === 'string' ? p : p instanceof Buffer ? p.toString() : '';
+      if (asStr === versionsDir || asStr.startsWith(`${versionsDir}${path.sep}`)) {
+        const frame = (new Error().stack.split('\n')[2] || '').trim();
+        const m = /^at (?:Object\.)?(\S+?)(?:\s*\[as [^\]]+\])?\s*\(/.exec(frame);
+        calls.push({ fn: name, path: asStr, caller: m ? m[1] : frame });
+      }
+      return originals[name].apply(fs, [p, ...rest]);
+    };
+  }
+  try {
+    await run();
+  } finally {
+    for (const name of targets) {
+      fs[name] = originals[name];
+    }
+  }
+  return calls;
+}
+
+// design review guard (r2→r4 non-convergence re-derivation): classifyRelease must be the ONLY
+// judge of a release's files. Every other reader of something under versions/ is a plain content
+// fetch of an ALREADY-classified-ok release (never a pass/fail judgment of its own) or a bare
+// directory-name listing — each named here, with its reason; an undeclared new one reds this test.
+const VERSIONS_READ_ALLOWLIST = new Set([
+  'classifyRelease', // the judge itself
+  'resolveInstalled', // readdirSync versions/ to enumerate candidate release NAMES, not content
+  'commitInstall', // existsSync(target) only, before deciding whether classifyRelease even applies
+  'settleRoot', // readFileSync of an already-ok release's entry.mjs bytes, to copy them; readdirSync versions/ for prune's candidate names
+  'clientVersionOf', // reads an already-selected release's package.json `version` field
+  'readJsonFile', // the generic "parse this file as JSON" helper `clientVersionOf` calls through
+]);
+
+test('classifyRelease is the sole judge of a release\'s files under versions/ — guard (design review, r2→r4 non-convergence re-derivation)', async (t) => {
+  const root = newRoot(t);
+  const built1 = goodPack('1.0.0');
+  const files1 = writePack(t, built1);
+  await installFromFiles({ packFile: files1.pack, manifestFile: files1.manifest, root });
+  // Reuse (same pack, same release): exercises commitInstall's exists+ok+same-pack path.
+  const calls = await instrumentedVersionsReads(root, async () => {
+    await installFromFiles({ packFile: files1.pack, manifestFile: files1.manifest, root });
+    // A damaged required file, re-installed: exists+bad+replace path.
+    fs.writeFileSync(path.join(root, 'versions', '1.0.0', 'client', 'client-update.mjs'), '');
+    await installFromFiles({ packFile: files1.pack, manifestFile: files1.manifest, root });
+    // Upgrade twice, so settleRoot's prune has something to actually remove (three releases, keeps two).
+    const files2 = writePack(t, goodPack('2.0.0'));
+    await installFromFiles({ packFile: files2.pack, manifestFile: files2.manifest, root });
+    const files3 = writePack(t, goodPack('3.0.0'));
+    await installFromFiles({ packFile: files3.pack, manifestFile: files3.manifest, root });
+    // resolveInstalled directly, including a current.json read fault (EISDIR).
+    resolveInstalled(root);
+    const cur = path.join(root, 'current.json');
+    const saved = fs.readFileSync(cur);
+    fs.rmSync(cur);
+    fs.mkdirSync(cur);
+    resolveInstalled(root);
+    fs.rmdirSync(cur);
+    fs.writeFileSync(cur, saved);
+    // recoverRoot (writePointer + clientVersionOf) via a real launch-time update: point current.json
+    // at a release that is not installed at all, and let the update repoint it back.
+    fs.writeFileSync(cur, JSON.stringify({ ...JSON.parse(saved), bridge_release: '9.9.9' }));
+    const bridge = await fixtureBridge(t, { published: goodPack('3.0.0') });
+    await runLaunchUpdate({ root, budgetMs: 10000, signal: new AbortController().signal, launchId: 'guard-launch', installed: resolveInstalled(root), env: seatEnv(t, bridge) });
+  });
+
+  const strays = calls.filter((c) => !VERSIONS_READ_ALLOWLIST.has(c.caller));
+  assert.deepEqual(strays, [], `undeclared reader(s) under versions/: ${JSON.stringify(strays, null, 2)}`);
+  assert.ok(calls.length > 10, `sanity: the instrumented run should have observed several calls (saw ${calls.length})`);
 });
 
 test('no intact release at all: not started, loudly', async (t) => {
@@ -1121,7 +1266,7 @@ test('no intact release at all: not started, loudly', async (t) => {
   const env = seatEnv(t, null);
   const run = await launch(root, env);
   assert.equal(run.code, 2);
-  assert.match(run.stderr, /release 1\.0\.0 is damaged/);
+  assert.match(run.stderr, /release 1\.0\.0 is not intact/);
   assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /no verified client release is installed/);
 });
 

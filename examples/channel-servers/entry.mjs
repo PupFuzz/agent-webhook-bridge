@@ -12,21 +12,27 @@
 //      alive, and this machine's boot time, is Claude Code re-spawning the server inside the same
 //      session: no network, no disk write, the same launch id, straight to step 3 on the installed
 //      release. Anything else is a new launch: a fresh launch id is written to launch.json.
-//   1. RESOLVE the installed release: the one `current.json` names, when it is INTACT — its
-//      `.verified` record, its FILES.json and the files the client cannot run without
-//      (REQUIRED_CLIENT_FILES) all hash as recorded. Otherwise the newest other intact release
-//      under `versions/` (a swap writes the version directory before the pointer, so the newest
-//      verified one is never older than the last good pointer), said on stderr and in state.json;
-//      the updater then treats the damaged release as not installed, so it is fetched again.
-//      None ⇒ not started (step 5).
+//   1. RESOLVE the installed release: `classifyRelease` (the one judge of a release's files —
+//      design review, card#10568 non-convergence re-derivation) says `ok` for the one `current.json`
+//      names, or, failing that, for the newest other release under `versions/` (a swap writes the
+//      version directory before the pointer, so the newest one that classifies `ok` is never older
+//      than the last good pointer) — said on stderr and in state.json's `recovered`. None ⇒ not
+//      started (step 5). Nothing is deleted here: a release that does not classify `ok` is merely
+//      passed over for this launch; only `client-update.mjs`, under the lock (step 2), ever removes
+//      one, on ITS OWN policy (a confirmed-bad release it is about to replace; a release the
+//      retention prune no longer needs to keep) — never because step 1 passed it over.
 //   2. UPDATE, on a new launch only: the INSTALLED release's `client/client-update.mjs`
 //      `runLaunchUpdate({root, budgetMs, signal, launchId, installed})`, raced against
 //      `budgetMs` (AWB_CLIENT_UPDATE_BUDGET_MS, default 20 s). When the budget wins, the signal
 //      is aborted; the updater checks it before every irreversible step and never does network
 //      work after it. A throw, a rejection or a budget overrun costs nothing but the update: the
-//      installed release still starts.
+//      installed release still starts. Under its lock the updater re-resolves step 1 itself and
+//      repoints `current.json` to what THAT resolve selects whenever it names anything else — so
+//      by the time step 3 runs, current.json always names what step 3 is about to import.
 //   3. IMPORT the release `current.json` names NOW — re-read after step 2 — with AWB_CLIENT_ROOT,
-//      AWB_LAUNCH_ID and AWB_BRIDGE_RELEASE set to what is actually imported.
+//      AWB_LAUNCH_ID and AWB_BRIDGE_RELEASE set to what is actually imported. An import that throws
+//      does not try another release (DL-434 bound 4): it is not started (step 5), worded from one
+//      `classifyRelease('full')` pass over the release that failed.
 //   4. `<root>/state.json` is written by THIS file only, once per new launch, and its `running`
 //      is the release step 3 imports — never the one step 1 resolved (design review r3-M8). A
 //      budget overrun is `update_failed` only when the pointer did not move; when it did, the
@@ -34,9 +40,20 @@
 //      The launch.json (step 0) and state.json writes are each best-effort: a failure is said on
 //      stderr and the launch goes on — an unwritable record never keeps a startable release from
 //      starting.
-//   5. NOT STARTED: no intact release is installed, or it cannot be resolved or imported. The channel's `.FAILED` marker is
-//      written (the path the launcher and `bridge:check` read), state.json says `not_started`,
-//      stderr says why, exit 2 — Claude Code still starts the session, without the channel.
+//      ⭐ state.json's FIELDS are a CROSS-RELEASE CONTRACT: this file writes them, but they are read
+//      by `clientUpdateInstruction` in the RUNNING release's OWN `channel-lib.mjs` — a release that
+//      may have shipped before or after the entry.mjs that wrote this particular file, since entry.mjs
+//      itself only changes with a new DL. A field is therefore never renamed or repurposed, only
+//      added: `state`, `running`, `installed`, `published`, `offer`, `approval_owed`, `error`,
+//      `recovered` (still-bad releases named, `recoverRoot`'s own release started instead),
+//      `late` (a budget overrun after the pointer already moved), `report_error`, `updater_broken`
+//      (the installed updater's own code threw — only a bootstrap onto a working updater repairs
+//      it) and `log_unreadable` (`install-log.jsonl` itself could not be read — a local file fault,
+//      not the updater's or the release's).
+//   5. NOT STARTED: no release classifies `ok`, or it cannot be resolved or imported. The channel's
+//      `.FAILED` marker is written (the path the launcher and `bridge:check` read), state.json says
+//      `not_started`, stderr says why, exit 2 — Claude Code still starts the session, without the
+//      channel.
 //   Nothing is ever written to stdout: it is the MCP frame channel.
 //
 // ⭐ THE PURE PIECES LIVE HERE, AND THE REST OF THE CLIENT IMPORTS THEM FROM HERE. This file must
@@ -173,146 +190,144 @@ export function fsyncDirectory(dir) {
   }
 }
 
-/**
- * `versions/<release>/.verified`: the pack sha256 the release was installed from, and the sha256
- * of the FILES.json kept beside it — or null when that release is not a verified install.
- */
-export function verifiedRecord(root, release) {
-  if (!STRICT_RELEASE.test(String(release))) {
-    return null;
-  }
-  try {
-    const [pack, files] = fs.readFileSync(path.join(root, 'versions', release, '.verified'), 'utf8').trim().split('\n');
-    return /^[0-9a-f]{64}$/.test(pack) && /^[0-9a-f]{64}$/.test(files) ? { packSha256: pack, filesJsonSha256: files } : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The pack sha256 a release was installed from, or null when it is not a verified install. */
-export function verifiedPackSha(root, release) {
-  const record = verifiedRecord(root, release);
-  return record ? record.packSha256 : null;
-}
-
 function sha256Of(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-/**
- * `null` when `filePath` (a path FILES.json lists, e.g. `client/entry.mjs`) matches on disk,
- * otherwise `{reason, established}`. `established` is false for a read fault that is not ENOENT —
- * a permission or I/O error says nothing about whether the file is actually damaged (review r2
- * minor 2): the caller must read that as "could not confirm", never as proven damage.
- */
-function fileDamage(dir, lines, filePath) {
-  let bytes;
-  try {
-    bytes = fs.readFileSync(path.join(dir, filePath));
-  } catch (err) {
-    if (err && err.code === 'ENOENT') {
-      return { reason: `${filePath} is missing`, established: true };
-    }
-    return { reason: `${filePath} could not be checked (${err && err.code ? err.code : err})`, established: false };
-  }
-  const line = lines.get(filePath);
-  if (!line || line.size !== bytes.length || line.sha256 !== sha256Of(bytes)) {
-    return { reason: `${filePath} does not match its FILES.json line`, established: true };
-  }
-  return null;
-}
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /**
- * `null` when every one of `paths` (FILES.json-listed paths under `versions/<release>`) matches,
- * otherwise `{reason, established}` for the first that does not. Assumes the caller already knows
- * `release` has a readable `.verified` record — every caller checks `verifiedRecord` itself first,
- * so that branch would be dead code here (review r2 minor 3).
+ * ⭐ THE ONE JUDGE OF A RELEASE'S FILES (design review, non-convergence re-derivation after r2→r4:
+ * three rounds each fixed a read fault — EACCES, EIO, EISDIR, anything that is not ENOENT or a
+ * hash mismatch — differently in one reader, and the next round found a sibling reader deciding it
+ * another way). Every reader that needs to know whether `versions/<release>` can be trusted reads
+ * it through THIS function, and only through it — `.verified`, FILES.json and every file scope
+ * checks are inside it, nowhere else (a source-scanning test in the test suite enforces this: it
+ * reds on an undeclared reader).
+ *
+ * Returns one of:
+ *   `{status: 'not-a-release'}` — `release` is not a bare X.Y.Z (a stray directory under `versions/`).
+ *   `{status: 'ok', packSha, filesJsonSha, listing}` — every file in `scope` matches its FILES.json
+ *     line; `listing` is FILES.json's parsed array, for a caller that needs more of it (settleRoot's
+ *     seat-tool list).
+ *   `{status: 'bad', file, why, message}` — `file` is the path that failed (`.verified` or
+ *     `FILES.json` for those two, else a FILES.json-listed path); `why` is `missing` (ENOENT),
+ *     `mismatch` (a hash or size disagreement), `malformed` (unreadable as what it must be — JSON,
+ *     two sha256 lines, a list) or `read-fault(<code>)` for anything else (a permission or I/O
+ *     error — this release is NOT thereby proven bad, only unreadable; every caller treats `bad`
+ *     uniformly regardless of `why`, per the operator ruling that reversed the earlier
+ *     never-delete-on-a-read-fault rule: the split protected nothing reachable and blocked the one
+ *     repair that mattered).
+ *
+ * `scope` is `'required'` — REQUIRED_CLIENT_FILES only, cheap enough for every launch — or `'full'`
+ * — every FILES.json-listed file, paid once by an install/bootstrap (`commitInstall`'s reuse
+ * check, so "repaired by a bootstrap" holds for a file outside REQUIRED_CLIENT_FILES too) or by a
+ * launch already not starting because its import threw (`importFailure`, DL-434 Decision 9).
  */
-function treeDamage(root, release, paths) {
-  const record = verifiedRecord(root, release);
+export function classifyRelease(root, release, scope) {
+  if (!STRICT_RELEASE.test(String(release))) {
+    return { status: 'not-a-release' };
+  }
   const dir = path.join(root, 'versions', release);
+  const bad = (file, why, message) => ({ status: 'bad', file, why, message });
+  const readFault = (file, err) => (err && err.code === 'ENOENT' ? bad(file, 'missing', `${file} is missing`) : bad(file, `read-fault(${err && err.code ? err.code : err})`, `${file} could not be read (${err && err.code ? err.code : err})`));
+  let verifiedText;
+  try {
+    verifiedText = fs.readFileSync(path.join(dir, '.verified'), 'utf8');
+  } catch (err) {
+    return readFault('.verified', err);
+  }
+  const [packSha, filesJsonSha] = verifiedText.trim().split('\n');
+  if (!SHA256_HEX.test(packSha) || !SHA256_HEX.test(filesJsonSha)) {
+    return bad('.verified', 'malformed', '.verified does not hold two sha256 lines');
+  }
+  let filesBytes;
+  try {
+    filesBytes = fs.readFileSync(path.join(dir, 'FILES.json'));
+  } catch (err) {
+    return readFault('FILES.json', err);
+  }
+  if (sha256Of(filesBytes) !== filesJsonSha) {
+    return bad('FILES.json', 'mismatch', 'FILES.json does not hash to the digest it was installed with');
+  }
   let listing;
   try {
-    const bytes = fs.readFileSync(path.join(dir, 'FILES.json'));
-    if (sha256Of(bytes) !== record.filesJsonSha256) {
-      return { reason: 'its FILES.json does not hash to the digest it was installed with', established: true };
+    listing = JSON.parse(filesBytes.toString('utf8'));
+  } catch {
+    listing = null;
+  }
+  if (!Array.isArray(listing)) {
+    return bad('FILES.json', 'malformed', 'FILES.json is not a JSON list');
+  }
+  const lines = new Map(listing.map((l) => [l && l.path, l]));
+  const paths = scope === 'full' ? [...lines.keys()] : REQUIRED_CLIENT_FILES.map((name) => `client/${name}`);
+  for (const filePath of paths) {
+    let bytes;
+    try {
+      bytes = fs.readFileSync(path.join(dir, filePath));
+    } catch (err) {
+      return readFault(filePath, err);
     }
-    listing = JSON.parse(bytes.toString('utf8'));
+    const line = lines.get(filePath);
+    if (!line || line.size !== bytes.length || line.sha256 !== sha256Of(bytes)) {
+      return bad(filePath, 'mismatch', `${filePath} does not match its FILES.json line`);
+    }
+  }
+  return { status: 'ok', packSha, filesJsonSha, listing };
+}
+
+/**
+ * `current.json`'s content, and — only when it does not name the eventual selection — the reason
+ * `recoverRoot` repoints it, told apart the way {@see classifyRelease} tells a release's own faults
+ * apart: `value` is the parsed object or null; `cause` is null on a clean read, else `missing`
+ * (ENOENT), `malformed` (unreadable JSON) or `read-fault(<code>)` (anything else, including a
+ * directory in its place — EISDIR).
+ */
+function readCurrentJson(root) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(root, 'current.json'), 'utf8');
   } catch (err) {
-    if (err && err.code === 'ENOENT') {
-      return { reason: 'its FILES.json is missing', established: true };
-    }
-    return { reason: `its FILES.json cannot be read (${err && err.code ? err.code : err})`, established: false };
+    return { value: null, cause: err && err.code === 'ENOENT' ? 'missing' : `read-fault(${err && err.code ? err.code : err})` };
   }
-  const lines = new Map(Array.isArray(listing) ? listing.map((l) => [l && l.path, l]) : []);
-  for (const filePath of paths ?? lines.keys()) {
-    const bad = fileDamage(dir, lines, filePath);
-    if (bad) {
-      return bad;
-    }
+  try {
+    return { value: JSON.parse(text), cause: null };
+  } catch {
+    return { value: null, cause: 'malformed' };
   }
-  return null;
 }
 
 /**
- * Why a verified release cannot be trusted to start, or null when it can: its FILES.json must hash
- * to what `.verified` recorded, and every REQUIRED_CLIENT_FILES entry must match its FILES.json
- * line. This is what a power cut after the install leaves detectable — the staged files are not
- * fsynced one by one (DL-434 bound), so on ext4 a switched pointer can name files the kernel never
- * wrote. Cheap enough for every launch (a handful of files); {@see fullTreeDamage} hashes the
- * whole tree and costs a real pack's thousands of files, so it runs only where that cost is a
- * one-time install/bootstrap step, or wording the message of a launch that is already not
- * starting because its import threw — never on the per-launch happy path.
- */
-export function releaseDamage(root, release) {
-  return treeDamage(root, release, REQUIRED_CLIENT_FILES.map((name) => `client/${name}`));
-}
-
-/**
- * Like {@see releaseDamage}, but every file FILES.json lists, not only REQUIRED_CLIENT_FILES —
- * the check a bootstrap re-install now repeats (`commitInstall`'s reuse check), so "repaired by a
- * bootstrap" is true of a file outside REQUIRED_CLIENT_FILES too; and what `importFailure` reads to
- * tell local damage from a defect in the published release (DL-434 Decision 9).
- */
-export function fullTreeDamage(root, release) {
-  return treeDamage(root, release, null);
-}
-
-/**
- * Step 1: the installed release — `{release, current, recovered, damaged, unconfirmed}`, with
- * `release` null when no intact release is. `current` is current.json's raw content whenever it
- * was read (whether or not the release it names turned out intact), or null when it is missing,
- * unreadable or malformed — `recoverRoot`'s own message tells the two apart (review r2 minor 3).
- * `damaged` lists `{release, reason}` for every verified release CONFIRMED not intact (ENOENT or a
- * hash mismatch); `unconfirmed` lists the same shape for one this launch could not confirm either
- * way (a permission or I/O fault) — skipped for this launch too, but never deleted (review r2
- * minor 2).
+ * Step 1: the installed release — `{release, packSha, filesJsonSha, current, currentCause,
+ * recovered, bad}`, with `release`, `packSha` and `filesJsonSha` null when nothing under
+ * `versions/` classifies `ok`. `current` is current.json's parsed content, or null when
+ * {@see readCurrentJson}'s `cause` says why (carried as `currentCause`, used only when `current`
+ * names nothing — `recoverRoot`'s message). `bad` lists `{release, why, message}` for every release
+ * this launch classified and did not select — a release this launch never looked at (because the
+ * selection was current.json's own, first try) is not in it.
  */
 export function resolveInstalled(root) {
-  let current = null;
-  try {
-    current = readJsonFile(path.join(root, 'current.json'));
-  } catch {
-    current = null;
-  }
-  const damaged = [];
-  const unconfirmed = [];
-  const intact = (release) => {
-    if (verifiedRecord(root, release) === null) {
-      return false;
+  const { value: current, cause: currentCause } = readCurrentJson(root);
+  const bad = [];
+
+  const judged = new Map();
+  const classify = (release) => {
+    if (judged.has(release)) {
+      return judged.get(release);
     }
-    const damage = releaseDamage(root, release);
-    if (damage !== null) {
-      const list = damage.established ? damaged : unconfirmed;
-      if (!list.some((d) => d.release === release)) {
-        list.push({ release, reason: damage.reason });
-      }
+    const c = classifyRelease(root, release, 'required');
+    judged.set(release, c);
+    if (c.status !== 'ok') {
+      bad.push({ release, why: c.status === 'not-a-release' ? 'not-a-release' : c.why, message: c.status === 'not-a-release' ? `${release} is not a valid X.Y.Z release` : c.message });
     }
-    return damage === null;
+    return c;
   };
   const namedRelease = current && typeof current === 'object' && typeof current.bridge_release === 'string' ? current.bridge_release : null;
-  if (namedRelease !== null && intact(namedRelease)) {
-    return { release: namedRelease, current, recovered: false, damaged, unconfirmed };
+  if (namedRelease !== null) {
+    const c = classify(namedRelease);
+    if (c.status === 'ok') {
+      return { release: namedRelease, packSha: c.packSha, filesJsonSha: c.filesJsonSha, current, currentCause, recovered: false, bad };
+    }
   }
   let names = [];
   try {
@@ -320,11 +335,12 @@ export function resolveInstalled(root) {
   } catch {
     names = [];
   }
-  const verified = names.filter((name) => intact(name)).sort(compareReleases);
-  if (verified.length === 0) {
-    return { release: null, current, recovered: true, damaged, unconfirmed };
+  const ok = names.map((name) => [name, classify(name)]).filter(([, c]) => c.status === 'ok').sort((a, b) => compareReleases(a[0], b[0]));
+  if (ok.length === 0) {
+    return { release: null, packSha: null, current, currentCause, recovered: true, bad };
   }
-  return { release: verified[verified.length - 1], current, recovered: true, damaged, unconfirmed };
+  const [release, c] = ok[ok.length - 1];
+  return { release, packSha: c.packSha, filesJsonSha: c.filesJsonSha, current, currentCause, recovered: true, bad };
 }
 
 function pidAlive(pid) {
@@ -383,13 +399,13 @@ export function budgetMs(env) {
 
 const EXPIRED = Symbol('update budget expired');
 
-/** `{recovered}` when step 1 passed over a damaged release and that release is still not what runs. */
+/** `{recovered}` when step 1 passed over a release that did not classify `ok` and it is still not what runs. */
 export function recoveredNote(before, after) {
-  const still = (before.damaged ?? []).filter((d) => d.release !== after.release);
+  const still = (before.bad ?? []).filter((d) => d.release !== after.release);
   if (still.length === 0) {
     return {};
   }
-  return { recovered: still.map((d) => `release ${d.release} is damaged (${d.reason})`).join('; ') + `; release ${after.release} started instead` };
+  return { recovered: still.map((d) => `release ${d.release} is not intact (${d.message})`).join('; ') + `; release ${after.release} started instead` };
 }
 
 function tryWrite(channel, file, value) {
@@ -474,20 +490,24 @@ function say(channel, text) {
 
 /**
  * What an import failure of `release` means, worded for the operator. The seat is not started
- * either way (no other release is tried: DL-434 bound 4); the whole-tree check runs here only to
- * say truthfully whether the fault is local damage, which a bootstrap repairs, or a defect in the
- * published release, which only the bridge can fix. Nothing is deleted here.
+ * either way (no other release is tried: DL-434 bound 4) — nothing is ever deleted here, only
+ * `client-update.mjs`, under the lock, removes a release. One `classifyRelease` full-scope pass
+ * over the failed release picks the remedy (rule 7 — one remedy per cause): its whole tree
+ * verifying anyway means the published release itself has a defect the bridge must fix, or this
+ * seat's Node runtime no longer satisfies its `node_engines`; a confirmed bad file means a
+ * bootstrap repairs it; a read fault means neither is established, and names the file to fix.
  */
 function importFailure(root, release, err) {
   const why = err && err.message ? err.message : String(err);
-  const damage = fullTreeDamage(root, release);
-  if (damage === null) {
-    return `release ${release} verifies but failed to start (${why}): this is a defect in the published release; the bridge must publish a fixed release`;
+  const c = classifyRelease(root, release, 'full');
+  if (c.status === 'ok') {
+    return `release ${release} verifies but failed to start (${why}): a defect in the published release, or this seat's Node runtime no longer matches its node_engines — the bridge must publish a fixed release`;
   }
-  if (damage.established) {
-    return `release ${release} is damaged on this seat (${damage.reason}): re-bootstrap from the bridge's pack — a bootstrap re-verifies the whole tree and replaces damaged files`;
+  if (c.status === 'bad' && c.why.startsWith('read-fault')) {
+    return `release ${release} failed to start (${why}), and whether it is intact on this seat was not established: ${c.message} — fix ${c.file} (its owner, permissions or disk) and the next launch retries`;
   }
-  return `release ${release} failed to start (${why}), and whether it is damaged on this seat was not established: ${damage.reason}`;
+  const cause = c.status === 'bad' ? c.message : `release ${release} is not a valid X.Y.Z`;
+  return `release ${release} is not intact on this seat (${cause}): re-bootstrap from the bridge's pack — a bootstrap re-verifies the whole tree and replaces what is not intact`;
 }
 
 function notStarted(root, channel, env, launchId, reason) {
@@ -538,18 +558,14 @@ export async function main({ env = process.env } = {}) {
     step = 'resolve the installed release';
     const before = resolveInstalled(root);
     if (before.release === null) {
-      const damaged = before.damaged.map((d) => `; release ${d.release} is damaged (${d.reason})`).join('');
-      const unconfirmed = before.unconfirmed.map((d) => `; release ${d.release} could not be confirmed intact (${d.reason})`).join('');
-      return notStarted(root, channel, env, launchId, `no verified client release is installed under ${path.join(root, 'versions')}${damaged}${unconfirmed} — bootstrap this seat's client from its bridge's published pack; THIS Claude Code session is deaf to live-wake until then`);
+      const bad = before.bad.map((d) => `; release ${d.release} is not intact (${d.message})`).join('');
+      return notStarted(root, channel, env, launchId, `no verified client release is installed under ${path.join(root, 'versions')}${bad} — bootstrap this seat's client from its bridge's published pack; THIS Claude Code session is deaf to live-wake until then`);
     }
-    for (const d of before.damaged) {
-      say(channel, `release ${d.release} is damaged (${d.reason}); it is passed over and fetched again`);
-    }
-    for (const d of before.unconfirmed) {
-      say(channel, `release ${d.release} could not be confirmed intact (${d.reason}); it is passed over this launch only and not removed as damaged — current.json is not repointed away from it`);
+    for (const d of before.bad) {
+      say(channel, `release ${d.release} is not intact (${d.message}); it is passed over`);
     }
     if (before.recovered) {
-      say(channel, `current.json does not name an intact release; running the newest intact release, ${before.release}`);
+      say(channel, `current.json does not name the selected release; running ${before.release}`);
     }
 
     let after = before;

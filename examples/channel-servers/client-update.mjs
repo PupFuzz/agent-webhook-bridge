@@ -25,12 +25,13 @@
 //   pack is thousands of files, and fsyncing each was measured at seconds), while the rename and
 //   the pointer are, so on a filesystem that reorders them the pointer can survive naming files
 //   that were never written. That is DETECTED, not prevented: entry.mjs starts a release only when
-//   its FILES.json and required files hash as recorded (`releaseDamage`), falls back to the kept
-//   previous release otherwise, and this updater then drops the damaged release so it is fetched
-//   again. `releaseDamage` is the cheap, per-launch check (REQUIRED_CLIENT_FILES only); a file
-//   outside it can still fail only at import, which does not start the seat (no other release is
-//   tried) — a bootstrap repairs it, because this updater's reuse check on an install pays the
-//   full, whole-tree check (`fullTreeDamage`).
+//   `classifyRelease` says `ok` (the one judge of a release's files — design review, non-convergence
+//   re-derivation after review rounds r2 through r4 each fixed a read fault differently in one
+//   reader and the next found a sibling reader deciding it another way); a release that is not
+//   `ok` is simply not started, and this updater is what removes one — on ITS OWN policy, never
+//   because a launch passed it over. `classifyRelease`'s cheap scope (REQUIRED_CLIENT_FILES only)
+//   is what a launch pays; its full scope (every FILES.json-listed file) is what an install/bootstrap
+//   pays once, so a bootstrap repairs a file outside REQUIRED_CLIENT_FILES too.
 //
 // ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
 // verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
@@ -60,9 +61,7 @@ import {
   readJsonFile,
   writeJsonAtomic,
   fsyncDirectory,
-  verifiedPackSha,
-  verifiedRecord,
-  fullTreeDamage,
+  classifyRelease,
   resolveInstalled,
   REQUIRED_CLIENT_FILES,
 } from './entry.mjs';
@@ -120,7 +119,7 @@ export function clipBytes(text, max) {
 
 function crashAt(ctx, point) {
   // Test hooks named by design §3.6: kill this process at a named point. A kill, not a power cut —
-  // the kernel still writes out what the process wrote; `releaseDamage` covers a power cut.
+  // the kernel still writes out what the process wrote; `classifyRelease` covers a power cut.
   if (ctx.env.AWB_CLIENT_CRASH_AT === point) {
     process.kill(process.pid, 'SIGKILL');
   }
@@ -861,13 +860,14 @@ function logLine(ctx, fields) {
   return ctx.log.append({ actor: ctx.actor, launch_id: ctx.launchId ?? undefined, source: ctx.source ?? undefined, ...fields });
 }
 
-function writePointer(root, release, manifest, packSha) {
+/** `{clientVersion, packSha, filesJsonSha}` — every field explicit, never re-derived by a fallback read. */
+function writePointer(root, release, fields) {
   writeJsonAtomic(path.join(root, 'current.json'), {
     bridge_release: release,
-    client_version: manifest ? manifest.client_version : clientVersionOf(root, release),
+    client_version: fields.clientVersion,
     installed_at: new Date().toISOString(),
-    pack_sha256: packSha,
-    files_json_sha256: manifest ? manifest.files_json_sha256 : (verifiedRecord(root, release)?.filesJsonSha256 ?? null),
+    pack_sha256: fields.packSha,
+    files_json_sha256: fields.filesJsonSha,
   });
 }
 
@@ -882,28 +882,26 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   checkBudget(ctx, `moving release ${release} into versions/`);
   crashAt(ctx, 'before-rename');
   fs.mkdirSync(path.join(root, 'versions'), { recursive: true });
-  const held = fs.existsSync(target) ? verifiedPackSha(root, release) : undefined;
-  // A FULL FILES.json verification (every file, not only REQUIRED_CLIENT_FILES) — this is the
-  // reuse check an install/bootstrap pays for once, never a per-launch cost, so "repaired by a
-  // bootstrap" (DL-434 Decision 9) is true of a file outside REQUIRED_CLIENT_FILES too (review r2
-  // MAJOR: a re-install of the same release used to reuse a tree with a damaged non-required file
-  // untouched).
-  const damage = held === undefined ? null : held === null ? { reason: 'it holds no readable .verified record', established: true } : fullTreeDamage(root, release);
-  if (held !== undefined && damage === null && held !== packSha) {
-    throw new Refusal(`versions/${release} already holds pack ${held}, not the verified pack ${packSha}; it is left as it is`);
-  }
-  if (damage !== null && !damage.established) {
-    // A read fault that is not a missing file or a hash mismatch proves nothing about the tree, so
-    // it is never grounds to delete it.
-    throw new Failure(`versions/${release} could not be checked (${damage.reason}); it is left as it is`);
-  }
-  if (held !== undefined && damage === null) {
+  const exists = fs.existsSync(target);
+  // The FULL scope (every file, not only REQUIRED_CLIENT_FILES) — this is the reuse check an
+  // install/bootstrap pays for once, never a per-launch cost, so "repaired by a bootstrap"
+  // (DL-434 Decision 9) is true of a file outside REQUIRED_CLIENT_FILES too. `bad` here — read
+  // fault included — is always replaced, never left in place: only a CONFIRMED same-pack match is
+  // reused, and only a confirmed DIFFERENT pack under the same release is refused (design review,
+  // reversing the earlier never-touch-a-read-fault rule, which protected nothing reachable and
+  // blocked the one repair that mattered).
+  const c = exists ? classifyRelease(root, release, 'full') : null;
+  if (exists && c.status === 'ok') {
+    if (c.packSha !== packSha) {
+      throw new Refusal(`versions/${release} already holds pack ${c.packSha}, not the verified pack ${packSha}; it is left as it is`);
+    }
     // The same verified bytes are already there, intact: reuse them.
     fs.rmSync(staging, { recursive: true, force: true });
   } else {
-    if (held !== undefined) {
-      // Never the running release: resolveInstalled starts only an intact one.
-      ctx.say(`versions/${release} is damaged (${damage.reason}); replacing it with the verified pack`);
+    if (exists) {
+      // Never the running release: resolveInstalled starts only an `ok` one.
+      const why = c.status === 'bad' ? c.message : `${release} is not a valid X.Y.Z`;
+      ctx.say(`versions/${release} is not intact (${why}); replacing it with the verified pack`);
       fs.rmSync(target, { recursive: true, force: true });
     }
     renameWithRetry(staging, target, { deadline: ctx.deadline });
@@ -911,7 +909,7 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   }
   crashAt(ctx, 'after-rename');
   checkBudget(ctx, `switching current.json to release ${release}`);
-  writePointer(root, release, manifest, packSha);
+  writePointer(root, release, { clientVersion: manifest.client_version, packSha, filesJsonSha: manifest.files_json_sha256 });
   crashAt(ctx, 'after-pointer');
   logLine(ctx, {
     action,
@@ -1000,35 +998,41 @@ function settleRoot(ctx, release) {
   checkBudget(ctx, 'updating the seat-tool shims');
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
-  let tools = [];
-  try {
-    tools = fs.readdirSync(path.join(root, 'versions', release, 'seat-tools', 'bin'));
-  } catch {
-    tools = [];
-  }
-  const wanted = new Set();
-  for (const tool of tools) {
-    const shim = shimFor(root, tool);
-    wanted.add(shim.name);
-    const file = path.join(bin, shim.name);
-    let current = null;
-    try {
-      current = fs.readFileSync(file, 'utf8');
-    } catch {
-      current = null;
-    }
-    if (current !== shim.body) {
-      writeFileAtomic(file, shim.body, 0o755);
-    }
-  }
-  for (const name of fs.readdirSync(bin)) {
-    if (!wanted.has(name)) {
+  // The tool list comes from the verified FILES.json listing, never a directory read (design
+  // review rule 6): a read fault on an unrelated file must never remove a working shim, so when
+  // the release does not classify `ok` at full scope, every existing shim is left untouched.
+  const classified = classifyRelease(root, release, 'full');
+  if (classified.status !== 'ok') {
+    ctx.say(`seat-tool shims not updated: release ${release} is not intact at full scope (${classified.status === 'bad' ? classified.message : `${release} is not a valid X.Y.Z`})`);
+  } else {
+    const prefix = 'seat-tools/bin/';
+    const tools = classified.listing
+      .filter((l) => l && typeof l.path === 'string' && l.path.startsWith(prefix) && l.path.length > prefix.length)
+      .map((l) => l.path.slice(prefix.length));
+    const wanted = new Set();
+    for (const tool of tools) {
+      const shim = shimFor(root, tool);
+      wanted.add(shim.name);
+      const file = path.join(bin, shim.name);
+      let current = null;
       try {
-        if (fs.readFileSync(path.join(bin, name), 'utf8').includes(SHIM_MARKER)) {
-          fs.rmSync(path.join(bin, name), { force: true });
-        }
+        current = fs.readFileSync(file, 'utf8');
       } catch {
-        // Not ours, or already gone.
+        current = null;
+      }
+      if (current !== shim.body) {
+        writeFileAtomic(file, shim.body, 0o755);
+      }
+    }
+    for (const name of fs.readdirSync(bin)) {
+      if (!wanted.has(name)) {
+        try {
+          if (fs.readFileSync(path.join(bin, name), 'utf8').includes(SHIM_MARKER)) {
+            fs.rmSync(path.join(bin, name), { force: true });
+          }
+        } catch {
+          // Not ours, or already gone.
+        }
       }
     }
   }
@@ -1041,17 +1045,33 @@ function settleRoot(ctx, release) {
   } catch {
     names = [];
   }
-  const older = names.filter((n) => n !== release && verifiedPackSha(root, n) !== null && compareReleases(n, release) < 0).sort(compareReleases);
+  const older = names.filter((n) => n !== release && classifyRelease(root, n, 'required').status === 'ok' && compareReleases(n, release) < 0).sort(compareReleases);
   if (older.length > 0) {
     kept.add(older[older.length - 1]);
   }
-  const removed = names.filter((n) => !kept.has(n));
-  for (const name of removed) {
-    fs.rmSync(path.join(root, 'versions', name), { recursive: true, force: true });
+  // A failed removal is LOGGED, never fatal to the update (design review rule 5): what could not
+  // be removed is simply left, and no message anywhere claims a release is being KEPT for it —
+  // retention policy, not a guarantee, and it may remove a release nobody proved damaged.
+  const removed = [];
+  const rmFailed = [];
+  for (const name of names) {
+    if (kept.has(name)) {
+      continue;
+    }
+    try {
+      fs.rmSync(path.join(root, 'versions', name), { recursive: true, force: true });
+      removed.push(name);
+    } catch (err) {
+      rmFailed.push(`${name} (${err && err.code ? err.code : err && err.message ? err.message : err})`);
+    }
   }
   fs.rmSync(path.join(root, 'staging'), { recursive: true, force: true });
   if (removed.length > 0) {
     logLine(ctx, { action: 'prune', result: 'ok', to_bridge_release: release, reason: `removed ${removed.sort(compareReleases).join(', ')}; kept ${[...kept].sort(compareReleases).join(', ')}` });
+  }
+  if (rmFailed.length > 0) {
+    ctx.say(`prune could not remove ${rmFailed.join(', ')}; left in place`);
+    logLine(ctx, { action: 'prune', result: 'failed', to_bridge_release: release, reason: `could not remove ${rmFailed.join(', ')}` });
   }
 }
 
@@ -1099,17 +1119,18 @@ async function installPack(ctx, { manifest, manifestSha256, packBytes, from, act
   commitInstall(ctx, { release: manifest.bridge_release, manifest, manifestSha256, staging, from, action });
 }
 
-/** Refuse what the installed release rules out: a lower release, or the same one with other bytes. */
-function refuseAgainstInstalled(root, installedRelease, manifest) {
+/**
+ * Refuse what the installed release rules out: a lower release, or the same one with other bytes.
+ * `installedPackSha` is the caller's already-known pack sha of `installedRelease` (resolveInstalled
+ * classified it `ok` to select it) — never re-derived here.
+ */
+function refuseAgainstInstalled(installedRelease, installedPackSha, manifest) {
   const cmp = compareReleases(manifest.bridge_release, installedRelease);
   if (cmp < 0) {
     throw new Refusal(`downgrade offered: release ${manifest.bridge_release} is below the installed ${installedRelease}`);
   }
-  if (cmp === 0) {
-    const held = verifiedPackSha(root, installedRelease);
-    if (held !== manifest.pack.sha256) {
-      throw new Refusal(`same release, different bytes: release ${installedRelease} is installed as pack ${held}, and this is pack ${manifest.pack.sha256} under the same release`);
-    }
+  if (cmp === 0 && installedPackSha !== manifest.pack.sha256) {
+    throw new Refusal(`same release, different bytes: release ${installedRelease} is installed as pack ${installedPackSha}, and this is pack ${manifest.pack.sha256} under the same release`);
   }
   return cmp;
 }
@@ -1156,51 +1177,43 @@ async function report(ctx, head) {
 }
 
 /**
- * Repair what entry.mjs's step 1 passed over: point current.json at the release it started, and
- * drop every damaged release (a power cut's half-written tree, DL-434) so it counts as not
- * installed and the offer fetches it again. The running release is never among them — step 1
- * starts only an intact one. One `pointer_recovered` line says what was found and done; a release
- * that could not be confirmed either way is neither dropped nor pointed away from, and alone logs
- * nothing.
+ * Repair current.json: point it at the release step 1 selected, whenever it names anything else
+ * (design review rule 3, reversing the earlier "keepPointer" behavior — the frozen-contract header
+ * says step 3 imports what current.json names NOW, which needs this to run unconditionally, and
+ * an unconfirmable release exempted from it was the exact case the header's promise broke).
+ * DELETES NOTHING — removing a release is `commitInstall`'s reuse check and `settleRoot`'s prune,
+ * each on its own policy; this function only ever repoints. One `pointer_recovered` line says what
+ * was found and what current.json names now.
  */
 function recoverRoot(ctx, installed) {
   const { root } = ctx;
   checkBudget(ctx, 'repairing current.json');
-  const dropped = [];
-  for (const d of installed.damaged ?? []) {
-    if (d.release === installed.release) {
-      continue;
-    }
-    fs.rmSync(path.join(root, 'versions', d.release), { recursive: true, force: true });
-    dropped.push(`release ${d.release} (${d.reason})`);
-  }
-  // A release current.json names that could not be CONFIRMED either way (a permission or I/O
-  // fault) keeps the pointer: it is passed over for this launch only, and the next launch checks
-  // it again.
-  const named = installed.current && typeof installed.current === 'object' ? installed.current.bridge_release : undefined;
-  const keepPointer = typeof named === 'string' && (installed.unconfirmed ?? []).some((u) => u.release === named);
-  const repointed = installed.recovered && !keepPointer;
-  if (repointed) {
-    writePointer(root, installed.release, null, verifiedPackSha(root, installed.release));
-  }
-  if (!repointed && dropped.length === 0) {
+  const named = installed.current && typeof installed.current === 'object' && typeof installed.current.bridge_release === 'string' ? installed.current.bridge_release : undefined;
+  if (named === installed.release) {
     return;
   }
-  // What was actually found (review r2 minor 3): current.json can be genuinely unreadable, or
-  // perfectly readable and simply naming a release nothing here ever verified — those are
-  // different facts, and only the first one is "unreadable".
+  // current.json's own read fault is in scope here (including a directory in its place —
+  // EISDIR), the same as a release's: named by cause, never swallowed to one generic message.
   let cause;
-  if (dropped.length > 0) {
-    cause = `damaged, removed so it is fetched again: ${dropped.join('; ')}`;
-  } else if (installed.current === null) {
-    cause = 'current.json was unreadable';
+  if (named !== undefined) {
+    const badEntry = (installed.bad ?? []).find((b) => b.release === named);
+    cause = badEntry ? `current.json named release ${named}, which is not intact (${badEntry.message})` : `current.json named release ${named}, which is not installed`;
+  } else if (installed.currentCause === 'missing') {
+    cause = 'current.json is missing';
+  } else if (installed.currentCause === 'malformed') {
+    cause = 'current.json is not valid JSON';
+  } else if (installed.currentCause && installed.currentCause.startsWith('read-fault(')) {
+    cause = `current.json could not be read (${installed.currentCause.slice('read-fault('.length, -1)})`;
   } else {
-    cause = typeof named === 'string' ? `current.json named release ${named}, which is not installed intact` : 'current.json did not name a valid release';
+    cause = 'current.json did not name a valid release';
   }
-  const reason = repointed
-    ? `${cause}; current.json now names ${installed.release}, the newest intact release`
-    : `${cause}; current.json still names release ${named}, which could not be confirmed intact and is checked again at the next launch`;
-  logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: repointed ? installed.release : named, reason });
+  try {
+    writePointer(root, installed.release, { clientVersion: clientVersionOf(root, installed.release), packSha: installed.packSha, filesJsonSha: installed.filesJsonSha });
+  } catch (err) {
+    throw new Failure(`current.json could not be repointed to release ${installed.release} (${err && err.code ? err.code : err && err.message ? err.message : err})`);
+  }
+  const reason = `${cause}; current.json now names ${installed.release}, the selected release`;
+  logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: installed.release, reason });
 }
 
 /**
@@ -1243,9 +1256,9 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
         // the lock.
         throw new Failure(`no verified client release is installed under ${path.join(root, 'versions')} any more`);
       }
-      if (installed.recovered || (installed.damaged ?? []).length > 0) {
-        recoverRoot(ctx, installed);
-      }
+      // recoverRoot no-ops when current.json already names the selected release: always safe to
+      // call, and the single source of truth for whether a repoint is owed (design review rule 3).
+      recoverRoot(ctx, installed);
       ctx.door = doorFromEnv(env);
       ctx.source = ctx.door.source;
       const answer = await ask(ctx, { op: 'client_manifest' }, MANIFEST_LEG_MS);
@@ -1280,7 +1293,7 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
         }
         result.offer = offer;
         known.to = offer;
-        if (refuseAgainstInstalled(root, installed.release, manifest) === 0) {
+        if (refuseAgainstInstalled(installed.release, installed.packSha, manifest) === 0) {
           result.state = 'current';
           recordUnloggedInstall(ctx, installed.release, manifest, manifestSha256);
           settleRoot(ctx, installed.release);
@@ -1348,7 +1361,7 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
       const installed = resolved.release === null ? null : resolved;
       known.from = installed ? installed.release : null;
       if (installed) {
-        refuseAgainstInstalled(root, installed.release, manifest);
+        refuseAgainstInstalled(installed.release, installed.packSha, manifest);
       }
       await installPack(ctx, { manifest, manifestSha256: known.manifestSha256, packBytes: fs.readFileSync(packFile), from: known.from, action: 'bootstrap' });
       settleRoot(ctx, manifest.bridge_release);

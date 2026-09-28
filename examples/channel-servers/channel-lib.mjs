@@ -275,7 +275,7 @@ export function launchIdentity(env) {
 export function clientUpdateInstruction(state, { launchId, root }) {
   const base = updateStateLine(state, { launchId, root });
   if (state && typeof state.recovered === 'string' && state.launch_id === launchId) {
-    const damage = `CLIENT RELEASE DAMAGED ON THIS SEAT: ${state.recovered}. Tell your operator; the updater removes the damaged release, so the next update that reaches the bridge fetches its published release again.`;
+    const damage = `CLIENT RELEASE DAMAGED ON THIS SEAT: ${state.recovered}. Tell your operator; a later update either replaces it with a verified copy or removes it during retention.`;
     return base ? `${damage} ${base}` : damage;
   }
   return base;
