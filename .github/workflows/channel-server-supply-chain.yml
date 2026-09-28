@@ -3,7 +3,7 @@ name: Channel-server supply chain
 # Guards the committed examples/channel-servers/ dependency tree (the reference
 # Claude Code channel MCP server that reads a bearer token + accepts loopback
 # POSTs as the agent's OS user — a real trust boundary, so a pinned + reviewed
-# tree matters). Four checks:
+# tree matters). The checks:
 #   1. `npm ci` — fails if package.json and package-lock.json have drifted
 #      (the committed lockfile must stay reproducible: lock regenerated whenever
 #      the dep range changes).
@@ -25,6 +25,11 @@ name: Channel-server supply chain
 #      a snapshot can compare to detect drift (DL-038) — and FAILS whenever
 #      package-lock.json's version disagrees with it, since the field is a signal
 #      only while every file that states it agrees (DL-268).
+#   5. client-update-windows — the seat updater's suite (tests/client-update.test.mjs)
+#      on windows-latest: directory renames and the EPERM retry, the %TEMP% marker path,
+#      long node_modules paths, and the process.kill(pid, 0) liveness check the session
+#      guard rests on (card#10568, design §3.6). Only that file: the other suites drive a
+#      unix socket or a bash fake `ssh`, which have no Windows form.
 #
 # Cost-scoped on purpose: only fires when the example actually changes (PR path
 # filter) plus a weekly cron to catch newly-disclosed CVEs without a code change.
@@ -70,6 +75,28 @@ jobs:
 
       - name: Audit the pinned tree (fail on high/critical CVE)
         run: npm audit --audit-level=high
+
+  client-update-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: examples/channel-servers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Node 20
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: examples/channel-servers/package-lock.json
+
+      - name: Reproducible install
+        run: npm ci --ignore-scripts
+
+      - name: The seat updater's suite (node --test)
+        run: node --test tests/client-update.test.mjs
 
   version-bump-guard:
     # Consumers copy examples/channel-servers/ into a per-deployment (often

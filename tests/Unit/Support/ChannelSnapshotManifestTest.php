@@ -24,31 +24,25 @@ use Tests\TestCase;
  */
 class ChannelSnapshotManifestTest extends TestCase
 {
+    /** The shared comparator vectors: one file, read by the python, PHP and Node implementations alike. */
+    private const VECTORS_FILE = __DIR__.'/../../Fixtures/version-comparator-vectors.json';
+
     /**
-     * The SHARED comparator vector table (DL-229). The declared authority for
-     * comparison semantics is `_version_tuple` in `bin/provision-board-tools.py`;
-     * these exact pairs + verdicts are asserted against it in
-     * `bin/test_provision_board_tools.py` (class `VersionComparatorLockstep`).
-     * Change one side without the other and the two implementations silently
-     * disagree about which snapshots are stale.
-     *
-     * The starred rows are where PHP's `version_compare()` DIVERGES from the
-     * authority (it honors pre-release/build tags the authority drops) — which is
-     * why {@see ChannelSnapshotManifest::compareVersions} exists at all.
+     * The SHARED comparator vector table (DL-229). The declared authority for comparison
+     * semantics is `_version_tuple` in `bin/provision-board-tools.py`; the same rows are
+     * asserted against it in `bin/test_provision_board_tools.py` (class
+     * `VersionComparatorLockstep`) and against the seat updater's `compareReleases` in
+     * `examples/channel-servers/tests/client-update.test.mjs` — all three READ
+     * `tests/Fixtures/version-comparator-vectors.json`, so there is no second copy to drift.
      *
      * @return list<array{string, string, int}>
      */
     public static function versionVectors(): array
     {
-        return [
-            ['0.8.0', '0.8.0', 0],
-            ['0.8.0-rc1', '0.8.0', 0],       // * version_compare says -1
-            ['0.8', '0.8.0', -1],
-            ['0.10.0', '0.9.0', 1],
-            ['0.8.0', '0.8.0+build5', 0],    // * version_compare says +1
-            ['1.0.0-alpha', '1.0.0', 0],     // * version_compare says -1
-            ['', '0.8.0', -1],
-        ];
+        /** @var array{vectors: list<array{string, string, int}>} $table */
+        $table = json_decode((string) file_get_contents(self::VECTORS_FILE), true, 8, JSON_THROW_ON_ERROR);
+
+        return $table['vectors'];
     }
 
     #[DataProvider('versionVectors')]
@@ -63,14 +57,17 @@ class ChannelSnapshotManifestTest extends TestCase
         $this->assertSame(-$expected, ChannelSnapshotManifest::compareVersions($b, $a) <=> 0);
     }
 
-    public function test_version_compare_would_diverge_on_three_vectors(): void
+    public function test_version_compare_diverges_exactly_on_the_marked_vectors(): void
     {
         // PROVE the divergence is real, not folklore: if PHP's version_compare ever
         // agreed on these, the hand-rolled comparator would be pointless. The SUT is
         // asserted on the SAME rows in the same test — comparing version_compare
         // against a literal table alone would stay green through a revert of
         // compareVersions() to version_compare(), i.e. it would not be a guard.
-        $starred = [['0.8.0-rc1', '0.8.0'], ['0.8.0', '0.8.0+build5'], ['1.0.0-alpha', '1.0.0']];
+        /** @var array{php_version_compare_diverges: list<array{string, string}>} $table */
+        $table = json_decode((string) file_get_contents(self::VECTORS_FILE), true, 8, JSON_THROW_ON_ERROR);
+        $starred = $table['php_version_compare_diverges'];
+        $this->assertNotSame([], $starred, 'the divergence rows are what justify the hand-rolled comparator');
 
         foreach (self::versionVectors() as [$a, $b, $expected]) {
             $pair = [$a, $b];

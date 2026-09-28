@@ -33,7 +33,9 @@ test('an unreadable manifest announces the explicit sentinel, never a plausible 
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const server = path.join(dir, path.basename(SERVER));
   fs.copyFileSync(SERVER, server);
-  fs.copyFileSync(path.join(path.dirname(SERVER), 'channel-lib.mjs'), path.join(dir, 'channel-lib.mjs'));
+  for (const sibling of ['channel-lib.mjs', 'entry.mjs']) {
+    fs.copyFileSync(path.join(path.dirname(SERVER), sibling), path.join(dir, sibling));
+  }
 
   const client = await connectServer(t, {}, { server });
 
