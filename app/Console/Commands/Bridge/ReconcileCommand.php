@@ -532,9 +532,9 @@ class ReconcileCommand extends BridgeCommand
                 // on this same line. `$owner['repo']`/`$owner['mapping']` are the matched
                 // `writeback.json` entry; `canonRepo` IS the key it matched; `prNumber` is an
                 // `int`. `prUrl` is `PrUrlRef::$raw` — the stored URL VERBATIM, whose own
-                // docblock says `unnormalized`: `parse()` needs only a mapped repo and
-                // `/pull/<n>` matching SOMEWHERE, so everything else in it is the card
-                // author's. Its consumers escape it at each console write.
+                // docblock says `unnormalized`: `parse()` reads only the value's first GitHub
+                // URL, up to its `/pull/<n>` (card#10735), so everything around that is the
+                // card author's. Its consumers escape it at each console write.
                 return [$owner['repo'], $owner['mapping'], $ref->canonRepo, $ref->prNumber, $ref->prUrl];
 
             case TrackedRefKind::BarePrNumber:

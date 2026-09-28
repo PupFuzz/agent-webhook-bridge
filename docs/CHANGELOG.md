@@ -8,6 +8,23 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#10735 / DL-431** — ⚠ **Acceptance narrowing (operator-approved 2026-09-27): a `pr_url` names a pull request only through its FIRST GitHub URL, which gives both the repo and the number.** `PrUrlRef::parse` took the repo from the first GitHub URL in the value and the number from the first `/pull/<digits>` anywhere in it, so a value holding two URLs could name a pull request neither URL names: `https://github.com/a/x/issues/5 https://github.com/b/y/pull/179` read as `a/x#179`, and the card was reconciled and promoted by it. Now one match gives both halves, and the first GitHub URL names a pull request only when its own segment is `pull` followed by digits. The pattern is `PrUrlRef::PATTERN`, `#github\.com/([^/]+/[^/]+?)(?:\.git)?/(pull|issues|commit|tree|blob)/(\d*)#i`, first match; group 2 must be exactly `pull` and group 3 non-empty.
+  - **Unchanged:** owner/repo and host case, `.git`, a trailing `/files`, `/commits/<sha>` or `#discussion_r…`, `www.`, `http`/`https`, text around the URL, and the `.../pull/0` placeholder. The card's by-ref `source` (`repoFromGitHubUrl`) is not changed.
+  - A card whose `pr_url` now names no pull request is treated as carrying a bare `pr_number` (DL-429): `bridge:reconcile` and `promote_on_release` skip and name it.
+  - The toolkit's copies of the rule move in the same release pair (card#10736).
+  - **No migration, no config key, no `.env` change, no route change, no token-scope change, no new `bridge:check` leg**; `--format=json` `schema` stays **1**.
+
+### Upgrade warnings
+
+- **card#10735 / DL-431 — these `pr_url` values classify differently.** Exactly the values where the first `/pull/<digits>` is not the one directly after the first GitHub URL's `owner/repo`:
+  - **Named a pull request, now name none** (the card is read as a bare `pr_number`):
+    - an issue, commit, tree or blob URL followed by any `/pull/<n>`: `https://github.com/a/x/issues/5 https://github.com/b/y/pull/179` (was `a/x#179`), `…/o/r/tree/main/pull/179`, `…/o/r/blob/main/pull/179`, `…/o/r/commit/<sha>/pull/179` (each was `o/r#179`);
+    - a first `pull` URL with no digits, or spelled `PULL`, followed by a numbered one: `https://github.com/o/r/pull/ https://github.com/o/r/pull/5` and `https://github.com/o/r/PULL/1 https://github.com/o/r/pull/5` (each was `o/r#5`).
+  - **Names a different pull request:** a non-GitHub `/pull/<n>` before the first GitHub pull URL. `https://example.com/pull/7 https://github.com/o/r/pull/9` was `o/r#7` and is now `o/r#9`.
+  - **Remedy for an affected card:** stamp one URL naming its pull request, `kbcard patch --task <id> --pr N --pr-url https://github.com/<owner>/<repo>/pull/N`. Run `bridge:reconcile` (report-only) after upgrading: an affected card that carries a `pr_number` appears as a bare-number skip line.
+
 ## [0.91.0] - 2026-09-27
 
 ### Added
