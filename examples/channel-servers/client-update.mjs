@@ -28,9 +28,9 @@
 //   its FILES.json and required files hash as recorded (`releaseDamage`), falls back to the kept
 //   previous release otherwise, and this updater then drops the damaged release so it is fetched
 //   again. `releaseDamage` is the cheap, per-launch check (REQUIRED_CLIENT_FILES only); a file
-//   outside it can still fail only at import, and entry.mjs's own last resort there — and this
-//   updater's reuse check on a bootstrap re-install — both pay the full, whole-tree check instead
-//   (`fullTreeDamage`, review r2 MAJOR).
+//   outside it can still fail only at import, which does not start the seat (no other release is
+//   tried) — a bootstrap repairs it, because this updater's reuse check on an install pays the
+//   full, whole-tree check (`fullTreeDamage`).
 //
 // ⛔ THE BUDGET. `signal` is aborted by entry.mjs when its deadline wins. The pack's
 // verify-and-stage (the longest synchronous step) and every irreversible step — the rename into
@@ -888,9 +888,14 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   // bootstrap" (DL-434 Decision 9) is true of a file outside REQUIRED_CLIENT_FILES too (review r2
   // MAJOR: a re-install of the same release used to reuse a tree with a damaged non-required file
   // untouched).
-  const damage = held === undefined ? null : held === null ? { reason: 'it holds no readable .verified record' } : fullTreeDamage(root, release);
+  const damage = held === undefined ? null : held === null ? { reason: 'it holds no readable .verified record', established: true } : fullTreeDamage(root, release);
   if (held !== undefined && damage === null && held !== packSha) {
     throw new Refusal(`versions/${release} already holds pack ${held}, not the verified pack ${packSha}; it is left as it is`);
+  }
+  if (damage !== null && !damage.established) {
+    // A read fault that is not a missing file or a hash mismatch proves nothing about the tree, so
+    // it is never grounds to delete it.
+    throw new Failure(`versions/${release} could not be checked (${damage.reason}); it is left as it is`);
   }
   if (held !== undefined && damage === null) {
     // The same verified bytes are already there, intact: reuse them.
@@ -1154,7 +1159,9 @@ async function report(ctx, head) {
  * Repair what entry.mjs's step 1 passed over: point current.json at the release it started, and
  * drop every damaged release (a power cut's half-written tree, DL-434) so it counts as not
  * installed and the offer fetches it again. The running release is never among them — step 1
- * starts only an intact one. One `pointer_recovered` line says what was found and done.
+ * starts only an intact one. One `pointer_recovered` line says what was found and done; a release
+ * that could not be confirmed either way is neither dropped nor pointed away from, and alone logs
+ * nothing.
  */
 function recoverRoot(ctx, installed) {
   const { root } = ctx;
@@ -1167,8 +1174,17 @@ function recoverRoot(ctx, installed) {
     fs.rmSync(path.join(root, 'versions', d.release), { recursive: true, force: true });
     dropped.push(`release ${d.release} (${d.reason})`);
   }
-  if (installed.recovered) {
+  // A release current.json names that could not be CONFIRMED either way (a permission or I/O
+  // fault) keeps the pointer: it is passed over for this launch only, and the next launch checks
+  // it again.
+  const named = installed.current && typeof installed.current === 'object' ? installed.current.bridge_release : undefined;
+  const keepPointer = typeof named === 'string' && (installed.unconfirmed ?? []).some((u) => u.release === named);
+  const repointed = installed.recovered && !keepPointer;
+  if (repointed) {
     writePointer(root, installed.release, null, verifiedPackSha(root, installed.release));
+  }
+  if (!repointed && dropped.length === 0) {
+    return;
   }
   // What was actually found (review r2 minor 3): current.json can be genuinely unreadable, or
   // perfectly readable and simply naming a release nothing here ever verified — those are
@@ -1179,11 +1195,12 @@ function recoverRoot(ctx, installed) {
   } else if (installed.current === null) {
     cause = 'current.json was unreadable';
   } else {
-    const named = installed.current && typeof installed.current === 'object' ? installed.current.bridge_release : undefined;
     cause = typeof named === 'string' ? `current.json named release ${named}, which is not installed intact` : 'current.json did not name a valid release';
   }
-  const reason = `${cause}; current.json now names ${installed.release}, the newest intact release`;
-  logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: installed.release, reason });
+  const reason = repointed
+    ? `${cause}; current.json now names ${installed.release}, the newest intact release`
+    : `${cause}; current.json still names release ${named}, which could not be confirmed intact and is checked again at the next launch`;
+  logLine(ctx, { action: 'pointer_recovered', result: 'ok', to_bridge_release: repointed ? installed.release : named, reason });
 }
 
 /**
@@ -1212,7 +1229,13 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
   let head;
   let reachable = false;
   try {
-    ctx.log = InstallLog.open(root, say);
+    try {
+      ctx.log = InstallLog.open(root, say);
+    } catch (err) {
+      // Not the updater failing to run: its own record cannot be read, and nothing can be logged
+      // or reported until it can.
+      return { ...result, state: 'update_failed', log_unreadable: true, error: `the install log ${path.join(root, 'install-log.jsonl')} cannot be read (${err && err.code ? err.code : err && err.message ? err.message : err})` };
+    }
     try {
       if (installed.release === null) {
         // Not a state entry.mjs's own pre-lock read can rule out (that is the race this re-resolve

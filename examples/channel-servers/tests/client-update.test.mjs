@@ -624,7 +624,8 @@ test('a release whose server does not load: not started, loudly', async (t) => {
 
   assert.equal(run.code, 2);
   assert.equal(read(root, 'state.json').state, 'not_started');
-  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /could not start release 1\.0\.0/);
+  // Its whole tree verifies, so the fault is in the published release, not on this seat.
+  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /release 1\.0\.0 verifies but failed to start \(.+\): this is a defect in the published release; the bridge must publish a fixed release/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -763,12 +764,14 @@ test('clientUpdateInstruction: silent when current, loud otherwise, and never be
       'Tell your operator; the install log is /r/install-log.jsonl. The update is tried again at the next launch; ' +
       'it succeeds once the bridge publishes a release this seat accepts.',
   );
-  // review r2 minor 4: an installed updater that cannot even run is not fixed by waiting for a
-  // newer release — only `updater_broken` (composeState's own "the installed updater failed"
-  // branch) says re-bootstrapping is the actual remedy.
+  // An updater that cannot run cannot fetch its own fix: it needs a fixed release, bootstrapped.
   assert.match(
     clientUpdateInstruction({ ...base, state: 'update_failed', error: 'the installed updater failed: x', updater_broken: true }, { launchId: 'L', root }),
-    /re-bootstrap this seat's client from the bridge's published pack\.$/,
+    /cannot fetch a fix: once the bridge publishes a fixed release, re-bootstrap this seat's client from it\.$/,
+  );
+  assert.match(
+    clientUpdateInstruction({ ...base, state: 'update_failed', error: 'the install log /r/install-log.jsonl cannot be read (EACCES)', log_unreadable: true }, { launchId: 'L', root }),
+    /the install log itself cannot be read — fix that file \(its owner and permissions\) and the next launch retries\.$/,
   );
   assert.doesNotMatch(clientUpdateInstruction({ ...base, state: 'update_failed', error: 'x', published: '1.0.0' }, { launchId: 'L', root }), /was not applied/);
   assert.match(clientUpdateInstruction({ ...base, state: 'approval_owed', approval_owed: '2.0.0' }, { launchId: 'L', root }), /^CLIENT RELEASE 2\.0\.0 IS PUBLISHED/);
@@ -943,12 +946,12 @@ test('a damaged file outside REQUIRED_CLIENT_FILES: invisible to step 1, but a b
   const root = await seatWith(t, '1.0.0', { pack: packWithExtraDep('1.0.0') });
   damage(root, '1.0.0', 'extra-dep.mjs');
 
-  // Still outside REQUIRED_CLIENT_FILES on purpose: step 1's cheap check does not catch this, and
-  // with no other release to fall back to the import failure is fatal for this launch.
+  // Still outside REQUIRED_CLIENT_FILES on purpose: step 1's cheap check does not catch this; the
+  // import failure is fatal for this launch, and its message names the damage and the repair.
   const run = await launch(root, seatEnv(t, null));
   assert.equal(run.code, 2, run.stderr);
-  assert.doesNotMatch(run.stderr, /release 1\.0\.0 is damaged/, 'the cheap per-launch check does not cover this file');
-  assert.match(run.stderr, /could not start release 1\.0\.0/);
+  assert.doesNotMatch(run.stderr, /release 1\.0\.0 is damaged \(/, 'the cheap per-launch check does not cover this file');
+  assert.match(run.stderr, /release 1\.0\.0 is damaged on this seat \(client\/extra-dep\.mjs does not match its FILES\.json line\): re-bootstrap from the bridge's pack — a bootstrap re-verifies the whole tree and replaces damaged files/);
 
   // The reuse check on a bootstrap re-install is now the FULL FILES.json verification.
   const r = bootstrap(t, root, packWithExtraDep('1.0.0'));
@@ -961,21 +964,34 @@ test('a damaged file outside REQUIRED_CLIENT_FILES: invisible to step 1, but a b
   assert.equal(online.started.release, '1.0.0');
 });
 
-test('an import failure outside REQUIRED_CLIENT_FILES falls back to the kept previous release (r2 MAJOR)', async (t) => {
+test('an import failure is not started, even with an intact previous release kept — no other release is tried (DL-434 bound 4)', async (t) => {
   const root = await seatWith(t, '1.0.0');
   const bridge = await fixtureBridge(t, { published: packWithExtraDep('2.0.0') });
   await launch(root, seatEnv(t, bridge));
   assert.equal(read(root, 'current.json').bridge_release, '2.0.0');
   damage(root, '2.0.0', 'extra-dep.mjs');
 
-  const run = await launch(root, seatEnv(t, null));
-  assert.equal(run.code, 0, run.stderr);
-  assert.equal(run.started.release, '1.0.0', 'the kept previous release starts instead');
-  assert.match(run.stderr, /release 2\.0\.0 failed to start .*falling back to the kept release 1\.0\.0/);
-  const state = read(root, 'state.json');
-  assert.equal(state.running, '1.0.0');
-  assert.match(state.recovered, /release 2\.0\.0 failed to start .*release 1\.0\.0 started instead/);
-  assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')), 'entry.mjs never deletes a release itself — only client-update.mjs, under the lock');
+  const env = seatEnv(t, null);
+  const run = await launch(root, env);
+  assert.equal(run.code, 2, run.stderr);
+  assert.equal(run.started, null, 'the kept 1.0.0 is not started in its place');
+  assert.equal(read(root, 'state.json').state, 'not_started');
+  assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /release 2\.0\.0 is damaged on this seat \(client\/extra-dep\.mjs does not match its FILES\.json line\): re-bootstrap/);
+  assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')), 'entry.mjs never deletes a release');
+});
+
+test('an import failure whose tree cannot be read says so, naming the file and the fault', async (t) => {
+  const root = await seatWith(t, '1.0.0', { pack: packWithExtraDep('1.0.0') });
+  const file = path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs');
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+
+  const env = seatEnv(t, null);
+  const run = await launch(root, env);
+  assert.equal(run.code, 2, run.stderr);
+  const marker = fs.readFileSync(failureMarkerPath(env), 'utf8');
+  assert.match(marker, /release 1\.0\.0 failed to start \(.+\), and whether it is damaged on this seat was not established: client\/extra-dep\.mjs could not be checked \(EISDIR\)/);
+  assert.doesNotMatch(marker, /defect in the published release|re-bootstrap/);
 });
 
 test('runLaunchUpdate re-resolves the installed release under the lock, not the caller\'s pre-lock argument (review r2 minor 1)', async (t) => {
@@ -1031,6 +1047,72 @@ test('releaseDamage / resolveInstalled: a non-ENOENT read fault is "could not be
   assert.deepEqual(resolved.damaged, []);
   assert.equal(resolved.unconfirmed.length, 1);
   assert.equal(resolved.unconfirmed[0].release, release);
+});
+
+test('composeState marks updater_broken only when the installed updater itself threw', () => {
+  const before = { release: '1.0.0', damaged: [] };
+  const after = { release: '1.0.0' };
+  const broken = composeState({ launchId: 'L', outcome: { error: new Error('SyntaxError: x') }, before, after, budget: 1 });
+  assert.equal(broken.state, 'update_failed');
+  assert.equal(broken.updater_broken, true);
+  const refused = composeState({ launchId: 'L', outcome: { result: { state: 'update_failed', error: 'refused: x' } }, before, after, budget: 1 });
+  assert.equal(refused.updater_broken, undefined);
+  const expired = composeState({ launchId: 'L', outcome: { expired: true }, before, after, budget: 1 });
+  assert.equal(expired.updater_broken, undefined);
+});
+
+test('an unreadable install log names itself, and is not reported as a broken updater', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const log = path.join(root, 'install-log.jsonl');
+  fs.rmSync(log, { force: true });
+  fs.mkdirSync(log);
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0') });
+
+  const installed = resolveInstalled(root);
+  const result = await runLaunchUpdate({ root, budgetMs: 10000, signal: new AbortController().signal, launchId: 'test-launch-log', installed, env: seatEnv(t, bridge) });
+  assert.equal(result.state, 'update_failed');
+  assert.equal(result.log_unreadable, true);
+  assert.match(result.error, /the install log .*install-log\.jsonl cannot be read \(EISDIR\)/);
+  const state = composeState({ launchId: 'L', outcome: { result }, before: installed, after: installed, budget: 1 });
+  assert.equal(state.updater_broken, undefined);
+  assert.match(clientUpdateInstruction(state, { launchId: 'L', root }), /the install log itself cannot be read/);
+  assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
+});
+
+test('an install onto a release whose tree cannot be read fails, naming the file and the fault, and deletes nothing', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const file = path.join(root, 'versions', '1.0.0', 'seat-tools', 'bin', 'check-channel-snapshot.py');
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+
+  const r = bootstrap(t, root, goodPack('1.0.0'));
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /versions\/1\.0\.0 could not be checked \(seat-tools\/bin\/check-channel-snapshot\.py could not be checked \(EISDIR\)\); it is left as it is/);
+  assert.ok(fs.statSync(file).isDirectory(), 'the release was not replaced');
+  assert.doesNotMatch(r.stderr, /is damaged/);
+});
+
+test('a release current.json names that cannot be confirmed intact keeps the pointer: passed over this launch only', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const r = bootstrap(t, root, goodPack('2.0.0'));
+  assert.equal(r.status, 0, r.stderr);
+  const file = path.join(root, 'versions', '2.0.0', 'client', 'package.json');
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+
+  const run = await launch(root, seatEnv(t, null));
+  assert.equal(run.code, 0, run.stderr);
+  assert.equal(run.started.release, '1.0.0');
+  assert.match(run.stderr, /release 2\.0\.0 could not be confirmed intact \(client\/package\.json could not be checked \(EISDIR\)\); it is passed over this launch only/);
+  assert.equal(read(root, 'current.json').bridge_release, '2.0.0', 'the pointer is not repointed away from it');
+  assert.ok(fs.existsSync(path.join(root, 'versions', '2.0.0')));
+
+  // Once the fault clears, the next launch starts it again with nothing to repair.
+  fs.rmdirSync(file);
+  fs.copyFileSync(path.join(root, 'versions', '1.0.0', 'client', 'package.json'), file); // the fixture's package.json does not vary by release
+  const again = await launch(root, seatEnv(t, null));
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(again.started.release, '2.0.0');
 });
 
 test('no intact release at all: not started, loudly', async (t) => {

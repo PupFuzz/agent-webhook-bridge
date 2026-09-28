@@ -261,8 +261,8 @@ function treeDamage(root, release, paths) {
  * fsynced one by one (DL-434 bound), so on ext4 a switched pointer can name files the kernel never
  * wrote. Cheap enough for every launch (a handful of files); {@see fullTreeDamage} hashes the
  * whole tree and costs a real pack's thousands of files, so it runs only where that cost is a
- * one-time install/bootstrap step, or a launch's last resort after an import failure — never on
- * the per-launch happy path.
+ * one-time install/bootstrap step, or wording the message of a launch that is already not
+ * starting because its import threw — never on the per-launch happy path.
  */
 export function releaseDamage(root, release) {
   return treeDamage(root, release, REQUIRED_CLIENT_FILES.map((name) => `client/${name}`));
@@ -271,8 +271,8 @@ export function releaseDamage(root, release) {
 /**
  * Like {@see releaseDamage}, but every file FILES.json lists, not only REQUIRED_CLIENT_FILES —
  * the check a bootstrap re-install now repeats (`commitInstall`'s reuse check), so "repaired by a
- * bootstrap" is true of a file outside REQUIRED_CLIENT_FILES too, and entry.mjs's last resort when
- * starting a release throws (review r2 MAJOR / DL-434 Decision 9).
+ * bootstrap" is true of a file outside REQUIRED_CLIENT_FILES too; and what `importFailure` reads to
+ * tell local damage from a defect in the published release (DL-434 Decision 9).
  */
 export function fullTreeDamage(root, release) {
   return treeDamage(root, release, null);
@@ -450,6 +450,7 @@ export function composeState({ launchId, outcome, before, after, budget }) {
       approval_owed: r.approval_owed ?? null,
       error: typeof r.state === 'string' ? (r.error ?? null) : 'the updater returned no state',
       ...(r.report_error ? { report_error: r.report_error } : {}),
+      ...(r.log_unreadable === true ? { log_unreadable: true } : {}),
     };
   }
   if (outcome.expired) {
@@ -462,8 +463,8 @@ export function composeState({ launchId, outcome, before, after, budget }) {
   // The ONE update_failed shape where the installed updater itself could not even run (its import
   // threw, or `runLaunchUpdate` rejected instead of resolving) — every other shape means the
   // updater ran fine and refused or deferred for its own reasons. `clientUpdateInstruction` reads
-  // this to say what actually repairs it: a re-bootstrap here, "a newer release" nowhere else
-  // (review r2 minor 4).
+  // this to say what actually repairs it: a release with a working updater, bootstrapped by hand,
+  // because this one cannot run to fetch it.
   return { ...base, state: 'update_failed', published: null, offer: null, approval_owed: null, updater_broken: true, error: `the installed updater failed: ${message}` };
 }
 
@@ -472,43 +473,21 @@ function say(channel, text) {
 }
 
 /**
- * The newest OTHER verified release under `versions/` whose whole tree (not only
- * REQUIRED_CLIENT_FILES) hashes clean, or null when there is none. Only reached from step 3's
- * import-failure fallback (review r2 MAJOR) — already the expensive, exceptional path, so it is
- * thorough rather than cheap.
+ * What an import failure of `release` means, worded for the operator. The seat is not started
+ * either way (no other release is tried: DL-434 bound 4); the whole-tree check runs here only to
+ * say truthfully whether the fault is local damage, which a bootstrap repairs, or a defect in the
+ * published release, which only the bridge can fix. Nothing is deleted here.
  */
-function fallbackRelease(root, exclude) {
-  let names = [];
-  try {
-    names = fs.readdirSync(path.join(root, 'versions'));
-  } catch {
-    names = [];
+function importFailure(root, release, err) {
+  const why = err && err.message ? err.message : String(err);
+  const damage = fullTreeDamage(root, release);
+  if (damage === null) {
+    return `release ${release} verifies but failed to start (${why}): this is a defect in the published release; the bridge must publish a fixed release`;
   }
-  const candidates = names.filter((name) => name !== exclude && verifiedRecord(root, name) !== null && fullTreeDamage(root, name) === null);
-  candidates.sort(compareReleases);
-  return candidates.length > 0 ? candidates[candidates.length - 1] : null;
-}
-
-/**
- * Patch state.json's `running` (and add a `recovered`-style note `clientUpdateInstruction` already
- * knows how to show) after step 3 fell back to a release other than the one it just wrote. Every
- * other field of the launch's normal state.json write is left as it was — best-effort, like every
- * record here (r1 MUST-FIX 1): a failure to patch it never keeps the fallback release from
- * starting, it just leaves state.json naming the release that failed to import.
- */
-function noteFallback(root, launchId, from, to, why) {
-  try {
-    const prior = readJsonFile(path.join(root, 'state.json'));
-    writeJsonAtomic(path.join(root, 'state.json'), {
-      ...(prior && typeof prior === 'object' ? prior : {}),
-      launch_id: launchId,
-      running: to,
-      recovered: `release ${from} failed to start (${why}); release ${to} started instead`,
-      written_at: new Date().toISOString(),
-    });
-  } catch {
-    // Best-effort, like every state.json write.
+  if (damage.established) {
+    return `release ${release} is damaged on this seat (${damage.reason}): re-bootstrap from the bridge's pack — a bootstrap re-verifies the whole tree and replaces damaged files`;
   }
+  return `release ${release} failed to start (${why}), and whether it is damaged on this seat was not established: ${damage.reason}`;
 }
 
 function notStarted(root, channel, env, launchId, reason) {
@@ -567,7 +546,7 @@ export async function main({ env = process.env } = {}) {
       say(channel, `release ${d.release} is damaged (${d.reason}); it is passed over and fetched again`);
     }
     for (const d of before.unconfirmed) {
-      say(channel, `release ${d.release} could not be confirmed intact (${d.reason}); it is passed over this launch only, not dropped`);
+      say(channel, `release ${d.release} could not be confirmed intact (${d.reason}); it is passed over this launch only and not removed as damaged — current.json is not repointed away from it`);
     }
     if (before.recovered) {
       say(channel, `current.json does not name an intact release; running the newest intact release, ${before.release}`);
@@ -593,30 +572,13 @@ export async function main({ env = process.env } = {}) {
     }
 
     step = `start release ${after.release}`;
-    let starting = after.release;
     env.AWB_CLIENT_ROOT = root;
     env.AWB_LAUNCH_ID = launchId;
-    env.AWB_BRIDGE_RELEASE = starting;
+    env.AWB_BRIDGE_RELEASE = after.release;
     try {
-      await import(pathToFileURL(path.join(root, 'versions', starting, 'client', SERVER_FILE)).href);
+      await import(pathToFileURL(path.join(root, 'versions', after.release, 'client', SERVER_FILE)).href);
     } catch (importErr) {
-      // REQUIRED_CLIENT_FILES is cheap and already checked at step 1; a file outside it (a
-      // dependency the check does not cover) can still fail only here. The full, whole-tree check
-      // names it when it can, and another kept intact release is tried before this seat gives up
-      // entirely (review r2 MAJOR / DL-434 Decision 9). versions/ itself is never touched here —
-      // only client-update.mjs, under the lock, deletes a release.
-      const damage = fullTreeDamage(root, starting);
-      const fallback = fallbackRelease(root, starting);
-      if (fallback === null) {
-        throw importErr;
-      }
-      const why = damage ? damage.reason : `${importErr && importErr.message ? importErr.message : importErr}`;
-      say(channel, `release ${starting} failed to start (${why}); falling back to the kept release ${fallback}`);
-      starting = fallback;
-      step = `start release ${starting} (fallback from ${after.release})`;
-      env.AWB_BRIDGE_RELEASE = starting;
-      noteFallback(root, launchId, after.release, starting, why);
-      await import(pathToFileURL(path.join(root, 'versions', starting, 'client', SERVER_FILE)).href);
+      return notStarted(root, channel, env, launchId, `${importFailure(root, after.release, importErr)} — THIS Claude Code session is deaf to live-wake`);
     }
   } catch (err) {
     notStarted(root, channel, env, launchId, `could not ${step}: ${err && err.message ? err.message : err} — THIS Claude Code session is deaf to live-wake`);

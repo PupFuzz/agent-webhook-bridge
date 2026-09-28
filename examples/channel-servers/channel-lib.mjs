@@ -275,7 +275,7 @@ export function launchIdentity(env) {
 export function clientUpdateInstruction(state, { launchId, root }) {
   const base = updateStateLine(state, { launchId, root });
   if (state && typeof state.recovered === 'string' && state.launch_id === launchId) {
-    const damage = `CLIENT RELEASE DAMAGED ON THIS SEAT: ${state.recovered}. Tell your operator; the damaged release is fetched again from the bridge.`;
+    const damage = `CLIENT RELEASE DAMAGED ON THIS SEAT: ${state.recovered}. Tell your operator; the updater removes the damaged release, so the next update that reaches the bridge fetches its published release again.`;
     return base ? `${damage} ${base}` : damage;
   }
   return base;
@@ -310,12 +310,14 @@ function updateStateLine(state, { launchId, root }) {
         (state.published && state.published !== state.running ? `; published release ${state.published} was not applied` : '') +
         `. Tell your operator; the install log is ${log}. ` +
         'The update is tried again at the next launch' +
-        // review r2 minor 4: an installed updater that cannot even run is not fixed by a newer
-        // published release — it can never run to fetch one. Only a failure caused by what was
-        // OFFERED (a refused pack, an unreachable bridge, a slow budget) self-heals that way.
+        // An installed updater that cannot run never fetches the fix itself, and re-bootstrapping
+        // the same release reuses the same updater; an unreadable install log is a local fault no
+        // release fixes. Only a failure caused by what was OFFERED self-heals at a later launch.
         (state.updater_broken
-          ? "; the installed updater itself cannot run, so re-bootstrap this seat's client from the bridge's published pack."
-          : '; it succeeds once the bridge publishes a release this seat accepts.')
+          ? "; the installed updater itself cannot run, so it cannot fetch a fix: once the bridge publishes a fixed release, re-bootstrap this seat's client from it."
+          : state.log_unreadable
+            ? '; the install log itself cannot be read — fix that file (its owner and permissions) and the next launch retries.'
+            : '; it succeeds once the bridge publishes a release this seat accepts.')
       );
     default:
       return (
