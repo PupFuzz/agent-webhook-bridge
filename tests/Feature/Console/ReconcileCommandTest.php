@@ -667,9 +667,10 @@ class ReconcileCommandTest extends TestCase
      * this install's own mappings") instead of ruling each VALUE. That is true of
      * `canonRepo`, which IS the matched key, and false of `prUrl` on the same return — it is
      * `PrUrlRef::$raw`, whose own docblock says *the URL exactly as it was stored,
-     * unnormalized*. `PrUrlRef::parse` needs only a mapped repo and `#/pull/(\d+)#` matching
-     * SOMEWHERE in the string; everything after the number is attacker free text, nothing
-     * lower-cases it, and no `bodySummary` gate stands in front of it.
+     * unnormalized*. `PrUrlRef::parse` reads only the value's first GitHub URL, up to its
+     * `/pull/<n>` (card#10735; before that, `#/pull/(\d+)#` matching SOMEWHERE in the string);
+     * everything after the number is attacker free text, nothing lower-cases it, and no
+     * `bodySummary` gate stands in front of it.
      */
     public function test_a_matched_pr_url_cannot_move_the_operators_cursor(): void
     {

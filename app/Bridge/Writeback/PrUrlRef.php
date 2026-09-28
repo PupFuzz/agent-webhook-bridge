@@ -5,10 +5,19 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 
 /**
- * The single definition of "which pull request does this `pr_url` name" — the parse
- * ({@see ExternalReferenceNormalizer::repoFromGitHubUrl} for the repo, `/pull/<n>` for
- * the number) that {@see TrackedCardRef::fromPayload} resolves a card's tracked PR with,
- * and that the move handler's add-if-missing stamp compares an offered `pr_url` against.
+ * The single definition of "which pull request does this `pr_url` name" — the parse that
+ * {@see TrackedCardRef::fromPayload} resolves a card's tracked PR with, and that the move
+ * handler's add-if-missing stamp compares an offered `pr_url` against.
+ *
+ * ⛔ THE REPO AND THE NUMBER COME FROM ONE MATCH (card#10735): the value's FIRST GitHub URL
+ * ({@see PATTERN}) — the same match {@see ExternalReferenceNormalizer::repoFromGitHubUrl}
+ * derives the card's by-ref `source` from — names a pull request only when its own segment
+ * is `pull` followed by digits. The
+ * number used to be the first `/pull/<digits>` ANYWHERE in the value, so
+ * `…/a/x/issues/5 …/b/y/pull/179` read as `a/x#179`, a pull request neither URL names, and
+ * `…/o/r/tree/main/pull/179` as `o/r#179`. The rule is published as
+ * `docs/pr-url-ref-parity-corpus.json`, which the toolkit vendors for its own copy of it
+ * (card#10736).
  *
  * Extracted rather than copied (canon #5, and the same move `pr_number` already made onto
  * {@see CardTokenCorroboration::tracksPr}): a `pr_url` is the one correlation ref whose
@@ -28,6 +37,19 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  */
 final class PrUrlRef
 {
+    /**
+     * The first GitHub web URL in a value, matched case-insensitively and unanchored: group 1
+     * is `owner/repo` (a trailing `.git` trimmed), group 2 the segment as spelled, group 3 the
+     * digit run right after the segment, possibly empty.
+     *
+     * ⚠ Up to group 2 this is `ExternalReferenceNormalizer::repoFromGitHubUrl`'s pattern with
+     * the segment captured, so both select the same first match; group 3 only reads further
+     * along it. That class mirrors kanban-board's rule and is held to it by
+     * `docs/external-reference-parity-corpus.json`, so the pattern is not hoisted onto it.
+     * `PrUrlRefTest` holds the two to the same match over its corpus.
+     */
+    public const PATTERN = '#github\.com/([^/]+/[^/]+?)(?:\.git)?/(pull|issues|commit|tree|blob)/(\d*)#i';
+
     private function __construct(
         /** The URL exactly as it was stored/offered — the caller's record of it, unnormalized. */
         public readonly string $raw,
@@ -49,12 +71,17 @@ final class PrUrlRef
             return null;
         }
 
-        $repo = $refs->repoFromGitHubUrl($url);
-        if ($repo === null || preg_match('#/pull/(\d+)#', $url, $m) !== 1) {
+        // ONE match gives both halves (card#10735). The segment is compared case-sensitively, as
+        // the number always was: `.../PULL/179` names no pull request.
+        if (preg_match(self::PATTERN, $url, $m) !== 1 || $m[2] !== 'pull' || $m[3] === '') {
+            return null;
+        }
+        $repo = $refs->canonicalizeSource($m[1]);
+        if ($repo === null) {
             return null;
         }
 
-        return new self($url, $repo, (int) $m[1]);
+        return new self($url, $repo, (int) $m[3]);
     }
 
     /** Does this name a real pull request (i.e. is it not the `.../pull/0` placeholder)? */
