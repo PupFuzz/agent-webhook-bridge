@@ -33,6 +33,9 @@ use Illuminate\Support\Carbon;
  */
 class SeatClientEvent extends Model
 {
+    /** The `reason` column's width in characters (its migration); an approval's `--reason` is held to it. */
+    public const REASON_MAX_CHARS = 500;
+
     public $timestamps = false;
 
     protected $guarded = ['id'];

@@ -23,8 +23,8 @@ use Throwable;
  * so a state is a claim about those reports: a seat that stopped calling keeps its last state
  * until {@see FleetState::Stale} says the evidence is old.
  *
- * ⚑ `warn` is decided here too, once, so the check and the command cannot disagree about which
- * seats need the operator. A seat OFF THE UPDATE PATH or NEEDING BOOTSTRAP warns only once this
+ * ⚑ `warn` is decided here too, once per seat (its state's verdict plus its caveats), so the check
+ * and the command cannot disagree about which seats need the operator. A seat OFF THE UPDATE PATH or NEEDING BOOTSTRAP warns only once this
  * bridge publishes a client pack: before that there is no update path for any seat to be on, and
  * a warning with no possible remedy is noise.
  */
@@ -101,7 +101,7 @@ final class ClientFleet
 
                 return $installedDigests[$agent][$release] ?? ($published !== null && $published->bridgeRelease === $release ? $published->filesJsonSha256 : null);
             };
-            [$state, $reason] = self::stateOf($agent, $bt, $row, $published, $approved, $digestOf, $now);
+            [$state, $reason] = self::stateOf($agent, $bt, $row, $published, $publishedError, $approved, $digestOf, $now);
             $seats[] = self::seat($agent, $bt, $row, $state, $reason, $published, $approved, $digestOf, $caps, $now);
         }
 
@@ -113,7 +113,7 @@ final class ClientFleet
      * @param  callable(?string): ?string  $digestOf
      * @return array{0: FleetState, 1: string}
      */
-    public static function stateOf(string $agent, BoardToolsConfig $bt, SeatClientState $row, ?PublishedClientPack $published, array $approved, callable $digestOf, Carbon $now): array
+    public static function stateOf(string $agent, BoardToolsConfig $bt, SeatClientState $row, ?PublishedClientPack $published, ?string $publishedError, array $approved, callable $digestOf, Carbon $now): array
     {
         $running = $row->running_bridge_release;
         $installed = $row->installed_bridge_release;
@@ -132,10 +132,10 @@ final class ClientFleet
             if ($unapproved !== null) {
                 [$verb, $release] = $unapproved;
                 $remedy = $published !== null && $published->bridgeRelease === $release
-                    ? " If it is wanted, `php artisan bridge:client-approve {$agent} {$release} --reason=\"…\"` records the approval"
+                    ? ". If it is wanted, `php artisan bridge:client-approve {$agent} {$release} --reason=\"…\"` records the approval"
                     : '';
 
-                return [FleetState::UnapprovedInstall, "it requires approval (board_tools.client_update.approval_required) and {$verb} release {$release}, whose client content has no approval for this agent — it did not come through `bridge:client-approve`. Approval is detected here, never enforced on the seat: find out how that build got there.{$remedy}"];
+                return [FleetState::UnapprovedInstall, "it requires approval (board_tools.client_update.approval_required) and {$verb} release {$release}, whose client content has no approval for this agent — it did not come through `bridge:client-approve`. Approval is detected here, never enforced on the seat: find out how that build got there{$remedy}"];
             }
         }
 
@@ -153,12 +153,15 @@ final class ClientFleet
             return [FleetState::OffUpdatePath, 'its latest board-tools call ('.HumanAge::floored((int) $row->last_call_at->diffInSeconds($now, true))." ago) came from {$version} with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge's published pack"];
         }
 
-        if ($row->last_call_at === null && $row->last_report_at === null) {
+        if ($row->last_call_at === null && $installed === null) {
+            if ($row->last_report_at !== null) {
+                return [FleetState::NeedsBootstrap, 'its install log has reached this bridge but records no successful install, and no call from its client has arrived — its bootstrap did not complete; bootstrap its client again'];
+            }
             $probed = $row->last_exempt_call_at !== null
-                ? ' Only a '.$row->last_exempt_caller.' call has reached the door for it ('.HumanAge::floored((int) $row->last_exempt_call_at->diffInSeconds($now, true)).' ago), which says nothing about its client.'
+                ? '. Only a '.$row->last_exempt_caller.' call has reached the door for it ('.HumanAge::floored((int) $row->last_exempt_call_at->diffInSeconds($now, true)).' ago), which says nothing about its client'
                 : '';
 
-            return [FleetState::NeedsBootstrap, 'no board-tools call from its client and no install report has ever reached this bridge, so it has no client on the update path that this bridge knows of.'.$probed];
+            return [FleetState::NeedsBootstrap, 'no board-tools call from its client and no install report has reached this bridge since it started its fleet ledger, so it has no client on the update path that this bridge knows of'.$probed];
         }
 
         $lastSeen = self::lastSeen($row);
@@ -181,30 +184,58 @@ final class ClientFleet
             }
         }
 
-        if ($running === null && $row->last_call_at === null && $installed !== null) {
+        // No launch has called yet: the needs_bootstrap branch above already took the seat with no install.
+        if ($running === null && $row->last_call_at === null) {
             return [FleetState::AppliesNextLaunch, "it installed release {$installed} and no launch of that client has called the bridge yet"];
+        }
+
+        if ($running !== null && $published === null) {
+            return [FleetState::Unverified, $publishedError !== null
+                ? "it runs release {$running}, but this bridge's published client pack record cannot be read (".UntrustedText::forOperator($publishedError).'), so that release cannot be compared with anything; repair the record or run `php artisan bridge:client-pack:install` again'
+                : "it runs release {$running}, installed through a client-update door, but this bridge publishes no client pack to compare it with — the publication it came from is gone from this bridge, or it came from another bridge"];
+        }
+        if ($running !== null && ChannelSnapshotManifest::compareVersions($running, $published->bridgeRelease) > 0) {
+            return [FleetState::Unverified, "it runs release {$running}, newer than the published {$published->bridgeRelease}, so that build did not come from this bridge's current publication"];
         }
 
         return [FleetState::Unverified, 'the ledger holds a combination the fleet derivation names no state for (running '.($running ?? 'unknown').', installed '.($installed ?? 'unknown').', published '.($published->bridgeRelease ?? 'nothing').'). This is a gap in the derivation, not in the seat: report it'];
     }
 
     /**
-     * Whether `$seat` needs the operator. Every state that is a fault warns; a restart owed warns
-     * once it is older than {@see self::RESTART_OWED_WARN_DAYS} days; the two "not on the update
-     * path" states warn only when a pack is published (see the class docblock).
-     *
-     * @param  array<string, mixed>  $seat
+     * Whether a seat's STATE needs the operator. Every state that is a fault warns; a restart owed
+     * warns once the published release is older than {@see self::RESTART_OWED_WARN_DAYS} days; the
+     * two "not on the update path" states warn only while a pack is published (see the class
+     * docblock). A seat's own `warn` also carries its caveats ({@see self::caveatsOf()}).
      */
-    public function warns(array $seat, Carbon $now): bool
+    private static function stateWarns(FleetState $state, ?PublishedClientPack $published, Carbon $now): bool
     {
-        return match (FleetState::from($seat['state'])) {
+        return match ($state) {
             FleetState::LogDiscontinuity, FleetState::UnapprovedInstall, FleetState::UpdateFailed,
             FleetState::ApprovalOwed, FleetState::Behind, FleetState::Unverified => true,
-            FleetState::OffUpdatePath, FleetState::NeedsBootstrap => $this->published !== null,
-            FleetState::AppliesNextLaunch => ($at = $this->published !== null ? self::publishedAt($this->published) : null) !== null
+            FleetState::OffUpdatePath, FleetState::NeedsBootstrap => $published !== null,
+            FleetState::AppliesNextLaunch => ($at = $published !== null ? self::publishedAt($published) : null) !== null
                 && $at->lt($now->copy()->subDays(self::RESTART_OWED_WARN_DAYS)),
             FleetState::Stale, FleetState::Current => false,
         };
+    }
+
+    /**
+     * What is true of a seat's configuration whatever its state, and needs the operator.
+     *
+     * An approval-required agent on the http transport has its channel server on this box. Whether
+     * it can approve itself depends on the OS user it runs as, which the bridge cannot see: a
+     * same-box multi-user install runs each agent as its own user (docs/board-tools.md § Same-box
+     * enablement). So the caveat states the condition rather than asserting the conclusion.
+     *
+     * @return list<string>
+     */
+    private static function caveatsOf(string $agent, BoardToolsConfig $bt): array
+    {
+        if ($bt->clientUpdateApprovalRequired && $bt->transport === 'http') {
+            return ["seat {$agent} requires client-update approval and uses the http transport, so its channel server is on this box: if it runs as an OS user that can run `php artisan` here, it can approve itself with `bridge:client-approve` — its approval is then a record, not a gate"];
+        }
+
+        return [];
     }
 
     /**
@@ -261,12 +292,19 @@ final class ClientFleet
             }
         }
 
+        $stateWarns = self::stateWarns($state, $published, $now);
+        $caveats = self::caveatsOf($agent, $bt);
+
         return [
             'agent' => $agent,
             'transport' => $bt->transport,
             'state' => $state->value,
             'label' => $state->label(),
             'reason' => $reason,
+            // ONE verdict per seat, read by bridge:check and bridge:client-fleet alike.
+            'warn' => $stateWarns || $caveats !== [],
+            'state_warns' => $stateWarns,
+            'caveats' => $caveats,
             'approval_required' => $bt->clientUpdateApprovalRequired,
             'running' => $row->running_bridge_release === null ? null : [
                 'bridge_release' => $row->running_bridge_release,

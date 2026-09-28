@@ -76,11 +76,11 @@ class ClientFleetStateTest extends TestCase
      * @param  array<string, string>  $installedDigests
      * @return array<string, mixed>
      */
-    private function derive(array $row, ?PublishedClientPack $published, bool $approval = false, array $approved = [], array $installedDigests = [], string $transport = 'ssh'): array
+    private function derive(array $row, ?PublishedClientPack $published, bool $approval = false, array $approved = [], array $installedDigests = [], string $transport = 'ssh', ?string $publishedError = null): array
     {
-        $fleet = ClientFleet::derive(['seat' => self::bt($approval, $transport)], ['seat' => $this->row($row)], $published, null, ['seat' => $approved], ['seat' => $installedDigests], ClientCapabilities::bundled(), $this->now);
+        $fleet = ClientFleet::derive(['seat' => self::bt($approval, $transport)], ['seat' => $this->row($row)], $published, $publishedError, ['seat' => $approved], ['seat' => $installedDigests], ClientCapabilities::bundled(), $this->now);
         $seat = $fleet->toArray()['seats'][0];
-        $seat['warns'] = $fleet->warns($seat, $this->now);
+        $seat['warns'] = $seat['warn'];
 
         return $seat;
     }
@@ -107,6 +107,7 @@ class ClientFleetStateTest extends TestCase
             'approval_owed' => [FleetState::ApprovalOwed, ['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => '0.9.27'], true, true, [self::OTHER_DIGEST], true],
             'off_update_path' => [FleetState::OffUpdatePath, ['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_client_version' => '0.9.27'], true, false, [], true],
             'needs_bootstrap (never seen)' => [FleetState::NeedsBootstrap, [], true, false, [], true],
+            'needs_bootstrap (a bootstrap that reported and did not complete)' => [FleetState::NeedsBootstrap, ['last_report_at' => '2026-09-28T11:00:00Z', 'install_id' => 'I1'], true, false, [], true],
             'needs_bootstrap (probes only)' => [FleetState::NeedsBootstrap, ['last_exempt_call_at' => '2026-09-28T11:00:00Z', 'last_exempt_caller' => 'probe'], true, false, [], true],
             'stale' => [FleetState::Stale, array_merge($launched('0.91.0', null, '2026-09-01T00:00:00Z'), ['last_call_at' => '2026-09-01T00:00:00Z']), true, false, [], false],
             'current' => [FleetState::Current, $launched('0.91.0'), true, false, [], false],
@@ -131,6 +132,47 @@ class ClientFleetStateTest extends TestCase
         $this->assertSame($expected->value, $seat['state'], $seat['reason']);
         $this->assertSame($expected->label(), $seat['label']);
         $this->assertSame($warns, $seat['warns'], "whether {$expected->value} warns");
+    }
+
+    /**
+     * The reachable `unverified` seats name their own cause; only a combination nothing names reads
+     * as a gap in the derivation.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: bool, 2: ?string, 3: string}>
+     */
+    public static function unverifiedCauses(): array
+    {
+        $launched = ['last_call_at' => '2026-09-28T11:30:00Z', 'last_call_launch_id' => 'L2', 'running_launch_id' => 'L2', 'running_launch_first_seen_at' => '2026-09-28T11:00:00Z', 'installed_bridge_release' => '0.91.0'];
+
+        return [
+            'the publication record cannot be read' => [$launched + ['running_bridge_release' => '0.91.0'], false, 'bad json', "it runs release 0.91.0, but this bridge's published client pack record cannot be read (bad json)"],
+            'nothing is published' => [$launched + ['running_bridge_release' => '0.91.0'], false, null, 'but this bridge publishes no client pack to compare it with'],
+            'running ahead of the published release' => [$launched + ['running_bridge_release' => '0.92.0'], true, null, 'it runs release 0.92.0, newer than the published 0.91.0'],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    #[DataProvider('unverifiedCauses')]
+    public function test_a_reachable_unverified_seat_names_its_cause(array $row, bool $published, ?string $error, string $says): void
+    {
+        $seat = $this->derive($row, $published ? $this->published() : null, false, [], [], 'ssh', $error);
+
+        $this->assertSame('unverified', $seat['state']);
+        $this->assertStringContainsString($says, $seat['reason']);
+        $this->assertStringNotContainsString('gap in the derivation', $seat['reason']);
+    }
+
+    /** No reason ends in a period: every surface appends its own, and two in a row read as a typo. */
+    public function test_no_reason_ends_with_a_period(): void
+    {
+        foreach (self::everyState() as $name => [$state, $row, $published, $approval, $approved]) {
+            $seat = $this->derive($row, $published ? $this->published() : null, $approval, $approved);
+            $this->assertStringEndsNotWith('.', $seat['reason'], $name);
+        }
+        $probed = $this->derive(['last_exempt_call_at' => '2026-09-28T11:00:00Z', 'last_exempt_caller' => 'probe'], null);
+        $this->assertStringEndsNotWith('.', $probed['reason']);
     }
 
     public function test_the_provider_reaches_every_state(): void

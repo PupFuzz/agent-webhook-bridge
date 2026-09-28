@@ -69,14 +69,17 @@ class ClientFleetCommand extends BridgeCommand
         }
         $warned = 0;
         foreach ($doc['seats'] as $seat) {
-            if ($fleet->warns($seat, $now)) {
+            if ($seat['warn']) {
                 $warned++;
             }
             $this->line("seat {$seat['agent']} [{$seat['transport']}] — {$seat['label']}: {$seat['reason']}.");
+            foreach ($seat['caveats'] as $caveat) {
+                $this->line("    ⚠ {$caveat}.");
+            }
             $this->line('    '.implode(' · ', [
                 'running: '.self::release($seat['running']),
                 'installed: '.self::release($seat['installed']),
-                'last seen: '.($seat['last_seen'] === null ? 'never' : HumanAge::floored((int) Carbon::parse($seat['last_seen'])->diffInSeconds($now, true)).' ago'),
+                'last seen: '.($seat['last_seen'] === null ? 'not since this bridge started its fleet ledger' : HumanAge::floored((int) Carbon::parse($seat['last_seen'])->diffInSeconds($now, true)).' ago'),
                 'approval: '.($seat['approval_required'] ? 'required' : 'not required'),
                 'capability gap: '.self::gap($seat['capability_gap']),
             ]));

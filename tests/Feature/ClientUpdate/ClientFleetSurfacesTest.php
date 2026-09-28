@@ -94,11 +94,30 @@ class ClientFleetSurfacesTest extends TestCase
         $this->assertSame('client_fleet: seat legacy is OFF THE UPDATE PATH — its latest board-tools call (1h ago) came from client 0.9.27 with no launch identity — a channel server not started by the client updater, so it will not update itself until its client is bootstrapped from this bridge\'s published pack. `php artisan bridge:client-fleet` shows every seat.', $message);
     }
 
-    public function test_the_leg_warns_on_an_approval_seat_that_runs_as_the_bridge(): void
+    private const HTTP_CAVEAT = 'seat colo requires client-update approval and uses the http transport, so its channel server is on this box: if it runs as an OS user that can run `php artisan` here, it can approve itself with `bridge:client-approve` — its approval is then a record, not a gate';
+
+    public function test_the_leg_warns_on_an_approval_seat_on_the_http_transport(): void
     {
         $findings = $this->check([$this->agent('colo', "  client_update:\n    approval_required: true\n", 'http')]);
 
-        $this->assertContains([Severity::Warn->value, 'client_fleet: seat colo requires client-update approval but uses the http transport, so it runs as this bridge\'s own OS user and can run `bridge:client-approve` for itself — its approval is a record, not a gate.'], $findings);
+        $this->assertContains([Severity::Warn->value, 'client_fleet: '.self::HTTP_CAVEAT.'.'], $findings);
+    }
+
+    /**
+     * The http-approval caveat is a per-seat fact in ClientFleet, so both surfaces print the same
+     * verdict: the check warns, and the command prints the caveat and counts the seat as needing you.
+     */
+    public function test_both_surfaces_agree_on_the_http_approval_caveat(): void
+    {
+        $colo = $this->agent('colo', "  client_update:\n    approval_required: true\n", 'http');
+        $findings = $this->check([$colo]);
+
+        $warns = array_values(array_filter($findings, static fn (array $f): bool => $f[0] === Severity::Warn->value));
+        $this->assertSame([[Severity::Warn->value, 'client_fleet: '.self::HTTP_CAVEAT.'.']], $warns);
+        $this->artisan('bridge:client-fleet')
+            ->expectsOutputToContain('    ⚠ '.self::HTTP_CAVEAT.'.')
+            ->expectsOutput('1 seat(s) — needs_bootstrap ×1; 1 need(s) you (bridge:check warns on the same seats).')
+            ->assertExitCode(0);
     }
 
     public function test_the_leg_is_unvalidated_when_the_ledger_cannot_be_read(): void

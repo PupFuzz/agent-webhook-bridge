@@ -4,15 +4,21 @@ namespace Tests\Feature\ClientUpdate;
 
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
+use App\Bridge\ClientUpdate\ClientUpdateDoor;
+use App\Bridge\ClientUpdate\InstallLogEntry;
 use App\Bridge\ClientUpdate\SeatClientLedger;
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Tools\ToolsCallStdio;
 use App\Models\SeatClientEvent;
 use App\Models\SeatClientState;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\Yaml\Yaml;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\ClientPackFixture;
 use Tests\Support\FakeToolsCallStdio;
@@ -119,7 +125,11 @@ class FleetLedgerDoorTest extends TestCase
     {
         $lines = [];
         foreach ($entries as $i => $fields) {
-            $line = (string) json_encode(['install_id' => $install, 'seq' => $firstSeq + $i, 'time' => '2026-09-28T10:00:00Z'] + $fields + ['actor' => 'launch', 'result' => 'ok', 'prev_sha256' => $prev]);
+            $fields += ['actor' => 'launch', 'result' => 'ok'];
+            if ($fields['actor'] === 'launch') {
+                $fields += ['launch_id' => 'L1'];   // every launch line names its launch
+            }
+            $line = (string) json_encode(['install_id' => $install, 'seq' => $firstSeq + $i, 'time' => '2026-09-28T10:00:00Z'] + $fields + ['prev_sha256' => $prev], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
             $lines[] = $line;
             $prev = hash('sha256', $line);
         }
@@ -249,6 +259,105 @@ class FleetLedgerDoorTest extends TestCase
         $this->assertSame(2, $back['body']['log_head']['seq']);
     }
 
+    /** The largest report the contract allows fits the smallest door, whatever its lines escape to. */
+    public function test_a_maximum_size_report_fits_the_ssh_door(): void
+    {
+        // Lines as large as allowed, padded with `"` — each becomes `\"` in the line and `\\\"` once the
+        // line rides as a JSON string: the worst case for the report body's size.
+        $budget = SeatClientLedger::MAX_REPORT_BYTES;
+        $count = (int) ceil($budget / InstallLogEntry::MAX_LINE_BYTES);
+        $fields = [];
+        for ($i = 0; $i < $count; $i++) {
+            $fields[] = ['action' => 'skip', 'pad' => ''];
+        }
+        // Grow each line's unknown `pad` key until the lines total exactly the budget.
+        $install = str_repeat('a', 64);   // the longest install id, so the envelope is at its largest
+        $base = array_sum(array_map('strlen', self::log($fields, 1, null, $install)));
+        $room = $budget - $base;
+        foreach ($fields as $i => $f) {
+            $share = intdiv($room, $count) + ($i < $room % $count ? 1 : 0);
+            $fields[$i]['pad'] = str_repeat('"', intdiv($share, 2)).($share % 2 === 1 ? 'x' : '');
+        }
+        $lines = self::log($fields, 1, null, $install);
+        $this->assertSame($budget, array_sum(array_map('strlen', $lines)));
+        foreach ($lines as $line) {
+            $this->assertLessThanOrEqual(InstallLogEntry::MAX_LINE_BYTES, strlen($line));
+        }
+        $body = ['op' => 'client_report', 'install_id' => $install, 'entries' => $lines];
+        $this->assertLessThanOrEqual(ToolsCallStdio::MAX_STDIN_BYTES, strlen((string) json_encode($body)));
+
+        $r = $this->ssh($body);
+
+        $this->assertSame(0, $r['exit'], $r['raw']);
+        $this->assertSame($count, $r['body']['stored']);
+    }
+
+    /** An open format: an unknown key is accepted, ignored, and kept in the bytes the chain hashes. */
+    public function test_an_unknown_key_is_accepted_and_kept_in_the_hashed_line(): void
+    {
+        $lines = self::log([self::install() + ['future_field' => ['nested' => 1]], ['action' => 'prune']]);
+
+        $r = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $lines]);
+
+        $this->assertSame(200, $r['status'], $r['raw']);
+        $this->assertFalse($r['body']['discontinuity']);
+        $held = SeatClientEvent::query()->where('agent', 'httpseat')->where('seq', 1)->firstOrFail();
+        $this->assertSame(hash('sha256', $lines[0]), $held->line_sha256);
+        $this->assertStringContainsString('future_field', $lines[0]);
+    }
+
+    /** A late line filling a gap already marked is stored, and moves neither the head nor the row. */
+    public function test_a_late_line_filling_a_gap_is_stored_not_flagged_as_changed(): void
+    {
+        $lines = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune']]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$lines[0], $lines[2]]]);
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+        $this->assertStringContainsString('seq 2–2 of install', (string) $row->log_discontinuity_reason);
+
+        $late = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$lines[1]]]);
+
+        $this->assertSame(1, $late['body']['stored']);
+        $this->assertSame(3, $late['body']['log_head']['seq']);
+        $row->refresh();
+        $this->assertStringContainsString('seq 2–2 of install', (string) $row->log_discontinuity_reason, 'the first reason stands; the late line is not "different content"');
+        $this->assertSame(3, SeatClientEvent::query()->where('agent', 'httpseat')->count());
+    }
+
+    /** Only a genuinely new install clears a broken-log mark; returning to a held one does not. */
+    public function test_returning_to_a_held_install_keeps_the_broken_log_mark(): void
+    {
+        $other = '6f1c2d3e-0000-4000-8000-000000000004';
+        $otherLog = self::log([['action' => 'bootstrap', 'actor' => 'provision'], ['action' => 'prune', 'actor' => 'provision']], 1, null, $other);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([self::install()])]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => [$otherLog[0]]]);
+        // Back to the first install, with a gap: the log is now marked broken.
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([['action' => 'prune']], 3)]);
+        $this->assertTrue(SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity'));
+
+        // Back to the second, held install, chaining cleanly: not a new install, so the mark stays.
+        $back = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => [$otherLog[1]]]);
+
+        $this->assertSame(1, $back['body']['stored']);
+        $this->assertTrue($back['body']['discontinuity'], 'only a genuinely new install clears the mark');
+    }
+
+    /**
+     * Both doors refuse a malformed agent YAML before any op runs, so the door's own config read is
+     * reached only if the YAMLs change between the two reads — and then it names the config, not
+     * the ledger. Driven on the door directly for that reason.
+     */
+    public function test_client_fleet_names_a_config_fault_as_a_config_fault(): void
+    {
+        $pm = AgentConfig::fromArray('sshpm', (array) Yaml::parseFile($this->dir.'/sshpm.yml'))->boardTools;
+        $this->assertNotNull($pm);
+        File::put($this->dir.'/broken.yml', "identity: [unterminated\n");
+
+        $outcome = $this->app->make(ClientUpdateDoor::class)->handle(['op' => 'client_fleet'], 'sshpm', $pm);
+
+        $this->assertSame(503, $outcome->status);
+        $this->assertSame('this bridge could not load its agent configs, so which seats make up the fleet is unknown (see the bridge log)', $outcome->body['error']);
+    }
+
     public function test_a_failed_launch_is_recorded_with_its_reason(): void
     {
         $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([
@@ -277,7 +386,11 @@ class FleetLedgerDoorTest extends TestCase
             'empty entries' => [['install_id' => self::INSTALL, 'entries' => []], 'needs `entries`'],
             'entries as an object' => [['install_id' => self::INSTALL, 'entries' => ['a' => $ok[0]]], 'needs `entries`'],
             // Counted before any line is read, so the lines need not parse (and stay under the ssh door's stdin cap).
-            'too many entries' => [['install_id' => self::INSTALL, 'entries' => array_fill(0, SeatClientLedger::MAX_REPORT_ENTRIES + 1, 'x')], 'more than 200 entries'],
+            'too many entries' => [['install_id' => self::INSTALL, 'entries' => array_fill(0, SeatClientLedger::MAX_REPORT_ENTRIES + 1, 'x')], 'at most '.SeatClientLedger::MAX_REPORT_ENTRIES.' entries AND at most '.SeatClientLedger::MAX_REPORT_BYTES.' bytes of lines — split the backlog by both'],
+            'too many bytes' => [['install_id' => self::INSTALL, 'entries' => array_fill(0, intdiv(SeatClientLedger::MAX_REPORT_BYTES, 4000) + 1, str_repeat('x', 4000))], 'bytes of lines — split the backlog by both'],
+            'the bridge\'s own install id in capitals' => [['install_id' => 'BRIDGE', 'entries' => $ok], 'needs `install_id`'],
+            'a launch line with no launch_id' => [['install_id' => self::INSTALL, 'entries' => [$line(['launch_id' => null])]], 'an `actor: launch` line with no `launch_id`'],
+            'a malformed manifest_sha256' => [['install_id' => self::INSTALL, 'entries' => [$line(['manifest_sha256' => 'nothex'])]], 'malformed `manifest_sha256`'],
             'a line that is not a string' => [['install_id' => self::INSTALL, 'entries' => [['seq' => 1]]], 'entry 0 is not a non-empty string'],
             'a line that is not JSON' => [['install_id' => self::INSTALL, 'entries' => ['{nope']], 'entry 0 is not valid JSON'],
             'a line that is a JSON list' => [['install_id' => self::INSTALL, 'entries' => ['[1,2]']], 'entry 0 is not a JSON object'],
@@ -374,6 +487,7 @@ class FleetLedgerDoorTest extends TestCase
             ->expectsOutputToContain('already has an approval of this content — event 1')
             ->assertExitCode(0);
 
+        $this->assertSame(0, Artisan::call('bridge:client-approve', ['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => 'a third']));
         $events = SeatClientEvent::query()->where('agent', 'gated')->get();
         $this->assertCount(1, $events);
         $this->assertSame('approve', $events[0]->action);
@@ -383,12 +497,33 @@ class FleetLedgerDoorTest extends TestCase
         $this->assertNotSame('', (string) $events[0]->actor);
     }
 
+    public function test_client_approve_says_the_door_now_offers_the_pack(): void
+    {
+        $this->publish(new ClientPackFixture);
+
+        Artisan::call('bridge:client-approve', ['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => 'ok']);
+
+        $this->assertStringEndsWith('. The update door now offers it to that seat.', trim(Artisan::output()));
+    }
+
+    /** A database it cannot write is "could not read": exit 2, as the command documents. */
+    public function test_client_approve_exits_2_when_the_ledger_cannot_be_written(): void
+    {
+        $this->publish(new ClientPackFixture);
+        Schema::drop('seat_client_events');
+
+        $this->artisan('bridge:client-approve', ['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => 'x'])
+            ->expectsOutputToContain('database query failed, but the server ANSWERED')
+            ->assertExitCode(2);
+    }
+
     public function test_client_approve_notes_an_agent_that_requires_no_approval(): void
     {
         $this->publish(new ClientPackFixture);
 
         $this->artisan('bridge:client-approve', ['agent' => 'sshseat', 'bridge_release' => '0.91.0', '--reason' => 'x'])
-            ->expectsOutputToContain('does not require approval (board_tools.client_update.approval_required is not true), so this approval gates nothing today')
+            ->expectsOutputToContain('sshseat does not require approval (board_tools.client_update.approval_required is not true), so the door already offered it and this approval gates nothing today; it is recorded all the same.')
+            ->doesntExpectOutputToContain('now offers it')
             ->assertExitCode(0);
     }
 
@@ -403,6 +538,7 @@ class FleetLedgerDoorTest extends TestCase
             'a v-prefixed release' => [['agent' => 'gated', 'bridge_release' => 'v0.91.0', '--reason' => 'x'], true, 1, 'must be bare X.Y.Z'],
             'an unknown agent' => [['agent' => 'nobody', 'bridge_release' => '0.91.0', '--reason' => 'x'], true, 1, 'nobody is not an agent with an enabled board_tools block'],
             'nothing published' => [['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => 'x'], false, 1, 'publishes no client pack yet'],
+            'a reason longer than the record holds' => [['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => str_repeat('r', SeatClientEvent::REASON_MAX_CHARS + 1)], true, 1, 'the approval record holds at most '.SeatClientEvent::REASON_MAX_CHARS],
             'a release that is not the published one' => [['agent' => 'gated', 'bridge_release' => '0.90.0', '--reason' => 'x'], true, 1, 'publishes release 0.91.0, not 0.90.0'],
         ];
     }

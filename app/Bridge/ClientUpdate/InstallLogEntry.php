@@ -3,6 +3,7 @@
 namespace App\Bridge\ClientUpdate;
 
 use App\Bridge\Tools\ClientVersion;
+use App\Models\SeatClientEvent;
 use JsonException;
 
 /**
@@ -17,12 +18,17 @@ use JsonException;
  *   result       ok | refused | failed | skipped
  *   actor        launch | provision
  *   prev_sha256  sha256 of the previous line's bytes; null on seq 1
+ *   launch_id    REQUIRED on an `actor: launch` line — it is what groups a launch's lines into one
+ *                outcome, and what lets a later launch supersede a failed one; without it a
+ *                failure would be cleared by its own launch's first call
  *   optional:    time, from_bridge_release, to_bridge_release, client_version, pack_sha256,
- *                files_json_sha256, manifest_sha256, source, reason, launch_id
+ *                files_json_sha256, manifest_sha256, source, reason, launch_id (on a provision line)
  *
- * ⛔ A LINE THAT IS NOT EXACTLY THIS IS REFUSED, and so is the report carrying it: every field is
- * stored and printed, and a log the bridge half-understood would be a chain it cannot follow. The
- * refusal names the field; nothing from that report is stored.
+ * ⭐ AN OPEN FORMAT (card#10567 B4 review r1). Every field listed above is validated when present,
+ * and a line whose listed field is malformed is REFUSED — so is the report carrying it, and nothing
+ * from that report is stored; the refusal names the field. A key NOT listed here is accepted and
+ * ignored: it stays in the stored line bytes, which are what the chain hashes, so a later client
+ * can add fields without this bridge refusing its log or breaking its chain.
  */
 final class InstallLogEntry
 {
@@ -87,6 +93,13 @@ final class InstallLogEntry
             throw new InstallLogRefused('has no positive integer `seq`');
         }
 
+        $actor = self::oneOf($e, 'actor', self::ACTORS);
+        $launchId = self::optional($e, 'launch_id', self::ID);
+        if ($actor === 'launch' && $launchId === null) {
+            throw new InstallLogRefused('is an `actor: launch` line with no `launch_id` — every launch line names its launch');
+        }
+        self::optional($e, 'manifest_sha256', self::SHA256);
+
         return new self(
             line: $line,
             lineSha256: hash('sha256', $line),
@@ -94,7 +107,7 @@ final class InstallLogEntry
             seq: $seq,
             action: self::oneOf($e, 'action', self::ACTIONS),
             result: self::oneOf($e, 'result', self::RESULTS),
-            actor: self::oneOf($e, 'actor', self::ACTORS),
+            actor: $actor,
             prevSha256: self::optional($e, 'prev_sha256', self::SHA256),
             time: self::optionalText($e, 'time', 40),
             fromBridgeRelease: self::optional($e, 'from_bridge_release', self::RELEASE),
@@ -103,8 +116,8 @@ final class InstallLogEntry
             packSha256: self::optional($e, 'pack_sha256', self::SHA256),
             filesJsonSha256: self::optional($e, 'files_json_sha256', self::SHA256),
             source: self::optionalText($e, 'source', 255),
-            reason: self::optionalText($e, 'reason', 500),
-            launchId: self::optional($e, 'launch_id', self::ID),
+            reason: self::optionalText($e, 'reason', SeatClientEvent::REASON_MAX_CHARS),
+            launchId: $launchId,
         );
     }
 

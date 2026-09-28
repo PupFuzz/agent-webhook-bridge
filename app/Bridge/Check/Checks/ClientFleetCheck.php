@@ -20,9 +20,9 @@ use Throwable;
  *
  * ⚑ IT DERIVES NOTHING. {@see ClientFleet} owns every state and the `warn` decision, and
  * `bridge:client-fleet` prints the same seats — so the two can never disagree about who needs you.
- * One WARN per such seat, plus one per approval-required agent on the HTTP transport (it runs as
- * this bridge's own OS user, so its approval is a record, not a gate); otherwise one OK line with
- * the spread. NEVER `fail`: a seat's client state is not the bridge's fault and must not move the
+ * One WARN per seat whose state needs you, plus one per caveat {@see ClientFleet} attaches to a
+ * seat (today: an approval-required agent on the http transport, which may be able to approve
+ * itself); otherwise one OK line with the spread. NEVER `fail`: a seat's client state is not the bridge's fault and must not move the
  * exit code.
  *
  * Inside the enabled-subset guard: an agent with no enabled block has no client in the fleet.
@@ -48,12 +48,15 @@ final class ClientFleetCheck implements Check
         $doc = $fleet->toArray();
         $warned = 0;
         foreach ($doc['seats'] as $seat) {
-            if ($seat['approval_required'] && $seat['transport'] === 'http') {
-                yield Finding::warn("client_fleet: seat {$seat['agent']} requires client-update approval but uses the http transport, so it runs as this bridge's own OS user and can run `bridge:client-approve` for itself — its approval is a record, not a gate.");
+            if (! $seat['warn']) {
+                continue;
             }
-            if ($fleet->warns($seat, $now)) {
-                $warned++;
+            $warned++;
+            if ($seat['state_warns']) {
                 yield Finding::warn("client_fleet: seat {$seat['agent']} is {$seat['label']} — {$seat['reason']}. `php artisan bridge:client-fleet` shows every seat.");
+            }
+            foreach ($seat['caveats'] as $caveat) {
+                yield Finding::warn("client_fleet: {$caveat}.");
             }
         }
         if ($warned > 0) {

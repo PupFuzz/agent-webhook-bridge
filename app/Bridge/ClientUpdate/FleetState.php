@@ -28,7 +28,11 @@ enum FleetState: string
     /** The seat's latest board-tools call carried no launch identity: a client not started by the updater. */
     case OffUpdatePath = 'off_update_path';
 
-    /** No board-tools call from the seat's client and no install report, ever (never seen, or seen only by probes). */
+    /**
+     * No board-tools call from the seat's client and no successful install reported, since this
+     * bridge started its fleet ledger: never seen, seen only by probes, or a bootstrap that reported
+     * and did not complete.
+     */
     case NeedsBootstrap = 'needs_bootstrap';
 
     /** Nothing from the seat — no call, no report — within {@see ClientFleet::STALE_AFTER_DAYS} days. */
@@ -43,7 +47,11 @@ enum FleetState: string
     /** The seat launched after the release was published and still runs an older one, with no failure or approval reported. */
     case Behind = 'behind';
 
-    /** None of the above — the ledger holds a combination the derivation does not name. */
+    /**
+     * The seat's release cannot be placed against the published one: the publication record is
+     * unreadable, nothing is published, or the seat runs a release newer than the published one —
+     * each named in the reason — or, last, a combination the derivation does not name.
+     */
     case Unverified = 'unverified';
 
     /** The operator's name for the state, in `bridge:client-fleet` and `bridge:check`. */

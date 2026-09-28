@@ -75,9 +75,6 @@ class ToolsCallCommand extends BridgeCommand
 
     protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?, caller?, launch?} — or a client-update {op, …} (DL-430) — from STDIN, write one JSON envelope to STDOUT (card 4952)';
 
-    /** Refuse a stdin flood: a booted Laravel process must not buffer unbounded input. */
-    private const MAX_STDIN_BYTES = 65536;   // 64 KiB
-
     /** A client that opens the channel but never sends EOF must not pin the process. */
     private const STDIN_TIMEOUT_SECS = 30;
 
@@ -174,7 +171,7 @@ class ToolsCallCommand extends BridgeCommand
         $in = $io->in();
         stream_set_timeout($in, self::STDIN_TIMEOUT_SECS);
         // Read one byte past the cap so an at-cap-plus-one body is detectable as oversize.
-        $raw = stream_get_contents($in, self::MAX_STDIN_BYTES + 1);
+        $raw = stream_get_contents($in, ToolsCallStdio::MAX_STDIN_BYTES + 1);
         if (! is_string($raw)) {
             return ['', 'could not read STDIN'];
         }
@@ -186,8 +183,8 @@ class ToolsCallCommand extends BridgeCommand
         if (! empty($meta['timed_out'])) {
             return ['', 'STDIN read timed out (no EOF within '.self::STDIN_TIMEOUT_SECS.'s)'];
         }
-        if (strlen($raw) > self::MAX_STDIN_BYTES) {
-            return ['', 'STDIN exceeds the '.self::MAX_STDIN_BYTES.'-byte cap'];
+        if (strlen($raw) > ToolsCallStdio::MAX_STDIN_BYTES) {
+            return ['', 'STDIN exceeds the '.ToolsCallStdio::MAX_STDIN_BYTES.'-byte cap'];
         }
 
         return [$raw, null];

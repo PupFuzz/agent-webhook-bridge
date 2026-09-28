@@ -2,6 +2,7 @@
 
 namespace App\Bridge\ClientUpdate;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -38,7 +39,11 @@ use Throwable;
  *                     ruling 6, card#10567 comment 6757).
  *   client_report     {op, install_id, entries: [<install-log line>, …]}  →  {ok, op, log_head,
  *                     stored, discontinuity}. {@see SeatClientLedger::report()} owns the chain
- *                     check; a malformed report is a 422 and stores nothing.
+ *                     check; a malformed report is a 422 and stores nothing. A report is bounded
+ *                     by BOTH {@see SeatClientLedger::MAX_REPORT_ENTRIES} lines and
+ *                     {@see SeatClientLedger::MAX_REPORT_BYTES} bytes of lines — the byte bound is
+ *                     derived from the ssh door's stdin cap, so any report within both fits either
+ *                     door; a seat splits its backlog by whichever it reaches first.
  *   client_fleet      {op}  →  {ok, op, published, published_error, spread, seats} —
  *                     {@see ClientFleet::toArray()}. 403 unless the calling agent's
  *                     `board_tools.fleet_view` is true.
@@ -134,6 +139,12 @@ final class ClientUpdateDoor
         }
         try {
             $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
+        } catch (ConfigException $e) {
+            Log::error('agent-tools: client_fleet could not load the agent configs', ['error' => RedactedErrorText::of($e)]);
+
+            return ClientUpdateOutcome::failure(503, 'this bridge could not load its agent configs, so which seats make up the fleet is unknown (see the bridge log)');
+        }
+        try {
             $fleet = ClientFleet::read($configs, $this->store);
         } catch (Throwable $e) {
             return $this->ledgerFault($e, 'this bridge could not read its fleet ledger (see the bridge log)');

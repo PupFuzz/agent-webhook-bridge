@@ -4,6 +4,7 @@ namespace App\Bridge\ClientUpdate;
 
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Tools\BoardToolDispatcher;
+use App\Bridge\Tools\ToolsCallStdio;
 use App\Models\SeatClientEvent;
 use App\Models\SeatClientState;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -30,6 +31,20 @@ final class SeatClientLedger
 
     /** At most this many lines per `client_report`; a seat with more sends several reports. */
     public const MAX_REPORT_ENTRIES = 200;
+
+    /**
+     * At most this many bytes of lines per `client_report` — the sum of the lines' own lengths.
+     * DERIVED from the smallest door's body cap ({@see ToolsCallStdio::MAX_STDIN_BYTES}, the ssh
+     * door) so that ANY report within both limits fits it: the lines ride as JSON strings, which
+     * at most doubles them (every byte of a JSON line is either plain or a `"` / `\` that gains one
+     * backslash; a client encoding non-ASCII as `\u…` must send it raw instead), plus a fixed
+     * allowance for the envelope and each entry's quotes and comma. A seat splits its backlog by
+     * whichever limit it reaches first — the entry count or these bytes.
+     */
+    public const MAX_REPORT_BYTES = (ToolsCallStdio::MAX_STDIN_BYTES - self::ENVELOPE_ALLOWANCE - 3 * self::MAX_REPORT_ENTRIES) >> 1;
+
+    /** `{"op":"client_report","install_id":"<≤64>","entries":[…]}` with room to spare. */
+    private const ENVELOPE_ALLOWANCE = 1024;
 
     private const INSTALL_ID = '/\A[0-9A-Za-z-]{1,64}\z/';
 
@@ -87,7 +102,9 @@ final class SeatClientLedger
      * worth seeing. It stays marked until the seat re-bootstraps (a new install id starts a new
      * chain, logged as a `rebootstrap` event).
      *
-     * A line re-sent with the SAME bytes (the seat retried after a lost answer) is skipped.
+     * A line re-sent with the SAME bytes (the seat retried after a lost answer) is skipped. A line
+     * older than the head that this bridge never received (it fills a gap already marked) is stored,
+     * and changes neither the head nor the row.
      *
      * @param  mixed  $installId  the report's `install_id`, as sent
      * @param  mixed  $entries  the report's `entries`, as sent
@@ -97,14 +114,15 @@ final class SeatClientLedger
      */
     public static function report(string $agent, mixed $installId, mixed $entries): array
     {
-        if (! is_string($installId) || preg_match(self::INSTALL_ID, $installId) !== 1 || $installId === self::BRIDGE_INSTALL_ID) {
+        if (! is_string($installId) || preg_match(self::INSTALL_ID, $installId) !== 1 || strcasecmp($installId, self::BRIDGE_INSTALL_ID) === 0) {
             throw new InstallLogRefused('client_report needs `install_id`, the seat\'s install id ([0-9A-Za-z-], at most 64 characters)');
         }
         if (! is_array($entries) || ! array_is_list($entries) || $entries === []) {
             throw new InstallLogRefused('client_report needs `entries`, a non-empty list of install-log lines');
         }
-        if (count($entries) > self::MAX_REPORT_ENTRIES) {
-            throw new InstallLogRefused('client_report carries more than '.self::MAX_REPORT_ENTRIES.' entries — send the rest in a later report');
+        $bytes = array_sum(array_map(static fn (mixed $line): int => is_string($line) ? strlen($line) : 0, $entries));
+        if (count($entries) > self::MAX_REPORT_ENTRIES || $bytes > self::MAX_REPORT_BYTES) {
+            throw new InstallLogRefused('client_report carries '.count($entries)." entries totalling {$bytes} bytes; a report holds at most ".self::MAX_REPORT_ENTRIES.' entries AND at most '.self::MAX_REPORT_BYTES.' bytes of lines — split the backlog by both and send the rest in later reports; nothing was stored');
         }
         $parsed = [];
         foreach ($entries as $i => $line) {
@@ -128,12 +146,15 @@ final class SeatClientLedger
                     'reason' => "the seat reported a new install id {$installId}; the log of install {$row->install_id} ends at seq ".($row->log_seq ?? 0),
                 ]);
                 // An install id this bridge already holds lines of (a restored root) resumes at its
-                // own stored head, so its re-sent lines are recognised rather than re-inserted.
+                // own stored head, so its re-sent lines are recognised rather than re-inserted — and
+                // keeps its broken-log mark: only a genuinely NEW install starts a clean chain.
                 $held = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->orderByDesc('seq')->first();
                 $row->log_seq = $held?->seq;
                 $row->log_head_sha256 = $held?->line_sha256;
-                $row->log_discontinuity = false;
-                $row->log_discontinuity_reason = null;
+                if ($held === null) {
+                    $row->log_discontinuity = false;
+                    $row->log_discontinuity_reason = null;
+                }
             }
             $row->install_id = $installId;
 
@@ -143,7 +164,12 @@ final class SeatClientLedger
             foreach ($parsed as $entry) {
                 if ($entry->seq < $expectedSeq) {
                     $held = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->where('seq', $entry->seq)->value('line_sha256');
-                    if ($held !== $entry->lineSha256) {
+                    if ($held === null) {
+                        // A late line filling a gap already marked: stored as evidence, but it is older
+                        // than the head, so it moves neither the head nor the row's current facts.
+                        self::storeEntry($agent, $entry, $now);
+                        $stored++;
+                    } elseif ($held !== $entry->lineSha256) {
                         self::discontinuity($row, "seq {$entry->seq} of install {$installId} arrived again with different content than the bridge already holds");
                     }
 
@@ -308,7 +334,7 @@ final class SeatClientLedger
      * What one stored line changes on the seat's row.
      *
      * A launch's OUTCOME is `failed` if any of its lines failed or refused, `ok` otherwise. Lines
-     * are grouped by `launch_id`; a line with none stands for itself.
+     * are grouped by `launch_id`, which every `actor: launch` line carries ({@see InstallLogEntry}).
      */
     private static function applyEntry(SeatClientState $row, InstallLogEntry $entry, Carbon $now): void
     {
@@ -321,7 +347,7 @@ final class SeatClientLedger
             return;
         }
         $failed = in_array($entry->result, ['failed', 'refused'], true);
-        if ($entry->launchId === null || $entry->launchId !== $row->last_launch_id) {
+        if ($entry->launchId !== $row->last_launch_id) {
             $row->last_launch_id = $entry->launchId;
             $row->last_launch_first_reported_at = $now;
             $row->last_launch_result = $failed ? 'failed' : 'ok';

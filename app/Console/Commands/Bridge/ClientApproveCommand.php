@@ -10,11 +10,12 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\UntrustedText;
+use App\Models\SeatClientEvent;
 
 /**
  * `bridge:client-approve <agent> <bridge_release> --reason=…` — approve the published client pack
  * for one agent whose `board_tools.client_update.approval_required` is true, so the client-update
- * door offers it (card#10567 B4, DL owning approval: CLAUDE_DECISIONS.md "client-update approval").
+ * door offers it (card#10567 B4, DL-433).
  *
  * ⭐ AN APPROVAL IS OF CONTENT, NOT OF A RELEASE (operator ruling, card#10567 comment 6774): it is
  * recorded against the published pack's `files_json_sha256`, so a later release whose client bytes
@@ -44,6 +45,11 @@ class ClientApproveCommand extends BridgeCommand
         $reason = trim((string) $this->strOption('reason'));
         if ($reason === '') {
             $this->error('bridge:client-approve: --reason is required — it is recorded with the approval and shown beside it. Nothing was recorded.');
+
+            return 1;
+        }
+        if (mb_strlen($reason) > SeatClientEvent::REASON_MAX_CHARS) {
+            $this->error('bridge:client-approve: --reason is '.mb_strlen($reason).' characters; the approval record holds at most '.SeatClientEvent::REASON_MAX_CHARS.'. Shorten it. Nothing was recorded.');
 
             return 1;
         }
@@ -90,7 +96,8 @@ class ClientApproveCommand extends BridgeCommand
             return 1;
         }
 
-        return $this->guardDatabase(function () use ($agent, $published, $reason, $bt): int {
+        // A database that cannot be read or written is "could not read" — exit 2, as documented above.
+        $rc = $this->guardDatabase(function () use ($agent, $published, $reason, $bt): int {
             $result = SeatClientLedger::approve($agent, $published, self::actor(), $reason);
             $what = "release {$published->bridgeRelease}'s client pack (client {$published->clientVersion}, content ".substr($published->filesJsonSha256, 0, 12).')';
             $event = $result['event'];
@@ -99,13 +106,15 @@ class ClientApproveCommand extends BridgeCommand
 
                 return self::SUCCESS;
             }
-            $this->line("bridge:client-approve: approved {$what} for {$agent} — event {$event->seq}, by ".UntrustedText::forOperator((string) $event->actor).'. The update door offers it to that seat at its next launch.');
-            if (! $bt->clientUpdateApprovalRequired) {
-                $this->line("bridge:client-approve: note — {$agent} does not require approval (board_tools.client_update.approval_required is not true), so this approval gates nothing today; it is recorded all the same.");
-            }
+            $recorded = "bridge:client-approve: approved {$what} for {$agent} — event {$event->seq}, by ".UntrustedText::forOperator((string) $event->actor).'.';
+            $this->line($bt->clientUpdateApprovalRequired
+                ? $recorded.' The update door now offers it to that seat.'
+                : $recorded." {$agent} does not require approval (board_tools.client_update.approval_required is not true), so the door already offered it and this approval gates nothing today; it is recorded all the same.");
 
             return self::SUCCESS;
         });
+
+        return $rc === self::SUCCESS ? self::SUCCESS : 2;
     }
 
     /** The OS user who ran this: the one identity the bridge host itself vouches for. */
