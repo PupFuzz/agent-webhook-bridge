@@ -9,7 +9,7 @@
 // with every release that installer can put under `versions/` — so what it does, and the names it
 // reads and writes, change only with a new DL:
 //   0. SESSION GUARD. `<root>/launch.json` naming this process's parent pid, with that parent
-//      alive, is a reconnect inside the same session (`/mcp reconnect`): no network, no disk
+//      alive, is Claude Code re-spawning the server inside the same session: no network, no disk
 //      write, the same launch id, straight to step 3 on the installed release. Anything else is a
 //      new launch: a fresh launch id is written to launch.json.
 //   1. RESOLVE the installed release: `current.json`, or, when that is unreadable, the newest
