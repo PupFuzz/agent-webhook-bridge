@@ -146,15 +146,15 @@ final class SeatClientLedger
                     'reason' => "the seat reported a new install id {$installId}; the log of install {$row->install_id} ends at seq ".($row->log_seq ?? 0),
                 ]);
                 // An install id this bridge already holds lines of (a restored root) resumes at its
-                // own stored head, so its re-sent lines are recognised rather than re-inserted — and
-                // keeps its broken-log mark: only a genuinely NEW install starts a clean chain.
+                // own stored head, so its re-sent lines are recognised rather than re-inserted. The
+                // broken-log mark is per ROW, so it is re-derived for the install being resumed from
+                // that install's own stored lines; a genuinely NEW install starts clean.
                 $held = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->orderByDesc('seq')->first();
                 $row->log_seq = $held?->seq;
                 $row->log_head_sha256 = $held?->line_sha256;
-                if ($held === null) {
-                    $row->log_discontinuity = false;
-                    $row->log_discontinuity_reason = null;
-                }
+                $break = $held === null ? null : self::storedChainBreak($agent, $installId);
+                $row->log_discontinuity = $break !== null;
+                $row->log_discontinuity_reason = $break;
             }
             $row->install_id = $installId;
 
@@ -294,6 +294,32 @@ final class SeatClientLedger
         }
 
         return ['install_id' => $row->install_id, 'seq' => $row->log_seq, 'sha256' => $row->log_head_sha256];
+    }
+
+    /**
+     * The first break in one install's STORED lines — a missing seq or a line that does not chain to
+     * the one before it — or null. ⚠ A seq once re-sent with different bytes is not in the store
+     * (only the first copy is kept), so that break cannot be re-derived here; DL-432 names it.
+     */
+    private static function storedChainBreak(string $agent, string $installId): ?string
+    {
+        $lines = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->orderBy('seq')->get(['seq', 'prev_sha256', 'line_sha256']);
+        $expectedSeq = 1;
+        $expectedPrev = null;
+        foreach ($lines as $line) {
+            if ($line->seq !== $expectedSeq) {
+                return $expectedSeq === 1
+                    ? "the first entry of install {$installId} this bridge received is seq {$line->seq}, so seq 1–".($line->seq - 1).' never arrived'
+                    : "seq {$expectedSeq}–".($line->seq - 1)." of install {$installId} never arrived";
+            }
+            if ($line->prev_sha256 !== $expectedPrev) {
+                return "seq {$line->seq} of install {$installId} does not chain to the entry before it (its prev_sha256 is not that line's sha256)";
+            }
+            $expectedSeq = $line->seq + 1;
+            $expectedPrev = $line->line_sha256;
+        }
+
+        return null;
     }
 
     /** The first reason sticks: later breaks in the same chain are consequences of it more often than not. */

@@ -30,7 +30,8 @@ use App\Models\SeatClientEvent;
  * approval is logged with the OS user who ran it and the reason given.
  *
  * EXIT: 0 approved, or already approved · 1 refused, nothing recorded · 2 could not read the
- * agent YAMLs or the publication record.
+ * agent YAMLs or the publication record, or could not read or write the fleet ledger (a database
+ * fault) — nothing recorded.
  */
 class ClientApproveCommand extends BridgeCommand
 {

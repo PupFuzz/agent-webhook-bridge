@@ -326,6 +326,17 @@ class FleetLedgerDoorTest extends TestCase
         $this->assertStringContainsString('future_field', $lines[0]);
     }
 
+    /** The open format holds at any depth: a deeply nested unknown key is accepted and hashed as sent. */
+    public function test_a_deeply_nested_unknown_key_is_accepted_and_kept_in_the_hashed_line(): void
+    {
+        $lines = self::log([self::install() + ['future' => ['a' => ['b' => ['c' => ['d' => [1]]]]]]]);
+
+        $r = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $lines]);
+
+        $this->assertSame(200, $r['status'], $r['raw']);
+        $this->assertSame(hash('sha256', $lines[0]), SeatClientEvent::query()->where('agent', 'httpseat')->where('seq', 1)->value('line_sha256'));
+    }
+
     /** A late line filling a gap already marked is stored, and moves neither the head nor the row. */
     public function test_a_late_line_filling_a_gap_is_stored_not_flagged_as_changed(): void
     {
@@ -344,21 +355,33 @@ class FleetLedgerDoorTest extends TestCase
     }
 
     /** Only a genuinely new install clears a broken-log mark; returning to a held one does not. */
-    public function test_returning_to_a_held_install_keeps_the_broken_log_mark(): void
+    /** The mark is re-derived for a resumed install: A's gap survives a clean install B in between. */
+    public function test_resuming_a_broken_install_after_a_clean_one_reads_broken(): void
     {
-        $other = '6f1c2d3e-0000-4000-8000-000000000004';
-        $otherLog = self::log([['action' => 'bootstrap', 'actor' => 'provision'], ['action' => 'prune', 'actor' => 'provision']], 1, null, $other);
-        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([self::install()])]);
-        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => [$otherLog[0]]]);
-        // Back to the first install, with a gap: the log is now marked broken.
-        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([['action' => 'prune']], 3)]);
-        $this->assertTrue(SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity'));
+        $other = '6f1c2d3e-0000-4000-8000-000000000006';
+        $a = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune']]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$a[0], $a[2]]]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => self::log([['action' => 'bootstrap', 'actor' => 'provision']], 1, null, $other)]);
+        $this->assertFalse(SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity'), 'B is clean');
 
-        // Back to the second, held install, chaining cleanly: not a new install, so the mark stays.
-        $back = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => [$otherLog[1]]]);
+        $back = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([['action' => 'prune']], 4, hash('sha256', $a[2]))]);
 
-        $this->assertSame(1, $back['body']['stored']);
-        $this->assertTrue($back['body']['discontinuity'], 'only a genuinely new install clears the mark');
+        $this->assertTrue($back['body']['discontinuity']);
+        $this->assertStringContainsString('seq 2–2 of install '.self::INSTALL.' never arrived', (string) SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity_reason'));
+    }
+
+    /** …and a resumed install whose stored chain is whole reads clean again. */
+    public function test_resuming_a_whole_install_after_a_broken_one_reads_clean(): void
+    {
+        $other = '6f1c2d3e-0000-4000-8000-000000000007';
+        $a = self::log([self::install(), ['action' => 'prune']]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$a[0]]]);
+        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => self::log([['action' => 'bootstrap', 'actor' => 'provision']], 3, null, $other)]);
+        $this->assertTrue(SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity'), 'B broke');
+
+        $back = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$a[1]]]);
+
+        $this->assertFalse($back['body']['discontinuity']);
     }
 
     /**

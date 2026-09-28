@@ -19,7 +19,6 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **A board-tools call may carry new optional keys**, `caller` (`probe` / `self-cert` / `operator`) and `launch` (`{id, bridge_release}`). Neither can refuse a call. A declared caller stamps only its own column, so `bridge:check --probe-tools`, `--probe-tools-ssh` and `provision-board-tools.py --self-cert` — which now send `caller` — never overwrite what a seat reported.
   - ⚠ **Refusal WORDING changed** on both board-tools doors' body refusals: the expected shape now reads `a JSON object {tool, args?, client_version?, caller?, launch?}`. Status codes, the `{ok:false,error}` shape and exit codes do not move.
   - ⚠ **`bridge:check` registers one more leg, `board_tools.client_fleet`**, inside the board-tools plane, so every inventory line moves by one. It warns per seat that needs the operator (and per approval-required agent on the http transport, which may be able to approve itself); it never fails, so the exit code does not move. `--format=json` `schema` stays **1**.
-  - Every `bridge:*` command's database guard now also catches a connection that cannot be OPENED at a transaction's start (a bare `PDOException`), printing its `database unreachable` line and exiting non-zero instead of a stack trace; `bridge:client-approve` is the first command to reach it.
   - No route change, no `.env` change, no token-scope change.
 
 ### Changed
@@ -33,6 +32,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#10567** — **every `bridge:*` command's database guard now also catches a connection that cannot be OPENED at a transaction's start** (a bare `PDOException`, which `DB::transaction()` throws before any query runs), printing its `database unreachable` line and exiting non-zero instead of a stack trace. `bridge:client-approve` is the first command to reach it.
 - **card#10734** — **`bridge:check`'s `writeback.source_coverage` warning for a source-less DL card on a shared board now names a remedy kbcard accepts for that card.** It used to advise the `.../pull/0` placeholder for every card, and kbcard (toolkit v0.38.0) refuses that write on a card holding a `pr_number` that names a positive number, rc 2 with nothing written. The remedy now depends on the card's `pr_number`, normalised as `BareRefNumber::canonical` normalises it:
   - **none** — unchanged: `Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).`
   - **a pull-request number N** (`'085'` and `85` are both 85) — `It holds pr_number N, so stamp the pr_url naming that pull request with it (kbcard patch --task <id> --pr N --pr-url https://github.com/<owner>/<repo>/pull/N).`
@@ -42,7 +42,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
-- **card#10567 / DL-432 — run `php artisan migrate`.** Two new tables (`seat_client_states`, `seat_client_events`). Until it runs, the dispatcher's fleet-ledger write fails soft (logged, the call is unaffected), the `client_report` and `client_fleet` ops answer `503` (and so does `client_manifest` for an agent that requires approval), `bridge:client-fleet` exits 1, `bridge:client-approve` exits 2 with nothing recorded, and `bridge:check`'s `board_tools.client_fleet` leg reports `unvalidated`.
+- **card#10567 / DL-432 — run `php artisan migrate`.** New tables `seat_client_states` and `seat_client_events`. Until it runs, the dispatcher's fleet-ledger write fails soft (logged, the call is unaffected), the `client_report` and `client_fleet` ops answer `503` (and so does `client_manifest` for an agent that requires approval), `bridge:client-fleet` exits 1, `bridge:client-approve` exits 2 with nothing recorded, and `bridge:check`'s `board_tools.client_fleet` leg reports `unvalidated`.
 - **card#10735 / DL-431 — these `pr_url` values classify differently.** Exactly the values where the first `/pull/<digits>` is not the one directly after the first GitHub URL's `owner/repo`. The full published corpus, with each value's old reading, is `docs/pr-url-ref-parity-corpus.json`. Examples, not a complete list:
   - **Named a pull request, now name none:**
     - the first GitHub URL is an issue, commit, tree or blob URL, followed by any `/pull/<n>`: `https://github.com/a/x/issues/5 https://github.com/b/y/pull/179` (was `a/x#179`), `…/o/r/tree/main/pull/179`, `…/o/r/blob/main/pull/179`, `…/o/r/commit/<sha>/pull/179` (each was `o/r#179`);

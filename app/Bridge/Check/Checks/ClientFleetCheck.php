@@ -22,8 +22,8 @@ use Throwable;
  * `bridge:client-fleet` prints the same seats — so the two can never disagree about who needs you.
  * One WARN per seat whose state needs you, plus one per caveat {@see ClientFleet} attaches to a
  * seat (today: an approval-required agent on the http transport, which may be able to approve
- * itself); otherwise one OK line with the spread. NEVER `fail`: a seat's client state is not the bridge's fault and must not move the
- * exit code.
+ * itself); otherwise one OK line with the spread. NEVER `fail`: a seat's client state is not the
+ * bridge's fault and must not move the exit code.
  *
  * Inside the enabled-subset guard: an agent with no enabled block has no client in the fleet.
  */
