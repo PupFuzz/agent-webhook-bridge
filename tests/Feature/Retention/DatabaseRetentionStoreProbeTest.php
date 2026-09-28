@@ -160,15 +160,6 @@ class DatabaseRetentionStoreProbeTest extends TestCase
      */
     public function test_the_probes_declaration_about_the_two_figures_holds_on_this_engine(): void
     {
-        // ⚑ THE MARIADB ARM COMPARES THE PAYLOAD WITH WHAT THE WRITE ADDED TO THE TABLE IT WROTE,
-        // not with the whole schema's size. The probe's figure sums every table, and a rollback
-        // returns rows but not pages, so tables EARLIER TESTS in the same run grew are in it — and
-        // InnoDB refreshes their statistics asynchronously, so whether that residue shows depends on
-        // timing: it passed 13 MiB on MariaDB 11 (card#10567, run 36376084510) after a fuzz test
-        // filled another table, and not on 10.6 in the same run. That is a fact about the run's other
-        // tests. The declaration is about how the engine accounts for OFF-PAGE bytes, and this write
-        // touches one table, so that table's own growth across the write is the measurement.
-        $before = $this->ownTableBytes();
         $written = $this->bulkPayloads(200, 65536);
 
         $footprint = (new DatabaseRetentionStoreProbe)->measure();
@@ -190,7 +181,7 @@ class DatabaseRetentionStoreProbeTest extends TestCase
         } else {
             $this->assertContains(DB::connection()->getDriverName(), ['mysql', 'mariadb']);
             $this->assertGreaterThan(
-                $this->ownTableBytes() - $before,
+                $footprint->storeBytes,
                 $footprint->payloadBytes,
                 'this engine no longer excludes off-page payload bytes from its size figure — re-measure and move the declaration in DatabaseRetentionStoreProbe::storeSize() (DL-331)',
             );
@@ -245,16 +236,6 @@ class DatabaseRetentionStoreProbeTest extends TestCase
      * carrying a `json_valid()` CHECK on MariaDB, so a raw filler string is accepted on
      * SQLite and REJECTED on the two jobs this test exists for.
      */
-    /** `webhook_events`' own size as the engine accounts for it; 0 on SQLite, whose arm does not read it. */
-    private function ownTableBytes(): int
-    {
-        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
-            return 0;
-        }
-
-        return (int) (DB::selectOne('select data_length + index_length as bytes from information_schema.tables where table_schema = database() and table_name = ?', [(new WebhookEvent)->getTable()])->bytes ?? 0);
-    }
-
     private function bulkPayloads(int $rows, int $bytesEach): int
     {
         $payload = '{"blob":"'.str_repeat('a', $bytesEach - 11).'"}';
