@@ -24,8 +24,10 @@ INPUTS, at the one commit: the tracked files under `examples/channel-servers/` e
 --omit=dev` runs against the committed lockfile, which reaches the registry (or npm's cache)
 from the machine that BUILDS the pack, never from a seat.
 
-REFUSED, before anything is written: a tracked file that is not a regular file (a symlink, a
-submodule); a lockfile entry carrying `hasInstallScript`, `os` or `cpu`; a `client_version`
+REFUSED, before anything is written: a channel-server tree that does not track the files a seat
+needs to run AND update itself (REQUIRED_CLIENT_FILES: the entry point, the updater and the
+server; design review r3-M6), so no pack can reach a seat and strand it on a client that cannot
+update; a tracked file that is not a regular file (a symlink, a submodule); a lockfile entry carrying `hasInstallScript`, `os` or `cpu`; a `client_version`
 (the channel server's `package.json` `version`) that is not bare `X.Y.Z`; a `package.json`
 with no `engines.node` string; any `*.node` file or `binding.gyp`, and any symlink or special
 file, in the installed tree; a path the ustar format cannot hold.
@@ -91,6 +93,10 @@ TAG = re.compile(r"v([0-9]+\.[0-9]+\.[0-9]+)")
 STRICT_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 CHANNEL_DIR = "examples/channel-servers/"
 EXCLUDED_CHANNEL_SUBTREES = ("tests/",)
+# The files a seat refuses a pack without and will not start a release without
+# (`REQUIRED_CLIENT_FILES` in examples/channel-servers/entry.mjs, minus package.json, which
+# client_metadata already requires). bin/test_build_client_pack.py holds the two lists equal.
+REQUIRED_CLIENT_FILES = ("entry.mjs", "client-update.mjs", "agent-webhook-bridge-channel.mjs", "channel-lib.mjs")
 SEAT_TOOLS_MANIFEST = "seat-tools.json"
 REGULAR_MODES = {"100644": 0o644, "100755": 0o755}
 LOCKFILE_REFUSED_KEYS = ("hasInstallScript", "os", "cpu")
@@ -175,6 +181,13 @@ def channel_files(repo: str, commit: str) -> list:
         shipped.append((relative, REGULAR_MODES[mode], blob(repo, blob_id)))
     if not shipped:
         raise Refused(f"{CHANNEL_DIR} holds no tracked files at {commit}")
+    names = {relative for relative, _, _ in shipped}
+    for required in REQUIRED_CLIENT_FILES:
+        if required not in names:
+            raise Refused(
+                f"{CHANNEL_DIR}{required} is not tracked at {commit}; a pack must carry the seat's entry point, "
+                "updater and server, or the seats it reaches could never update again"
+            )
     return shipped
 
 

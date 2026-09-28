@@ -39,12 +39,23 @@ import {
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { spawn } from 'node:child_process';
-// Pure, side-effect-free helpers, split into a sibling module ONLY so they can be
-// unit-tested directly (this file self-executes on import). Plain ESM, no build
-// step; consumers copy the whole directory so the sibling travels with this entry.
-import { deriveMeta, relayBridgeResponse } from './channel-lib.mjs';
+// Helpers split into sibling modules so they can be tested directly (this file
+// self-executes on import) and shared with the launch-time updater: channel-lib.mjs
+// holds the relay contract and the bridge transport, entry.mjs the channel's socket and
+// `.FAILED` marker paths (its own refusals write the same marker). Plain ESM, no build
+// step; consumers copy the whole directory, and the client pack carries it whole.
+import {
+  deriveMeta,
+  relayBridgeResponse,
+  resolveToolsToken,
+  sshRoundTrip,
+  httpRoundTrip,
+  launchIdentity,
+  clientUpdateInstruction,
+  errorDetail,
+} from './channel-lib.mjs';
+import { channelSocketPath, failureMarkerPath } from './entry.mjs';
 
 const SERVER_NAME = process.env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
 const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
@@ -131,28 +142,10 @@ const CLIENT_VERSION = readClientVersion();
 // stale number.
 const HANDSHAKE_VERSION = CLIENT_VERSION ?? '0.0.0-unreadable-manifest';
 
-// Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
-// explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
-// FILE SHORT-CIRCUITS to '' (never silently falling through to the channel token),
-// else the BRIDGE_CHANNEL_TOKEN fallback. An empty-string env var does not
-// "configure" a source (it is treated as unset for this chain).
-function resolveToolsToken() {
-  if (process.env.BRIDGE_TOOLS_TOKEN) {
-    return process.env.BRIDGE_TOOLS_TOKEN;
-  }
-  const file = process.env.BRIDGE_TOOLS_TOKEN_FILE;
-  if (file) {
-    try {
-      return fs.readFileSync(file, 'utf8').trim();
-    } catch {
-      return '';   // configured-but-unreadable file short-circuits; no fallthrough
-    }
-  }
-  if (process.env.BRIDGE_CHANNEL_TOKEN) {
-    return process.env.BRIDGE_CHANNEL_TOKEN;
-  }
-  return '';
-}
+// The launch this server belongs to, when entry.mjs started it (card#10568): sent on every
+// board-tools call as `launch`, so the bridge knows which release this launch runs.
+// Null — and the key omitted — for a server started any other way.
+const LAUNCH = launchIdentity(process.env);
 
 function shouldAdvertiseTools() {
   if (CHANNEL_TOOLS_ENV === '1') {
@@ -167,7 +160,7 @@ function shouldAdvertiseTools() {
   if (TOOLS_SSH_TARGET !== '') {
     return true;
   }
-  return TOOLS_ENDPOINT !== '' && resolveToolsToken() !== '';
+  return TOOLS_ENDPOINT !== '' && resolveToolsToken(process.env) !== '';
 }
 
 const TOOLS_ENABLED = shouldAdvertiseTools();
@@ -527,21 +520,13 @@ const CLEAR_CONTEXT_TOOL = {
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 };
 
-function defaultSocketPath() {
-  // Per-uid + per-server-name default. Multi-agent operators get distinct
-  // paths automatically when they set distinct BRIDGE_CHANNEL_NAME per agent
-  // (the same string that's used as the .mcp.json key AND the
-  // <channel source="..."> attribute the model routes on).
-  const xdg = process.env.XDG_RUNTIME_DIR;
-  if (!xdg) {
-    return null;
-  }
-  return path.join(xdg, `agent-webhook-bridge-channel-${SERVER_NAME}.sock`);
-}
-
+// The per-uid + per-server-name default is entry.mjs's channelSocketPath. Multi-agent
+// operators get distinct paths automatically when they set distinct BRIDGE_CHANNEL_NAME
+// per agent (the same string that's used as the .mcp.json key AND the
+// <channel source="..."> attribute the model routes on).
 const SERVER_PORT = Number(process.env.BRIDGE_CHANNEL_PORT || 8788);
 const SERVER_HOST = '127.0.0.1';
-const SOCKET_PATH = process.env.BRIDGE_CHANNEL_SOCKET || defaultSocketPath();
+const SOCKET_PATH = channelSocketPath(process.env);
 
 // A bind failure exits the process with a stderr message Claude Code SWALLOWS
 // (it does not surface MCP-server startup stderr), so a session whose connector
@@ -558,13 +543,11 @@ const SOCKET_PATH = process.env.BRIDGE_CHANNEL_SOCKET || defaultSocketPath();
 // loopback/tunnel port. Base dir: $XDG_RUNTIME_DIR when set (Linux), else
 // os.tmpdir() — $TMPDIR or /tmp on Linux/macOS, %TEMP% on Windows — so the
 // Windows launcher's $env:TEMP lookup and this path agree (a literal '/tmp'
-// would resolve to C:\tmp under Node on Windows and never match).
+// would resolve to C:\tmp under Node on Windows and never match). The path is
+// entry.mjs's failureMarkerPath — ONE definition, because entry.mjs writes the same
+// marker when no release can be started.
 function markerPath() {
-  if (TRANSPORT === 'unix' && SOCKET_PATH) {
-    return `${SOCKET_PATH}.FAILED`;
-  }
-  const xdg = process.env.XDG_RUNTIME_DIR || os.tmpdir();
-  return path.join(xdg, `agent-webhook-bridge-channel-${SERVER_NAME}.http-${SERVER_PORT}.FAILED`);
+  return failureMarkerPath(process.env);
 }
 
 function writeFailureMarker(reason) {
@@ -638,7 +621,7 @@ function unbindableReason(addr) {
 if (TRANSPORT === 'unix' && !SOCKET_PATH) {
   // markerPath() falls to its non-unix branch here (SOCKET_PATH is falsy), and
   // XDG_RUNTIME_DIR is necessarily unset in this state (it's the only reason
-  // defaultSocketPath() returned null), so the marker resolves to
+  // channelSocketPath() returned null), so the marker resolves to
   // os.tmpdir()/…http-<port>.FAILED — %TEMP% on Windows, where the launcher
   // looks. Write it so a misconfigured Windows seat isn't silently deaf (FR #2444).
   const remedy =
@@ -673,7 +656,27 @@ if (TOOLS_SSH_TARGET !== '' && TOOLS_ENDPOINT !== '') {
   );
 }
 
+// What this launch's client update did (card#10568, design §3.4): entry.mjs writes
+// <AWB_CLIENT_ROOT>/state.json for the launch before it imports this server, and one
+// INSTRUCTIONS line says so when the state is not `current`. Read once, here — fixed for
+// the session. A server started any other way has no AWB_CLIENT_ROOT and says nothing.
+function readClientUpdateState(root) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8'));
+  } catch (err) {
+    return { unreadable: err && err.message ? err.message : String(err) };
+  }
+}
+
+const CLIENT_UPDATE_LINE = process.env.AWB_CLIENT_ROOT
+  ? clientUpdateInstruction(readClientUpdateState(process.env.AWB_CLIENT_ROOT), {
+      launchId: process.env.AWB_LAUNCH_ID,
+      root: process.env.AWB_CLIENT_ROOT,
+    })
+  : null;
+
 const INSTRUCTIONS = [
+  ...(CLIENT_UPDATE_LINE ? [CLIENT_UPDATE_LINE] : []),
   `Events from the agent-webhook-bridge arrive as <channel source="${SERVER_NAME}" kind="..." target_id="...">.`,
   'The body is JSON: {"intent": {kind, subject_id, summary, payload, ...}}; the kind and target_id attributes are copied from it (target_id is intent.subject_id) and are absent when a body carries no intent.',
   'These channel EVENTS are one-way notifications: read them and act — no reply is sent back through the event.',
@@ -715,113 +718,51 @@ const mcp = new Server(
 // `scrubSnippet` + `relayBridgeResponse` (the credential-scrubbing relay contract)
 // are pure — they live in ./channel-lib.mjs and are imported at the top of this file.
 
-// SSH-forced-command transport: spawn `ssh [-i key] [-p port] <target>` with NO
-// command (sshd substitutes the pinned bridge:tools-call), write {tool, args, client_version} to the
-// child's stdin, and CAPTURE (never inherit) its stdout — so this server's OWN stdout
-// stays the MCP JSON-RPC frame channel. Accumulate the full child stdout, then relay.
+// SSH-forced-command transport: one round trip through channel-lib's sshRoundTrip (the
+// same primitive the updater uses), relayed as a tool result. The child's stdout is
+// CAPTURED, never inherited — this server's OWN stdout is the MCP JSON-RPC frame channel.
 async function callToolOverSsh(payload) {
-  const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
-  if (TOOLS_SSH_KEY) {
-    args.push('-i', TOOLS_SSH_KEY);
-  }
-  if (TOOLS_SSH_PORT) {
-    args.push('-p', TOOLS_SSH_PORT);
-  }
-  args.push(TOOLS_SSH_TARGET);
-
-  return await new Promise((resolve) => {
-    // One error shape for every ssh failure (spawn, child error, deadline) — a single
-    // formatter, matching the isError result the parse-failure/relay path yields.
-    const fail = (text) =>
-      resolve({ isError: true, content: [{ type: 'text', text }] });
-
-    let child;
-    try {
-      child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    } catch (err) {
-      fail(
-        `could not spawn ssh to ${TOOLS_SSH_TARGET}: ${err && err.message ? err.message : err}`,
-      );
-      return;
-    }
-    // Overall deadline: ConnectTimeout bounds only the connect, so a host that
-    // connects then hangs would pin this call forever and leak the child. Kill it and
-    // fail; cleared on any resolution so no dangling timer keeps the event loop alive.
-    const deadline = setTimeout(() => {
-      child.kill('SIGKILL');
-      fail(
-        `ssh to ${TOOLS_SSH_TARGET} exceeded the ${TOOLS_SSH_DEADLINE_MS}ms deadline`,
-      );
-    }, TOOLS_SSH_DEADLINE_MS);
-    let stdout = '';
-    // The HEAD of the child's stderr, bounded, kept for the non-zero-exit path
-    // (card#7709). `console.error` below reaches the MCP client's server log, which is
-    // not a surface the calling agent reads, so `Permission denied (publickey)` /
-    // `Connection refused` / `Host key verification failed` used to reach nobody who
-    // could act on it. HEAD and not tail: a tail slice can cut an `Authorization:` line
-    // in half and leave the token past the anchor `scrubSnippet` redacts from, and ssh
-    // states its diagnosis first. The relay scrubs this before any of it is returned.
-    let stderrHead = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      if (stderrHead.length < SSH_STDERR_CAPTURE_LIMIT) {
-        stderrHead = (stderrHead + text).slice(0, SSH_STDERR_CAPTURE_LIMIT);
-      }
-      // The RAW stream stays diagnostics-only — never mixed into the tool result; only
-      // the scrubbed, bounded head above can reach a caller, and only on a failed leg.
-      console.error(`[${SERVER_NAME}] ssh ${TOOLS_SSH_TARGET} stderr: ${text.trimEnd()}`);
-    });
-    child.on('error', (err) => {
-      clearTimeout(deadline);
-      fail(
-        `ssh to ${TOOLS_SSH_TARGET} failed: ${err && err.message ? err.message : err}`,
-      );
-    });
-    child.on('close', (code, signal) => {
-      clearTimeout(deadline);
-      const captured = stderrHead.trim();
-      // `code` is null when the child died on a signal, so it is reported as one
-      // rather than as `exited null` (a wrong-but-specific cause is worse than an
-      // honest one). Our own deadline kill lands here too, but that path already
-      // resolved with its own message and this resolve is a no-op.
-      const how = code === null ? `ssh was killed by ${signal}` : `ssh exited ${code}`;
-      resolve(
-        relayBridgeResponse(
-          stdout,
-          code === 0,
-          `ssh ${TOOLS_SSH_TARGET}`,
-          code === 0 ? '' : `${how}${captured ? `: ${captured}` : ' and wrote nothing to stderr'}`,
-        ),
-      );
-    });
-    child.stdin.write(payload);
-    child.stdin.end();
+  const r = await sshRoundTrip({
+    target: TOOLS_SSH_TARGET,
+    key: TOOLS_SSH_KEY,
+    port: TOOLS_SSH_PORT,
+    input: payload,
+    deadlineMs: TOOLS_SSH_DEADLINE_MS,
+    stderrLimit: SSH_STDERR_CAPTURE_LIMIT,
+    // The RAW stream stays diagnostics-only — never mixed into the tool result; only the
+    // scrubbed, bounded head can reach a caller, and only on a failed leg (card#7709).
+    // `console.error` reaches the MCP client's server log, not a surface the agent reads.
+    onStderr: (text) => console.error(`[${SERVER_NAME}] ssh ${TOOLS_SSH_TARGET} stderr: ${text.trimEnd()}`),
   });
+  if (r.failure) {
+    // One error shape for every ssh failure (spawn, child error, deadline) — the isError
+    // result the parse-failure/relay path yields.
+    return { isError: true, content: [{ type: 'text', text: r.failure.message }] };
+  }
+  const captured = r.stderrHead.trim();
+  // `code` is null when the child died on a signal, so it is reported as one rather than
+  // as `exited null` (a wrong-but-specific cause is worse than an honest one).
+  const how = r.code === null ? `ssh was killed by ${r.killSignal}` : `ssh exited ${r.code}`;
+  return relayBridgeResponse(
+    r.stdout,
+    r.code === 0,
+    `ssh ${TOOLS_SSH_TARGET}`,
+    r.code === 0 ? '' : `${how}${captured ? `: ${captured}` : ' and wrote nothing to stderr'}`,
+  );
 }
 
-// HTTP loopback transport: POST {tool, args, client_version} with the per-agent bearer.
+// HTTP loopback transport: POST the call body with the per-agent bearer.
 async function callToolOverHttp(payload, token) {
   try {
-    const res = await fetch(TOOLS_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: payload,
-    });
-    const text = await res.text();
-    return relayBridgeResponse(text, res.ok, TOOLS_ENDPOINT);
+    const res = await httpRoundTrip({ url: TOOLS_ENDPOINT, token, body: payload });
+    return relayBridgeResponse(res.text, res.ok, TOOLS_ENDPOINT);
   } catch (err) {
     return {
       isError: true,
       content: [
         {
           type: 'text',
-          text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${err && err.message ? err.message : err}`,
+          text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${errorDetail(err)}`,
         },
       ],
     };
@@ -908,11 +849,14 @@ if (ADVERTISE_ANY_TOOL) {
     // predating this field produces exactly that shape — and a null would be a second
     // spelling of one state, which is the read-time fork the bridge should never have to
     // handle.
-    const payload = JSON.stringify(
-      CLIENT_VERSION === null
-        ? { tool: toolName, args }
-        : { tool: toolName, args, client_version: CLIENT_VERSION },
-    );
+    // `launch` follows the same rule: omitted, never null, for a server entry.mjs did not
+    // start (card#10568).
+    const payload = JSON.stringify({
+      tool: toolName,
+      args,
+      ...(CLIENT_VERSION === null ? {} : { client_version: CLIENT_VERSION }),
+      ...(LAUNCH === null ? {} : { launch: LAUNCH }),
+    });
 
     // Guard branches on the TRANSPORT (DR2-5), not on a bearer: the ssh transport
     // carries no bearer, so `!token` must not gate it.
@@ -920,7 +864,7 @@ if (ADVERTISE_ANY_TOOL) {
       return await callToolOverSsh(payload);
     }
 
-    const token = resolveToolsToken();
+    const token = resolveToolsToken(process.env);
     if (!TOOLS_ENDPOINT || !token) {
       const missing = [
         TOOLS_ENDPOINT ? null : 'BRIDGE_TOOLS_ENDPOINT',
