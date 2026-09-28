@@ -13,7 +13,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Yaml\Yaml;
 use Tests\Support\ClientPackFixture;
 use Tests\Support\MaterializesChecks;
@@ -45,6 +44,26 @@ class ClientFleetSurfacesTest extends TestCase
         Carbon::setTestNow();
         File::deleteDirectory($this->dir);
         parent::tearDown();
+    }
+
+    /**
+     * Run `$body` with the models pointed at a database that refuses connections, then point them
+     * back — before RefreshDatabase's teardown, which rolls back on the DEFAULT connection. Not
+     * `Schema::drop()`: on MariaDB that DDL commits RefreshDatabase's transaction and takes the
+     * table from every later test (the WritebackBoardDivergenceLedgerTest precedent).
+     */
+    private function withADeadDatabase(\Closure $body): void
+    {
+        $default = config('database.default');
+        config(['database.connections.dead-ledger' => [
+            'driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 1,
+            'database' => 'nothing', 'username' => 'nobody', 'password' => '',
+        ], 'database.default' => 'dead-ledger']);
+        try {
+            $body();
+        } finally {
+            config(['database.default' => $default]);
+        }
     }
 
     private function agent(string $name, string $extra = '', string $transport = 'ssh'): AgentConfig
@@ -122,9 +141,11 @@ class ClientFleetSurfacesTest extends TestCase
 
     public function test_the_leg_is_unvalidated_when_the_ledger_cannot_be_read(): void
     {
-        Schema::drop('seat_client_states');
-
-        $findings = $this->check([$this->agent('seat')]);
+        $seat = $this->agent('seat');
+        $findings = [];
+        $this->withADeadDatabase(function () use ($seat, &$findings): void {
+            $findings = $this->check([$seat]);
+        });
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Unvalidated->value, $findings[0][0]);
@@ -169,8 +190,8 @@ class ClientFleetSurfacesTest extends TestCase
     public function test_client_fleet_exits_non_zero_when_the_ledger_cannot_be_read(): void
     {
         $this->agent('seat');
-        Schema::drop('seat_client_states');
-
-        $this->artisan('bridge:client-fleet')->expectsOutputToContain('database query failed, but the server ANSWERED')->assertExitCode(1);
+        $this->withADeadDatabase(function (): void {
+            $this->artisan('bridge:client-fleet')->expectsOutputToContain('database unreachable')->assertExitCode(1)->run();
+        });
     }
 }

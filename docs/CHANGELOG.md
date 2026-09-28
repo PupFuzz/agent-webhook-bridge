@@ -19,6 +19,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **A board-tools call may carry new optional keys**, `caller` (`probe` / `self-cert` / `operator`) and `launch` (`{id, bridge_release}`). Neither can refuse a call. A declared caller stamps only its own column, so `bridge:check --probe-tools`, `--probe-tools-ssh` and `provision-board-tools.py --self-cert` — which now send `caller` — never overwrite what a seat reported.
   - ⚠ **Refusal WORDING changed** on both board-tools doors' body refusals: the expected shape now reads `a JSON object {tool, args?, client_version?, caller?, launch?}`. Status codes, the `{ok:false,error}` shape and exit codes do not move.
   - ⚠ **`bridge:check` registers one more leg, `board_tools.client_fleet`**, inside the board-tools plane, so every inventory line moves by one. It warns per seat that needs the operator (and per approval-required agent on the http transport, which may be able to approve itself); it never fails, so the exit code does not move. `--format=json` `schema` stays **1**.
+  - Every `bridge:*` command's database guard now also catches a connection that cannot be OPENED at a transaction's start (a bare `PDOException`), printing its `database unreachable` line and exiting non-zero instead of a stack trace; `bridge:client-approve` is the first command to reach it.
   - No route change, no `.env` change, no token-scope change.
 
 ### Changed

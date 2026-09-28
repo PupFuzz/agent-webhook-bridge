@@ -80,6 +80,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'App\Bridge\Validation\EndpointValidationException' => 'composed by this app\'s own endpoint validators from a configured URL or socket path',
         'Error' => 'a PHP engine error (ArgumentCountError from `new $class`) about a classifier class this install configured',
         'Illuminate\Database\QueryException' => 'a PDO/driver error from this install\'s own database, with the SQL this app wrote',
+        'PDOException' => 'a PDO driver error opening or using this install\'s own database connection — the DSN host/port and the driver\'s own text, no SQL and no response body',
         'JsonException' => 'PHP\'s own json_decode() diagnosis, from a fixed table (`Syntax error`, `Malformed UTF-8 characters, possibly incorrectly encoded`, `Control character error, …`, `Maximum stack depth exceeded`) — measured to carry none of the bytes it was decoding',
         'Symfony\Component\Yaml\Exception\ParseException' => 'the YAML parser\'s position and snippet of this install\'s own agent config file',
         'UnexpectedValueException' => 'composed by ClientCapabilities from the checked-in resources/client-capabilities.json: a fixed phrase naming the table path or a field and the version string stored there (the one site catching it tries nothing else)',

@@ -70,6 +70,26 @@ class FleetLedgerDoorTest extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * Run `$body` with the models pointed at a database that refuses connections, then point them
+     * back — before RefreshDatabase's teardown, which rolls back on the DEFAULT connection. Not
+     * `Schema::drop()`: on MariaDB that DDL commits RefreshDatabase's transaction and takes the
+     * table from every later test (the WritebackBoardDivergenceLedgerTest precedent).
+     */
+    private function withADeadDatabase(\Closure $body): void
+    {
+        $default = config('database.default');
+        config(['database.connections.dead-ledger' => [
+            'driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 1,
+            'database' => 'nothing', 'username' => 'nobody', 'password' => '',
+        ], 'database.default' => 'dead-ledger']);
+        try {
+            $body();
+        } finally {
+            config(['database.default' => $default]);
+        }
+    }
+
     private function secret(string $path, string $value): void
     {
         File::put($path, $value);
@@ -510,11 +530,12 @@ class FleetLedgerDoorTest extends TestCase
     public function test_client_approve_exits_2_when_the_ledger_cannot_be_written(): void
     {
         $this->publish(new ClientPackFixture);
-        Schema::drop('seat_client_events');
-
-        $this->artisan('bridge:client-approve', ['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => 'x'])
-            ->expectsOutputToContain('database query failed, but the server ANSWERED')
-            ->assertExitCode(2);
+        $this->withADeadDatabase(function (): void {
+            $this->artisan('bridge:client-approve', ['agent' => 'gated', 'bridge_release' => '0.91.0', '--reason' => 'x'])
+                ->expectsOutputToContain('database unreachable')
+                ->assertExitCode(2)
+                ->run();
+        });
     }
 
     public function test_client_approve_notes_an_agent_that_requires_no_approval(): void
