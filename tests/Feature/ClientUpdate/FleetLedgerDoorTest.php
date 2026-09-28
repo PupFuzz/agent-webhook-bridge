@@ -237,6 +237,12 @@ class FleetLedgerDoorTest extends TestCase
 
                 return ['reports' => [[$a[0]], [$bad]], 'next' => self::log([['action' => 'prune']], 3, hash('sha256', $bad))[0]];
             }, 'seq 2 of install '.self::INSTALL.' does not chain to the entry before it'],
+            'a broken prev_sha256 link inside one report' => [static function (): array {
+                $a = self::log([self::install()]);
+                $bad = self::log([['action' => 'prune']], 2, str_repeat('0', 64))[0];
+
+                return ['reports' => [[$a[0], $bad]], 'next' => self::log([['action' => 'prune']], 3, hash('sha256', $bad))[0]];
+            }, 'seq 2 of install '.self::INSTALL.' does not chain to the entry before it'],
             'a seq re-sent with different bytes' => [static function (): array {
                 $a = self::log([self::install()]);
 
@@ -477,6 +483,7 @@ class FleetLedgerDoorTest extends TestCase
             // Counted before any line is read, so the lines need not parse (and stay under the ssh door's stdin cap).
             'too many entries' => [['install_id' => self::INSTALL, 'entries' => array_fill(0, SeatClientLedger::MAX_REPORT_ENTRIES + 1, 'x')], 'at most '.SeatClientLedger::MAX_REPORT_ENTRIES.' entries AND at most '.SeatClientLedger::MAX_REPORT_BYTES.' bytes of lines — split the backlog by both'],
             'too many bytes' => [['install_id' => self::INSTALL, 'entries' => array_fill(0, intdiv(SeatClientLedger::MAX_REPORT_BYTES, 4000) + 1, str_repeat('x', 4000))], 'bytes of lines — split the backlog by both'],
+            'an install id in upper case' => [['install_id' => 'ABC-1', 'entries' => self::log([self::install()], 1, null, 'ABC-1')], 'lower case'],
             'the bridge\'s own install id in capitals' => [['install_id' => 'BRIDGE', 'entries' => $ok], 'needs `install_id`'],
             'a launch line with no launch_id' => [['install_id' => self::INSTALL, 'entries' => [$line(['launch_id' => null])]], 'an `actor: launch` line with no `launch_id`'],
             'a line nested past json_decode\'s default depth' => [['install_id' => self::INSTALL, 'entries' => [substr($ok[0], 0, -1).',"x":'.str_repeat('[', 520).str_repeat(']', 520).'}']], 'nests deeper than json_decode\'s default 512 levels'],

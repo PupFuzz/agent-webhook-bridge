@@ -15,7 +15,7 @@ return new class extends Migration
         //   - the bridge's own events (install_id = 'bridge', seq = per agent from 1):
         //     `approve` (`bridge:client-approve`), `rebootstrap` (a seat reported a new
         //     install id) and `resend_conflict` (a held seq arrived again with different
-        //     bytes; `source` names the seat install it is about).
+        //     bytes; `source` names the seat install and `subject_seq` the seq it is about).
         //
         // ⛔ APPEND-ONLY BY CONVENTION, CHECKED STATICALLY: nothing in app/ updates or deletes a
         // row (SeatClientEventsNoWriterTest greps for it). The database does not enforce it.
@@ -39,6 +39,9 @@ return new class extends Migration
             $table->string('launch_id', 64)->nullable();
             $table->string('prev_sha256', 64)->nullable();
             $table->string('line_sha256', 64)->nullable();
+            // A bridge `resend_conflict` event's seat seq (its `source` is the seat install): what the
+            // once-per-(install, seq) record and the chain-break read key on, never the prose reason.
+            $table->unsignedBigInteger('subject_seq')->nullable();
             // The seat's own clock, as it wrote it; `received_at` is this bridge's.
             $table->string('occurred_at', 40)->nullable();
             $table->timestamp('received_at', 3)->useCurrent();

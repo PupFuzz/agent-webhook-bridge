@@ -9,7 +9,8 @@ use Illuminate\Support\Carbon;
 /**
  * One entry of the append-only client-update event log (card#10567 B4): a seat's install-log line
  * received by `client_report`, or a bridge-side event (`install_id` = {@see SeatClientLedger::BRIDGE_INSTALL_ID}):
- * `approve`, `rebootstrap`, or `resend_conflict` (whose `source` names the seat install it is about).
+ * `approve`, `rebootstrap`, or `resend_conflict` (whose `source` and `subject_seq` name the seat
+ * install and seq it is about).
  *
  * ⛔ Nothing updates or deletes a row — `SeatClientEventsNoWriterTest` checks app/ for it.
  *
@@ -29,6 +30,7 @@ use Illuminate\Support\Carbon;
  * @property ?string $launch_id
  * @property ?string $prev_sha256
  * @property ?string $line_sha256
+ * @property ?int $subject_seq
  * @property ?string $occurred_at
  * @property Carbon $received_at
  */
@@ -43,6 +45,7 @@ class SeatClientEvent extends Model
 
     protected $casts = [
         'seq' => 'integer',
+        'subject_seq' => 'integer',
         'received_at' => 'datetime',
     ];
 }
