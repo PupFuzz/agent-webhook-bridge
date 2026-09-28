@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\AgentTools;
 
+use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\ClientUpdate\ClientUpdateDoor;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -74,7 +75,9 @@ final class AgentToolsController
         // nothing else about the body, so a caller predating the field, or one sending
         // anything {@see ClientVersion} will not take, reaches the dispatcher unchanged with
         // null recorded. The bearer is what authorizes this call; a version never is.
-        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd, ClientVersion::fromCall($request->input('client_version')));
+        // `caller` and `launch` are the same kind of observation (card#10567 B4; {@see CallerReport}).
+        $caller = CallerReport::fromCall($request->input('caller'), $request->input('launch'));
+        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd, ClientVersion::fromCall($request->input('client_version')), $caller);
 
         return response()->json($outcome->body(), $outcome->status);
     }
@@ -98,7 +101,7 @@ final class AgentToolsController
         if ($decoded instanceof DispatchOutcome) {
             return response()->json($decoded->body(), $decoded->status);
         }
-        $outcome = $door->handle($decoded, $agent->agentName, $agent->config->transport);
+        $outcome = $door->handle($decoded, $agent->agentName, $agent->config);
 
         return response()->json($outcome->body, $outcome->status);
     }

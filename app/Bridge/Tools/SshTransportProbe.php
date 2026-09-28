@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\ClientUpdate\ExemptCaller;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\UntrustedText;
@@ -275,7 +276,8 @@ final class SshTransportProbe
      */
     public function probeLive(string $target, array $expectedScopes): array
     {
-        $r = $this->env->sshRoundTrip($target, (string) json_encode(['tool' => 'board_my_cards']));
+        // Declared a probe (card#10567 B4), so the fleet ledger keeps the seat's own report of its client.
+        $r = $this->env->sshRoundTrip($target, (string) json_encode(ExemptCaller::probeBody()));
         if ($r['exit'] !== 0) {
             // ⛔ ESCAPED AT THE INTERPOLATION (card#9200, DL-366). Everything this leg
             // echoes below crossed the wire from a REMOTE host: its stderr, its stdout, and

@@ -635,4 +635,73 @@ class BoardToolsConfigTest extends TestCase
         $this->assertCount(1, $enabled);
         $this->assertSame('ssh', $enabled[0]->boardTools?->transport);
     }
+
+    // ─── card#10567 B4: fleet_view and client_update.approval_required ─────────
+
+    /**
+     * @param  array<string, mixed>  $extra
+     */
+    private function sshBlock(array $extra, bool $explicit = true): array
+    {
+        return ['board_tools' => array_merge(['transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55], $explicit ? ['enabled' => true] : [], $extra)];
+    }
+
+    public function test_fleet_view_and_approval_default_to_false(): void
+    {
+        $bt = $this->config($this->sshBlock([]))->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->fleetView);
+        $this->assertFalse($bt->clientUpdateApprovalRequired);
+    }
+
+    public function test_fleet_view_and_approval_parse_when_true(): void
+    {
+        $bt = $this->config($this->sshBlock(['fleet_view' => true, 'client_update' => ['approval_required' => true]]))->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertTrue($bt->fleetView);
+        $this->assertTrue($bt->clientUpdateApprovalRequired);
+    }
+
+    /**
+     * @return array<string, array{0: array<string, mixed>, 1: string}>
+     */
+    public static function malformedClientUpdateKeys(): array
+    {
+        return [
+            'fleet_view as a yes string' => [['fleet_view' => 'yes'], 'board_tools.fleet_view must be true or false when set'],
+            'fleet_view as 1' => [['fleet_view' => 1], 'board_tools.fleet_view must be true or false when set'],
+            'client_update as a scalar' => [['client_update' => true], 'board_tools.client_update must be a mapping when set'],
+            'approval_required as a string' => [['client_update' => ['approval_required' => 'true']], 'board_tools.client_update.approval_required must be true or false when set'],
+        ];
+    }
+
+    /**
+     * An explicit block fails loud on a malformed key, like every other malformation here…
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    #[DataProvider('malformedClientUpdateKeys')]
+    public function test_a_malformed_client_update_key_throws_on_an_explicit_block(array $extra, string $message): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage($message);
+        $this->config($this->sshBlock($extra));
+    }
+
+    /**
+     * …and suppresses a default-class block, never reading a typo as either value.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    #[DataProvider('malformedClientUpdateKeys')]
+    public function test_a_malformed_client_update_key_suppresses_a_default_block(array $extra, string $message): void
+    {
+        $bt = $this->config($this->sshBlock($extra, false))->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertSame($message, $bt->suppressedReason);
+    }
 }

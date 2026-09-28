@@ -5047,7 +5047,7 @@ class AgentToolsCallTest extends TestCase
             'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
         ], $body)
             ->assertStatus(422)
-            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}']);
+            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?, caller?, launch?}']);
         Http::assertNothingSent();
     }
 
@@ -5081,10 +5081,10 @@ class AgentToolsCallTest extends TestCase
     public static function queryStringSuppliedTool(): array
     {
         return [
-            'an EMPTY body under a JSON Content-Type' => ['application/json', '', 422, 'request body is empty — expected a JSON object {tool, args?, client_version?}'],
-            'a body that never parses' => ['application/json', '{"args":{', 422, 'request body is not valid JSON (Syntax error) — expected a JSON object {tool, args?, client_version?}'],
-            'a body that is JSON of another type' => ['application/json', '42', 422, 'request body is a JSON number, not an object — expected a JSON object {tool, args?, client_version?}'],
-            'an EMPTY body under no JSON Content-Type' => ['text/plain', '', 422, 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?}'],
+            'an EMPTY body under a JSON Content-Type' => ['application/json', '', 422, 'request body is empty — expected a JSON object {tool, args?, client_version?, caller?, launch?}'],
+            'a body that never parses' => ['application/json', '{"args":{', 422, 'request body is not valid JSON (Syntax error) — expected a JSON object {tool, args?, client_version?, caller?, launch?}'],
+            'a body that is JSON of another type' => ['application/json', '42', 422, 'request body is a JSON number, not an object — expected a JSON object {tool, args?, client_version?, caller?, launch?}'],
+            'an EMPTY body under no JSON Content-Type' => ['text/plain', '', 422, 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?, caller?, launch?}'],
             'a JSON object body' => ['application/json', '{}', 200, null],
         ];
     }

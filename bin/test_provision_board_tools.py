@@ -693,6 +693,16 @@ class SelfCert(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(json.dumps({"error": "boom"}), 0)
 
+    def test_the_probe_declares_itself_a_self_certification(self):
+        # card#10567 B4: without `caller`, the bridge's fleet ledger would record this probe as the
+        # seat's own channel server — with no version — over what the seat reported.
+        completed = mock.Mock(stdout=json.dumps({"ok": True}), stderr="", returncode=0)
+        with mock.patch.object(pbt.subprocess, "run", return_value=completed) as run:
+            pbt._self_cert("agent@host", None, None)
+        body = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(body["caller"], "self-cert")
+        self.assertEqual(body["tool"], "board_my_cards")
+
     def test_parseable_json_at_nonzero_exit_fails(self):
         # A well-formed envelope with no ok/error keys but a non-zero exit is still
         # a failed round-trip — the returncode gate alone must catch the exit-2 case.

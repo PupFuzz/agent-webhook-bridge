@@ -27,6 +27,7 @@ use App\Bridge\Check\Checks\ChannelSnapshotCheck;
 use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
+use App\Bridge\Check\Checks\ClientFleetCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
@@ -729,6 +730,11 @@ class CheckCommand extends BridgeCommand
                     $ok = false;
                 }
             }
+
+            // card#10567 B4: the fleet's client states, over the same enabled subset.
+            if (! $this->emitReport($runner->run(CheckSlot::ClientFleet, $ctx))) {
+                $ok = false;
+            }
         } else {
             // The board-tools planes are the second-largest not-run population on a
             // healthy install (4 of the 13 on `minimal`). An ELSE rather than a
@@ -740,7 +746,8 @@ class CheckCommand extends BridgeCommand
                 ->noteNotRun(CheckSlot::BoardToolsState, $noBoardTools)
                 ->noteNotRun(CheckSlot::BoardToolsClientHalf, $noBoardTools)
                 ->noteNotRun(CheckSlot::BoardToolsSsh, $noBoardTools)
-                ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noBoardTools);
+                ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noBoardTools)
+                ->noteNotRun(CheckSlot::ClientFleet, $noBoardTools);
         }
 
         // DL-217: opt-in live board-tools probe. Offline by default (like the rest of
@@ -933,6 +940,7 @@ class CheckCommand extends BridgeCommand
             ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')))
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
+            ->register(CheckSlot::ClientFleet, new ClientFleetCheck)
             ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($probeTools))
             ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $probeToolsSsh));
     }

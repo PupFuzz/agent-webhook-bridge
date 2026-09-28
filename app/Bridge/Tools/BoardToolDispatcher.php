@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\ClientUpdate\CallerReport;
+use App\Bridge\ClientUpdate\SeatClientLedger;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
@@ -88,8 +90,11 @@ final class BoardToolDispatcher
      *                                  its door read it off the wire, already reduced by
      *                                  {@see ClientVersion}; null for a call that reported
      *                                  none. Required for the same reason as above.
+     * @param  CallerReport  $caller  what the call said about who made it (card#10567 B4) —
+     *                                recorded in the fleet ledger, and like the version above,
+     *                                read by no branch here. Required for the same reason.
      */
-    public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance, ?string $clientVersion): DispatchOutcome
+    public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance, ?string $clientVersion, CallerReport $caller): DispatchOutcome
     {
         // card#9170 / DL-372 Decision 7 (REVERSED), AND IT IS THE FIRST STATEMENT ON PURPOSE.
         // This is where a name stops being an argument and becomes the process's identity: the
@@ -111,6 +116,11 @@ final class BoardToolDispatcher
         // so this cannot mint a sighting for a seat that has none, nor clear a live tombstone.
         // Best-effort by construction: the ledger swallows its own failures.
         ConfigSeenLedger::recordEnabled($agentName, $cfg);
+        // card#10567 B4, AT ENTRY FOR THE SAME REASON: which client made this call, and from which
+        // launch, is a fact about the CALLER whether or not the tool then succeeds. An exempt
+        // caller (a probe) stamps only its own column — {@see SeatClientLedger::recordCall()} owns
+        // that rule. Best-effort by construction.
+        SeatClientLedger::recordCall($agentName, $clientVersion, $caller);
 
         if ($toolName === '') {
             return DispatchOutcome::failure(422, 'request must carry a non-empty `tool`');

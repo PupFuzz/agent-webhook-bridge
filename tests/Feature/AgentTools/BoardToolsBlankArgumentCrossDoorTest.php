@@ -764,7 +764,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertSame(1, $ssh['exit']);
         $error = (string) $http['body']['error'];
         $this->assertStringStartsWith($phrase, $error);
-        $this->assertStringEndsWith('expected a JSON object {tool, args?, client_version?}', $error);
+        $this->assertStringEndsWith('expected a JSON object {tool, args?, client_version?, caller?, launch?}', $error);
         $this->assertStringNotContainsString('`tool`', $error, 'a body that never parsed must not be blamed on a field');
         $this->assertSame([], $http['requests']);
         $this->assertSame([], $ssh['requests']);

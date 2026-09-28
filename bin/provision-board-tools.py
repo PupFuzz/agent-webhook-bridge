@@ -1910,7 +1910,9 @@ def _self_cert(target: str, ssh_key, ssh_port) -> int:
     if ssh_port:
         cmd += ["-p", str(ssh_port)]
     cmd.append(target)
-    payload = json.dumps({"tool": "board_my_cards", "args": {}})
+    # `caller` declares this a self-certification, so the bridge's fleet ledger does not record it as
+    # the seat's channel server reporting (card#10567 B4); an older bridge ignores the key.
+    payload = json.dumps({"tool": "board_my_cards", "args": {}, "caller": "self-cert"})
     try:
         proc = subprocess.run(cmd, input=payload, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:

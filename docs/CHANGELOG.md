@@ -8,6 +8,19 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#10567 / DL-432 / DL-433** — **a fleet ledger: each board-tools seat's reported channel-server client lands in the bridge's database, and the PM can read every seat's state.** Supersedes DL-385 Decision 7 (no PM-side view of a seat's client). **No client reports a launch or an install log yet** (the seat updater is a later slice), so today every seat that calls reads `off_update_path` and every other `needs_bootstrap`; neither warns while this bridge publishes no client pack.
+  - ⚠ **TWO MIGRATIONS — run `php artisan migrate`**: `seat_client_states` (one row per agent) and `seat_client_events` (append-only). Retention does not touch either.
+  - **New `php artisan bridge:client-fleet [--json]`**: per seat, the running and installed release, last seen, whether approval is required, the capability gap against the published client, and one state from an ordered, total list — `log_discontinuity`, `unapproved_install`, `update_failed`, `approval_owed`, `off_update_path`, `needs_bootstrap`, `stale`, `current`, `applies_next_launch` (restart owed), `behind`, `unverified`. `DL-432` owns each definition.
+  - **New `php artisan bridge:client-approve <agent> <bridge_release> --reason=…`** (DL-433): approves the published pack's CONTENT (`files_json_sha256`) for one agent, logged with the OS user and reason; a later release with unchanged client bytes owes no new approval. `<bridge_release>` must be the release published now.
+  - **New client-update door ops** on `POST /agent-tools/client` and the ssh door: `client_report` (a seat's install-log lines, hash-chain checked — a break is stored and marked, a malformed report is a `422` that stores nothing) and `client_fleet` (the fleet document; `403` unless the agent's `board_tools.fleet_view` is `true`, `401` without a bearer). `client_manifest` gains `approval: {required, owed}` and `log_head`, and its `offer` is `null` for an agent that requires approval and has none for the published content. `client_pack` is still served to any authenticated agent.
+  - **Two new optional agent-YAML keys**: `board_tools.fleet_view` (the PM's seat) and `board_tools.client_update.approval_required`. Both default `false`; a non-boolean value fails an explicit block and suppresses a default one, like every other malformed `board_tools` key.
+  - **A board-tools call may carry two new optional keys**, `caller` (`probe` / `self-cert` / `operator`) and `launch` (`{id, bridge_release}`). Neither can refuse a call. A declared caller stamps only its own column, so `bridge:check --probe-tools`, `--probe-tools-ssh` and `provision-board-tools.py --self-cert` — which now send `caller` — never overwrite what a seat reported.
+  - ⚠ **Refusal WORDING changed** on both board-tools doors' body refusals: the expected shape now reads `a JSON object {tool, args?, client_version?, caller?, launch?}`. Status codes, the `{ok:false,error}` shape and exit codes do not move.
+  - ⚠ **`bridge:check` registers one more leg, `board_tools.client_fleet`**, inside the board-tools plane, so every inventory line moves by one. It warns per seat that needs the operator (and per approval-required agent on the http transport, which can approve itself); it never fails, so the exit code does not move. `--format=json` `schema` stays **1**.
+  - No route change, no `.env` change, no token-scope change.
+
 ### Fixed
 
 - **card#10734** — **`bridge:check`'s `writeback.source_coverage` warning for a source-less DL card on a shared board now names a remedy kbcard accepts for that card.** It used to advise the `.../pull/0` placeholder for every card, and kbcard (toolkit v0.38.0) refuses that write on a card holding a `pr_number` that names a positive number, rc 2 with nothing written. The remedy now depends on the card's `pr_number`, normalised as `BareRefNumber::canonical` normalises it:
