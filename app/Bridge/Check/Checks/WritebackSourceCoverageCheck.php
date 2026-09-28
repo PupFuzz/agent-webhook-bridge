@@ -9,6 +9,7 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
+use App\Bridge\Writeback\BareRefNumber;
 use App\Bridge\Writeback\WritebackConfig;
 use Throwable;
 
@@ -131,7 +132,7 @@ final class WritebackSourceCoverageCheck implements Check
                 $source = $refs->sourceFor($payload, $externalLink);
                 if ($source === null) {
                     if ($writeback->boardIsShared((int) $boardId)) {
-                        yield Finding::warn('writeback: card '.UntrustedText::forOperator($id).' (DL '.UntrustedText::forOperator((string) $dl).") on SHARED board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
+                        yield Finding::warn('writeback: card '.UntrustedText::forOperator($id).' (DL '.UntrustedText::forOperator((string) $dl).") on SHARED board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. ".self::remedy($id, $payload['pr_number'] ?? null, $refs));
                         $flagged++;
                     }
                     // non-shared board: the qualifier is omitted (DL-174) — null source correlates fine.
@@ -148,5 +149,29 @@ final class WritebackSourceCoverageCheck implements Check
                 yield Finding::ok("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
             }
         }
+    }
+
+    /**
+     * What to stamp on a source-less card, which depends on the `pr_number` it holds
+     * (card#10734). kbcard refuses any write that leaves a `pr_number` no `pr_url` names
+     * (agent-webhook-bridge DL-429, toolkit v0.38.0), so the `.../pull/0` placeholder is the
+     * remedy only for a card holding none. A number naming a pull request is advised as the
+     * pair; a value naming none gets no number of its own (printing one would assert a pull
+     * request the bridge reads this card as not naming) and no placeholder, which kbcard
+     * refuses over a decorated `#148` it reads as 148 — so both refs, by hand, as `CardNote`
+     * advises for the same shape.
+     */
+    private static function remedy(string $id, mixed $storedPr, ExternalReferenceNormalizer $refs): string
+    {
+        if (($storedPr ?? '') === '') {
+            return 'Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).';
+        }
+        $task = UntrustedText::forOperator($id);
+        $n = BareRefNumber::canonical(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $storedPr, $refs);
+        if ($n === null) {
+            return "Its pr_number is not a pull-request number, so correct both refs (kbcard patch --task {$task} --pr <number> --pr-url https://github.com/<owner>/<repo>/pull/<number>).";
+        }
+
+        return "It holds pr_number {$n}, so stamp the pr_url naming that pull request with it (kbcard patch --task {$task} --pr {$n} --pr-url https://github.com/<owner>/<repo>/pull/{$n}).";
     }
 }

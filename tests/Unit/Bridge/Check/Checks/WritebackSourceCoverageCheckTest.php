@@ -11,6 +11,7 @@ use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\KanbanSearchSim;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -69,6 +70,81 @@ class WritebackSourceCoverageCheckTest extends TestCase
         $this->assertStringContainsString('card 1 (DL 42) on SHARED board 8 has dl_number but source=null', $findings[0]['message']);
         $this->assertStringContainsString('will NEVER self-move', $findings[0]['message']);
         $this->assertStringNotContainsString('all have a mapped source', $this->joined($findings));
+    }
+
+    /**
+     * card#10734: with no `pr_number` the `.../pull/0` placeholder is still the remedy — it
+     * names a repo and no pull request, and there is no number on the card for a URL to name.
+     */
+    public function test_a_source_less_card_holding_no_pr_number_is_told_to_stamp_the_placeholder(): void
+    {
+        $this->fakeBoard(self::BOARD, [$this->dlCard(1, [])]);
+
+        $findings = $this->findings($this->sharedBoardMappings());
+
+        $this->assertCount(1, $findings);
+        $this->assertStringEndsWith(
+            'will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).',
+            $findings[0]['message'],
+        );
+    }
+
+    /**
+     * card#10734: a card holding a `pr_number` may not be given the `.../pull/0` placeholder —
+     * kbcard (toolkit v0.38.0) refuses a write leaving a `pr_number` no `pr_url` names — so the
+     * remedy names that pull request by the pair. The number is the canonical one
+     * (`BareRefNumber::canonical`), so a stored `'085'` and a JSON number both name 85.
+     *
+     * @return array<string, array{mixed}>
+     */
+    public static function prNumberSpellings(): array
+    {
+        return ['string with a leading zero' => ['085'], 'json number' => [85]];
+    }
+
+    #[DataProvider('prNumberSpellings')]
+    public function test_a_source_less_card_holding_a_pr_number_is_told_to_stamp_that_pull_requests_pair(mixed $prNumber): void
+    {
+        $this->fakeBoard(self::BOARD, [$this->dlCard(1, ['pr_number' => $prNumber])]);
+
+        $findings = $this->findings($this->sharedBoardMappings());
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringEndsWith(
+            'will NEVER self-move. It holds pr_number 85, so stamp the pr_url naming that pull request with it (kbcard patch --task 1 --pr 85 --pr-url https://github.com/<owner>/<repo>/pull/85).',
+            $findings[0]['message'],
+        );
+        $this->assertStringNotContainsString('/pull/0', $findings[0]['message']);
+    }
+
+    /**
+     * card#10734: a `pr_number` that names no pull request (`BareRefNumber::canonical` is null)
+     * gets no number of its own in the remedy — printing one would assert a pull request the
+     * bridge reads the card as not naming — and no `.../pull/0` either: kbcard reads `#148` as
+     * 148 and refuses the placeholder over it. Both refs, by hand, is the write kbcard accepts
+     * over every such value, and is the remedy `CardNote` already gives for this shape.
+     *
+     * @return array<string, array{mixed}>
+     */
+    public static function notAPrNumber(): array
+    {
+        return ['several digit runs' => ['PR 12 of 34'], 'decorated' => ['#148'], 'zero' => [0], 'negative' => [-5]];
+    }
+
+    #[DataProvider('notAPrNumber')]
+    public function test_a_source_less_card_whose_pr_number_is_not_a_pr_number_is_told_to_correct_both_refs(mixed $prNumber): void
+    {
+        $this->fakeBoard(self::BOARD, [$this->dlCard(1, ['pr_number' => $prNumber])]);
+
+        $findings = $this->findings($this->sharedBoardMappings());
+
+        $this->assertCount(1, $findings);
+        $this->assertStringEndsWith(
+            'will NEVER self-move. Its pr_number is not a pull-request number, so correct both refs (kbcard patch --task 1 --pr <number> --pr-url https://github.com/<owner>/<repo>/pull/<number>).',
+            $findings[0]['message'],
+        );
+        $this->assertStringNotContainsString('/pull/0', $findings[0]['message']);
     }
 
     /**
