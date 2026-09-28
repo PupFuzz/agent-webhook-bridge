@@ -120,7 +120,7 @@ final class ClientFleet
         $isApproved = static fn (?string $release): bool => ($d = $digestOf($release)) !== null && in_array($d, $approved, true);
 
         if ($row->log_discontinuity) {
-            return [FleetState::LogDiscontinuity, 'its install log broke — '.UntrustedText::forOperator((string) $row->log_discontinuity_reason).'. The entries were stored as received; this clears only when the seat re-bootstraps its client, which starts a new log'];
+            return [FleetState::LogDiscontinuity, 'its install log broke — '.UntrustedText::forOperator((string) $row->log_discontinuity_reason).'. The entries were stored as received. It clears if the missing lines arrive and the chain is whole again, or when the seat\'s client is re-bootstrapped into a new install; a line re-sent with different content keeps this install marked for good'];
         }
 
         if ($bt->clientUpdateApprovalRequired) {

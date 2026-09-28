@@ -210,42 +210,121 @@ class FleetLedgerDoorTest extends TestCase
         $this->assertSame(2, SeatClientEvent::query()->where('agent', 'httpseat')->count());
     }
 
+    private const OTHER = '6f1c2d3e-0000-4000-8000-0000000000b0';
+
     /**
-     * @return array<string, array{0: callable(): list<list<string>>, 1: string}>
+     * Every kind of break, as the reports that make it, the reason it gives, and the line that
+     * continues that install's log cleanly afterwards (sent when the seat resumes it).
+     *
+     * @return array<string, array{0: callable(): array{reports: list<list<string>>, next: string}, 1: string}>
      */
-    public static function discontinuities(): array
+    public static function breaks(): array
     {
         return [
-            'a gap' => [static fn (): array => [self::log([self::install()]), self::log([['action' => 'prune']], 3, hash('sha256', self::log([self::install()])[0]))], 'seq 2–2 of install'],
-            'a first report that does not start at seq 1' => [static fn (): array => [self::log([self::install()], 4)], 'so seq 1–3 never arrived'],
-            'a broken link to the stored head' => [static fn (): array => [self::log([self::install()]), self::log([['action' => 'prune']], 2, str_repeat('0', 64))], 'does not chain to the entry before it'],
-            'a broken link inside one report' => [static function (): array {
-                $lines = self::log([self::install(), ['action' => 'prune']]);
-                $tampered = json_decode($lines[1], true);
-                $tampered['prev_sha256'] = str_repeat('1', 64);
+            'a gap' => [static function (): array {
+                $a = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune']]);
 
-                return [[$lines[0], (string) json_encode($tampered)]];
-            }, 'does not chain to the entry before it'],
-            'a seq re-sent with different bytes' => [static fn (): array => [self::log([self::install()]), self::log([self::install('0.92.0')])], 'arrived again with different content'],
+                return ['reports' => [[$a[0]], [$a[2]]], 'next' => self::log([['action' => 'prune']], 4, hash('sha256', $a[2]))[0]];
+            }, 'seq 2–2 of install '.self::INSTALL.' never arrived'],
+            'a first stored seq above 1' => [static function (): array {
+                $a = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune']]);
+
+                return ['reports' => [[$a[2]]], 'next' => self::log([['action' => 'prune']], 4, hash('sha256', $a[2]))[0]];
+            }, 'the first entry of install '.self::INSTALL.' this bridge holds is seq 3, so seq 1–2 never arrived'],
+            'a broken prev_sha256 link' => [static function (): array {
+                $a = self::log([self::install()]);
+                $bad = self::log([['action' => 'prune']], 2, str_repeat('0', 64))[0];
+
+                return ['reports' => [[$a[0]], [$bad]], 'next' => self::log([['action' => 'prune']], 3, hash('sha256', $bad))[0]];
+            }, 'seq 2 of install '.self::INSTALL.' does not chain to the entry before it'],
+            'a seq re-sent with different bytes' => [static function (): array {
+                $a = self::log([self::install()]);
+
+                return ['reports' => [[$a[0]], self::log([self::install('0.92.0')])], 'next' => self::log([['action' => 'prune']], 2, hash('sha256', $a[0]))[0]];
+            }, 'seq 1 of install '.self::INSTALL.' arrived again with different content'],
         ];
     }
 
-    /**
-     * @param  callable(): list<list<string>>  $reports
-     */
-    #[DataProvider('discontinuities')]
-    public function test_a_broken_chain_is_stored_and_marked(callable $reports, string $reason): void
+    /** @param  list<string>  $entries */
+    private function report(string $install, array $entries): array
     {
-        $last = null;
-        foreach ($reports() as $entries) {
-            $last = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => $entries]);
-            $this->assertSame(200, $last['status'], 'a discontinuity is stored, not refused');
+        $r = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $install, 'entries' => $entries]);
+        $this->assertSame(200, $r['status'], 'a break is stored, never refused: '.$r['raw']);
+
+        return $r['body'];
+    }
+
+    private function mark(): array
+    {
+        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
+
+        return [$row->log_discontinuity, (string) $row->log_discontinuity_reason];
+    }
+
+    /**
+     * @param  callable(): array{reports: list<list<string>>, next: string}  $make
+     */
+    #[DataProvider('breaks')]
+    public function test_every_break_marks_the_install_on_the_live_path(callable $make, string $reason): void
+    {
+        $body = [];
+        foreach ($make()['reports'] as $entries) {
+            $body = $this->report(self::INSTALL, $entries);
         }
 
-        $this->assertTrue($last['body']['discontinuity']);
-        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
-        $this->assertTrue($row->log_discontinuity);
-        $this->assertStringContainsString($reason, (string) $row->log_discontinuity_reason);
+        $this->assertTrue($body['discontinuity']);
+        $this->assertSame([true, $reason], [$this->mark()[0], substr($this->mark()[1], 0, strlen($reason))]);
+    }
+
+    /**
+     * The same break survives the seat moving to a new install and back (A → B → A): the mark is
+     * a function of A's stored log, not of the row's history.
+     *
+     * @param  callable(): array{reports: list<list<string>>, next: string}  $make
+     */
+    #[DataProvider('breaks')]
+    public function test_every_break_marks_the_install_on_resume(callable $make, string $reason): void
+    {
+        $made = $make();
+        foreach ($made['reports'] as $entries) {
+            $this->report(self::INSTALL, $entries);
+        }
+        $this->report(self::OTHER, self::log([['action' => 'bootstrap', 'actor' => 'provision']], 1, null, self::OTHER));
+        $this->assertFalse($this->mark()[0], 'the new install B is clean');
+
+        $back = $this->report(self::INSTALL, [$made['next']]);
+
+        $this->assertTrue($back['discontinuity']);
+        $this->assertStringStartsWith($reason, $this->mark()[1]);
+    }
+
+    /**
+     * A gap a late line fills is a whole chain again, and reads clean on both paths — the r3
+     * reproduction: A[1,3] → late A[2] → B → A.
+     */
+    public function test_a_healed_gap_reads_clean_on_both_paths(): void
+    {
+        $a = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune'], ['action' => 'prune']]);
+        $this->assertTrue($this->report(self::INSTALL, [$a[0], $a[2]])['discontinuity']);
+
+        $live = $this->report(self::INSTALL, [$a[1]]);
+        $this->assertSame(1, $live['stored']);
+        $this->assertSame(3, $live['log_head']['seq'], 'a late line does not move the head');
+        $this->assertFalse($live['discontinuity'], 'live: the log is whole');
+
+        $this->report(self::OTHER, self::log([['action' => 'bootstrap', 'actor' => 'provision']], 1, null, self::OTHER));
+        $this->assertFalse($this->report(self::INSTALL, [$a[3]])['discontinuity'], 'resume: the same log reads the same');
+    }
+
+    /** A conflict is recorded once however often the different bytes are re-sent. */
+    public function test_a_resend_conflict_is_recorded_once(): void
+    {
+        $a = self::log([self::install()]);
+        $this->report(self::INSTALL, [$a[0]]);
+        $this->report(self::INSTALL, self::log([self::install('0.92.0')]));
+        $this->report(self::INSTALL, self::log([self::install('0.92.0')]));
+
+        $this->assertSame(1, SeatClientEvent::query()->where('action', 'resend_conflict')->where('source', self::INSTALL)->count());
     }
 
     public function test_a_new_install_id_is_a_logged_rebootstrap_that_starts_a_fresh_chain(): void
@@ -337,39 +416,6 @@ class FleetLedgerDoorTest extends TestCase
         $this->assertSame(hash('sha256', $lines[0]), SeatClientEvent::query()->where('agent', 'httpseat')->where('seq', 1)->value('line_sha256'));
     }
 
-    /** A late line filling a gap already marked is stored, and moves neither the head nor the row. */
-    public function test_a_late_line_filling_a_gap_is_stored_not_flagged_as_changed(): void
-    {
-        $lines = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune']]);
-        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$lines[0], $lines[2]]]);
-        $row = SeatClientState::query()->where('agent', 'httpseat')->firstOrFail();
-        $this->assertStringContainsString('seq 2–2 of install', (string) $row->log_discontinuity_reason);
-
-        $late = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$lines[1]]]);
-
-        $this->assertSame(1, $late['body']['stored']);
-        $this->assertSame(3, $late['body']['log_head']['seq']);
-        $row->refresh();
-        $this->assertStringContainsString('seq 2–2 of install', (string) $row->log_discontinuity_reason, 'the first reason stands; the late line is not "different content"');
-        $this->assertSame(3, SeatClientEvent::query()->where('agent', 'httpseat')->count());
-    }
-
-    /** Only a genuinely new install clears a broken-log mark; returning to a held one does not. */
-    /** The mark is re-derived for a resumed install: A's gap survives a clean install B in between. */
-    public function test_resuming_a_broken_install_after_a_clean_one_reads_broken(): void
-    {
-        $other = '6f1c2d3e-0000-4000-8000-000000000006';
-        $a = self::log([self::install(), ['action' => 'prune'], ['action' => 'prune']]);
-        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => [$a[0], $a[2]]]);
-        $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => $other, 'entries' => self::log([['action' => 'bootstrap', 'actor' => 'provision']], 1, null, $other)]);
-        $this->assertFalse(SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity'), 'B is clean');
-
-        $back = $this->http('/agent-tools/client', ['op' => 'client_report', 'install_id' => self::INSTALL, 'entries' => self::log([['action' => 'prune']], 4, hash('sha256', $a[2]))]);
-
-        $this->assertTrue($back['body']['discontinuity']);
-        $this->assertStringContainsString('seq 2–2 of install '.self::INSTALL.' never arrived', (string) SeatClientState::query()->where('agent', 'httpseat')->value('log_discontinuity_reason'));
-    }
-
     /** …and a resumed install whose stored chain is whole reads clean again. */
     public function test_resuming_a_whole_install_after_a_broken_one_reads_clean(): void
     {
@@ -433,6 +479,7 @@ class FleetLedgerDoorTest extends TestCase
             'too many bytes' => [['install_id' => self::INSTALL, 'entries' => array_fill(0, intdiv(SeatClientLedger::MAX_REPORT_BYTES, 4000) + 1, str_repeat('x', 4000))], 'bytes of lines — split the backlog by both'],
             'the bridge\'s own install id in capitals' => [['install_id' => 'BRIDGE', 'entries' => $ok], 'needs `install_id`'],
             'a launch line with no launch_id' => [['install_id' => self::INSTALL, 'entries' => [$line(['launch_id' => null])]], 'an `actor: launch` line with no `launch_id`'],
+            'a line nested past json_decode\'s default depth' => [['install_id' => self::INSTALL, 'entries' => [substr($ok[0], 0, -1).',"x":'.str_repeat('[', 520).str_repeat(']', 520).'}']], 'nests deeper than json_decode\'s default 512 levels'],
             'a malformed manifest_sha256' => [['install_id' => self::INSTALL, 'entries' => [$line(['manifest_sha256' => 'nothex'])]], 'malformed `manifest_sha256`'],
             'a line that is not a string' => [['install_id' => self::INSTALL, 'entries' => [['seq' => 1]]], 'entry 0 is not a non-empty string'],
             'a line that is not JSON' => [['install_id' => self::INSTALL, 'entries' => ['{nope']], 'entry 0 is not valid JSON'],

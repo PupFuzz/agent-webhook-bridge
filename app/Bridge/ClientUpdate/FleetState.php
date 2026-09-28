@@ -13,7 +13,7 @@ namespace App\Bridge\ClientUpdate;
  */
 enum FleetState: string
 {
-    /** The install log's hash chain broke: a gap, a broken link, or a line re-sent with different bytes. */
+    /** The current install's stored log is not a whole, unaltered chain: a gap, a broken link, or a seq re-sent with different bytes. */
     case LogDiscontinuity = 'log_discontinuity';
 
     /** The agent requires approval and the build it installed or runs has no approval of its content. */

@@ -78,11 +78,14 @@ final class InstallLogEntry
             throw new InstallLogRefused('is longer than '.self::MAX_LINE_BYTES.' bytes');
         }
         try {
-            // No depth cap of our own: the format is open, so an unknown key may nest (PHP's default
-            // depth still applies; MAX_LINE_BYTES already bounds the line).
+            // No depth cap of our own: the format is open, so an unknown key may nest. json_decode's
+            // default limit (512 levels) still applies, and ~1 KiB of brackets reaches it, so that
+            // overflow gets its own reason rather than being called invalid JSON.
             $e = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
-            throw new InstallLogRefused('is not valid JSON');
+        } catch (JsonException $parse) {
+            throw new InstallLogRefused($parse->getCode() === JSON_ERROR_DEPTH
+                ? 'nests deeper than json_decode\'s default 512 levels'
+                : 'is not valid JSON');
         }
         if (! is_array($e) || array_is_list($e)) {
             throw new InstallLogRefused('is not a JSON object');

@@ -94,17 +94,19 @@ final class SeatClientLedger
     /**
      * Store one `client_report`: the seat's install-log lines after the head this bridge holds.
      *
-     * THE CHAIN. Each line names the sha256 of the line before it. The first new line must chain to
-     * the stored head (or be seq 1 of an install this bridge has not seen), and each later line to
-     * the one before it. A line that does not — a gap, a broken link, a seq re-sent with different
-     * bytes — is STILL STORED, and the seat's row is marked `log_discontinuity` with the first
-     * such reason: the log is evidence, and losing the part that disagrees would hide the thing
-     * worth seeing. It stays marked until the seat re-bootstraps (a new install id starts a new
-     * chain, logged as a `rebootstrap` event).
+     * EVERY LINE IS STORED as received — the log is evidence, and dropping the part that disagrees
+     * would hide the thing worth seeing — except a seq this bridge already holds: the same bytes are
+     * skipped (the seat retried after a lost answer), different bytes are recorded as a bridge
+     * `resend_conflict` event naming that install and seq, and the first copy is kept. A line newer
+     * than the head moves the head and the row's facts; a line older than the head (a late gap fill)
+     * is stored and moves neither.
      *
-     * A line re-sent with the SAME bytes (the seat retried after a lost answer) is skipped. A line
-     * older than the head that this bridge never received (it fills a gap already marked) is stored,
-     * and changes neither the head nor the row.
+     * THE MARK is then one rule, {@see self::chainBreak()}: `log_discontinuity` says the CURRENT
+     * install's stored log is not a whole, unaltered chain — a missing seq, a line whose
+     * `prev_sha256` is not the previous line's sha256, or a recorded re-send conflict. It is a pure
+     * function of what is stored, so a gap that a late line fills reads clean again, a re-send
+     * conflict keeps that install marked for good, and a new install id starts clean (logged as a
+     * `rebootstrap` event).
      *
      * @param  mixed  $installId  the report's `install_id`, as sent
      * @param  mixed  $entries  the report's `entries`, as sent
@@ -141,55 +143,52 @@ final class SeatClientLedger
             $row = SeatClientState::query()->where('agent', $agent)->lockForUpdate()->first() ?? new SeatClientState(['agent' => $agent]);
             $now = Carbon::now();
 
+            $resumed = false;
             if ($row->install_id !== null && $row->install_id !== $installId) {
                 self::appendBridgeEvent($agent, 'rebootstrap', [
                     'reason' => "the seat reported a new install id {$installId}; the log of install {$row->install_id} ends at seq ".($row->log_seq ?? 0),
                 ]);
                 // An install id this bridge already holds lines of (a restored root) resumes at its
-                // own stored head, so its re-sent lines are recognised rather than re-inserted. The
-                // broken-log mark is per ROW, so it is re-derived for the install being resumed from
-                // that install's own stored lines; a genuinely NEW install starts clean.
+                // own stored head, so its re-sent lines are recognised rather than re-inserted.
                 $held = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->orderByDesc('seq')->first();
                 $row->log_seq = $held?->seq;
                 $row->log_head_sha256 = $held?->line_sha256;
-                $break = $held === null ? null : self::storedChainBreak($agent, $installId);
-                $row->log_discontinuity = $break !== null;
-                $row->log_discontinuity_reason = $break;
+                $resumed = true;
             }
             $row->install_id = $installId;
 
-            $expectedSeq = ($row->log_seq ?? 0) + 1;
-            $expectedPrev = $row->log_head_sha256;
+            $headSeq = $row->log_seq;
+            $headSha = $row->log_head_sha256;
+            $wasWhole = ! $resumed && ! $row->log_discontinuity;
+            $late = false;
             $stored = 0;
             foreach ($parsed as $entry) {
-                if ($entry->seq < $expectedSeq) {
+                if ($row->log_seq !== null && $entry->seq <= $row->log_seq) {
                     $held = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->where('seq', $entry->seq)->value('line_sha256');
                     if ($held === null) {
-                        // A late line filling a gap already marked: stored as evidence, but it is older
-                        // than the head, so it moves neither the head nor the row's current facts.
                         self::storeEntry($agent, $entry, $now);
                         $stored++;
+                        $late = true;
                     } elseif ($held !== $entry->lineSha256) {
-                        self::discontinuity($row, "seq {$entry->seq} of install {$installId} arrived again with different content than the bridge already holds");
+                        self::recordResendConflict($agent, $installId, $entry->seq);
                     }
 
                     continue;
                 }
-                if ($entry->seq !== $expectedSeq) {
-                    self::discontinuity($row, $expectedSeq === 1
-                        ? "the first entry of install {$installId} this bridge received is seq {$entry->seq}, so seq 1–".($entry->seq - 1).' never arrived'
-                        : "seq {$expectedSeq}–".($entry->seq - 1)." of install {$installId} never arrived");
-                } elseif ($entry->prevSha256 !== $expectedPrev) {
-                    self::discontinuity($row, "seq {$entry->seq} of install {$installId} does not chain to the entry before it (its prev_sha256 is not that line's sha256)");
-                }
                 self::storeEntry($agent, $entry, $now);
                 self::applyEntry($row, $entry, $now);
                 $stored++;
-                $expectedSeq = $entry->seq + 1;
-                $expectedPrev = $entry->lineSha256;
                 $row->log_seq = $entry->seq;
                 $row->log_head_sha256 = $entry->lineSha256;
             }
+
+            // The whole stored log is read only when the prefix up to the old head is not already
+            // known whole (see chainBreak()'s docblock for why the bounded read is equivalent).
+            $break = $wasWhole && ! $late
+                ? self::chainBreak($agent, $installId, $headSeq ?? 0, $headSha)
+                : self::chainBreak($agent, $installId);
+            $row->log_discontinuity = $break !== null;
+            $row->log_discontinuity_reason = $break;
             $row->last_report_at = $now;
             $row->save();
 
@@ -297,19 +296,31 @@ final class SeatClientLedger
     }
 
     /**
-     * The first break in one install's STORED lines — a missing seq or a line that does not chain to
-     * the one before it — or null. ⚠ A seq once re-sent with different bytes is not in the store
-     * (only the first copy is kept), so that break cannot be re-derived here; DL-432 names it.
+     * THE ONE DEFINITION of a broken install log: the first break in `$installId`'s STORED lines, or
+     * null when they are a whole, unaltered chain. A break is, in order: a missing seq (including a
+     * first stored seq above 1), a line whose `prev_sha256` is not the previous stored line's sha256,
+     * or — the chain being otherwise whole — a `resend_conflict` event recorded for this install.
+     * This method is the only place those reasons are worded.
+     *
+     * COST, AND THE BOUNDED READ. A full read is every stored line of the install, under the row
+     * lock the report holds. The live path reads only the lines after the old head (`$afterSeq`,
+     * `$afterSha`) when the row was NOT marked before this report and no late line (older than the
+     * head) was stored in it. That is equivalent to the full read: the mark is this function of the
+     * stored lines, recomputed after every report, so an unmarked row means lines 1…head were a whole
+     * chain with no conflict; a report that adds lines only above the head cannot change that prefix,
+     * and a conflict recorded in THIS report is found by the conflict read, which is never bounded.
+     * Resuming an install, a row already marked, or a late line forces the full read.
      */
-    private static function storedChainBreak(string $agent, string $installId): ?string
+    private static function chainBreak(string $agent, string $installId, int $afterSeq = 0, ?string $afterSha = null): ?string
     {
-        $lines = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->orderBy('seq')->get(['seq', 'prev_sha256', 'line_sha256']);
-        $expectedSeq = 1;
-        $expectedPrev = null;
+        $lines = SeatClientEvent::query()->where('agent', $agent)->where('install_id', $installId)->where('seq', '>', $afterSeq)
+            ->orderBy('seq')->get(['seq', 'prev_sha256', 'line_sha256']);
+        $expectedSeq = $afterSeq + 1;
+        $expectedPrev = $afterSha;
         foreach ($lines as $line) {
             if ($line->seq !== $expectedSeq) {
                 return $expectedSeq === 1
-                    ? "the first entry of install {$installId} this bridge received is seq {$line->seq}, so seq 1–".($line->seq - 1).' never arrived'
+                    ? "the first entry of install {$installId} this bridge holds is seq {$line->seq}, so seq 1–".($line->seq - 1).' never arrived'
                     : "seq {$expectedSeq}–".($line->seq - 1)." of install {$installId} never arrived";
             }
             if ($line->prev_sha256 !== $expectedPrev) {
@@ -319,17 +330,25 @@ final class SeatClientLedger
             $expectedPrev = $line->line_sha256;
         }
 
-        return null;
+        $conflict = SeatClientEvent::query()->where('agent', $agent)->where('install_id', self::BRIDGE_INSTALL_ID)
+            ->where('action', 'resend_conflict')->where('source', $installId)->orderBy('seq')->value('reason');
+
+        return is_string($conflict) ? $conflict : null;
     }
 
-    /** The first reason sticks: later breaks in the same chain are consequences of it more often than not. */
-    private static function discontinuity(SeatClientState $row, string $reason): void
+    /**
+     * A seq this bridge holds arrived again with different bytes: record it once, as a bridge event
+     * whose `source` is the seat install it is about, so the break outlives the report — the store
+     * keeps only the first copy, and nothing else would remember the second.
+     */
+    private static function recordResendConflict(string $agent, string $installId, int $seq): void
     {
-        if ($row->log_discontinuity) {
-            return;
+        $reason = "seq {$seq} of install {$installId} arrived again with different content than the bridge already holds";
+        $held = SeatClientEvent::query()->where('agent', $agent)->where('install_id', self::BRIDGE_INSTALL_ID)
+            ->where('action', 'resend_conflict')->where('source', $installId)->where('reason', $reason)->exists();
+        if (! $held) {
+            self::appendBridgeEvent($agent, 'resend_conflict', ['source' => $installId, 'reason' => $reason]);
         }
-        $row->log_discontinuity = true;
-        $row->log_discontinuity_reason = $reason;
     }
 
     private static function storeEntry(string $agent, InstallLogEntry $entry, Carbon $now): void

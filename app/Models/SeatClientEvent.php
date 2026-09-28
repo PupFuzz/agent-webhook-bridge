@@ -8,7 +8,8 @@ use Illuminate\Support\Carbon;
 
 /**
  * One entry of the append-only client-update event log (card#10567 B4): a seat's install-log line
- * received by `client_report`, or a bridge-side event (`install_id` = {@see SeatClientLedger::BRIDGE_INSTALL_ID}).
+ * received by `client_report`, or a bridge-side event (`install_id` = {@see SeatClientLedger::BRIDGE_INSTALL_ID}):
+ * `approve`, `rebootstrap`, or `resend_conflict` (whose `source` names the seat install it is about).
  *
  * ⛔ Nothing updates or deletes a row — `SeatClientEventsNoWriterTest` checks app/ for it.
  *

@@ -57,7 +57,8 @@ return new class extends Migration
             $table->timestamp('last_launch_first_reported_at', 3)->nullable();
             $table->timestamp('last_report_at', 3)->nullable();
 
-            // The head of the install log received so far, and whether its chain ever broke.
+            // The head of the current install's log, and whether its stored log is not a whole,
+            // unaltered chain (SeatClientLedger::chainBreak() is the one definition).
             $table->unsignedBigInteger('log_seq')->nullable();
             $table->string('log_head_sha256', 64)->nullable();
             $table->boolean('log_discontinuity')->default(false);

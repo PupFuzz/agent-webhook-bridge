@@ -13,8 +13,9 @@ return new class extends Migration
         //   - a seat's install-log entries, received by `client_report` (install_id = the
         //     seat's own, seq = the seat's own, line_sha256 = sha256 of the exact line);
         //   - the bridge's own events (install_id = 'bridge', seq = per agent from 1):
-        //     `approve` (`bridge:client-approve`) and `rebootstrap` (a seat reported a new
-        //     install id).
+        //     `approve` (`bridge:client-approve`), `rebootstrap` (a seat reported a new
+        //     install id) and `resend_conflict` (a held seq arrived again with different
+        //     bytes; `source` names the seat install it is about).
         //
         // ⛔ APPEND-ONLY BY CONVENTION, CHECKED STATICALLY: nothing in app/ updates or deletes a
         // row (SeatClientEventsNoWriterTest greps for it). The database does not enforce it.
