@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\AgentTools;
 
+use App\Bridge\ClientUpdate\CallerReport;
+use App\Bridge\ClientUpdate\ClientUpdateDoor;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolAgentResolver;
@@ -10,6 +12,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientVersion;
 use App\Bridge\Tools\DispatchOutcome;
+use App\Bridge\Tools\ResolvedBoardToolAgent;
 use App\Bridge\Tools\ToolCallBody;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,24 +34,9 @@ final class AgentToolsController
 {
     public function call(Request $request, BoardToolDispatcher $dispatcher): JsonResponse
     {
-        $bearer = $this->bearer($request);
-        if ($bearer === null) {
-            return $this->refuse(401, 'missing bearer token');
-        }
-
-        try {
-            $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
-        } catch (ConfigException $e) {
-            // A malformed agent YAML is fail-closed everywhere else too — surface it
-            // as a service fault, not a caller error.
-            return $this->refuse(503, 'agent config error');
-        }
-        $resolver = new BoardToolAgentResolver($configs);
-        $agent = $resolver->resolve($bearer);
-        if ($agent === null) {
-            // Do not distinguish "unknown token" from "collided/unreadable token" to
-            // the caller — both are "you are not an authenticated board-tools agent".
-            return $this->refuse(401, 'unrecognized bearer token');
+        $agent = $this->authenticate($request);
+        if ($agent instanceof JsonResponse) {
+            return $agent;
         }
 
         // The body is parsed by the ONE primitive both doors share (card#10106), on the raw
@@ -87,9 +75,59 @@ final class AgentToolsController
         // nothing else about the body, so a caller predating the field, or one sending
         // anything {@see ClientVersion} will not take, reaches the dispatcher unchanged with
         // null recorded. The bearer is what authorizes this call; a version never is.
-        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd, ClientVersion::fromCall($request->input('client_version')));
+        // `caller` and `launch` are the same kind of observation (card#10567 B4; {@see CallerReport}).
+        $caller = CallerReport::fromCall($request->input('caller'), $request->input('launch'));
+        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd, ClientVersion::fromCall($request->input('client_version')), $caller);
 
         return response()->json($outcome->body(), $outcome->status);
+    }
+
+    /**
+     * POST /agent-tools/client — the client-update door (DL-430), behind the same loopback gate
+     * and the same bearer as `/agent-tools/call`, and parsed by the same {@see ToolCallBody}.
+     * The body is `{op, …}`; {@see ClientUpdateDoor} owns the ops and their answers, and the ssh
+     * door hands it the same body, so both transports answer the same bytes.
+     */
+    public function client(Request $request, ClientUpdateDoor $door): JsonResponse
+    {
+        $agent = $this->authenticate($request);
+        if ($agent instanceof JsonResponse) {
+            return $agent;
+        }
+        if (! $request->isJson()) {
+            return $this->refuse(422, 'request Content-Type must be application/json — the body is read as '.ToolCallBody::CLIENT_UPDATE_SHAPE);
+        }
+        $decoded = ToolCallBody::parse($request->getContent(), ToolCallBody::CLIENT_UPDATE_SHAPE);
+        if ($decoded instanceof DispatchOutcome) {
+            return response()->json($decoded->body(), $decoded->status);
+        }
+        $outcome = $door->handle($decoded, $agent->agentName, $agent->config);
+
+        return response()->json($outcome->body, $outcome->status);
+    }
+
+    /**
+     * The caller's agent, resolved from the bearer — never from the body — or the refusal to send.
+     */
+    private function authenticate(Request $request): ResolvedBoardToolAgent|JsonResponse
+    {
+        $bearer = $this->bearer($request);
+        if ($bearer === null) {
+            return $this->refuse(401, 'missing bearer token');
+        }
+
+        try {
+            $configs = (new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs();
+        } catch (ConfigException $e) {
+            // A malformed agent YAML is fail-closed everywhere else too — surface it
+            // as a service fault, not a caller error.
+            return $this->refuse(503, 'agent config error');
+        }
+        $agent = (new BoardToolAgentResolver($configs))->resolve($bearer);
+
+        // Do not distinguish "unknown token" from "collided/unreadable token" to
+        // the caller — both are "you are not an authenticated board-tools agent".
+        return $agent ?? $this->refuse(401, 'unrecognized bearer token');
     }
 
     private function bearer(Request $request): ?string

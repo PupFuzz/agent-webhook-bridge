@@ -106,6 +106,33 @@ class ForeignRelayAdoptionTest extends TestCase
                 .'silent github delivery record interpolates the subscription SCOPE, escaped as the leg that '
                 .'published it escapes its own (DL-382). No exception is involved.',
         ],
+        'Bridge/ClientApproveCommand.php' => [
+            'relays' => 2, 'escaped' => 6,
+            'ruling' => '✔ NOT FOREIGN ×2 (card#10567 / DL-433) — a `ConfigException` over this install\'s own agent YAMLs, '
+                .'and a `ClientPackRefused` over this install\'s own published-pack record, escaped as text from a file '
+                .'another account could have written (the `bridge:client-pack:install` ruling above). '
+                .'⚑ THE OTHER ESCAPES ARE NOT RELAYS and carry no `×` token: the release and agent arguments the operator '
+                .'typed, and an approval\'s actor and reason read back from the event log. No exception is involved.',
+        ],
+        'Bridge/ClientFleetCommand.php' => [
+            'relays' => 1, 'escaped' => 1,
+            'ruling' => '✔ NOT FOREIGN ×1 (card#10567 / DL-432) — a `ConfigException` over this install\'s own agent YAMLs. '
+                .'⚑ THE ESCAPE IS NOT A RELAY and carries no `×` token: the published-pack record\'s read error as '
+                .'`ClientFleet` carries it (already redacted there), escaped as text from a file another account could have written.',
+        ],
+        'Bridge/ClientPackInstallCommand.php' => [
+            'relays' => 5, 'escaped' => 6,
+            'ruling' => '⛔ FOREIGN ×3 (card#10567 / DL-430) — the GitHub release read and the asset download, relaying '
+                .'a GitHub response body or the read client\'s own unreadable-body text; and a `ClientPackRefused` '
+                .'from checking the downloaded assets, which interpolates values read out of the release\'s manifest '
+                .'and SHA256SUMS. All three escaped. ✔ NOT FOREIGN ×2 — a `ClientPackRefused` over this install\'s own '
+                .'published-pack record, and a `ClientPackStoreFault`, which can wrap that same record\'s parse fault. '
+                .'Both escaped, as text from a file another account could have written (review r3). The fault\'s '
+                .'`recovery` is NOT a relay and is printed whole: the store composes it only from this install\'s '
+                .'own paths and account names, and the escape\'s length bound would cut it. '
+                .'⚑ THE OTHER ESCAPE IS NOT A RELAY and carries no `×` token: the GitHub token resolver\'s `problem` '
+                .'text, which can name a credential-helper path or a store message. No exception is involved.',
+        ],
         'Bridge/GitHubOwedCommand.php' => [
             'relays' => 3, 'escaped' => 0,
             'ruling' => '✔ NOT FOREIGN ×3 — an UnreadableFileException and a MalformedStateFileException over the '

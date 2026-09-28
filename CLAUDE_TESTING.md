@@ -36,6 +36,7 @@ vendor/bin/pint                                      # fix in place
 | `tests/Feature/Provision/` | `bridge:provision` Artisan command end-to-end | Feature; `Http::fake`; tmp config + secret dir |
 | `tests/Feature/Handlers/` | `ChannelPushHandler`, `SpawnDetachedHandler`, `LogIntentHandler`, `RegistryAppendHandler` | Feature; `Http::fake` for HTTP-backed handlers |
 | `tests/Feature/Console/` | `bridge:check`, `bridge:inbox`, `bridge:inspect`, `bridge:replay`, `bridge:stats` | Feature; `RefreshDatabase` + tmp dirs |
+| `tests/Feature/ClientUpdate/` + `tests/Unit/ClientUpdate/` | The client-update door and the published-pack store (DL-430): `bridge:client-pack:install` against a faked GitHub release, the store's publication rules, and every op on BOTH doors held to the same bytes; the fleet ledger and approval (DL-432/433): `client_report`'s chain, the offer gate, `client_fleet`, every fleet state (`ClientFleetStateTest`) and the two static guards (`ExemptCallerSendersTest`, `SeatClientEventsNoWriterTest`) | Feature; `Http::fake`; tmp state dir; `Tests\Support\ClientPackFixture` builds a manifest/pack pair in the DL-428 shape |
 
 Run `vendor/bin/phpunit --list-tests 2>/dev/null | wc -l` for a live count. The number isn't quoted in any markdown file in this repo because it drifts every PR.
 
@@ -358,6 +359,16 @@ both are two-parent merges while `git merge-base --is-ancestor <base> <head>` is
 plain `git merge` in a fixture *does* fast-forward there, and the resulting one-parent work tree is
 a tree GitHub would never hand a gate — so a fixture without `--no-ff` tests a shape that does not
 exist, and the script refuses it, correctly.
+
+## The seat updater's suite (card#10568, DL-434)
+
+`examples/channel-servers/tests/client-update.test.mjs` runs the REAL `entry.mjs`, `client-update.mjs` and `channel-lib.mjs` against a local fixture bridge (`tests/client-update-fixture.mjs`), in a real seat root per test.
+
+- **Packs are built in the fixture, not by `bin/build-client-pack.py`**: the refusal cases need packs that builder never produces (a symlink, `../x`, a FILES.json that lies). The fixture copies the builder's layout and manifest format, but nothing in this suite holds it to the builder. What joins the two is the `real pack installs` step of `client-pack-build-check.yml`: it tags the checkout locally, builds a real pack with the builder, and installs it with `node client-update.mjs install`, so a format the installer does not accept reds there. The channel server inside a fixture pack is a stub that records which release started — except in the one case that roots the seat under `tests/.client-root-*` and ships the REAL server, whose bare `@modelcontextprotocol/sdk` import then resolves through the package's own `node_modules`.
+- **Each REFUSAL case (the `refusals` table) asserts four things**: the installed release still starts, `versions/` and `current.json` are byte-unchanged, `state.json` names the refusal, and the install log (and the fixture's received report) carries it. The other failure cases assert what their failure leaves. One failure writes no install-log line and sends no report: an installed updater that cannot even load (it is what would have written them) — that one is loud through `state.json`, the INSTRUCTIONS line and stderr only.
+- **`launch()` deletes `launch.json` first**: every launch is spawned by the one test process, which the session guard would rightly read as the same live parent. The guard has its own cases with explicit records (`{reconnect: true}`).
+- **Crash hooks** (`AWB_CLIENT_CRASH_AT`, `crashAt` in `client-update.mjs`) kill or hang the updater at a named point. A kill is not a power cut; the power-cut cases instead damage an installed release's files directly. A killed launch's lock is expired by rewriting its recorded deadline, not waited out.
+- **The `client-update-windows` job** in `channel-server-supply-chain.yml` runs this file on `windows-latest`. It is not a required check, and a green run is not Windows validation of the seat (a real Claude Code session on Windows) — see card#10568.
 
 ## The channel-server live-state sandbox (DL-269)
 

@@ -2,6 +2,8 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\ClientUpdate\CallerReport;
+use App\Bridge\ClientUpdate\ClientUpdateDoor;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolDispatcher;
@@ -18,7 +20,7 @@ use App\Bridge\Tools\ToolsCallStdio;
  * `bridge:tools-call` — the SSH-forced-command front door for board tools (Finding
  * C, card 4952). It is the exact dual of the loopback HTTP controller: it resolves
  * the caller's identity (from the PINNED `--agent`, never the wire), reads a
- * `{tool, args, client_version?}` request from STDIN, and dispatches it through the SAME
+ * `{tool, args, client_version?, caller?, launch?}` request from STDIN, and dispatches it through the SAME
  * {@see BoardToolDispatcher} the HTTP door uses — so the response body is
  * byte-identical between transports.
  *
@@ -29,7 +31,13 @@ use App\Bridge\Tools\ToolsCallStdio;
  * SSH_ORIGINAL_COMMAND — which this command NEVER reads (identity is `--agent`,
  * action is STDIN, full stop).
  *
- * The STDIN request is `{tool, args?, client_version?}`. ⛔ The third key is an OPTIONAL
+ * A STDIN body carrying `op` is not a tool call: it is a client-update request
+ * (`client_manifest` / `client_pack` / `client_report` / `client_fleet`), answered by {@see ClientUpdateDoor} after the same
+ * parse and the same agent checks, and never dispatched as a tool (DL-430).
+ *
+ * The STDIN request is `{tool, args?, client_version?, caller?, launch?}`. The last two are the
+ * fleet ledger's observations of who is calling (card#10567 B4, {@see CallerReport}) and can refuse
+ * nothing either. ⛔ The third key is an OPTIONAL
  * OBSERVATION and never part of what this door accepts (card#8974): the caller's own
  * snapshot version, recorded beside the call. A request that omits it, or carries any
  * value {@see ClientVersion} will not take, is accepted exactly as it was before the
@@ -65,15 +73,12 @@ class ToolsCallCommand extends BridgeCommand
 {
     protected $signature = 'bridge:tools-call {--agent= : the identity, forced from the pinned authorized_keys command (trusted; NOT read from the caller)}';
 
-    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?} from STDIN, write one JSON envelope to STDOUT (card 4952)';
-
-    /** Refuse a stdin flood: a booted Laravel process must not buffer unbounded input. */
-    private const MAX_STDIN_BYTES = 65536;   // 64 KiB
+    protected $description = 'SSH-forced-command board-tools front door: read {tool, args, client_version?, caller?, launch?} — or a client-update {op, …} (DL-430) — from STDIN, write one JSON envelope to STDOUT (card 4952)';
 
     /** A client that opens the channel but never sends EOF must not pin the process. */
     private const STDIN_TIMEOUT_SECS = 30;
 
-    public function handle(BoardToolDispatcher $dispatcher, ToolsCallStdio $io, ServingProcessEnvironment $env): int
+    public function handle(BoardToolDispatcher $dispatcher, ClientUpdateDoor $clientUpdate, ToolsCallStdio $io, ServingProcessEnvironment $env): int
     {
         // Earliest userland point — keep any post-boot notice off fd 1 (the envelope
         // channel). Cannot cover a true startup error; the client parse is that guard.
@@ -124,6 +129,13 @@ class ToolsCallCommand extends BridgeCommand
         if ($decoded instanceof DispatchOutcome) {
             return $this->emit($io, $decoded->body(), $decoded->exitCode());
         }
+        // A body carrying `op` is a client-update request (DL-430), answered by the door the HTTP
+        // route `/agent-tools/client` also serves — never by the board-tools dispatcher.
+        if (array_key_exists('op', $decoded)) {
+            $outcome = $clientUpdate->handle($decoded, $agent->agentName, $bt);
+
+            return $this->emit($io, $outcome->body, $outcome->exitCode());
+        }
         // A missing or non-string `tool` is the dispatcher's refusal, as it is for the HTTP door.
         $tool = $decoded['tool'] ?? null;
         if (! is_string($tool)) {
@@ -140,7 +152,10 @@ class ToolsCallCommand extends BridgeCommand
 
         // Measured at the dispatch, not at boot: what is being recorded is a fact about the
         // process that served THIS call, and the measurement is the whole cost.
-        $outcome = $dispatcher->dispatch($tool, $args, $bt, $agent->agentName, CallProvenance::of($env), $clientVersion);
+        // ⛔ OPTIONAL TOO, and read the same way (card#10567 B4): who made the call and which launch it
+        // belongs to, recorded in the fleet ledger — {@see CallerReport} owns the reduction.
+        $caller = CallerReport::fromCall($decoded['caller'] ?? null, $decoded['launch'] ?? null);
+        $outcome = $dispatcher->dispatch($tool, $args, $bt, $agent->agentName, CallProvenance::of($env), $clientVersion, $caller);
 
         return $this->emit($io, $outcome->body(), $outcome->exitCode());
     }
@@ -156,7 +171,7 @@ class ToolsCallCommand extends BridgeCommand
         $in = $io->in();
         stream_set_timeout($in, self::STDIN_TIMEOUT_SECS);
         // Read one byte past the cap so an at-cap-plus-one body is detectable as oversize.
-        $raw = stream_get_contents($in, self::MAX_STDIN_BYTES + 1);
+        $raw = stream_get_contents($in, ToolsCallStdio::MAX_STDIN_BYTES + 1);
         if (! is_string($raw)) {
             return ['', 'could not read STDIN'];
         }
@@ -168,8 +183,8 @@ class ToolsCallCommand extends BridgeCommand
         if (! empty($meta['timed_out'])) {
             return ['', 'STDIN read timed out (no EOF within '.self::STDIN_TIMEOUT_SECS.'s)'];
         }
-        if (strlen($raw) > self::MAX_STDIN_BYTES) {
-            return ['', 'STDIN exceeds the '.self::MAX_STDIN_BYTES.'-byte cap'];
+        if (strlen($raw) > ToolsCallStdio::MAX_STDIN_BYTES) {
+            return ['', 'STDIN exceeds the '.ToolsCallStdio::MAX_STDIN_BYTES.'-byte cap'];
         }
 
         return [$raw, null];

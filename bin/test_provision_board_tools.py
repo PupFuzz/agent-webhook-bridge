@@ -693,6 +693,16 @@ class SelfCert(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(json.dumps({"error": "boom"}), 0)
 
+    def test_the_probe_declares_itself_a_self_certification(self):
+        # card#10567 B4: without `caller`, the bridge's fleet ledger would record this probe as the
+        # seat's own channel server — with no version — over what the seat reported.
+        completed = mock.Mock(stdout=json.dumps({"ok": True}), stderr="", returncode=0)
+        with mock.patch.object(pbt.subprocess, "run", return_value=completed) as run:
+            pbt._self_cert("agent@host", None, None)
+        body = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(body["caller"], "self-cert")
+        self.assertEqual(body["tool"], "board_my_cards")
+
     def test_parseable_json_at_nonzero_exit_fails(self):
         # A well-formed envelope with no ok/error keys but a non-zero exit is still
         # a failed round-trip — the returncode gate alone must catch the exit-2 case.
@@ -1372,15 +1382,16 @@ class VersionComparatorLockstep(unittest.TestCase):
     PHP (`App\\Bridge\\Support\\ChannelSnapshotManifest::compareVersions`) so it can tell a
     stale deployed snapshot from a current one WITHOUT shelling out to this script.
 
-    These vectors are the LOCKSTEP CONTRACT: the same pairs and the same verdicts are
-    asserted in `tests/Unit/Support/ChannelSnapshotManifestTest.php`
-    (`ChannelSnapshotManifestTest::versionVectors`). Change one side without the other and
-    the provisioner and `bridge:check` silently disagree about which snapshots are
-    stale — the operator re-syncs forever, or never.
+    These vectors are the LOCKSTEP CONTRACT, held in ONE file,
+    `tests/Fixtures/version-comparator-vectors.json`, which this class,
+    `tests/Unit/Support/ChannelSnapshotManifestTest.php` and the seat updater's
+    `examples/channel-servers/tests/client-update.test.mjs` all read — so the provisioner,
+    `bridge:check` and the seat cannot disagree about which version is newer without one
+    of the three going red.
 
-    The starred rows are where PHP's `version_compare()` DIVERGES from this authority
-    (it honors the pre-release/build tags `_version_tuple` deliberately drops), which
-    is why the PHP side may not use it.
+    The file's `php_version_compare_diverges` rows are where PHP's `version_compare()`
+    DIVERGES from this authority (it honors the pre-release/build tags `_version_tuple`
+    deliberately drops), which is why the PHP side may not use it.
 
     CONFORMANCE BOUND (measured): the two implementations agree for ASCII-digit
     versions whose chunks fit PHP's integer range. Outside that they cannot — this
@@ -1389,15 +1400,11 @@ class VersionComparatorLockstep(unittest.TestCase):
     through an npm `version` field, so it is a documented bound, not a defect.
     """
 
-    VECTORS = [
-        ("0.8.0", "0.8.0", 0),
-        ("0.8.0-rc1", "0.8.0", 0),      # * php version_compare says -1
-        ("0.8", "0.8.0", -1),
-        ("0.10.0", "0.9.0", 1),
-        ("0.8.0", "0.8.0+build5", 0),   # * php version_compare says +1
-        ("1.0.0-alpha", "1.0.0", 0),    # * php version_compare says -1
-        ("", "0.8.0", -1),
-    ]
+    # ONE table for all three implementations (the seat updater's `compareReleases` in
+    # examples/channel-servers/entry.mjs reads it too); the rows where PHP's
+    # version_compare() diverges are listed in the same file.
+    with open(os.path.join(_HERE, "..", "tests", "Fixtures", "version-comparator-vectors.json"), encoding="utf-8") as _fh:
+        VECTORS = [tuple(row) for row in json.load(_fh)["vectors"]]
 
     @staticmethod
     def _cmp(a: str, b: str) -> int:

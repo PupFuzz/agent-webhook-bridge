@@ -388,6 +388,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Channel-server client pack (DL-430)
+    |--------------------------------------------------------------------------
+    |
+    | The GitHub repo whose release `v<VERSION>` carries this bridge's client
+    | pack. `bridge:client-pack:install` reads it with this install's GitHub read
+    | token and publishes the pack under `<state_dir>/client-packs/`, which the
+    | client-update door serves to seats. Point it at your fork if you release
+    | from one.
+    |
+    */
+
+    'client_pack' => [
+        'repo' => env('BRIDGE_CLIENT_PACK_REPO', 'PupFuzz/agent-webhook-bridge'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Runtime-state directory
     |--------------------------------------------------------------------------
     |

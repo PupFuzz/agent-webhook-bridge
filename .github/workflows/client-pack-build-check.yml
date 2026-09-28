@@ -4,8 +4,9 @@ name: Client pack builds
 # builds the pack a release publishes, but only from a release tag, and a tag exists only after the
 # release has merged, when a failure can no longer block anything. This asks the same question
 # before merge: `--verify-commit` runs every step, and every refusal that applies to an untagged
-# commit, against the commit under test, then discards the result. It writes nothing and uploads nothing, so this job
-# cannot become a way to publish a pack from an untagged tree.
+# commit, against the commit under test, then discards the result. The job uploads nothing, so it
+# cannot become a way to publish a pack from an untagged tree; its second step builds a real pack
+# into the runner's temp dir only to install it there (the builder <-> installer seam).
 #
 # IT IS A BUILD-SUCCEEDS GATE, NOT A CONTENT-DIFF GATE. Each release builds its own pack from its own
 # tag, so there is no earlier pack to compare against, and a green run says only that the tree
@@ -58,3 +59,30 @@ jobs:
           node --version
           npm --version
           python3 bin/build-client-pack.py --verify-commit HEAD
+
+      # THE BUILDER <-> INSTALLER SEAM (card#10568). The seat updater's own suite builds its packs in a
+      # fixture, so nothing there holds the builder's real output to what `client-update.mjs install`
+      # accepts. This does: tag the commit under test LOCALLY with its own VERSION (never pushed; a
+      # `--ref` build needs a tag), build a real pack from it into the runner's temp dir, and install
+      # it into a fresh seat root. Nothing is uploaded or published.
+      - name: A real pack from this commit installs on a seat
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(tr -d '[:space:]' < VERSION)"
+          git tag -f "v${release}" HEAD
+          python3 bin/build-client-pack.py --ref "v${release}" --out "$RUNNER_TEMP/pack"
+          node examples/channel-servers/client-update.mjs install --actor provision \
+            --pack "$RUNNER_TEMP/pack/client-pack-v${release}.tar.gz" \
+            --manifest "$RUNNER_TEMP/pack/client-pack-v${release}.manifest.json" \
+            --root "$RUNNER_TEMP/seat-root"
+          node -e '
+            const fs = require("fs");
+            const [root, release, manifest] = process.argv.slice(1);
+            const cur = JSON.parse(fs.readFileSync(`${root}/current.json`, "utf8"));
+            const m = JSON.parse(fs.readFileSync(manifest, "utf8"));
+            if (cur.bridge_release !== release || cur.files_json_sha256 !== m.files_json_sha256) {
+              console.error("the installed pointer does not name the pack just built", cur, m);
+              process.exit(1);
+            }
+          ' "$RUNNER_TEMP/seat-root" "$release" "$RUNNER_TEMP/pack/client-pack-v${release}.manifest.json"
