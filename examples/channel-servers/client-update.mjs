@@ -261,7 +261,10 @@ export class InstallLog {
         fs.fsyncSync(fd);
       } catch (err) {
         try {
-          fs.ftruncateSync(fd, before);
+          // By PATH, not through `fd`: on Windows an append-mode handle is opened with append
+          // access only (no FILE_WRITE_DATA), and cannot set the file's end — measured on the
+          // windows-latest job, where an `ftruncateSync(fd)` here left the fragment in place.
+          fs.truncateSync(this.file, before);
         } catch {
           this.torn = true;
         }
