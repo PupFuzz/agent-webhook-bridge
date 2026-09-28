@@ -1,0 +1,270 @@
+{
+  "schema": 1,
+  "about": "The behavioural corpus for the bridge's rule of WHICH pull request a card's `pr_url` names (card#10735 / DL-431). The bridge OWNS this rule: App\\Bridge\\Writeback\\PrUrlRef::parse. agent-board-toolkit carries a VENDORED copy of this file and holds its own copy of the rule to it. tests/Feature/Writeback/PrUrlRefTest.php loads its data providers FROM this file and runs every vector against PrUrlRef on every test run, so this file cannot drift from what the bridge tests. THE BRIDGE CHECKS ONLY ITS OWN HALF: nothing in this repo reads the toolkit's copy of the rule or its vendored copy of this file. docs/kanban-integration-contract.md section 3 carries the row that publishes this file to the far end.",
+  "authority": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Writeback\\PrUrlRef",
+    "symbol": "App\\Bridge\\Writeback\\PrUrlRef::parse",
+    "path": "app/Bridge/Writeback/PrUrlRef.php",
+    "corpus": "docs/pr-url-ref-parity-corpus.json",
+    "checked_by": "tests/Feature/Writeback/PrUrlRefTest.php",
+    "relationship": "The bridge OWNS this rule. A mirror that disagrees is the mirror's defect to fix by re-mirroring, never the bridge's to fix by matching the mirror."
+  },
+  "mirror": {
+    "repo": "PupFuzz/agent-board-toolkit",
+    "symbol": "KB_JQ_PR_URL_REF (bin/_kb-board-lib.sh) and promote's pr_url_ref",
+    "tracked": "toolkit card#10736",
+    "vendored_copy": "The toolkit carries a byte-identical copy of this file. Where it lives in that repo, and the check that runs it, are the toolkit's to declare; this repo cannot read them."
+  },
+  "the_rule": "Take the FIRST match of `#github\\.com/([^/]+/[^/]+?)(?:\\.git)?/(pull|issues|commit|tree|blob)/(\\d*)#i` (PHP PCRE, case-insensitive, unanchored) in the value. The value names a pull request iff that match exists, group 2 is exactly `pull` (case-sensitive) and group 3 is non-empty; then repo = group 1 lower-cased and number = group 3 as an integer. The repo and the number always come from that ONE match. A non-string or empty value names nothing. Number 0 is the source-only placeholder: a repo and no pull request.",
+  "how_the_far_end_runs_this": "Load this file. For every entry of `vectors`, give `input` to your implementation of the rule. When `expect` is null the value must name nothing. Otherwise your answer must equal `expect.repo` (lower-cased owner/repo), `expect.number` (an integer) and `expect.names_pr` (true iff the number is greater than 0). Any disagreement is drift from the bridge's rule and is the mirror's to fix. `note` is prose and carries no expectation.",
+  "not_checked_by_this_repo": [
+    "THAT THE TOOLKIT'S COPY OF THE RULE ANSWERS THESE VECTORS. The bridge's CI has no checkout of the toolkit repo, so nothing here reds when that copy changes or drifts.",
+    "THAT THE TOOLKIT'S VENDORED COPY OF THIS FILE IS STILL BYTE-IDENTICAL TO THIS ONE. A vector added here reaches the toolkit only when it re-vendors.",
+    "ANY PR-URL READER OTHER THAN PrUrlRef::parse, in any repo. Inside this repo every reader of a pr_url's pull request goes through PrUrlRef::parse (DL-431), but this file makes no claim about code it does not drive."
+  ],
+  "vectors": [
+    {
+      "note": "One URL naming one pull request. The spellings below all name this same one.",
+      "input": "https://github.com/owner/repo/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "owner/repo is case-insensitive on GitHub, so the repo is lower-cased.",
+      "input": "https://github.com/Owner/Repo/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "",
+      "input": "https://GitHub.com/owner/repo/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "A trailing .git on the repo is trimmed, in any case.",
+      "input": "https://github.com/owner/repo.git/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "",
+      "input": "https://github.com/owner/repo.GIT/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Anything after the number is ignored.",
+      "input": "https://github.com/owner/repo/pull/179/files",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "",
+      "input": "https://github.com/owner/repo/pull/179/commits/abc123",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "",
+      "input": "https://github.com/owner/repo/pull/179#discussion_r123456",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "The match is unanchored, so a www. host, http, and text before the URL are accepted.",
+      "input": "https://www.github.com/owner/repo/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "",
+      "input": "http://github.com/owner/repo/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "",
+      "input": "PR: https://github.com/owner/repo/pull/179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Leading zeros in the number are read as an integer.",
+      "input": "https://github.com/owner/repo/pull/0179",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Only the FIRST GitHub URL counts: a later pull URL is ignored.",
+      "input": "https://github.com/a/x/pull/5 https://github.com/b/y/pull/179",
+      "expect": {
+        "repo": "a/x",
+        "number": 5,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "The source-only placeholder: it names a repo and NO pull request (names_pr false).",
+      "input": "https://github.com/owner/repo/pull/0",
+      "expect": {
+        "repo": "owner/repo",
+        "number": 0,
+        "names_pr": false
+      }
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#7): a /pull/<n> outside the first GitHub URL's own segment is not its number.",
+      "input": "https://example.com/pull/7 https://github.com/o/r/pull/9",
+      "expect": {
+        "repo": "o/r",
+        "number": 9,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Changed by card#10735 (was acme/widget#9).",
+      "input": "https://example.com/x/pull/9 https://github.com/acme/widget/pull/179",
+      "expect": {
+        "repo": "acme/widget",
+        "number": 179,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Changed by card#10735 (was a/b#7). github.com/o/pull/7 is on GitHub but is not a github.com/<owner>/<repo>/<segment>/ URL, so the first match is the second URL.",
+      "input": "https://github.com/o/pull/7 https://github.com/a/b/pull/9",
+      "expect": {
+        "repo": "a/b",
+        "number": 9,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Changed by card#10735 (was pull/12#12). The owner and repo are pull and 12; the number is the one after the segment.",
+      "input": "https://github.com/pull/12/pull/9",
+      "expect": {
+        "repo": "pull/12",
+        "number": 9,
+        "names_pr": true
+      }
+    },
+    {
+      "note": "Changed by card#10735 (was a/x#179, a pull request neither URL names). The first GitHub URL is an issue URL, so the value names no pull request.",
+      "input": "https://github.com/a/x/issues/5 https://github.com/b/y/pull/179",
+      "expect": null
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#179). The first GitHub URL's segment is tree.",
+      "input": "https://github.com/o/r/tree/main/pull/179",
+      "expect": null
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#179).",
+      "input": "https://github.com/o/r/blob/main/pull/179",
+      "expect": null
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#179).",
+      "input": "https://github.com/o/r/commit/abc123/pull/179",
+      "expect": null
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#5). The first GitHub URL's pull segment has no digits.",
+      "input": "https://github.com/o/r/pull/ https://github.com/o/r/pull/5",
+      "expect": null
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#5). The segment must be exactly lower-case pull; the URL match itself is case-insensitive, so PULL is still the FIRST GitHub URL.",
+      "input": "https://github.com/o/r/PULL/1 https://github.com/o/r/pull/5",
+      "expect": null
+    },
+    {
+      "note": "Changed by card#10735 (was o/r#6). Any spelling of pull other than lower-case.",
+      "input": "https://github.com/o/r/Pull/5 https://github.com/o/r/pull/6",
+      "expect": null
+    },
+    {
+      "note": "Named no pull request before card#10735 either.",
+      "input": "https://github.com/o/r/issues/179",
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": "https://github.com/o/r/PULL/179",
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": "https://github.com/o/r/pull/abc",
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": "https://github.com/o/r",
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": "https://gitlab.com/o/r/pull/179",
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": "see the linked PR",
+      "expect": null
+    },
+    {
+      "note": "The empty string, JSON null and a JSON number are not a pull-request URL.",
+      "input": "",
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": null,
+      "expect": null
+    },
+    {
+      "note": "",
+      "input": 179,
+      "expect": null
+    }
+  ]
+}
