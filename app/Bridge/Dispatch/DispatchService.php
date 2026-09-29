@@ -19,6 +19,7 @@ use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Writeback\OwedWriteQueue;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Database\Eloquent\Model;
@@ -46,6 +47,12 @@ use Throwable;
  *        note is preserved (not cleared) for observability; bridge:replay
  *        --force can re-run it.
  *  - per-agent durability writes (processed_at) are uncaught → 5xx.
+ *  - (D) a DURABLE handler (DL-009) is not called directly: its target is recorded as an
+ *        owed write and applied through {@see OwedWriteQueue::drain()} — the one apply path,
+ *        shared with the scheduled sweep (card#10849 / DL-440). A RATE LIMIT (408/429) is
+ *        caught there and leaves the write queued: the dispatch is still marked delivered
+ *        (answering 200), with a note saying the write is owed, and every other target, push
+ *        and agent runs. Any OTHER durable failure propagates exactly as before → 5xx.
  *
  * NO DB::transaction wraps the loop (implementation requirement 2): each
  * agent's processed_at commit must persist as it happens, so a mid-loop 5xx +
@@ -54,12 +61,16 @@ use Throwable;
  */
 final class DispatchService
 {
+    private readonly OwedWriteQueue $owed;
+
     public function __construct(
         private SubscriptionRegistry $subscriptions,
         private AgentRegistry $agents,
         private HandlerRegistry $handlers,
         private IntentLog $intentLog,
-    ) {}
+    ) {
+        $this->owed = new OwedWriteQueue($handlers, $subscriptions);
+    }
 
     /**
      * @param  array<mixed>  $payload  the parsed event body
@@ -269,26 +280,30 @@ final class DispatchService
             }
             // Partition by durability (DL-009). A DurableReaction handler performs
             // a non-loss-tolerant side effect (e.g. a card-move writeback); its
-            // failure must PROPAGATE (treatment B → 5xx → redelivery), not be
-            // swallowed as a best-effort note. Durable handlers run FIRST so a
-            // durable throw short-circuits BEFORE any best-effort handler fires —
-            // redelivery then re-runs the whole dispatch (durable handlers MUST be
-            // idempotent) without re-amplifying best-effort pushes.
+            // failure must not be swallowed as a best-effort note. Durable handlers
+            // run FIRST so a durable throw short-circuits BEFORE any best-effort
+            // handler fires — redelivery then re-runs the whole dispatch (durable
+            // handlers MUST be idempotent) without re-amplifying best-effort pushes.
             $durable = [];
             $bestEffort = [];
             foreach ($targets as $target) {
                 $handler = $this->handlers->resolve($target->handler);
                 if ($handler instanceof DurableReaction) {
-                    $durable[] = [$target, $handler];
+                    $durable[] = $target;
                 } else {
                     $bestEffort[] = [$target, $handler];
                 }
             }
 
-            // Durable: uncaught → propagate → 5xx; the dispatch stays unprocessed
-            // (processed_at null) and is redelivered.
-            foreach ($durable as [$durableTarget, $durableHandler]) {
-                $durableHandler->handle($durableTarget, $agent);
+            // Durable: treatment (D). A rate limit leaves the write OWED and is not a
+            // delivery failure; anything else propagates → 5xx, and the dispatch stays
+            // unprocessed (processed_at null) and is redelivered.
+            $owedNotes = [];
+            foreach ($durable as $durableTarget) {
+                $owedNote = $this->runDurable($durableTarget, $agent, $event, $provider, $scopeId);
+                if ($owedNote !== null) {
+                    $owedNotes[] = $owedNote;
+                }
             }
 
             // Best-effort: a throw is a recorded note, not a delivery failure.
@@ -340,9 +355,38 @@ final class DispatchService
             if ($result->intents === [] && $targets === []) {
                 $this->markDropped($dispatch, 'classifier emitted no reactions');
             } else {
-                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush);
+                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null, $unconfirmedPush, $owedNotes === [] ? null : implode('; ', $owedNotes));
             }
         }
+    }
+
+    /**
+     * Apply one durable target the only way any durable write is applied (card#10849 /
+     * DL-440): record it as owed, then drain its subject. On the healthy path the drain
+     * applies — and deletes — the row just inserted, in this request, so what it adds is a
+     * few indexed queries on a table that is empty between requests. A subject that already owes an older write applies that one
+     * first; one whose head is rate-limited (or being drained by a concurrent request) leaves
+     * this write queued behind it.
+     *
+     * ⛔ NO BRANCH ON "IS ANYTHING PENDING?" and none on arming: the insert is unconditional,
+     * and the table's FIFO order is the whole ordering guarantee. A rate limit never escapes
+     * the drain; any other failure — including the insert itself — propagates → 5xx.
+     *
+     * Returns a note for the dispatch row when this delivery did NOT apply the write, else
+     * null.
+     */
+    private function runDurable(ReactionTarget $target, AgentConfig $agent, WebhookEvent $event, string $provider, string $scopeId): ?string
+    {
+        $subject = OwedWriteQueue::subjectKey($provider, $scopeId, $target->handler, $target->debounceKey);
+        $this->owed->enqueue($subject, $target, $agent, $event);
+        $this->owed->drain($subject);
+
+        $owed = $this->owed->find($subject, (int) $event->id);
+        if ($owed === null) {
+            return null;
+        }
+
+        return "owed write: {$target->handler} ({$target->debounceKey}) was not applied by this delivery — it is queued behind a rate-limited or in-progress write of the same subject, and the bridge retries it (attempts so far: {$owed->attempts}; card#10849)";
     }
 
     /**
@@ -517,12 +561,14 @@ final class DispatchService
      * it, and a second value or a widened enum is a different, larger question that was
      * not authorised here. `ChannelPushUnconfirmedTest` pins the stored byte.
      */
-    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null, bool $unconfirmedPush = false): void
+    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null, bool $unconfirmedPush = false, ?string $owedNote = null): void
     {
         $dispatch->update([
             'processed_at' => now(),
             'outcome' => AgentDispatch::OUTCOME_DELIVERED,
-            'error_message' => $note,   // a best-effort handler failure, if any
+            // A best-effort handler failure AND a write left owed are two different facts
+            // about one dispatch — both are kept, neither overwrites the other (card#10849).
+            'error_message' => implode('; ', array_filter([$note, $owedNote], static fn (?string $n): bool => $n !== null)) ?: null,
             // Non-null on a delivered row ONLY for the DL-203 echo-suppressed
             // machine writeback ('echo: agent surface suppressed'); otherwise
             // cleared like before (--force replay transition, DL-036).
@@ -558,6 +604,7 @@ final class DispatchService
                     ? 'a channel_push leg ran and the bridge holds no receipt that the seat received it; a leg that reached the transport logs its own `bridge channel_push:` line with what that endpoint declared, and a leg that raised — at the transport or before it — is named in `handler_note`'
                     : null,
                 'handler_note' => $note,
+                'owed_write' => $owedNote,
                 'reason' => $reason,
             ], static fn ($v) => $v !== null)
         );
