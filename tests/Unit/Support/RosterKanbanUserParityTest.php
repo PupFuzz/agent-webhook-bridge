@@ -29,8 +29,17 @@ class RosterKanbanUserParityTest extends MirrorParityTestCase
         return 'docs/kb-roster-uid-parity-corpus.json';
     }
 
+    /**
+     * A vector whose config is a STRING carries the coord config file's exact TEXT: a JSON number
+     * literal such as `7.00` or `7e0` has no other faithful spelling, because every decoder in
+     * the chain — PHP's here, jq's in the far-end runner — normalises it. Decoding it here is the
+     * same `json_decode` the check's own read performs on the file.
+     */
     protected static function invoke(string $method, array $args): mixed
     {
+        if (is_string($args[0] ?? null)) {
+            $args[0] = json_decode($args[0], true);
+        }
         $answer = parent::invoke($method, $args);
 
         return $answer instanceof RosterKanbanUser ? ['uid' => $answer->userId, 'why' => $answer->why] : $answer;

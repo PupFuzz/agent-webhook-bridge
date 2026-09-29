@@ -75,6 +75,14 @@ roster_verdict() {
     jq -cn --arg v "$v" '{uid: null, why: $v}'
 }
 
+# The coord config TEXT a roster vector hands the authority. A vector may carry it as a STRING —
+# the file's exact bytes — because a number literal like `7.00` or `7e0` has no other faithful
+# spelling: jq re-serialising an object normalises it (`7e0` prints `7`), which would feed the
+# authority a different file from the one the vector describes. An object is serialised as before.
+config_text() {
+    jq -r 'if (.v.args[0] | type) == "string" then .v.args[0] else (.v.args[0] | tojson) end' <<<"$1"
+}
+
 perturb() {  # $1 = method, $2 = expect JSON → a value the authority must NOT answer
     case "$1" in
         of) jq -c '. + "\u0000perturbed"' <<<"$2" ;;
@@ -90,7 +98,7 @@ while IFS= read -r row; do
         of)
             got="$(jq -cn --arg h "$(kb_url_host "$(jq -r '.v.args[0]' <<<"$row")")" '$h')" ;;
         lookUp)
-            got="$(roster_verdict "$(jq -c '.v.args[0]' <<<"$row")" "$(jq -r '.v.args[1]' <<<"$row")" "$(jq -r '.v.args[2]' <<<"$row")")" ;;
+            got="$(roster_verdict "$(config_text "$row")" "$(jq -r '.v.args[1]' <<<"$row")" "$(jq -r '.v.args[2]' <<<"$row")")" ;;
         *)
             echo "UNMEASURED $method#$i: this runner does not know method '$method'"; unmeasured=$((unmeasured + 1)); continue ;;
     esac
@@ -113,7 +121,7 @@ while IFS= read -r row; do
     [[ $control -eq 1 ]] && want="$(perturb "$method" "$want")"
     case "$method" in
         of) got="$(jq -cn --arg h "$(kb_url_host "$(jq -r '.v.args[0]' <<<"$row")")" '$h')" ;;
-        lookUp) got="$(roster_verdict "$(jq -c '.v.args[0]' <<<"$row")" "$(jq -r '.v.args[1]' <<<"$row")" "$(jq -r '.v.args[2]' <<<"$row")")" ;;
+        lookUp) got="$(roster_verdict "$(config_text "$row")" "$(jq -r '.v.args[1]' <<<"$row")" "$(jq -r '.v.args[2]' <<<"$row")")" ;;
         *) echo "UNMEASURED divergence $method#$i"; unmeasured=$((unmeasured + 1)); continue ;;
     esac
     if jq -e --argjson a "$got" --argjson b "$want" -n '$a == $b' >/dev/null 2>&1; then

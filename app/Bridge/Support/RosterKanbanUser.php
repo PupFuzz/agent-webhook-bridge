@@ -11,8 +11,13 @@ namespace App\Bridge\Support;
  * A PORT OF THE TOOLKIT'S READER, not a second rule: `KB_JQ_ROSTER`'s `roster_seats` and
  * `seat_uid_verdict` in `bin/_kb-board-lib.sh` (toolkit 11a6d150). A seat is a `roster[]` entry
  * that is an object with a string `name`, and the FIRST such entry with the name decides. The
- * id must be a JSON number, at least 1 and integral — a string `"7"` is refused, not coerced,
+ * id must be a JSON INTEGER literal, at least 1 — a string `"7"` is refused, not coerced,
  * because the framework writes this field and a shape nobody declared is a question for it.
+ * ⛔ AND SO IS AN INTEGRAL FLOAT (`7.0`, `7.00`, `7e0`), which PHP decodes to a float: the
+ * toolkit at 11a6d150 accepted one, and its string compare then read the seat's own card as
+ * another holder's — a false self-takeover (toolkit card#10868 comment 7670). Its fix refuses
+ * any value that is not a plain integer literal, verdict `bad`; this port refuses it now, and
+ * the corpus publishes those cases so the two ends are held to the same answer.
  *
  * ⚠ The verdict names are the toolkit's (`absent` / `nofield` / `nohost` / `bad`), so a line
  * from either tool can be read against the other's.
@@ -72,9 +77,6 @@ final class RosterKanbanUser
         $value = $map[$host];
         if (is_int($value) && $value >= 1) {
             return new self($value, null);
-        }
-        if (is_float($value) && $value >= 1 && $value === floor($value) && $value <= PHP_INT_MAX) {
-            return new self((int) $value, null);
         }
 
         return new self(null, self::BAD, $value);

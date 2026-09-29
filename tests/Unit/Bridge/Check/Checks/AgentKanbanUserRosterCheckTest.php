@@ -89,6 +89,21 @@ class AgentKanbanUserRosterCheckTest extends TestCase
         $this->assertStringContainsString('is "7", not a positive integer kanban user id (roster verdict `bad`)', $findings[0]->message);
     }
 
+    /**
+     * An integral FLOAT is not an id either (toolkit card#10868 comment 7670): the file's own
+     * `7.0` literal decodes to a float, and it is `bad`, not user 7.
+     */
+    public function test_an_integral_float_roster_id_is_malformed_not_user_seven(): void
+    {
+        $path = $this->roster([]);
+        File::put($path, '{"project":"p","roster":[{"name":"impl","kanban_user_id":{"'.self::HOST.'":7.0}}]}');
+
+        $findings = $this->findings(['impl' => ['kanban_user_id' => 7]]);
+
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('(roster verdict `bad`)', $findings[0]->message);
+    }
+
     public function test_an_equal_id_is_ok(): void
     {
         $this->roster([['name' => 'impl', 'kanban_user_id' => [self::HOST => 7]]]);

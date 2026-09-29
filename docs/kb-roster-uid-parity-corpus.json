@@ -14,7 +14,7 @@
     "path": "bin/_kb-board-lib.sh",
     "relationship": "The toolkit OWNS this rule (README § \"The card owner — the kanban assignee\"). A disagreement is the bridge's defect to fix by re-porting, never the toolkit's to fix by matching the bridge."
   },
-  "how_the_far_end_runs_this": "From a bridge checkout: `bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <toolkit checkout>`. For each vector [config, seat, host] it writes `config` to a file and calls the toolkit's own `kb_owner_resolve` with COORD_CONFIG at that file, COORD_AGENT=seat and KB_API=https://<host>/api/v3. rc 0 must give KB_OWNER_USER_ID == expect.uid; rc 1 must give a KB_OWNER_WHY naming expect.why (absent: not a roster[].name; nofield: no `kanban_user_id` object; nohost: no entry for this board instance; bad: not a positive integer). A WHY the runner cannot classify is exit 2, never agreement. Exit 0 agreed, 1 drifted, 2 could not measure; `--control` perturbs every expectation and every pinned constant and must report each.",
+  "how_the_far_end_runs_this": "From a bridge checkout: `bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <toolkit checkout>`. For each vector [config, seat, host] it writes `config` to a file — the string VERBATIM when `config` is a string (the file's exact text, used where a number literal must survive), else serialised and calls the toolkit's own `kb_owner_resolve` with COORD_CONFIG at that file, COORD_AGENT=seat and KB_API=https://<host>/api/v3. rc 0 must give KB_OWNER_USER_ID == expect.uid; rc 1 must give a KB_OWNER_WHY naming expect.why (absent: not a roster[].name; nofield: no `kanban_user_id` object; nohost: no entry for this board instance; bad: not a positive integer). A WHY the runner cannot classify is exit 2, never agreement. Exit 0 agreed, 1 drifted, 2 could not measure; `--control` perturbs every expectation and every pinned constant and must report each.",
   "not_checked_by_this_repo": [
     "NOTHING IN THIS REPO'S CI RUNS THE TOOLKIT: a change to `kb_owner_resolve` or KB_JQ_ROSTER reds nothing here until someone runs bin/kb-owner-parity.sh against the changed toolkit. Run it on a toolkit bump.",
     "The runner reads the authority's verdict through the WORDING of KB_OWNER_WHY (the function exposes no verdict code). A rewording it cannot classify is reported as could-not-measure (exit 2), so it fails loud rather than agreeing — but a rewording that moves one verdict's sentence onto another verdict's fragment would be misread.",
@@ -24,9 +24,9 @@
     "date": "2026-09-29",
     "authority_ref": "PupFuzz/agent-board-toolkit 11a6d150 (the dev merge of PR #425, card#10868), bin/_kb-board-lib.sh exported with `git archive`",
     "authority_blob": "sha256:9aea087a25542fb9d69161a4c39ab34c8a595d35715f49502de88ec96a41c8db (bin/_kb-board-lib.sh) — copied from the runner's own `executed:` line, not typed",
-    "vectors_digest": "sha256:75fe961eb713efd949e56dad60a25c6b808919dfc57fa6899392a5818a8401f7",
+    "vectors_digest": "sha256:0c5844f59bae4ed336976bc0945ea0416d529f8a0e72c02e228dd07908ef0d99",
     "method": "`bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <that export>` executed every vector, every known divergence and every pinned constant against the authority named above; `--control` over the same export reported every perturbed expectation (exit 0). As a discrimination check the runner was also run against a copy of the same lib with the trailing-dot strip removed and the id floor lowered to 0, and reported those vectors DISAGREE.",
-    "result": "exit 0 — agreed 30 · disagreed 0 · unmeasured 0. Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
+    "result": "exit 1 — agreed 29 · disagreed 3 · unmeasured 0, and the three disagreements are DELIBERATE: they are the integral-float vectors (`7.0`, `7.00`, `7e0`), published with the verdict `bad` that the toolkit's in-flight fix for card#10868 comment 7670 (a false self-takeover on a float id) is to return, and 11a6d150 still accepts them (`7e0` reaches it as `7`, since jq normalises the literal at parse). `--control` reported every perturbed row (exit 0). Re-take this measurement against the toolkit commit that lands that fix; exit 0 is then required, and the PHP_INT_MAX divergence is expected to converge with it and be deleted. Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
   },
   "mirror_local": {},
   "mirrored_but_not_driven": {},
@@ -80,7 +80,7 @@
           "uid": null,
           "why": "bad"
         },
-        "why": "jq accepts any integral number at least 1; the port refuses one larger than PHP_INT_MAX, which no kanban user id can be. The authority's answer is not a user id the board could hold either."
+        "why": "jq accepts any integral number at least 1; the port refuses a value that is not a JSON integer, and one larger than PHP_INT_MAX decodes to a float. The authority's answer is not a user id the board could hold either. The toolkit's integer-literal fix (card#10868 comment 7670) should converge this entry; the runner then reports it stale."
       },
       {
         "args": [
@@ -605,25 +605,39 @@
       },
       {
         "args": [
-          {
-            "project": "p",
-            "roster": [
-              {
-                "name": "impl",
-                "kanban_user_id": {
-                  "kanban.example.com": 7.0
-                }
-              }
-            ]
-          },
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7.0}}]}",
           "impl",
           "kanban.example.com"
         ],
         "expect": {
-          "uid": 7,
-          "why": null
+          "uid": null,
+          "why": "bad"
         },
-        "note": "an integral FLOAT is an id: jq has one number type and the toolkit tests integrality by value"
+        "note": "an integral FLOAT is not an id: refused, never coerced — the toolkit at 11a6d150 accepted it and then read the seat's own card as another holder's (card#10868 comment 7670) (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
+      },
+      {
+        "args": [
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7.00}}]}",
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "the same integral float spelled with two zeros (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
+      },
+      {
+        "args": [
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7e0}}]}",
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "the same integral float in exponent form — jq 1.7 normalises it to 7 at parse, so a far end that only inspects the decoded value cannot see it (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
       }
     ]
   }
