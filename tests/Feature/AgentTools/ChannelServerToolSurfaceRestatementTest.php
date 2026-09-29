@@ -10,6 +10,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
 use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Bridge\Writeback\OwnerTag;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\BundledChannelServer;
 use Tests\TestCase;
@@ -327,7 +328,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
     {
         $definition = $this->toolDefinition($tool);
 
-        foreach ([...CallerTagPolicy::RESERVED_PREFIXES, ...CallerTagPolicy::RESERVED_BARE] as $reserved) {
+        foreach ([...CallerTagPolicy::RESERVED_PREFIXES, ...CallerTagPolicy::RESERVED_BARE, OwnerTag::PREFIX] as $reserved) {
             $this->assertStringContainsString(
                 $reserved,
                 $definition,
@@ -353,7 +354,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         // reserved set expects `tags: []` to empty the card.
         $definition = $this->toolDefinition('board_correct_card');
 
-        foreach (CallerTagPolicy::PRESERVED_BARE as $preserved) {
+        foreach ([...CallerTagPolicy::PRESERVED_BARE, OwnerTag::PREFIX] as $preserved) {
             $this->assertStringContainsString(
                 $preserved,
                 $definition,

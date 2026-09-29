@@ -14,6 +14,7 @@ use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
 use App\Bridge\Check\Checks\AgentCoordinationIdentityCheck;
 use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
 use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
+use App\Bridge\Check\Checks\AgentKanbanUserRosterCheck;
 use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
 use App\Bridge\Check\Checks\AgentWebhookSecretCheck;
 use App\Bridge\Check\Checks\BoardToolsBearerCheck;
@@ -911,6 +912,7 @@ class CheckCommand extends BridgeCommand
             ->register(
                 CheckSlot::AgentRoster,
                 new AgentIdentityCollisionsCheck,
+                new AgentKanbanUserRosterCheck,
                 new AgentTreatAsSignalCheck,
                 new AgentDefaultAgentCheck,
                 new SharedIdentitiesCheck,

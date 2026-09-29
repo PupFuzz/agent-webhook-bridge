@@ -13,7 +13,7 @@ use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
-use App\Bridge\Writeback\OwnerTag;
+use App\Bridge\Writeback\OwnerlessStart;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\ProgramCardGuard;
@@ -557,11 +557,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → retry
         }
-        // The PR outcomes' order was read by the no-regression guard above; `started` never
-        // reads it, and an empty order answers from the merged / merged_to_main stages alone.
-        if ($mapping->isTerminalStage($stageId, $this->stageOrderMemo[$mapping->boardId] ?? [])) {
-            OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome);
-        }
+        OwnerlessStart::noteAfterMove($this->alerts, $card, $mapping, $isRevive, $cardId, $repo, $outcome, $stageId);
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
         // human hold" signal — durable Log::warning first (the record; mirrors every

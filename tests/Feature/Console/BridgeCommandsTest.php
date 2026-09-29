@@ -2851,6 +2851,30 @@ class BridgeCommandsTest extends TestCase
         $this->assertNull($d->error_message);
     }
 
+    /**
+     * card#10869 — THE RELEASE PROPERTY, at the command level: no coord roster carries
+     * `kanban_user_id` yet (kanban card#10867), so an install whose seat lacks one must be told so
+     * by name and must still EXIT 0 (operator ruling C: WARN until the ids exist). A unit test pins
+     * the severity; this pins that the severity is the one that leaves the exit code alone.
+     */
+    public function test_check_warns_on_a_roster_seat_with_no_kanban_user_id_and_still_exits_zero(): void
+    {
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 7\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        $coord = $this->dir.'/coordination.config.json';
+        File::put($coord, (string) json_encode(['project' => 'p', 'roster' => [['name' => 'impl', 'role' => 'impl']]]));
+        config([
+            'bridge.writeback.coord_config_path' => $coord,
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+        ]);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+
+        $this->assertStringContainsString("WARN: agent impl: its coord roster seat 'impl' carries no kanban user id for this kanban instance ('kanban.example.com')", $out);
+        $this->assertStringContainsString('UNVERIFIED against the roster', $out);
+        $this->assertSame(0, $code);
+    }
+
     public function test_check_surfaces_an_id_collision_on_the_console(): void
     {
         // Two agents sharing a kanban_user_id silently bypasses attribution (DL-007

@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
+use App\Bridge\Support\CoordConfigPath;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\UntrustedText;
@@ -357,25 +358,12 @@ final class WritebackBoardStateCheck implements Check
         $prefix = "writeback: move_coord_cards ({$repo}, board {$mapping->boardId})";
         $tail = 'Until this is verified the two movers may disagree about which column is terminal and fight every cycle.';
 
-        // The per-install override (BRIDGE_COORD_CONFIG_PATH via .env) first, then the
-        // ambient $COORD_CONFIG read LIVE through getenv(). getenv() rather than env()
-        // is load-bearing, not a style choice: `php artisan optimize` caches config/ and
-        // freezes every env() at deploy time (and the frozen value wins over the live
-        // one), so an ambient path resolved in config/bridge.php would be whatever the
-        // DEPLOYING shell had — usually nothing — forever. That would make this
-        // "mandatory" compare permanently report CANNOT-VERIFY: present, running, and
-        // never once doing its job. getenv() is cache-immune, and reading it here is
-        // legitimate ONLY because this check runs from a CLI-only command (the receiver's
-        // FPM env has no $COORD_CONFIG — which is the whole reason the compare lives in
-        // `bridge:check`).
-        $path = config('bridge.writeback.coord_config_path');
-        if (! is_string($path) || $path === '') {
-            $ambient = getenv('COORD_CONFIG');
-            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
-        }
+        // CoordConfigPath owns the resolution and why it reads getenv() live — without it
+        // this "mandatory" compare would report CANNOT-VERIFY forever on a cached config.
+        $path = CoordConfigPath::resolve();
         $config = CoordConfigTerminals::load($path);
         if ($config === null) {
-            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
+            $where = CoordConfigPath::unreadableClause($path);
 
             yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 

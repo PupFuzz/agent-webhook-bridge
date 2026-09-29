@@ -12,18 +12,17 @@ use Illuminate\Support\Facades\Http;
  * writeback sends (`workflow_stage_id` and `tags` replace), and every request is answered from
  * the state the previous one left.
  *
- * ⭐ WHY STATE, NOT A FIXED BODY. The terminal owner-tag clear reads the card AFTER the move and
- * writes a tag list built from that read, so a subject that turns on "which read did the write
- * come from" cannot be expressed with one canned answer: a fixed body makes the scan read and
- * the fresh read identical, which is exactly the case in which the defect is invisible.
+ * ⭐ WHY STATE, NOT A FIXED BODY. A subject that turns on what the card holds AFTER a write — which
+ * fields a move left untouched (card#10869: the assignee and any `owner:` tag survive a terminal
+ * move), or which read a write was built from — cannot be expressed with one canned answer.
  *
  * ⚑ `moveOnlyToken` models kanban's DL-204 split (`TaskMutator::update()` authorizes `move` only
  * when `workflow_stage_id` is the PATCH's SOLE key, `update` otherwise): a PATCH carrying any
  * other key answers 403 and changes nothing, which is what a custom board role holding
  * `task.move` but not `task.update` sees.
  *
- * ⚠ It models the two fields the writeback's moves and clears send and nothing else — no
- * `payload` per-key merge, no validation. A leg whose subject is another field stubs its own.
+ * ⚠ It models the fields a PATCH sends by replacing them and nothing else — no `payload` per-key
+ * merge, no validation. A leg whose subject is another field stubs its own.
  */
 final class KanbanCardStub
 {
