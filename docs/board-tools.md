@@ -7,7 +7,7 @@ token and no toolkit** can see and capture its own board work directly.
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
-(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435):
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435; the search since DL-437):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
@@ -17,6 +17,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card already held by a **different** user is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
+| `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -62,8 +63,8 @@ The tools that ship today — the table is held against the bridge's own registr
 ## Discovering them
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
-`board_create_card`, `board_correct_card`, `board_take_card`, `board_comment_card` and
-`board_get_cards`, and the
+`board_create_card`, `board_correct_card`, `board_take_card`, `board_comment_card`,
+`board_get_cards` and `board_search`, and the
 server's own `instructions` string names them (it derives the names from the same tool list it
 advertises). ⚠ **A tool your seat's copy of the channel server
 predates is invisible to you and reports as missing** — the tool set is restated in that
@@ -394,11 +395,14 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
   `"`, and `%` (a wildcard to a kanban older than v0.36.0) are refused. `_` is accepted — agent
   names carry it — and kanban v0.36.0 and later match it literally; an older kanban reads it as
   any one character.
-- ⛔ **A tag kanban stores escaped is refused, not answered as empty.** Kanban stores tags as
-  JSON and its exact tag match compares against that stored text, so a tag containing a control
-  character, `/`, `\` or any non-ASCII character (any byte ≥ 0x80) matches no card, even one
-  that carries it. The read would answer `cards: []` beside counts of `0`, so the tool refuses
-  the tag (422, before any board read) instead. The limitation is kanban's (kanban card#9522).
+- ⛔ **A tag an older kanban stores escaped is refused, not answered as empty.** Kanban stores
+  tags as JSON, and a kanban **before v0.46.0** compares its exact tag match against that stored
+  text, so there a tag containing a control character, `/`, `\` or any non-ASCII character (any
+  byte ≥ 0x80) matches no card, even one that carries it. The read would answer `cards: []`
+  beside counts of `0`, so the tool refuses the tag (422, before any board read) instead (kanban
+  card#9522). From kanban v0.46.0 such a tag matches element-wise, but this read does not know
+  which kanban answers it, so it keeps the refusal. `board_search`, which only answers kanban
+  v0.47.0 or later, accepts these tags.
 - **Cost:** a call with `tag` adds the tag read (paged) and one-row searches — the
   `other_swimlanes` count, the free-text disclosure check, and the `no_swimlane` count. The
   board structure read is the one the default call already makes.
@@ -1091,10 +1095,14 @@ you sent them**. Where the bridge cannot establish a status for an id, the **who
 **⚠ A 403 is `other_board` only once your own board has read back.** kanban's search answers a
 writeback user that is not a **member** of your board with zero rows, not an error, so such a user
 would miss every card on your board and then 403 on each by id — every one of your own cards would
-come back `other_board`. On the first 403 in a call the bridge therefore asks your board once
+come back `other_board`. Any id **in the same call** that came back `found` or `archived` already
+proves your board reads back (the search that returned it answers members only), and every
+board-scoped lookup runs before any by-id read, so that proof counts whatever order you sent the ids
+in. Only when **no** id resolved on your board does the first 403 make the bridge ask your board once
 (`limit=1`); if it reads back **empty**, the call is **refused** — an empty board and an unreadable
 one are one answer to that question (and the control counts LIVE cards, so a board whose every card
-is archived reads back empty too). Likewise, a by-id answer that names **your** board after the
+is archived reads back empty too — which is why a resolved `archived` id is taken as the proof
+instead of asking). Likewise, a by-id answer that names **your** board after the
 board-scoped search missed it (a user who may view your board without being its member) is refused
 as a **BROKEN READ**, never reported as a status.
 
@@ -1140,7 +1148,7 @@ the retryable `502`.
 
 **Cost:** per id, one search for a live card, two for an archived one, three reads for an id not on
 your board; plus at most one stage read (only when `stage` is selected and a card was found) and at
-most one membership control per call. **That worst case is a large slice of a budget every
+most one membership control per call (none when any id resolved on your board). **That worst case is a large slice of a budget every
 board-tools call and the writeback SHARE.** kanban's default API limit is 300 req/min **per
 authenticated user** (kanban `origin/dev` 4688b543, `app/Providers/AppServiceProvider.php:40`), and
 every call on this door authenticates as the ONE writeback user (§ *A least-privilege writeback
@@ -1152,6 +1160,152 @@ which costs fewer than 3 reads, so a call where every id misses never pays it �
 per-minute budget the writeback's own card moves draw on. A 429 that lands on a writeback move
 while that budget is exhausted is currently handled as a PERMANENT failure rather than retried, not
 something this tool fixes — tracked separately as card#10849.
+
+## `board_search`
+
+**Search your own board by filter and get the matches only** (DL-437, card#10832; rt#572 asks 3–5).
+`board_my_cards` answers "what is in my lane", with a lane list and a column list attached;
+`board_get_cards` answers "what state are these ids in". This answers "which cards on my board match
+these filters" — and, with `summary: true`, "how many, per column".
+
+**Arguments** (all optional; they combine with AND):
+
+| Arg | Notes |
+| --- | --- |
+| `tags_all` | Non-empty list of tags. Cards carrying **every** one (each matched exactly — kanban v0.46.0+ matches each tag element-wise, so `/`, `%`, `\` and non-ASCII characters match literally). A tag containing `"` or `*` (term syntax) or longer than kanban's tag limit is refused; this applies to `tags_any` and `summary_tags` too. |
+| `tags_any` | Non-empty list of tags. Cards carrying **at least one**. kanban's search has no OR, so this costs one search per tag (see *Cost*). |
+| `stage` | Non-empty **list** of columns, each a numeric stage id or a stage name — resolved exactly as `board_my_cards`' `stage` is (case-insensitive, trimmed, an ambiguous name refused; `BoardStageArgument`). |
+| `pr_number` | A positive integer. Cards tracking that pull-request number, **in any repo** — each card's `source` and `pr_url` tell them apart. **Live cards only**: refused with `include_archived: true` (below). |
+| `name_contains` | Non-empty text. Cards whose **name** contains it — kanban's own match (a `LIKE`, so case follows kanban's database collation). A `"` or a control character is refused: kanban's term carries the text inside quotes. |
+| `updated_since` | A calendar **date**, `YYYY-MM-DD`. Cards updated on or after it. kanban compares the **date part** of `updated_at` (its `whereDate`, in kanban's database time zone), so a timestamp is refused rather than rounded. |
+| `include_archived` | Boolean, default `false`. Also search the archived side; each card then carries `archived: true` or `false`. |
+| `lane` | `mine` (your own swimlane), `none` (cards in no lane) or `any` (every lane — **the default**). |
+| `summary` | Boolean, default `false`. Counts instead of cards — below. |
+| `summary_tags` | With `summary: true` only: a list of tags to count the matches of, each on its own. |
+| `fields` | As `board_get_cards`' `fields` (`BoardCardProjection::FIELDS`, `description` opt-in). `[]` is refused (it would return empty cards); not with `summary`. |
+| `limit` | 1 to `BoardSearchTool::MAX_LIMIT` — kanban's own page size (`KanbanClient::SEARCH_LIMIT`), so one request per search is the whole window. Default `BoardSearchTool::DEFAULT_LIMIT` (`board_my_cards`' card-count cap). Not with `summary`. |
+
+Any other key is refused (§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379)).
+An argument that would change nothing on this call (`summary_tags` without `summary`, `fields` or
+`limit` with it) is refused rather than ignored, as is every malformed value — all before any read.
+
+**Returns** (a search):
+
+```jsonc
+{
+  "configured_board_id": 10,
+  "filters": { "tags_all": ["lane:A"], "stage": [51], "include_archived": false, "lane": "any" },  // as applied: stage names resolved to ids
+  "fields": ["id", "name", "stage", "..."],
+  "cards": [ { "id": 104, "name": "…", "stage": "In Review", "swimlane_id": null, "position": 1024, "…": "…" } ],
+  "window": { "total": 3, "returned": 3, "limit": 52, "truncated": false, "total_is_lower_bound": false }
+}
+```
+
+**Matches only**: no `board_stages`, no `cards_by_stage`, no lane block. `cards` are the **newest**
+matches first (highest id — kanban orders its search that way, and ids are allocated monotonically),
+each the `board_get_cards` card shape (`swimlane_id` and `position` included), plus `archived` under
+`include_archived`.
+
+**`summary: true`** returns no `cards`, `fields` or `window`, and instead:
+
+```jsonc
+"summary": {
+  "total": 3, "total_is_lower_bound": false, "truncated": false,
+  "by_stage": [ { "id": 50, "name": "Backlog", "count": 1 }, { "id": 51, "name": "In Review", "count": 2 } ],
+  "stage_counts_sum_to_total": true,
+  "by_tag": [ { "tag": "bug", "count": 2 } ]      // only when summary_tags is sent
+}
+```
+
+`by_stage` covers the `stage` columns you named, or every column of your board, in column order.
+⛔ Without `stage`, that needs your board's column list: if kanban's read of the board answers
+without one (a 200 carrying no stage collection), the summary is **refused** (422, an INSTALL fault,
+naming that cause) rather than answered with an empty `by_stage`. Naming the columns in `stage` still
+counts them.
+Every count is **kanban's own** (`meta.total` of a one-row search), so nothing is cut: `truncated` and
+`total_is_lower_bound` are always `false` here. ⚠ Each count is a **separate** read, so a card moving
+between two of them can make the columns disagree with `total` by the cards that moved —
+`stage_counts_sum_to_total` says whether they agreed on this call, rather than hiding it.
+
+### The honesty contract, filter by filter
+
+⭐ **Every filter is applied by kanban, never by reading more of the board and filtering in the
+bridge.** Source-read at kanban `origin/dev` 54a63399 (`QueryParser::applyStructuredFilter`,
+`TasksController::search` / `byRef`), not measured against a live instance:
+
+| Filter | How kanban applies it | Window |
+| --- | --- | --- |
+| `tags_all` | one `tags:"<tag>"` term per tag, ANDed | exact |
+| `stage` | `workflow_stage_id=<ids>` | exact |
+| `name_contains` | `name:"<text>"` (a `LIKE %text%`) | exact |
+| `updated_since` | `updated_at>=:<date>` (a date compare) | exact |
+| `lane` | `swimlane_id=<your lane>` / `swimlane_id=none` / no term | exact |
+| `include_archived` | the `archived` switch — kanban has no both-sides mode, so one more search per archive side; the two sides are disjoint, so their totals add | exact |
+| `tags_any` | one search per tag, merged by id in the bridge | the **window** is exact (a card among the union's newest `limit` is among the newest `limit` of every tag it carries); the **total** is exact when every per-tag search was complete, and otherwise a **lower bound** — the larger of the distinct cards read and the largest single-tag count — with `total_is_lower_bound: true` **and** `truncated: true`, because a union kanban was not asked to size cannot be sized from per-tag counts without counting a card that carries two tags twice |
+| `pr_number` | kanban's by-ref index (`boards/{id}/tasks/by-ref.json`, the index the writeback correlates on — canonicalized, board-scoped, **live only**, unpaginated); with any other filter, each card it names is **re-asked through the search** with `id=<n>` and every other filter, so kanban still decides each one | exact (the index answers every live card carrying the PR) |
+
+⛔ **A filter kanban did not apply is a refusal, never an answer.** kanban's search answers a term it
+does not recognise as **free text**, at 200 — a count of cards whose TEXT matches, which looks exactly
+like a count of the thing asked (`swimlane_id=none` on a kanban before v0.45.0 is the live instance).
+So every search this tool sends is checked against kanban's own parse disclosure
+(`meta.free_text_terms`, kanban DL-282, **first released in kanban v0.47.0**): a term listed there, a
+response without the disclosure at all, or one without `meta.total`, refuses the whole call (422,
+"NO cards were returned", an INSTALL fault) — **so `board_search` needs kanban v0.47.0 or later.** A
+row naming another board refuses the call too, without that row's content; a 200 carrying no card
+collection is the retryable `502`.
+
+**Two combinations are refused, each naming why:**
+
+- **`pr_number` with `include_archived: true`** — ⚠ **a kanban-side gap, not a bridge choice.** kanban
+  finds a card by PR number only through its by-ref index, which hard-excludes archived cards with no
+  parameter to include them, and its search has no PR-number term (a `custom_field_pr_number` term
+  compares the raw stored value, whose type is each board's own, and would disagree with the
+  canonicalized index the writeback correlates on). `board_get_cards` reads known ids on either side.
+- **`summary: true` with a `tags_any` of more than one tag** — kanban's search has no OR, and a sum of
+  per-tag counts counts a card carrying two of them twice. Use `summary_tags` to count each tag.
+
+**⚠ It crosses lanes by default** (`lane: any`) — the third read on this door that does, after
+`board_my_cards`' `tag` read (DL-383) and `board_get_cards` (DL-435), and the first whose population
+you **filter** rather than name. It stays on your own configured board: every search carries
+`board_id=<yours>`, and kanban's disclosure confirms it applied.
+
+⛔ **"No matches" is said only of a board the bridge can read.** kanban's search answers a token
+whose user is not a **member** of your board zero rows, at 200 — the same answer as "nothing
+matched". So when every search of a call answered nothing, your board is asked once (the membership
+control `board_get_cards` uses, `BoardMembershipControl`); if it reads back empty the call is refused
+(422), naming membership, instead of answered. Anything a search returned in the same call is the
+proof, and then nothing more is asked. ⚠ That control cannot tell an **empty** board from an
+unreadable one — and it counts live cards, so a board whose every card is archived reads back empty
+too — so on such a board a search matching nothing is refused rather than answered "no matches"
+(DL-437 bound (f)). `pr_number` alone sends no search, so its by-ref answer stands without the control.
+
+**Errors.** A permanent 4xx on a search, the membership control, the stage read or the by-ref read is
+a named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339). Any other
+board failure keeps the retryable `502`.
+
+**Cost**, in kanban requests — every one against the per-user budget the writeback shares (§
+`board_get_cards` *Cost*):
+
+- one stage read (the board structure read) when `stage` is sent, `stage` is a selected field (it is by default), or `summary` is
+  set;
+- a search: **(number of `tags_any` tags, or 1) × (2 with `include_archived`, else 1)**;
+- a summary: **(2 with `include_archived`, else 1) × (1 + columns counted + `summary_tags` tags)**;
+- `pr_number`: **1** by-ref read, plus, when any other filter is sent, **(cards the index names) × (number
+  of `tags_any` tags, or 1)** searches, plus **(cards the index names) × (`summary_tags` tags)** in a
+  summary (the matches, of which those cards are the upper bound);
+- **1** membership control whenever the call sends any search (asked only if every search answered
+  nothing, above).
+
+⛔ **Bounded, every request counted.** The call's **whole** total — every line above that applies —
+is held to `BoardSearchTool::REQUEST_CEILING`, and no accepted call sends more. A call its arguments
+alone put over the ceiling (a summary's integer `stage` ids counted) is refused, with its count per
+phase, before its first request. Where the total depends on what a read returns — the columns a
+summary counts, the cards carrying a PR — it is refused once the **sizing** reads have run: the stage
+read, plus the by-ref read on the `pr_number` path. A refused call has sent at most those, never a
+search. The ceiling is **borrowed**, not chosen:
+it is `board_get_cards`' worst case, `3 × MAX_IDS + 1`, the per-call ceiling this door already accepted
+against that shared budget (DL-435 bound (d)). Nothing is ever walked page by page: `limit` never
+exceeds one page, and every count is kanban's.
 
 ## Errors
 

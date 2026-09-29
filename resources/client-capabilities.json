@@ -104,6 +104,60 @@
       "removed_in": null,
       "since": "0.5.0"
     },
+    "board_search": {
+      "arguments": {
+        "fields": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "include_archived": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "lane": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "limit": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "name_contains": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "pr_number": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "stage": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "summary": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "summary_tags": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "tags_all": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "tags_any": {
+          "removed_in": null,
+          "since": "0.9.32"
+        },
+        "updated_since": {
+          "removed_in": null,
+          "since": "0.9.32"
+        }
+      },
+      "removed_in": null,
+      "since": "0.9.32"
+    },
     "board_take_card": {
       "arguments": {
         "card_id": {

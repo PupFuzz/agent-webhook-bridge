@@ -376,6 +376,38 @@ class BoardGetCardsTest extends TestCase
         $this->assertStringContainsString('MEMBER', (string) $res['body']['error']);
     }
 
+    /**
+     * ⛔ A ROW THE SAME CALL ALREADY RESOLVED IS THE MEMBERSHIP PROOF (PR #822 r3). kanban's search
+     * floors to membership, so a `found` or `archived` row proves the token can read this board. On a
+     * board with NO live cards the `limit=1` control reads 0, and consulting it anyway refused the call
+     * and sent the operator to audit a membership the call had just proven — whichever order the ids
+     * came in, because the 403 id is placed only after every scoped lookup.
+     *
+     * @return array<string, array{list<int>}>
+     */
+    public static function orderOfAResolvedAndAForbiddenId(): array
+    {
+        return ['resolved first' => [[102, 105]], 'forbidden first' => [[105, 102]]];
+    }
+
+    /** @param  list<int>  $ids */
+    #[DataProvider('orderOfAResolvedAndAForbiddenId')]
+    public function test_a_row_resolved_in_the_same_call_proves_membership_and_the_control_is_not_asked(array $ids): void
+    {
+        $this->fakeBoard(archived: [102 => self::row(102)], byId: [105 => ['status' => 403]], visibleTotal: 0);
+
+        $res = $this->http(['ids' => $ids, 'fields' => []]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $statuses = array_column($res['body']['result']['cards'], 'status', 'id');
+        $this->assertSame(['archived', 'other_board'], [$statuses[102], $statuses[105]]);
+        Http::assertNotSent(function (Request $r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return ($query['q'] ?? null) === 'board_id='.self::BOARD;
+        });
+    }
+
     public function test_the_membership_control_is_asked_once_per_call_however_many_ids_403(): void
     {
         $this->fakeBoard(byId: [101 => ['status' => 403], 102 => ['status' => 403]]);

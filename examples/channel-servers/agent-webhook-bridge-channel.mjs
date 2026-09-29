@@ -292,7 +292,7 @@ const TOOL_DEFINITIONS = [
             'could not stand behind is null with a reason in its *_unmeasured key — never ' +
             'read a null as zero. Terminal columns are left out unless include_terminal is ' +
             'true. Refused when it contains " * % / \\, a control character or any non-ASCII ' +
-            'character (kanban cannot match those exactly). Omit it and the response is ' +
+            'character (a kanban before v0.46.0 cannot match those exactly). Omit it and the response is ' +
             'exactly the default.',
         },
         include_terminal: {
@@ -546,6 +546,105 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ['ids'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_search',
+    description:
+      'Search the cards on YOUR board by filter and get the MATCHES ONLY — no lane list, no column ' +
+      'list, no grouping. Every filter is applied by the board itself, and the filters combine ' +
+      '(AND). lane defaults to any: cards in every lane of your board, each with its swimlane_id ' +
+      '(null means no lane). Results are the NEWEST matches first, cut to limit; window says ' +
+      'total (how many matched), returned, truncated (true when more matched than were returned) ' +
+      'and total_is_lower_bound (true only when a tags_any union could not be sized exactly — ' +
+      'truncated is then true too). summary: true returns counts instead of cards: total and ' +
+      'by_stage, plus by_tag for the tags you name in summary_tags. Read-only. Where the board ' +
+      'cannot show it applied a filter, the call is REFUSED (422) rather than answered with a ' +
+      'count of something else. A board fault that cannot clear (the bridge token revoked/rotated, ' +
+      'or its scope too narrow to read) is REFUSED (422) naming the INSTALL fault — do not retry ' +
+      'it; tell your operator.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tags_all: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description: 'Cards carrying EVERY one of these tags (each matched exactly).',
+        },
+        tags_any: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description:
+            'Cards carrying AT LEAST ONE of these tags (each matched exactly). Costs one board ' +
+            'read per tag. Cannot be combined with summary when it names more than one tag.',
+        },
+        stage: {
+          type: 'array',
+          items: { anyOf: [{ type: 'integer' }, { type: 'string' }] },
+          minItems: 1,
+          description:
+            'Cards in any of these columns — each a numeric stage id or a stage name (matched ' +
+            'case-insensitively; a name matching two columns is refused).',
+        },
+        pr_number: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Cards tracking this pull-request number (any repo — each card carries source and ' +
+            'pr_url to tell them apart). Live cards only: refused with include_archived.',
+        },
+        name_contains: {
+          type: 'string',
+          description: 'Cards whose name contains this text (the board\'s own match; no double quote).',
+        },
+        updated_since: {
+          type: 'string',
+          description: 'Cards updated on or after this DATE, YYYY-MM-DD (the board compares dates, not times).',
+        },
+        include_archived: {
+          type: 'boolean',
+          description: 'Also search archived cards; each card then carries archived: true or false.',
+        },
+        lane: {
+          type: 'string',
+          enum: ['mine', 'any', 'none'],
+          description: 'mine = your own swimlane, none = cards in no lane, any = every lane (default).',
+        },
+        summary: {
+          type: 'boolean',
+          description: 'Return counts (total, by_stage, and by_tag for summary_tags) and no cards.',
+        },
+        summary_tags: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description: 'With summary: true, also count the matches carrying each of these tags.',
+        },
+        fields: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: ['id', 'name', 'stage', 'position', 'swimlane_id', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at', 'description'],
+          },
+          minItems: 1,
+          description:
+            'Which card fields to return. Omit it for every field EXCEPT description. ' +
+            'description is opt-in per call: name it here to get each card\'s body (with ' +
+            'description_truncated: true when the bridge cut it — never read a cut body as ' +
+            'the whole scope). Not with summary.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 200,
+          description:
+            'How many cards to return, newest first (default 52, at most 200). To see past it, ' +
+            'narrow the filters. Not with summary.',
+        },
+      },
       additionalProperties: false,
     },
   },
