@@ -312,7 +312,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **`source`** is derived by the bridge's existing mirror of kanban's rule (`ExternalReferenceNormalizer::sourceFor`, over the payload's `repo` / GitHub URLs and the card's `external_link`, all on the rows the tool already reads — no extra request); `docs/board-tools.md` states the order. `null` when none yields a repo.
   - **`pr_url`** is the stored `payload.pr_url` as a string, or `null`; a non-scalar stored value reads `null`, as an absent one does. It is one input to `source`, not the answer.
   - **Additive:** no key renamed, removed or re-typed; the two new keys sit after `pr_number`.
-  - **No channel-server re-deploy needed.** The card shape is built in the bridge (`BoardMyCardsTool::projectCard`) and the channel server relays the result unchanged; `examples/channel-servers/` is untouched and its snapshot version does not move.
+  - **No channel-server re-deploy needed.** The card shape is built in the bridge (`BoardMyCardsTool::projectCard`) and the channel server relays the result unchanged; `examples/channel-servers/` is untouched and its snapshot version does not move. *(Annotation, card#10832 / DL-435: `BoardMyCardsTool::projectCard` was **renamed** and moved — the card shape is now built by `BoardCardProjection::project`.)*
 
 ### Changed
 
