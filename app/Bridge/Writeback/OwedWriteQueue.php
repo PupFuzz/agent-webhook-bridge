@@ -113,10 +113,14 @@ final class OwedWriteQueue
     }
 
     /**
-     * Record $target as owed for $event. IDEMPOTENT on `(subject, event)`: a second agent's
-     * insert of the same write, or a redelivery of the same event, is a no-op. ⛔ A failure here
-     * (the database down, the table missing) PROPAGATES — the durable write could not be
-     * recorded, and the dispatch's 5xx is the existing contract for that.
+     * Record $target as owed for $event. IDEMPOTENT on `(subject, event)` ONLY WHILE that row
+     * still exists — a concurrent insert of the same pending write, or a redelivery arriving
+     * before it is applied, is a no-op. Once that row is applied and deleted, a later call for
+     * the same (subject, event) — e.g. a second agent classifying the same event to the same
+     * handler + debounceKey — inserts and applies AGAIN; it is the durable handler's own
+     * idempotency that makes that harmless, not this method. ⛔ A failure here (the database
+     * down, the table missing) PROPAGATES — the durable write could not be recorded, and the
+     * dispatch's 5xx is the existing contract for that.
      */
     public function enqueue(string $subjectKey, ReactionTarget $target, AgentConfig $agent, WebhookEvent $event): void
     {

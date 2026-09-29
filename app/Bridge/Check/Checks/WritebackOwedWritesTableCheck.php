@@ -22,7 +22,10 @@ use Throwable;
  * GitHub delivery is never redelivered (DL-183). This is where that is found at preflight
  * rather than from the outage.
  *
- * Silent when the table exists and nothing owed is left without a clock retry. WARNs, naming
+ * Silent when the table exists and every currently-owed write has a clock retry AVAILABLE — this
+ * asks only whether the config/instance can run, not whether a pass has actually run recently
+ * (that needs live traffic or an adopted tick either way, on THIS write same as the watchdog since
+ * DL-440 Decision 7). WARNs, naming
  * the key or command, when writes are owed and `OwedWriteRetryJob::clockRetryGap()` says the
  * retry sweep cannot run.
  * `unvalidated` when the database could not be asked at all: `database.connectivity` reports
@@ -72,6 +75,6 @@ final class WritebackOwedWritesTableCheck implements Check
             return;
         }
 
-        yield Silence::because('the owed-write table exists, and nothing owed is left without a clock retry');
+        yield Silence::because('the owed-write table exists, and every currently-owed write has a clock retry available to it');
     }
 }

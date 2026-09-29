@@ -56,6 +56,11 @@ use Throwable;
  * differently:
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
+ *    ⭐ EXCEPT the move PATCH itself: a RATE LIMIT (408/429) on it is not this
+ *    — it is recorded as owed and retried by the bridge itself, and the
+ *    delivery answers 200 (card#10849 / DL-440, `OwedWriteQueue`). Every
+ *    other transient cause on every other call here (this read included)
+ *    still throws → 5xx → redelivery.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
  *    outcome, the card id does not RESOLVE on the mapped board (refused by the board-scoped
  *    check before the card is read at all — card#8375), the card kanban handed back is NOT on
