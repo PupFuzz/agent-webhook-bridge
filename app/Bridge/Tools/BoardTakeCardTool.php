@@ -98,11 +98,13 @@ use Illuminate\Support\Facades\Log;
  * replaced holder, carries a `warning`, and says whether the takeover was CONFIRMED.
  * ⛔ The exception is a card in a FINISHED column (Done, Won't Do, Shipped to dev, Shipped to main):
  * its assignee is the record of who did the work, and replacing it needs an explicit steal, which
- * this door does not have — so it is refused, and so is a card whose column cannot be SHOWN not to
- * be finished ({@see FinishedStages}). The steal stays where a human is: `kbcard patch --assign
- * <seat> --steal`. With no assignee, another seat's legacy `owner:` tag counts as the holder
- * ({@see otherSeatsOwnerTags}), the migration fallback the toolkit also reads.
-
+ * this door does not have — so replacing a finished card's ASSIGNEE is refused, and so is replacing
+ * the assignee of a card whose column cannot be SHOWN not to be finished ({@see FinishedStages}).
+ * The steal stays where a human is: `kbcard patch --assign <seat> --steal`. With no assignee,
+ * another seat's legacy `owner:` tag counts as the holder ({@see otherSeatsOwnerTags}), the
+ * migration fallback the toolkit also reads — and that takeover is not column-gated, because it
+ * replaces no record: the take writes `assigned_user_id` alone, so the tag stays on the card.
+ *
  * ⭐ RE-TAKING A CARD THE SEAT ALREADY HOLDS SUCCEEDS AND WRITES NOTHING (`already_held`).
  * It is not a conflict — the board already says what the call is asking it to say — so
  * refusing would make a retry-safe operation fail on its own success, and writing would
@@ -119,7 +121,7 @@ use Illuminate\Support\Facades\Log;
  * ACCEPTED on its size: the gap between one read and one write on one card, against a workflow
  * where a seat claims a card once and then works it for minutes or hours. A TAKEOVER does
  * re-read, and reports `takeover_confirmed: false` with `board_now_names` when it lost.
-
+ *
  * ⛔ A ROW THAT CARRIES NO READABLE `assigned_user_id` IS A DEGRADED READ AND REFUSES.
  * Present-null is a real value meaning UNASSIGNED and is the ordinary case; an ABSENT key
  * or a non-numeric one means the read cannot say whose claim the write would take, and
@@ -255,9 +257,9 @@ final class BoardTakeCardTool implements Tool
 
     /**
      * Q3 (operator ruling, card#10868): a card another user holds is WARNED about, then TAKEN, and
-     * a card comment names the holder it replaced — except a card in a FINISHED column, whose
-     * assignee is the record of who did the work and is refused (ruling 7624: replacing it needs an
-     * explicit steal, which this door does not have).
+     * a card comment names the holder it replaced — except an ASSIGNEE on a card in a FINISHED
+     * column, which is the record of who did the work and is refused (ruling 7624: replacing it
+     * needs an explicit steal, which this door does not have).
      *
      * ⭐ THE HOLDER IS NAMED BEFORE THE WRITE, in the durable log, and not only in the response: a
      * call cut off after the PATCH lands would otherwise lose whom it replaced, and a retry then
@@ -272,7 +274,10 @@ final class BoardTakeCardTool implements Tool
     private function takeOver(KanbanClient $client, array $row, int $boardId, int $cardId, int $userId, ?int $holder, array $ownerTags, string $agentName): array
     {
         $replaced = $this->holderPhrase($holder, $ownerTags);
-        $this->refuseIfFinished($client, $row, $boardId, $cardId, $replaced, $agentName);
+        // Only an ASSIGNEE is a record the take would overwrite; a legacy tag stays on the card.
+        if ($holder !== null) {
+            $this->refuseIfFinished($client, $row, $boardId, $cardId, $replaced, $agentName);
+        }
 
         Log::warning('board_take_card: TAKING a card another holder has — named before the write', [
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
@@ -326,12 +331,13 @@ final class BoardTakeCardTool implements Tool
      */
     private function otherSeatsOwnerTags(array $row): array
     {
+        $ownerTags = array_values(array_filter(CardTags::readable($row) ?? [], OwnerTag::is(...)));
+        if ($ownerTags === []) {
+            return [];
+        }
         $mySeat = SeatKanbanUser::seatNameForCallingSeat($this->name());
         $others = [];
-        foreach (CardTags::readable($row) ?? [] as $tag) {
-            if (! OwnerTag::is($tag)) {
-                continue;
-            }
+        foreach ($ownerTags as $tag) {
             $slash = strrpos($tag, '/');
             $seat = $slash === false ? null : substr($tag, $slash + 1);
             if ($seat !== $mySeat) {

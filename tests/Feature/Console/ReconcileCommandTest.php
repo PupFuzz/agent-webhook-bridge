@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
@@ -1235,6 +1236,44 @@ class ReconcileCommandTest extends TestCase
         $movedAt = array_key_last(array_filter($cards->log, static fn (array $e): bool => $e['method'] === 'PATCH'));
         $this->assertSame([], array_slice($cards->log, $movedAt + 1));
         $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+    }
+
+    /**
+     * card#10869, operator ruling A covers EVERY bridge move out of a start column — `--fix`
+     * included: a forward drift that takes a card with no owner recorded out of
+     * `started_from_stages` is applied and alerted. The assignee-carrying twin is the control.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: int}>
+     */
+    public static function fixStartOwners(): array
+    {
+        return [
+            'no owner recorded' => [['assigned_user_id' => null, 'tags' => ['triaged']], 1],
+            'an assignee' => [['assigned_user_id' => 7, 'tags' => []], 0],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $owner
+     */
+    #[DataProvider('fixStartOwners')]
+    public function test_fix_alerts_a_move_out_of_a_start_column_on_a_card_with_no_owner(array $owner, int $alerts): void
+    {
+        $this->writeWriteback(['owner/repo' => [
+            'board_id' => 8,
+            'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+            'started_from_stages' => [46],
+        ]], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $scanned = $this->card(5, 46, ['pr_url' => $this->prUrl(5)], ['block_reason' => null] + $owner);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $this->assertCount($alerts, Http::recorded(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL)
+            && $r['type'] === 'writeback_moved_without_owner' && $r['card_id'] === 5 && $r['to_stage'] === 50));
     }
 
     public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void

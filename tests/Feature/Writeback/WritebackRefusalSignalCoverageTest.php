@@ -69,10 +69,6 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         // notices with their own gate and their own signal `type`, not refusals (DL-274).
         'kanban_move_card: auto-unparked a card from a parked stage' => 'paired with notifyUnpark — a distinct signal type, not a refusal',
         'kanban_move_card: revived a card from the abandon stage on PR reopen' => 'paired with notifyRevive — a distinct signal type, not a refusal',
-        // card#10869 (operator ruling A): paired by hand with notifyMovedWithoutOwner — the move
-        // LANDED, so this is a notice with its own signal `type` and its own dedup key, not a
-        // refusal routed through the move-failed pairing.
-        'kanban_move_card: moved a card with no owner recorded — no kanban assignee and no owner: tag; the seat working it has not claimed it' => 'paired with notifyMovedWithoutOwner — a distinct signal type, not a refusal',
         // A documented FAIL-OPEN diagnostic: the move still happens, so nothing was refused.
         'kanban_move_card: could not read board stage order for the no-regression guard — allowing the move' => 'fail-open diagnostic — the move proceeds, no refusal to signal',
         // The SECOND fail-open route of the same guard (card#8761), and the one that had no

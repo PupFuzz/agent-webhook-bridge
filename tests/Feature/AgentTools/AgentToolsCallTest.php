@@ -4605,6 +4605,26 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('owner:proj/other-seat', (string) $comments[0]['content']);
     }
 
+    /**
+     * A tag-held takeover replaces NO record — the take writes `assigned_user_id` alone and the
+     * tag stays on the card — so it is not column-gated: with no writeback.json at all, on a card
+     * in a column that would be finished, it is still taken, warned and commented, and no column
+     * read is made. The assignee twin of this fixture is refused (the unanswerable-legs test).
+     */
+    public function test_a_tag_held_takeover_is_not_column_gated_because_it_replaces_no_record(): void
+    {
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['workflow_stage_id' => 52, 'tags' => ['owner:proj/other-seat']]), $comments));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.replaced.owner_tags', ['owner:proj/other-seat'])
+            ->assertJsonPath('result.takeover_comment', 'posted');
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'preload.json'));
+    }
+
     public function test_an_unassigned_card_carrying_this_seats_own_owner_tag_is_taken_the_ordinary_way(): void
     {
         $comments = [];

@@ -13,6 +13,7 @@ use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\OwnerlessStart;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrOutcome;
@@ -495,7 +496,10 @@ class ReconcileCommand extends BridgeCommand
             return;
         }
 
-        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward');
+        // The card as scanned and its mapping travel to the write so an applied move out of a
+        // start column can be checked for a recorded owner (card#10869, ruling A).
+        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward')
+            + ['repo' => (string) $repo, 'card' => $card, 'mapping' => $mapping];
     }
 
     /**
@@ -711,6 +715,7 @@ class ReconcileCommand extends BridgeCommand
                     Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['record']);
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
+                    OwnerlessStart::noteAfterMove($this->alerts, $p['card'], $p['mapping'], false, $p['card_id'], $p['repo'], self::ALERT_OUTCOME, $p['expected']);
                 } catch (Throwable $e) {
                     $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], UntrustedText::forOperator(RedactedErrorText::of($e))));
                     $this->hadError = true;

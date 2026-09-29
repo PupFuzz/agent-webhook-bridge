@@ -949,8 +949,9 @@ the holder it replaced — the toolkit's card-start claim does the same. So:
   `takeover_comment` (`posted` / `failed` / `not_attempted`). A lost race answers
   `takeover_confirmed: false` with `board_now_names`, and no comment. `taken` stays `true`: the
   write was accepted.
-- ⛔ **A card in a FINISHED column is refused, and nothing is written.** Done, Won't Do, Shipped
-  to dev and Shipped to main: the assignee of a finished card is the record of who did the work,
+- ⛔ **Replacing the ASSIGNEE of a card in a FINISHED column is refused, and nothing is written.**
+  Done, Won't Do, Shipped to dev and Shipped to main: the assignee of a finished card is the record
+  of who did the work,
   and replacing it needs an explicit steal, which this door does not have —
   `kbcard patch --assign <seat> --steal` is where it lives. The bridge knows those columns by the
   **union** of your install's `writeback.json` mapping on this board (its `merged` /
@@ -960,7 +961,10 @@ the holder it replaced — the toolkit's card-start claim does the same. So:
   cannot be SHOWN to be unfinished is refused too**: `writeback.json` will not parse, no mapping
   on this board maps `merged`, the board's columns cannot be read, or the card's column is not in
   the board's order. An install with no writeback mapping on the board-tools board therefore
-  still refuses every takeover, as before. ⚠ `board_my_cards`' own terminal exclusion uses the
+  still refuses every takeover of an ASSIGNEE, as it refused every held card before. ⚠ **A
+  tag-held takeover is NOT column-gated**, because it replaces no record: the take writes
+  `assigned_user_id` alone and the `owner:` tag stays on the card. (Before card#10869 such a card
+  was taken silently; now it is taken with the warning and the comment.) ⚠ `board_my_cards`' own terminal exclusion uses the
   board's declaration alone, so a Shipped-to-dev card can be "current" there and "finished" here.
 - The takeover costs two extra board reads (the board's columns, once for the structure and once
   for the order) and one card comment; `comment.create` is needed for the comment (without it the

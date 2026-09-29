@@ -16,11 +16,13 @@ namespace App\Bridge\Support;
  * else is cut at its first `:` (the port); then ONE trailing dot is dropped. It is NOT
  * case-folded — the toolkit compares hosts byte-for-byte.
  *
- * ⚠ PARITY IS PINNED ON THIS SIDE ONLY. `KanbanInstanceKeyTest` holds this class to the rows of
- * the toolkit's own `tests/kb-host-guard-selftest.sh` § kb_url_host, copied at the toolkit
- * commit the test names. No corpus is published that BOTH ends execute, so a later change to
- * `kb_url_host` is not detectable from this repo — `docs/config-schema.md` § identity
- * `coord_seat` says so where an operator reads it.
+ * ⚠ PARITY IS A PUBLISHED CORPUS, AND ONLY THIS END'S HALF IS IN CI. `docs/kb-instance-key-parity-corpus.json`
+ * holds the rows of the toolkit's own `tests/kb-host-guard-selftest.sh` § kb_url_host;
+ * `KanbanInstanceKeyParityTest` holds this class to it both ways on every run, and
+ * `bin/kb-owner-parity.sh` runs the same file through a toolkit checkout's own `kb_url_host`.
+ * That second half is not in CI (CI has no toolkit checkout), so a later change to
+ * `kb_url_host` reds nothing here until someone runs it — `docs/config-schema.md` § identity
+ * `kanban_user_id` says so where an operator reads it.
  */
 final class KanbanInstanceKey
 {

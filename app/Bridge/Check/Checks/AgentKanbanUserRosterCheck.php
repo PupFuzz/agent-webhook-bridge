@@ -40,7 +40,7 @@ use App\Bridge\Writeback\CoordConfigTerminals;
  * The seat is `identity.coord_seat`, else the agent name; the board instance is the host of
  * `bridge.providers.kanban.api_base_url` ({@see KanbanInstanceKey}); the roster read is
  * {@see RosterKanbanUser} — both ports of the toolkit's reader, held to
- * `docs/kb-owner-parity-corpus.json`.
+ * `docs/kb-instance-key-parity-corpus.json` and `docs/kb-roster-uid-parity-corpus.json`.
  *
  * It runs in the roster slot, after the per-agent loop, because it compares agents with each
  * other (two agents resolving to one seat) as well as with the roster.

@@ -748,7 +748,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
         if ($named) {
             Http::assertSent(fn (Request $r) => $this->isOwnerlessAlert($r, 49));
-            Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []): bool => ($ctx['catalog_id'] ?? null) === 'move_card.moved_without_owner'
+            Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []): bool => ($ctx['catalog_id'] ?? null) === 'owner.moved_without_owner'
                 && $ctx['card_id'] === 5 && $ctx['from_stage'] === 46 && $ctx['to_stage'] === 49)->once();
         } else {
             Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
@@ -807,7 +807,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->assertCount(2, Http::recorded(fn (Request $r) => $r->method() === 'PATCH'));
         $this->assertCount(1, Http::recorded(fn (Request $r) => $this->isOwnerlessAlert($r, 49)));
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []): bool => ($ctx['catalog_id'] ?? null) === 'move_card.moved_without_owner')->twice();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []): bool => ($ctx['catalog_id'] ?? null) === 'owner.moved_without_owner')->twice();
     }
 
     public function test_a_move_that_does_not_leave_a_start_column_never_alerts_ownerless(): void
@@ -2054,9 +2054,16 @@ class KanbanMoveCardHandlerTest extends TestCase
         ], $over);
     }
 
+    /**
+     * The OVERRIDE alerts these unpark / revive legs are about. The card#10869 owner-less-start
+     * signal is excluded: an unpark or revival of an unowned card raises it too — correctly, and
+     * pinned by its own tests — and counting it here would make these legs measure the fixture's
+     * missing owner rather than the hold they override.
+     */
     private function alertPushCount(): int
     {
-        return collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
+        return collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0])
+            && $pair[0]['type'] !== 'writeback_moved_without_owner')->count();
     }
 
     public function test_unpark_moves_a_no_automove_pinned_card_and_alerts(): void

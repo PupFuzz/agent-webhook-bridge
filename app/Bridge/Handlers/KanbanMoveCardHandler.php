@@ -10,11 +10,10 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardNote;
-use App\Bridge\Writeback\CardTags;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
-use App\Bridge\Writeback\OwnerTag;
+use App\Bridge\Writeback\OwnerlessStart;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\ProgramCardGuard;
@@ -558,7 +557,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → retry
         }
-        $this->noteOwnerlessStart($card, $current, $isRevive, $mapping, $cardId, $repo, $outcome, $stageId);
+        OwnerlessStart::noteAfterMove($this->alerts, $card, $mapping, $isRevive, $cardId, $repo, $outcome, $stageId);
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
         // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
         // human hold" signal — durable Log::warning first (the record; mirrors every
@@ -986,46 +985,6 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 $repo, $outcome, $cardId, 'cardnote_send_failed',
             );
         }
-    }
-
-    /**
-     * card#10869, operator ruling A: a move that takes a card OUT OF A START COLUMN — the
-     * mapping's `started_from_stages` / `unpark_from_stages`, the columns a card is pulled from
-     * when work begins, or the abandon stage a `reopened` revival pulls it back out of — on a card
-     * that records NO OWNER, neither a kanban assignee nor a legacy `owner:` tag, is MADE and
-     * then raised: a durable log line and a live alert, "moved card N with no owner recorded".
-     * This covers every outcome that can take such a move (`started`, `opened`, a `reopened`
-     * revival or unpark), because the predicate is the column the card LEAVES, not the outcome.
-     *
-     * ⭐ WHY A SIGNAL AND NOT A REFUSAL (operator ruling A: "never refuse"). The owner is recorded
-     * by the SEAT — the toolkit's card-start claim or `board_take_card`; this handler moves on a
-     * GitHub event, which names a pusher and not a seat, so it can never record one itself. What
-     * this does is make "a card started with nobody on it" visible where no seat claimed it.
-     *
-     * ⚠ A mapping that declares no `started_from_stages` / `unpark_from_stages` has no start
-     * columns the bridge knows of, so only its revivals are checked. The read is the card as it
-     * stood BEFORE the move — the only one in hand; a claim written between that read and the
-     * move is not seen, which errs toward an alert that says too much.
-     *
-     * @param  array<string, mixed>  $card
-     */
-    private function noteOwnerlessStart(array $card, mixed $current, bool $isRevive, WritebackMapping $mapping, int $cardId, string $repo, string $outcome, int $stageId): void
-    {
-        $startColumns = array_merge($mapping->startedFromStages ?? [], $mapping->unparkFromStages ?? []);
-        if ((! $isRevive && ! in_array($current, $startColumns, true)) || is_numeric($card['assigned_user_id'] ?? null)) {
-            return;
-        }
-        $tags = CardTags::readable($card);
-        if ($tags !== null && array_filter($tags, OwnerTag::is(...)) !== []) {
-            return;
-        }
-
-        Log::warning('kanban_move_card: moved a card with no owner recorded — no kanban assignee and no owner: tag; the seat working it has not claimed it', [
-            'catalog_id' => 'move_card.moved_without_owner',
-            'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome, 'from_stage' => $current, 'to_stage' => $stageId,
-            'tags_readable' => $tags !== null,
-        ]);
-        $this->alerts->notifyMovedWithoutOwner($repo, $cardId, $outcome, is_int($current) ? $current : null, $stageId);
     }
 
     /**

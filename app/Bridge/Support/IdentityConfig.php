@@ -18,8 +18,9 @@ final class IdentityConfig
     /**
      * @param  ?string  $coordSeat  `identity.coord_seat` — the coord roster seat (`roster[].name`)
      *                              this agent serves, for an agent whose name is not that seat's
-     *                              (card#10869). Null ⇒ the agent name is the seat name. Read only
-     *                              by `bridge:check`'s roster compare ({@see seatName}).
+     *                              (card#10869). Null ⇒ the agent name is the seat name. Read by
+     *                              `bridge:check`'s roster compare and by `board_take_card`'s
+     *                              legacy-tag holder test, both through {@see seatName}.
      */
     public function __construct(
         public readonly ?int $kanbanUserId = null,
