@@ -28,8 +28,8 @@ use Illuminate\Support\Facades\Log;
  *      {@see KanbanClient::cardBoardId} — the unscoped by-id read, which
  *      hands back a board id and nothing else. Another board ⇒ `other_board`; 404 ⇒ `not_found`
  *      (no such id, or in kanban's trash — kanban answers both the same, before authorization);
- *      403 ⇒ `other_board`, but only once {@see ownBoardReadable} has shown this board reads back
- *      to the same token — see there for why that control is not optional.
+ *      403 ⇒ `other_board`, but only once {@see ownBoardReadable} has shown the same token may read
+ *      this board — see there for why that control is not optional.
  *
  * ⚠ IT CROSSES LANES, deliberately — the second read on this door that does (after DL-383's `tag`
  * read). A card id is caller-named on the caller's own board, so there is no wider population to
@@ -205,15 +205,18 @@ final class BoardGetCardsTool implements Tool
         }
 
         if ($onBoard === $boardId || $onBoard === null) {
-            // Either the card IS on this board and the board-scoped search did not return it — the
-            // shape of a writeback user that may VIEW the board without being its member (kanban's
-            // search floors to membership, its `view` policy does not) — or kanban answered 2xx with
-            // no board id at all. Neither is a status; both are refused rather than guessed.
+            // Either the card IS on this board and the board-scoped search did not return it —
+            // the shape kanban would produce if its VIEW authorization and its SEARCH scope
+            // disagreed about who may read this board (on current kanban, source-read, the two
+            // agree for an API token — see `BoardMembershipControl`'s docblock — so this is a
+            // defence against a kanban version or configuration where they do not, not a live case
+            // here) — or kanban answered 2xx with no board id at all. Neither is a status; both are
+            // refused rather than guessed.
             Log::warning('board_get_cards: the by-id read and the board-scoped search disagree — refusing without a verdict', [
                 'agent' => $agentName, 'card_id' => $id, 'board_id' => $boardId, 'by_id_board' => $onBoard,
             ]);
 
-            throw new ToolRefusalException("board_get_cards: card {$id} could not be placed — the board-scoped search of your board {$boardId} did not return it, and the by-id read ".($onBoard === null ? 'answered without a board id' : 'says it IS on that board').'. That is a BROKEN READ, not a status, so NO cards were returned. The usual cause is a writeback token whose user can view your board without being a MEMBER of it (kanban\'s search answers members only). This is an INSTALL fault; report it to your operator.', installFault: true);
+            throw new ToolRefusalException("board_get_cards: card {$id} could not be placed — the board-scoped search of your board {$boardId} did not return it, and the by-id read ".($onBoard === null ? 'answered without a board id' : 'says it IS on that board').'. That is a BROKEN READ, not a status, so NO cards were returned. The likely cause is a kanban whose VIEW authorization and its SEARCH scope disagree about who may read this board. This is an INSTALL fault; report it to your operator.', installFault: true);
         }
 
         return ['status' => self::STATUS_OTHER_BOARD];
@@ -228,8 +231,10 @@ final class BoardGetCardsTool implements Tool
      * seat's own board would come back `other_board`. Any id of THIS call that step 1 resolved is
      * proof enough (the search that returned it floors to membership), and every step-1 lookup runs
      * before any placement, so that proof is in hand whatever order the ids came in. Only when no
-     * id resolved is the board asked, once ({@see ownBoardReadable}); when it does not read back the
-     * call is refused — an empty board and an unreadable one are one answer to that control.
+     * id resolved is the board asked, once ({@see ownBoardReadable}); when it is NOT readable to
+     * that token — kanban's 403 (not a member), or its 200 naming the board `trashed` (which the
+     * control fails closed on, {@see BoardMembershipControl}) — the call is refused. A readable
+     * board, empty or not, makes the 403 `other_board`.
      *
      * @param  \Closure(): bool  $ownBoardReadable  {@see ownBoardReadable}, memoised for this call
      * @return array{status: string}
@@ -240,11 +245,11 @@ final class BoardGetCardsTool implements Tool
             return ['status' => self::STATUS_OTHER_BOARD];
         }
 
-        Log::warning('board_get_cards: a card id 403s and the agent\'s own board reads back empty — refusing without a verdict', [
+        Log::warning('board_get_cards: a card id 403s and the token may not read the agent\'s own board — refusing without a verdict', [
             'agent' => $agentName, 'card_id' => $id, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and your board {$boardId} reads back EMPTY to that same token — a board the token's user is not a MEMBER of answers exactly that way, so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. If your board is not genuinely empty, have your operator check that token's membership of board {$boardId}.");
+        throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and that same token may not read your board {$boardId} either — the token's user is not a MEMBER of it, or the board is TRASHED, so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. Have your operator check that token's membership of board {$boardId}, and whether it is trashed.");
     }
 
     /** The membership control {@see forbiddenVerdict} needs ({@see BoardMembershipControl}). */
@@ -253,7 +258,7 @@ final class BoardGetCardsTool implements Tool
         try {
             return $membership->readable();
         } catch (RequestException $e) {
-            throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId} to establish that the token can read it");
+            throw $this->readRefusal($e, $agentName, BoardReadRoute::MembershipStatus, "the status of your board {$boardId} to establish that the token can read it");
         }
     }
 

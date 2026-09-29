@@ -2,10 +2,12 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Writeback\KanbanClient;
+
 /**
  * WHICH KANBAN ROUTE CLASS A BOARD TOOL'S READ WENT TO — the discriminator
  * {@see BoardCallRefusal::readCause} needs, because a 403 and a 404 do not mean the same
- * thing on the two route classes this door reads from, and the CAUSE is the whole value of
+ * thing on every route class this door reads from, and the CAUSE is the whole value of
  * a named refusal (a refusal that names the wrong thing to audit is worse than the retryable
  * 502 it replaced: it rules the true cause out BY NAME).
  *
@@ -13,20 +15,20 @@ namespace App\Bridge\Tools;
  * cause strings for `tasks/search.json`, which is `board_correct_card`'s only read; DL-339
  * hoisted them and `board_my_cards` reached them from `boards/{id}/preload.json`, whose
  * authorization is different in exactly the place the strings make their claim. A caller
- * therefore names the route class it called, and a `try` block must not span both.
+ * therefore names the route class it called, and a `try` block must not span two.
  *
  * ⚠ THESE ARE THE ROUTE CLASSES WHOSE REFUSALS THIS DOOR NAMES — NOT A CENSUS OF THE ROUTES IT
- * READS. `GET /tasks/{id}.json` is a third one, reached only by `BoardCreateCardTool`'s DL-299
+ * READS. `GET /tasks/{id}.json` is one omission, reached only by `BoardCreateCardTool`'s DL-299
  * placement read-back, which catches `\Throwable` and degrades: it composes no cause, so it has
  * no case here. A route that starts producing a named refusal needs one.
  *
- * ⚠ THE DIFFERENCE IS KANBAN'S, NOT THIS REPO'S, AND THIS REPO CANNOT CHECK IT. Both cases
- * below are source-read from the kanban-board tree, not measured against a live instance;
+ * ⚠ THE DIFFERENCE IS KANBAN'S, NOT THIS REPO'S, AND THIS REPO CANNOT CHECK IT. Every case
+ * below is source-read from the kanban-board tree, not measured against a live instance;
  * the conditions are declared for a consumer in `docs/kanban-integration-contract.md` § 2
- * (the `preload.json` and `search.json` rows), which is the surface that moves if kanban's
- * authorization does. The failure direction if kanban changes one is a refusal naming the
- * wrong thing to audit — never a silent write, and never a widening of what this door
- * accepts.
+ * (the `preload.json`, `status.json` and `search.json` rows), which is the surface that moves
+ * if kanban's authorization does. The failure direction if kanban changes one is a refusal
+ * naming the wrong thing to audit — never a silent write, and never a widening of what this
+ * door accepts.
  */
 enum BoardReadRoute
 {
@@ -47,4 +49,16 @@ enum BoardReadRoute
      * strings deny by name.
      */
     case BoardScoped;
+
+    /**
+     * `GET /api/v3/boards/{id}/status.json` — the membership control's own read
+     * ({@see KanbanClient::boardReadable}). Same `view` authorization as {@see BoardScoped}, but
+     * NOT the same 404 cause: this route resolves a trashed board too (`->withTrashed()`,
+     * authorizing `restore` instead of `view`), so ITS 404 is only an id no board carries at
+     * all — never a trashed one, unlike {@see BoardScoped}'s `preload.json` / `by-ref.json`. A
+     * shared 404 string would have told an operator to look for a trashed board on a route that
+     * can see one. Its 403 is consumed as the control's own answer ({@see
+     * KanbanClient::boardReadable}) and never reaches a cause string here.
+     */
+    case MembershipStatus;
 }

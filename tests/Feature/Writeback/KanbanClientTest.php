@@ -518,6 +518,54 @@ class KanbanClientTest extends TestCase
         $this->assertFalse($this->client()->byRefAvailable(8));   // pre-by-ref kanban
     }
 
+    /**
+     * card#10856: kanban authorizes `boards/{id}/status.json` on the board — 200 to a member, an EMPTY
+     * board included, 403 to a non-member; a trashed board (200 to its owner) is not readable either.
+     * Anything else is thrown.
+     */
+    public function test_board_readable_answers_membership_from_the_board_status_read(): void
+    {
+        Http::fake([
+            '*/boards/8/status.json' => Http::response(['data' => ['id' => 8, 'status' => 'active']]),
+            '*/boards/9/status.json' => Http::response(['message' => 'This action is unauthorized.'], 403),
+            '*/boards/7/status.json' => Http::response(['message' => 'Not Found'], 404),
+            '*/boards/6/status.json' => Http::response(['data' => ['id' => 6, 'status' => 'trashed']]),
+        ]);
+
+        $this->assertTrue($this->client()->boardReadable(8));
+        $this->assertFalse($this->client()->boardReadable(9));
+        $this->assertFalse($this->client()->boardReadable(6), 'its owner is answered 200, but the search reaches no card of a trashed board');
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_ends_with($r->url(), '/boards/8/status.json')
+            && $r->hasHeader('Authorization', 'Bearer wb-token'));
+
+        try {
+            $this->client()->boardReadable(7);
+            $this->fail('a 404 is not a membership answer');
+        } catch (RequestException $e) {
+            $this->assertSame(404, $e->response->status());
+        }
+    }
+
+    /** An archived board is one of kanban's TWO readable `data.status` values, `trashed`'s sibling. */
+    public function test_board_readable_is_true_on_an_archived_board(): void
+    {
+        Http::fake(['*/boards/8/status.json' => Http::response(['data' => ['id' => 8, 'status' => 'archived']])]);
+
+        $this->assertTrue($this->client()->boardReadable(8));
+    }
+
+    /**
+     * ⛔ FAIL CLOSED (card#10856 review). A 200 whose body carries no `data.status` — a kanban
+     * that answers a THIRD status this code has not seen, or a malformed body — is NOT read as
+     * readable. The only route to `true` is an explicit `active` or `archived`.
+     */
+    public function test_board_readable_is_false_on_a_200_with_no_recognised_status(): void
+    {
+        Http::fake(['*/boards/8/status.json' => Http::response(['data' => ['id' => 8]])]);
+
+        $this->assertFalse($this->client()->boardReadable(8));
+    }
+
     public function test_default_correlation_mode_is_ref(): void
     {
         // DL-031: constructed without an explicit mode → ref (hits by-ref, not scan).

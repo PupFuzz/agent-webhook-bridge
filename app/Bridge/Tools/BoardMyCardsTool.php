@@ -229,10 +229,8 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         }
 
         try {
-            $ownRead = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
-            $sharedRead = $cfg->sharedSwimlaneId === null
-                ? null
-                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+            $ownRows = $client->swimlaneCards($boardId, $swimlaneId);
+            $sharedRows = $cfg->sharedSwimlaneId === null ? null : $client->swimlaneCards($boardId, $cfg->sharedSwimlaneId);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
         }
@@ -245,6 +243,9 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
                 throw $this->readRefusal($e, $agentName, 'tag', BoardReadRoute::Search, "the cards carrying your `tag` on your board {$boardId}");
             }
         }
+
+        $ownRead = $this->filterSwimlane($ownRows, $swimlaneId, $agentName, 'own');
+        $sharedRead = $sharedRows === null ? null : $this->filterSwimlane($sharedRows, (int) $cfg->sharedSwimlaneId, $agentName, 'shared');
 
         // ⛔ THE BOARD AXIS IS READ OVER EVERY ROW THIS CALL READ — before the stage filter
         // and before the cut (r1). DL-302 built it as a defence-in-depth report against a
@@ -1060,10 +1061,13 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         ksort($byId);
         $rows = array_values($byId);
 
-        // Split for the same reason as the own/shared legs above: this one is board-scoped,
-        // and on the COORD board it is the likeliest place a membership gap actually shows —
-        // `coord_board_id` is configured separately from `board_id`, so an install can hold
-        // membership of one and not the other.
+        // Board-scoped, and on the COORD board it is the likeliest place a membership gap
+        // actually shows — `coord_board_id` is configured separately from `board_id`, so an
+        // install can hold membership of one and not the other. A non-member 403s HERE
+        // (kanban authorizes `view` on the board itself, and for an API token `view` is
+        // owner-or-member — the same set the search above is floored to): this read is what
+        // refuses the call for a coord board the token cannot read, whether or not the tag
+        // search above found any row.
         try {
             $coordStageNames = $client->boardStageNames($coordBoardId);
         } catch (RequestException $e) {
