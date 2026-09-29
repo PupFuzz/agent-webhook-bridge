@@ -23,6 +23,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- ⚠ **card#10856 — CHANGES WHAT `board_my_cards` REFUSES** — **`board_my_cards` no longer tells a seat it has no cards when the writeback token cannot read its board.** kanban's search answers a token whose user is not a member of the board zero rows at 200, so a seat whose board the operator had removed the writeback user from got clean empty windows. Now, when every search of the seat's board answered nothing (the lane, shared-lane and `tag` reads), the board is asked once through the membership control `board_get_cards` and `board_search` already use (`BoardMembershipControl`), and a board that reads back empty refuses the call (422), naming membership. The coordination board is asked the same way when none of the seat's address tags matched a card there. Any row a search returned is the proof, and then nothing more is asked.
+  - ⚠ **A board with no live card at all is refused too** — the control cannot tell it from an unreadable one (DL-437 bound (f)). That includes **`bridge:check --probe-tools`, `--probe-tools-ssh` and `provision-board-tools.py --self-cert`**, which send a real `board_my_cards`: on such a board they now report the call as failed, with this refusal as the reason.
+  - At most one extra `limit=1` search per board per call, only when every search of that board answered nothing.
+  - `bridge:check`'s "the writeback token sees 0 cards" warning now says `board_my_cards` refuses in that state instead of answering an empty window.
+  - No migration, no config key, no `.env` change, no route change, no token-scope change, no response-shape change on a readable board; `--format=json` `schema` stays **1**.
 - **card#10832 / DL-437** — `board_get_cards` no longer refuses a call, naming the token's board membership, when an id 403s on a board with no live cards while another id of the same call resolved as `archived`: a card resolved on the seat's board in the same call is now the membership proof, whatever order the ids were sent in.
 
 ### Changed

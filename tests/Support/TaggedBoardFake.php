@@ -14,7 +14,9 @@ use Illuminate\Support\Facades\Http;
  * descending, an `id<N` q-token applied as a filter, a page of the request's `limit` at a time with
  * `links.next` set while rows remain (the walk it serves is keyed on id, card#10653); a one-row count
  * search answers the number of `$tagRows` its own `swimlane_id=` / `workflow_stage_id=` terms
- * select, so a count the tool reports is one a real server would have given for that query.
+ * select, so a count the tool reports is one a real server would have given for that query. The
+ * membership control (`q=board_id=10`, `limit=1`) answers the board's live cards: the lane and tag
+ * rows, each counted once.
  *
  * Options:
  *  - `parser` — `current` (kanban v0.45.0+); `pre-none` (v0.43.0–v0.44.x): `swimlane_id=none`
@@ -78,6 +80,12 @@ trait TaggedBoardFake
                     $disclosure = $options['parser'] === 'pre-disclosure' ? [] : ['match_mode' => 'fulltext_prefix_and', 'fallback_tokens' => [], 'dropped_stopwords' => [], 'dropped_oversize_tokens' => []];
 
                     return $refused('probe') ?? Http::response(['data' => [], 'links' => ['next' => null], 'meta' => ['total' => 0] + $disclosure]);
+                }
+                if ($q === 'board_id=10' && ($query['limit'] ?? null) === '1') {
+                    // The membership control (card#10856): the board's live cards, whatever lane.
+                    $live = array_unique(array_column(array_merge($laneRows, $tagRows), 'id'));
+
+                    return Http::response(['data' => [], 'links' => ['next' => null], 'meta' => ['total' => count($live)]]);
                 }
                 if (! str_contains($q, 'tags:"')) {
                     return Http::response(['data' => $laneRows, 'links' => ['next' => null], 'meta' => ['total' => count($laneRows)]]);

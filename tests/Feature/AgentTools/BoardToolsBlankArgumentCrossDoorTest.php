@@ -18,6 +18,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
 use Tests\Support\JsonTypeArms;
+use Tests\Support\ReadableEmptyBoardSearch;
 use Tests\TestCase;
 
 /**
@@ -623,7 +624,7 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
-            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => ReadableEmptyBoardSearch::stub(),
         ]);
     }
 
@@ -654,11 +655,15 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
         $this->assertNull(BoardToolsClientCall::query()->where('agent', 'me')->value('client_version'), 'if this door now records the padded version too, the divergence was closed — which needs a ruling, not a green test');
     }
 
-    /** A board on which no idempotency key correlates, so a create always creates. */
+    /**
+     * A board on which no idempotency key correlates, so a create always creates. Its search stub is
+     * {@see fakeReadableWindow}'s: `Http::fake` stubs stack and the first registered wins, so a loop
+     * mixing the two would otherwise answer a later read call's membership control from this one.
+     */
     private function fakeUncorrelatedBoard(): void
     {
         Http::fake([
-            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => ReadableEmptyBoardSearch::stub(),
             '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);

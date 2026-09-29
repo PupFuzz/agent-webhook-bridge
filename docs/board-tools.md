@@ -252,6 +252,23 @@ see [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4x
 The whole call refuses, including when only the **coord** leg failed: a response silently
 missing its coordination cards reads exactly like a board with none.
 
+⛔ **"No cards" is said only of a board the bridge can read (card#10856).** kanban's search answers a
+token whose user is not a **member** of the board zero rows, at 200 — the same answer as a lane with
+no cards. So when every search of your board answered nothing (the lane read, the shared-lane read,
+the `tag` read), your board is asked once — the membership control `board_get_cards` and
+`board_search` use, `BoardMembershipControl` — and if it reads back empty the call is **refused**
+(422), naming membership, instead of answered with empty windows. The coordination board is its own
+question, because it is configured apart from `board_id`: when none of your address tags matched a
+card there, that board is asked once too, and refuses the same way. Any row a search returned — even
+one the lane filter then drops as another lane's — is the proof, and then nothing more is asked.
+- ⚠ The control cannot tell an **empty** board from an unreadable one, and it counts live cards, so a
+  board with no live card at all (a new board, or one whose every card is archived) is refused too
+  (DL-437 bound (f)). ⚠ **That includes `bridge:check --probe-tools`, `--probe-tools-ssh` and the
+  `--self-cert` round-trip**, which all send a real `board_my_cards`: on such a board they report the
+  call as not succeeding, with this refusal as the reason.
+- **Cost:** at most one extra `limit=1` search per board per call, sent only when every search of that
+  board answered nothing.
+
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
 ⚠ **Every card list in this response is cut to a fixed number of CARDS, and the response
@@ -491,6 +508,9 @@ deliberate exception** (DL-383): it lists the cards on your board carrying the o
 tag you name, in any lane — see § Cards carrying a tag, in any lane.
 
 ### An empty window is not always an empty lane
+
+An empty answer is only given once the board is shown readable (§ `board_my_cards` above), so the
+membership gap is no longer one of its causes; the two below still are.
 
 ⚠ **Check the bridge log before you believe an empty answer.** When kanban
 answers `200` with a body carrying no card collection at all, the read degrades
@@ -1755,7 +1775,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `docs/multi-host.md § 3`).
   `bridge:check --probe-tools=<endpoint>` exercises
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
-  the REAL ssh round-trip (see the runbook below).
+  the REAL ssh round-trip (see the runbook below). ⚠ Both send a real `board_my_cards`, which
+  refuses on a board with no live card readable to the writeback token (§ `board_my_cards`,
+  card#10856) — so on a new, empty board the probe fails naming membership. Put one live card on
+  the board, or read the `board_tools` visibility line above it: that one says 0 cards too.
 - **⭐ The CLIENT half is reported too, and only the seat can report it (DL-313).**
   Everything above observes the **bridge** side of the door. The **calling seat's** half —
   its keypair, its seeded `known_hosts`, the `BRIDGE_TOOLS_*` entries in its own

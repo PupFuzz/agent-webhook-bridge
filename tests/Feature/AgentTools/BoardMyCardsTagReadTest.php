@@ -591,6 +591,21 @@ class BoardMyCardsTagReadTest extends TestCase
         ], self::sentSearches(), 'presence witness: the second call adds the tag read, its two counts and the disclosure probe after the same lane search');
     }
 
+    /**
+     * A tag row is a search row of this board, so with an empty lane it is the membership proof on
+     * its own and no control is asked (card#10856); without `tag` the same empty lane asks it.
+     */
+    public function test_a_tag_row_is_the_membership_proof_when_the_lane_is_empty(): void
+    {
+        $this->fakeTaggedBoard([], [self::taggedRow(71, 50, null)]);
+
+        $this->assertTrue($this->http(['tag' => 'lane:A'])['ok']);
+        $this->assertNotContains('board_id=10 [count]', self::sentSearches(), 'a call that read a tag row asks no membership control');
+
+        $this->assertTrue($this->http()['ok']);
+        $this->assertContains('board_id=10 [count]', self::sentSearches(), 'presence witness: the empty lane alone does ask it');
+    }
+
     public function test_the_board_axis_reads_the_tag_rows_too(): void
     {
         $this->fakeTaggedBoard([], [self::taggedRow(71, 50, null)]);

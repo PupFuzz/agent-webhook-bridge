@@ -14,6 +14,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\FakeToolsCallStdio;
+use Tests\Support\ReadableEmptyBoardSearch;
 use Tests\TestCase;
 
 /**
@@ -124,7 +125,7 @@ class ToolsCallCommandTest extends TestCase
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
-            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => ReadableEmptyBoardSearch::stub(),
         ]);
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']));
@@ -250,7 +251,7 @@ class ToolsCallCommandTest extends TestCase
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
-            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => ReadableEmptyBoardSearch::stub(),
         ]);
     }
 
@@ -330,7 +331,7 @@ class ToolsCallCommandTest extends TestCase
         $this->writeSshAgent();
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
-            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => ReadableEmptyBoardSearch::stub(),
         ]);
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
@@ -572,7 +573,7 @@ class ToolsCallCommandTest extends TestCase
         $this->writeSshAgent();
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
-            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => ReadableEmptyBoardSearch::stub(),
         ]);
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards', 'args' => ['status' => 'all']]));

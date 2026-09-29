@@ -100,6 +100,14 @@ use Illuminate\Support\Facades\Log;
  * between a board-scoped read and a card search, and a refusal naming the wrong one denies the
  * true cause to the operator by name.
  *
+ * ⛔ "NO CARDS" IS SAID ONLY OF A BOARD THE TOKEN CAN READ (card#10856). kanban's search answers a
+ * token whose user is not a MEMBER of the board zero rows at 200, so a seat whose board the token
+ * could not read was told it had no cards. When every search of a board answered nothing, the board
+ * is asked once ({@see BoardMembershipControl}, via {@see member}) and a board reading back empty
+ * refuses the whole call — the product board after its lane, shared-lane and `tag` reads, the
+ * coordination board after its address-tag reads. Any row a search returned is the proof, so a call
+ * that read one asks nothing more.
+ *
  * ⭐ `tag` IS THE ONE READ HERE THAT CROSSES SWIMLANES ON PURPOSE (card#9260, DL-383). A seat
  * whose sprint cards sat at `swimlane_id: null` read its own lane, found none, and wrote that its
  * sprint was empty: the lane read never contained them, and nothing in the response varied
@@ -229,10 +237,8 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         }
 
         try {
-            $ownRead = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
-            $sharedRead = $cfg->sharedSwimlaneId === null
-                ? null
-                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+            $ownRows = $client->swimlaneCards($boardId, $swimlaneId);
+            $sharedRows = $cfg->sharedSwimlaneId === null ? null : $client->swimlaneCards($boardId, $cfg->sharedSwimlaneId);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
         }
@@ -245,6 +251,17 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
                 throw $this->readRefusal($e, $agentName, 'tag', BoardReadRoute::Search, "the cards carrying your `tag` on your board {$boardId}");
             }
         }
+
+        // Any row a search of this board returned — before the swimlane filter drops a foreign
+        // lane's — is the membership proof; only when every search answered nothing is the board asked.
+        $membership = new BoardMembershipControl($client, $boardId);
+        if ($ownRows !== [] || ($sharedRows ?? []) !== [] || ($tagRead->cards ?? []) !== []) {
+            $membership->proven();
+        }
+        $this->member($membership, $boardId, 'your board', $agentName);
+
+        $ownRead = $this->filterSwimlane($ownRows, $swimlaneId, $agentName, 'own');
+        $sharedRead = $sharedRows === null ? null : $this->filterSwimlane($sharedRows, (int) $cfg->sharedSwimlaneId, $agentName, 'shared');
 
         // ⛔ THE BOARD AXIS IS READ OVER EVERY ROW THIS CALL READ — before the stage filter
         // and before the cut (r1). DL-302 built it as a defence-in-depth report against a
@@ -291,7 +308,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             // already holds, so a future key added to the literal above would drop
             // the observed coord block with nothing red. Naming each key also puts
             // coordBlock()'s declared shape under phpstan.
-            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit);
+            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit, $membership);
             $result['coord_board_id'] = $coord['coord_board_id'];
             $result['coord_board_observed'] = $coord['coord_board_observed'];
             $result['configured_coord_board_id'] = $coord['configured_coord_board_id'];
@@ -337,6 +354,29 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         ]);
 
         return BoardCallRefusal::readRefusal($this->name(), $route, $status, $what, 'so NO cards were returned — this is not an empty window');
+    }
+
+    /**
+     * ⛔ Every search of a board answered nothing: kanban's search answers a board the token's user is
+     * not a MEMBER of exactly that way, so "no cards" is reported only once the board is shown readable
+     * ({@see BoardMembershipControl} — the control `board_get_cards` and `board_search` ask too).
+     */
+    private function member(BoardMembershipControl $membership, int $boardId, string $whose, string $agentName): void
+    {
+        try {
+            $readable = $membership->readable();
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'membership control', BoardReadRoute::Search, "{$whose} {$boardId} to establish that the token can read it");
+        }
+        if ($readable) {
+            return;
+        }
+
+        Log::warning('board_my_cards: every search answered nothing and the board reads back empty — refusing without an answer', [
+            'agent' => $agentName, 'board_id' => $boardId,
+        ]);
+
+        throw new ToolRefusalException("board_my_cards: kanban's search returned no cards, and {$whose} {$boardId} reads back EMPTY to the bridge's writeback token — a board the token's user is not a MEMBER of answers exactly that way (kanban's search answers members only), so \"no cards\" cannot be told from \"cannot see the board\". NO cards were returned. If {$whose} has live cards, have your operator check that token's membership of board {$boardId}.");
     }
 
     /**
@@ -1041,7 +1081,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      *
      * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>, coord_cards_window: array{total: int, returned: int, limit: int, truncated: bool, remedy?: string}}
      */
-    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit): array
+    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit, BoardMembershipControl $ownBoard): array
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
@@ -1059,6 +1099,11 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         }
         ksort($byId);
         $rows = array_values($byId);
+        if ($rows === []) {
+            // The coord board is configured apart from `board_id`, so its membership is its own
+            // question — unless it IS the product board, whose control this call already holds.
+            $this->member($coordBoardId === (int) $cfg->boardId ? $ownBoard : new BoardMembershipControl($client, $coordBoardId), $coordBoardId, 'the coordination board', $agentName);
+        }
 
         // Split for the same reason as the own/shared legs above: this one is board-scoped,
         // and on the COORD board it is the likeliest place a membership gap actually shows —
