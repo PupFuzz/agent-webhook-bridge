@@ -1239,17 +1239,13 @@ php artisan bridge:github-owed --fix --repo owner/name --limit 20
   - **Bounds** — `OwedWriteQueue`'s constants own the figures, deliberately not repeated here: `MAX_ATTEMPTS` rate-limited attempts per write, an exponential backoff from `BASE_BACKOFF_S` (never sooner than the refusal's `Retry-After`), `MAX_AGE_S` in the queue, and `MAX_QUEUE_PER_SUBJECT` owed writes per subject.
   - **When a bound is spent the write is given up LOUDLY**: one `writeback_owed_write_gave_up` alert on the `alert_channel` per give-up — never deduplicated, so a subject that gives up again next week alerts again — carrying `reason` (`rate_limited`, `expired`, `target_gone`, `overflow`), `handler`, `repo`, `webhook_event_ids`, `attempts` and a `remedy` (`php artisan bridge:replay <id> --agent=<agent> --force`, which re-runs that agent's whole dispatch, best-effort pushes included). A move / block-reason subject's card id is withheld from the channel (`card_id_withheld: true`, DL-314); the `Log::warning` (`catalog_id: owed_write.gave_up`) carries it. An overflow gives up every write the subject owed, in one alert.
   - **The watchdog is always on and needs nothing from you.** The first time a write is left owed, the bridge declares the periodic job instance `writeback-owed-writes-watchdog` (handler `owed_write_watchdog`, read-and-alert). It gives up, with the alert above, the oldest owed write of any subject that has sat past `MAX_AGE_S` — which is what surfaces a write on a subject that never sees another event. Switch it off with `bridge:jobs disable writeback-owed-writes-watchdog`; a removed instance is declared again at the next owed write.
-  - **The sweep is OFF by default** (it applies board writes with no request behind it, which is what DL-325's arming exists for). To have owed writes retried on a clock too, arm it and declare an instance:
+  - **The sweep is ON BY DEFAULT** (operator ruling, 2026-09-29, card#10849 / DL-440: new functionality defaults on and needs no setup — the one named exception to DL-325's board-writing-jobs-off-by-default, which is a separate bridge-wide question). The first time a write is left owed, the bridge ALSO declares the periodic job instance `writeback-owed-writes-retry` (handler `owed_write_retry`, `mutates_state`) the same way it declares the watchdog — nothing to arm, nothing to insert. It retries a due owed write on a clock too, for a subject that sees no further live event before `MAX_AGE_S`. Turn it off:
 
     ```dotenv
-    BRIDGE_JOBS_ARMED_MUTATORS=owed_write_retry
+    BRIDGE_OWED_WRITE_RETRY_DISABLED=true
     ```
 
-    ```bash
-    php artisan bridge:jobs add writeback-owed-writes --handler=owed_write_retry --interval=300 \
-      --owner=<you> --docs-ref='docs/writeback.md#failure-behaviour-what-retries-vs-not' \
-      --justification='retry an owed write whose card sees no further event before it ages out'
-    ```
+    which withholds it from the armed set exactly as if `owed_write_retry` had never been named — DL-325's ordinary unarmed state — and its instance is then never (re-)declared either. `bridge:jobs disable writeback-owed-writes-retry` is the OTHER way to stop a declared instance from running, independent of arming.
   - **The release promote and the coordination-card move** stop at their first rate limit — no further call that run — and the whole target (the repo's scan, the issue's card set) is one owed write; the retry re-runs it, skipping what already moved.
   - **The no-regression guard and the dependabot create guard do NOT fail open on a rate limit.** Each fails open on an unreadable board read by design; a rate-limited read instead keeps the write owed, so a retried `opened` cannot drag a card that has since shipped backward.
   - **Not retried here, unchanged:** the owner-tag clear after a terminal move and the correlation card note handle their own failures (a named alert, no throw), rate limits included.

@@ -5,8 +5,10 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
 use App\Bridge\Scheduling\Handlers\OwedWriteWatchdogJob;
 use App\Bridge\Scheduling\JobRegistry;
+use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\RedactedErrorText;
@@ -301,7 +303,7 @@ final class OwedWriteQueue
                 $handler->handle(self::targetOf($row), $agent);
             } catch (RequestException $e) {
                 if (! RefusalContext::isRateLimited($e)) {
-                    $this->declareWatchdog();
+                    $this->declareJobs();
                     throw $e;
                 }
                 $this->recordAttempt($row, $e, $e);
@@ -350,7 +352,7 @@ final class OwedWriteQueue
             ] + self::rowContext($row));
         }
 
-        $this->declareWatchdog();
+        $this->declareJobs();
     }
 
     /**
@@ -408,20 +410,18 @@ final class OwedWriteQueue
     }
 
     /**
-     * Make sure the always-on watchdog has an instance to run, the first time a write is left
-     * owed. Declared HERE, at the moment it becomes necessary, rather than shipped as a row every
-     * install carries: an install that is never rate-limited never grows a periodic job. An
-     * operator who DISABLES it keeps it disabled (`JobRegistry::insert` writes `enabled` at
-     * create only); one who REMOVES it gets it back at the next owed write. Best-effort: failing
-     * to declare it must never change what the dispatch answers.
+     * Make sure the always-on watchdog — and, unless disabled, the default-armed retry sweep —
+     * has an instance to run, the first time a write is left owed. Declared HERE, at the moment
+     * it becomes necessary, rather than shipped as a row every install carries: an install that
+     * is never rate-limited never grows either periodic job. An operator who DISABLES an
+     * instance keeps it disabled (`JobRegistry::insert` writes `enabled` at create only); one
+     * who REMOVES it gets it back at the next owed write. Best-effort: failing to declare
+     * either must never change what the dispatch answers.
      */
-    private function declareWatchdog(): void
+    private function declareJobs(): void
     {
         try {
-            if (ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->exists()) {
-                return;
-            }
-            app(JobRegistry::class)->insert(OwedWriteWatchdogJob::spec());
+            $this->declareOne(OwedWriteWatchdogJob::INSTANCE, OwedWriteWatchdogJob::spec());
         } catch (Throwable $e) {
             Log::warning('bridge owed-write: could not declare the owed-write watchdog job — owed writes will not be aged out or alerted on until it exists', [
                 'catalog_id' => 'owed_write.watchdog_undeclared',
@@ -429,6 +429,33 @@ final class OwedWriteQueue
                 'remedy' => 'php artisan bridge:jobs add '.OwedWriteWatchdogJob::INSTANCE.' --handler='.OwedWriteWatchdogJob::NAME.' (docs/periodic-jobs.md)',
             ]);
         }
+
+        // ⛔ NOT ATTEMPTED WHILE THE KILL SWITCH IS SET: an unarmed mutator's spec is REFUSED
+        // at insert (JobRegistry::insert), so trying it here would be an ordinary, expected
+        // outcome of the operator's own choice — not the config gap this exists to report
+        // loudly. Checked directly rather than caught, so a disabled retry sweep never logs as
+        // though something were missing.
+        if ((bool) config('bridge.jobs.owed_write_retry_disabled')) {
+            return;
+        }
+        try {
+            $this->declareOne(OwedWriteRetryJob::INSTANCE, OwedWriteRetryJob::spec());
+        } catch (Throwable $e) {
+            Log::warning('bridge owed-write: could not declare the owed-write retry job — owed writes will not be retried on a clock until it exists (each subject\'s next event still retries it inline)', [
+                'catalog_id' => 'owed_write.retry_undeclared',
+                'error' => RedactedErrorText::of($e),
+                'remedy' => 'php artisan bridge:jobs add '.OwedWriteRetryJob::INSTANCE.' --handler='.OwedWriteRetryJob::NAME.' (docs/periodic-jobs.md)',
+            ]);
+        }
+    }
+
+    /** @throws Throwable when the instance does not yet exist and JobRegistry::insert() refuses or fails */
+    private function declareOne(string $instance, JobSpec $spec): void
+    {
+        if (ScheduledJob::query()->where('name', $instance)->exists()) {
+            return;
+        }
+        app(JobRegistry::class)->insert($spec);
     }
 
     /** The subject's oldest row, when it is due now. */

@@ -659,12 +659,16 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     // --- card#10849 / DL-440 § 3b: a rate limit stops the scan's calls, once, for the whole target ---
 
-    public function test_a_github_rate_limit_on_the_first_candidate_ends_the_scan_with_no_further_call_and_no_alert(): void
+    public function test_a_github_rate_limit_on_the_first_candidate_pauses_github_only_and_nothing_can_still_move(): void
     {
         // Before card#10849 this 429 was a PERMANENT per-card refusal: alerted, skipped, and the
-        // scan went on hammering GitHub for every later candidate. Now it escapes the scan at
-        // once and the owed-write queue retries the whole scan as one owed row.
+        // scan went on hammering GitHub for every later candidate. Now GitHub is called no
+        // further THIS RUN once it refuses — but every candidate here needs GitHub BEFORE
+        // kanban, so pausing GitHub alone still means no candidate reaches a move; the sibling
+        // test below proves the "other source keeps running" half on a KANBAN-first refusal,
+        // where GitHub genuinely has independent work left to do.
         $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
         $this->fakeBoard($this->twoPromotableCards(), [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'API rate limit exceeded'], 429, ['Retry-After' => '60']),
@@ -682,13 +686,23 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/103') || str_contains($r->url(), '/compare/'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        // Named in the scan's own output, never silently dropped.
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: scan complete'
+            && $ctx['rate_limited_sources'] === ['github'])->once();
     }
 
-    public function test_a_kanban_rate_limit_on_a_promote_move_ends_the_scan_with_no_further_call_and_no_alert(): void
+    /**
+     * The "other source keeps running" half of the operator ruling, on its only exercisable
+     * shape: kanban refuses candidate 1's MOVE, after GitHub already cleared it — so GitHub
+     * has independent work left (deciding candidate 2's eligibility) that a kanban pause must
+     * not stop. Candidate 2's GitHub calls succeed; its kanban move is never attempted.
+     */
+    public function test_a_kanban_rate_limit_on_a_promote_move_pauses_kanban_only_and_github_keeps_deciding_other_candidates(): void
     {
         // card#10849: swallowing this as `promote_movecard_4xx` stranded the card at Shipped for
         // good — this leg has no reconcile backstop.
         $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
         $this->fakeBoard($this->twoPromotableCards(), [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             'https://api.github.com/repos/owner/repo/pulls/103' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA7', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
@@ -705,9 +719,15 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             $this->assertSame(429, $e->response->status());
         }
 
+        // ⭐ Source B: GitHub is STILL processed for candidate 2 after kanban (source A) 429'd
+        // on candidate 1 — the operator's condition, proved directly rather than inferred.
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/pulls/103'));
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/compare/SHA7...main'));
+        // But kanban is paused: exactly one PATCH (candidate 1's refused move), none for candidate 2.
         $this->assertCount(1, Http::recorded(fn (Request $r) => $r->method() === 'PATCH'), 'one refused move, and no move for the next candidate');
-        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/103'));
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: scan complete'
+            && $ctx['rate_limited_sources'] === ['kanban'])->once();
     }
 
     // --- card#7212: the success record names the board the write LANDED on ---

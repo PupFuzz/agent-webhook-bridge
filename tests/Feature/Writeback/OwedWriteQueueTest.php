@@ -187,6 +187,36 @@ class OwedWriteQueueTest extends TestCase
         $this->assertSame(OwedWriteWatchdogJob::NAME, $job->handler);
     }
 
+    /**
+     * Operator ruling, 2026-09-29 (card#10849 / DL-440): `owed_write_retry` ships ARMED and its
+     * instance is declared by default, the one named exception to DL-325's default-off.
+     */
+    public function test_the_first_owed_write_also_declares_the_retry_instance_armed_by_default(): void
+    {
+        $this->assertFalse(ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->exists());
+
+        $this->rateLimitFirst(retryAfter: null);
+        $this->owe('a');
+
+        $job = ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->sole();
+        $this->assertTrue($job->enabled);
+        $this->assertSame(OwedWriteRetryJob::NAME, $job->handler);
+    }
+
+    public function test_the_kill_switch_withholds_both_the_arming_and_the_retry_instance(): void
+    {
+        config(['bridge.jobs.owed_write_retry_disabled' => true]);
+
+        $this->assertSame(JobRefusal::UNARMED_MUTATOR, $this->app->make(JobHandlerRegistry::class)->runnable(OwedWriteRetryJob::NAME)?->reason ?? null);
+
+        $this->rateLimitFirst(retryAfter: null);
+        $this->owe('a');
+
+        // The watchdog is unaffected by the retry job's own kill switch.
+        $this->assertTrue(ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->exists());
+        $this->assertFalse(ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->exists(), 'a disabled retry job gets no instance — inserting one would be refused anyway');
+    }
+
     // --- §10.9: the per-subject lock ---
 
     public function test_an_overlapping_drain_of_the_same_subject_no_ops_and_the_write_applies_once(): void

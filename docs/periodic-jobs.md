@@ -234,6 +234,10 @@ would extinguish its own warn on the first run with nothing wired.
   `JobCapability::MutatesState`, and it is **inert** until this install names it in
   `BRIDGE_JOBS_ARMED_MUTATORS`. Read-and-alert handlers (staleness checks, wakes, watches,
   cleanups) declare `JobCapability::ReadAndAlert` and exist under normal code review.
+  ⚠ **One named exception:** `owed_write_retry` is armed by default regardless of that list
+  (operator ruling 2026-09-29, card#10849 / DL-440 — new functionality defaults on; DL-325's
+  default-off is a bridge-wide question for a separate card). `JobHandlerRegistry::armedFromConfig()`
+  is the one place this is decided; nothing else reads `BRIDGE_JOBS_ARMED_MUTATORS` directly.
 - **Instances are free.** Inserting or removing an instance of an already-reviewed handler
   is ungated, programmatic and runtime. The only thing an inserter owes is the
   `justification` sentence — **a required documentation slot, not an approval and not a
@@ -352,8 +356,8 @@ backstop, not permission.
 |---|---|---|
 | `standup_digest` | `read_and_alert` | Asks `App\Bridge\Standup\StandupGate::runPass()` — the PM digest (DL-306), on a wall clock instead of a delivery cadence. Both ingresses share the digest's own interval marker, so the digest is still pushed at most once per `BRIDGE_STANDUP_INTERVAL` however many things asked. The instance's `interval_s` is how often the scheduler **asks**; `BRIDGE_STANDUP_INTERVAL` is how often it **pushes**. |
 | `idle_nudge` | `read_and_alert` | Pushes ONE live event at a seat that has sat idle past its horizon with work waiting — judged from the seat's own offer record where its YAML declares one (DL-424), otherwise from Mezzanine's fleet snapshot and the intents pushed at it since it went idle (DL-380). **Off and inert until configured** — see [*The idle nudge*](#the-idle-nudge-idle_nudge) below. |
-| `owed_write_watchdog` | `read_and_alert` | Gives up, with a named `writeback_owed_write_gave_up` alert, any durable writeback the bridge has owed longer than `OwedWriteQueue::MAX_AGE_S` (card#10849 / DL-440). **Its instance, `writeback-owed-writes-watchdog`, is declared by the bridge itself the first time a write is left owed** — the only shipped handler with an instance nobody has to insert. It reads and deletes rows of the bridge's own `writeback_owed_writes` table and alerts; it never calls kanban or GitHub. |
-| `owed_write_retry` | `mutates_state` | **The first shipped state-mutating handler, and inert until armed.** Drains every subject whose oldest owed write is due, through the same `OwedWriteQueue::drain()` a live delivery uses (card#10849 / DL-440). Owed writes are already retried inline by the subject's next live event; this adds a retry for a subject that sees none. Arming it and inserting its instance: [`writeback.md`](writeback.md) § *Failure behaviour*. |
+| `owed_write_watchdog` | `read_and_alert` | Gives up, with a named `writeback_owed_write_gave_up` alert, any durable writeback the bridge has owed longer than `OwedWriteQueue::MAX_AGE_S` (card#10849 / DL-440). **Its instance, `writeback-owed-writes-watchdog`, is declared by the bridge itself the first time a write is left owed** — one of two shipped handlers whose instance nobody has to insert (the other is its neighbour below). It reads and deletes rows of the bridge's own `writeback_owed_writes` table and alerts; it never calls kanban or GitHub. |
+| `owed_write_retry` | `mutates_state` | **The first shipped state-mutating handler — and, by explicit operator ruling (2026-09-29, card#10849 / DL-440: new functionality defaults on and needs no setup), the ONE exception to this table's `mutates_state` rule below: armed BY DEFAULT, and its instance is declared by the bridge itself the first time a write is left owed, same as the watchdog above.** Drains every subject whose oldest owed write is due, through the same `OwedWriteQueue::drain()` a live delivery uses. Owed writes are already retried inline by the subject's next live event; this adds a retry for a subject that sees none. `BRIDGE_OWED_WRITE_RETRY_DISABLED=true` is the kill switch back to the ordinary unarmed state (§ *Board/state-mutating handlers* below then governs it exactly like every other mutator). [`writeback.md`](writeback.md) § *Failure behaviour* has the rest. |
 
 ### The idle nudge (`idle_nudge`)
 
