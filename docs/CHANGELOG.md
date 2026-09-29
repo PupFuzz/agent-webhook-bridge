@@ -25,6 +25,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - ⚠ **CI (this repo only):** `pr-title-lint`'s closure step no longer passes a card-naming branch without a closing form in the title, mirroring the runtime.
   - Operator-facing text moves: `bridge:check`'s per-mapping closure line, the withheld-merge warning and `bridge:reconcile`'s skip lines now say the head branch is not closure evidence. The machine-matched tag `(mention-vs-closure, DL-305/DL-308)` is unchanged on both, so anything grepping it (coord's `board-mover-check.py` included) still classifies the rows; the withheld-merge warning names DL-436 in its log context (`decision`). No migration, no config key, no `.env` change, no route change, no token-scope change; `--format=json` `schema` stays **1**.
 
+### Fixed
+
+- **card#10862** — **the channel-server test suite passes in a deployed copy of `examples/channel-servers/`, not only in a bridge checkout.** The seat updater's suite read the shared version-comparator vectors from the repo's `tests/Fixtures/`, outside that directory, so every seat that deployed the directory alone and ran `node --test tests/` got one `ENOENT` failure (roundtable #577). The vectors file moved to `examples/channel-servers/tests/fixtures/version-comparator-vectors.json`; the Node suite reads it from beside itself, and the PHP (`ChannelSnapshotManifestTest`) and Python (`VersionComparatorLockstep`) comparator tests now read that same file, so it is still ONE table for all three implementations and there is no second copy to drift.
+  - CI: `channel-server-supply-chain.yml` now installs, tests and audits the channel server from a `git archive` extraction of `examples/channel-servers/` in the runner's temp dir, not from the checkout, so a test that reads a file outside the directory fails the PR.
+  - ⚠ **Reference channel-server snapshot 0.9.31 → 0.9.32** (the version-bump guard counts any file under the directory, `tests/` included), so `bridge:check` WARNs for a seat on an older copy until it re-copies `examples/channel-servers/`, runs `npm ci` and restarts its session. Nothing the server or updater does changed (one comment in `entry.mjs` names the vectors' new path): a seat that does not re-deploy loses nothing.
+  - No migration, no config key, no `.env` change, no route change, no token-scope change; `--format=json` `schema` stays **1**.
+
 ## [0.92.0] - 2026-09-28
 
 ### Added
