@@ -69,8 +69,9 @@ jobs:
 
       # Every later step runs in this extraction, never in the checkout, so nothing outside
       # examples/channel-servers/ is reachable by a relative path. `git archive` reads the
-      # committed tree, the same bytes a seat's deploy extracts.
-      - name: Extract examples/channel-servers the way a seat deploys it
+      # committed tree, a copy of the directory alone, as a seat's copy or symlink of it holds
+      # (config-schema.md `server_path`).
+      - name: Extract examples/channel-servers as a copy of the directory alone
         shell: bash
         run: |
           set -euo pipefail
