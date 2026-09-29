@@ -56,6 +56,15 @@ final class BoardGetCardsTool implements Tool
      * default-projection answer here is that same list — so the same bound keeps it inside the same
      * budget. It also bounds the upstream fan-out: at most three reads per id (live, archived,
      * by-id), plus one stage read and one visibility control per call.
+     *
+     * ⚠ THAT FAN-OUT SHARES A SCARCE BUDGET: kanban rate-limits 300 req/min per AUTHENTICATED
+     * USER (source-read, kanban `origin/dev` 4688b543, `RateLimiter::for('api', …)` in
+     * `app/Providers/AppServiceProvider.php`), and this tool, every other board-tools call, and
+     * the writeback all authenticate as the ONE writeback user. A call naming ids that all miss
+     * both archive sides can therefore cost up to 157 requests (3 per id at this bound, plus one
+     * shared membership-control request) against a budget the writeback's own card moves draw
+     * on too — and a 429 the writeback hits mid-move is currently dropped as a PERMANENT
+     * failure rather than retried (card#10849; not addressed here).
      */
     public const MAX_IDS = BoardMyCardsTool::DEFAULT_MAX_CARDS;
 

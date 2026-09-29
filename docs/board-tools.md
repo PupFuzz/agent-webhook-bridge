@@ -1140,7 +1140,15 @@ the retryable `502`.
 
 **Cost:** per id, one search for a live card, two for an archived one, three reads for an id not on
 your board; plus at most one stage read (only when `stage` is selected and a card was found) and at
-most one membership control per call.
+most one membership control per call. **That worst case is a large slice of a budget every
+board-tools call and the writeback SHARE.** kanban's default API limit is 300 req/min **per
+authenticated user** (kanban `origin/dev` 4688b543, `app/Providers/AppServiceProvider.php:40`), and
+every call on this door authenticates as the ONE writeback user (§ *A least-privilege writeback
+token* in [`writeback.md`](writeback.md)) — so at `MAX_IDS` = 52, one call naming ids that all miss
+both archive sides can cost up to 157 requests (52 × 3, plus one shared membership-control request),
+against the same per-minute budget the writeback's own card moves draw on. A 429 that lands on a
+writeback move while that budget is exhausted is currently handled as a PERMANENT failure rather
+than retried, not something this tool fixes — tracked separately as card#10849.
 
 ## Errors
 
