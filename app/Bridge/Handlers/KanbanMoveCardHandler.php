@@ -101,7 +101,8 @@ use Throwable;
  * `closed_unmerged` is the lone legitimately-backward outcome AMONG THE FOUR PR
  * outcomes and is allowed to regress UNLESS the card has reached a terminal
  * (Shipped/Released) stage. Fail-open when the order can't be read, so the guard
- * never breaks the writeback. (The opt-in `reopened` outcome below is a fifth,
+ * never breaks the writeback — except a RATE-LIMITED read, which requeues the move instead
+ * (card#10849 / DL-440). (The opt-in `reopened` outcome below is a fifth,
  * handler-internal, deliberately-backward move — scoped to the abandon stage.)
  * ⚠ Since card#10850 / DL-436 the built-in classifier emits no `closed_unmerged` move
  * ({@see PrOutcome::movesCard()}); its arms here serve only a custom classifier that still
@@ -523,7 +524,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // resurrect a shipped card. `reopened` (DL-195) allows the backward move ONLY
         // from the abandon stage (the revival), else is forward-only like `opened`.
         // Fail-open: when the order can't be read (preload down, or a stage not on the
-        // board) the move proceeds as it did pre-guard.
+        // board) the move proceeds as it did pre-guard — except on a rate limit, which
+        // requeues the move (card#10849; isRegressiveMove says why).
         if (in_array($outcome, ['opened', 'merged', 'merged_to_main', PrOutcome::CLOSED_UNMERGED, 'reopened'], true)) {
             if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
@@ -625,7 +627,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * Best-effort with the move's transient/permanent split
      * ({@see RefusalContext::isPermanent}): a permanent refusal (e.g. the board has no
      * `dl_number`/`pr_number` custom field) → alert + log + no-op (never 5xx-storm an unfixable
-     * stamp). A transient failure PROPAGATES → redelivery re-stamps — safe because the stamp is
+     * stamp). A transient failure PROPAGATES → the retry re-stamps (the owed-write queue's for a
+     * rate limit, card#10849) — safe because the stamp is
      * add-if-missing-idempotent and the move is idempotent, and it closes the window where a
      * swallowed transient failure would strand the card unstamped forever.
      *
@@ -824,7 +827,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
+            throw $e;   // transient → the retry re-stamps (add-if-missing idempotent)
         }
     }
 
@@ -1044,7 +1047,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * Whether applying $outcome would regress the card to an earlier workflow stage
      * in a way the no-regression guard (#2935) refuses. Fail-open (false) whenever
      * the board order can't be determined — the guard never blocks a move on missing
-     * order data, only on a definite backward step.
+     * order data, only on a definite backward step. ONE exception: a RATE-LIMITED order read
+     * rethrows (card#10849 / DL-440), so the owed-write queue retries the move rather than
+     * applying a possibly-stale one blind.
      *
      * ⭐ THERE ARE TWO FAIL-OPEN ROUTES AND BOTH ARE LOUD (card#8761). Failing open is the
      * ruled behaviour and card#8761 did not change it: refusing the move when the order
@@ -1065,6 +1070,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // later card retries (preserving the per-card fail-open below).
             $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
+            // ⛔ NOT ON A RATE LIMIT (card#10849 / DL-440). This read is the one thing standing
+            // between a QUEUED write and a card that moved on while it waited — a retried
+            // `opened` landing after `merged` — so failing open here is exactly backwards.
+            // Rethrown, the owed-write queue keeps the move queued and retries it; every other
+            // failure keeps the ruled fail-open below.
+            if ($e instanceof RequestException && RefusalContext::isRateLimited($e)) {
+                throw $e;
+            }
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
                 'catalog_id' => 'move_card.stage_order_unreadable',
                 'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),

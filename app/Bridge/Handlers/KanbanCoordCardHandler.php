@@ -313,7 +313,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 }
             }
         } catch (RequestException $e) {
-            // A permanent refusal → alert + log + no-op; anything else is transient (throw → redelivery retries).
+            // A permanent refusal → alert + log + no-op; anything else is transient and throws (a rate limit is retried by the owed-write queue — RefusalContext::isPermanent).
             if (RefusalContext::isPermanent($e)) {
                 // FLAT reason, unlike the card-keyed handlers': this one catch spans the
                 // correlation READS and the create WRITE, so a status-split

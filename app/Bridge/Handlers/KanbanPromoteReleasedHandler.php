@@ -48,8 +48,11 @@ use Illuminate\Support\Facades\Log;
  *
  * Failure posture mirrors KanbanMoveCardHandler's transient/permanent split: a permanent gap
  * (no writeback config, no GitHub token, a permanent refusal per card) is a durable-alert +
- * loud-log + no-op (never a 5xx-storm of an unfixable event); a transient failure THROWS →
- * redelivery retries. Recovery from a permanent gap: fix it → the NEXT release event re-scans
+ * loud-log + no-op (never a 5xx-storm of an unfixable event); a transient failure THROWS at
+ * once. A RATE LIMIT included (card#10849 / DL-440): the scan then sends no further call to the
+ * refused source — nor to the other, since every candidate needs GitHub before kanban and nothing
+ * either could still do would promote a card — and the owed-write queue holds this whole target as
+ * ONE owed row and retries the whole scan. Recovery from a permanent gap: fix it → the NEXT release event re-scans
  * (a stranded card is still at Shipped). There is no reconcile backstop for this transition, so the gaps
  * are made LOUD (durable alert + bridge:check warn), not a log grep.
  *
@@ -278,8 +281,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * Read one candidate's PR, test its merge sha for reachability from main, and move the
      * card to Released when it is on main. Returns whether the card was promoted. A permanent
      * ({@see RefusalContext::isPermanent}) GitHub/kanban refusal on this card is logged + skipped
-     * (return false); a transient error PROPAGATES so redelivery re-scans (idempotent — a
-     * promoted card leaves the Shipped filter).
+     * (return false); a transient error PROPAGATES at once — a rate limit included — so the retry
+     * re-scans (idempotent — a promoted card leaves the Shipped filter).
      *
      * ⭐ THE NON-PROMOTING EXITS ARE NOT ALL THE SAME EXIT (card#8787). Three loud `catch`
      * arms sat beside two silent `return false`s, and the silent pair could not tell
@@ -318,7 +321,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
                 return false;
             }
-            throw $e;   // transient → 5xx → redelivery re-scans
+            throw $e;   // transient → the retry re-scans
         }
 
         // An OPEN PR carries a non-null TEST-merge sha on no branch — gate on merged, not on

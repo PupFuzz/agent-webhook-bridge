@@ -76,7 +76,8 @@ use Illuminate\Support\Facades\Log;
  *
  * DURABLE, with the writeback's standard transient(→ retry) / permanent(→ alert + log +
  * no-op) split, decided by {@see RefusalContext::isPermanent} (DL-020/DL-285). Idempotent
- * under at-least-once redelivery: a card already in the destination is skipped, so a re-PATCH never fires.
+ * under any retry — a redelivery, or the owed-write queue's: a card already in the destination is
+ * skipped, so a re-PATCH never fires.
  *
  * Its refusals are keyed by the coordination ISSUE, so the alert carries `issue_number`
  * (DL-285); the per-card arms reached from inside the loop additionally carry that card's id.
@@ -201,9 +202,10 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             // PER-CARD error isolation: a tag can legitimately match several cards, and
             // a permanent refusal on one of them (a card deleted between the search and the
             // read) must not abandon the rest — they would never be retried, since a
-            // permanent failure is deliberately not redelivered. A transient failure still
-            // propagates: redelivery re-runs the whole set, and the cards already moved
-            // are skipped as idempotent.
+            // permanent failure is deliberately not retried. A transient failure still
+            // propagates AT ONCE — a rate limit included, which is what stops every further
+            // kanban call this run (card#10849 / DL-440) — and the retry re-runs the whole set,
+            // skipping the cards already moved as idempotent.
             foreach ($ids as $id) {
                 try {
                     $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber, $p);

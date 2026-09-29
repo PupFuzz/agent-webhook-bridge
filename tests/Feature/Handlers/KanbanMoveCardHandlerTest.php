@@ -1728,18 +1728,23 @@ class KanbanMoveCardHandlerTest extends TestCase
     }
 
     // --- card#10849: a kanban 429 is a rate limit, not a refusal ---
+    //
+    // These pin the HANDLER half of the contract: a rate limit is THROWN, never swallowed as a
+    // permanent refusal. What happens to the throw — the write held as owed and retried by the
+    // bridge, the delivery answering 200 — is the owed-write queue's, and is pinned end to end in
+    // tests/Feature/Writeback/OwedWriteDispatchTest.php and OwedWriteQueueTest.php.
 
-    public function test_a_rate_limited_move_is_transient_it_throws_leaves_the_card_and_never_alerts(): void
+    public function test_a_rate_limited_move_throws_to_the_owed_write_queue_leaves_the_card_and_never_alerts(): void
     {
-        // Until card#10849 this 429 was swallowed as a PERMANENT refusal: no throw (so no 5xx and
-        // no redelivery), a `movecard_4xx` alert, and the card left in the wrong column for good.
+        // Until card#10849 this 429 was swallowed as a PERMANENT refusal: no throw, a
+        // `movecard_4xx` alert, and the card left in the wrong column for good.
         $this->writeAllOutcomesWithAlert();
         $stub = $this->stubCard5([]);
         $stub->rateLimitedPatches = 1;
 
         try {
             $this->handle($this->payload(['outcome' => 'merged']));
-            $this->fail('a 429 on the move PATCH must propagate for redelivery');
+            $this->fail('a 429 on the move PATCH must reach the owed-write queue');
         } catch (RequestException $e) {
             $this->assertSame(429, $e->response->status());
         }
@@ -1748,7 +1753,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_a_redelivery_after_a_rate_limited_move_lands_the_move_exactly_once(): void
+    public function test_a_retry_after_a_rate_limited_move_lands_the_move_exactly_once(): void
     {
         $this->writeAllOutcomesWithAlert();
         $stub = $this->stubCard5([]);
@@ -1756,11 +1761,11 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         try {
             $this->handle($this->payload(['outcome' => 'merged']));
-            $this->fail('the rate-limited first delivery must throw');
+            $this->fail('the rate-limited first attempt must throw');
         } catch (RequestException) {
-            // expected — the receiver 5xxs and kanban redelivers
+            // expected — the owed-write queue holds the write and retries it
         }
-        $this->handle($this->payload(['outcome' => 'merged']));   // the redelivery
+        $this->handle($this->payload(['outcome' => 'merged']));   // the retry
         $this->handle($this->payload(['outcome' => 'merged']));   // and a second, late one
 
         $this->assertSame(52, $stub->cards[5]['workflow_stage_id']);
@@ -1769,12 +1774,11 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_a_move_rate_limited_on_every_delivery_is_never_swallowed(): void
+    public function test_a_move_rate_limited_on_every_attempt_is_never_swallowed_as_a_refusal(): void
     {
-        // Exhaustion: however many deliveries the upstream makes, each one still throws — the
-        // event is never converted into a swallowed refusal, so every attempt 5xxs and lands on
-        // the receiver's webhook-5xx record, which `bridge:inbox` surfaces (the receiver-level
-        // leg is RateLimitedWritebackRedeliveryTest).
+        // Exhaustion: however many times it is retried, each attempt still throws — the write is
+        // never converted into a swallowed refusal here. The BOUND on those attempts, and the
+        // named give-up alert when it is spent, are the owed-write queue's (OwedWriteQueueTest).
         $this->writeAllOutcomesWithAlert();
         $stub = $this->stubCard5([]);
         $stub->rateLimitedPatches = PHP_INT_MAX;
@@ -1796,10 +1800,10 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_a_stamp_rate_limited_after_the_move_landed_is_restamped_by_the_redelivery_without_a_second_move(): void
+    public function test_a_stamp_rate_limited_after_the_move_landed_is_restamped_by_the_retry_without_a_second_move(): void
     {
-        // The move lands, then the correlation stamp is rate-limited: the throw redelivers, and
-        // the redelivery's already-in-stage self-heal stamps without moving the card again.
+        // The move lands, then the correlation stamp is rate-limited: the throw leaves the write
+        // owed, and the retry's already-in-stage self-heal stamps without moving the card again.
         $this->writeAllOutcomesWithAlert();
         $stub = $this->stubCard5(['payload' => ['origin' => 'preemptive']]);
         $stub->afterWrite = static function (KanbanCardStub $s, int $id, array $data): void {
@@ -1810,7 +1814,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         try {
             $this->handle($this->payload(['outcome' => 'merged', 'stamp_dl' => 'DL-42']));
-            $this->fail('a 429 on the stamp must propagate for redelivery');
+            $this->fail('a 429 on the stamp must reach the owed-write queue');
         } catch (RequestException $e) {
             $this->assertSame(429, $e->response->status());
         }
@@ -1819,7 +1823,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $applied = $stub->appliedPatchesTo(5);
         $this->assertCount(1, array_filter($applied, static fn (array $p): bool => isset($p['workflow_stage_id'])), 'the move is applied once');
-        $this->assertNotSame([], array_filter($applied, static fn (array $p): bool => isset($p['payload'])), 'the redelivery landed the stamp');
+        $this->assertNotSame([], array_filter($applied, static fn (array $p): bool => isset($p['payload'])), 'the retry landed the stamp');
     }
 
     // --- FR #3866 / card#4852: stamp correlation refs (dl_number / pr_number / pr_url) add-if-missing ---

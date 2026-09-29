@@ -465,18 +465,30 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         $this->handle(['disposition' => 'terminal']);
     }
 
-    public function test_a_429_on_one_card_propagates_for_redelivery_rather_than_being_isolated_as_a_refusal(): void
+    public function test_a_429_on_one_card_stops_every_later_kanban_call_and_escapes_the_loop_once(): void
     {
-        // card#10849: per-card isolation is for PERMANENT refusals; a rate limit clears by
-        // waiting, so it escapes the loop exactly as a 5xx does.
+        // card#10849 / DL-440 § 3b: per-card isolation is for PERMANENT refusals. A rate limit
+        // escapes the loop at once — so the run sends kanban nothing more (card 9 is never read,
+        // let alone moved) — and the owed-write queue holds this whole issue as ONE owed row and
+        // retries the set. Before card#10849 the 429 was isolated as a refusal and card 9 moved
+        // anyway, leaving card 7 behind for good.
+        $this->writeMappingWithAlert();
         Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7], ['id' => 9]]]),
             '*/tasks/7.json' => Http::response(['message' => 'Too Many Attempts.'], 429, ['Retry-After' => '37']),
             '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50]]),
         ]);
 
-        $this->expectException(RequestException::class);
-        $this->handle(['disposition' => 'terminal']);
+        try {
+            $this->handle(['disposition' => 'terminal']);
+            $this->fail('a rate limit must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/tasks/9.json'));
+        Http::assertNotSent(fn ($r) => str_starts_with($r->url(), self::ALERT_URL));
     }
 
     public function test_a_5xx_is_transient_and_throws_for_redelivery(): void

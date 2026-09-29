@@ -155,7 +155,8 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         }
 
         // A permanent refusal (a deleted card) → log + no-op. Anything else — a 5xx, a
-        // rate limit, a timeout — is transient (throw → redelivery retries).
+        // rate limit, a timeout — is transient and throws: the owed-write queue holds and
+        // retries a rate limit itself, anything else 5xxs (RefusalContext::isPermanent).
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {

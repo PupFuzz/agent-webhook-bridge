@@ -531,6 +531,30 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && $ctx['key'] === 'origin' && $ctx['board'] === 8 && str_contains((string) $ctx['error'], '500'))->once();
     }
 
+    /**
+     * card#10849 / DL-440: a RATE-LIMITED custom-field read is the one unreadable answer this guard
+     * does not create past. Every other failure keeps the fail-open above (the 500 leg); a rate
+     * limit propagates so the owed-write queue retries the WHOLE create once the limiter clears,
+     * rather than minting the card without a constant the retry could have read.
+     */
+    public function test_a_rate_limited_custom_field_read_propagates_and_creates_nothing(): void
+    {
+        $this->customFieldsStatus = 429;
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        try {
+            $this->handle('opened');
+            $this->fail('a rate-limited custom-field read must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+    }
+
     /** A 200 carrying no collection is could-not-see too (card#5698), never "no fields registered". */
     public function test_a_custom_field_read_carrying_no_collection_creates_the_card_without_origin_and_warns(): void
     {

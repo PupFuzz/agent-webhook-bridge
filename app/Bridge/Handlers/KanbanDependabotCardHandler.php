@@ -288,7 +288,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 $this->collapseDuplicates($client, $live, $mapping, $repo, $prNumber);
             }
         } catch (RequestException $e) {
-            // A permanent refusal → alert + log + no-op; anything else is transient (throw → redelivery retries).
+            // A permanent refusal → alert + log + no-op; anything else is transient and throws (a rate limit is retried by the owed-write queue — RefusalContext::isPermanent).
             if (RefusalContext::isPermanent($e)) {
                 // FLAT reason: this one catch spans the correlation READS, the archive /
                 // move / create WRITES and the collapse, so a status-split write reason
@@ -309,7 +309,8 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     /**
      * Drop every {@see CONSTANT_PAYLOAD_VALUES} key the mapped board does not accept (DL-392).
      *
-     * ⛔ AN UNREADABLE READ OMITS TOO, LOUDLY. A throw or a body with no collection says nothing
+     * ⛔ AN UNREADABLE READ OMITS TOO, LOUDLY — except a RATE-LIMITED one, which propagates to the
+     * owed-write queue (card#10849; the catch says why). A throw or a body with no collection says nothing
      * about the board, so neither "accepted" nor "not accepted" is established; the card is the
      * record of the PR and the constant is metadata about it, so the create goes ahead without
      * the constant and a `warning` names the read that failed. Sending it instead would stake the
@@ -325,6 +326,13 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         try {
             $fields = $client->boardCustomFields($mapping->boardId);
         } catch (RequestException|ConnectionException $e) {
+            // ⛔ EXCEPT A RATE LIMIT (card#10849 / DL-440): that read clears by waiting, and the
+            // owed-write queue retries the WHOLE create once it does — so creating now, without a
+            // constant the retry could have read, trades a short delay for a permanently thinner
+            // card. Every other failure keeps the omit-and-warn below.
+            if ($e instanceof RequestException && RefusalContext::isRateLimited($e)) {
+                throw $e;
+            }
             $fields = null;
             $error = RedactedErrorText::note($e);
         }
