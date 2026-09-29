@@ -309,7 +309,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * record of the PR and the constant is metadata about it, so the create goes ahead without
      * the constant and a `warning` names the read that failed. Sending it instead would stake the
      * card on a value this read could not vouch for — the exact 422 this method exists to stop.
-     * Rethrowing a 5xx for redelivery instead would stake it on this one endpoint recovering.
+     * Rethrowing a 5xx to be retried instead would stake it on this one endpoint recovering.
      *
      * @param  array<string, int|string>  $payload
      * @return array<string, int|string>

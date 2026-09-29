@@ -32,8 +32,11 @@ use Throwable;
  * which is exactly the surface DL-325's arming exists for. UNLIKE every other mutator,
  * though, THIS ONE IS ARMED BY DEFAULT, and its instance is declared by
  * {@see OwedWriteQueue::declareJobs()} at every durable write, before its row is inserted — the
- * same trigger as {@see OwedWriteWatchdogJob}'s, so no write can be owed without both behind
- * it, and an install that never makes a durable write grows neither. Operator
+ * same trigger as {@see OwedWriteWatchdogJob}'s, so an owed write has both behind it EXCEPT
+ * while the kill switch below is set (this one is never declared), while a declare failed
+ * (logged `owed_write.retry_undeclared`), or after an operator removed the instance and before
+ * the next durable write re-declares it. An install that never makes a durable write grows
+ * neither. Operator
  * ruling, 2026-09-29 (card#10849 / DL-440): new functionality defaults on and needs no setup;
  * DL-325's default-off is a bridge-wide question for a separate card, and this is the one
  * named exception ahead of it — see {@see JobHandlerRegistry::armedFromConfig}.

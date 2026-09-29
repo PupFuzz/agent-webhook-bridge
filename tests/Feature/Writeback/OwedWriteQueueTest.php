@@ -13,6 +13,7 @@ use App\Bridge\Scheduling\JobContext;
 use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\JobPassSource;
 use App\Bridge\Scheduling\JobRefusal;
+use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
@@ -33,6 +34,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -219,13 +221,13 @@ class OwedWriteQueueTest extends TestCase
         $this->assertSame(JobRefusal::UNARMED_MUTATOR, $refusal->reason);
     }
 
-    public function test_the_first_owed_write_declares_the_watchdog_instance(): void
+    public function test_the_first_durable_write_declares_the_watchdog_instance(): void
     {
         $this->assertFalse(ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->exists());
 
-        $this->rateLimitFirst(retryAfter: null);
-        $this->owe('a');
+        $this->owe('a');   // a healthy write — declared before the insert, not on a failure
 
+        $this->assertSame(['a'], $this->applied);
         $job = ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->sole();
         $this->assertTrue($job->enabled);
         $this->assertSame(OwedWriteWatchdogJob::NAME, $job->handler);
@@ -235,13 +237,13 @@ class OwedWriteQueueTest extends TestCase
      * Operator ruling, 2026-09-29 (card#10849 / DL-440): `owed_write_retry` ships ARMED and its
      * instance is declared by default, the one named exception to DL-325's default-off.
      */
-    public function test_the_first_owed_write_also_declares_the_retry_instance_armed_by_default(): void
+    public function test_the_first_durable_write_also_declares_the_retry_instance_armed_by_default(): void
     {
         $this->assertFalse(ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->exists());
 
-        $this->rateLimitFirst(retryAfter: null);
-        $this->owe('a');
+        $this->owe('a');   // a healthy write — declared before the insert, not on a failure
 
+        $this->assertSame(['a'], $this->applied);
         $job = ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->sole();
         $this->assertTrue($job->enabled);
         $this->assertSame(OwedWriteRetryJob::NAME, $job->handler);
@@ -443,6 +445,88 @@ class OwedWriteQueueTest extends TestCase
         }
     }
 
+    /**
+     * The converse of the test above: more due NEVER-failed heads than one pass drains (a
+     * sustained rate-limit storm keeps them coming) must not keep a failing head out of every
+     * pass — one slot per pass is reserved for the least recently failed due head.
+     */
+    public function test_a_failing_head_gets_a_slot_even_when_never_failed_heads_fill_the_pass(): void
+    {
+        $this->behaviour = function (ReactionTarget $t): void {
+            if (($t->payload['tag'] ?? null) === 'broken') {
+                throw new RequestException(new Response(new GuzzleResponse(500, [], '{"message":"Server Error"}')));
+            }
+        };
+        $this->oweOn('probe-broken', 'broken');
+        try {
+            $this->queue()->drain(OwedWriteQueue::subjectKey('kanban', '5', 'probe_write', 'probe-broken'));
+        } catch (RequestException) {
+        }
+        $this->assertNotNull(WritebackOwedWrite::query()->sole()->last_failed_at);
+
+        $perPass = OwedWriteRetryJob::MAX_SUBJECTS_PER_PASS;
+        for ($i = 0; $i <= $perPass; $i++) {
+            $this->oweOn("probe-fresh-{$i}", "fresh-{$i}");
+        }
+        $this->applied = [];
+
+        try {
+            $this->queue()->sweep($perPass);
+            $this->fail('the failing head was tried, and its failure still fails the pass');
+        } catch (RequestException) {
+        }
+
+        $this->assertCount($perPass - 1, $this->applied, 'every other slot went to a never-failed head, oldest first');
+        $this->assertSame(array_map(static fn (int $i): string => "fresh-{$i}", range(0, $perPass - 2)), $this->applied);
+    }
+
+    /**
+     * Two requests owing their subjects' first writes at once both see no instance and both
+     * insert; `scheduled_jobs.name` is unique, so the loser's insert is refused. The instance
+     * exists — that is a success, not the loud "could not declare" line.
+     */
+    public function test_losing_the_first_declare_race_is_not_reported_as_an_undeclared_job(): void
+    {
+        $raced = false;
+        DB::listen(function (QueryExecuted $q) use (&$raced): void {
+            if ($raced || ! str_contains($q->sql, 'scheduled_jobs') || ! str_contains(strtolower($q->sql), 'limit 1')) {
+                return;
+            }
+            // JobRegistry::insert() has just read the name absent; a concurrent request
+            // inserts it before this one's save.
+            $raced = true;
+            $this->app->make(JobRegistry::class)->insert(OwedWriteWatchdogJob::spec());
+        });
+        Log::spy();
+
+        $this->owe('a');
+
+        $this->assertTrue($raced, 'the window was exercised');
+        $this->assertSame(1, ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->count());
+        Log::shouldNotHaveReceived('warning', fn (string $message, array $context = []): bool => str_ends_with((string) ($context['catalog_id'] ?? ''), '_undeclared'));
+        $this->assertSame(['a'], $this->applied);
+    }
+
+    public function test_a_failure_that_cannot_be_recorded_does_not_replace_the_handlers_own(): void
+    {
+        $this->behaviour = fn () => throw new RequestException(new Response(new GuzzleResponse(500, [], '{"message":"Server Error"}')));
+        WritebackOwedWrite::saving(static function (WritebackOwedWrite $row): void {
+            if ($row->last_failed_at !== null) {
+                throw new \RuntimeException('database went away');
+            }
+        });
+
+        try {
+            $this->owe('a');
+            $this->fail('the handler failure propagates');
+        } catch (RequestException $e) {
+            $this->assertSame(500, $e->response->status(), 'the handler\'s own failure, not the stamp\'s');
+        } finally {
+            WritebackOwedWrite::flushEventListeners();
+        }
+        $this->assertSame('a', WritebackOwedWrite::query()->sole()->payload['tag']);
+    }
+
     // --- the bounds, held against the constants they are sized from ---
 
     public function test_the_lock_outlives_the_slowest_handler_and_the_age_bound_outlives_the_retry_schedule(): void
@@ -450,6 +534,9 @@ class OwedWriteQueueTest extends TestCase
         $promoteWorstCase = KanbanPromoteReleasedHandler::MAX_CANDIDATES
             * (2 * KanbanPromoteReleasedHandler::RUNTIME_GITHUB_TIMEOUT_SECONDS + KanbanHttpClient::TIMEOUT_SECONDS);
         $this->assertGreaterThan($promoteWorstCase, OwedWriteQueue::LEASE_S);
+
+        // sweep() reserves one slot for a failing head; at 1 that slot would be the only one.
+        $this->assertGreaterThanOrEqual(2, OwedWriteRetryJob::MAX_SUBJECTS_PER_PASS);
 
         $schedule = OwedWriteQueue::BASE_BACKOFF_S * (2 ** OwedWriteQueue::MAX_ATTEMPTS);
         $this->assertGreaterThan($schedule, OwedWriteQueue::MAX_AGE_S);

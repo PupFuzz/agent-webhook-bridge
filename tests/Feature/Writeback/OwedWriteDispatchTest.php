@@ -153,7 +153,7 @@ class OwedWriteDispatchTest extends TestCase
 
     // --- §10.4: the retry sweep ---
 
-    public function test_the_armed_sweep_applies_a_due_owed_write_once_and_its_next_pass_sends_nothing(): void
+    public function test_the_retry_sweep_applies_a_due_owed_write_once_and_its_next_pass_sends_nothing(): void
     {
         $this->kanbanAgent();
         $stub = $this->card(48);

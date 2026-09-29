@@ -29,8 +29,10 @@ use App\Bridge\Writeback\OwedWriteQueue;
  * {@see OwedWriteRetryJob}.
  *
  * ⚑ ITS INSTANCE IS DECLARED BY THE QUEUE, not shipped: {@see OwedWriteQueue} inserts
- * {@see self::spec()} at every durable write, before the row exists — so no write can be owed
- * without it, and an install that never makes a durable write never grows this job.
+ * {@see self::spec()} at every durable write, before the row exists — so an owed write has it
+ * behind it EXCEPT where that declare failed (logged `owed_write.watchdog_undeclared`), or after
+ * an operator removed the instance and before the next durable write re-declares it. An install
+ * that never makes a durable write never grows this job.
  */
 final class OwedWriteWatchdogJob implements JobHandler
 {

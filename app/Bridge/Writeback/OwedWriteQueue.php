@@ -192,28 +192,50 @@ final class OwedWriteQueue
     /**
      * The scheduled sweep's pass: drain up to $maxSubjects subjects whose HEAD is due.
      *
-     * ⛔ NO SUBJECT IS STARVED, on two legs. (1) EACH SUBJECT IS ISOLATED, and the first failure
-     * is rethrown only AFTER the pass — a throw that ended the pass would starve every subject
-     * ranked behind it. Rethrown afterwards, it still fails the job row, which is how a job
-     * reports failure. (2) A HEAD THAT KEEPS FAILING RANKS LAST. A non-rate-limit failure sets
-     * no `not_before` (so it is due on every pass) and, being oldest, would lead the `id` order
-     * forever: $maxSubjects of them would fill every pass and a rate-limited write elsewhere
-     * would never be retried before the watchdog expired it. So heads whose last apply did
-     * not fail that way come first, by `id`, and failing heads after them, least recently
-     * failed first — each one this pass tries is re-stamped and drops behind the rest, so
-     * every due subject is reached within a bounded number of passes.
+     * ⛔ NO SUBJECT IS STARVED, on three legs. (1) EACH SUBJECT IS ISOLATED, and the first
+     * failure is rethrown only AFTER the pass — a throw that ended the pass would starve every
+     * subject ranked behind it. Rethrown afterwards, it still fails the job row, which is how a
+     * job reports failure. (2) A HEAD THAT KEEPS FAILING RANKS LAST. A non-rate-limit failure
+     * sets no `not_before` (so it is due on every pass) and, being oldest, would lead the `id`
+     * order forever, filling every pass and keeping a rate-limited write elsewhere from ever
+     * being retried. So heads whose last apply did not fail that way (`last_failed_at` null)
+     * fill the pass by `id`. (3) ONE SLOT IS RESERVED FOR A FAILING HEAD. Leg (2) alone just
+     * inverts the starvation: a rate-limit storm keeping $maxSubjects never-failed heads due
+     * every pass would keep every failing head out until the watchdog expired it. So whenever
+     * a due failing head exists, one slot goes to the least recently failed one; trying it
+     * re-stamps it, behind every other failing head.
+     *
+     * THE BOUNDS, stated for $maxSubjects ≥ 2 (`OwedWriteRetryJob::MAX_SUBJECTS_PER_PASS`, held
+     * by a test — at 1 the reserved slot would be the only slot): a due failing head is tried
+     * within F passes, F the number of due failing heads (one per pass, round-robin). A due
+     * never-failed head is tried once the older due never-failed heads ahead of it have had
+     * $maxSubjects - 1 slots each; each head a pass tries leaves that group (applied, backed off
+     * by a rate limit, or failed), and a row can re-enter it only through a rate limit — at
+     * most `MAX_ATTEMPTS` times — so the rows ahead of it are finite and so is its wait. A
+     * drain that loses the subject's lock to a live delivery consumes a slot without
+     * resolving the head; that delivery is draining it.
      *
      * @return int how many subjects were drained
      */
     public function sweep(int $maxSubjects): int
     {
-        $subjects = $this->heads()
-            ->where(fn ($q) => $q->whereNull('not_before')->orWhere('not_before', '<=', now()))
+        $due = fn () => $this->heads()
+            ->where(fn ($q) => $q->whereNull('not_before')->orWhere('not_before', '<=', now()));
+
+        $reserved = $due()->whereNotNull('last_failed_at')
+            ->orderBy('last_failed_at')
+            ->orderBy('id')
+            ->value('subject_key');
+        $subjects = $due()
+            ->when($reserved !== null, fn ($q) => $q->where('subject_key', '!=', $reserved))
             ->orderByRaw('last_failed_at IS NOT NULL')
             ->orderBy('last_failed_at')
             ->orderBy('id')
-            ->limit($maxSubjects)
+            ->limit($reserved !== null ? $maxSubjects - 1 : $maxSubjects)
             ->pluck('subject_key');
+        if ($reserved !== null) {
+            $subjects->push($reserved);
+        }
 
         $failure = null;
         foreach ($subjects as $subjectKey) {
@@ -385,7 +407,17 @@ final class OwedWriteQueue
         $row->last_failed_at = now();
         $row->last_status = $cause instanceof RequestException ? $cause->response->status() : null;
         $row->last_error = mb_substr(RedactedErrorText::of($cause), 0, 1000);
-        $row->save();
+        try {
+            $row->save();
+        } catch (Throwable $e) {
+            // ⛔ Never replaces the handler's failure: the caller rethrows THAT one. Unstamped,
+            // the row still ranks as never-failed, which costs only sweep order.
+            Log::warning('bridge owed-write: could not record a failed apply on its owed write — the failure itself still propagates', [
+                'catalog_id' => 'owed_write.failure_unrecorded',
+                'error' => RedactedErrorText::of($e),
+                'cause' => $row->last_error,
+            ] + self::rowContext($row));
+        }
     }
 
     /**
@@ -491,7 +523,12 @@ final class OwedWriteQueue
         if (ScheduledJob::query()->where('name', $instance)->exists()) {
             return;
         }
-        app(JobRegistry::class)->insert($spec);
+        try {
+            app(JobRegistry::class)->insert($spec);
+        } catch (UniqueConstraintViolationException) {
+            // A concurrent request declared it between the read and this insert — the
+            // instance exists, which is all this method promises.
+        }
     }
 
     /** The subject's oldest row, when it is due now. */

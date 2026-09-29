@@ -35,8 +35,9 @@ use Illuminate\Support\Facades\Log;
  * defers this transition to (ReconcileCommand excludes merged_to_main from move-in).
  *
  * DURABLE (survives the DL-203 echo/signal strip, so an agent-merged release still promotes)
- * and IDEMPOTENT (a promoted card leaves the Shipped filter, so a redelivery — e.g. after a
- * mid-scan transient throw — re-scans and moves nothing already done; no double-move).
+ * and IDEMPOTENT (a promoted card leaves the Shipped filter, so a retry — the owed-write queue's,
+ * after a mid-scan transient throw; GitHub never redelivers, DL-183 — re-scans and moves
+ * nothing already done; no double-move).
  *
  * Reachability, not a dev-only proxy: promote iff
  * `compareStatus(merge_commit_sha, RELEASE_BASE)` ∈ {ahead, identical} — a POSITIVE "is the

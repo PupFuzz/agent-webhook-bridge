@@ -443,8 +443,10 @@ final class MappedBoardGuard
      * sequence this issued before the loop existed.
      *
      * ⛔ A TRANSIENT failure PROPAGATES, and that is deliberate on both callers: the handler
-     * wants the 5xx that makes kanban redeliver, and the command wants to report the mapping
-     * as unmeasured rather than as clean. Only a PERMANENT refusal is captured — and a
+     * wants the throw that keeps its write OWED (a rate limit answers 200, anything else 5xx;
+     * either way the owed-write queue retries it, since GitHub — which delivers these events —
+     * never redelivers, DL-183), and the command wants to report the mapping as unmeasured
+     * rather than as clean. Only a PERMANENT refusal is captured — and a
      * board that could not be ASKED has not answered "no", so the loop keeps going: a positive
      * establishment on another declared board is a measurement that stands on its own, and
      * black-holing every card because one board's membership lapsed would be the widest
