@@ -35,7 +35,7 @@ final class JobRefusal
     {
         return new self(
             self::UNKNOWN_HANDLER,
-            // The registered set is never empty (the registry ships one handler), so there is
+            // The registered set is never empty (the registry's constructor registers the built-in handlers), so there is
             // no "(none)" arm to write here — that would be a branch for a state the
             // constructor excludes.
             "no handler named '{$handler}' exists in this build — a job may only reference a handler that is registered in bridge code. Registered: ".$knownList,

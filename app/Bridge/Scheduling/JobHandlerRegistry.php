@@ -3,6 +3,8 @@
 namespace App\Bridge\Scheduling;
 
 use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
+use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
+use App\Bridge\Scheduling\Handlers\OwedWriteWatchdogJob;
 use App\Bridge\Scheduling\Handlers\StandupDigestJob;
 use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\CsvEnv;
@@ -42,6 +44,8 @@ final class JobHandlerRegistry
     ) {
         $this->register(new StandupDigestJob($standupGate));
         $this->register(new IdleNudgeJob($handlers));
+        $this->register(new OwedWriteRetryJob($handlers));
+        $this->register(new OwedWriteWatchdogJob($handlers));
     }
 
     /**
