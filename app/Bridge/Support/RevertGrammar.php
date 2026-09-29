@@ -29,14 +29,13 @@ namespace App\Bridge\Support;
  * branches, but that governs what CI DEMANDS; the writeback reads the title GitHub wrote
  * by itself, and only the first layer was covered.
  *
- * ⛔ BOTH ROUTES WERE LIVE, which is why this class answers about two surfaces rather
- * than one. Measured end-to-end through the classifier before the fix: the LEXICAL route
- * fires on the quoted closing form, and the STRUCTURAL route
- * ({@see PrOutcome::mergeClosesCard()}) fires whenever the original's branch carried a
- * {@see CardTokenGrammar} token — `revert-611-card-8294-slug` parses to card 8294 —
- * which is the spelling `board-card-start` mints and was this shop's house convention
- * until 2026-08-29. Repairing only the quoted title would have left the hazard half-open
- * on every install still on that convention.
+ * ⛔ BOTH SURFACES WERE LIVE, which is why this class answers about two rather than one.
+ * Measured end-to-end through the classifier before the fix: the quoted closing form
+ * closed the card, and so did DL-308's structural route whenever the original's branch
+ * carried a {@see CardTokenGrammar} token (`revert-611-card-8294-slug` parses to card 8294).
+ * Since card#10850 / DL-436 retired that route no ref closes a card, so the ref half is
+ * no longer a closure question; {@see self::isRevert()} still reads both surfaces so the
+ * withheld-merge warning names a revert however GitHub or the author marked it.
  *
  * WHAT IS *NOT* REFUSED: CORRELATION. `revert-611-card-8294-slug` still NAMES card 8294
  * and must — the revert IS about that card, and the `opened` outcome, the PR-ref stamps
@@ -50,7 +49,7 @@ namespace App\Bridge\Support;
  * that it SHOULD close. It does not, for three reasons. (1) GitHub does not escape the
  * inner quotes, so depth is not reliably parseable from the title at all — a parity
  * count over an ambiguous parse would be authorizing a TERMINAL, irreversible stage move
- * on a guess, which is the trade DL-308 refused for `refCorroborates()`. (2) The cost is
+ * on a guess. (2) The cost is
  * near zero: the FIRST revert never moved the card back (a backward move was considered
  * and declined — DL-305's no-demotion ruling), so the card is still where the original
  * merge left it and the re-apply has nothing to promote. (3) Under-promotion is
@@ -72,8 +71,7 @@ namespace App\Bridge\Support;
  * class's own quotation rule to itself: a marker inside `Revert "…"` is the ORIGINAL
  * author's, so it does not veto a closing form written outside the quotes.
  *
- * ⚠ A KNOWN DIVERGENCE FROM CI, filed rather than repaired here — the same shape
- * {@see PrOutcome::mergeClosesCard()}'s docblock already records for the branch predicate.
+ * ⚠ A KNOWN DIVERGENCE FROM CI, filed rather than repaired here.
  * `.github/workflows/pr-title-lint.yml` answers *"is this a revert"* by exempting the
  * `revert-*` BRANCH; this class also reads the TITLE. So a hand-made revert (a `git revert`
  * pushed to an ordinary branch) whose title carries the quoted closing form **passes** the
@@ -153,12 +151,11 @@ final class RevertGrammar
      * Is this head ref GitHub's `revert-<n>[-<original ref>]` wrapper around another
      * PR's branch?
      *
-     * WHY THE STRUCTURAL ROUTE MUST ASK. DL-308's argument for reading the head ref as a
-     * completion claim is that the ref is minted by THIS INSTALL's own tooling
-     * (`board-card-start` → `card-<id>-slug`) and so carries the branch's IDENTITY. A
-     * `revert-<n>-` ref is minted by GITHUB and carries a COPY of the original's
-     * identity; the branch it names is not the card's work branch, it is a wrapper
-     * around the name of one. The premise fails, so the conclusion may not be drawn.
+     * A `revert-<n>-` ref is minted by GITHUB and carries a COPY of the original's
+     * identity; the branch it names is not the card's work branch, it is a wrapper around
+     * the name of one. Read so the withheld-merge warning and `bridge:reconcile`'s skip line
+     * name the revert (DL-308's structural route, which also refused it, is retired by
+     * DL-436).
      */
     public static function isRevertRef(string $headRef): bool
     {

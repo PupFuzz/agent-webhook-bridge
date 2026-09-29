@@ -373,6 +373,15 @@ class ReconcileCommand extends BridgeCommand
         }
 
         $outcome = $this->outcomeFor($pr);
+        // card#10850 / DL-436: a PR closed without merging moves no card, on the event path or
+        // here. Asked BEFORE the stage lookup, because `stages.closed_unmerged` still parses (it
+        // names DL-195's abandon stage) and would otherwise plan the move the classifier dropped.
+        if (! PrOutcome::movesCard($outcome)) {
+            $this->line("card {$cardId} ({$cardRepo}#{$prNumber}): PR is closed without merging — a close moves no card (DL-436), so it is left where it is — skipped");
+            $this->skipped++;
+
+            return;
+        }
         $expected = $mapping->stageFor($outcome);
         if ($expected === null) {
             $this->line("card {$cardId} ({$cardRepo}#{$prNumber}): PR outcome '{$outcome}' has no mapped stage — skipped");
@@ -390,16 +399,17 @@ class ReconcileCommand extends BridgeCommand
 
             return;
         }
-        // card#7348 / DL-305 (widened DL-308) — the SAME closure gate the event path
-        // applies, over the SAME TWO FIELDS (the head branch ref and the title), because
-        // this leg re-derives the same proposition from the same evidence. Without it the
-        // backstop would keep re-planning the merge move the classifier had just declined:
-        // `--fix` runs on a schedule, so the defect would simply arrive an hour later with
-        // a CLI's name on it. Since DL-308 the lockstep cuts the other way too — a term
-        // added here and not there (or there and not here) makes the two paths disagree
-        // about which merges close a card, which is why the term itself lives on
-        // `PrOutcome` and neither path spells it. A card carrying a `dl_number` may also be
-        // closed by a closing form naming that DL, mirroring the classifier's DL arm.
+        // card#7348 / DL-305 — the SAME closure gate the event path applies, over the SAME
+        // FIELD (the title), because this leg re-derives the same proposition from the same
+        // evidence. Without it the backstop would keep re-planning the merge move the
+        // classifier had just declined: `--fix` runs on a schedule, so the defect would simply
+        // arrive an hour later with a CLI's name on it. A card carrying a `dl_number` may also
+        // be closed by a closing form naming that DL, mirroring the classifier's DL arm. Since
+        // card#10850 / DL-436 the head branch is closure evidence on neither path.
+        //
+        // ⛔ NO DEMOTION. A card DL-308's retired route already moved to the shipped stage
+        // lands here, is skipped with the line below, and stays where it is: this leg never
+        // regresses a card, and the gate returns before any drift is computed.
         //
         // PLACED AFTER THE TERMINAL RETURN, which is what keeps it from adding a line about
         // a decision this command does not make: `merged_to_main` is out of scope here by
@@ -407,7 +417,7 @@ class ReconcileCommand extends BridgeCommand
         // report a withheld move on every release PR and withhold nothing.
         // `PrOutcome::requiresClosure()` still owns WHICH outcomes are gated — this
         // placement narrows where the answer can matter, never what the answer is.
-        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching(), $outcome, $cardId, $payload, $refs)) {
+        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title']->rawForMatching(), $cardId, $payload, $refs)) {
             // The REVERT arm exists because the default sentence is FALSE about a revert
             // (card#8306): GitHub quotes the original title and wraps the original ref, so
             // the ref usually DOES name this card and the title usually DOES carry a
@@ -430,8 +440,8 @@ class ReconcileCommand extends BridgeCommand
             $ref = $pr['head_ref']->forOperator();
             $this->line(match (true) {
                 NoCloseGrammar::marks($pr['title']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
-                RevertGrammar::isRevert($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$ref}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
-                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$ref}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
+                RevertGrammar::isRevert($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but is a revert, which closes no card (head branch ref '{$ref}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
+                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its title carries no closing form naming this card (head branch ref '{$ref}' is not closure evidence) — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
             });
             $this->skipped++;
 
@@ -565,19 +575,12 @@ class ReconcileCommand extends BridgeCommand
     }
 
     /**
-     * Does this PR CLAIM that merging it completes THIS card (card#7348 / DL-305, widened
-     * by DL-308)?
+     * Does this PR CLAIM that merging it completes THIS card (card#7348 / DL-305)?
      *
-     * THE STRUCTURAL ROUTE IS ASKED FIRST and is not about the title at all: a merge into
-     * the integration branch from a head branch whose ref names this card
-     * ({@see PrOutcome::mergeClosesCard()}). The classifier applies the identical term to
-     * the identical two fields, and it has to — this leg re-derives the same proposition
-     * from the same evidence on a schedule, so a term present on one side and absent on
-     * the other means the backstop and the event path disagree about which merges close a
-     * card, which is the drift `PrOutcome` exists to prevent. In practice only the
-     * integration outcome ever reaches here (the `merged_to_main` terminal return sits
-     * above), but the outcome is passed rather than assumed so the two calls are the same
-     * call.
+     * THE TITLE IS THE ONLY SURFACE READ (card#10850 / DL-436). DL-308's structural route — a
+     * head ref naming the card closed it — is retired on both paths at once; this leg and the
+     * classifier re-derive the same proposition, and a term on one side only means the backstop
+     * and the event path disagree about which merges close a card (DL-305 §6).
      *
      * The two LEXICAL ways a title can name the card mirror the two correlation channels,
      * exactly as the classifier's own gate does: the native `card#<id>`, or a closing form
@@ -586,10 +589,9 @@ class ReconcileCommand extends BridgeCommand
      * uses to authorize its set.
      *
      * THE `[no-close]` MARKER IS NOT A TERM HERE, and its absence is the design rather than
-     * an omission (card#8344): it is refused inside BOTH authorities this method ORs — the
-     * grammar's choke point and `mergeClosesCard()` — so the backstop inherits it without
-     * spelling it, exactly as it inherits the revert refusal. A term added here would be
-     * the second copy DL-305 §6 forbids.
+     * an omission (card#8344): the grammar's choke point refuses it, so the backstop inherits
+     * it without spelling it, exactly as it inherits the revert refusal. A term added here
+     * would be the second copy DL-305 §6 forbids.
      *
      * THE DL IS READ OFF THE CARD, NEVER OFF THE TITLE. A `DL-NNN` in the title that this
      * card does not carry is another card's work, and reading it would re-open through the
@@ -606,11 +608,8 @@ class ReconcileCommand extends BridgeCommand
      *
      * @param  array<string, mixed>  $payload  the card payload (the `dl_number` stamp)
      */
-    private function closes(string $title, string $headRef, string $outcome, int $cardId, array $payload, ExternalReferenceNormalizer $refs): bool
+    private function closes(string $title, int $cardId, array $payload, ExternalReferenceNormalizer $refs): bool
     {
-        if (PrOutcome::mergeClosesCard($outcome, $headRef, $cardId, $title)) {
-            return true;
-        }
         if (ClosureGrammar::closesCard($title, $cardId)) {
             return true;
         }
@@ -644,7 +643,7 @@ class ReconcileCommand extends BridgeCommand
             return 'opened';   // an open PR (REST has no reopened) → the `opened` outcome
         }
         if (! $pr['merged']) {
-            return 'closed_unmerged';
+            return PrOutcome::CLOSED_UNMERGED;
         }
 
         return PrOutcome::forMergedBase($pr['base_ref']);
@@ -690,8 +689,6 @@ class ReconcileCommand extends BridgeCommand
         foreach ($this->backward as $p) {
             if ($p['kind'] === 'unorderable') {
                 $label = 'unorderable — not moved (board stage order unreadable)';
-            } elseif ($p['outcome'] === 'closed_unmerged') {
-                $label = 'backward — not moved (abandoned PR; v1 leaves the closed_unmerged regression to the event path / a human)';
             } else {
                 $label = 'backward — not moved (card is ahead of its PR state; likely a deliberate human move)';
             }
