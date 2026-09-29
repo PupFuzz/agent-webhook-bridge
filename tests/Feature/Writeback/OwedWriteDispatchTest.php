@@ -303,25 +303,7 @@ class OwedWriteDispatchTest extends TestCase
         $this->assertStringContainsString('owed write: kanban_move_card (5)', $message);
     }
 
-    // --- §10.15: the two legs that swallow their own failure keep doing so ---
-
-    public function test_a_rate_limited_owner_tag_clear_is_still_swallowed_and_alerted_and_the_move_is_not_owed(): void
-    {
-        $this->kanbanAgent();
-        $stub = new KanbanCardStub([5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 48, 'block_reason' => null, 'tags' => ['owner:kanban/kanban']]]);
-        Http::fake([
-            self::ALERT_URL.'*' => Http::response(['ok' => true]),
-            '*/tasks/5.json' => fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data())
-                ? Http::response(['message' => 'Too Many Attempts.'], 429, ['Retry-After' => '37'])
-                : $stub->stub()['*/tasks/*.json']($r),
-        ] + PreloadStub::stub(8, self::STAGES) + ScopeLookupStub::onMappedBoard(8));
-
-        $this->deliverKanban('owner-tag-1', ['outcome' => 'merged'])->assertStatus(200);
-
-        $this->assertSame(52, $stub->cards[5]['workflow_stage_id'], 'the move landed');
-        $this->assertSame(0, WritebackOwedWrite::query()->count(), 'the rate limit never reached the queue: the write counts as applied');
-        Http::assertSent(fn (Request $r) => str_starts_with($r->url(), self::ALERT_URL) && $r['reason'] === 'owner_tag_not_cleared_transient');
-    }
+    // --- §10.15: the leg that swallows its own failure keeps doing so (the DL-386 owner-tag clear it once shared this with was retired by DL-439) ---
 
     public function test_a_rate_limited_card_note_is_still_swallowed_and_alerted_and_the_move_is_not_owed(): void
     {

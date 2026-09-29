@@ -50,6 +50,7 @@ class CheckCommandRegistrationTest extends TestCase
         'install.secret_dir',
         'database.connectivity',
         'database.install_suffix',
+        'writeback.owed_writes_table',
         'install.inbox_config',
         'retention.posture',
         'jobs.posture',

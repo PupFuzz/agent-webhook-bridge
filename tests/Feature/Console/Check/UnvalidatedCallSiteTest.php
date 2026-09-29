@@ -216,7 +216,7 @@ class UnvalidatedCallSiteTest extends TestCase
         // table exists was never measured. Reporting it MISSING there would send the operator to
         // `migrate` a database that may be fine and merely unreachable, which
         // `database.connectivity` already reports.
-        'app/Bridge/Check/Checks/WritebackOwedWritesTableCheck.php' => 1,
+        'app/Bridge/Check/Checks/WritebackOwedWritesTableCheck.php' => 2,
         // card#8683 / DL-345 — ONE site, the same shape as the two above and limb (a): the
         // cache backend holding the standup gate's last-failure marker could not be READ.
         // An unreachable cache is not evidence that the last digest pass succeeded, and this
