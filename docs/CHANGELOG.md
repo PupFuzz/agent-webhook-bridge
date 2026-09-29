@@ -66,11 +66,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Upgrade warnings
 
-- **card#10849 / DL-440 — run `php artisan migrate` before the new code serves webhooks** (new table `writeback_owed_writes`). Until it runs, every delivery carrying a durable writeback answers 5xx and `bridge:check`'s `writeback.owed_writes_table` leg FAILs.
+- **card#10849 / DL-440 — run `php artisan migrate` before the new code serves webhooks** (new table `writeback_owed_writes`). Until it runs, every delivery carrying a durable writeback answers 5xx — and GitHub never redelivers — and `bridge:check`'s `writeback.owed_writes_table` leg FAILs.
 - **Re-deploy each seat's channel server** — the reference snapshot moves 0.9.30 → 0.9.35 across this release. Re-copy the whole `examples/channel-servers/` directory, run `npm ci`, and restart the seat's session; until then `bridge:check` WARNs and the seat does not see `board_get_cards` or `board_search`.
 - **card#10832 / DL-437 — `board_search` needs kanban v0.47.0 or later**; against an older kanban every `board_search` call is refused as an install fault. Upgrade kanban first if seats will use it.
 - **card#10850 / DL-436 — a card now ships only on a closing form in the PR title.** Title the PR that finishes a card `… closes card#<id>` (or `Fixes DL-NNN`); a merge from a `card-<id>-…` branch without one no longer moves the card, and a PR closed unmerged no longer moves it to `closed_unmerged`'s stage.
-- **card#10869 / DL-439 — card ownership is the kanban assignee.** A merge no longer removes a card's `owner:` tag, so on an agent-board-toolkit release older than the one carrying card#10868 a later start of that card by another seat is not stamped. Install that toolkit release, then run `kbcard owner-migrate`.
+- **card#10869 / DL-439 — card ownership is the kanban assignee.** A merge no longer removes a card's `owner:` tag, so on an agent-board-toolkit release older than the one carrying card#10868 a later start of that card by another seat is not stamped. Install that toolkit release; once your coord roster carries each seat's `kanban_user_id` (until then `kbcard owner-migrate` finds nothing it can assign), run `kbcard owner-migrate`.
 
 ## [0.92.0] - 2026-09-28
 
