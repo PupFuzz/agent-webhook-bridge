@@ -7,11 +7,13 @@ use App\Bridge\Support\DlTokenGrammar;
 use LogicException;
 
 /**
- * The comment the bridge posts on a pull request whose merge or close could not be correlated to a
- * card (DL-390, card#9569): what was read, from where, on which board, why it failed, and what to
- * run. Until this existed the only record was a bridge log line (and, for the handler's refusals, a
- * `writeback_move_failed` alert), so the board could disagree with what shipped while nothing on
- * GitHub said so.
+ * The comment the bridge posts on a pull request whose merge could not be correlated to a card
+ * (DL-390, card#9569; a close too, until DL-436 stopped a close moving anything) — or, since
+ * card#10850 / DL-436, whose merge from a card's own branch closed nothing
+ * ({@see NO_CLOSING_FORM}): what was read, from where, on which board, why no card
+ * moved, and what to run. Until this existed the only record was a bridge log line (and, for the
+ * handler's refusals, a `writeback_move_failed` alert), so the board could disagree with what
+ * shipped while nothing on GitHub said so.
  *
  * ⛔ NO AUTHOR-CONTROLLED BYTE REACHES THE BODY, BY CONSTRUCTION RATHER THAN BY ESCAPING. A PR title
  * and a head ref are chosen by whoever opened the pull request, and a comment the bridge authors is
@@ -48,7 +50,13 @@ final class PrCorrelationComment
     /** What every outcome's {@see marker()} starts with. */
     public const MARKER_PREFIX = '<!-- agent-webhook-bridge:pr-correlation ';
 
-    /** The outcomes that comment: a merge or a close. `opened` / `reopened` / `started` never do. */
+    /**
+     * The outcomes a comment can be keyed by: a merge or a close. `opened` / `reopened` / `started`
+     * never comment. `closed_unmerged` stays a member although nothing emits it since card#10850 /
+     * DL-436 ({@see PrOutcome::movesCard()}): a comment `bridge:github-owed` already recorded under
+     * that outcome must still read as a well-formed row, or one owed write would make the whole
+     * record unreadable ({@see GitHubWriteDebt}).
+     */
     public const OUTCOMES = [PrOutcome::INTEGRATION_MERGE, PrOutcome::RELEASE_MERGE, 'closed_unmerged'];
 
     /** A DL token parsed, no card on the mapped board carries it, and no card token parsed to fall back to. */
@@ -58,19 +66,28 @@ final class PrCorrelationComment
     public const TOKEN_UNREADABLE = 'token_unreadable';
 
     /**
+     * A merge from a head branch naming the card, whose title carries no closing form naming it, so
+     * the card did not move (card#10850 / DL-436). Not a correlation failure — the card is known —
+     * but the one merge whose author has reason to expect a move, since DL-308 made it one until
+     * DL-436 retired that route.
+     */
+    public const NO_CLOSING_FORM = 'no_closing_form';
+
+    /**
      * Every cause that comments. The handler-side ones ARE the `writeback_move_failed` reason
      * codes those refusals already emit, so the comment and the alert name one cause with one string.
      * The refusals about the INSTALL rather than the pull request (`mapped_board_unreadable_to_this_token`,
      * `board_scope_lookup_unfiltered`, a kanban 4xx, a malformed payload) are deliberately absent: the
      * PR author can do nothing about them, and a comment naming the card there would be a
      * wrong-but-specific accusation. A pin is not a cause either, but a pinned card is still stamped,
-     * so a ref that stamp drops is reported like any other. Nor does a merge that claims to finish
-     * nothing comment (DL-305), whether its card correlated or its token did not: the classifier
-     * attaches no evidence there, since a title citing another card or DL is routine.
+     * so a ref that stamp drops is reported like any other. A merge that claims to finish nothing
+     * (DL-305) comments only as {@see NO_CLOSING_FORM}, where the head branch names the card: a
+     * title citing another card or DL is routine and stays silent.
      */
     private const CAUSES = [
         self::DL_UNRESOLVED,
         self::TOKEN_UNREADABLE,
+        self::NO_CLOSING_FORM,
         'card_token_near_miss',
         MappedBoardGuard::REASON_ID_OUTSIDE_MAPPED_BOARD,
         // The multi-board sibling of the line above (card#9850 / DL-404). It is a member for
@@ -190,13 +207,17 @@ final class PrCorrelationComment
         if ($cause === self::DL_UNRESOLVED && $dl === null) {
             return null;
         }
+        $cardId = is_int($cardId) || (is_string($cardId) && ctype_digit($cardId)) ? (int) $cardId : null;
+        if ($cause === self::NO_CLOSING_FORM && $cardId === null) {
+            return null;
+        }
 
         return new self(
             $repo,
             $evidence['pr_number'],
             $outcome,
             $cause,
-            is_int($cardId) || (is_string($cardId) && ctype_digit($cardId)) ? (int) $cardId : null,
+            $cardId,
             $mapping->boardId,
             $mapping->declaredBoardIds(),
             $mapping->isOnAdditionalDeclaredBoard(),
@@ -284,6 +305,15 @@ final class PrCorrelationComment
      */
     private function boardsLookedOn(): array
     {
+        // Decided at classify time from the title and head branch alone: no board was read, and on an install
+        // declaring several boards the card may not be on the mapped one, so naming a board here
+        // would claim a lookup that never happened.
+        if ($this->cause === self::NO_CLOSING_FORM) {
+            return [
+                '**Board looked on:** none — the card was selected from the head branch and not moved, so no board was read.',
+                "the board that holds card#{$this->cardId}",
+            ];
+        }
         if ($this->cause === MappedBoardGuard::REASON_ID_OUTSIDE_DECLARED_BOARDS) {
             $checked = $this->checkedBoards();
 
@@ -324,6 +354,13 @@ final class PrCorrelationComment
                 $this->titleClosesDl
                     ? "kbcard patch --task <card-id> --dl {$this->dl} --pr {$this->prNumber} --pr-url <this pull request's URL>\nkbcard move --task <card-id> --column <column>"
                     : $byHand,
+            ],
+            self::NO_CLOSING_FORM => [
+                "Board not updated: {$card} was not moved, because this pull request's title carries no closing form naming it.",
+                "The head branch names {$card}, which selects it, but a branch name does not claim that the card's work is done (DL-436). "
+                    .'A merge moves a card on '.PrOutcome::describeClosure().". If this pull request does not finish {$card}, nothing is wrong and nothing needs doing.",
+                "# only if this pull request does finish {$card}:\nkbcard move --task {$task} --column <column>\n"
+                    .'# and title the pull request that finishes a card: <type>(<scope>): <subject> (closes card#<id>)',
             ],
             self::TOKEN_UNREADABLE => [
                 $notMoved,
@@ -453,7 +490,7 @@ final class PrCorrelationComment
         $urlWithdrawn = $urlDropped && in_array($stored->url, [StoredPrUrlKind::None, StoredPrUrlKind::PlaceholderThisRepo], true);
 
         // What the card answers DIFFERENTLY excludes all four: calling any of them "different"
-        // is false on a public page, and on a close it would say the card tracks another PR.
+        // is false on a public page.
         $differing = array_values(array_diff($this->droppedRefs, array_merge(
             $numberUnconfirmed || $numberNamesNoPr ? ['pr_number'] : [],
             $urlWithdrawn || $urlPlaceholderKept ? ['pr_url'] : [],
@@ -466,53 +503,6 @@ final class PrCorrelationComment
             $urlWithdrawn ? "a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request's" : '',
         ]);
         $why = implode('; ', $reasons).", so {$notRecorded}. Nothing else is said here about the card's refs, and its stage is decided separately.";
-        $prRefDiffers = array_intersect(['pr_number', 'pr_url'], $differing) !== [];
-
-        if ($this->outcome === 'closed_unmerged' && $prRefDiffers) {
-            $stage = $this->stageId === null ? 'its `closed_unmerged` stage' : "workflow stage {$this->stageId}";
-            // Only a `pr_url` naming ANOTHER pull request makes the card track "a different
-            // pull request"; one naming THIS pull request beside another number, a differing
-            // bare number, or a url that is free text does not (DL-429 Decision 1, r5) — yet the
-            // number or the work may still be the replacement's, so the close still warns, in
-            // words that are true of the card.
-            [$headline, $ifSuperseded] = match (true) {
-                // DL-429 r8, repo-gated by r9 — a `pr_number` that happens to equal this
-                // event's, beside a `pr_url` naming ANOTHER pull request of THIS EVENT'S OWN
-                // repo, is the card's OWN refs disagreeing with each other, mirrored from
-                // CardNote::droppedCorrelationRef's dedicated heading — the generic arm below
-                // never claims THIS is unreachable, but it also does not surface the collision,
-                // which is worth a reader's own look. Reads the SAME `StoredPrRef` predicate as
-                // the card note, so the two tables cannot diverge: a `pr_url` naming a
-                // same-numbered pull request of a DIFFERENT repo (a repo that moved org) is not
-                // this — the card's two refs agree, and the generic arm below is true of it.
-                $stored->otherPrSameRepoWithMatchingNumber() => [
-                    "Check {$card}: its `pr_number` matches this pull request's number, but its `pr_url` already names a different pull request.",
-                    "If the pull request {$card} tracks supersedes this one",
-                ],
-                $stored->url === StoredPrUrlKind::NamesOtherPr => [
-                    "Check {$card}: it tracks a different pull request than the one just closed.",
-                    "If the pull request {$card} tracks supersedes this one",
-                ],
-                $stored->url === StoredPrUrlKind::NamesThisPr => [
-                    "Check {$card}: its `pr_url` names this pull request, but its `pr_number` is a different number.",
-                    'If that number belongs to a pull request that supersedes this one',
-                ],
-                in_array('pr_number', $differing, true) => [
-                    "Check {$card}: it carries a different `pr_number` than the pull request just closed — ".CardNote::BARE_NUMBER.'.',
-                    'If that number belongs to a pull request that supersedes this one',
-                ],
-                default => [
-                    "Check {$card}: its `pr_url` is not a pull-request URL, so it names no pull request, and this close may have moved it.",
-                    "If {$card}'s work continues in a pull request that supersedes this one",
-                ],
-            };
-
-            return [
-                $headline,
-                $why." {$ifSuperseded}, this close may have moved {$card} to {$stage} even though its work continues there.",
-                "kbcard show --task {$task}\n# if this close moved it, put it back:\nkbcard move --task {$task} --column <the column it was in>",
-            ];
-        }
 
         $flags = array_filter([
             $prRefDropped ? "--pr {$this->prNumber} --pr-url <this pull request's URL>" : '',

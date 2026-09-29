@@ -17,6 +17,7 @@ use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\ProgramCardGuard;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\StoredPrNumberKind;
 use App\Bridge\Writeback\StoredPrRef;
@@ -102,13 +103,18 @@ use Throwable;
  * (Shipped/Released) stage. Fail-open when the order can't be read, so the guard
  * never breaks the writeback. (The opt-in `reopened` outcome below is a fifth,
  * handler-internal, deliberately-backward move — scoped to the abandon stage.)
+ * ⚠ Since card#10850 / DL-436 the built-in classifier emits no `closed_unmerged` move
+ * ({@see PrOutcome::movesCard()}); its arms here serve only a custom classifier that still
+ * emits one.
  *
  * The `reopened` outcome (opt-in `revive_on_reopen`, DL-195) is the writeback's other
  * legitimately-backward move: a reopened PR revives its card from the mapped
- * `closed_unmerged` (abandon) stage back to the `opened` stage. The guard allows that
- * backward move ONLY from the abandon stage (terminal-safe — a Shipped/Released card
- * is never there); elsewhere `reopened` is forward-only like `opened`. A marker-gated
- * override alert (notifyRevive) fires after the move.
+ * `closed_unmerged` (abandon) stage back to the `opened` stage — a stage the writeback no
+ * longer parks a card in since DL-436, so what it revives was put there by a person or
+ * before DL-436. The guard allows that backward move ONLY from the abandon stage
+ * (terminal-safe — a Shipped/Released card is never there); elsewhere `reopened` is
+ * forward-only like `opened`. A marker-gated override alert (notifyRevive) fires after
+ * the move.
  *
  * A refusal about WHICH CARD an event is about — a near-miss token, a card id off the mapped board,
  * a card on another board, an uncorroborated title token, a correlation ref not stamped — is ALSO

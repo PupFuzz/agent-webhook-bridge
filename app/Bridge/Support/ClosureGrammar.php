@@ -14,7 +14,9 @@ namespace App\Bridge\Support;
  * card for context moved it into a terminal, irreversible stage on merge, and the
  * release sweep faithfully propagated the result. A peer measured 17 wrong-retirement
  * candidates in one release bundle and one card whose explicit human ruling the
- * writeback reversed. This class is the missing predicate.
+ * writeback reversed. This class is the missing predicate — and since card#10850 / DL-436,
+ * which retired DL-308's head-branch route, the ONLY closure authority: nothing but a
+ * closing form in the PR title moves a card on merge.
  *
  * THE TOKEN HALF IS NOT RESTATED HERE, and that is the whole reason this reads the way
  * it does. A closing form is a verb BRIDGE followed by a token, and the token is

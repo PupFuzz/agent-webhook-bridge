@@ -480,11 +480,10 @@ class PrTitleLintTest extends TestCase
         $out = [];
         exec(($locale === null ? '' : 'LC_ALL='.escapeshellarg($locale).' ')
             .'TITLE='.escapeshellarg($title).' BRANCH='.escapeshellarg($branch)
-            // Every step is run with a BASE in the environment even though only the
-            // closure step reads one: `set -u` makes an absent variable a hard error,
-            // so the harness must supply what the `env:` block supplies. The default
-            // is the INTEGRATION base — the one every dev-targeted PR carries, and the
-            // one under which the structural route is live.
+            // Every step is run with a BASE in the environment although, since
+            // card#10850 / DL-436 retired the structural route, no step reads one: a
+            // step that starts to will still run under `set -u` rather than hard-error
+            // on an absent variable. The default is the INTEGRATION base.
             .' BASE='.escapeshellarg($base)
             // LAST WINS in bash's `VAR=v cmd` prefix, which is the ORDER Actions
             // applies a step's `env:` in: after the runner's own environment. So a
@@ -2176,8 +2175,9 @@ class PrTitleLintTest extends TestCase
 
     /**
      * The corpus the whole-step tie below is driven over: (title, branch) pairs
-     * spanning both closure routes, both their misses, and the shapes that carry no
-     * closure question at all. Real head branches and real titles from this repo's
+     * spanning the closing form, its misses, card-naming branches (which closed a card
+     * until DL-436 and close nothing since), and the shapes that carry no closure
+     * question at all. Real head branches and real titles from this repo's
      * merged PRs wherever a row has one — the `<type>/<id>-slug` rows ARE the measured
      * defect (card#8294 counted 8 in a row), and the `card-<id>-slug` rows are the
      * convention that worked before it.
@@ -2195,10 +2195,7 @@ class PrTitleLintTest extends TestCase
             'fix/card8286-release-tag-check',
             'card-security-sleep',
             'fix/decouple-check-name-from-runtime',
-            // A branch naming a DIFFERENT card than the title correlates — the only
-            // shape that distinguishes "the ref names a card" from "the ref names
-            // THIS card". Without it, deleting the structural id comparison leaves
-            // the whole suite green (measured).
+            // A branch naming a DIFFERENT card than the title correlates.
             'card-1234-other-work',
         ] as $branch) {
             foreach ([
@@ -2231,10 +2228,11 @@ class PrTitleLintTest extends TestCase
     /**
      * ⭐ THE WHOLE-STEP TIE, and the only leg here that measures what the gate is FOR.
      * Every other tie compares one regex to one grammar; this compares the STEP's
-     * verdict to the BRIDGE's — `ClosureGrammar::closesCard()` OR
-     * {@see PrOutcome::mergeClosesCard()}, over the card the classifier would select
+     * verdict to the BRIDGE's — `ClosureGrammar::closesCard()`, the only closure route
+     * since card#10850 / DL-436, over the card the classifier would select
      * ({@see CardTokenGrammar::parse()} on the title, leftmost-only). Neither side
-     * carries a copy of the other's answer.
+     * carries a copy of the other's answer. The corpus keeps its card-naming branches:
+     * they are the rows that red the gate if it ever re-grows a branch route.
      *
      * That is the property the gate exists to hold. A leg comparing the bash to a
      * hand-written expectation would have stayed green through the convention flip
@@ -2254,8 +2252,8 @@ class PrTitleLintTest extends TestCase
      * ALREADY false when it was written. THREE families of title-decidable input make the
      * two sides answer DIFFERENTLY, all by design, and all were MEASURED rather than
      * reasoned about: the REVERT family (card#8306 — the writeback subtracts the quoted
-     * span and refuses GitHub's wrapped ref, while the gate reads that same quoted verb as
-     * a closing form and demands nothing of a `revert-*` branch), `[no-close]`
+     * span, while the gate reads that same quoted verb as a closing form and demands
+     * nothing of a `revert-*` branch), `[no-close]`
      * (card#8344 / DL-327 — the gate short-circuits at its `optout=` test while the
      * writeback reads the marker as the author's declaration and withholds the move), and
      * the ENUMERATED SEPARATOR class (DL-272 — `closes<TAB>card#N`, which this step's
@@ -2285,9 +2283,7 @@ class PrTitleLintTest extends TestCase
         $agreed = $reds = 0;
         foreach (self::closureCorpus() as [$title, $branch]) {
             $id = CardTokenGrammar::parse($title);
-            $runtime = $id !== null
-                && ! (ClosureGrammar::closesCard($title, $id)
-                    || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $title));
+            $runtime = $id !== null && ! ClosureGrammar::closesCard($title, $id);
             $this->assertSame($runtime, $this->runClosureStep($title, $branch) !== 0,
                 "the gate and the bridge disagree on '{$title}' / '{$branch}': the bridge "
                 .($runtime ? 'REFUSES' : 'moves').' the card');
@@ -2314,13 +2310,11 @@ class PrTitleLintTest extends TestCase
      *
      *  - **`[no-close]`** (card#8344 / DL-327). The author has already answered the first —
      *    a declared NON-closure — so the gate demands nothing and exits 0, while the
-     *    writeback reads the same literal as the declaration it is and refuses BOTH routes.
+     *    writeback reads the same literal as the declaration it is and vetoes the closing form.
      *  - **A REVERT announced only in the TITLE** (card#8306). `Revert "… (closes card#N)"`
      *    pushed to an ORDINARY branch is not covered by the step's `revert-*` exemption at
      *    all: the step reads the quoted verb as a closing form and passes, while
-     *    `ClosureGrammar` subtracts the quoted span and {@see PrOutcome::mergeClosesCard()}
-     *    asks `App\Bridge\Support\RevertGrammar::isRevert()` on both surfaces, so the
-     *    writeback refuses.
+     *    `ClosureGrammar` subtracts the quoted span, so the writeback refuses.
      *    ⚠ This one PREDATES the marker — the tie's docblock claim that its biconditional
      *    covered everything a title can decide was false when written, which is why the
      *    correction there is measured here rather than asserted there.
@@ -2340,44 +2334,43 @@ class PrTitleLintTest extends TestCase
      *
      * EACH ROW CARRIES ITS OWN ONE-VARIABLE CONTROL — the same title with the marker, or the
      * revert wrapper, removed — because a disagreement asserted without one is satisfied by
-     * any title the gate happens to pass. The marker rows run on BOTH branch shapes because
-     * the control's verdict inverts between them (on the card's own branch both sides MOVE;
-     * on `<type>/<id>-slug` both REFUSE), and the closing `assertNotSame` is what proves that
-     * pair is not one measurement taken twice.
+     * any title the gate happens to pass. The marker rows run over TWO titles because the
+     * control's verdict inverts between them (with a closing form both sides MOVE; without
+     * one both REFUSE — on either branch shape since DL-436), and the closing `assertNotSame`
+     * is what proves that pair is not one measurement taken twice.
      */
     public function test_the_gate_and_the_predicate_disagree_by_design_on_a_marker_and_on_a_revert(): void
     {
-        $marked = 'docs: cite the prior ruling '.NoCloseGrammar::MARKER.' (card#8286)';
-        $control = 'docs: cite the prior ruling (card#8286)';
-        $this->assertSame($control, str_replace(NoCloseGrammar::MARKER.' ', '', $marked),
-            'the control differs from the marked title by more than the marker — it would not isolate it');
-
-        $id = CardTokenGrammar::parse($marked);
-        $this->assertSame(8286, $id, 'the marker must not disturb which card the title correlates');
-        $this->assertSame($id, CardTokenGrammar::parse($control));
-
         $controlVerdicts = [];
-        foreach (['card-8286-context', 'docs/8286-context'] as $branch) {
-            // THE RUNTIME REFUSES, on both routes, because the marker empties both.
-            $this->assertFalse(ClosureGrammar::closesCard($marked, $id),
-                'the lexical route must be empty under the marker');
-            $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $marked),
-                "the structural route must be empty under the marker, including on '{$branch}' which names the card");
+        foreach (['docs: cite the prior ruling (closes card#8286)', 'docs: cite the prior ruling (card#8286)'] as $control) {
+            $marked = str_replace('docs: cite the prior ruling ', 'docs: cite the prior ruling '.NoCloseGrammar::MARKER.' ', $control);
+            $this->assertSame($control, str_replace(NoCloseGrammar::MARKER.' ', '', $marked),
+                'the control differs from the marked title by more than the marker — it would not isolate it');
 
-            // THE GATE PASSES IT — the disagreement, asserted rather than tolerated.
-            $this->assertSame(0, $this->runClosureStep($marked, $branch),
-                "the gate must PASS a declared non-closure on '{$branch}' — demanding a closure claim there is the over-promotion defect the marker exists to prevent");
+            $id = CardTokenGrammar::parse($marked);
+            $this->assertSame(8286, $id, 'the marker must not disturb which card the title correlates');
+            $this->assertSame($id, CardTokenGrammar::parse($control));
 
-            // THE CONTROL: same title, marker removed ⇒ the two sides agree again.
-            $runtimeMoves = ClosureGrammar::closesCard($control, $id)
-                || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $control);
-            $this->assertSame($runtimeMoves, $this->runClosureStep($control, $branch) === 0,
-                "without the marker the gate and the bridge must AGREE on '{$branch}' — otherwise the marker is not what carries the disagreement");
-            $controlVerdicts[$branch] = $runtimeMoves;
+            foreach (['card-8286-context', 'docs/8286-context'] as $branch) {
+                // THE RUNTIME REFUSES, because the marker vetoes the closing form.
+                $this->assertFalse(ClosureGrammar::closesCard($marked, $id),
+                    'the closing form must be vetoed under the marker');
+
+                // THE GATE PASSES IT — the disagreement, asserted rather than tolerated.
+                $this->assertSame(0, $this->runClosureStep($marked, $branch),
+                    "the gate must PASS a declared non-closure on '{$branch}' — demanding a closure claim there is the over-promotion defect the marker exists to prevent");
+
+                // THE CONTROL: same title, marker removed ⇒ the two sides agree again.
+                $runtimeMoves = ClosureGrammar::closesCard($control, $id);
+                $this->assertSame($runtimeMoves, $this->runClosureStep($control, $branch) === 0,
+                    "without the marker the gate and the bridge must AGREE on '{$branch}' — otherwise the marker is not what carries the disagreement");
+                $controlVerdicts[$control] = $runtimeMoves;
+            }
         }
 
-        $this->assertNotSame($controlVerdicts['card-8286-context'], $controlVerdicts['docs/8286-context'],
-            'both control branches reached the same verdict — the pair measured one direction twice');
+        [$withClosingForm, $withoutClosingForm] = array_values($controlVerdicts);
+        $this->assertNotSame($withClosingForm, $withoutClosingForm,
+            'both control titles reached the same verdict — the pair measured one direction twice');
 
         // THE REVERT FAMILY, on an ORDINARY branch so the step's `revert-*` exemption is not
         // what carries the answer: the quoted closing form is a closing form to the gate and
@@ -2421,9 +2414,9 @@ class PrTitleLintTest extends TestCase
      *    ({@see RevertGrammar}).
      *  - `false-red` — the gate REDS a merge the writeback WOULD move. This is the shape
      *    that costs an author a retitle, and exactly one input family produces it: the
-     *    separator class DL-272 priced and enumerated deliberately (TAB/VT/FF/CR), and only
-     *    where the structural route is not also open — the same-family rows on a
-     *    card-naming branch agree, which is why they are carried here as its control.
+     *    separator class DL-272 priced and enumerated deliberately (TAB/VT/FF/CR). Until
+     *    DL-436 a card-naming branch passed the gate before the separator was read, so
+     *    those rows agreed; since DL-436 they are false-reds too.
      *
      * ⛔ THE ASSERTION THAT MAKES THIS AUDITABLE is the last one: a row whose family
      * declares agreement and which DISAGREES fails with the row printed. So a new
@@ -2431,8 +2424,8 @@ class PrTitleLintTest extends TestCase
      * its direction, where the invariant below decides whether it is a ruling or a defect.
      *
      * EVERY FAMILY CARRIES ITS OWN CONTROL — the near-spellings the marker grammar does not
-     * catch, the unquoted and un-reverted forms, the space-separated form, and the branch
-     * shape that reopens the structural route — because a disagreement asserted without one
+     * catch, the unquoted and un-reverted forms, and the space-separated form — because a
+     * disagreement asserted without one
      * is satisfied by any title the gate happens to pass.
      */
     public function test_the_enumerated_disagreement_families_point_the_direction_they_declare(): void
@@ -2440,9 +2433,7 @@ class PrTitleLintTest extends TestCase
         $seen = $families = [];
         foreach (self::disagreementRows() as [$title, $branch, $family, $declared]) {
             $id = CardTokenGrammar::parse($title);
-            $moves = $id !== null
-                && (ClosureGrammar::closesCard($title, $id)
-                    || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $title));
+            $moves = $id !== null && ClosureGrammar::closesCard($title, $id);
             $reds = $this->runClosureStep($title, $branch) !== 0;
             $measured = match (true) {
                 $id === null => 'no-correlation',
@@ -2513,7 +2504,7 @@ class PrTitleLintTest extends TestCase
         $rows = [];
 
         // FAMILY — THE MARKER. Positions, spellings, and both branch shapes, because the
-        // structural route is open on one of them and the verdict must not depend on it.
+        // card's own branch closed a card until DL-436 and the verdict must not depend on it.
         foreach ([
             "feat: thing {$m} (closes card#8286)",
             "{$m} feat: thing (closes card#8286)",
@@ -2537,7 +2528,7 @@ class PrTitleLintTest extends TestCase
         $rows[] = ["feat: thing {$m} (closes DL-239) (card#8286)", 'docs/8286-context', 'marker', 'withheld'];
 
         // FAMILY — THE REVERT (card#8306). The gate reads the quoted verb as a closing form;
-        // the writeback subtracts the quoted span and refuses the wrapped ref.
+        // the writeback subtracts the quoted span.
         $revert = 'Revert "feat: widget rework (closes card#8286)"';
         foreach (['fix/streaming-timeout', 'revert-611-card-8286-widget'] as $branch) {
             $rows[] = [$revert, $branch, 'revert', 'withheld'];
@@ -2557,7 +2548,7 @@ class PrTitleLintTest extends TestCase
         $rows[] = ['docs: record the ruling (DL-239)', 'docs/dl-239', 'dl', 'no-correlation'];
         $rows[] = ["docs: record the ruling {$m} (DL-239)", 'docs/dl-239', 'dl', 'no-correlation'];
         $rows[] = ['feat: thing (closes DL-239) (card#8286)', 'docs/8286-context', 'dl', 'agree-red'];
-        $rows[] = ['feat: thing (closes DL-239) (card#8286)', 'card-8286-context', 'dl', 'agree-move'];
+        $rows[] = ['feat: thing (closes DL-239) (card#8286)', 'card-8286-context', 'dl', 'agree-red'];
 
         // FAMILY — THE ENUMERATED SEPARATOR (DL-272's priced false-RED). `\s` admits these
         // four and the step's enumerated class does not, so the gate reds a merge that
@@ -2567,15 +2558,16 @@ class PrTitleLintTest extends TestCase
             foreach (['fix/8286-x', 'fix/streaming-timeout'] as $branch) {
                 $rows[] = ["ci: gate closes{$sep}card#8286", $branch, 'separator', 'false-red'];
             }
-            // Its control, and the scope of the price: on a card-naming head the STRUCTURAL
-            // route passes the gate before the separator is read, so the same title agrees.
-            $rows[] = ["ci: gate closes{$sep}card#8286", 'card-8286-context', 'separator', 'agree-move'];
+            // The scope of the price: until DL-436 a card-naming head passed the gate before
+            // the separator was read; it no longer does, so the price reaches it too.
+            $rows[] = ["ci: gate closes{$sep}card#8286", 'card-8286-context', 'separator', 'false-red'];
         }
         $rows[] = ['ci: gate closes card#8286', 'fix/8286-x', 'separator', 'agree-move'];
 
         // FAMILY — NO RULING AT ALL: the shapes the gate exists for, in both answers.
         $rows[] = ['feat: thing (card#8286)', 'docs/8286-context', 'agree', 'agree-red'];
-        $rows[] = ['feat: thing (card#8286)', 'card-8286-context', 'agree', 'agree-move'];
+        // card#10850 / DL-436: the card's own branch no longer closes it, on either side.
+        $rows[] = ['feat: thing (card#8286)', 'card-8286-context', 'agree', 'agree-red'];
         $rows[] = ['feat: thing (closes card#8286)', 'docs/8286-context', 'agree', 'agree-move'];
         $rows[] = ['feat: closes the bug in card#8286', 'docs/8286-context', 'agree', 'agree-red'];
         $rows[] = ['feat: thing (closescard#8286)', 'docs/8286-context', 'agree', 'no-correlation'];
@@ -2607,9 +2599,9 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * The passing shapes, watched to pass — one per verb the grammar accepts, plus
-     * both structural spellings. Driven off {@see ClosureGrammar::accepted()} so a
-     * verb added to the grammar is exercised here without an edit.
+     * The passing shapes, watched to pass — one per verb the grammar accepts. Driven off
+     * {@see ClosureGrammar::accepted()} so a verb added to the grammar is exercised here
+     * without an edit.
      */
     public function test_the_closure_step_passes_every_closing_form_the_grammar_accepts(): void
     {
@@ -2622,11 +2614,25 @@ class PrTitleLintTest extends TestCase
             $this->assertSame(0, $this->runClosureStep($title, 'ci/8286-release-tag-check'),
                 "'{$title}' carries a closing form the grammar accepts and must pass");
         }
+    }
 
+    /**
+     * card#10850 / DL-436 — a branch naming the card no longer passes the gate, in every
+     * spelling that used to (DL-308's structural route), because the writeback no longer
+     * moves the card on it. The control is the same branch with a closing form in the
+     * title, so the red turns on the missing claim and not on the branch.
+     */
+    public function test_a_branch_naming_the_card_no_longer_passes_the_gate(): void
+    {
         foreach (['card-8286-slug', 'fix/card8286-slug', 'fix/card#8286-slug'] as $branch) {
-            $this->assertSame(0, $this->runClosureStep('ci: gate release-promote (card#8286)', $branch),
-                "'{$branch}' names the card structurally and must pass");
+            [$rc, $out] = $this->runStep(self::CLOSURE_STEP, 'ci: gate release-promote (card#8286)', $branch);
+            $this->assertSame(1, $rc, "'{$branch}' names the card, and that no longer closes it");
+            $this->assertStringContainsString('A head branch naming the card does not close it either', $out);
+            $this->assertSame(0, $this->runClosureStep('ci: gate release-promote (closes card#8286)', $branch),
+                "control: '{$branch}' with a closing form in the title passes");
         }
+        $this->assertStringNotContainsString('release_base=', $this->stepScript(self::CLOSURE_STEP),
+            'the step still reads the base — only the retired structural route needed it');
     }
 
     /**
@@ -2911,8 +2917,8 @@ class PrTitleLintTest extends TestCase
      * — head ref first, then the title's leftmost token — and the closure step still
      * does not: it reads the TITLE's leftmost card only. So on a `card`-stem branch
      * whose title cites another card BEFORE its own, the two steps disagree about
-     * which card the PR is even about, and CI reds a merge the writeback would close
-     * STRUCTURALLY off the head ref.
+     * which card the PR is even about, and CI reds a merge whose title closes the head
+     * ref's card, which the writeback selects and moves.
      *
      * ⛔ The whole-step tie above cannot see this: it derives BOTH sides from
      * `CardTokenGrammar::parse($title)`, so it compares the closure step against a
@@ -2926,15 +2932,14 @@ class PrTitleLintTest extends TestCase
     public function test_the_closure_step_reads_the_title_where_the_classifier_reads_the_head(): void
     {
         $this->bootClassifierMapping();
-        $title = 'docs: port card#1234 guidance (card#9996)';
+        $title = 'docs: port card#1234 guidance (closes card#9996)';
         $branch = 'card-9996-stage-attrs';
 
         // The premise, asserted rather than assumed: the runtime really does select the
-        // head ref's card and really would close it.
+        // head ref's card and the title really does close it.
         $this->assertSame(9996, $this->classifierSelects($title, $branch),
             'the classifier selects the head ref\'s card');
-        $this->assertTrue(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, 9996, $title),
-            'and the merge closes it structurally');
+        $this->assertTrue(ClosureGrammar::closesCard($title, 9996), 'and the title closes it');
 
         // The divergence: CI reds it anyway, naming the title's leftmost card.
         [$rc, $out] = $this->runStep(self::CLOSURE_STEP, $title, $branch);
@@ -2944,7 +2949,7 @@ class PrTitleLintTest extends TestCase
 
         // CONTROL — with the branch's own card leftmost the two sides agree again, so
         // the red above is attributable to ORDER and not to the fixture generally.
-        [$rc] = $this->runStep(self::CLOSURE_STEP, 'docs: port the guidance (card#9996) from card#1234', $branch);
+        [$rc] = $this->runStep(self::CLOSURE_STEP, 'docs: port the guidance (closes card#9996) from card#1234', $branch);
         $this->assertSame(0, $rc, 'control: with the branch\'s card leftmost the two sides agree again');
     }
 
@@ -2986,33 +2991,17 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * THE SECOND CONJUNCT of the structural route, and its control. A release merge
-     * takes that route NOT AT ALL ({@see PrOutcome::mergeClosesCard()} requires
-     * {@see PrOutcome::INTEGRATION_MERGE}), so the identical PR passes against the
-     * integration base and must red against the release base — otherwise the step
-     * mirrors the predicate minus a conjunct and the whole-step tie above is
-     * measuring under an assumption instead of a value.
-     *
-     * The base name is not spelled here: it is read from the step and compared to the
-     * authority's own constant, so a rename moves both or reds.
+     * card#10850 / DL-436 — the base ref decided only the retired structural route, so a
+     * verdict that still turned on it would mean the step kept a copy of that route.
      */
-    public function test_the_structural_route_is_withheld_from_a_release_merge(): void
+    public function test_the_closure_steps_verdict_does_not_turn_on_the_base(): void
     {
-        $this->assertSame(PrOutcome::RELEASE_BASE, $this->stepRegex(self::CLOSURE_STEP, 'release_base'),
-            'the step and the writeback disagree about which base is the release base');
-
-        $title = 'ci: gate release-promote (card#8286)';
-        $branch = 'card-8286-release-tag-check';
-        $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::RELEASE_MERGE, $branch, 8286, $title),
-            'the authority must withhold the structural route here, or this leg measures nothing');
-        $this->assertTrue(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, 8286, $title));
-
-        $this->assertSame(0, $this->runStep(self::CLOSURE_STEP, $title, $branch, null, 'dev')[0],
-            'the integration base must take the structural route');
-        $this->assertSame(1, $this->runStep(self::CLOSURE_STEP, $title, $branch, null, PrOutcome::RELEASE_BASE)[0],
-            'the release base must NOT take the structural route');
-        $this->assertSame(0, $this->runStep(self::CLOSURE_STEP, 'ci: gate (closes card#8286)', $branch, null, PrOutcome::RELEASE_BASE)[0],
-            'the LEXICAL route is untouched by the base — a release merge still closes on a closing form');
+        foreach (['ci: gate release-promote (card#8286)' => 1, 'ci: gate (closes card#8286)' => 0] as $title => $rc) {
+            foreach (['dev', PrOutcome::RELEASE_BASE] as $base) {
+                $this->assertSame($rc, $this->runStep(self::CLOSURE_STEP, $title, 'card-8286-release-tag-check', null, $base)[0],
+                    "'{$title}' against '{$base}'");
+            }
+        }
     }
 
     /**

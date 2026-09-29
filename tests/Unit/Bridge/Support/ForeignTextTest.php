@@ -134,16 +134,16 @@ class ForeignTextTest extends TestCase
             'ruling' => '✔ THE DECLARATION ITSELF ×2 — the method, and the docblock line naming it. Not call sites.',
         ],
         'Console/Commands/Bridge/ReconcileCommand.php' => [
-            'uses' => 5,
-            'ruling' => '✔ TO A MATCHER ×5, never to a sink — the mention-vs-closure backstop (DL-305/DL-308), '
-                .'counted PER VALUE because that is what the derivation counts. `closes()` ×2 (the title and the '
-                .'ref, for a closing form); `NoCloseGrammar::marks()` ×1 (the title, for the `[no-close]` '
-                .'marker); `RevertGrammar::isRevert()` ×2 (both, for a revert). All three answer a boolean and '
-                .'print nothing. The same two values reach the operator-facing skip line through '
-                .'`forOperator()`, which is why this file needs BOTH exits. ⚑ This entry read 3 on its first '
-                .'draft, from a `grep -c` that counts matching LINES while the derivation counts OCCURRENCES — '
-                .'two of these three lines carry two uses each. The derivation is what corrected it, which is '
-                .'the argument for deriving rather than writing a figure down.',
+            'uses' => 4,
+            'ruling' => '✔ TO A MATCHER ×4, never to a sink — the mention-vs-closure backstop (DL-305/DL-436), '
+                .'counted PER VALUE because that is what the derivation counts. `closes()` ×1 (the title, for a '
+                .'closing form — the head ref stopped being closure evidence at DL-436); `NoCloseGrammar::marks()` '
+                .'×1 (the title, for the `[no-close]` marker); `RevertGrammar::isRevert()` ×2 (both, for a '
+                .'revert). All three answer a boolean and print nothing. The same two values reach the '
+                .'operator-facing skip line through `forOperator()`, which is why this file needs BOTH exits. '
+                .'⚑ This entry read 3 on its first draft, from a `grep -c` that counts matching LINES while the '
+                .'derivation counts OCCURRENCES. The derivation is what corrected it, which is the argument for '
+                .'deriving rather than writing a figure down.',
         ],
         'Console/Commands/Bridge/WritebackExposureCommand.php' => [
             'uses' => 2,

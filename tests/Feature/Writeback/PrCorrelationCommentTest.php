@@ -138,7 +138,7 @@ class PrCorrelationCommentTest extends TestCase
     {
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (closes card_77)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=token_unreadable', $body);
@@ -153,7 +153,7 @@ class PrCorrelationCommentTest extends TestCase
         // a board this bridge never reads.
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing (closes card#123)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=card_id_outside_mapped_board', $body);
@@ -177,7 +177,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->declareSecondBoard(13);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing (closes card#123)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=card_id_outside_declared_boards', $body);
@@ -208,7 +208,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([123 => $this->card(123, board: 9002)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing (closes card#123)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=card_id_outside_declared_boards', $body);
@@ -253,7 +253,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $this->card(5, board: 9)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=card_not_on_mapped_board', $body);
@@ -262,26 +262,6 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertStringNotContainsString('board 8', $body);
         $this->assertStringNotContainsString('workflow stage 52', $body);
         $this->assertStringNotContainsString('board 9', $body);   // the board the row came back on is never disclosed
-    }
-
-    public function test_an_unstamped_ref_on_a_close_of_a_card_resolved_on_another_declared_board_names_that_boards_stage(): void
-    {
-        $this->declareSecondBoard(13, ['merged' => 97, 'closed_unmerged' => 95]);
-        $this->onBoard = [5 => ['id' => 5, 'board_id' => 13]];
-        $this->cards = new KanbanCardStub([5 => $this->card(5, board: 13, stage: 96, pr: 739)]);
-        $this->extraStubs = PreloadStub::stub(13, [95 => 1, 96 => 2, 97 => 3]);
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
-
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
-        $this->assertStringContainsString('this close may have moved card#5 to workflow stage 95 ', $body,
-            'the stage the close really moved the card to is board 13\'s, and the remedy that puts it back depends on it');
-        $this->assertStringContainsString('- **Board looked on:** board 13, ', $body);
-        $this->assertStringNotContainsString('workflow stage 49', $body);
-        $this->assertStringNotContainsString('board 8', $body);
-        $this->assertSame([['workflow_stage_id' => 95]], array_slice($this->cards->patchesTo(5), 0, 1));   // control: the decline landed on board 13's stage
     }
 
     /**
@@ -309,7 +289,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $this->card(5, board: 9)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=card_not_on_mapped_board', $body);
@@ -397,7 +377,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 739)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
@@ -422,7 +402,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 739)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
@@ -435,7 +415,7 @@ class PrCorrelationCommentTest extends TestCase
 
     /**
      * DL-429 r2 — the card's bare `pr_number` EQUALS this pull request's, but no `pr_url`
-     * confirms its repo: nothing on the card is "different", on a merge or on a close.
+     * confirms its repo: nothing on the card is "different".
      */
     public function test_an_unconfirmed_equal_pr_number_is_not_called_a_different_one(): void
     {
@@ -443,7 +423,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 719)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(719);
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
@@ -456,7 +436,7 @@ class PrCorrelationCommentTest extends TestCase
      * DL-429 r3 — card#9850's legacy shape: another repo's `.../pull/0` placeholder beside a
      * bare `pr_number` equal to this pull request's. The stamp drops both refs, but the kept
      * `pr_url` names a repository and no pull request, and the number is unconfirmed, not
-     * different — so a close must not say the card "tracks a different pull request".
+     * different — so the comment must not say the card "tracks a different pull request".
      * (Count a kept placeholder as a `pr_url` that differs ⇒ the "Check card#5" headline ⇒ RED.)
      */
     public function test_a_kept_foreign_placeholder_is_not_called_a_different_pull_request(): void
@@ -467,7 +447,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $card]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(719);
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
@@ -491,7 +471,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $card]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(719);
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
@@ -522,117 +502,26 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertStringContainsString('kbcard patch --task 5 --pr-url <this pull request\'s URL>', $body);
     }
 
-    public function test_closed_unmerged_superseded_pr_declining_a_card_that_tracks_the_replacement_posts_one_comment(): void
+    /**
+     * card#10850 / DL-436 — a pull request closed without merging moves no card, so it has no
+     * board write to report on. Both fixtures posted a comment before DL-436: the card tracking a
+     * replacement pull request (the superseded-PR decline, card#9422 / card#9486), and a DL no
+     * card carries. The merge of the same card is the control — the stub can post, and does.
+     */
+    public function test_a_pr_closed_without_merging_moves_nothing_and_posts_nothing(): void
     {
-        // The card's measured incidents (card#9422/#719, card#9486/#739): a superseded PR is closed,
-        // its branch still names the card, and the close's decline move lands on a card whose live
-        // pull request is the replacement. Decline semantics are NOT changed — the move still lands;
-        // what is new is that the PR now says so, and how to put the card back.
         $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
         $this->cards = new KanbanCardStub([5 => $this->card(5, pr: 739)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: false));
+        $this->dispatch('d2', $this->closedPr(720, head: 'fix/thing-abc', title: 'feat: a thing (closes DL-999)', merged: false));
 
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString('outcome=closed_unmerged', $body);
-        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
-        // DL-429 r4 — the card's `pr_number` (739) is BARE: it names no pull request (Decision
-        // 1), so "it tracks a different pull request" was false. The warning itself stands —
-        // the number may well be the replacement's — and says what the card really carries.
-        $this->assertStringContainsString('Check card#5: it carries a different `pr_number` than the pull request just closed — a bare number no `pr_url` attributes to a repo, so it names no pull request.', $body);
-        $this->assertStringContainsString('If that number belongs to a pull request that supersedes this one, this close may have moved card#5 to workflow stage 49 even though its work continues there.', $body);
-        $this->assertStringNotContainsString('different pull request', $body);
-        $this->assertStringContainsString('kbcard move --task 5', $body);
-        $this->assertSame([['workflow_stage_id' => 49]], array_slice($this->cards->patchesTo(5), 0, 1));   // decline unchanged
-    }
+        $this->assertSame([], $this->github->requests);
+        $this->assertSame([], $this->cards->patchesTo(5));
 
-    /**
-     * DL-429 r4 — CONTROL for the test above: the card's `pr_url` names the replacement pull
-     * request, so the card really does track a different pull request, and the close says so.
-     */
-    public function test_closed_unmerged_on_a_card_whose_pr_url_names_the_replacement_says_a_different_pull_request(): void
-    {
-        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
-        $card = $this->card(5, pr: 739);
-        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/739';
-        $this->cards = new KanbanCardStub([5 => $card]);
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
-
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString('Check card#5: it tracks a different pull request than the one just closed.', $body);
-        $this->assertStringContainsString('If the pull request card#5 tracks supersedes this one, this close may have moved card#5 to workflow stage 49', $body);
-        $this->assertStringNotContainsString('739', $body);
-    }
-
-    /**
-     * DL-429 r8 — the card's `pr_number` matches the CLOSING pull request's own number, while
-     * its `pr_url` names a DIFFERENT pull request of the same repo: the card's own two refs
-     * disagree with each other, mirrored here from `CardNote::droppedCorrelationRef`'s
-     * dedicated heading for the same shape. The generic NamesOtherPr headline above is not
-     * FALSE of this card, but it also does not surface the number collision — this one does.
-     */
-    public function test_closed_unmerged_on_a_card_whose_pr_number_matches_but_whose_pr_url_names_another_pull_request(): void
-    {
-        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
-        $card = $this->card(5, pr: 719);
-        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/999';
-        $this->cards = new KanbanCardStub([5 => $card]);
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
-
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString("Check card#5: its `pr_number` matches this pull request's number, but its `pr_url` already names a different pull request.", $body);
-        $this->assertStringContainsString('If the pull request card#5 tracks supersedes this one, this close may have moved card#5 to workflow stage 49', $body);
-        $this->assertStringNotContainsString('it tracks a different pull request than the one just closed', $body);
-    }
-
-    /**
-     * DL-429 r9 — CONTROL for the test above: the card's `pr_number` matches the closing
-     * pull request's own number, but its `pr_url` names a same-numbered pull request of a
-     * DIFFERENT repo — the card's two refs AGREE (`oldorg/widget#719` is exactly what both
-     * name), so the r8 headline's "disagree" is false of it. The generic headline is used
-     * instead, reading the same `StoredPrRef::otherPrSameRepoWithMatchingNumber` this class's
-     * mirror does, so the two tables cannot diverge.
-     */
-    public function test_closed_unmerged_on_a_card_whose_pr_number_matches_a_different_repos_pull_request(): void
-    {
-        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
-        $card = $this->card(5, pr: 719);
-        $card['payload']['pr_url'] = 'https://github.com/oldorg/widget/pull/719';
-        $this->cards = new KanbanCardStub([5 => $card]);
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
-
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString('Check card#5: it tracks a different pull request than the one just closed.', $body);
-        $this->assertStringNotContainsString('disagree', $body);
-        $this->assertStringNotContainsString("matches this pull request's number", $body);
-    }
-
-    /**
-     * DL-429 r4 — a close on a card whose `pr_url` is an operator's free text: the url names
-     * no pull request, so the close must not say the card tracks a different one.
-     */
-    public function test_closed_unmerged_on_a_card_whose_pr_url_is_free_text_does_not_claim_a_different_pull_request(): void
-    {
-        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
-        $card = $this->card(5);
-        $card['payload'] = ['pr_url' => 'see the linked PR'];
-        $this->cards = new KanbanCardStub([5 => $card]);
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
-
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString('Check card#5: its `pr_url` is not a pull-request URL, so it names no pull request, and this close may have moved it.', $body);
-        $this->assertStringContainsString("If card#5's work continues in a pull request that supersedes this one, this close may have moved card#5 to workflow stage 49 even though its work continues there.", $body);
-        $this->assertStringNotContainsString('different pull request', $body);
-        $this->assertStringNotContainsString('linked PR', $body);
+        $this->dispatch('d3', $this->closedPr(721, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
+        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $this->onlyComment(721));   // control
     }
 
     /**
@@ -649,36 +538,11 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $card]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(702);
         $this->assertStringContainsString('card#5 already carries a different `pr_number`, and the first value written wins; a `pr_url` is recorded only beside a `pr_number` confirmed as this pull request\'s, so the `pr_number` and `pr_url` this pull request carries were not recorded on card#5.', $body);
         $this->assertStringNotContainsString('placeholder', $body);
-    }
-
-    /**
-     * DL-429 r5 — a close of a card whose `pr_url` names THIS pull request but whose `pr_number`
-     * holds another number: the card names this pull request, so "it tracks a different pull
-     * request" was false. The warning stands — the number may be a replacement's — in words
-     * true of the card. `test_closed_unmerged_on_a_card_whose_pr_url_names_the_replacement_says_a_different_pull_request`
-     * is the control.
-     */
-    public function test_closed_unmerged_on_a_card_whose_pr_url_names_this_pull_request_does_not_claim_a_different_one(): void
-    {
-        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
-        $card = $this->card(5, pr: 739);
-        $card['payload']['pr_url'] = 'https://github.com/acme/widget/pull/719';
-        $this->cards = new KanbanCardStub([5 => $card]);
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
-
-        $body = $this->onlyComment(719);
-        $this->assertStringContainsString('cause=correlation_ref_not_stamped', $body);
-        $this->assertStringContainsString('**Check card#5: its `pr_url` names this pull request, but its `pr_number` is a different number.**', $body);
-        $this->assertStringContainsString('If that number belongs to a pull request that supersedes this one, this close may have moved card#5 to workflow stage 49 even though its work continues there.', $body);
-        $this->assertStringNotContainsString('different pull request', $body);
-        $this->assertStringNotContainsString('739', $body);
     }
 
     /**
@@ -727,7 +591,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $this->card(5)]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $this->assertSame(52, $this->cards->patchesTo(5)[0]['workflow_stage_id'] ?? null);   // control: it moved
         $this->assertSame([], $this->github->requests);
@@ -753,9 +617,9 @@ class PrCorrelationCommentTest extends TestCase
         $this->fakePeers();
         Log::spy();
 
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
-        $this->assertSame([['workflow_stage_id' => 49]], array_slice($this->cards->patchesTo(5), 0, 1));
+        $this->assertSame([['workflow_stage_id' => 52]], array_slice($this->cards->patchesTo(5), 0, 1));
         $this->assertCount(1, array_filter($this->cards->log, fn (array $e) => $e['method'] === 'PATCH' && isset($e['data']['workflow_stage_id'])));   // never retried
         $dispatch = AgentDispatch::query()->sole();
         $this->assertNotNull($dispatch->processed_at);
@@ -796,14 +660,16 @@ class PrCorrelationCommentTest extends TestCase
     public function test_a_different_outcome_on_the_same_pr_gets_its_own_comment(): void
     {
         $this->fakePeers();
+        $release = $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true);
+        $release['pull_request']['base']['ref'] = 'main';
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: false));
-        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->dispatch('d2', $release);
 
         $posts = $this->github->posts(702);
         $this->assertCount(2, $posts);
-        $this->assertStringStartsWith('<!-- agent-webhook-bridge:pr-correlation outcome=closed_unmerged -->', $posts[0]);
-        $this->assertStringStartsWith('<!-- agent-webhook-bridge:pr-correlation outcome=merged -->', $posts[1]);
+        $this->assertStringStartsWith('<!-- agent-webhook-bridge:pr-correlation outcome=merged -->', $posts[0]);
+        $this->assertStringStartsWith('<!-- agent-webhook-bridge:pr-correlation outcome=merged_to_main -->', $posts[1]);
     }
 
     public function test_a_comment_that_only_quotes_the_marker_does_not_suppress_the_report(): void
@@ -842,6 +708,53 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertSame([], $this->github->requests);
     }
 
+    /**
+     * card#10850 / DL-436 — a merge from the card's OWN branch whose title closes nothing moved the
+     * card until DL-436 (DL-308's structural route), so its author is told on the PR why it did
+     * not, and what closes a card. No board is read to decide it, so the comment names none.
+     */
+    public function test_a_merge_from_the_cards_branch_that_closes_nothing_posts_one_no_closing_form_comment(): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'card-5-thing', title: 'feat: a thing (card#5)', merged: true));
+
+        $body = $this->onlyComment(702);
+        $this->assertStringStartsWith('<!-- agent-webhook-bridge:pr-correlation outcome=merged -->', $body);
+        $this->assertStringContainsString('<!-- cause=no_closing_form card=5 -->', $body);
+        $this->assertStringContainsString("**Board not updated: card#5 was not moved, because this pull request's title carries no closing form naming it.**", $body);
+        $this->assertStringContainsString('a branch name does not claim that the card\'s work is done (DL-436)', $body);
+        $this->assertStringContainsString('Closes card#123', $body);   // the accept-set, rendered from ClosureGrammar
+        $this->assertStringContainsString('**Board looked on:** none', $body);
+        $this->assertStringNotContainsString('board 8', $body);
+        $this->assertStringContainsString("# only if this pull request does finish card#5:\nkbcard move --task 5 --column <column>", $this->remedy($body));
+        $this->assertSame([], $this->cards->patchesTo(5));   // and nothing moved
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public static function mergesFromTheCardsBranchThatSayNothingOnThePr(): array
+    {
+        return [
+            'a [no-close] title: the author declared it' => ['card-5-thing', 'feat: a thing [no-close] (card#5)'],
+            'GitHub\'s revert of a closing PR' => ['revert-611-card-5-thing', 'Revert "feat: a thing (closes card#5)"'],
+            'a title that closes the card: it moves' => ['card-5-thing', 'feat: a thing (closes card#5)'],
+        ];
+    }
+
+    #[DataProvider('mergesFromTheCardsBranchThatSayNothingOnThePr')]
+    public function test_a_merge_from_the_cards_branch_posts_nothing_when_the_author_declared_it_reverted_it_or_closed_it(string $head, string $title): void
+    {
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
+        $this->cards = new KanbanCardStub([5 => $this->card(5)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: $head, title: $title, merged: true));
+
+        $this->assertSame([], $this->github->requests);
+    }
+
     public function test_an_install_fault_refusal_of_the_card_id_posts_nothing(): void
     {
         // The mapped board does not read back to the writeback token, so the guard cannot tell a
@@ -849,7 +762,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->boardReadsBack = false;
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-123-thing', title: 'feat: a thing (closes card#123)', merged: true));
 
         $this->assertSame([], $this->github->requests);
     }
@@ -910,8 +823,8 @@ class PrCorrelationCommentTest extends TestCase
 
     public function test_a_merge_naming_an_unresolved_dl_only_in_its_head_branch_posts_nothing(): void
     {
-        // The structural route of the gate is a CARD token in the head ref: a resolved DL-390
-        // merged from this branch with this title would move nothing either.
+        // A resolved DL-390 merged from this branch with this title would move nothing either:
+        // only a closing form in the title closes.
         $this->fakePeers();
 
         $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: true));
@@ -939,7 +852,7 @@ class PrCorrelationCommentTest extends TestCase
 
     public function test_a_release_merge_from_a_branch_naming_an_unreadable_card_token_posts_nothing(): void
     {
-        // The structural route is an integration merge's; a release merge needs a closing form.
+        // A head branch is not closure evidence on any merge (DL-436), and the title closes nothing.
         $this->fakePeers();
 
         $release = $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing', merged: true);
@@ -964,19 +877,17 @@ class PrCorrelationCommentTest extends TestCase
 
     // --- a parsed DL beside an unreadable card token: the unreadable token's own closure evidence counts --
 
-    public function test_a_near_miss_refusal_on_an_integration_merge_from_a_branch_naming_the_unreadable_token_posts_one_comment(): void
+    public function test_a_near_miss_refusal_on_an_integration_merge_from_a_branch_naming_the_unreadable_token_posts_nothing(): void
     {
-        // Had `card_77` parsed, the branch route would have closed card#77 and the DL-218 guard moved it,
-        // so the refused move is one this pull request claimed; the title's DL is only a mention.
+        // Until DL-436 a card-shaped head ref was closure evidence (the structural route), so this
+        // refusal was reported. A head branch no longer claims anything, parsed or not, and the
+        // title's DL is only a mention: nothing here claims closure.
         $this->dlCards = ['42' => [5]];
         $this->fakePeers();
 
         $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (DL-42)', merged: true));
 
-        $body = $this->onlyComment(702);
-        $this->assertStringContainsString('<!-- cause=card_token_near_miss card=5 -->', $body);
-        $this->assertStringContainsString('`DL-42` from the title', $body);
-        $this->assertStringContainsString('a card-shaped token from the head branch that does not parse (it appears to name card 77)', $body);
+        $this->assertSame([], $this->github->requests);
         $this->assertSame([], $this->cards->patchesTo(5));   // the refusal itself is unchanged: nothing written
     }
 
@@ -994,19 +905,15 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertSame([], $this->cards->patchesTo(5));
     }
 
-    public function test_an_unresolved_dl_on_an_integration_merge_from_a_branch_naming_an_unreadable_token_posts_one_token_unreadable_comment(): void
+    public function test_an_unresolved_dl_on_an_integration_merge_from_a_branch_naming_an_unreadable_token_posts_nothing(): void
     {
-        // The claim is the unreadable card token's, not the DL's, so the comment names that cause and
-        // does not send its reader to stamp a DL the pull request only mentions.
+        // The head branch's unreadable token was a claim only while the branch was closure evidence
+        // (DL-308, retired by DL-436); the title's DL is only a mention.
         $this->fakePeers();
 
         $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (DL-999)', merged: true));
 
-        $body = $this->onlyComment(702);
-        $this->assertStringContainsString('<!-- cause=token_unreadable card=none -->', $body);
-        $this->assertStringContainsString('`DL-999` from the title', $body);
-        $this->assertStringContainsString('a card-shaped token from the head branch that does not parse (it appears to name card 77)', $body);
-        $this->assertStringNotContainsString('--dl DL-999', $body);
+        $this->assertSame([], $this->github->requests);
     }
 
     public function test_an_unresolved_dl_on_a_merge_whose_title_closes_an_unreadable_token_posts_one_token_unreadable_comment(): void
@@ -1024,12 +931,12 @@ class PrCorrelationCommentTest extends TestCase
 
     public function test_the_same_merge_with_a_card_token_that_parses_moves_that_card_and_posts_nothing_beside_a_resolving_dl(): void
     {
-        $this->assertParsingBranchMovesCard77AndPostsNothing(['42' => [5]], 'feat: a thing (DL-42)');
+        $this->assertParsingBranchMovesCard77AndPostsNothing(['42' => [5]], 'feat: a thing (closes card#77, DL-42)');
     }
 
     public function test_the_same_merge_with_a_card_token_that_parses_moves_that_card_and_posts_nothing_beside_an_unresolved_dl(): void
     {
-        $this->assertParsingBranchMovesCard77AndPostsNothing([], 'feat: a thing (DL-999)');
+        $this->assertParsingBranchMovesCard77AndPostsNothing([], 'feat: a thing (closes card#77, DL-999)');
     }
 
     public function test_an_unresolved_dl_beside_an_unreadable_token_on_a_merge_that_claims_nothing_posts_nothing(): void
@@ -1131,46 +1038,9 @@ class PrCorrelationCommentTest extends TestCase
         $this->assertStringContainsString('a DL-shaped token from the title that does not parse', $body);
     }
 
-    public function test_a_close_whose_title_only_mentions_a_dl_no_card_carries_names_it_without_a_dl_remedy(): void
-    {
-        // A close is reported without closure evidence, but a DL the title does not close is never
-        // offered for stamping. No unreadable token is present, so the cause stays `dl_unresolved`.
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(702, head: 'fix/thing-abc', title: 'feat: a thing (DL-999)', merged: false));
-
-        $body = $this->onlyComment(702);
-        $this->assertStringContainsString('<!-- cause=dl_unresolved card=none -->', $body);
-        $this->assertStringContainsString('carries `dl_number` DL-999,', $this->causeLine($body));
-        $this->assertStringNotContainsString('--dl', $this->remedy($body));
-        $this->assertStringContainsString('kbcard patch --task <card-id> --pr 702 --pr-url <this pull request\'s URL>', $this->remedy($body));
-    }
-
-    public function test_a_close_from_a_branch_naming_an_unreadable_card_token_beside_a_mentioned_dl_posts_token_unreadable_without_a_dl_remedy(): void
-    {
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: a thing (DL-999)', merged: false));
-
-        $body = $this->onlyComment(702);
-        $this->assertStringContainsString('<!-- cause=token_unreadable card=none -->', $body);
-        $this->assertStringNotContainsString('--dl', $this->remedy($body));
-    }
-
-    public function test_a_close_whose_title_closes_a_dl_no_card_carries_beside_an_unreadable_card_token_offers_the_dl(): void
-    {
-        $this->fakePeers();
-
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card_77-thing', title: 'feat: closes DL-999', merged: false));
-
-        $body = $this->onlyComment(702);
-        $this->assertStringContainsString('<!-- cause=dl_unresolved card=none -->', $body);
-        $this->assertStringContainsString('kbcard patch --task <card-id> --dl DL-999 --pr 702', $this->remedy($body));
-    }
-
     // --- what an unstamped ref comment may claim ----------------------------------------------------
 
-    public function test_a_close_that_drops_only_a_dl_number_does_not_say_the_card_tracks_another_pull_request(): void
+    public function test_a_merge_that_drops_only_a_dl_number_does_not_say_the_card_tracks_another_pull_request(): void
     {
         $this->onBoard = [5 => ['id' => 5, 'board_id' => 8]];
         $card = $this->card(5);
@@ -1178,7 +1048,7 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $card]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-DL-42-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d1', $this->closedPr(719, head: 'feat/card-5-DL-42-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $body = $this->onlyComment(719);
         $this->assertStringContainsString('the `dl_number` this pull request carries was not recorded on card#5', $body);
@@ -1196,10 +1066,33 @@ class PrCorrelationCommentTest extends TestCase
         $this->cards = new KanbanCardStub([5 => $card]);
         $this->fakePeers();
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing', merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
 
         $this->assertStringContainsString('cause=correlation_ref_not_stamped', $this->onlyComment(702));
         $this->assertSame([], array_filter($this->cards->patchesTo(5), fn (array $p) => isset($p['workflow_stage_id'])));
+    }
+
+    /**
+     * card#10850 / DL-436 — THE card-side hold, end to end through the dispatcher: a merge whose
+     * title closes the card does not move it while the card carries `no-automove`. The same event
+     * on the same card without the tag is the control, so the hold — not the fixture — is what
+     * stops the move.
+     */
+    public function test_a_closing_merge_does_not_move_a_card_held_by_no_automove(): void
+    {
+        // Two cards in ONE stub, because `Http::fake()` stacks and its first stub wins: a second
+        // `fakePeers()` for the control would be silently ignored.
+        $this->onBoard = [5 => ['id' => 5, 'board_id' => 8], 6 => ['id' => 6, 'board_id' => 8]];
+        $held = $this->card(5, pr: 702);
+        $held['tags'] = ['no-automove'];
+        $this->cards = new KanbanCardStub([5 => $held, 6 => $this->card(6, pr: 703)]);
+        $this->fakePeers();
+
+        $this->dispatch('d1', $this->closedPr(702, head: 'card-5-thing', title: 'feat: a thing (closes card#5)', merged: true));
+        $this->dispatch('d2', $this->closedPr(703, head: 'card-6-thing', title: 'feat: a thing (closes card#6)', merged: true));
+
+        $this->assertSame([], array_filter($this->cards->patchesTo(5), fn (array $p) => isset($p['workflow_stage_id'])));
+        $this->assertSame(52, $this->cards->patchesTo(6)[0]['workflow_stage_id'] ?? null, 'control: without the hold it moves');
     }
 
     // --- the dedupe read and the per-request memo --------------------------------------------------
@@ -1481,15 +1374,14 @@ class PrCorrelationCommentTest extends TestCase
 
     public function test_a_later_event_that_posts_the_comment_discharges_what_an_earlier_one_owed(): void
     {
-        // The repair route that needs no command, for the one outcome that CAN recur: a reopen and
-        // a second close of the same pull request.
+        // The repair route that needs no command: a redelivery or `bridge:replay` of the same merge.
         $this->github = new GitHubIssueCommentsStub(postStatus: 403);
         $this->fakePeers();
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: false));
-        $this->assertSame([[702, 'closed_unmerged', 'post_refused', 403, 1]], $this->owedComments());
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->assertSame([[702, 'merged', 'post_refused', 403, 1]], $this->owedComments());
 
         $this->github->postStatus = 201;
-        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: false));
+        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
 
         $this->assertCount(1, $this->github->stored(702));
         $this->assertSame([], GitHubWriteDebt::owed());
@@ -1499,16 +1391,18 @@ class PrCorrelationCommentTest extends TestCase
     {
         $this->github = new GitHubIssueCommentsStub(postStatus: 403);
         $this->fakePeers();
+        $release = $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true);
+        $release['pull_request']['base']['ref'] = 'main';
 
-        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: false));
-        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: 'feat: a thing', merged: false));
-        $this->dispatch('d3', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->dispatch('d1', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->dispatch('d2', $this->closedPr(702, head: 'feat/dl-390-thing', title: self::CLOSES_DL_390, merged: true));
+        $this->dispatch('d3', $release);
 
-        // The marker is per outcome, so the close and the merge owe two comments; the second close
+        // The marker is per outcome, so the two merges owe two comments; the redelivered merge
         // bumps its outcome's attempt count rather than minting a second row.
         $this->assertSame([
-            [702, 'closed_unmerged', 'post_refused', 403, 2],
-            [702, 'merged', 'post_refused', 403, 1],
+            [702, 'merged', 'post_refused', 403, 2],
+            [702, 'merged_to_main', 'post_refused', 403, 1],
         ], $this->owedComments());
     }
 

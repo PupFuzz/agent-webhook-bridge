@@ -22,20 +22,19 @@ class NoCloseGrammarTest extends TestCase
     /** The house shape: a context PR built ON the card's own branch, which is what makes the marker necessary. */
     private const REF = 'card-8344-no-close-marker';
 
-    private const MARKED = 'docs: cite the prior ruling [no-close] (card#8344)';
+    private const MARKED = 'docs: cite the prior ruling [no-close] (closes card#8344)';
 
-    private const CONTROL = 'docs: cite the prior ruling (card#8344)';
+    private const CONTROL = 'docs: cite the prior ruling (closes card#8344)';
 
-    public function test_the_defect_a_context_pr_on_the_cards_branch_closed_it_structurally(): void
+    public function test_the_marker_withholds_a_closing_form_on_the_cards_own_branch(): void
     {
-        // THE DEFECT AT ITS SMALLEST SURFACE. The structural route (DL-308) reads the head
-        // ref's IDENTITY, and a PR written FOR a card without finishing it has exactly the
-        // ref a PR that finishes it has — so the premise held and the conclusion was still
-        // wrong. Nothing in the artifact distinguishes them; the CONTROL is the proof that
-        // this row turns on the marker and not on some property of the branch or the title.
-        $this->assertTrue(PrOutcome::mergeClosesCard('merged', self::REF, 8344, self::CONTROL),
+        // THE DEFECT's shape: a PR written FOR a card without finishing it. Under DL-308 its
+        // ref alone closed the card; since DL-436 only the title can, and the marker vetoes
+        // the title. The CONTROL is the proof that this row turns on the marker and not on
+        // some property of the branch or the title.
+        $this->assertTrue(ClosureGrammar::closesCard(self::CONTROL, 8344),
             'the control must close, or the witness below is satisfied by a gate that refuses everything');
-        $this->assertFalse(PrOutcome::mergeClosesCard('merged', self::REF, 8344, self::MARKED));
+        $this->assertFalse(ClosureGrammar::closesCard(self::MARKED, 8344));
 
         // CORRELATION IS UNTOUCHED — the card is still selected on both surfaces, which is
         // what keeps the PR-ref stamps and `bridge:reconcile`'s population intact. This is
@@ -115,15 +114,14 @@ class NoCloseGrammarTest extends TestCase
             'docs: cite the ruling (card#8344)[no-close]',
         ] as $title) {
             $this->assertTrue(NoCloseGrammar::marks($title), "'{$title}' must read as marked");
-            $this->assertFalse(PrOutcome::mergeClosesCard('merged', self::REF, 8344, $title));
+            $this->assertFalse(ClosureGrammar::closesCard(str_replace('(card#8344)', '(closes card#8344)', $title), 8344));
         }
     }
 
     public function test_a_quoted_marker_is_the_original_authors_declaration(): void
     {
-        // DL-318's ruling RE-DERIVED on the second marker rather than assumed by analogy,
-        // and the case is reachable: a revert takes no structural route at all, so the two
-        // readings can differ only on the LEXICAL one — which is where DL-318's positional
+        // DL-318's ruling RE-DERIVED on the second marker rather than assumed by analogy:
+        // the two readings differ on the closing form — which is where DL-318's positional
         // escape hatch lives. A marker inside the quotes is the ORIGINAL author's claim
         // about the ORIGINAL PR, so it must not veto this author's own closing form.
         $hand = 'Revert "docs: cite the ruling [no-close] (card#8344)" — deliberate, this completes it (closes card#456)';
@@ -142,27 +140,23 @@ class NoCloseGrammarTest extends TestCase
     {
         // ⛔ THE PROPERTY THAT MAKES THIS NOT THE ACCEPT-SURFACE DL-318 REFUSED, asserted
         // rather than argued in prose: over a corpus that already fails the gate, adding
-        // the marker never turns a no into a yes. It is a term in a conjunction on the
-        // structural route and an early return on the lexical one, so there is no title in
-        // which it can select a card, authorize a stage, or overturn a guard.
+        // the marker never turns a no into a yes. It is an early return at the grammar's
+        // choke point, so there is no title in which it can select a card, authorize a
+        // stage, or overturn a guard.
         $rows = [
-            ['merged', 'feat: rework, follows card#4811', 'fix/streaming-timeout', 4811],  // the bare mention
-            ['merged_to_main', 'feat: rework (card#4811)', 'card-4811-widget', 4811],      // release merge
-            ['merged', 'feat: rework (card#4811)', 'fix/4811-widget', 4811],               // id, no token
-            ['merged', 'feat: rework (closes card#9999)', 'fix/streaming-timeout', 4811],  // closes another card
+            ['feat: rework, follows card#4811', 4811],   // the bare mention
+            ['feat: rework (card#4811)', 4811],          // a citation
+            ['feat: rework (closes card#9999)', 4811],   // closes another card
         ];
-        foreach ($rows as [$outcome, $title, $ref, $id]) {
-            $plain = PrOutcome::mergeClosesCard($outcome, $ref, $id, $title) || ClosureGrammar::closesCard($title, $id);
-            $marked = PrOutcome::mergeClosesCard($outcome, $ref, $id, $title.' [no-close]')
-                || ClosureGrammar::closesCard($title.' [no-close]', $id);
-            $this->assertFalse($plain, "'{$title}' is expected to close nothing before the marker");
-            $this->assertFalse($marked, "'{$title}' must not START closing because of the marker");
+        foreach ($rows as [$title, $id]) {
+            $this->assertFalse(ClosureGrammar::closesCard($title, $id), "'{$title}' is expected to close nothing before the marker");
+            $this->assertFalse(ClosureGrammar::closesCard($title.' [no-close]', $id), "'{$title}' must not START closing because of the marker");
         }
 
         // THE CONTROL for the row above: the same construction over a title that DOES close
         // shows the pair discriminates rather than reporting false twice.
-        $this->assertTrue(PrOutcome::mergeClosesCard('merged', self::REF, 8344, self::CONTROL));
-        $this->assertFalse(PrOutcome::mergeClosesCard('merged', self::REF, 8344, self::CONTROL.' [no-close]'));
+        $this->assertTrue(ClosureGrammar::closesCard(self::CONTROL, 8344));
+        $this->assertFalse(ClosureGrammar::closesCard(self::CONTROL.' [no-close]', 8344));
     }
 
     public function test_the_refusal_sentence_names_the_marker_and_the_pins_precedence(): void
