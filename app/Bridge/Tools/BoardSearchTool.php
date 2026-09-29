@@ -74,9 +74,9 @@ final class BoardSearchTool implements Tool
      * per-call ceiling `board_get_cards` already accepted against kanban's per-user rate limit, which
      * every board-tools call and the writeback share (DL-435 bound (d)). {@see plan} is the call's
      * whole planned total; a call whose total exceeds this is refused before its first request when
-     * its arguments alone decide that, and otherwise right after the one read that sizes it (the
-     * structure read or the by-ref read), before any search. See `docs/board-tools.md` § `board_search`
-     * Cost.
+     * its arguments alone decide that (a summary's integer `stage` ids counted), and otherwise once
+     * the SIZING reads have run — the structure read, plus the by-ref read on the `pr_number` path —
+     * and never after a search. See `docs/board-tools.md` § `board_search` Cost.
      */
     public const REQUEST_CEILING = 3 * BoardGetCardsTool::MAX_IDS + 1;
 
@@ -135,9 +135,11 @@ final class BoardSearchTool implements Tool
         $variants = $tagsAny === [] ? [null] : $tagsAny;
         $readsStructure = $stageArg !== null || $summary || in_array('stage', $fields, true);
         // What only a read can size (the columns a summary counts, the cards carrying the PR) is
-        // counted at its floor, 0, here; the total is checked again once that read has sized it.
+        // counted at its floor here; the total is checked again once that read has sized it. A
+        // `stage` list's distinct integer ids are that floor for the columns: each resolves to
+        // itself or is refused, while a stage NAME may name a column an id already names.
         $plan = fn (int $scope, int $candidates, bool $reasks): array => $this->plan($readsStructure, $prNumber !== null, $summary, count($sides), count($variants), count($summaryTags), $scope, $candidates, $reasks);
-        $this->withinCeiling($plan(0, 0, false));
+        $this->withinCeiling($plan(count(array_unique(array_filter($stageArg ?? [], is_int(...)))), 0, false));
         $membership = new BoardMembershipControl($client, $boardId);
 
         $structure = null;

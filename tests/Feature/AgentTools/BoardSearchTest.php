@@ -764,6 +764,21 @@ class BoardSearchTest extends TestCase
         $this->assertSame(1, self::sent(), 'only the structure read that sized it');
     }
 
+    /**
+     * A summary's `stage` list of integer ids is sized by the arguments alone — each distinct id is a
+     * column counted — so a list longer than the ceiling is refused before the structure read.
+     */
+    public function test_a_summary_whose_integer_stage_list_exceeds_the_ceiling_is_refused_before_any_read(): void
+    {
+        $this->fakeKanban();
+
+        $res = $this->http(['summary' => true, 'stage' => range(1000, 1000 + BoardSearchTool::REQUEST_CEILING)]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('per-call ceiling of '.BoardSearchTool::REQUEST_CEILING, (string) $res['body']['error']);
+        $this->assertSame(0, self::sent(), 'refused before any request, the structure read included');
+    }
+
     /** Three cards carry PR 7 in the seat's lane; `lane: mine` makes each a re-ask. */
     private function threePrCardsInMyLane(): void
     {

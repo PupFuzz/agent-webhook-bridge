@@ -1298,10 +1298,11 @@ board failure keeps the retryable `502`.
 
 ⛔ **Bounded, every request counted.** The call's **whole** total — every line above that applies —
 is held to `BoardSearchTool::REQUEST_CEILING`, and no accepted call sends more. A call its arguments
-alone put over the ceiling is refused, with its count per phase, before its first request. Where the
-total depends on what a read returns — the columns a summary counts when you name no `stage`, the
-cards carrying a PR — it is refused right after that **one** sizing read (the stage read or the
-by-ref read), before any search. The ceiling is **borrowed**, not chosen:
+alone put over the ceiling (a summary's integer `stage` ids counted) is refused, with its count per
+phase, before its first request. Where the total depends on what a read returns — the columns a
+summary counts, the cards carrying a PR — it is refused once the **sizing** reads have run: the stage
+read, plus the by-ref read on the `pr_number` path. A refused call has sent at most those, never a
+search. The ceiling is **borrowed**, not chosen:
 it is `board_get_cards`' worst case, `3 × MAX_IDS + 1`, the per-call ceiling this door already accepted
 against that shared budget (DL-435 bound (d)). Nothing is ever walked page by page: `limit` never
 exceeds one page, and every count is kanban's.

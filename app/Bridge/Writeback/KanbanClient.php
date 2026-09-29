@@ -381,7 +381,8 @@ final class KanbanClient
     /**
      * {@see findCardsByRef}'s read, returning the ROWS — kanban answers by-ref with full task rows
      * (`TaskResource::collection`, source-read at kanban `TasksController::byRef`), board-scoped by
-     * the route (`authorize('view', $board)` — a non-member 403s here, unlike a search) and LIVE
+     * the route (`authorize('view', $board)` — a user who may not VIEW the board 403s here; VIEW is
+     * not floored to membership, unlike the search, so a non-member viewer gets rows) and LIVE
      * only: archived rows are hard-excluded with no parameter to include them. Unpaginated: the
      * collection is every live card on the board carrying the ref.
      *
