@@ -665,10 +665,11 @@ class BoardMyCardsTagReadTest extends TestCase
     }
 
     /**
-     * ⛔ A TAG KANBAN'S EXACT MATCH CANNOT FIND IS REFUSED, NEVER ANSWERED AS AN EMPTY BLOCK. Kanban
-     * matches `tags LIKE '%"<tag>"%'` over the JSON text its `array` cast stored, so a tag whose JSON
-     * spelling differs from the tag matches no card — even one carrying it — and `cards: []` beside
-     * two agreeing zeros would read as a measured answer.
+     * ⛔ A TAG AN OLD KANBAN'S EXACT MATCH CANNOT FIND IS REFUSED, NEVER ANSWERED AS AN EMPTY BLOCK. A
+     * kanban before v0.46.0 matches `tags LIKE '%"<tag>"%'` over the JSON text its `array` cast
+     * stored, so there a tag whose JSON spelling differs from the tag matches no card — even one
+     * carrying it — and `cards: []` beside two agreeing zeros would read as a measured answer. This
+     * read has no kanban version floor, so it keeps the refusal (kanban v0.46.0+ would match).
      */
     #[DataProvider('tagsKanbanStoresEscaped')]
     public function test_a_tag_kanban_stores_escaped_is_refused_on_both_doors_before_any_board_request(string $tag): void
@@ -681,6 +682,37 @@ class BoardMyCardsTagReadTest extends TestCase
             $this->assertFalse($res['ok'], "{$door}: ".json_encode($res['body']));
             $this->assertStringContainsString('stores tags as JSON', (string) $res['body']['error'], $door);
             $this->assertSame($before, Http::recorded()->count(), "{$door}: a refused argument costs no board request");
+        }
+    }
+
+    /**
+     * ⛔ `board_my_cards`' `tag` read has NO kanban version floor, so it keeps the old-kanban rule
+     * (`BoardTagTerm::checkForAnyKanban`) that `board_search` dropped: the tags `board_search` now
+     * accepts are refused here with the SAME messages as before the split, byte for byte.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function tagsOnlyTheOldKanbanRuleRefuses(): array
+    {
+        $escaped = 'board_my_cards: `tag` may not contain a control character, `/`, `\\` or any non-ASCII character. Kanban stores tags as JSON, which writes each of those as an escape, and its exact tag match compares against that stored text — so no card would match, even one carrying the tag, and the answer would look like an empty one. No spelling of such a tag can be matched by this read.';
+
+        return [
+            'a slash' => ['team/ops', $escaped],
+            'a non-ASCII character' => ['café', $escaped],
+            'a percent sign' => ['50%', 'board_my_cards: `tag` may not contain `%`. A kanban older than v0.36.0 reads `%` in an exact tag match as a wildcard, which would widen this read to other tags — `%` alone matches every tagged card on your board.'],
+        ];
+    }
+
+    #[DataProvider('tagsOnlyTheOldKanbanRuleRefuses')]
+    public function test_the_tags_board_search_accepts_are_still_refused_here_word_for_word(string $tag, string $message): void
+    {
+        $this->fakeTaggedBoard([], [self::taggedRow(1, 50, null)]);
+
+        foreach (['http', 'ssh'] as $door) {
+            $res = $this->through($door, ['tag' => $tag]);
+            $this->assertFalse($res['ok'], "{$door}: ".json_encode($res['body']));
+            // The door may append its client-version note after the tool's own message.
+            $this->assertStringStartsWith($message, (string) $res['body']['error'], $door);
         }
     }
 

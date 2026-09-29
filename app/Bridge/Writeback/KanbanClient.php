@@ -806,7 +806,6 @@ final class KanbanClient
         return new SearchPage(
             self::rowList(is_array($body) ? ($body['data'] ?? null) : null),
             $meta !== null && is_numeric($meta['total'] ?? null) ? (int) $meta['total'] : null,
-            self::stringList($meta['applied_filters'] ?? null),
             self::stringList($meta['free_text_terms'] ?? null),
             $meta !== null && array_key_exists('match_mode', $meta),
         );

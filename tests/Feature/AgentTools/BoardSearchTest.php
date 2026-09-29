@@ -431,6 +431,37 @@ class BoardSearchTest extends TestCase
         $this->assertSame(['board_id=10'], self::searches());
     }
 
+    /** @return array<string, array{string}> */
+    public static function tagsTheOldKanbanRuleRefuses(): array
+    {
+        return ['a slash' => ['team/ops'], 'a non-ASCII character' => ['café'], 'a percent sign' => ['50%']];
+    }
+
+    /**
+     * ⭐ `board_search` only answers a kanban carrying the v0.47.0 parse disclosure, and from kanban
+     * v0.46.0 an exact tag matches element-wise with `%` escaped (kanban DL-271), so it takes the
+     * term-syntax rule alone: these tags are sent, and match exactly the card carrying them — on
+     * every tag argument.
+     */
+    #[DataProvider('tagsTheOldKanbanRuleRefuses')]
+    public function test_a_tag_an_old_kanban_could_not_match_is_searched_and_matches_exactly(string $tag): void
+    {
+        $this->card(101, ['tags' => [$tag]]);
+        $this->card(102, ['tags' => ['50x', 'team', 'cafe']]);
+        $this->fakeKanban();
+
+        foreach (['tags_all', 'tags_any'] as $key) {
+            $res = $this->http([$key => [$tag], 'fields' => ['id']]);
+            $this->assertTrue($res['ok'], "{$key}: ".json_encode($res['body']));
+            $this->assertSame([101], self::ids($res['body']), $key);
+        }
+        $this->assertContains('board_id=10 tags:"'.$tag.'"', self::searches());
+
+        $summary = $this->http(['summary' => true, 'summary_tags' => [$tag]]);
+        $this->assertTrue($summary['ok'], json_encode($summary['body']) ?: '');
+        $this->assertSame([['tag' => $tag, 'count' => 1]], $summary['body']['result']['summary']['by_tag']);
+    }
+
     // ─── pr_number ───────────────────────────────────────────────────────────
 
     public function test_pr_number_alone_is_kanban_s_by_ref_index_and_no_search(): void

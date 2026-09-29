@@ -292,7 +292,7 @@ const TOOL_DEFINITIONS = [
             'could not stand behind is null with a reason in its *_unmeasured key — never ' +
             'read a null as zero. Terminal columns are left out unless include_terminal is ' +
             'true. Refused when it contains " * % / \\, a control character or any non-ASCII ' +
-            'character (kanban cannot match those exactly). Omit it and the response is ' +
+            'character (a kanban before v0.46.0 cannot match those exactly). Omit it and the response is ' +
             'exactly the default.',
         },
         include_terminal: {

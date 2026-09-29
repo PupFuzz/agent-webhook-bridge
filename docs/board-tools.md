@@ -395,11 +395,14 @@ three `lane:A` cards sat at `swimlane_id: null`. Nothing in that response could 
   `"`, and `%` (a wildcard to a kanban older than v0.36.0) are refused. `_` is accepted — agent
   names carry it — and kanban v0.36.0 and later match it literally; an older kanban reads it as
   any one character.
-- ⛔ **A tag kanban stores escaped is refused, not answered as empty.** Kanban stores tags as
-  JSON and its exact tag match compares against that stored text, so a tag containing a control
-  character, `/`, `\` or any non-ASCII character (any byte ≥ 0x80) matches no card, even one
-  that carries it. The read would answer `cards: []` beside counts of `0`, so the tool refuses
-  the tag (422, before any board read) instead. The limitation is kanban's (kanban card#9522).
+- ⛔ **A tag an older kanban stores escaped is refused, not answered as empty.** Kanban stores
+  tags as JSON, and a kanban **before v0.46.0** compares its exact tag match against that stored
+  text, so there a tag containing a control character, `/`, `\` or any non-ASCII character (any
+  byte ≥ 0x80) matches no card, even one that carries it. The read would answer `cards: []`
+  beside counts of `0`, so the tool refuses the tag (422, before any board read) instead (kanban
+  card#9522). From kanban v0.46.0 such a tag matches element-wise, but this read does not know
+  which kanban answers it, so it keeps the refusal. `board_search`, which only answers kanban
+  v0.47.0 or later, accepts these tags.
 - **Cost:** a call with `tag` adds the tag read (paged) and one-row searches — the
   `other_swimlanes` count, the free-text disclosure check, and the `no_swimlane` count. The
   board structure read is the one the default call already makes.
@@ -1169,7 +1172,7 @@ these filters" — and, with `summary: true`, "how many, per column".
 
 | Arg | Notes |
 | --- | --- |
-| `tags_all` | Non-empty list of tags. Cards carrying **every** one (each matched exactly). |
+| `tags_all` | Non-empty list of tags. Cards carrying **every** one (each matched exactly — kanban v0.46.0+ matches each tag element-wise, so `/`, `%`, `\` and non-ASCII characters match literally). A tag containing `"` or `*` (term syntax) or longer than kanban's tag limit is refused; this applies to `tags_any` and `summary_tags` too. |
 | `tags_any` | Non-empty list of tags. Cards carrying **at least one**. kanban's search has no OR, so this costs one search per tag (see *Cost*). |
 | `stage` | Non-empty **list** of columns, each a numeric stage id or a stage name — resolved exactly as `board_my_cards`' `stage` is (case-insensitive, trimmed, an ambiguous name refused; `BoardStageArgument`). |
 | `pr_number` | A positive integer. Cards tracking that pull-request number, **in any repo** — each card's `source` and `pr_url` tell them apart. **Live cards only**: refused with `include_archived: true` (below). |

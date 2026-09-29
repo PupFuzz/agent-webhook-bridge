@@ -346,7 +346,8 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * very shape this argument exists to see past — as though the tag read had come back.
      *
      * What may be inside a present, non-empty tag — the `"`, `*`, `%`, JSON-escape and length
-     * refusals and why each exists — is {@see BoardTagTerm}'s.
+     * refusals and why each exists — is {@see BoardTagTerm::checkForAnyKanban}'s: this read has no kanban
+     * version floor, so it keeps the old-kanban rule.
      *
      * @param  array<string, mixed>  $args
      */
@@ -363,7 +364,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         if ($tag === '') {
             throw new ToolRefusalException('board_my_cards: `tag` was sent EMPTY. Omit the argument entirely for the default response; an empty value is not a tag and is refused rather than silently ignored, which would answer the lane read as though no card carried the tag.');
         }
-        BoardTagTerm::check($tag, $this->name(), 'tag');
+        BoardTagTerm::checkForAnyKanban($tag, $this->name(), 'tag');
 
         return $tag;
     }
