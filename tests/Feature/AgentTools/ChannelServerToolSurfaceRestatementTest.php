@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardCardProjection;
 use App\Bridge\Tools\BoardCreateCardTool;
+use App\Bridge\Tools\BoardGetCardsTool;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
@@ -79,6 +81,7 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
      */
     private const CAPPED_UNTAGGED_TOOLS = [
         'board_comment_card' => "required: ['card_id', 'content']",
+        'board_get_cards' => "required: ['ids']",
     ];
 
     private function toolDefinition(string $tool): string
@@ -395,5 +398,38 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
             $this->property($tool, $property),
             "the channel server's {$tool} `{$property}` property does not state the ".KanbanFieldLimits::NAME_MAX.'-character cap the bridge refuses on'
         );
+    }
+
+    /**
+     * `board_get_cards` refuses more than {@see BoardGetCardsTool::MAX_IDS} ids, and its schema states
+     * that cap twice — `maxItems`, which a client may enforce before sending, and the property's prose,
+     * which is what a model reads. Both are pinned: a stale `maxItems` makes a client refuse a call the
+     * bridge would take (or send one it refuses); stale prose sends a seat a call it reads as a bug.
+     */
+    public function test_the_channel_server_advertises_the_id_cap_the_bridge_refuses_on(): void
+    {
+        $block = $this->property('board_get_cards', 'ids');
+
+        $this->assertStringContainsString('maxItems: '.BoardGetCardsTool::MAX_IDS.',', $block, "board_get_cards' `ids` maxItems is not the bridge's cap");
+        $this->assertStringContainsString('at most '.BoardGetCardsTool::MAX_IDS, $block, "board_get_cards' `ids` description does not state the bridge's cap");
+    }
+
+    /**
+     * The `fields` enum IS the projection vocabulary restated inline (an MCP schema has no pointer to
+     * follow), so it is held EQUAL to {@see BoardCardProjection::FIELDS}: a field the bridge accepts and
+     * the enum omits is undiscoverable, and one the enum offers and the bridge refuses turns a
+     * schema-valid call into a 422.
+     */
+    public function test_the_channel_server_advertises_exactly_the_fields_the_projection_offers(): void
+    {
+        $block = $this->property('board_get_cards', 'fields');
+        $this->assertSame(1, preg_match('/enum: \[([^\]]*)\]/', $block, $m), "board_get_cards' `fields` no longer carries an enum this test can read — re-anchor it");
+        preg_match_all("/'([a-z_]+)'/", $m[1], $values);
+
+        $advertised = $values[1];
+        $offered = BoardCardProjection::FIELDS;
+        sort($advertised);
+        sort($offered);
+        $this->assertSame($offered, $advertised);
     }
 }
