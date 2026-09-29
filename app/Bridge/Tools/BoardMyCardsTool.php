@@ -103,10 +103,10 @@ use Illuminate\Support\Facades\Log;
  * ⛔ "NO CARDS" IS SAID ONLY OF A BOARD THE TOKEN CAN READ (card#10856). kanban's search answers a
  * token whose user is not a MEMBER of the board zero rows at 200, so a seat whose board the token
  * could not read was told it had no cards. When every search of a board answered nothing, the board
- * is asked once ({@see BoardMembershipControl}, via {@see member}) and a board reading back empty
- * refuses the whole call — the product board after its lane, shared-lane and `tag` reads, the
- * coordination board after its address-tag reads. Any row a search returned is the proof, so a call
- * that read one asks nothing more.
+ * is asked once ({@see BoardMembershipControl}, via {@see member}) — the product board after its
+ * lane, shared-lane and `tag` reads, the coordination board after its address-tag reads. A board
+ * kanban refuses the token (403) refuses the whole call; a readable one is answered, empty or not.
+ * Any row a search returned is the proof, so a call that read one asks nothing more.
  *
  * ⭐ `tag` IS THE ONE READ HERE THAT CROSSES SWIMLANES ON PURPOSE (card#9260, DL-383). A seat
  * whose sprint cards sat at `swimlane_id: null` read its own lane, found none, and wrote that its
@@ -359,24 +359,25 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
     /**
      * ⛔ Every search of a board answered nothing: kanban's search answers a board the token's user is
      * not a MEMBER of exactly that way, so "no cards" is reported only once the board is shown readable
-     * ({@see BoardMembershipControl} — the control `board_get_cards` and `board_search` ask too).
+     * ({@see BoardMembershipControl} — the control `board_get_cards` and `board_search` ask too). A
+     * readable board with no cards, an empty one included, is answered with empty windows.
      */
     private function member(BoardMembershipControl $membership, int $boardId, string $whose, string $agentName): void
     {
         try {
             $readable = $membership->readable();
         } catch (RequestException $e) {
-            throw $this->readRefusal($e, $agentName, 'membership control', BoardReadRoute::Search, "{$whose} {$boardId} to establish that the token can read it");
+            throw $this->readRefusal($e, $agentName, 'membership control', BoardReadRoute::BoardScoped, "the status of {$whose} {$boardId} to establish that the token can read it");
         }
         if ($readable) {
             return;
         }
 
-        Log::warning('board_my_cards: every search answered nothing and the board reads back empty — refusing without an answer', [
+        Log::warning('board_my_cards: every search answered nothing and the token may not read the board — refusing without an answer', [
             'agent' => $agentName, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException("board_my_cards: kanban's search returned no cards, and {$whose} {$boardId} reads back EMPTY to the bridge's writeback token — a board the token's user is not a MEMBER of answers exactly that way (kanban's search answers members only), so \"no cards\" cannot be told from \"cannot see the board\". NO cards were returned. If {$whose} has live cards, have your operator check that token's membership of board {$boardId}.");
+        throw new ToolRefusalException("board_my_cards: kanban's search returned no cards, and kanban refuses (403) the bridge's writeback token a read of {$whose} {$boardId} — the token's user is not a MEMBER of it (or the board is trashed), and kanban's search answers a non-member zero rows, so \"no cards\" would be false. NO cards were returned. Have your operator check that token's membership of board {$boardId}.");
     }
 
     /**

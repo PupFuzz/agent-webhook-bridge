@@ -518,6 +518,34 @@ class KanbanClientTest extends TestCase
         $this->assertFalse($this->client()->byRefAvailable(8));   // pre-by-ref kanban
     }
 
+    /**
+     * card#10856: kanban authorizes `boards/{id}/status.json` on the board — 200 to a member, an EMPTY
+     * board included, 403 to a non-member; a trashed board (200 to its owner) is not readable either.
+     * Anything else is thrown.
+     */
+    public function test_board_readable_answers_membership_from_the_board_status_read(): void
+    {
+        Http::fake([
+            '*/boards/8/status.json' => Http::response(['data' => ['id' => 8, 'status' => 'active']]),
+            '*/boards/9/status.json' => Http::response(['message' => 'This action is unauthorized.'], 403),
+            '*/boards/7/status.json' => Http::response(['message' => 'Not Found'], 404),
+            '*/boards/6/status.json' => Http::response(['data' => ['id' => 6, 'status' => 'trashed']]),
+        ]);
+
+        $this->assertTrue($this->client()->boardReadable(8));
+        $this->assertFalse($this->client()->boardReadable(9));
+        $this->assertFalse($this->client()->boardReadable(6), 'its owner is answered 200, but the search reaches no card of a trashed board');
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_ends_with($r->url(), '/boards/8/status.json')
+            && $r->hasHeader('Authorization', 'Bearer wb-token'));
+
+        try {
+            $this->client()->boardReadable(7);
+            $this->fail('a 404 is not a membership answer');
+        } catch (RequestException $e) {
+            $this->assertSame(404, $e->response->status());
+        }
+    }
+
     public function test_default_correlation_mode_is_ref(): void
     {
         // DL-031: constructed without an explicit mode → ref (hits by-ref, not scan).

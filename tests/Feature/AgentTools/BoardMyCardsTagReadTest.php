@@ -13,6 +13,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\DataProviderExternal;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
+use Tests\Support\KanbanBoardStatus;
 use Tests\Support\TaggedBoardFake;
 use Tests\TestCase;
 
@@ -600,10 +601,10 @@ class BoardMyCardsTagReadTest extends TestCase
         $this->fakeTaggedBoard([], [self::taggedRow(71, 50, null)]);
 
         $this->assertTrue($this->http(['tag' => 'lane:A'])['ok']);
-        $this->assertNotContains('board_id=10 [count]', self::sentSearches(), 'a call that read a tag row asks no membership control');
+        $this->assertSame([], KanbanBoardStatus::asked(), 'a call that read a tag row asks no membership control');
 
         $this->assertTrue($this->http()['ok']);
-        $this->assertContains('board_id=10 [count]', self::sentSearches(), 'presence witness: the empty lane alone does ask it');
+        $this->assertSame([10], KanbanBoardStatus::asked(), 'presence witness: the empty lane alone does ask it');
     }
 
     public function test_the_board_axis_reads_the_tag_rows_too(): void

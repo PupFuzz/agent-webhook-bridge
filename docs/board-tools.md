@@ -255,19 +255,21 @@ missing its coordination cards reads exactly like a board with none.
 ⛔ **"No cards" is said only of a board the bridge can read (card#10856).** kanban's search answers a
 token whose user is not a **member** of the board zero rows, at 200 — the same answer as a lane with
 no cards. So when every search of your board answered nothing (the lane read, the shared-lane read,
-the `tag` read), your board is asked once — the membership control `board_get_cards` and
-`board_search` use, `BoardMembershipControl` — and if it reads back empty the call is **refused**
-(422), naming membership, instead of answered with empty windows. The coordination board is its own
-question, because it is configured apart from `board_id`: when none of your address tags matched a
-card there, that board is asked once too, and refuses the same way. Any row a search returned — even
+the `tag` read), the bridge asks kanban whether the token may read your board — the membership
+control `board_get_cards` and `board_search` use too, `BoardMembershipControl`, which reads
+`GET /boards/{id}/status.json`. kanban authorizes that read on the board itself: a **member** gets 200
+and the empty windows are answered — a new board, or one whose every card is archived, included — and
+a **non-member** gets 403 and the call is **refused** (422), naming membership. The coordination board
+is its own question, because it is configured apart from `board_id`: when none of your address tags
+matched a card there, it is asked once too, and refuses the same way. Any row a search returned — even
 one the lane filter then drops as another lane's — is the proof, and then nothing more is asked.
-- ⚠ The control cannot tell an **empty** board from an unreadable one, and it counts live cards, so a
-  board with no live card at all (a new board, or one whose every card is archived) is refused too
-  (DL-437 bound (f)). ⚠ **That includes `bridge:check --probe-tools`, `--probe-tools-ssh` and the
-  `--self-cert` round-trip**, which all send a real `board_my_cards`: on such a board they report the
-  call as not succeeding, with this refusal as the reason.
-- **Cost:** at most one extra `limit=1` search per board per call, sent only when every search of that
-  board answered nothing.
+- ⚠ **On kanban's current authorization this tool refuses a non-member before the control is
+  reached**: the board-structure read it makes first (`boards/{id}/preload.json`, and the coordination
+  board's, read after its tag searches) is authorized on the board, so a non-member gets a 403 there
+  and the call is refused naming membership (§ A PERMANENT board 4xx). The control is a second guard,
+  for a kanban whose board read and search ever disagree about who may read a board.
+- **Cost:** at most one extra request per board per call, sent only when every search of that board
+  answered nothing.
 
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
@@ -1112,19 +1114,19 @@ you sent them**. Where the bridge cannot establish a status for an id, the **who
 | `other_board` | the id is a card on a **different** board — the coordination board included | after a miss on both sides, the unscoped `GET /tasks/{id}/preload.json` answered with another board's id, **or** answered 403 (a board the writeback user may not view). **Nothing of that card is returned — not its content and not its board id.** |
 | `not_found` | no card carries the id, **or it is in kanban's trash** | that same by-id read answered 404. kanban answers a missing id and a trashed one the same way, before any authorization, so the two are one status here. |
 
-**⚠ A 403 is `other_board` only once your own board has read back.** kanban's search answers a
+**⚠ A 403 is `other_board` only once the token is shown to read your own board.** kanban's search answers a
 writeback user that is not a **member** of your board with zero rows, not an error, so such a user
 would miss every card on your board and then 403 on each by id — every one of your own cards would
 come back `other_board`. Any id **in the same call** that came back `found` or `archived` already
-proves your board reads back (the search that returned it answers members only), and every
+proves the token reads your board (the search that returned it answers members only), and every
 board-scoped lookup runs before any by-id read, so that proof counts whatever order you sent the ids
-in. Only when **no** id resolved on your board does the first 403 make the bridge ask your board once
-(`limit=1`); if it reads back **empty**, the call is **refused** — an empty board and an unreadable
-one are one answer to that question (and the control counts LIVE cards, so a board whose every card
-is archived reads back empty too — which is why a resolved `archived` id is taken as the proof
-instead of asking). Likewise, a by-id answer that names **your** board after the
-board-scoped search missed it (a user who may view your board without being its member) is refused
-as a **BROKEN READ**, never reported as a status.
+in. Only when **no** id resolved on your board does the first 403 make the bridge ask kanban once
+whether the token may read your board (`GET /boards/{id}/status.json`, authorized on the board
+itself): 200 — an empty board included — makes the 403 `other_board`; a 403 there (the token's user
+is not a member) **refuses** the call. Likewise, a by-id answer that names **your** board after the
+board-scoped search missed it is refused as a **BROKEN READ**, never reported as a status. (For an
+API token kanban's `view` is owner-or-member, the same set its search answers, so this is a
+disagreement kanban's current authorization does not produce; it is refused rather than trusted.)
 
 **Returns:**
 
@@ -1161,7 +1163,7 @@ A key you did not select is absent.
 `tag` read (DL-383). You name each id, on your own board; a card anywhere else is a status with no
 content.
 
-**Errors.** A permanent 4xx on the board-scoped search, the membership control or the stage read is a
+**Errors.** A permanent 4xx on the board-scoped search, the membership control (other than its 403, the membership refusal above) or the stage read is a
 named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339).
 On the by-id read, 403 and 404 are **statuses** (above), not refusals; any other failure there keeps
 the retryable `502`.
@@ -1291,15 +1293,14 @@ you **filter** rather than name. It stays on your own configured board: every se
 
 ⛔ **"No matches" is said only of a board the bridge can read.** kanban's search answers a token
 whose user is not a **member** of your board zero rows, at 200 — the same answer as "nothing
-matched". So when every search of a call answered nothing, your board is asked once (the membership
-control `board_get_cards` uses, `BoardMembershipControl`); if it reads back empty the call is refused
-(422), naming membership, instead of answered. Anything a search returned in the same call is the
-proof, and then nothing more is asked. ⚠ That control cannot tell an **empty** board from an
-unreadable one — and it counts live cards, so a board whose every card is archived reads back empty
-too — so on such a board a search matching nothing is refused rather than answered "no matches"
-(DL-437 bound (f)). `pr_number` alone sends no search, so its by-ref answer stands without the control.
+matched". So when every search of a call answered nothing, kanban is asked once whether the token may
+read your board (the membership control `board_get_cards` uses, `BoardMembershipControl`:
+`GET /boards/{id}/status.json`, authorized on the board itself). A member's 200 is answered "no
+matches" — on an empty board too, or one whose every card is archived — and a non-member's 403 is
+refused (422), naming membership. Anything a search returned in the same call is the proof, and then
+nothing more is asked. `pr_number` alone sends no search, so its by-ref answer stands without the control.
 
-**Errors.** A permanent 4xx on a search, the membership control, the stage read or the by-ref read is
+**Errors.** A permanent 4xx on a search, the membership control (other than its 403, the membership refusal above), the stage read or the by-ref read is
 a named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339). Any other
 board failure keeps the retryable `502`.
 
@@ -1775,10 +1776,7 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `docs/multi-host.md § 3`).
   `bridge:check --probe-tools=<endpoint>` exercises
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
-  the REAL ssh round-trip (see the runbook below). ⚠ Both send a real `board_my_cards`, which
-  refuses on a board with no live card readable to the writeback token (§ `board_my_cards`,
-  card#10856) — so on a new, empty board the probe fails naming membership. Put one live card on
-  the board, or read the `board_tools` visibility line above it: that one says 0 cards too.
+  the REAL ssh round-trip (see the runbook below).
 - **⭐ The CLIENT half is reported too, and only the seat can report it (DL-313).**
   Everything above observes the **bridge** side of the door. The **calling seat's** half —
   its keypair, its seeded `known_hosts`, the `BRIDGE_TOOLS_*` entries in its own

@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Writeback\KanbanClient;
+
 /**
  * WHICH KANBAN ROUTE CLASS A BOARD TOOL'S READ WENT TO — the discriminator
  * {@see BoardCallRefusal::readCause} needs, because a 403 and a 404 do not mean the same
@@ -45,6 +47,11 @@ enum BoardReadRoute
      * does not resolve trashed boards)"`). So membership IS a live 403 cause here, and a
      * 404 is most likely a board id that does not resolve — the two things the `Search`
      * strings deny by name.
+     *
+     * Also `GET /api/v3/boards/{id}/status.json`, the membership control's read
+     * ({@see KanbanClient::boardReadable}): the same `view` authorization, but it resolves a
+     * trashed board (authorizing `restore` instead), so its 404 is only an id no board carries.
+     * Its 403 is consumed as the control's answer and never reaches a cause string here.
      */
     case BoardScoped;
 }

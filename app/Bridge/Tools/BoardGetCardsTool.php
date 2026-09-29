@@ -28,8 +28,8 @@ use Illuminate\Support\Facades\Log;
  *      {@see KanbanClient::cardBoardId} — the unscoped by-id read, which
  *      hands back a board id and nothing else. Another board ⇒ `other_board`; 404 ⇒ `not_found`
  *      (no such id, or in kanban's trash — kanban answers both the same, before authorization);
- *      403 ⇒ `other_board`, but only once {@see ownBoardReadable} has shown this board reads back
- *      to the same token — see there for why that control is not optional.
+ *      403 ⇒ `other_board`, but only once {@see ownBoardReadable} has shown the same token may read
+ *      this board — see there for why that control is not optional.
  *
  * ⚠ IT CROSSES LANES, deliberately — the second read on this door that does (after DL-383's `tag`
  * read). A card id is caller-named on the caller's own board, so there is no wider population to
@@ -228,8 +228,8 @@ final class BoardGetCardsTool implements Tool
      * seat's own board would come back `other_board`. Any id of THIS call that step 1 resolved is
      * proof enough (the search that returned it floors to membership), and every step-1 lookup runs
      * before any placement, so that proof is in hand whatever order the ids came in. Only when no
-     * id resolved is the board asked, once ({@see ownBoardReadable}); when it does not read back the
-     * call is refused — an empty board and an unreadable one are one answer to that control.
+     * id resolved is the board asked, once ({@see ownBoardReadable}); when kanban refuses the token a
+     * read of it (403) the call is refused. A readable board, empty or not, makes the 403 `other_board`.
      *
      * @param  \Closure(): bool  $ownBoardReadable  {@see ownBoardReadable}, memoised for this call
      * @return array{status: string}
@@ -240,11 +240,11 @@ final class BoardGetCardsTool implements Tool
             return ['status' => self::STATUS_OTHER_BOARD];
         }
 
-        Log::warning('board_get_cards: a card id 403s and the agent\'s own board reads back empty — refusing without a verdict', [
+        Log::warning('board_get_cards: a card id 403s and the token may not read the agent\'s own board — refusing without a verdict', [
             'agent' => $agentName, 'card_id' => $id, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and your board {$boardId} reads back EMPTY to that same token — a board the token's user is not a MEMBER of answers exactly that way, so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. If your board is not genuinely empty, have your operator check that token's membership of board {$boardId}.");
+        throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and kanban refuses (403) that same token a read of your board {$boardId} — the token's user is not a MEMBER of it (or the board is trashed), so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. Have your operator check that token's membership of board {$boardId}.");
     }
 
     /** The membership control {@see forbiddenVerdict} needs ({@see BoardMembershipControl}). */
@@ -253,7 +253,7 @@ final class BoardGetCardsTool implements Tool
         try {
             return $membership->readable();
         } catch (RequestException $e) {
-            throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId} to establish that the token can read it");
+            throw $this->readRefusal($e, $agentName, BoardReadRoute::BoardScoped, "the status of your board {$boardId} to establish that the token can read it");
         }
     }
 

@@ -15,8 +15,7 @@ use Illuminate\Support\Facades\Http;
  * `links.next` set while rows remain (the walk it serves is keyed on id, card#10653); a one-row count
  * search answers the number of `$tagRows` its own `swimlane_id=` / `workflow_stage_id=` terms
  * select, so a count the tool reports is one a real server would have given for that query. The
- * membership control (`q=board_id=10`, `limit=1`) answers the board's live cards: the lane and tag
- * rows, each counted once.
+ * board's status read (the membership control) answers 200: the token's user is a member.
  *
  * Options:
  *  - `parser` — `current` (kanban v0.45.0+); `pre-none` (v0.43.0–v0.44.x): `swimlane_id=none`
@@ -73,6 +72,7 @@ trait TaggedBoardFake
 
         Http::fake([
             '*/boards/10/preload.json' => $refused('preload') ?? Http::response(['data' => $preload]),
+            '*/boards/10/status.json' => KanbanBoardStatus::readable(),
             '*/tasks/search.json*' => function (Request $request) use ($laneRows, $tagRows, $options, $refused) {
                 $query = self::searchQuery($request);
                 $q = is_string($query['q'] ?? null) ? $query['q'] : '';
@@ -80,12 +80,6 @@ trait TaggedBoardFake
                     $disclosure = $options['parser'] === 'pre-disclosure' ? [] : ['match_mode' => 'fulltext_prefix_and', 'fallback_tokens' => [], 'dropped_stopwords' => [], 'dropped_oversize_tokens' => []];
 
                     return $refused('probe') ?? Http::response(['data' => [], 'links' => ['next' => null], 'meta' => ['total' => 0] + $disclosure]);
-                }
-                if ($q === 'board_id=10' && ($query['limit'] ?? null) === '1') {
-                    // The membership control (card#10856): the board's live cards, whatever lane.
-                    $live = array_unique(array_column(array_merge($laneRows, $tagRows), 'id'));
-
-                    return Http::response(['data' => [], 'links' => ['next' => null], 'meta' => ['total' => count($live)]]);
                 }
                 if (! str_contains($q, 'tags:"')) {
                     return Http::response(['data' => $laneRows, 'links' => ['next' => null], 'meta' => ['total' => count($laneRows)]]);

@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
+use Tests\Support\KanbanBoardStatus;
 use Tests\TestCase;
 
 /**
@@ -142,27 +143,30 @@ class BoardGetCardsTest extends TestCase
 
     /**
      * The kanban surface this tool reads: the board-scoped search (both archive sides), the unscoped
-     * by-id read, the visibility control and the board's stages.
+     * by-id read, the board's status read (the membership control: 200 to a `$member`, else 403) and
+     * the board's stages. The search also answers kanban's `limit=1` whole-board count, as kanban
+     * would — the board's live cards to a member, zero to anyone else — though the tool never sends it.
      *
      * @param  array<int, array<string, mixed>>  $live  id => row on this board, live side
      * @param  array<int, array<string, mixed>>  $archived  id => row on this board, archived side
      * @param  array<int, int|array{status: int}>  $byId  id => the board the by-id read answers, or a status it answers with
      */
-    private function fakeBoard(array $live = [], array $archived = [], array $byId = [], int $visibleTotal = 5, ?int $searchStatus = null): void
+    private function fakeBoard(array $live = [], array $archived = [], array $byId = [], bool $member = true, ?int $searchStatus = null): void
     {
         Http::fake([
             '*/boards/'.self::BOARD.'/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                 ['id' => 50, 'name' => 'Backlog', 'position' => 1],
                 ['id' => 51, 'name' => 'In Review', 'position' => 2],
             ]]]]]),
-            '*/tasks/search.json*' => function (Request $request) use ($live, $archived, $visibleTotal, $searchStatus) {
+            '*/boards/'.self::BOARD.'/status.json' => $member ? KanbanBoardStatus::readable(self::BOARD) : KanbanBoardStatus::forbidden(),
+            '*/tasks/search.json*' => function (Request $request) use ($live, $archived, $member, $searchStatus) {
                 if ($searchStatus !== null) {
                     return Http::response('refused', $searchStatus);
                 }
                 parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
                 $q = (string) ($query['q'] ?? '');
                 if ($q === 'board_id='.self::BOARD) {
-                    return Http::response(['data' => [], 'meta' => ['total' => $visibleTotal]]);
+                    return Http::response(['data' => [], 'meta' => ['total' => $member ? count($live) : 0]]);
                 }
                 if (preg_match('/^board_id='.self::BOARD.' id=(\d+)$/', $q, $m) !== 1) {
                     return Http::response('unexpected search '.$q, 500);
@@ -365,23 +369,40 @@ class BoardGetCardsTest extends TestCase
      * 403s on every one of its own cards by id. Without the control, every card on the seat's own
      * board would come back `other_board` — the confident-wrong answer this tool exists to replace.
      */
-    public function test_a_403_is_not_other_board_while_the_seat_s_own_board_reads_back_empty(): void
+    public function test_a_403_is_not_other_board_while_the_token_may_not_read_the_seat_s_own_board(): void
     {
-        $this->fakeBoard(byId: [101 => ['status' => 403]], visibleTotal: 0);
+        $this->fakeBoard(byId: [101 => ['status' => 403]], member: false);
 
         $res = $this->http(['ids' => [101]]);
 
         $this->assertSame(422, $res['status']);
         $this->assertStringContainsString('NO cards were returned', (string) $res['body']['error']);
+        $this->assertStringContainsString('refuses (403)', (string) $res['body']['error']);
         $this->assertStringContainsString('MEMBER', (string) $res['body']['error']);
     }
 
     /**
+     * An EMPTY board the token may read — a new board, or one whose every card is archived — answers
+     * the membership control 200, so a 403 id on it is `other_board` rather than a refusal (card#10856:
+     * the `limit=1` search the control used to be read zero there, the same as a non-member's).
+     */
+    public function test_a_403_on_an_empty_readable_board_is_other_board(): void
+    {
+        $this->fakeBoard(byId: [101 => ['status' => 403]]);
+
+        $res = $this->http(['ids' => [101], 'fields' => []]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([['id' => 101, 'status' => 'other_board']], self::idStatus($res['body']));
+        $this->assertSame([self::BOARD], KanbanBoardStatus::asked());
+    }
+
+    /**
      * ⛔ A ROW THE SAME CALL ALREADY RESOLVED IS THE MEMBERSHIP PROOF (PR #822 r3). kanban's search
-     * floors to membership, so a `found` or `archived` row proves the token can read this board. On a
-     * board with NO live cards the `limit=1` control reads 0, and consulting it anyway refused the call
-     * and sent the operator to audit a membership the call had just proven — whichever order the ids
-     * came in, because the 403 id is placed only after every scoped lookup.
+     * floors to membership, so a `found` or `archived` row proves the token can read this board, and
+     * the control is not asked — whichever order the ids came in, because the 403 id is placed only
+     * after every scoped lookup. (As first built, a board with NO live cards read 0 to the control's
+     * `limit=1` search, and the call was refused over a membership it had just proven.)
      *
      * @return array<string, array{list<int>}>
      */
@@ -394,18 +415,14 @@ class BoardGetCardsTest extends TestCase
     #[DataProvider('orderOfAResolvedAndAForbiddenId')]
     public function test_a_row_resolved_in_the_same_call_proves_membership_and_the_control_is_not_asked(array $ids): void
     {
-        $this->fakeBoard(archived: [102 => self::row(102)], byId: [105 => ['status' => 403]], visibleTotal: 0);
+        $this->fakeBoard(archived: [102 => self::row(102)], byId: [105 => ['status' => 403]]);
 
         $res = $this->http(['ids' => $ids, 'fields' => []]);
 
         $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
         $statuses = array_column($res['body']['result']['cards'], 'status', 'id');
         $this->assertSame(['archived', 'other_board'], [$statuses[102], $statuses[105]]);
-        Http::assertNotSent(function (Request $r) {
-            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
-
-            return ($query['q'] ?? null) === 'board_id='.self::BOARD;
-        });
+        $this->assertSame([], KanbanBoardStatus::asked());
     }
 
     public function test_the_membership_control_is_asked_once_per_call_however_many_ids_403(): void
@@ -415,14 +432,7 @@ class BoardGetCardsTest extends TestCase
         $res = $this->http(['ids' => [101, 102], 'fields' => []]);
 
         $this->assertSame(['other_board', 'other_board'], array_column($res['body']['result']['cards'], 'status'));
-        $controls = 0;
-        Http::recorded(function (Request $r) use (&$controls) {
-            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
-            $controls += ($query['q'] ?? null) === 'board_id='.self::BOARD ? 1 : 0;
-
-            return false;
-        });
-        $this->assertSame(1, $controls);
+        $this->assertSame([self::BOARD], KanbanBoardStatus::asked());
     }
 
     /** A user that may VIEW the board but not search it (super-admin, not a member) reads a card of this board by id only. */

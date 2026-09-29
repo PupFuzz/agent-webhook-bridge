@@ -381,8 +381,9 @@ final class KanbanClient
     /**
      * {@see findCardsByRef}'s read, returning the ROWS — kanban answers by-ref with full task rows
      * (`TaskResource::collection`, source-read at kanban `TasksController::byRef`), board-scoped by
-     * the route (`authorize('view', $board)` — a user who may not VIEW the board 403s here; VIEW is
-     * not floored to membership, unlike the search, so a non-member viewer gets rows) and LIVE
+     * the route (`authorize('view', $board)` — a user who may not VIEW the board 403s here; for an
+     * API token VIEW is owner-or-member, the set the search floors to, because kanban's super-admin
+     * mode is session-only — see `docs/kanban-integration-contract.md` § 2, `status.json`) and LIVE
      * only: archived rows are hard-excluded with no parameter to include them. Unpaginated: the
      * collection is every live card on the board carrying the ref.
      *
@@ -978,6 +979,30 @@ final class KanbanClient
         $data = is_array($body) && is_array($body['data'] ?? null) ? $body['data'] : [];
 
         return ['total' => count($data), 'exact' => false];
+    }
+
+    /**
+     * Whether the token's user may read the board: `GET /boards/{id}/status.json`, which kanban
+     * authorizes on the board itself (`BoardsController::status` → the `view` policy) — 200 to a
+     * member, 403 to a non-member. It answers membership directly, so an EMPTY board reads as
+     * readable, which the `limit=1` search ({@see visibility}) cannot show. The route resolves a
+     * trashed board too and then authorizes `restore`: a trashed board 403s to all but its owner,
+     * and answers the owner `data.status: "trashed"` — not readable either, because the search
+     * does not reach a trashed board's cards. A token lacking the `read` ability 403s here as well;
+     * the board tools ask this only after a search of the same call succeeded, which that token
+     * could not have done.
+     *
+     * @throws RequestException any other 4xx or 5xx (a 404 is a board id that does not resolve)
+     */
+    public function boardReadable(int $boardId): bool
+    {
+        $resp = $this->http()->get("/boards/{$boardId}/status.json");
+        if ($resp->status() === 403) {
+            return false;
+        }
+        $resp->throw();
+
+        return $resp->json('data.status') !== 'trashed';
     }
 
     /**
