@@ -91,9 +91,10 @@ export const DEFAULT_BUDGET_MS = 20000;
 /**
  * The per-chunk leading-digit tuple, in lockstep with the bridge's
  * `ChannelSnapshotManifest::versionTuple` and the provisioner's `_version_tuple`: the shared
- * vectors in `tests/Fixtures/version-comparator-vectors.json` are asserted against all three. A
- * chunk with no leading digit reads as 0, which is why every release this client compares is
- * checked against {@see STRICT_RELEASE} first — `v1.0.0` would otherwise order below `0.91.0`.
+ * vectors in this directory's `tests/fixtures/version-comparator-vectors.json` are asserted
+ * against all three. A chunk with no leading digit reads as 0, which is why every release this
+ * client compares is checked against {@see STRICT_RELEASE} first — `v1.0.0` would otherwise order
+ * below `0.91.0`.
  */
 export function versionTuple(version) {
   return String(version)
