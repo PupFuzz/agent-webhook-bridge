@@ -33,7 +33,7 @@ use Tests\TestCase;
  * card#10849 / DL-440 on the real surface: a durable writeback kanban rate-limits reaches the
  * route, the dispatcher and the owed-write queue. The delivery answers 200 with the write
  * recorded as OWED, every other target / push / agent still runs, and the bridge applies the
- * write itself — inline on the subject's next live event, or on the armed sweep — in the order
+ * write itself — inline on the subject's next live event, or on the retry sweep (on by default) — in the order
  * live processing would have used.
  *
  * ⛔ WHAT IT REPLACES: `RateLimitedWritebackRedeliveryTest` (fbf99b3), which asserted the
@@ -151,7 +151,7 @@ class OwedWriteDispatchTest extends TestCase
         $this->assertNull($second->error_message);
     }
 
-    // --- §10.4: the armed sweep ---
+    // --- §10.4: the retry sweep ---
 
     public function test_the_armed_sweep_applies_a_due_owed_write_once_and_its_next_pass_sends_nothing(): void
     {

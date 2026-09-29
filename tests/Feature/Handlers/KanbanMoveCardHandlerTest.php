@@ -673,7 +673,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
     public function test_kanban_5xx_is_transient_and_throws(): void
     {
-        // A kanban 5xx / timeout is TRANSIENT: throw → 5xx → redelivery retries.
+        // A kanban 5xx / timeout is TRANSIENT: throw, and the owed-write queue keeps the write owed (5xx).
         $this->writeWriteback();
         $this->writeToken();
         Http::fake(['*/tasks/5.json' => Http::response('upstream error', 503)]);

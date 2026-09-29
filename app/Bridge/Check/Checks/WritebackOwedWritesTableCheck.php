@@ -60,7 +60,7 @@ final class WritebackOwedWritesTableCheck implements Check
         // Owed writes waiting with nothing to retry them on a clock: named by the config or
         // command that stopped the sweep (card#10849 / DL-440 operator ruling — a sweep that
         // silently never runs is the failure this leg exists to report). With nothing owed, a
-        // missing sweep costs nothing yet and the instance is declared at the first owed write.
+        // missing sweep costs nothing yet and the instance is declared at the next durable write.
         try {
             $owed = WritebackOwedWrite::query()->count();
         } catch (Throwable $e) {

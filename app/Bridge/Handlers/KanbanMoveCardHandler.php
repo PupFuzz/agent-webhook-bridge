@@ -34,9 +34,10 @@ use Throwable;
 /**
  * Move a kanban card to a workflow stage — the bridge's first WRITEBACK
  * (FR #2016 / DL-009/020). DURABLE: a failed move must not be silently dropped,
- * so it implements DurableReaction (runs first; its throw propagates → 5xx →
- * redelivery), and it is IDEMPOTENT (no-op when the card is already in the
- * target stage), as the marker contract requires.
+ * so it implements DurableReaction (runs first, through the owed-write queue,
+ * which keeps a write whose throw escapes owed — see the TRANSIENT arm below), and
+ * it is IDEMPOTENT (no-op when the card is already in the target stage), as the
+ * marker contract requires.
  *
  * The classifier (correlation) supplies WHICH card + the repo + the
  * GitHub-controlled outcome in the payload; the BOARD + STAGE come exclusively
@@ -55,12 +56,15 @@ use Throwable;
  * Two failure modes, treated
  * differently:
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
- *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
- *    ⭐ EXCEPT the move PATCH itself: a RATE LIMIT (408/429) on it is not this
- *    — it is recorded as owed and retried by the bridge itself, and the
- *    delivery answers 200 (card#10849 / DL-440, `OwedWriteQueue`). Every
- *    other transient cause on every other call here (this read included)
- *    still throws → 5xx → redelivery.
+ *    kanban API error that is not a permanent refusal) → THROW out of handle()
+ *    to the owed-write queue (card#10849 / DL-440, `OwedWriteQueue`), which
+ *    keeps the write OWED either way. ⭐ A RATE LIMIT (408/429) on ANY call
+ *    here — the board-scoped lookup, getCard, the no-regression order read,
+ *    the move PATCH, the ref stamp — answers 200 and the bridge retries the
+ *    write itself. Any other transient failure that leaves handle() answers
+ *    5xx; the subject's next event or the retry sweep retries it, and so does
+ *    a redelivery where the upstream redelivers — GitHub, which delivers this
+ *    handler's events, never does (DL-183).
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
  *    outcome, the card id does not RESOLVE on the mapped board (refused by the board-scoped
  *    check before the card is read at all — card#8375), the card kanban handed back is NOT on
@@ -297,8 +301,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         }
 
         // A kanban 4xx (deleted card, a stage that doesn't exist on the card's
-        // board) is PERMANENT — log + no-op, never 5xx-retry it. Only a 5xx /
-        // timeout / connection error is transient (throw → redelivery retries).
+        // board) is PERMANENT — log + no-op, never 5xx-retry it. A rate limit
+        // (408/429), a 5xx, a timeout or a connection error is transient: throw,
+        // and the owed-write queue keeps the write owed (class docblock).
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
@@ -337,7 +342,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → retry
+            throw $e;   // transient → stays owed (class docblock)
         }
 
         // SECURITY (belongs-to-mapped-board, DL-009): refuse to move a card that isn't
@@ -562,7 +567,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → retry
+            throw $e;   // transient → stays owed (class docblock)
         }
         OwnerlessStart::noteAfterMove($this->alerts, $card, $mapping, $isRevive, $cardId, $repo, $outcome, $stageId);
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and

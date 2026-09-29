@@ -15,10 +15,12 @@ use App\Bridge\Writeback\OwedWriteQueue;
  * {@see OwedWriteQueue::MAX_AGE_S} (card#10849 / DL-440).
  *
  * ⭐ WHY IT IS A JOB (docs/periodic-jobs.md's decision order, step 4). A write is left owed when
- * its subject was rate-limited, and it is retried by that subject's NEXT drain — the next event
- * about the same card, or the armed sweep. A subject that never sees another event has no
- * arrival to gate on, so only a clock can notice the row has sat too long and say so. Without
- * this an UNARMED install would hold such a write forever, silently.
+ * its apply was rate-limited, failed any other way, lost the subject's lock, or died with its
+ * process, and it is retried by that subject's NEXT drain — the next event about the same card,
+ * or the retry sweep. A subject that never sees another event has no arrival to gate on, so
+ * only a clock can notice the row has sat too long and say so. Without this an install with the
+ * retry sweep switched off would hold such a write forever, silently — and so would one where
+ * the sweep keeps failing it.
  *
  * ⚑ {@see JobCapability::ReadAndAlert}, and within that class's own docblock: it reads and
  * deletes rows of the bridge's OWN bookkeeping table and alerts. It never calls a durable
@@ -27,8 +29,8 @@ use App\Bridge\Writeback\OwedWriteQueue;
  * {@see OwedWriteRetryJob}.
  *
  * ⚑ ITS INSTANCE IS DECLARED BY THE QUEUE, not shipped: {@see OwedWriteQueue} inserts
- * {@see self::spec()} the first time it leaves a write owed, so an install never rate-limited
- * never grows this job.
+ * {@see self::spec()} at every durable write, before the row exists — so no write can be owed
+ * without it, and an install that never makes a durable write never grows this job.
  */
 final class OwedWriteWatchdogJob implements JobHandler
 {

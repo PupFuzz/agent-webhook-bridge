@@ -47,6 +47,10 @@ return new class extends Migration
             $table->timestamp('not_before', 3)->nullable();
             $table->unsignedSmallInteger('last_status')->nullable();
             $table->string('last_error', 1000)->nullable();
+            // Set when the last apply failed for a reason other than a rate limit (which sets
+            // no not_before): the sweep ranks such a head last, so a few persistently failing
+            // subjects cannot fill every pass (OwedWriteQueue::sweep).
+            $table->timestamp('last_failed_at', 3)->nullable();
             $table->timestamps(3);
 
             // BOTH the multi-agent dedup (agent B's insert of agent A's write is a no-op) AND,

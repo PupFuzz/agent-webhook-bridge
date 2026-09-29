@@ -186,7 +186,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → retry
+            throw $e;   // transient → stays owed and is retried
         }
 
         // SECURITY (belongs-to-mapped-board, DL-009): refuse to touch a card that isn't
@@ -269,7 +269,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → retry (add-if-missing / clear-if-ours is idempotent)
+            throw $e;   // transient → stays owed and is retried (add-if-missing / clear-if-ours is idempotent)
         }
         // Both boards, from the guard's own rendering (card#7212): the old single `board`
         // key was the config's INTENDED board, which is emitted whether or not the card

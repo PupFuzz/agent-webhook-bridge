@@ -28,6 +28,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $not_before
  * @property int|null $last_status
  * @property string|null $last_error
+ * @property Carbon|null $last_failed_at
  */
 class WritebackOwedWrite extends Model
 {
@@ -48,6 +49,7 @@ class WritebackOwedWrite extends Model
         'not_before',
         'last_status',
         'last_error',
+        'last_failed_at',
     ];
 
     protected $casts = [
@@ -57,5 +59,6 @@ class WritebackOwedWrite extends Model
         'attempts' => 'integer',
         'not_before' => 'datetime',
         'last_status' => 'integer',
+        'last_failed_at' => 'datetime',
     ];
 }

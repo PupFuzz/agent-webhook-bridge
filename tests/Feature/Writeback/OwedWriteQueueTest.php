@@ -25,9 +25,11 @@ use App\Models\WritebackOwedWrite;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -259,6 +261,45 @@ class OwedWriteQueueTest extends TestCase
         $this->assertFalse(ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->exists(), 'a disabled retry job gets no instance — inserting one would be refused anyway');
     }
 
+    /**
+     * A write left owed by a failure that is NOT an HTTP error response — a timeout or a
+     * refused connection is a `ConnectionException`, not a `RequestException` — must still have
+     * the watchdog and the retry sweep behind it, or nothing ever alerts on it.
+     */
+    public function test_a_write_left_owed_by_a_connection_failure_has_both_jobs_declared(): void
+    {
+        $this->behaviour = fn () => throw new ConnectionException('cURL error 28: Operation timed out');
+
+        try {
+            $this->owe('a');
+            $this->fail('a connection failure propagates, exactly as before');
+        } catch (ConnectionException) {
+        }
+
+        $this->assertSame('a', WritebackOwedWrite::query()->sole()->payload['tag'], 'the write stays owed');
+        $this->assertTrue(ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->exists());
+        $this->assertTrue(ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->exists());
+    }
+
+    /**
+     * A write left owed because its drain lost the subject's lock — to a holder that will never
+     * release it, e.g. a process killed mid-apply, whose lease still runs for `LEASE_S` — must
+     * still have both jobs behind it. The delivery answers 200 "owed" on this path.
+     */
+    public function test_a_write_left_owed_by_a_lost_lock_has_both_jobs_declared(): void
+    {
+        $held = Cache::lock('bridge:owed-write:'.$this->subject(), OwedWriteQueue::LEASE_S);
+        $this->assertTrue($held->get());
+
+        $this->owe('a');
+
+        $this->assertSame([], $this->applied, 'the drain lost the lock and applied nothing');
+        $this->assertSame('a', WritebackOwedWrite::query()->sole()->payload['tag']);
+        $this->assertTrue(ScheduledJob::query()->where('name', OwedWriteWatchdogJob::INSTANCE)->exists());
+        $this->assertTrue(ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->exists());
+        $held->release();
+    }
+
     // --- §10.9: the per-subject lock ---
 
     public function test_an_overlapping_drain_of_the_same_subject_no_ops_and_the_write_applies_once(): void
@@ -348,6 +389,58 @@ class OwedWriteQueueTest extends TestCase
 
         $this->assertSame(['healthy'], $this->applied, 'the healthy subject was drained in the same pass');
         $this->assertSame('broken', WritebackOwedWrite::query()->sole()->payload['tag'], 'the failing write stays owed');
+    }
+
+    /**
+     * More persistently-failing subjects than one pass drains, all OLDER than a rate-limited
+     * write that is due: by `id` alone the failing heads fill every pass and the rate-limited
+     * write is never retried until the watchdog expires it.
+     */
+    public function test_persistently_failing_heads_cannot_monopolise_the_sweep(): void
+    {
+        $attempted = [];
+        $limitedOnce = false;
+        $this->behaviour = function (ReactionTarget $t) use (&$attempted, &$limitedOnce): void {
+            $tag = (string) ($t->payload['tag'] ?? '');
+            $attempted[] = $tag;
+            if (str_starts_with($tag, 'broken')) {
+                throw new RequestException(new Response(new GuzzleResponse(500, [], '{"message":"Server Error"}')));
+            }
+            if ($tag === 'limited' && ! $limitedOnce) {
+                $limitedOnce = true;
+                throw $this->rateLimited();
+            }
+        };
+
+        $perPass = OwedWriteRetryJob::MAX_SUBJECTS_PER_PASS;
+        // One more failing subject than a pass drains, each already failed once live …
+        for ($i = 0; $i <= $perPass; $i++) {
+            $this->oweOn("probe-broken-{$i}", "broken-{$i}");
+            try {
+                $this->queue()->drain(OwedWriteQueue::subjectKey('kanban', '5', 'probe_write', "probe-broken-{$i}"));
+            } catch (RequestException) {
+            }
+        }
+        // … and, newest of all, a write refused by a rate limit whose backoff then elapses.
+        $this->oweOn('probe-limited', 'limited');
+        $this->queue()->drain(OwedWriteQueue::subjectKey('kanban', '5', 'probe_write', 'probe-limited'));
+        $this->travel(OwedWriteQueue::BASE_BACKOFF_S + 1)->seconds();
+        $attempted = [];
+
+        try {
+            $this->queue()->sweep($perPass);
+        } catch (RequestException) {
+        }
+        $this->assertContains('limited', $this->applied, 'the due rate-limited write was retried in the first pass');
+
+        $this->travel(1)->seconds();
+        try {
+            $this->queue()->sweep($perPass);
+        } catch (RequestException) {
+        }
+        for ($i = 0; $i <= $perPass; $i++) {
+            $this->assertContains("broken-{$i}", $attempted, "failing subject {$i} was not starved by the others");
+        }
     }
 
     // --- the bounds, held against the constants they are sized from ---

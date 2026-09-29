@@ -44,7 +44,14 @@ use Throwable;
  * throws a rate limit back to its caller, so the delivery answers 200 and every other target,
  * push and agent of the dispatch runs. ⛔ ANY OTHER FAILURE PROPAGATES UNCHANGED, and leaves
  * its row queued: the dispatch 5xxs exactly as it did before, and the next drain of the subject
- * — a redelivery, the next event, or the sweep — retries it first.
+ * — a redelivery, the next event, or the sweep — retries it first. Such a row is stamped
+ * `last_failed_at`, which is what keeps it from monopolising the sweep ({@see sweep}).
+ *
+ * ⭐ EVERY ENQUEUE DECLARES THE PERIODIC JOBS ({@see declareJobs}) BEFORE IT INSERTS. A row can
+ * be left owed by a rate limit, by any other throw, by a drain that lost the subject's lock, or
+ * by a process that died mid-apply — and only the first of those passes through a catch arm.
+ * Declaring at the one place every row is born makes "an owed row has the watchdog and the
+ * retry sweep behind it" a property of the insert, not of which way the apply failed.
  *
  * ⭐ ONE CONCURRENCY PRIMITIVE: a NON-BLOCKING per-subject `Cache::lock` around drain(), the
  * shape `App\Bridge\Support\AfterResponseGate` takes for the job registry. A caller that loses
@@ -124,6 +131,7 @@ final class OwedWriteQueue
      */
     public function enqueue(string $subjectKey, ReactionTarget $target, AgentConfig $agent, WebhookEvent $event): void
     {
+        $this->declareJobs();
         if ($this->find($subjectKey, (int) $event->id) !== null) {
             return;
         }
@@ -184,11 +192,16 @@ final class OwedWriteQueue
     /**
      * The scheduled sweep's pass: drain up to $maxSubjects subjects whose HEAD is due.
      *
-     * ⛔ EACH SUBJECT IS ISOLATED, and the first failure is rethrown only AFTER the pass. A
-     * subject whose head keeps failing for a reason other than a rate limit is, by `id`, the
-     * OLDEST due subject — so letting its throw end the pass would starve every other subject
-     * on every pass, forever. Rethrown afterwards, it still fails the job row, which is how a
-     * job reports failure.
+     * ⛔ NO SUBJECT IS STARVED, on two legs. (1) EACH SUBJECT IS ISOLATED, and the first failure
+     * is rethrown only AFTER the pass — a throw that ended the pass would starve every subject
+     * ranked behind it. Rethrown afterwards, it still fails the job row, which is how a job
+     * reports failure. (2) A HEAD THAT KEEPS FAILING RANKS LAST. A non-rate-limit failure sets
+     * no `not_before` (so it is due on every pass) and, being oldest, would lead the `id` order
+     * forever: $maxSubjects of them would fill every pass and a rate-limited write elsewhere
+     * would never be retried before the watchdog expired it. So heads whose last apply did
+     * not fail that way come first, by `id`, and failing heads after them, least recently
+     * failed first — each one this pass tries is re-stamped and drops behind the rest, so
+     * every due subject is reached within a bounded number of passes.
      *
      * @return int how many subjects were drained
      */
@@ -196,6 +209,8 @@ final class OwedWriteQueue
     {
         $subjects = $this->heads()
             ->where(fn ($q) => $q->whereNull('not_before')->orWhere('not_before', '<=', now()))
+            ->orderByRaw('last_failed_at IS NOT NULL')
+            ->orderBy('last_failed_at')
             ->orderBy('id')
             ->limit($maxSubjects)
             ->pluck('subject_key');
@@ -306,9 +321,9 @@ final class OwedWriteQueue
 
             try {
                 $handler->handle(self::targetOf($row), $agent);
-            } catch (RequestException $e) {
-                if (! RefusalContext::isRateLimited($e)) {
-                    $this->declareJobs();
+            } catch (Throwable $e) {
+                if (! $e instanceof RequestException || ! RefusalContext::isRateLimited($e)) {
+                    $this->recordFailure($row, $e);
                     throw $e;
                 }
                 $this->recordAttempt($row, $e, $e);
@@ -333,6 +348,8 @@ final class OwedWriteQueue
     private function recordAttempt(WritebackOwedWrite $row, ?RequestException $refusal, Throwable $cause): void
     {
         $row->attempts = $row->attempts + 1;
+        // Its backoff governs it now, not the failing-head rank (see sweep()).
+        $row->last_failed_at = null;
         $wait = max(
             $refusal !== null ? (RefusalContext::retryAfterSeconds($refusal) ?? 0) : 0,
             self::BASE_BACKOFF_S * (2 ** ($row->attempts - 1)),
@@ -356,8 +373,19 @@ final class OwedWriteQueue
                 'not_before' => $row->not_before->toIso8601String(),
             ] + self::rowContext($row));
         }
+    }
 
-        $this->declareJobs();
+    /**
+     * A failure that is not a rate limit: no attempt counted and no `not_before` — the row stays
+     * due, and the throw propagates exactly as it did — but it is stamped, so {@see sweep} ranks
+     * it behind every head that is not failing this way.
+     */
+    private function recordFailure(WritebackOwedWrite $row, Throwable $cause): void
+    {
+        $row->last_failed_at = now();
+        $row->last_status = $cause instanceof RequestException ? $cause->response->status() : null;
+        $row->last_error = mb_substr(RedactedErrorText::of($cause), 0, 1000);
+        $row->save();
     }
 
     /**
@@ -418,12 +446,13 @@ final class OwedWriteQueue
 
     /**
      * Make sure the always-on watchdog — and, unless disabled, the default-armed retry sweep —
-     * has an instance to run, the first time a write is left owed. Declared HERE, at the moment
-     * it becomes necessary, rather than shipped as a row every install carries: an install that
-     * is never rate-limited never grows either periodic job. An operator who DISABLES an
-     * instance keeps it disabled (`JobRegistry::insert` writes `enabled` at create only); one
-     * who REMOVES it gets it back at the next owed write. Best-effort: failing to declare
-     * either must never change what the dispatch answers.
+     * has an instance to run, at every {@see enqueue}, before the row exists. Declared by the
+     * queue rather than shipped as a migration row: an install that never makes a durable
+     * write never grows either periodic job. An operator who DISABLES an instance keeps it
+     * disabled (`JobRegistry::insert` writes `enabled` at create only); one who REMOVES it gets
+     * it back at the next durable write. Best-effort: failing to declare either must never
+     * change what the dispatch answers — and costs one indexed `exists()` per instance once
+     * both exist.
      */
     private function declareJobs(): void
     {

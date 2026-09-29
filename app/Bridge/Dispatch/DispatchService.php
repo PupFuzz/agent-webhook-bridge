@@ -282,8 +282,9 @@ final class DispatchService
             // a non-loss-tolerant side effect (e.g. a card-move writeback); its
             // failure must not be swallowed as a best-effort note. Durable handlers
             // run FIRST so a durable throw short-circuits BEFORE any best-effort
-            // handler fires — redelivery then re-runs the whole dispatch (durable
-            // handlers MUST be idempotent) without re-amplifying best-effort pushes.
+            // handler fires — a redelivery, where the upstream redelivers, then re-runs
+            // the whole dispatch (durable handlers MUST be idempotent) without
+            // re-amplifying best-effort pushes.
             $durable = [];
             $bestEffort = [];
             foreach ($targets as $target) {
@@ -296,8 +297,10 @@ final class DispatchService
             }
 
             // Durable: treatment (D). A rate limit leaves the write OWED and is not a
-            // delivery failure; anything else propagates → 5xx, and the dispatch stays
-            // unprocessed (processed_at null) and is redelivered.
+            // delivery failure; anything else propagates → 5xx, the dispatch stays
+            // unprocessed (processed_at null), and the write stays owed either way —
+            // retried by the subject's next event or the retry sweep, and by a
+            // redelivery only where the upstream redelivers (GitHub never does, DL-183).
             $owedNotes = [];
             foreach ($durable as $durableTarget) {
                 $owedNote = $this->runDurable($durableTarget, $agent, $event, $provider, $scopeId);
