@@ -24,7 +24,8 @@ use Illuminate\Support\Facades\Log;
  *   1. {@see BoardScopedRow::lookUp} — the board-scoped search every card-id tool on this door uses
  *      (DL-323): live side, then archived side on a live miss. A row there is `found` or `archived`,
  *      and ONLY such a row's content is ever returned.
- *   2. On a miss on both sides, {@see KanbanClient::cardBoardId} — the unscoped by-id read, which
+ *   2. Only after step 1 has run for EVERY id, and only for an id it missed on both sides,
+ *      {@see KanbanClient::cardBoardId} — the unscoped by-id read, which
  *      hands back a board id and nothing else. Another board ⇒ `other_board`; 404 ⇒ `not_found`
  *      (no such id, or in kanban's trash — kanban answers both the same, before authorization);
  *      403 ⇒ `other_board`, but only once {@see ownBoardReadable} has shown this board reads back
@@ -65,7 +66,8 @@ final class BoardGetCardsTool implements Tool
      * § The default is capped): nothing enforces it, and no reply is truncated for it.
      *
      * It also bounds the upstream fan-out: at most `3 × MAX_IDS + 1` requests — 3 per id (live,
-     * archived, by-id), plus one shared visibility-control request per call. A stage read never
+     * archived, by-id), plus at most one shared visibility-control request per call — asked only
+     * when no id resolved on this board and some id 403s. A stage read never
      * adds to that ceiling: it is paid only when some id resolves in fewer than 3 reads (`found` or
      * `archived`), which is never true on a call where every id misses.
      *
@@ -91,29 +93,36 @@ final class BoardGetCardsTool implements Tool
 
     public function refusedArgumentReason(string $key): ?string
     {
-        if (in_array(strtolower($key), ['include_description', 'description'], true)) {
-            return "`{$key}` is not an argument here — a card's body is selected per call by naming `description` in `fields`.";
-        }
-
-        return null;
+        return BoardCardProjection::refusedDescriptionArgument($key);
     }
 
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         // Arguments first, then the board — so a refused call reads nothing.
         $ids = $this->requireIds($args);
-        $fields = $this->fields($args);
+        $fields = BoardCardProjection::fieldsArgument($args, $this->name());
         $boardId = (int) $cfg->boardId;
 
+        // Every board-scoped lookup first, so the placement step below knows whether the call has
+        // already proven it can read this board — see forbiddenVerdict().
+        /** @var array<int, array{status: string, row: array<string, mixed>}|null> $scoped */
+        $scoped = [];
+        foreach ($ids as $id) {
+            $scoped[$id] = $this->scopedVerdict($client, $boardId, $id, $agentName);
+        }
+
+        // A row resolved on this board IS the membership proof (kanban's search floors to
+        // membership), so the control is asked only when no id resolved, at most once per call, and
+        // only if some id 403s.
+        $membership = new BoardMembershipControl($client, $boardId);
+        if (array_filter($scoped) !== []) {
+            $membership->proven();
+        }
+        $ownBoardReadable = fn (): bool => $this->ownBoardReadable($membership, $boardId, $agentName);
         /** @var array<int, array{status: string, row?: array<string, mixed>}> $verdicts */
         $verdicts = [];
-        // Asked at most once per call, and only if some id 403s — see forbiddenVerdict().
-        $readable = null;
-        $ownBoardReadable = function () use ($client, $boardId, $agentName, &$readable): bool {
-            return $readable ??= $this->ownBoardReadable($client, $boardId, $agentName);
-        };
         foreach ($ids as $id) {
-            $verdicts[$id] = $this->verdict($client, $boardId, $id, $agentName, $ownBoardReadable);
+            $verdicts[$id] = $scoped[$id] ?? $this->placedVerdict($client, $boardId, $id, $agentName, $ownBoardReadable);
         }
 
         $stageNames = [];
@@ -153,10 +162,11 @@ final class BoardGetCardsTool implements Tool
     }
 
     /**
-     * @param  \Closure(): bool  $ownBoardReadable  {@see ownBoardReadable}, memoised for this call
-     * @return array{status: string, row?: array<string, mixed>}
+     * Step 1: `found` / `archived` off the board-scoped lookup, or null when it missed on both sides.
+     *
+     * @return array{status: string, row: array<string, mixed>}|null
      */
-    private function verdict(KanbanClient $client, int $boardId, int $id, string $agentName, \Closure $ownBoardReadable): array
+    private function scopedVerdict(KanbanClient $client, int $boardId, int $id, string $agentName): ?array
     {
         try {
             $scoped = BoardScopedRow::lookUp($client, $boardId, $id, $this->name(), $agentName);
@@ -170,6 +180,17 @@ final class BoardGetCardsTool implements Tool
             return ['status' => self::STATUS_ARCHIVED, 'row' => $scoped->archived];
         }
 
+        return null;
+    }
+
+    /**
+     * Step 2, for an id step 1 missed on both sides: the by-id read places it.
+     *
+     * @param  \Closure(): bool  $ownBoardReadable  {@see ownBoardReadable}, memoised for this call
+     * @return array{status: string}
+     */
+    private function placedVerdict(KanbanClient $client, int $boardId, int $id, string $agentName, \Closure $ownBoardReadable): array
+    {
         try {
             $onBoard = $client->cardBoardId($id);
         } catch (RequestException $e) {
@@ -201,12 +222,14 @@ final class BoardGetCardsTool implements Tool
     /**
      * A 403 on the by-id read: a task carries the id, on a board the token's user may not view.
      *
-     * ⛔ THAT IS `other_board` ONLY IF THIS BOARD IS ONE THE USER MAY VIEW, and nothing so far has
-     * shown it: kanban's search answers a non-member ZERO ROWS, not an error, so a writeback user
-     * that is not a member of this board misses every card on it at step 1 and then 403s on each
-     * one here — and every card on the seat's own board would come back `other_board`. So the
-     * board is asked once ({@see ownBoardReadable}), and when it does not read back the call is
-     * refused: an empty board and an unreadable one are one answer to that control.
+     * ⛔ THAT IS `other_board` ONLY IF THIS BOARD IS ONE THE USER MAY VIEW: kanban's search answers a
+     * non-member ZERO ROWS, not an error, so a writeback user that is not a member of this board
+     * misses every card on it at step 1 and then 403s on each one here — and every card on the
+     * seat's own board would come back `other_board`. Any id of THIS call that step 1 resolved is
+     * proof enough (the search that returned it floors to membership), and every step-1 lookup runs
+     * before any placement, so that proof is in hand whatever order the ids came in. Only when no
+     * id resolved is the board asked, once ({@see ownBoardReadable}); when it does not read back the
+     * call is refused — an empty board and an unreadable one are one answer to that control.
      *
      * @param  \Closure(): bool  $ownBoardReadable  {@see ownBoardReadable}, memoised for this call
      * @return array{status: string}
@@ -224,14 +247,11 @@ final class BoardGetCardsTool implements Tool
         throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and your board {$boardId} reads back EMPTY to that same token — a board the token's user is not a MEMBER of answers exactly that way, so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. If your board is not genuinely empty, have your operator check that token's membership of board {$boardId}.");
     }
 
-    /**
-     * Whether this board reads back at least one card to the writeback token — the membership
-     * control {@see forbiddenVerdict} needs. One `limit=1` search ({@see KanbanClient::visibility}).
-     */
-    private function ownBoardReadable(KanbanClient $client, int $boardId, string $agentName): bool
+    /** The membership control {@see forbiddenVerdict} needs ({@see BoardMembershipControl}). */
+    private function ownBoardReadable(BoardMembershipControl $membership, int $boardId, string $agentName): bool
     {
         try {
-            return $client->visibility($boardId)['total'] > 0;
+            return $membership->readable();
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId} to establish that the token can read it");
         }
@@ -262,37 +282,6 @@ final class BoardGetCardsTool implements Tool
         }
 
         return $ids;
-    }
-
-    /**
-     * The projection this call returns. Absent (or null — the HTTP door hands `""` over as null) ⇒
-     * {@see BoardCardProjection::defaultFields}, which leaves the body out.
-     *
-     * @param  array<string, mixed>  $args
-     * @return list<string>
-     */
-    private function fields(array $args): array
-    {
-        $fields = $args['fields'] ?? null;
-        if ($fields === null) {
-            return BoardCardProjection::defaultFields();
-        }
-        $vocabulary = implode(', ', array_map(fn (string $f): string => "`{$f}`", BoardCardProjection::FIELDS));
-        if (! is_array($fields) || ! array_is_list($fields)) {
-            throw new ToolRefusalException("board_get_cards: `fields` must be a list of field names, from: {$vocabulary}. Omit it for every field but `description`.");
-        }
-        $selected = [];
-        foreach ($fields as $field) {
-            // Trimmed as the HTTP door's middleware would have handed it over, so the ssh door does
-            // not refuse a name the HTTP door accepts ({@see BoardToolArgs}).
-            $name = is_string($field) ? BoardToolArgs::trimmed($field) : null;
-            if ($name === null || ! in_array($name, BoardCardProjection::FIELDS, true)) {
-                throw new ToolRefusalException('board_get_cards: `fields` names '.json_encode($field)." — not a card field. The fields are: {$vocabulary}.");
-            }
-            $selected[] = $name;
-        }
-
-        return array_values(array_unique($selected));
     }
 
     /**

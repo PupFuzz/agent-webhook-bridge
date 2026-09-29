@@ -375,6 +375,27 @@ final class KanbanClient
      */
     public function findCardsByRef(int $boardId, string $system, string $ref, ?string $source = null): array
     {
+        return self::correlationIds(self::idList($this->byRefData($boardId, $system, $ref, $source)), "by-ref {$system}", $boardId);
+    }
+
+    /**
+     * {@see findCardsByRef}'s read, returning the ROWS — kanban answers by-ref with full task rows
+     * (`TaskResource::collection`, source-read at kanban `TasksController::byRef`), board-scoped by
+     * the route (`authorize('view', $board)` — a user who may not VIEW the board 403s here; VIEW is
+     * not floored to membership, unlike the search, so a non-member viewer gets rows) and LIVE
+     * only: archived rows are hard-excluded with no parameter to include them. Unpaginated: the
+     * collection is every live card on the board carrying the ref.
+     *
+     * @return list<array<string, mixed>>|null null when the 200 body carried no card collection —
+     *                                         never folded into "no match" here; the caller decides
+     */
+    public function cardRowsByRef(int $boardId, string $system, string $ref): ?array
+    {
+        return self::rowList($this->byRefData($boardId, $system, $ref, null));
+    }
+
+    private function byRefData(int $boardId, string $system, string $ref, ?string $source): mixed
+    {
         $query = ['system' => $system, 'ref' => $ref];
         // Repo qualifier (kanban DL-163): on a board aggregating multiple repos a
         // bare ref collides; pass the source so the server returns only this repo's
@@ -383,9 +404,8 @@ final class KanbanClient
         if ($source !== null && $source !== '') {
             $query['source'] = $source;
         }
-        $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
 
-        return self::correlationIds(self::idList($data), "by-ref {$system}", $boardId);
+        return $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
     }
 
     /**
@@ -757,13 +777,56 @@ final class KanbanClient
      */
     private function searchTotal(int $boardId, string $terms): SearchTotal
     {
-        $body = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} {$terms}", 'limit' => 1])->throw()->json();
+        $page = $this->searchPage($boardId, $terms, 1);
+
+        return new SearchTotal($page->total, $page->freeTextRan);
+    }
+
+    /**
+     * ONE page of a board-scoped search: the newest `$limit` rows matching `board_id=<b> <terms>`
+     * (kanban orders the search `orderByDesc('id')` before paginating, and ids are allocated
+     * monotonically, so page 1 IS the newest cards), plus everything the response's `meta` says —
+     * {@see SearchPage}. `$terms` are the `q` terms after the board scope, space-separated; `''`
+     * sends the bare scope. `$archivedOnly` is the archive SWITCH (DL-296, {@see cardRowsByTag}).
+     *
+     * ⛔ NO PAGE WALK, deliberately: a caller that needs every row takes {@see pagedSearch}. This is
+     * for a caller that needs a bounded window and the exact size of what it cut — `meta.total`
+     * gives the second without reading the rows behind the cut. `$limit` above kanban's own page cap
+     * (`min(200, …)` in `TasksController::search`, = {@see SEARCH_LIMIT}) would be silently lowered
+     * by the server, so it is the caller's to keep it within.
+     */
+    public function searchPage(int $boardId, string $terms, int $limit, bool $archivedOnly = false): SearchPage
+    {
+        $query = ['q' => "board_id={$boardId}".($terms === '' ? '' : " {$terms}"), 'limit' => $limit];
+        if ($archivedOnly) {
+            $query['archived'] = 1;
+        }
+        $body = $this->http()->get('/tasks/search.json', $query)->throw()->json();
         $meta = is_array($body) && is_array($body['meta'] ?? null) ? $body['meta'] : null;
 
-        return new SearchTotal(
+        return new SearchPage(
+            self::rowList(is_array($body) ? ($body['data'] ?? null) : null),
             $meta !== null && is_numeric($meta['total'] ?? null) ? (int) $meta['total'] : null,
+            self::stringList($meta['free_text_terms'] ?? null),
             $meta !== null && array_key_exists('match_mode', $meta),
         );
+    }
+
+    /**
+     * @return list<string>|null null unless `$value` is a list of strings
+     */
+    private static function stringList(mixed $value): ?array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return null;
+        }
+        foreach ($value as $item) {
+            if (! is_string($item)) {
+                return null;
+            }
+        }
+
+        return $value;
     }
 
     /** @param  non-empty-list<int>|null  $stageIds */
