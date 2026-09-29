@@ -715,7 +715,11 @@ class ReconcileCommand extends BridgeCommand
                     Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['record']);
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
-                    OwnerlessStart::noteAfterMove($this->alerts, $p['card'], $p['mapping'], false, $p['card_id'], $p['repo'], self::ALERT_OUTCOME, $p['expected']);
+                    // A forward move out of the abandon stage into `opened` is the reconcile's
+                    // revival: work resumed, exactly as the event path's `reopened` one.
+                    $fromAbandon = ($p['card']['workflow_stage_id'] ?? null) === $p['mapping']->stageFor(PrOutcome::CLOSED_UNMERGED)
+                        && $p['expected'] === $p['mapping']->stageFor('opened');
+                    OwnerlessStart::noteAfterMove($this->alerts, $p['card'], $p['mapping'], $fromAbandon, $p['card_id'], $p['repo'], self::ALERT_OUTCOME, $p['expected']);
                 } catch (Throwable $e) {
                     $this->warn(sprintf('card %d: move failed (%s) — left as-is', $p['card_id'], UntrustedText::forOperator(RedactedErrorText::of($e))));
                     $this->hadError = true;

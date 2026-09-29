@@ -442,12 +442,13 @@ const TOOL_DEFINITIONS = [
       'with no assignee — another seat\'s legacy owner: tag) is TAKEN OVER: it is ' +
       'reassigned to you, a card comment names whom it replaced, and the result says ' +
       'so (replaced, warning, takeover_confirmed, takeover_comment). Read the warning: ' +
-      'that holder may still be working it, so talk to them. The exception is a card ' +
-      'in a FINISHED column (Done, Won\'t Do, Shipped to dev, Shipped to main) — its ' +
-      'assignee is the record of who did the work, so that is REFUSED (422) and ' +
-      'nothing is written, and so is a held card whose column the bridge cannot show ' +
-      'is unfinished. There is no override here; replacing a finished card\'s holder ' +
-      'is a decision for your operator. ' +
+      'that holder may still be working it, so talk to them. The exception is replacing ' +
+      'the ASSIGNEE of a card in a FINISHED column (Done, Won\'t Do, Shipped to dev, ' +
+      'Shipped to main) — that assignee is the record of who did the work, so it is ' +
+      'REFUSED (422) and nothing is written, and so is replacing the assignee of a card ' +
+      'whose column the bridge cannot show is unfinished. A card held only by a legacy ' +
+      'owner: tag is taken wherever it sits (the tag stays on it). There is no override ' +
+      'here; replacing a finished card\'s assignee is a decision for your operator. ' +
       'Re-taking a card you already hold SUCCEEDS, writes nothing, and answers ' +
       'already_held: true, so it is safe to call again if you are unsure. ' +
       'A board fault that cannot clear (the bridge token revoked/rotated, or the ' +

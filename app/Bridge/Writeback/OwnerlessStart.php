@@ -24,8 +24,9 @@ use Illuminate\Support\Facades\Log;
  * written between that read and the move is not seen, which errs toward an alert that says too
  * much. A mapping that declares no start set has no start columns the bridge knows of, so only
  * revivals are checked there. An absent `assigned_user_id` key reads as "no assignee" — kanban
- * projects the key on both reads the movers take (`docs/kanban-integration-contract.md` § 2), and
- * a kanban that stopped would make this alert on every start, loudly rather than silently.
+ * projects the key on both reads the movers take, the event path's `GET /tasks/{id}.json` and
+ * `bridge:reconcile`'s board-scan search (`docs/kanban-integration-contract.md` § 2 declares both),
+ * and a kanban that stopped would make this alert on every start, loudly rather than silently.
  */
 final class OwnerlessStart
 {

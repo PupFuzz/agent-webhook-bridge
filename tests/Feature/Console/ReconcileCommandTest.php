@@ -1276,6 +1276,23 @@ class ReconcileCommandTest extends TestCase
             && $r['type'] === 'writeback_moved_without_owner' && $r['card_id'] === 5 && $r['to_stage'] === 50));
     }
 
+    public function test_fix_alerts_the_reconciles_revival_out_of_the_abandon_stage_on_a_card_with_no_owner(): void
+    {
+        // The abandon stage (`closed_unmerged`, 49 here) is a start column for a move into `opened`:
+        // work resumed, as on the event path's `reopened` revival. No start sets are declared, so
+        // only the abandon leg can raise this.
+        $this->writeWriteback([], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $scanned = $this->card(5, 49, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'assigned_user_id' => null, 'tags' => []]);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $this->assertCount(1, Http::recorded(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL) && $r['type'] === 'writeback_moved_without_owner'));
+    }
+
     public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void
     {
         $this->writeWriteback();

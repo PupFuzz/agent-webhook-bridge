@@ -198,7 +198,7 @@ final class BoardTakeCardTool implements Tool
         }
 
         if (in_array($lower, self::OVERRIDE_ARGS, true)) {
-            return "`{$key}` is not an argument here — this tool has no override. A card another user holds is TAKEN with a warning and a card comment naming them, EXCEPT a card in a finished column, which is refused and NOTHING is written; replacing that record, or releasing a card, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
+            return "`{$key}` is not an argument here — this tool has no override. A card another user holds is TAKEN with a warning and a card comment naming them, EXCEPT that replacing the ASSIGNEE of a card in a finished column is refused and NOTHING is written; replacing that record, or releasing a card, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
         }
 
         return "unknown argument `{$key}` — the assignee is resolved from your bridge identity, never from your arguments.";
