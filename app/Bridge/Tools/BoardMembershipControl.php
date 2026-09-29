@@ -7,9 +7,16 @@ use Illuminate\Http\Client\RequestException;
 
 /**
  * Whether the writeback token's user may READ one board — the membership control `board_get_cards`
- * (DL-435 Decision 3), `board_search` (DL-437 Decision 12) and `board_my_cards` (card#10856, on its
- * own board and on its coordination board) ask before they report an answer an unreadable board would
- * also produce. One instance per board per call: the control is asked at most once for each.
+ * (DL-435 Decision 3) and `board_search` (DL-437 Decision 12) ask before they report an answer an
+ * unreadable board would also produce. One instance per board per call: the control is asked at
+ * most once for each.
+ *
+ * ⛔ `board_my_cards` does NOT ask this (card#10856, considered and declined). It reads its own
+ * board's structure (`boards/{id}/preload.json`) before any search — unconditionally, and the
+ * coordination board's structure too whenever one is configured — and both are `view`-authorized
+ * the same way `status.json` is, so a non-member is already refused there. Adding this control
+ * would be a second guard behind one that already fires first, paying an extra request for no
+ * reachable case; see the class docblock's condition below, which is what makes the guard reliable.
  *
  * ⛔ kanban's search floors to the caller's own boards and answers a NON-MEMBER zero rows at 200, not
  * an error, so "nothing on this board matched" and "this token cannot see this board" are one answer

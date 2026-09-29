@@ -252,24 +252,17 @@ see [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4x
 The whole call refuses, including when only the **coord** leg failed: a response silently
 missing its coordination cards reads exactly like a board with none.
 
-⛔ **"No cards" is said only of a board the bridge can read (card#10856).** kanban's search answers a
-token whose user is not a **member** of the board zero rows, at 200 — the same answer as a lane with
-no cards. So when every search of your board answered nothing (the lane read, the shared-lane read,
-the `tag` read), the bridge asks kanban whether the token may read your board — the membership
-control `board_get_cards` and `board_search` use too, `BoardMembershipControl`, which reads
-`GET /boards/{id}/status.json`. kanban authorizes that read on the board itself: a **member** gets 200
-and the empty windows are answered — a new board, or one whose every card is archived, included — and
-a **non-member** gets 403 and the call is **refused** (422), naming membership. The coordination board
-is its own question, because it is configured apart from `board_id`: when none of your address tags
-matched a card there, it is asked once too, and refuses the same way. Any row a search returned — even
-one the lane filter then drops as another lane's — is the proof, and then nothing more is asked.
-- ⚠ **On kanban's current authorization this tool refuses a non-member before the control is
-  reached**: the board-structure read it makes first (`boards/{id}/preload.json`, and the coordination
-  board's, read after its tag searches) is authorized on the board, so a non-member gets a 403 there
-  and the call is refused naming membership (§ A PERMANENT board 4xx). The control is a second guard,
-  for a kanban whose board read and search ever disagree about who may read a board.
-- **Cost:** at most one extra request per board per call, sent only when every search of that board
-  answered nothing.
+⛔ **"No cards" is answered only of a board the bridge can read (card#10856).** kanban's search
+answers a token whose user is not a **member** of the board zero rows, at 200 — the same answer as
+a lane with no cards. This tool does not learn that from the search: it reads your board's
+structure (`boards/{id}/preload.json`) **before any search**, unconditionally, and the coordination
+board's structure too whenever one is configured — both `view`-authorized on the board itself, so a
+**non-member gets a 403 there and the call is refused** (422, naming membership) before a search
+ever runs (§ A PERMANENT board 4xx). A member is answered as before, empty windows included — a
+new board, or one whose every card is archived. (card#10856 was investigated as a `board_get_cards`
+/ `board_search`-shaped membership control on this tool too; that control was **declined** here,
+because it can never fire — the structure read already refuses first, on every path this tool
+takes, so it would only cost an extra request. See the class docblock on `BoardMembershipControl`.)
 
 ### The default is capped (`cards_window`, `stage`, `limit`)
 

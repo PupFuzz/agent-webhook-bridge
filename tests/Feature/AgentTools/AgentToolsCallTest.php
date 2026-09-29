@@ -1469,14 +1469,16 @@ class AgentToolsCallTest extends TestCase
         $this->assertArrayNotHasKey('coord_cards', $result);
     }
 
-    // ─── board_my_cards: "no cards" is said only of a board the token can read (card#10856) ──
+    // ─── board_my_cards: a non-member is refused by the board-scoped structure read (card#10856) ──
 
     /**
      * Board 10 (and coord board 12 when `$coord`), modelled as kanban answers a token whose user is,
-     * or is not, a member of each (`$member`): the search floors to membership, so a non-member's
-     * every search answers zero rows at 200, while every read kanban authorizes on the BOARD — its
-     * preload and its status — answers 200 to a member, whatever the board holds, and 403 to a
-     * non-member (for an API token `view` is owner-or-member: super-admin mode is session-only).
+     * or is not, a member of each (`$member`): kanban authorizes `preload.json` on the board itself
+     * (`view`), 200 to a member whatever the board holds, 403 to a non-member — for an API token
+     * `view` is owner-or-member (kanban's super-admin mode is session-only, and the v3 API runs
+     * without a session), the same set the search is floored to. `board_my_cards` reads this BEFORE
+     * any search — its own board's structure always, the coord board's structure whenever a coord
+     * block is configured — so a non-member is refused there and no search names "no cards".
      *
      * @param  list<array<string, mixed>>  $laneRows
      * @param  array<int, bool>  $member  board id => whether the token's user is a member of it
@@ -1496,11 +1498,6 @@ class AgentToolsCallTest extends TestCase
             '*/boards/12/preload.json' => ($member[12] ?? false) ? Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
             ]]]) : KanbanBoardStatus::forbidden(),
-            '*/boards/*/status.json' => function ($request) use ($member) {
-                preg_match('#/boards/(\d+)/status\.json#', $request->url(), $m);
-
-                return ($member[(int) $m[1]] ?? false) ? KanbanBoardStatus::readable((int) $m[1]) : KanbanBoardStatus::forbidden();
-            },
             '*/tasks/search.json*' => function ($request) use ($laneRows, $member, $coordRows) {
                 parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
                 $q = (string) ($query['q'] ?? '');
@@ -1533,12 +1530,14 @@ class AgentToolsCallTest extends TestCase
             'board_id' => $board, 'tags' => [], 'payload' => [], 'updated_at' => '2026-09-29'];
     }
 
-    public function test_my_cards_refuses_a_board_the_token_cannot_read_instead_of_an_empty_window(): void
+    /**
+     * ⭐ THE GUARD THIS TOOL ACTUALLY HOLDS (card#10856). No membership control is asked here — a
+     * non-member is refused by the board-structure read this tool makes FIRST (`boards/{id}/preload.json`,
+     * `view`-authorized), before any search runs. The refusal names membership, from the board's own
+     * 403, and no card search happened to answer "no cards" over.
+     */
+    public function test_my_cards_refuses_a_board_the_token_cannot_read_via_the_structure_read(): void
     {
-        // card#10856's shape: the operator removes the writeback user from the board, and kanban's
-        // search answers every read zero rows at 200. The board-structure read this tool makes FIRST
-        // is authorized on the board, so kanban refuses it (403) and the call is refused, naming
-        // membership, before any search — the membership control is never reached on the own board.
         $this->fakeMembershipBoard([self::laneRow(1, 4)], [10 => false]);
 
         $res = $this->callTool(['tool' => 'board_my_cards']);
@@ -1547,8 +1546,7 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('the structure of your board 10', (string) $res->json('error'));
         $this->assertStringContainsString('membership of that board', (string) $res->json('error'));
         $this->assertNull($res->json('result'));
-        $this->assertSame([], self::searchQueries());
-        $this->assertSame([], KanbanBoardStatus::asked());
+        $this->assertSame([], self::searchQueries(), 'refused before any search — the structure read is what refuses it');
     }
 
     public function test_my_cards_answers_an_empty_readable_board_with_empty_windows(): void
@@ -1562,33 +1560,21 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame([], $result['cards_by_stage']);
         $this->assertSame(0, $result['cards_window']['total']);
         $this->assertSame(['board_id=10 swimlane_id=4'], self::searchQueries());
-        $this->assertSame([10], KanbanBoardStatus::asked());
-    }
-
-    public function test_a_row_the_lane_filter_drops_is_still_the_membership_proof(): void
-    {
-        // The search floors to membership, so ANY row it returned proves it — including one the
-        // bridge's read-isolation filter then drops as another lane's. No control is asked.
-        $this->fakeMembershipBoard([self::laneRow(1, 99)], [10 => true]);
-
-        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
-
-        $this->assertSame([], $result['cards_by_stage']);
-        $this->assertSame([], KanbanBoardStatus::asked());
     }
 
     public function test_my_cards_refuses_a_coord_board_the_token_cannot_read(): void
     {
         // The coord board is configured apart from board_id, so the token can be a member of the
-        // product board and not of it — and "nothing is addressed to you" is then the same answer.
+        // product board and not of it. `coordBlock` reads the coord board's structure
+        // (`boardStageNames`, `view`-authorized) after its tag searches, unconditionally — so a
+        // non-member is refused there, whether or not the tag search found a row.
         $this->fakeMembershipBoard([self::laneRow(1, 4)], [10 => true, 12 => false], coord: true);
 
         $res = $this->callTool(['tool' => 'board_my_cards']);
 
         $res->assertStatus(422);
-        $this->assertStringContainsString('a read of the coordination board 12', (string) $res->json('error'));
+        $this->assertStringContainsString('the structure of the coordination board 12', (string) $res->json('error'));
         $this->assertSame(['board_id=10 swimlane_id=4', 'board_id=12 tags:"repo:me"'], self::searchQueries());
-        $this->assertSame([12], KanbanBoardStatus::asked());
     }
 
     public function test_an_empty_coord_leg_on_a_readable_coord_board_is_answered(): void
@@ -1599,7 +1585,6 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertSame([], $result['coord_cards']);
         $this->assertSame(1, $result['cards_window']['total']);
-        $this->assertSame([12], KanbanBoardStatus::asked());
     }
 
     // ─── board_my_cards: the identity echo is UNCONDITIONAL (card#7325, DL-304) ──
@@ -5533,8 +5518,8 @@ class AgentToolsCallTest extends TestCase
         $search = '\\S+/tasks/search\\.json\\?';
 
         return match ($scenario) {
-            'board_my_cards' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}.*swimlane_id=4#", '#^GET \\S+/boards/10/status\\.json$#']],
-            'board_my_cards with a shared lane and a coord block' => ['status' => 200, 'sends' => ["#^GET {$search}.*swimlane_id=9#", '#^GET \\S+/boards/12/status\\.json$#', '#^GET \\S+/boards/12/preload\\.json#']],
+            'board_my_cards' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}.*swimlane_id=4#"]],
+            'board_my_cards with a shared lane and a coord block' => ['status' => 200, 'sends' => ["#^GET {$search}.*swimlane_id=9#", '#^GET \\S+/boards/12/preload\\.json#']],
             'board_create_card' => ['status' => 200, 'sends' => ["#^GET {$search}.*archived=1#", '#^POST \\S+/tasks\\.json$#', '#^GET \\S+/tasks/77\\.json$#']],
             'board_create_card idempotency hit' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/7\\.json$#']],
             'board_create_card raced duplicate collapsed' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks\\.json$#', '#^PATCH \\S+/tasks/9\\.json$#']],

@@ -100,14 +100,6 @@ use Illuminate\Support\Facades\Log;
  * between a board-scoped read and a card search, and a refusal naming the wrong one denies the
  * true cause to the operator by name.
  *
- * ⛔ "NO CARDS" IS SAID ONLY OF A BOARD THE TOKEN CAN READ (card#10856). kanban's search answers a
- * token whose user is not a MEMBER of the board zero rows at 200, so a seat whose board the token
- * could not read was told it had no cards. When every search of a board answered nothing, the board
- * is asked once ({@see BoardMembershipControl}, via {@see member}) — the product board after its
- * lane, shared-lane and `tag` reads, the coordination board after its address-tag reads. A board
- * kanban refuses the token (403) refuses the whole call; a readable one is answered, empty or not.
- * Any row a search returned is the proof, so a call that read one asks nothing more.
- *
  * ⭐ `tag` IS THE ONE READ HERE THAT CROSSES SWIMLANES ON PURPOSE (card#9260, DL-383). A seat
  * whose sprint cards sat at `swimlane_id: null` read its own lane, found none, and wrote that its
  * sprint was empty: the lane read never contained them, and nothing in the response varied
@@ -252,14 +244,6 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             }
         }
 
-        // Any row a search of this board returned — before the swimlane filter drops a foreign
-        // lane's — is the membership proof; only when every search answered nothing is the board asked.
-        $membership = new BoardMembershipControl($client, $boardId);
-        if ($ownRows !== [] || ($sharedRows ?? []) !== [] || ($tagRead->cards ?? []) !== []) {
-            $membership->proven();
-        }
-        $this->member($membership, $boardId, 'your board', $agentName);
-
         $ownRead = $this->filterSwimlane($ownRows, $swimlaneId, $agentName, 'own');
         $sharedRead = $sharedRows === null ? null : $this->filterSwimlane($sharedRows, (int) $cfg->sharedSwimlaneId, $agentName, 'shared');
 
@@ -308,7 +292,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             // already holds, so a future key added to the literal above would drop
             // the observed coord block with nothing red. Naming each key also puts
             // coordBlock()'s declared shape under phpstan.
-            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit, $membership);
+            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName, $limit);
             $result['coord_board_id'] = $coord['coord_board_id'];
             $result['coord_board_observed'] = $coord['coord_board_observed'];
             $result['configured_coord_board_id'] = $coord['configured_coord_board_id'];
@@ -354,30 +338,6 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         ]);
 
         return BoardCallRefusal::readRefusal($this->name(), $route, $status, $what, 'so NO cards were returned — this is not an empty window');
-    }
-
-    /**
-     * ⛔ Every search of a board answered nothing: kanban's search answers a board the token's user is
-     * not a MEMBER of exactly that way, so "no cards" is reported only once the board is shown readable
-     * ({@see BoardMembershipControl} — the control `board_get_cards` and `board_search` ask too). A
-     * readable board with no cards, an empty one included, is answered with empty windows.
-     */
-    private function member(BoardMembershipControl $membership, int $boardId, string $whose, string $agentName): void
-    {
-        try {
-            $readable = $membership->readable();
-        } catch (RequestException $e) {
-            throw $this->readRefusal($e, $agentName, 'membership control', BoardReadRoute::BoardScoped, "the status of {$whose} {$boardId} to establish that the token can read it");
-        }
-        if ($readable) {
-            return;
-        }
-
-        Log::warning('board_my_cards: every search answered nothing and the token may not read the board — refusing without an answer', [
-            'agent' => $agentName, 'board_id' => $boardId,
-        ]);
-
-        throw new ToolRefusalException("board_my_cards: kanban's search returned no cards, and kanban refuses (403) the bridge's writeback token a read of {$whose} {$boardId} — the token's user is not a MEMBER of it (or the board is trashed), and kanban's search answers a non-member zero rows, so \"no cards\" would be false. NO cards were returned. Have your operator check that token's membership of board {$boardId}.");
     }
 
     /**
@@ -1082,7 +1042,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      *
      * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>, coord_cards_window: array{total: int, returned: int, limit: int, truncated: bool, remedy?: string}}
      */
-    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit, BoardMembershipControl $ownBoard): array
+    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName, int $limit): array
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
@@ -1100,16 +1060,14 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         }
         ksort($byId);
         $rows = array_values($byId);
-        if ($rows === []) {
-            // The coord board is configured apart from `board_id`, so its membership is its own
-            // question — unless it IS the product board, whose control this call already holds.
-            $this->member($coordBoardId === (int) $cfg->boardId ? $ownBoard : new BoardMembershipControl($client, $coordBoardId), $coordBoardId, 'the coordination board', $agentName);
-        }
 
-        // Split for the same reason as the own/shared legs above: this one is board-scoped,
-        // and on the COORD board it is the likeliest place a membership gap actually shows —
-        // `coord_board_id` is configured separately from `board_id`, so an install can hold
-        // membership of one and not the other.
+        // Board-scoped, and on the COORD board it is the likeliest place a membership gap
+        // actually shows — `coord_board_id` is configured separately from `board_id`, so an
+        // install can hold membership of one and not the other. A non-member 403s HERE
+        // (kanban authorizes `view` on the board itself, and for an API token `view` is
+        // owner-or-member — the same set the search above is floored to): this read is what
+        // refuses the call for a coord board the token cannot read, whether or not the tag
+        // search above found any row.
         try {
             $coordStageNames = $client->boardStageNames($coordBoardId);
         } catch (RequestException $e) {

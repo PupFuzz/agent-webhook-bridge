@@ -14,8 +14,7 @@ use Illuminate\Support\Facades\Http;
  * descending, an `id<N` q-token applied as a filter, a page of the request's `limit` at a time with
  * `links.next` set while rows remain (the walk it serves is keyed on id, card#10653); a one-row count
  * search answers the number of `$tagRows` its own `swimlane_id=` / `workflow_stage_id=` terms
- * select, so a count the tool reports is one a real server would have given for that query. The
- * board's status read (the membership control) answers 200: the token's user is a member.
+ * select, so a count the tool reports is one a real server would have given for that query.
  *
  * Options:
  *  - `parser` — `current` (kanban v0.45.0+); `pre-none` (v0.43.0–v0.44.x): `swimlane_id=none`
@@ -72,7 +71,6 @@ trait TaggedBoardFake
 
         Http::fake([
             '*/boards/10/preload.json' => $refused('preload') ?? Http::response(['data' => $preload]),
-            '*/boards/10/status.json' => KanbanBoardStatus::readable(),
             '*/tasks/search.json*' => function (Request $request) use ($laneRows, $tagRows, $options, $refused) {
                 $query = self::searchQuery($request);
                 $q = is_string($query['q'] ?? null) ? $query['q'] : '';
