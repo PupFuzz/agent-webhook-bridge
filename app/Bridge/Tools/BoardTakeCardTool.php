@@ -2,10 +2,17 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Writeback\CardTags;
+use App\Bridge\Writeback\FinishedStages;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\WritebackConfig;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -56,8 +63,9 @@ use Illuminate\Support\Facades\Log;
  *  - A CORRECTION WRITES WHAT THE CALLER SUPPLIED; A TAKE WRITES WHAT THE BRIDGE RESOLVED.
  *    Every `board_correct_card` argument is caller-owned content by construction. Putting a
  *    claim in that grammar invites the one argument this feature may never have.
- *  - REFUSE-ON-CONFLICT HAS NO ANALOGUE IN A CORRECTION, which writes unconditionally once
- *    ownership is proven. A take's central behaviour is a REFUSAL that reads the card first.
+ *  - A TAKE READS THE CARD'S HOLDER FIRST AND A CORRECTION HAS NO ANALOGUE: a correction writes
+ *    unconditionally once ownership is proven, while a take decides from the holder whether it
+ *    writes silently, takes over with a warning, or refuses (a finished card).
  *
  * ⭐ THE AUTHORIZATION, STATED RATHER THAN INHERITED. `board_correct_card`'s model was
  * widened by DL-376 (card#9201/#9202) to minted-OR-assigned, and nothing here rests on
@@ -81,15 +89,21 @@ use Illuminate\Support\Facades\Log;
  * The MINT STAMP is deliberately NOT part of it — a seat that could only take what it filed
  * could not take the work anybody else queued for it, which is the whole ask.
  *
- * ⛔ REFUSE-ON-CONFLICT, MATCHING THE TOOLKIT HALF (card#9169's `kbcard patch --assign`).
- * A card already held by a DIFFERENT user is refused, the holder is NAMED, and nothing is
- * written — that refusal IS the collision detector, and it works precisely in the case the
- * feature was filed for (the column never moved). ⚠ ONE DELIBERATE DIVERGENCE from the
- * toolkit half, and it is a narrowing: there is no `--steal`. Stealing is a decision about
- * ANOTHER seat's work, `kbcard` takes it from a human at a terminal who can go and talk to
- * them, and this door's caller is an agent — so the override is left where a human is, and
- * this tool has no way to express it. A seat that genuinely must take a held card asks its
- * operator, who has `kbcard patch --assign <seat> --steal`.
+ * ⛔ WARN, THEN TAKE — AND NEVER A FINISHED CARD (card#10869; operator rulings on card#10868:
+ * Q3 and 7624). This tool used to REFUSE a card held by a different user. The operator ruled
+ * that an agent claiming a card another user holds WARNS, THEN TAKES IT, and posts a card comment
+ * naming the holder it replaced — the toolkit's card-start claim does the same. So a held card is
+ * now taken: the holder is named in the durable log BEFORE the write, the write is re-read, and
+ * only a re-read naming this seat gets the comment ({@see takeOver}). The response names the
+ * replaced holder, carries a `warning`, and says whether the takeover was CONFIRMED.
+ * ⛔ The exception is a card in a FINISHED column (Done, Won't Do, Shipped to dev, Shipped to main):
+ * its assignee is the record of who did the work, and replacing it needs an explicit steal, which
+ * this door does not have — so replacing a finished card's ASSIGNEE is refused, and so is replacing
+ * the assignee of a card whose column cannot be SHOWN not to be finished ({@see FinishedStages}).
+ * The steal stays where a human is: `kbcard patch --assign <seat> --steal`. With no assignee,
+ * another seat's legacy `owner:` tag counts as the holder ({@see otherSeatsOwnerTags}), the
+ * migration fallback the toolkit also reads — and that takeover is not column-gated, because it
+ * replaces no record: the take writes `assigned_user_id` alone, so the tag stays on the card.
  *
  * ⭐ RE-TAKING A CARD THE SEAT ALREADY HOLDS SUCCEEDS AND WRITES NOTHING (`already_held`).
  * It is not a conflict — the board already says what the call is asking it to say — so
@@ -98,19 +112,15 @@ use Illuminate\Support\Facades\Log;
  * re-sends the id in that case; the difference is unobservable on the board and the
  * response says which happened.
  *
- * ⚠ DISCLOSED BOUND — REFUSE-ON-CONFLICT DETECTS A CLAIM THAT HAS LANDED, NOT A RACE.
+ * ⚠ DISCLOSED BOUND — THE HOLDER CHECK SEES A CLAIM THAT HAS LANDED, NOT A RACE.
  * {@see currentHolder} reads the search row and {@see KanbanClient::patchCard} then writes
  * unconditionally: there is no compare-and-swap, because kanban's task PATCH offers no
  * conditional update to express one. So two seats that read `assigned_user_id: null` at the
  * same instant BOTH write, last-writer-wins, and both are answered `taken: true,
- * already_held: false` — the loser believing it holds a card another seat is on, which is the
- * very state this tool exists to make visible. ⭐ THE WINDOW IS ACCEPTED, and it is accepted
- * on its size rather than waved through: it is the gap between one read and one write on one
- * card, against a workflow where a seat claims a card once and then works it for minutes or
- * hours. What the refusal covers is the whole of the rest of that span, which is where the
- * collision this was filed for actually happens (the operator's case is a card sitting
- * claimed-but-unmoved, not two agents typing at once). ⛔ It is written down because every
- * other bound here is — a guard whose limits are undisclosed reads as a guarantee.
+ * already_held: false` on the unassigned path, which does not re-read. ⭐ THE WINDOW IS
+ * ACCEPTED on its size: the gap between one read and one write on one card, against a workflow
+ * where a seat claims a card once and then works it for minutes or hours. A TAKEOVER does
+ * re-read, and reports `takeover_confirmed: false` with `board_now_names` when it lost.
  *
  * ⛔ A ROW THAT CARRIES NO READABLE `assigned_user_id` IS A DEGRADED READ AND REFUSES.
  * Present-null is a real value meaning UNASSIGNED and is the ordinary case; an ABSENT key
@@ -188,7 +198,7 @@ final class BoardTakeCardTool implements Tool
         }
 
         if (in_array($lower, self::OVERRIDE_ARGS, true)) {
-            return "`{$key}` is not an argument here — this tool has no override. A card already held by another seat is refused and NOTHING is written; taking one off them, or releasing one, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
+            return "`{$key}` is not an argument here — this tool has no override. A card another user holds is TAKEN with a warning and a card comment naming them, EXCEPT that replacing the ASSIGNEE of a card in a finished column is refused and NOTHING is written; replacing that record, or releasing a card, is a decision for your operator (`kbcard patch --assign <seat> --steal` / `--unassign`).";
         }
 
         return "unknown argument `{$key}` — the assignee is resolved from your bridge identity, never from your arguments.";
@@ -227,13 +237,52 @@ final class BoardTakeCardTool implements Tool
             return $result;
         }
 
-        if ($holder !== null) {
-            Log::warning('board_take_card: refused — the card is already assigned to a different kanban user', [
-                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'holder' => $holder,
+        $ownerTags = $holder === null ? $this->otherSeatsOwnerTags($row) : [];
+        if ($holder === null && $ownerTags === []) {
+            try {
+                $client->patchCard($cardId, ['assigned_user_id' => $userId]);
+            } catch (RequestException $e) {
+                throw $this->writeRefusal($e, $cardId, $userId, $agentName);
+            }
+
+            Log::info('board_take_card: taken', [
+                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'assigned_user_id' => $userId,
             ]);
 
-            throw new ToolRefusalException("board_take_card: card {$cardId} is ALREADY HELD by kanban user {$holder}, and you are kanban user {$userId} — NOTHING WAS WRITTEN. That seat may be working it right now: a card whose column never moved looks unclaimed and is not, which is exactly what this refusal exists to tell you. Talk to whoever that is, or pick up different work. This door has no override: taking a card off another seat is a decision for your operator, who can make it with `kbcard patch --assign <seat> --steal`.");
+            return $result;
         }
+
+        return $result + $this->takeOver($client, $row, $boardId, $cardId, $userId, $holder, $ownerTags, $agentName);
+    }
+
+    /**
+     * Q3 (operator ruling, card#10868): a card another user holds is WARNED about, then TAKEN, and
+     * a card comment names the holder it replaced — except an ASSIGNEE on a card in a FINISHED
+     * column, which is the record of who did the work and is refused (ruling 7624: replacing it
+     * needs an explicit steal, which this door does not have).
+     *
+     * ⭐ THE HOLDER IS NAMED BEFORE THE WRITE, in the durable log, and not only in the response: a
+     * call cut off after the PATCH lands would otherwise lose whom it replaced, and a retry then
+     * finds the card already this seat's and says nothing (the toolkit's claim orders it the same
+     * way). The comment is posted only once a RE-READ of the row names this seat's user — a comment
+     * naming a replacement that did not happen would be the one false record here.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  list<string>  $ownerTags  legacy `owner:` tags naming another seat (only when unassigned)
+     * @return array<string, mixed>
+     */
+    private function takeOver(KanbanClient $client, array $row, int $boardId, int $cardId, int $userId, ?int $holder, array $ownerTags, string $agentName): array
+    {
+        $replaced = $this->holderPhrase($holder, $ownerTags);
+        // Only an ASSIGNEE is a record the take would overwrite; a legacy tag stays on the card.
+        if ($holder !== null) {
+            $this->refuseIfFinished($client, $row, $boardId, $cardId, $replaced, $agentName);
+        }
+
+        Log::warning('board_take_card: TAKING a card another holder has — named before the write', [
+            'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+            'replaced_assignee' => $holder, 'replaced_owner_tags' => $ownerTags, 'assigned_user_id' => $userId,
+        ]);
 
         try {
             $client->patchCard($cardId, ['assigned_user_id' => $userId]);
@@ -241,11 +290,155 @@ final class BoardTakeCardTool implements Tool
             throw $this->writeRefusal($e, $cardId, $userId, $agentName);
         }
 
-        Log::info('board_take_card: taken', [
+        $nowNames = $this->assigneeAfterWrite($client, $boardId, $cardId, $agentName);
+        $confirmed = $nowNames === $userId;
+        $comment = 'not_attempted';
+        if ($confirmed) {
+            try {
+                $client->addComment($cardId, "{$agentName} (kanban user {$userId}) took this card over from {$replaced} with board_take_card.");
+                $comment = 'posted';
+            } catch (RequestException|ConnectionException $e) {
+                Log::warning('board_take_card: the card was taken, but the comment naming the replaced holder could not be posted — the holder is in this log line and in the response', [
+                    'agent' => $agentName, 'card_id' => $cardId, 'replaced' => $replaced, 'error' => RedactedErrorText::of($e),
+                ]);
+                $comment = 'failed';
+            }
+        }
+
+        Log::info('board_take_card: taken over', [
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'assigned_user_id' => $userId,
+            'replaced' => $replaced, 'confirmed' => $confirmed, 'comment' => $comment,
         ]);
 
-        return $result;
+        return [
+            'replaced' => ['assigned_user_id' => $holder, 'owner_tags' => $ownerTags],
+            'warning' => "card {$cardId} was held by {$replaced}; it has been reassigned to you (kanban user {$userId}). If that holder is still working it, talk to them.",
+            'takeover_confirmed' => $confirmed,
+            'takeover_comment' => $comment,
+        ] + ($confirmed || $nowNames === null ? [] : ['board_now_names' => $nowNames]);
+    }
+
+    /**
+     * Legacy `owner:<project>/<seat>` tags naming a seat OTHER than this one — the migration
+     * fallback for "who holds this card" on a card with no assignee (card#10868 migration step 1;
+     * deleted with the other tag readers at step 3). The bridge cannot spell this seat's own tag —
+     * `<project>` lives in the coord config, which the request path cannot read — so it compares
+     * the SEAT part only: a tag whose seat is this seat's roster name may be this seat's own and is
+     * not treated as another holder.
+     *
+     * @param  array<string, mixed>  $row
+     * @return list<string>
+     */
+    private function otherSeatsOwnerTags(array $row): array
+    {
+        $ownerTags = array_values(array_filter(CardTags::readable($row) ?? [], OwnerTag::is(...)));
+        if ($ownerTags === []) {
+            return [];
+        }
+        $mySeat = SeatKanbanUser::seatNameForCallingSeat($this->name());
+        $others = [];
+        foreach ($ownerTags as $tag) {
+            $slash = strrpos($tag, '/');
+            $seat = $slash === false ? null : substr($tag, $slash + 1);
+            if ($seat !== $mySeat) {
+                $others[] = $tag;
+            }
+        }
+
+        return $others;
+    }
+
+    /**
+     * @param  list<string>  $ownerTags
+     */
+    private function holderPhrase(?int $holder, array $ownerTags): string
+    {
+        return $holder !== null
+            ? "kanban user {$holder}"
+            : 'the seat named by its legacy owner tag '.implode(', ', $ownerTags);
+    }
+
+    /**
+     * Refuse a takeover of a card in a FINISHED column, or of one whose column cannot be shown
+     * not to be finished — {@see FinishedStages} owns both answers and why an unanswerable leg is
+     * never read as "current".
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function refuseIfFinished(KanbanClient $client, array $row, int $boardId, int $cardId, string $replaced, string $agentName): void
+    {
+        $refuse = function (string $why) use ($cardId, $replaced, $agentName): never {
+            Log::warning('board_take_card: refused a takeover — the card is, or cannot be shown not to be, in a finished column', [
+                'agent' => $agentName, 'card_id' => $cardId, 'replaced' => $replaced, 'why' => $why,
+            ]);
+
+            throw new ToolRefusalException("board_take_card: card {$cardId} is held by {$replaced}, and {$why}. A finished card's assignee is the record of who did the work, and replacing it needs an explicit steal, which this door does not have — NOTHING WAS WRITTEN. If the card really must change hands, your operator can do it with `kbcard patch --assign <seat> --steal`.");
+        };
+
+        $stage = $row['workflow_stage_id'] ?? null;
+        if (! is_numeric($stage)) {
+            $refuse("the board's row for it names no readable column, so whether it is finished cannot be read");
+        }
+        $stage = (int) $stage;
+
+        try {
+            $writeback = WritebackConfig::loadDefault();
+        } catch (ConfigException $e) {
+            Log::warning('board_take_card: writeback.json will not parse, so which columns are finished is unknown', [
+                'agent' => $agentName, 'card_id' => $cardId, 'error' => $e->getMessage(),
+            ]);
+            $refuse("the bridge cannot read its own writeback.json, which names this board's Shipped and Released columns, so whether it is finished cannot be read (an INSTALL fault; report it to your operator)");
+        }
+
+        try {
+            $structure = $client->boardStructure($boardId);
+            $order = $client->boardStageOrder($boardId);
+        } catch (RequestException $e) {
+            $status = BoardCallRefusal::permanentOnRead($e);
+            if ($status === null) {
+                throw $e;
+            }
+
+            throw BoardCallRefusal::readRefusal(
+                $this->name(),
+                BoardReadRoute::BoardScoped,
+                $status,
+                "board {$boardId}'s columns to establish whether card {$cardId} is finished",
+                'so nothing was written',
+            );
+        }
+
+        $mappings = $writeback?->mappingsOnBoard($boardId) ?? [];
+        $why = FinishedStages::unanswerable($stage, $mappings, $structure, $order);
+        if ($why !== null) {
+            $refuse("whether it is in a finished column cannot be read — {$why}");
+        }
+        if (FinishedStages::isFinished($stage, $mappings, $structure, $order)) {
+            $name = $structure->stageNames[$stage] ?? "column {$stage}";
+            $refuse("it is in a FINISHED column ({$name})");
+        }
+    }
+
+    /**
+     * The row's assignee as a re-read finds it after the write, or null when the re-read did not
+     * answer — never an exception: the write has landed or not by now, and the caller reports
+     * what it could establish.
+     */
+    private function assigneeAfterWrite(KanbanClient $client, int $boardId, int $cardId, string $agentName): ?int
+    {
+        try {
+            $live = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName)->live;
+        } catch (RequestException|ConnectionException|ToolRefusalException $e) {
+            Log::warning('board_take_card: the takeover write was sent, but the re-read that confirms it failed', [
+                'agent' => $agentName, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
+            ]);
+
+            return null;
+        }
+
+        $assignee = $live['assigned_user_id'] ?? null;
+
+        return is_numeric($assignee) ? (int) $assignee : null;
     }
 
     /**

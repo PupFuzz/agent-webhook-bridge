@@ -14,7 +14,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
-| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card already held by a **different** user is **refused by name** and nothing is written. |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
@@ -544,7 +544,7 @@ Kanban's own search endpoint answers every page as a paginated collection carryi
 | --- | --- | --- |
 | `title` | yes | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's `name => string\|max:255`; an over-long title is **refused** (422) before any request is sent — card#8486, the same bound `board_correct_card` puts on `name`, through the same primitive). A title that is blank once trimmed — including one made only of invisible characters — is **refused**. ⚠ The cap reads the value **as sent**, padding included (see the normalisation rule at the top). |
 | `description` | no | String, **trimmed**. A description that is blank once trimmed is treated as **absent**: no `description` is written at all (a card being born has nothing to clear). |
-| `tags` | no | List of strings, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). An entry that is blank once trimmed is **refused**. Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. (A non-reserved colon such as `priority:high` is fine.) |
+| `tags` | no | List of strings, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). An entry that is blank once trimmed is **refused**. Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. ⛔ **The retired seat owner tag `owner:` is refused too** (card#10869, operator ruling B; case-insensitive), with a reason naming `board_take_card`: card ownership is the kanban assignee, and a caller-written tag would name a holder nobody is. (A non-reserved colon such as `priority:high` is fine.) |
 | `idempotency_key` | no (recommended) | `[A-Za-z0-9.-]{1,64}`, **and at most `64 − length("idem:<you>:")` characters**: the key is stored in the tag `idem:<you>:<key>` and kanban caps every tag at 64 (`tags.* => string\|max:64`), so the prefix your agent name makes comes out of the key's length (card#9588, DL-394). A longer key is **refused** (422) before any request is sent, naming your cap and the key's length; an agent name so long that `idem:<you>:` alone fills the cap is refused as an install fault. Other characters are refused (they are kanban tag-search metacharacters that could correlate the wrong card). The key is **lowercased** before use, so it correlates case-insensitively (`Report` and `report` are the same key). |
 
 Any other key — a `swimlane_id`, an `assignee` — is **refused** (422) before any request, and **no card is created**: see § [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
@@ -662,7 +662,7 @@ that keys on one card per subject.
 | `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced: a coerced id names a different card, and this id selects the row the write lands on. |
 | `name` | no | Non-empty string, **stored trimmed**, **≤ 255 characters** (kanban's own `name => string\|max:255`; ⚠ the cap reads the value **as sent**, padding included). There is **no clear form** — a card cannot be left without a name, so a `name` that is blank once trimmed, including one made only of invisible characters, is refused (omit it to leave it alone). |
 | `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only or invisible-characters-only (see the present/absent rule below). |
-| `tags` | no | List of strings — **your** tags, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`); an entry that is blank once trimmed is refused. The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
+| `tags` | no | List of strings — **your** tags, each **trimmed** and **≤ 64 characters** (kanban's `tags.* => string\|max:64`); an entry that is blank once trimmed is refused. The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`), the retired `owner:` tag and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
 
 > ⚠ **The two length caps are a MIRROR of rules that live in the kanban repo** (`App\Support\TaskWriteRules`), held in one place here (`KanbanFieldLimits`) and stated as a mirror: they are a **diagnostic**, not the safety. The safety is kanban's own 422 — which the tool maps to a named refusal rather than the retryable 502 — so a cap that goes stale degrades the *message*, never the outcome. `board_create_card` shares both caps (one policy, both tools: `name`/`title` at 255 through `BoardCallRefusal::overLongName()`, every tag at 64 through `CallerTagPolicy`).
 
@@ -767,7 +767,9 @@ allowed to send.** Two halves, and the second is the one that is easy to get wro
 1. **Tags you may not supply**, so you could not restore them either: `created-by:`
    (your mint stamp — dropping it locks you out of your own card), `idem:` (your
    correlation key — dropping it re-opens duplicate minting under it), `type:` and
-   `triaged` (the triage pass's work).
+   `triaged` (the triage pass's work), and the retired seat owner tag `owner:` (card#10869,
+   operator ruling B) — on a card with no assignee it may be the only record of who holds the
+   card, until `kbcard owner-migrate` turns it into an assignee.
 2. **Holds you MAY supply and may not drop**: `no-automove` — the writeback's
    all-outcome pin (`PinGuard`), the tag half of the same pin whose other half
    (`block_reason`) this tool refuses to touch by name — plus **every
@@ -918,23 +920,55 @@ relation is consulted. Two independent narrowings are checked instead, and **bot
    `shared_swimlane_id`. ⚠ That is the same **lane scope** `board_my_cards` reads, but it is
    **not the same set of cards**, in either direction: `board_my_cards` **caps** its response
    by card count (card#8985), so a card it did not list can still be takeable; and a card it
-   **does** list can be **refused** here because another user already holds it. What makes the
-   scope legible is the lane you work, not the listing you got.
+   **does** list can be **refused** here because another user holds it and it is finished. What
+   makes the scope legible is the lane you work, not the listing you got.
 
 > ⛔ **Coordination cards are OUT of scope.** They live on a separately configured board and
 > are addressed by TAG rather than by lane, and reaching them would put a write on a second
 > board this door has never written to. Narrowing later is not available in the way widening
 > later is.
 
-**⛔ Refuse-on-conflict — that refusal IS the collision detector.**
+**⚠ A card another user holds is WARNED about, then TAKEN — never a finished one (card#10869 / DL-439; operator rulings on card#10868, Q3 and 7624).**
 
-A card already held by a **different** kanban user is **refused** (422), the holder is
-**named**, and **nothing is written**. Treat it as *another seat is on this* — which is
-precisely the state the feature exists to make visible, because the column has not moved.
+Until card#10869 this tool refused a card held by a different user. The operator ruled that an
+agent claiming a card another user holds warns, then takes it, and posts a card comment naming
+the holder it replaced — the toolkit's card-start claim does the same. So:
 
-**There is no override on this door.** Taking a card off another seat is a decision about
-somebody else's work; `kbcard patch --assign <seat> --steal` takes it from a human who can
-go and ask them, and this tool has no way to express it.
+- **The holder is the card's assignee** — another seat's kanban user or a person. With **no**
+  assignee, another seat's legacy `owner:<project>/<seat>` tag counts as the holder (the
+  migration fallback, read until `kbcard owner-migrate` reports no tag-only card; a tag whose
+  seat part is **your** seat name — `identity.coord_seat`, else your agent name — may be your
+  own and is not treated as another holder).
+- **Named first, then written, then read back.** The bridge writes a durable log line naming the
+  holder **before** the assignment PATCH (a call cut off after the write still leaves the record),
+  sends the one-field PATCH, and re-reads the row. Only a re-read naming **you** gets the card
+  comment (`<agent> (kanban user N) took this card over from …`), posted as the writeback user —
+  a comment naming a replacement that did not happen would be the one false record here.
+- **The response says so:** `replaced` (`{assigned_user_id, owner_tags}`), `warning` (read it —
+  that holder may still be working the card; talk to them), `takeover_confirmed`, and
+  `takeover_comment` (`posted` / `failed` / `not_attempted`). A lost race answers
+  `takeover_confirmed: false` with `board_now_names`, and no comment. `taken` stays `true`: the
+  write was accepted.
+- ⛔ **Replacing the ASSIGNEE of a card in a FINISHED column is refused, and nothing is written.**
+  Done, Won't Do, Shipped to dev and Shipped to main: the assignee of a finished card is the record
+  of who did the work,
+  and replacing it needs an explicit steal, which this door does not have —
+  `kbcard patch --assign <seat> --steal` is where it lives. The bridge knows those columns by the
+  **union** of your install's `writeback.json` mapping on this board (its `merged` /
+  `merged_to_main` stages and every column the board places at or past them) and the board's
+  own declaration (`is_terminal`, else `lane_type: done`) — the reference board does not
+  declare Shipped to dev done, which is why the mapping is needed. ⛔ **A held card whose column
+  cannot be SHOWN to be unfinished is refused too**: `writeback.json` will not parse, no mapping
+  on this board maps `merged`, the board's columns cannot be read, or the card's column is not in
+  the board's order. An install with no writeback mapping on the board-tools board therefore
+  still refuses every takeover of an ASSIGNEE, as it refused every held card before. ⚠ **A
+  tag-held takeover is NOT column-gated**, because it replaces no record: the take writes
+  `assigned_user_id` alone and the `owner:` tag stays on the card. (Before card#10869 such a card
+  was taken silently; now it is taken with the warning and the comment.) ⚠ `board_my_cards`' own terminal exclusion uses the
+  board's declaration alone, so a Shipped-to-dev card can be "current" there and "finished" here.
+- The takeover costs two extra board reads (the board's columns, once for the structure and once
+  for the order) and one card comment; `comment.create` is needed for the comment (without it the
+  takeover lands and answers `takeover_comment: failed`).
 
 **⭐ Re-taking a card you already hold SUCCEEDS and writes nothing.** The board already says
 what the call is asking it to say, so refusing would make a retry-safe operation fail on its
@@ -955,7 +989,9 @@ answer. ⚠ **Sharing a `kanban_user_id` is an install fault with no supported f
 `github_user_id`, it cannot be declared deliberate, and the collision already makes the id
 resolve to nobody everywhere else in the bridge. `bridge:check` warns on it ahead of time (at
 exit 0). [`config-schema.md` § `identity:`](config-schema.md#identity-optional-mapping--the-agents-own-immutable-upstream-ids)
-owns that rule and the reasoning; it is not restated here.
+owns that rule and the reasoning; it is not restated here. ⭐ **That key is the bridge's copy of
+the coord roster's `roster[].kanban_user_id`**, the single store of each seat's id (card#10869),
+and `bridge:check` holds the two against each other — the same section owns how.
 
 **⚠ A PINNED card still takes a claim, and that is a ruling.** The DL-178 hold governs a
 card's stage, its lifecycle and the fields `PinGuard::PINNED_FIELDS` names — which is

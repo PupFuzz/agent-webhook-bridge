@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
@@ -1202,36 +1203,25 @@ class ReconcileCommandTest extends TestCase
             && $r->data() === ['workflow_stage_id' => 52]);
     }
 
-    public function test_fix_into_a_terminal_stage_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
+    public function test_fix_into_a_terminal_stage_is_stage_only_and_keeps_the_assignee_and_owner_tag(): void
     {
-        // The board read is the SCAN; a tag another writer adds after it must survive the clear,
-        // which it can only do if the clear's tag list comes from a read taken at the write.
+        // card#10869: the retired DL-386 clear no longer follows a terminal move, and a finished
+        // card KEEPS its assignee (card#10868 Q2).
         $this->writeWriteback();
-        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban']]);
-        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
-        $this->fake([$scanned], [5 => $this->mergedToDevPr()], cardEndpoint: $cards);
-
-        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
-
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
-    }
-
-    public function test_fix_makes_no_tag_write_when_the_fresh_read_shows_no_owner_tag(): void
-    {
-        $this->writeWriteback();
-        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['owner:kanban/kanban']]);
-        $cards = new KanbanCardStub([5 => ['tags' => ['triaged']] + $scanned]);
+        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'assigned_user_id' => 7, 'tags' => ['triaged', 'owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([5 => $scanned]);
         $this->fake([$scanned], [5 => $this->mergedToDevPr()], cardEndpoint: $cards);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
 
         $this->assertSame([['workflow_stage_id' => 52]], $cards->patchesTo(5));
+        $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+        $this->assertSame(7, $cards->cards[5]['assigned_user_id']);
     }
 
     /**
-     * The terminal check's other side: a forward drift into `opened` is not terminal, so the
-     * applied move carries no clear. The PATCH is the presence witness that `--fix` applied the
-     * move; nothing may follow it, because the clear's first step is a read.
+     * A forward drift into `opened`: the PATCH is the presence witness that `--fix` applied the
+     * move, and nothing may follow it.
      */
     public function test_fix_into_a_non_terminal_stage_moves_an_owner_tagged_card_stage_only_with_no_fresh_read_or_tag_write(): void
     {
@@ -1246,6 +1236,61 @@ class ReconcileCommandTest extends TestCase
         $movedAt = array_key_last(array_filter($cards->log, static fn (array $e): bool => $e['method'] === 'PATCH'));
         $this->assertSame([], array_slice($cards->log, $movedAt + 1));
         $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+    }
+
+    /**
+     * card#10869, operator ruling A covers EVERY bridge move out of a start column — `--fix`
+     * included: a forward drift that takes a card with no owner recorded out of
+     * `started_from_stages` is applied and alerted. The assignee-carrying twin is the control.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: int}>
+     */
+    public static function fixStartOwners(): array
+    {
+        return [
+            'no owner recorded' => [['assigned_user_id' => null, 'tags' => ['triaged']], 1],
+            'an assignee' => [['assigned_user_id' => 7, 'tags' => []], 0],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $owner
+     */
+    #[DataProvider('fixStartOwners')]
+    public function test_fix_alerts_a_move_out_of_a_start_column_on_a_card_with_no_owner(array $owner, int $alerts): void
+    {
+        $this->writeWriteback(['owner/repo' => [
+            'board_id' => 8,
+            'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+            'started_from_stages' => [46],
+        ]], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $scanned = $this->card(5, 46, ['pr_url' => $this->prUrl(5)], ['block_reason' => null] + $owner);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $this->assertCount($alerts, Http::recorded(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL)
+            && $r['type'] === 'writeback_moved_without_owner' && $r['card_id'] === 5 && $r['to_stage'] === 50));
+    }
+
+    public function test_fix_alerts_the_reconciles_revival_out_of_the_abandon_stage_on_a_card_with_no_owner(): void
+    {
+        // The abandon stage (`closed_unmerged`, 49 here) is a start column for a move into `opened`:
+        // work resumed, as on the event path's `reopened` revival. No start sets are declared, so
+        // only the abandon leg can raise this.
+        $this->writeWriteback([], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $scanned = $this->card(5, 49, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'assigned_user_id' => null, 'tags' => []]);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $this->assertCount(1, Http::recorded(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL) && $r['type'] === 'writeback_moved_without_owner'));
     }
 
     public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void

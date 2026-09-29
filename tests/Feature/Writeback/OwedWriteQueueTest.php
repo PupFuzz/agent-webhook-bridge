@@ -31,6 +31,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -134,6 +135,47 @@ class OwedWriteQueueTest extends TestCase
             $this->assertStringStartsWith('php artisan bridge:replay ', $body['remedy']);
         }
         $this->assertSame(0, WritebackOwedWrite::query()->count());
+    }
+
+    // --- operator ruling (DL-440): a give-up names the config that kept the clock retry away ---
+
+    public function test_a_give_up_names_no_gap_when_the_retry_sweep_is_in_place(): void
+    {
+        $this->owe('stuck-then-aged', drain: false);
+        $this->rateLimitFirst(retryAfter: null);
+        $this->queue()->drain($this->subject());   // owed ⇒ both instances declared
+        $this->travel(OwedWriteQueue::MAX_AGE_S + 60)->seconds();
+        (new OwedWriteWatchdogJob($this->handlers))->run($this->jobContext());
+
+        $this->assertNull($this->alertsOfType('writeback_owed_write_gave_up')[0]['retry_sweep_gap']);
+    }
+
+    /**
+     * @return iterable<string, array{0: callable(): void, 1: string}>
+     */
+    public static function sweepGaps(): iterable
+    {
+        yield 'kill switch' => [fn () => config(['bridge.jobs.owed_write_retry_disabled' => true]), 'BRIDGE_OWED_WRITE_RETRY_DISABLED=true'];
+        yield 'jobs disabled' => [fn () => config(['bridge.jobs.enabled' => false]), 'BRIDGE_JOBS_ENABLED=false'];
+        yield 'pass unusable' => [fn () => config(['bridge.jobs.max_per_pass' => 0]), 'the job registry can run no pass'];
+        yield 'instance disabled' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->update(['enabled' => false]), 'bridge:jobs enable '.OwedWriteRetryJob::INSTANCE];
+        yield 'instance removed' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->delete(), 'bridge:jobs add '.OwedWriteRetryJob::INSTANCE];
+        yield 'instance refused' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->update(['last_status' => ScheduledJob::STATUS_REFUSED, 'last_error' => 'unarmed']), 'was REFUSED at its last run: unarmed'];
+    }
+
+    #[DataProvider('sweepGaps')]
+    public function test_a_give_up_names_the_config_that_kept_the_retry_sweep_away(callable $break, string $named): void
+    {
+        $this->owe('stuck', drain: false);
+        $this->rateLimitFirst(retryAfter: null);
+        $this->queue()->drain($this->subject());
+        $break();
+        $this->travel(OwedWriteQueue::MAX_AGE_S + 60)->seconds();
+        $this->queue()->giveUp(WritebackOwedWrite::query()->sole(), 'expired');
+
+        $gap = $this->alertsOfType('writeback_owed_write_gave_up')[0]['retry_sweep_gap'];
+        $this->assertIsString($gap);
+        $this->assertStringContainsString($named, $gap);
     }
 
     // --- §10.8: the watchdog gives up only an aged HEAD ---

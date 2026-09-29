@@ -7,10 +7,14 @@ use App\Bridge\Scheduling\JobContext;
 use App\Bridge\Scheduling\JobHandler;
 use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\JobOutcome;
+use App\Bridge\Scheduling\JobsConfig;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Support\HandlerRegistry;
+use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\OwedWriteQueue;
+use App\Models\ScheduledJob;
+use Throwable;
 
 /**
  * The periodic drain of owed durable writes (card#10849 / DL-440): every subject whose head
@@ -76,6 +80,45 @@ final class OwedWriteRetryJob implements JobHandler
     public static function queueFor(HandlerRegistry $handlers): OwedWriteQueue
     {
         return new OwedWriteQueue($handlers, new SubscriptionRegistry((string) config('bridge.config_dir')));
+    }
+
+    /**
+     * Why an owed write is NOT being retried on a clock on this install, naming the key or the
+     * command that fixes it — or null when nothing stands in the way (the instance exists, is
+     * enabled, was not refused at its last run, and the registry runs jobs at all). The one
+     * answer both loud surfaces print: the give-up alert (`retry_sweep_gap`) and `bridge:check`'s
+     * `writeback.owed_writes_table` leg, so a sweep that silently never runs is named by the
+     * config that stopped it (operator ruling, card#10849 / DL-440). Never throws — it is read on
+     * the alert path; an unreadable answer is itself named.
+     */
+    public static function clockRetryGap(): ?string
+    {
+        if ((bool) config('bridge.jobs.owed_write_retry_disabled')) {
+            return 'BRIDGE_OWED_WRITE_RETRY_DISABLED=true switches the owed-write retry sweep off — unset it to turn it back on';
+        }
+        try {
+            $posture = JobsConfig::fromConfig();
+            if (! $posture->enabled) {
+                return 'BRIDGE_JOBS_ENABLED=false — no periodic job runs on this install, so neither the owed-write retry sweep nor its watchdog does';
+            }
+            if ($posture->problem !== null) {
+                return 'the job registry can run no pass on this install, so neither the owed-write retry sweep nor its watchdog does: '.$posture->problem;
+            }
+            $job = ScheduledJob::query()->where('name', self::INSTANCE)->first();
+        } catch (Throwable $e) {
+            return 'whether the owed-write retry sweep can run could not be determined ('.RedactedErrorText::of($e).')';
+        }
+        if ($job === null) {
+            return 'the periodic job `'.self::INSTANCE.'` is not declared — php artisan bridge:jobs add '.self::INSTANCE.' --handler='.self::NAME.' (docs/periodic-jobs.md)';
+        }
+        if (! (bool) $job->enabled) {
+            return 'the periodic job `'.self::INSTANCE.'` is disabled — php artisan bridge:jobs enable '.self::INSTANCE;
+        }
+        if ($job->last_status === ScheduledJob::STATUS_REFUSED) {
+            return 'the periodic job `'.self::INSTANCE.'` was REFUSED at its last run: '.(string) $job->last_error;
+        }
+
+        return null;
     }
 
     public static function spec(): JobSpec

@@ -12,7 +12,6 @@ use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
-use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\PrOutcome;
@@ -442,7 +441,6 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
             throw $e;
         }
-        OwnerTag::clearAfterTerminalMove($this->alerts, $kanban, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release');
         Log::info('kanban_promote_released: promoted Shipped→Released', ['catalog_id' => 'promote_released.promoted', 'card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;

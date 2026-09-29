@@ -315,6 +315,11 @@ class UnvalidatedCallSiteTest extends TestCase
         // is deliberately NOT here: those bytes were read, so it is a measured fault and
         // reports `warn`.
         'app/Bridge/Check/Checks/SharedIdentitiesCheck.php' => 1,
+        // card#10869: the coord roster could not be read (no path, unreadable, malformed), or
+        // the kanban API base names no host to key the roster by — either way no agent's
+        // identity.kanban_user_id was held against the store it is a copy of. Two sites, one
+        // per missing input; a MISSING roster id is a measured answer and reports `warn`.
+        'app/Bridge/Check/Checks/AgentKanbanUserRosterCheck.php' => 2,
         // card#5698 sub-shape (2): the channel token EXISTS and this process cannot read
         // it. `bridge:check` reads that token as the operator while `channel_push` reads it
         // inside the receiver request as another OS user, so the mode that stopped US is no

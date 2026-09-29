@@ -648,7 +648,9 @@ class WritebackMultiBoardTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && $r->data() === ['workflow_stage_id' => self::SPRINT_STARTED_STAGE]);
-        $this->assertSame(['auto_unparked'], array_column($this->alerts(), 'reason'),
+        // The card carries no owner either, so the card#10869 owner-less-start alert fires from
+        // the same board's own `unpark_from_stages` — the narrowed set reaches that rule too.
+        $this->assertSame(['moved_without_owner', 'auto_unparked'], array_column($this->alerts(), 'reason'),
             'the override of a human hold is compensated by the unpark alert on this board exactly as on the mapped one');
     }
 

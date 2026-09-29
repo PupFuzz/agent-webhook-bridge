@@ -30,6 +30,12 @@ python3 bin/coord-mirror-parity.py --corpus docs/coord-lane-parity-corpus.json
                                                     # never read as agreement. --control shows it fail.
                                                     # The bridge-side half IS in CI and reds BOTH ways — read
                                                     # each corpus's own not_checked_by_this_repo for the bound
+bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <toolkit checkout>
+                                                    # the same half for the bridge's two PORTS of the TOOLKIT's
+                                                    # owner rules (kb_url_host, the roster kanban_user_id read —
+                                                    # card#10869 / DL-439): sources that checkout's lib and runs the
+                                                    # corpus through its own functions. NOT in CI; run it on a
+                                                    # toolkit bump. Same 0 / 1 / 2 exit meaning; --control.
 git fetch origin dev && node bin/gen-client-capabilities.mjs
                                                     # regenerate resources/client-capabilities.json after ANY change to
                                                     # the channel server's TOOL_DEFINITIONS (DL-425). The fetch is not

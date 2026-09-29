@@ -255,12 +255,13 @@ final class OwedWriteQueue
     public function giveUp(WritebackOwedWrite $row, string $reason): void
     {
         $row->delete();
+        $gap = OwedWriteRetryJob::clockRetryGap();
         $this->alerts->notifyOwedWriteGaveUp(
             'owed_write.gave_up',
             'bridge owed-write: GAVE UP on a durable write the bridge owed — it was NOT applied (see `reason`; `remedy` re-runs it)',
-            self::rowContext($row) + ['reason' => $reason],
+            self::rowContext($row) + ['reason' => $reason, 'retry_sweep_gap' => $gap],
             self::repoOf($row), $row->handler, $reason, self::withholdsCardId($row),
-            [$row->webhook_event_id], $row->attempts, self::remedy($row),
+            [$row->webhook_event_id], $row->attempts, self::remedy($row), $gap,
         );
     }
 
@@ -396,13 +397,15 @@ final class OwedWriteQueue
 
             $head = $rows->first();
             $eventIds = array_values($rows->map(fn (WritebackOwedWrite $r): int => $r->webhook_event_id)->all());
+            $gap = OwedWriteRetryJob::clockRetryGap();
             $this->alerts->notifyOwedWriteGaveUp(
                 'owed_write.overflow_gave_up',
                 'bridge owed-write: GAVE UP on EVERY write one subject owed — it exceeded the per-subject bound, which is itself the defect signal; none of them was applied (`remedy` re-runs each)',
-                self::rowContext($head) + ['dropped' => count($eventIds), 'webhook_event_ids' => $eventIds],
+                self::rowContext($head) + ['dropped' => count($eventIds), 'webhook_event_ids' => $eventIds, 'retry_sweep_gap' => $gap],
                 self::repoOf($head), $head->handler, 'overflow', self::withholdsCardId($head),
                 $eventIds, (int) $rows->max('attempts'),
                 implode('; ', $rows->map(fn (WritebackOwedWrite $r): string => self::remedy($r))->all()),
+                $gap,
             );
         } finally {
             $lock->release();

@@ -5,8 +5,10 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
+use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\RedactedErrorText;
+use App\Models\WritebackOwedWrite;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
@@ -20,7 +22,9 @@ use Throwable;
  * GitHub delivery is never redelivered (DL-183). This is where that is found at preflight
  * rather than from the outage.
  *
- * Silent when the table exists — there is nothing to say about a table that is there.
+ * Silent when the table exists and nothing owed is left without a clock retry. WARNs, naming
+ * the key or command, when writes are owed and `OwedWriteRetryJob::clockRetryGap()` says the
+ * retry sweep cannot run.
  * `unvalidated` when the database could not be asked at all: `database.connectivity` reports
  * that cause, and this leg says only that it measured nothing.
  */
@@ -50,6 +54,24 @@ final class WritebackOwedWritesTableCheck implements Check
             return;
         }
 
-        yield Silence::because('the owed-write table exists — this leg speaks only when it does not');
+        // Owed writes waiting with nothing to retry them on a clock: named by the config or
+        // command that stopped the sweep (card#10849 / DL-440 operator ruling — a sweep that
+        // silently never runs is the failure this leg exists to report). With nothing owed, a
+        // missing sweep costs nothing yet and the instance is declared at the first owed write.
+        try {
+            $owed = WritebackOwedWrite::query()->count();
+        } catch (Throwable $e) {
+            yield Finding::unvalidated('owed-write table: its rows could NOT be counted ('.RedactedErrorText::of($e).')');
+
+            return;
+        }
+        $gap = $owed > 0 ? OwedWriteRetryJob::clockRetryGap() : null;
+        if ($gap !== null) {
+            yield Finding::warn("owed-write table: {$owed} durable write(s) are owed and nothing retries them on a clock — {$gap}. Until then each is retried only by its subject's next event, and given up loudly after OwedWriteQueue::MAX_AGE_S.");
+
+            return;
+        }
+
+        yield Silence::because('the owed-write table exists, and nothing owed is left without a clock retry');
     }
 }

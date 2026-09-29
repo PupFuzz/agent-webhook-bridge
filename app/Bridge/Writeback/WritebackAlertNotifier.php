@@ -147,6 +147,29 @@ final class WritebackAlertNotifier
     }
 
     /**
+     * Signal that a bridge move took a card OUT OF A START COLUMN with NO OWNER recorded — no
+     * kanban assignee and no legacy `owner:` tag (card#10869, operator ruling A: the card is moved,
+     * never refused, and the alert names it). Emitted AFTER the confirmed move.
+     *
+     * DEDUPED PER (repo, card, destination stage): one alert per card per kind of start, so a
+     * redelivery that somehow re-reaches it cannot repeat it, while the same card started again
+     * into a different column (a later revival) is a new fact worth saying. One small marker per
+     * such card is the cost, bounded by the cards a seat never claimed.
+     */
+    public function notifyMovedWithoutOwner(string $repo, int $cardId, string $outcome, ?int $fromStage, int $toStage): void
+    {
+        $this->emit('writeback_moved_without_owner', implode("\x00", ['moved_without_owner', $repo, (string) $cardId, (string) $toStage]), [
+            'repo' => $repo,
+            'card_id' => $cardId,
+            'outcome' => $outcome,
+            'from_stage' => $fromStage,
+            'to_stage' => $toStage,
+            'reason' => 'moved_without_owner',
+            'summary' => "moved card {$cardId} with no owner recorded",
+        ]);
+    }
+
+    /**
      * Signal that a card parked in the `closed_unmerged` (abandon) stage was REVIVED
      * (DL-195) back to the `opened` stage when its PR was reopened — the compensating
      * "we moved a card out of a terminal-ish stage" notification. Emitted AFTER a
@@ -200,12 +223,16 @@ final class WritebackAlertNotifier
         array $webhookEventIds,
         int $attempts,
         string $remedy,
+        ?string $retrySweepGap,
     ): void {
         Log::warning($message, ['catalog_id' => $catalogId] + $logContext);
         $this->emit('writeback_owed_write_gave_up', null, [
             'repo' => $repo,
             'handler' => $handler,
             'reason' => $reason,
+            // Why no clock retried it first, naming the key or command that fixes that; null
+            // when the retry sweep was in place (OwedWriteRetryJob::clockRetryGap()).
+            'retry_sweep_gap' => $retrySweepGap,
             // No owed subject names a VERIFIED card, so the key is always null — present so the
             // body keeps the `writeback_move_failed` shape, beside `card_id_withheld` where the
             // subject IS a card id.

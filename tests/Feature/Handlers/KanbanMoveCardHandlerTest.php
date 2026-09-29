@@ -95,8 +95,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET
-                ->push(['data' => ['id' => 5]])   // PATCH
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // PATCH
         ] + $this->fakePreload());
 
         $this->handle($this->payload());
@@ -162,7 +161,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
                 ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
@@ -183,8 +181,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '148', 'pr_url' => 'https://github.com/owner/repo/pull/148']]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
@@ -231,8 +228,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900]]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr' => 148]));   // no uncorroborated flag
@@ -302,8 +298,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '0148', 'pr_url' => 'https://github.com/owner/repo/pull/0148']]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
@@ -440,8 +435,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
         $this->handle($this->payload());   // no card_token_near_miss flag
@@ -478,8 +472,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 49]])   // GET
-                ->push(['data' => ['id' => 5]])   // PATCH
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // PATCH
         ] + $this->fakePreload());
 
         $this->handle($this->payload());
@@ -500,8 +493,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push('{"data":{"id":5,"board_id":8.0,"workflow_stage_id":49}}')   // GET
-                ->push(['data' => ['id' => 5]])   // PATCH
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // PATCH
         ] + $this->fakePreload());
 
         $this->handle($this->payload());
@@ -707,6 +699,133 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
             && $r->data() === ['workflow_stage_id' => 49]);
+    }
+
+    /**
+     * card#10869, operator ruling A — a card leaving a start column with NO owner recorded (no
+     * assignee, no `owner:` tag) is MOVED and then named: a durable log line and a live alert,
+     * "moved card N with no owner recorded". The two controls are what make the alert mean "no
+     * owner" rather than "any start move": the same move on a card carrying an assignee, or a
+     * legacy owner tag, draws nothing.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: bool}>
+     */
+    public static function startedCardOwners(): array
+    {
+        return [
+            'no assignee, no owner tag' => [['assigned_user_id' => null, 'tags' => ['triaged']], true],
+            'no assignee key, null tags' => [['tags' => null], true],
+            'an assignee' => [['assigned_user_id' => 7, 'tags' => []], false],
+            'a legacy owner tag' => [['assigned_user_id' => null, 'tags' => ['owner:kanban/kanban']], false],
+        ];
+    }
+
+    private function isOwnerlessAlert(Request $r, int $toStage): bool
+    {
+        return $this->isAlertPush($r) && $r['type'] === 'writeback_moved_without_owner'
+            && $r['card_id'] === 5 && $r['to_stage'] === $toStage && $r['summary'] === 'moved card 5 with no owner recorded';
+    }
+
+    /**
+     * @param  array<string, mixed>  $owner
+     */
+    #[DataProvider('startedCardOwners')]
+    public function test_a_start_move_alerts_on_a_card_that_records_no_owner(array $owner, bool $named): void
+    {
+        $this->writeWritebackWithAlert(['started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 46] + $owner])   // GET (Backlog)
+                ->push(['data' => ['id' => 5]]),                                                         // PATCH
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        // The move is made either way — ruling A: never refuse.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
+        if ($named) {
+            Http::assertSent(fn (Request $r) => $this->isOwnerlessAlert($r, 49));
+            Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []): bool => ($ctx['catalog_id'] ?? null) === 'owner.moved_without_owner'
+                && $ctx['card_id'] === 5 && $ctx['from_stage'] === 46 && $ctx['to_stage'] === 49)->once();
+        } else {
+            Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        }
+    }
+
+    public function test_an_opened_move_out_of_a_start_column_alerts_on_a_card_with_no_owner(): void
+    {
+        // `opened` is not only `started` that leaves Backlog: a PR opened on a card still in a
+        // start column promotes it too, and the ruling covers every such move.
+        $this->writeWritebackWithAlert(['opened' => 50, 'started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 46, 'assigned_user_id' => null, 'tags' => []]])
+                ->push(['data' => ['id' => 5]]),
+        ] + $this->fakePreload());
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $this->isOwnerlessAlert($r, 50));
+    }
+
+    public function test_a_reopened_revival_alerts_on_a_card_with_no_owner(): void
+    {
+        // The abandon stage a revival pulls a card back out of is a start column for this rule.
+        $this->writeReviveConfig(withAlert: true);
+        $this->fakeReviveStageOrderAndCard(77, ['assigned_user_id' => null, 'tags' => []], withAlert: true);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $this->isOwnerlessAlert($r, 50));
+    }
+
+    /**
+     * DEDUPED per (repo, card, destination): the same card started into the same column again
+     * (a re-created branch after a human dragged it back) is said once. The log line — the
+     * durable record — is written both times.
+     */
+    public function test_the_ownerless_alert_is_deduped_per_card_and_destination(): void
+    {
+        $this->writeWritebackWithAlert(['started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Log::spy();
+        $unowned = ['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 46, 'assigned_user_id' => null, 'tags' => []]];
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()->push($unowned)->push(['data' => ['id' => 5]])->push($unowned)->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        $this->assertCount(2, Http::recorded(fn (Request $r) => $r->method() === 'PATCH'));
+        $this->assertCount(1, Http::recorded(fn (Request $r) => $this->isOwnerlessAlert($r, 49)));
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []): bool => ($ctx['catalog_id'] ?? null) === 'owner.moved_without_owner')->twice();
+    }
+
+    public function test_a_move_that_does_not_leave_a_start_column_never_alerts_ownerless(): void
+    {
+        // In Review (50) → Shipped (52) on an unowned card: not a card START, so nothing.
+        $this->writeWritebackWithAlert(['merged' => 52, 'started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => []]])
+                ->push(['data' => ['id' => 5]]),
+        ] + $this->fakePreload());
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 52]);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
     public function test_started_does_not_regress_an_already_progressed_card(): void
@@ -974,8 +1093,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['board_id' => 999]));
@@ -1836,7 +1954,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['origin' => 'preemptive']]])  // GET
                 ->push(['data' => ['id' => 5]])   // PATCH move
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['data' => ['id' => 5]]),  // PATCH stamp
         ] + $this->fakePreload());
 
@@ -1857,7 +1974,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0099']]])  // GET: dl already set
                 ->push(['data' => ['id' => 5]])   // move
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['data' => ['id' => 5]]),  // stamp (pr only)
         ] + $this->fakePreload());
 
@@ -1878,7 +1994,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 77]]])  // GET: pr set, dl absent
                 ->push(['data' => ['id' => 5]])   // move
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['data' => ['id' => 5]]),  // stamp (dl only)
         ] + $this->fakePreload());
 
@@ -1895,8 +2010,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]])
-                ->push(['data' => ['id' => 5]])   // move only
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // move only
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
@@ -1914,7 +2028,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET: no pr_url
                 ->push(['data' => ['id' => 5]])   // move
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['data' => ['id' => 5]]),  // stamp
         ] + $this->fakePreload());
 
@@ -1934,8 +2047,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_url' => 'https://github.com/owner/repo/pull/1']]])  // GET: pr_url already set
-                ->push(['data' => ['id' => 5]])   // move only — nothing to stamp
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // move only — nothing to stamp
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
@@ -1968,7 +2080,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET
                 ->push(['data' => ['id' => 5]])                    // move OK
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['message' => 'unknown field'], 422),      // stamp 4xx — permanent
         ] + $this->fakePreload());
 
@@ -1986,7 +2097,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET
                 ->push(['data' => ['id' => 5]])       // move OK
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['error' => 'boom'], 500),     // stamp 5xx — transient
         ] + $this->fakePreload());
 
@@ -2003,8 +2113,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
         $this->handle($this->payload());
@@ -2044,9 +2153,16 @@ class KanbanMoveCardHandlerTest extends TestCase
         ], $over);
     }
 
+    /**
+     * The OVERRIDE alerts these unpark / revive legs are about. The card#10869 owner-less-start
+     * signal is excluded: an unpark or revival of an unowned card raises it too — correctly, and
+     * pinned by its own tests — and counting it here would make these legs measure the fixture's
+     * missing owner rather than the hold they override.
+     */
     private function alertPushCount(): int
     {
-        return collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
+        return collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0])
+            && $pair[0]['type'] !== 'writeback_moved_without_owner')->count();
     }
 
     public function test_unpark_moves_a_no_automove_pinned_card_and_alerts(): void
@@ -2835,7 +2951,6 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])   // GET: a bare card
                 ->push(['data' => ['id' => 5]])    // move
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]])   // GET: the owner-tag clear's read after the move
                 ->push(['data' => ['id' => 5]]),   // stamp
         ] + $this->fakePreload());
 
@@ -2863,8 +2978,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 261]]])   // GET: earlier stage
-                ->push(['data' => ['id' => 5]])   // move
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // move
         ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr' => 262]));
@@ -3504,8 +3618,7 @@ pull request it already names', $notes[0]);
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET
-                ->push(['data' => ['id' => 5]])   // PATCH
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),   // PATCH
         ] + $this->fakePreload());
         Log::spy();
 
@@ -3535,8 +3648,7 @@ pull request it already names', $notes[0]);
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 49]])
-                ->push(['data' => ['id' => 5]])
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => []]]),   // GET: the owner-tag clear's read after the move
+                ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
         Log::spy();
 
@@ -3568,7 +3680,7 @@ pull request it already names', $notes[0]);
             && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
     }
 
-    // --- owner:<project>/<seat> — a terminal move is stage-only, then a separate owner-tag clear ---
+    // --- card#10869: a terminal move is stage-only; the card keeps its assignee and any owner: tag ---
 
     /**
      * Card 5 behind a stateful `/tasks/{id}.json`, on a board whose order places Won't Do (77)
@@ -3604,227 +3716,55 @@ pull request it already names', $notes[0]);
         return array_map(static fn (array $e): string => $e['method'].' '.implode(',', array_keys($e['data'])), $stub->log);
     }
 
-    public function test_a_terminal_move_is_stage_only_and_the_owner_clear_is_a_separate_write_from_a_fresh_read(): void
+    /**
+     * card#10869 (DL-386 retired): the card owner is the kanban ASSIGNEE, and a finished card
+     * KEEPS it (operator ruling, card#10868 Q2). A terminal move is the stage-only PATCH and
+     * nothing after it — no fresh read, no `tags` write, and never a key naming the assignee —
+     * so a legacy `owner:*` tag and the assignee both survive into the finished column.
+     */
+    public function test_a_terminal_move_is_stage_only_and_keeps_the_assignee_and_any_owner_tag(): void
     {
         $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['triaged', 'owner:kanban/kanban', 'foo']]);
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['triaged', 'foo']]], $stub->patchesTo(5));
-        $this->assertSame(['GET ', 'PATCH workflow_stage_id', 'GET ', 'PATCH tags'], $this->cardRequestShape($stub));
-        $this->assertSame(['triaged', 'foo'], $stub->cards[5]['tags']);
-    }
-
-    public function test_a_terminal_move_clears_every_owner_tag_the_card_carries(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban', 'triaged', 'owner:bridge/impl']]);
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['triaged']]], $stub->patchesTo(5));
-    }
-
-    public function test_a_tag_another_writer_adds_between_the_move_and_the_clear_survives_the_clear(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban']]);
-        $stub->afterWrite = static function (KanbanCardStub $s, int $id, array $data): void {
-            if (array_key_exists('workflow_stage_id', $data)) {
-                $s->cards[$id]['tags'][] = 'added-after-the-move';
-            }
-        };
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['added-after-the-move']]], $stub->patchesTo(5));
-    }
-
-    public function test_a_terminal_move_on_a_card_with_no_owner_tag_makes_no_tag_write(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['triaged', 'foo']]);
+        $stub = $this->stubCard5(['tags' => ['triaged', 'owner:kanban/kanban', 'foo'], 'assigned_user_id' => 7]);
 
         $this->handle($this->payload(['outcome' => 'merged']));
 
         $this->assertSame([['workflow_stage_id' => 52]], $stub->patchesTo(5));
+        $this->assertSame(['GET ', 'PATCH workflow_stage_id'], $this->cardRequestShape($stub));
+        $this->assertSame(['triaged', 'owner:kanban/kanban', 'foo'], $stub->cards[5]['tags']);
+        $this->assertSame(7, $stub->cards[5]['assigned_user_id']);
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_a_non_terminal_move_keeps_the_owner_tag_and_never_reads_for_a_clear(): void
+    public function test_closed_unmerged_into_a_far_right_wont_do_is_stage_only_and_keeps_the_owner_tag(): void
     {
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['workflow_stage_id' => 49, 'tags' => ['triaged', 'owner:kanban/kanban']]);
-
-        $this->handle($this->payload(['outcome' => 'opened']));
-
-        $this->assertSame(['GET ', 'PATCH workflow_stage_id'], $this->cardRequestShape($stub));
-    }
-
-    public function test_closed_unmerged_into_a_far_right_wont_do_is_terminal_and_clears_the_owner(): void
-    {
-        // Won't-Do (77) is placed AFTER Shipped/Released, so it is terminal by the board's own
-        // order — the `closed_unmerged` stage is not terminal by name.
+        // Won't-Do (77) is placed AFTER Shipped/Released — a finished column by the board's own
+        // order, which is the case the retired clear reached through the terminal floor.
         $this->writeReviveConfig();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban', 'triaged']]);
+        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban', 'triaged'], 'assigned_user_id' => 7]);
 
         $this->handle($this->payload(['outcome' => 'closed_unmerged']));
 
-        $this->assertSame([['workflow_stage_id' => 77], ['tags' => ['triaged']]], $stub->patchesTo(5));
+        $this->assertSame([['workflow_stage_id' => 77]], $stub->patchesTo(5));
+        $this->assertSame(['owner:kanban/kanban', 'triaged'], $stub->cards[5]['tags']);
+        $this->assertSame(7, $stub->cards[5]['assigned_user_id']);
     }
 
-    public function test_closed_unmerged_into_in_progress_is_not_terminal_and_keeps_the_owner(): void
+    public function test_a_move_only_token_is_enough_for_a_terminal_move_and_nothing_alerts(): void
     {
-        $this->writeAllOutcomesWithAlert();   // closed_unmerged => 49 (In Progress, before Shipped)
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban', 'triaged']]);
-
-        $this->handle($this->payload(['outcome' => 'closed_unmerged']));
-
-        $this->assertSame([['workflow_stage_id' => 49]], $stub->patchesTo(5));
-    }
-
-    public function test_a_move_only_token_still_lands_the_move_and_alerts_that_the_owner_was_not_cleared(): void
-    {
-        // kanban DL-204: a PATCH whose sole key is workflow_stage_id authorizes `task.move`; any
-        // other key authorizes `task.update`. A token holding only the first must keep its move.
+        // kanban DL-204: a PATCH whose sole key is workflow_stage_id authorizes `task.move`. With
+        // the owner-tag clear retired, a terminal move needs nothing a move-only token lacks.
         $this->writeAllOutcomesWithAlert();
-        Log::spy();
         $stub = $this->stubCard5(['tags' => ['triaged', 'owner:kanban/kanban']], moveOnlyToken: true);
 
         $this->handle($this->payload(['outcome' => 'merged']));
 
         $this->assertSame(52, $stub->cards[5]['workflow_stage_id']);
-        $this->assertSame(['triaged', 'owner:kanban/kanban'], $stub->cards[5]['tags']);
-        $this->assertSame([200, 403], array_values(array_map(static fn (array $e): int => $e['status'], array_filter($stub->log, static fn (array $e): bool => $e['method'] === 'PATCH'))));
-        Log::shouldHaveReceived('info')->withArgs(fn (string $m) => $m === 'kanban_move_card: moved')->once();
-        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
-            && $r['reason'] === 'owner_tag_not_cleared_write_403_not_writable_by_this_token'
-            && $r['card_id'] === 5);
+        $this->assertSame([200], array_values(array_map(static fn (array $e): int => $e['status'], array_filter($stub->log, static fn (array $e): bool => $e['method'] === 'PATCH'))));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_a_transient_failure_on_the_tag_write_neither_throws_nor_undoes_the_move_and_alerts(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        $stub = new KanbanCardStub([5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['owner:kanban/kanban']]]);
-        Http::fake([
-            self::ALERT_URL.'*' => Http::response(['ok' => true]),
-            '*/tasks/5.json' => fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data())
-                ? Http::response(['message' => 'Server Error'], 503)
-                : $stub->stub()['*/tasks/*.json']($r),
-        ] + PreloadStub::stub(8, [49 => 3, 50 => 4, 52 => 5, 53 => 6]));
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame(52, $stub->cards[5]['workflow_stage_id']);
-        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
-            && $r['reason'] === 'owner_tag_not_cleared_transient'
-            && $r['card_id'] === 5);
-    }
-
-    /** @return array<string, array{0: mixed, 1: bool}> */
-    public static function unreadableTagLists(): array
-    {
-        return [
-            'tags key absent' => [null, true],
-            'tags not a list' => [['a' => 'owner:kanban/kanban'], false],
-            'a non-string entry' => [['owner:kanban/kanban', 7], false],
-        ];
-    }
-
-    #[DataProvider('unreadableTagLists')]
-    public function test_tags_unreadable_on_the_fresh_read_alert_after_the_move_and_write_no_tags(mixed $tags, bool $absent): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        Log::spy();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban']]);
-        $stub->afterWrite = static function (KanbanCardStub $s, int $id) use ($tags, $absent): void {
-            if ($absent) {
-                unset($s->cards[$id]['tags']);
-            } else {
-                $s->cards[$id]['tags'] = $tags;
-            }
-        };
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52]], $stub->patchesTo(5));
-        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'owner: tag was NOT cleared'))->once();
-        $order = Http::recorded()->map(fn (array $pair) => $pair[0]->method().' '.$pair[0]->url())->values()->all();
-        $movedAt = array_search('PATCH https://kanban.example.com/api/v3/tasks/5.json', $order, true);
-        $alertedAt = array_search('POST '.self::ALERT_URL, $order, true);
-        $this->assertIsInt($movedAt);
-        $this->assertIsInt($alertedAt);
-        $this->assertGreaterThan($movedAt, $alertedAt, 'the unreadable-tags alert is raised after a CONFIRMED move');
-        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
-            && $r['reason'] === 'owner_tag_not_cleared_tags_unreadable'
-            && $r['card_id'] === 5);
-    }
-
-    public function test_a_card_the_fresh_read_finds_on_another_board_gets_no_tag_write_and_a_refusal(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban']]);
-        $stub->afterWrite = static function (KanbanCardStub $s, int $id): void {
-            $s->cards[$id]['board_id'] = 12;
-        };
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52]], $stub->patchesTo(5));
-        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
-            && $r['reason'] === 'card_not_on_mapped_board'
-            && $r['card_id'] === 5);
-    }
-
-    public function test_a_refused_fresh_read_writes_no_tags_and_alerts(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban']]);
-        $stub->afterWrite = static function (KanbanCardStub $s, int $id): void {
-            unset($s->cards[$id]);
-        };
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52]], $stub->patchesTo(5));
-        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
-            && $r['reason'] === 'owner_tag_not_cleared_read_404_no_such_card'
-            && $r['card_id'] === 5);
-    }
-
-    public function test_present_null_tags_are_a_readable_empty_list_and_make_no_tag_write_and_no_warning(): void
-    {
-        $this->writeAllOutcomesWithAlert();
-        Log::spy();
-        $stub = $this->stubCard5(['tags' => null]);
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52]], $stub->patchesTo(5));
-        Log::shouldNotHaveReceived('warning', [\Mockery::on(fn ($msg) => str_contains((string) $msg, 'owner: tag')), \Mockery::any()]);
-    }
-
-    public function test_a_card_pinned_between_the_move_and_the_clear_still_loses_its_owner_tag_and_keeps_the_pin(): void
-    {
-        // `tags` is not a field the DL-178 pin governs (PinGuard::PINNED_FIELDS), and the clear
-        // removes `owner:*` only, so a hold placed after the move survives the clear.
-        $this->writeAllOutcomesWithAlert();
-        $stub = $this->stubCard5(['tags' => ['owner:kanban/kanban']]);
-        $stub->afterWrite = static function (KanbanCardStub $s, int $id, array $data): void {
-            if (array_key_exists('workflow_stage_id', $data)) {
-                $s->cards[$id]['block_reason'] = 'held by an operator';
-                $s->cards[$id]['tags'][] = 'no-automove';
-            }
-        };
-
-        $this->handle($this->payload(['outcome' => 'merged']));
-
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['no-automove']]], $stub->patchesTo(5));
-        $this->assertSame('held by an operator', $stub->cards[5]['block_reason']);
-    }
-
-    public function test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared(): void
+    public function test_a_pinned_card_carrying_an_owner_tag_is_not_written(): void
     {
         $this->writeAllOutcomesWithAlert();
         $stub = $this->stubCard5(['tags' => ['no-automove', 'owner:kanban/kanban']]);
@@ -3838,10 +3778,8 @@ pull request it already names', $notes[0]);
 
     /**
      * The payload every leg below delivers: an `opened` outcome carrying correlation refs to
-     * stamp. `opened` (49 → 50) rather than `merged` deliberately — 52 is terminal on this
-     * board, and the owner-tag clear that follows a terminal move would add a second read and
-     * a second write to the shape the subject asserts is EMPTY, which is noise in the one
-     * assertion that has to be exact.
+     * stamp. `opened` (49 → 50) rather than `merged`, so the leg exercised is an ordinary
+     * forward move rather than a terminal one.
      *
      * @return array<string, mixed>
      */

@@ -335,8 +335,9 @@ const TOOL_DEFINITIONS = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:) ' +
-            'and the bare tag "triaged" are refused, and each tag is capped at 64 ' +
+            'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:), ' +
+            'the retired owner tag (owner:) and the bare tag "triaged" are refused — ' +
+            'claim a card with board_take_card instead — and each tag is capped at 64 ' +
             "characters (kanban's own limit).",
         },
         idempotency_key: {
@@ -379,7 +380,7 @@ const TOOL_DEFINITIONS = [
       'Your tag list replaces only YOUR OWN tags: because kanban replaces ' +
       'the tag list wholesale, the bridge re-sends every tag on the card that is ' +
       "somebody else's — the ones you may not supply (created-by:, idem:, id:, " +
-      'type:, triaged) AND the holds anyone may set but nobody else may drop ' +
+      'type:, owner:, triaged) AND the holds anyone may set but nobody else may drop ' +
       "(no-automove, plus your install's own hold tags).",
     inputSchema: {
       type: 'object',
@@ -406,10 +407,11 @@ const TOOL_DEFINITIONS = [
           items: { type: 'string' },
           description:
             'Your replacement tag list (an empty list drops YOUR tags). The same ' +
-            'reserved prefixes (created-by:, idem:, id:, type:) and the bare tag ' +
+            'reserved prefixes (created-by:, idem:, id:, type:, owner:) and the bare tag ' +
             '"triaged" are refused as at create, and each tag is capped at 64 ' +
             'characters (kanban\'s own limit). Tags that are not yours to drop are ' +
-            'preserved: the reserved ones and any hold marker (no-automove).',
+            'preserved: the reserved ones (a legacy owner: tag included) and any hold ' +
+            'marker (no-automove).',
         },
       },
       required: ['card_id'],
@@ -436,11 +438,17 @@ const TOOL_DEFINITIONS = [
       'response is a DIFFERENT board, addressed to you by tag rather than held in a ' +
       'lane, and those cards are not takeable here. The refusal names that as the likely ' +
       'cause when your bridge has a coordination leg. ' +
-      'A card ALREADY HELD BY SOMEBODY ELSE is REFUSED (422) naming the user holding ' +
-      'it, and nothing is written — that refusal is the collision detector, so treat ' +
-      'it as "another seat is on this" and pick up different work rather than ' +
-      'retrying. There is no override here; taking a card off another seat is a ' +
-      'decision for your operator. ' +
+      'A card ALREADY HELD BY SOMEBODY ELSE (another kanban user as assignee, or — ' +
+      'with no assignee — another seat\'s legacy owner: tag) is TAKEN OVER: it is ' +
+      'reassigned to you, a card comment names whom it replaced, and the result says ' +
+      'so (replaced, warning, takeover_confirmed, takeover_comment). Read the warning: ' +
+      'that holder may still be working it, so talk to them. The exception is replacing ' +
+      'the ASSIGNEE of a card in a FINISHED column (Done, Won\'t Do, Shipped to dev, ' +
+      'Shipped to main) — that assignee is the record of who did the work, so it is ' +
+      'REFUSED (422) and nothing is written, and so is replacing the assignee of a card ' +
+      'whose column the bridge cannot show is unfinished. A card held only by a legacy ' +
+      'owner: tag is taken wherever it sits (the tag stays on it). There is no override ' +
+      'here; replacing a finished card\'s assignee is a decision for your operator. ' +
       'Re-taking a card you already hold SUCCEEDS, writes nothing, and answers ' +
       'already_held: true, so it is safe to call again if you are unsure. ' +
       'A board fault that cannot clear (the bridge token revoked/rotated, or the ' +
