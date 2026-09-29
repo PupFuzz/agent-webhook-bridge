@@ -14,7 +14,6 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\FakeToolsCallStdio;
-use Tests\Support\KanbanBoardStatus;
 use Tests\TestCase;
 
 /**
@@ -126,7 +125,6 @@ class ToolsCallCommandTest extends TestCase
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']));
@@ -253,7 +251,6 @@ class ToolsCallCommandTest extends TestCase
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
     }
 
@@ -334,7 +331,6 @@ class ToolsCallCommandTest extends TestCase
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
@@ -577,7 +573,6 @@ class ToolsCallCommandTest extends TestCase
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards', 'args' => ['status' => 'all']]));

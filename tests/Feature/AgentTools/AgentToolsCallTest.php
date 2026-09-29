@@ -358,7 +358,7 @@ class AgentToolsCallTest extends TestCase
         File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
             ."board_tools:\n  transport: http\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []]), '*/boards/*/status.json' => KanbanBoardStatus::readable(20), '*/boards/*/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 7]], 'workflows' => [['stages' => [['id' => 99, 'name' => 'Backlog', 'position' => 1]]]]]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []]), '*/boards/*/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 7]], 'workflows' => [['stages' => [['id' => 99, 'name' => 'Backlog', 'position' => 1]]]]]])]);
 
         $this->callTool(['tool' => 'board_my_cards'], bearer: $channelToken)->assertStatus(200);
     }
@@ -1294,10 +1294,7 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.cards_by_stage.Backlog.1.id', 2);
     }
 
-    /**
-     * No rows at all — the commonest window, and the one every board key is null on. The board is
-     * one the token may read (the membership control, card#10856), so the empty lane is answered.
-     */
+    /** No rows at all — the commonest window, and the one every board key is null on. */
     private function fakeEmptyWindow(): void
     {
         Http::fake([
@@ -1305,7 +1302,6 @@ class AgentToolsCallTest extends TestCase
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
     }
 
@@ -5266,14 +5262,12 @@ class AgentToolsCallTest extends TestCase
         return match ($tool) {
             'board_my_cards' => [
                 'args' => ['include_description' => false, 'stage' => 50, 'limit' => 5],
-                // Every lane and coord search answers nothing, and each board is one the token may
-                // read (the membership control, card#10856), so the call answers empty windows.
+                // The board-structure read succeeds (member), and every lane and coord search
+                // answers nothing, so the call answers empty windows.
                 'fake' => function ($request) {
-                    return match (true) {
-                        str_contains($request->url(), '/preload.json') => Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]]),
-                        str_contains($request->url(), '/status.json') => KanbanBoardStatus::readable(),
-                        default => Http::response(['data' => []]),
-                    };
+                    return str_contains($request->url(), '/preload.json')
+                        ? Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]])
+                        : Http::response(['data' => []]);
                 },
             ],
             'board_create_card' => [

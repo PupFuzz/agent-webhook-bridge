@@ -17,7 +17,6 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use LogicException;
 use Tests\Support\CallingSeatSeal;
-use Tests\Support\KanbanBoardStatus;
 use Tests\Support\KanbanSearchSim;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
@@ -112,7 +111,6 @@ class BoardToolDispatcherTest extends TestCase
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
@@ -125,7 +123,6 @@ class BoardToolDispatcherTest extends TestCase
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $outcome = $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'me', CallProvenance::NotSshd, null, CallerReport::unreported());
@@ -227,7 +224,6 @@ class BoardToolDispatcherTest extends TestCase
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $this->dispatcher()->dispatch('board_my_cards', [], $this->cfg(), 'prod-agent', CallProvenance::NotSshd, null, CallerReport::unreported());
@@ -278,7 +274,6 @@ class BoardToolDispatcherTest extends TestCase
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
 
         $outcome = $this->withUnmigratedDatabase(

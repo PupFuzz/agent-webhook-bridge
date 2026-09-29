@@ -18,7 +18,6 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
 use Tests\Support\JsonTypeArms;
-use Tests\Support\KanbanBoardStatus;
 use Tests\TestCase;
 
 /**
@@ -625,7 +624,6 @@ class BoardToolsBlankArgumentCrossDoorTest extends TestCase
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/boards/*/status.json' => KanbanBoardStatus::readable(),
         ]);
     }
 
