@@ -503,6 +503,52 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'board_get_cards',
+    description:
+      'Read cards you already know the ids of in ONE call, whatever lane, column or archive ' +
+      'state they are in. EVERY id you send comes back exactly once, in the order ' +
+      'you sent it, with a status: found (live on your board), archived (on your board, ' +
+      'archived), other_board (the id is a card on a different board, the coordination board ' +
+      'included; nothing of that card is returned), or not_found (no card has that id, or it ' +
+      'is in kanban\'s trash). An id is never silently left out. found and archived entries ' +
+      'carry the card under card, each with its swimlane_id (null means no lane) and its ' +
+      'position. Card order within a column IS its priority order: sort by (position, id) ' +
+      'ascending within a stage — the lowest position is the top card. Read-only. ' +
+      'There is no window here, so no truncated flag: nothing is cut, because the request ' +
+      'itself is bounded. Where the bridge cannot establish a status for an id it REFUSES the ' +
+      'whole call (422) and says why; it never answers with a hole. A board fault that cannot ' +
+      'clear (the bridge token revoked/rotated, or its scope too narrow to read) is REFUSED ' +
+      '(422) naming the INSTALL fault — do not retry it; tell your operator.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'integer', minimum: 1 },
+          minItems: 1,
+          maxItems: 52,
+          description:
+            'The card ids to read (at most 52, each once). Integers only — a decorated string ' +
+            'is refused, never coerced. A repeated id is refused.',
+        },
+        fields: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: ['id', 'name', 'stage', 'position', 'swimlane_id', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at', 'description'],
+          },
+          description:
+            'Which card fields to return. Omit it for every field EXCEPT description. ' +
+            'description is opt-in per call: name it here to get each card\'s body (with ' +
+            'description_truncated: true when the bridge cut it — never read a cut body as ' +
+            'the whole scope). An empty list returns statuses only.',
+        },
+      },
+      required: ['ids'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // LOCAL-EXEC self-management tool (card 5089). NOT part of TOOL_DEFINITIONS — those are

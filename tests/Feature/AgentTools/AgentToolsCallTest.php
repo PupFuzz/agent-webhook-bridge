@@ -5165,7 +5165,37 @@ class AgentToolsCallTest extends TestCase
                 'args' => ['card_id' => 42, 'content' => 'a note'],
                 'fake' => $this->commentFake(live: [$this->commentableCardRow()]),
             ],
+            'board_get_cards' => [
+                'args' => ['ids' => [42, 43], 'fields' => ['name', 'stage']],
+                'fake' => $this->getCardsFake(),
+            ],
             default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
+        };
+    }
+
+    /**
+     * `board_get_cards`' kanban surface for the door-wide arms: card 42 live on board 10, 43 on no
+     * board (by-id 404), 44 on a board the token may not view (by-id 403) while board 10 reads back.
+     */
+    private function getCardsFake(): \Closure
+    {
+        return function ($request) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/boards/10/preload.json')) {
+                return Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]]);
+            }
+            if (str_contains($url, '/tasks/43/preload.json')) {
+                return Http::response(['message' => 'Not Found'], 404);
+            }
+            if (str_contains($url, '/tasks/44/preload.json')) {
+                return Http::response(['message' => 'This action is unauthorized.'], 403);
+            }
+            if (str_contains($url, 'q=board_id=10&limit=1')) {
+                return Http::response(['data' => [], 'meta' => ['total' => 3]]);
+            }
+            $live = str_contains($url, 'id=42') && ! str_contains($url, 'archived=1');
+
+            return Http::response(['data' => $live ? [['id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'workflow_stage_id' => 50, 'name' => 'c', 'tags' => []]] : []]);
         };
     }
 
@@ -5283,6 +5313,7 @@ class AgentToolsCallTest extends TestCase
             'board_correct_card lookup misses into the archive side',
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side',
+            'board_get_cards a 403 asks the membership control',
         ] as $scenario) {
             $extra[$scenario] = [$scenario];
         }
@@ -5313,6 +5344,7 @@ class AgentToolsCallTest extends TestCase
             'board_correct_card lookup misses into the archive side' => $lookupMiss('board_correct_card', ['card_id' => 42, 'name' => 'n'], $this->correctFake(live: [])),
             'board_take_card lookup misses into the archive side' => $lookupMiss('board_take_card', ['card_id' => 42], $this->takeFake(live: [])),
             'board_comment_card lookup misses into the archive side' => $lookupMiss('board_comment_card', ['card_id' => 42, 'content' => 'a note'], $this->commentFake(live: [])),
+            'board_get_cards a 403 asks the membership control' => ['tool' => 'board_get_cards', 'args' => ['ids' => [44], 'fields' => []], 'fake' => $this->getCardsFake()],
             default => ['tool' => $scenario] + $this->undeclaredKeyFixture($scenario),
         };
     }
@@ -5338,6 +5370,8 @@ class AgentToolsCallTest extends TestCase
             'board_correct_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
             'board_take_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
             'board_comment_card' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks/42/comments\\.json$#']],
+            'board_get_cards' => ['status' => 200, 'sends' => ["#^GET {$search}.*id=43.*archived=1#", '#^GET \\S+/tasks/43/preload\\.json$#', '#^GET \\S+/boards/10/preload\\.json#']],
+            'board_get_cards a 403 asks the membership control' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/44/preload\\.json$#', "#^GET {$search}q=board_id=10&limit=1$#"]],
             'board_correct_card lookup misses into the archive side',
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side' => ['status' => 422, 'sends' => ["#^GET {$search}.*archived=1#"]],

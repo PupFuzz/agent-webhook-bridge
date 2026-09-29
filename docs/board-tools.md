@@ -7,7 +7,7 @@ token and no toolkit** can see and capture its own board work directly.
 
 The tools that ship today — the table is held against the bridge's own registry by
 `ChannelServerToolSurfaceRestatementTest`, so it is the live set and not a snapshot of it
-(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381):
+(two since DL-217; the correction tool since DL-326; the take tool since DL-372; the comment tool since DL-381; the by-id read since DL-435):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
@@ -16,6 +16,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
 | `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card already held by a **different** user is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
+| `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 
 > ⛔ **EVERY STRING YOU SEND IS TRIMMED, AND A VALUE MADE ONLY OF INVISIBLE CHARACTERS
 > COUNTS AS EMPTY** (card#9155). The tools are reached through two front doors and only
@@ -61,7 +62,8 @@ The tools that ship today — the table is held against the bridge's own registr
 ## Discovering them
 
 If your channel server advertises tools, your MCP client lists `board_my_cards`,
-`board_create_card`, `board_correct_card`, `board_take_card` and `board_comment_card`, and the
+`board_create_card`, `board_correct_card`, `board_take_card`, `board_comment_card` and
+`board_get_cards`, and the
 server's own `instructions` string names them (it derives the names from the same tool list it
 advertises). ⚠ **A tool your seat's copy of the channel server
 predates is invisible to you and reports as missing** — the tool set is restated in that
@@ -1053,6 +1055,92 @@ an **INSTALL FAULT by name** that lists every gate to audit. See
 
 **Cost:** two requests on a successful comment (one board-scoped lookup, one POST); two reads and
 no write on a not-on-board refusal.
+
+## `board_get_cards`
+
+**Read N cards you already know the ids of, in one call** (DL-435, card#10832; rt#572). A seat
+asking "what state are these ten cards in" used to read its lane, then every column one at a time,
+and still find cards in **no** read it could make — `board_my_cards` sees your own lane, a capped
+window and live cards only, and it cannot say whether a card it omits is archived, in another lane,
+on another board or gone. This tool answers **every id you name, with a status**.
+
+**Arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `ids` | yes | A non-empty **list of positive integers** — the ids `board_my_cards` (or anything else) reports. At most `BoardGetCardsTool::MAX_IDS` per call (the schema's `maxItems` states the number and a test holds the two equal); it is `board_my_cards`' own per-list cap, so a full answer stays inside the same response budget. A decorated string (`"42"`), a float, zero, a repeated id or an over-long list is **refused** (422) before any request. |
+| `fields` | no | Which card fields to return, from `BoardCardProjection::FIELDS` (the schema's `enum` restates it and a test holds the two equal). **Omitted, or `null` ⇒ every field except `description`.** Naming `description` returns each card's body **and** `description_truncated`, cut to the same per-card `description_max_bytes` `board_my_cards` uses. `[]` returns statuses only. An unknown name is **refused**. |
+
+That is the whole accepted set; any other key is refused (and `include_description` is told to name
+`description` in `fields` instead): see
+§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379).
+
+**⛔ N in, N out.** The answer's `cards` list has **exactly one entry per requested id, in the order
+you sent them**. Where the bridge cannot establish a status for an id, the **whole call is refused**
+(422, "NO cards were returned") — it never answers with a hole.
+
+**The statuses, and how each is established:**
+
+| `status` | Means | How the bridge knows |
+| --- | --- | --- |
+| `found` | a **live** card on your board, in **any** lane (or none) | the board-scoped search every card-id tool on this door uses (`q=board_id=<yours> id=<n>`, the verdict read off the returned row — DL-323) |
+| `archived` | an **archived** card on your board | the same search, on kanban's archived side, asked only when the live side missed (DL-296) |
+| `other_board` | the id is a card on a **different** board — the coordination board included | after a miss on both sides, the unscoped `GET /tasks/{id}/preload.json` answered with another board's id, **or** answered 403 (a board the writeback user may not view). **Nothing of that card is returned — not its content and not its board id.** |
+| `not_found` | no card carries the id, **or it is in kanban's trash** | that same by-id read answered 404. kanban answers a missing id and a trashed one the same way, before any authorization, so the two are one status here. |
+
+**⚠ A 403 is `other_board` only once your own board has read back.** kanban's search answers a
+writeback user that is not a **member** of your board with zero rows, not an error, so such a user
+would miss every card on your board and then 403 on each by id — every one of your own cards would
+come back `other_board`. On the first 403 in a call the bridge therefore asks your board once
+(`limit=1`); if it reads back **empty**, the call is **refused** — an empty board and an unreadable
+one are one answer to that question (and the control counts LIVE cards, so a board whose every card
+is archived reads back empty too). Likewise, a by-id answer that names **your** board after the
+board-scoped search missed it (a user who may view your board without being its member) is refused
+as a **BROKEN READ**, never reported as a status.
+
+**Returns:**
+
+```jsonc
+{
+  "configured_board_id": 10,
+  "fields": ["id", "name", "stage", "swimlane_id", "..."],   // the projection this call applied
+  "cards": [
+    { "id": 101, "status": "found",       "card": { "id": 101, "name": "…", "stage": "In Review", "swimlane_id": 4, "position": 1024, "…": "…" } },
+    { "id": 102, "status": "archived",    "card": { "…": "…" } },
+    { "id": 103, "status": "other_board" },   // no card key
+    { "id": 104, "status": "not_found" }      // no card key
+  ]
+}
+```
+
+`card` is the same card shape `board_my_cards` returns (`BoardCardProjection`, one owner for both),
+plus two keys `board_my_cards`' lane lists do not carry:
+
+- `swimlane_id` — present-and-`null` for a card in no lane, and **absent** (never `null`) when the
+  row carried no readable lane field;
+- `position` — kanban's in-column ordering value, as a number; **absent** when kanban sent none.
+  ⭐ **Card order within a column IS the priority order** (operator ruling, rt#552): the top card has
+  the lowest `position`, and the total order within a stage is **`(position, id)` ascending** — `id`
+  breaks a tie. kanban indexes and locks cards in that same order (its `tasks` index is
+  `(workflow_stage_id, position)`).
+
+A key you did not select is absent.
+
+**⚠ No window.** Nothing is cut — the request is bounded instead — so there is no `cards_window`,
+`truncated` or `total_is_lower_bound` here. N in, N out is this tool's whole honesty contract.
+
+**⚠ It crosses lanes, deliberately** — the second read on this door that does, after `board_my_cards`'
+`tag` read (DL-383). You name each id, on your own board; a card anywhere else is a status with no
+content.
+
+**Errors.** A permanent 4xx on the board-scoped search, the membership control or the stage read is a
+named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339).
+On the by-id read, 403 and 404 are **statuses** (above), not refusals; any other failure there keeps
+the retryable `502`.
+
+**Cost:** per id, one search for a live card, two for an archived one, three reads for an id not on
+your board; plus at most one stage read (only when `stage` is selected and a card was found) and at
+most one membership control per call.
 
 ## Errors
 

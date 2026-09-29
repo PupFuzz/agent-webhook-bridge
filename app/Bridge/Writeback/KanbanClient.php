@@ -5,6 +5,7 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -119,6 +120,34 @@ final class KanbanClient
         // already refuses LOUDLY on a result that does not name this card — the same fact,
         // reported where the operator can act on it.
         return self::rowList($data) ?? [];
+    }
+
+    /**
+     * WHICH BOARD CARD `$cardId` IS ON — and nothing else about it (card#10832). `GET
+     * /tasks/{id}/preload.json`, the lightweight task read (no subtasks, comments or attachments).
+     *
+     * ⛔ UNSCOPED, like {@see getCard}, and for that reason it returns the `board_id` ALONE: the
+     * row may be another tenant's card, so none of its content leaves this method. It exists for
+     * the one question a board-scoped read cannot answer — after {@see cardRowsOnBoard} missed on
+     * both sides of the archive switch, is the id on ANOTHER board or on none?
+     *
+     * ⚠ THE CALLER READS THE STATUS, and the two it can act on are kanban's, source-read (kanban
+     * `routes/api.php` binds `{task}` `->withTrashed()`; `TasksController::preload` 404s a trashed
+     * task before `authorize('view')`): **404** = no task carries the id, or it is in the trash —
+     * the binding and the trash check both answer before authorization, so this holds whatever the
+     * token may see; **403** = a task carries it, on a board the token's user may not view (or the
+     * token lacks `read`, which a caller that has just searched with the same token has excluded).
+     * Every other non-2xx throws as it always does.
+     *
+     * @return int|null the task's `board_id`, or null when a 2xx body carried none
+     *
+     * @throws RequestException on any non-2xx
+     */
+    public function cardBoardId(int $cardId): ?int
+    {
+        $boardId = $this->http()->get("/tasks/{$cardId}/preload.json")->throw()->json('data.board_id');
+
+        return is_numeric($boardId) ? (int) $boardId : null;
     }
 
     /**

@@ -302,7 +302,8 @@ one is wrong) and
 your bridge identity, never from the payload, so there is no argument for a user id
 and a seat can claim only for itself) and `board_comment_card` (DL-381: append a comment to
 a live card on your own board; the bridge writes the `FROM: <seat>` attribution line, and
-nothing is edited or deleted) — and acts as a
+nothing is edited or deleted) and `board_get_cards` (DL-435: read known card ids in one call,
+each answered with an explicit status — never silently omitted) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
 forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
 `Authorization: Bearer <token>` and returns the bridge's response verbatim.

@@ -8,6 +8,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#10832 / DL-435** — **new board tool `board_get_cards(ids, fields?)`: read known card ids in one call (at most `BoardGetCardsTool::MAX_IDS`), and every id comes back exactly once, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found`.** A card on the seat's own board is found in any lane or column, live or archived; a card on another board (the coordination board included) is a status with no content and no board id; a missing id and one in kanban's trash are both `not_found`. Where the bridge cannot establish a status for an id — the writeback token's user is not a member of the seat's board, or the by-id read and the board-scoped search disagree — the whole call is refused (422), never answered with a hole. `fields` selects what each card carries (`BoardCardProjection::FIELDS`); omitted, every field but `description`; `description` is opt-in per call and travels with `description_truncated`. Each card carries `swimlane_id` and `position` (card order within a column is its priority order: `(position, id)` ascending, rt#552).
+  - ⚠ **Reference channel-server snapshot 0.9.30 → 0.9.31** (the new tool's schema), so `bridge:check` WARNs for a seat on an older copy until it re-copies `examples/channel-servers/`, runs `npm ci` and restarts its session. A seat that does not re-deploy loses no function; it does not see the new tool.
+  - `board_my_cards`' answer is unchanged (its card projection moved to `BoardCardProjection`, byte-identical).
+  - No migration, no config key, no `.env` change, no route change, no token-scope change (the tool reads with the writeback token's existing `read` ability), no `bridge:check` leg; `--format=json` `schema` stays **1**.
+
 ## [0.92.0] - 2026-09-28
 
 ### Added
