@@ -42,16 +42,42 @@ final class RefusalContext
     }
 
     /**
-     * Whether a kanban refusal is PERMANENT (a 4xx the client caused) rather than
-     * retryable. Load-bearing: a permanent refusal is swallowed + logged with a
-     * {@see self::from()} context, while a non-permanent one (5xx / transport) is
-     * rethrown so the receiver returns 5xx and kanban re-delivers the webhook.
+     * The 4xx statuses that say "not now" rather than "not this request": the identical
+     * request can succeed once time passes, so they are TRANSIENT — see {@see isPermanent}.
+     * 408 is a request the server stopped waiting for; 429 is a rate limit (card#10849).
+     * kanban's `throttle:api` / weighted throttle answer 429 BEFORE the controller runs
+     * ("nothing runs"), so a 429'd write was not applied and a redelivery cannot double it.
+     */
+    private const TRANSIENT_4XX = [408, 429];
+
+    /**
+     * Whether a refusal is PERMANENT (a 4xx the client caused, which the identical request
+     * cannot get past by waiting) rather than retryable. Load-bearing: a permanent refusal
+     * is swallowed + logged with a {@see self::from()} context, while a non-permanent one
+     * (5xx, transport, or a {@see TRANSIENT_4XX} status) is rethrown so the receiver
+     * returns 5xx — the delivery failure an upstream's redelivery (kanban's retry curve)
+     * and `bridge:inbox`'s webhook-5xx warning both act on.
+     *
+     * ⛔ UNTIL card#10849 THIS WAS "EVERY 4xx", and a kanban 429 was swallowed as a refusal:
+     * a rate-limited card move was DROPPED — the card stayed in the wrong column and the
+     * operator got a `{verb}_4xx` alert naming a refusal that waiting would have cleared.
+     *
+     * ⚑ Retry-After IS HONOURED BY THE RETRY CURVE, NOT BY THIS PROCESS. The bridge has no
+     * queue and no timer (CLAUDE_ARCHITECTURE.md: at-least-once is borrowed from the
+     * upstream's redelivery), so the next attempt's time is the upstream's to choose. kanban's
+     * limiters are per-minute (`RateLimiter::for('api')`, source-read on kanban `origin/dev`
+     * 59c77070), so the Retry-After it sends is at most 60 s, and kanban's webhook retry curve
+     * (`DeliverWebhook::backoff()`) starts at 5 minutes and reads none of the receiver's
+     * response headers — a kanban-delivered event's redelivery always lands after the window
+     * kanban named. Waiting it out inside the request instead would hold a PHP worker for up
+     * to a minute against kanban's default 10 s delivery timeout, so a Retry-After is
+     * deliberately not slept on here.
      */
     public static function isPermanent(RequestException $e): bool
     {
         $status = $e->response->status();
 
-        return $status >= 400 && $status < 500;
+        return $status >= 400 && $status < 500 && ! in_array($status, self::TRANSIENT_4XX, true);
     }
 
     /**

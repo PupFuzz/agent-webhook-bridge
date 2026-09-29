@@ -240,7 +240,8 @@ final class KanbanClient
      * failure is deterministic, so 5xx-ing it would retry-storm an unfixable
      * event for ~11 days (the DL-020 / DispatchService anti-pattern) — the caller
      * treats it as permanent (log + no-op). A real HTTP error still throws via
-     * `->throw()` (transient 5xx → retry, 4xx → permanent), as the move path does.
+     * `->throw()` (RefusalContext::isPermanent() splits permanent from transient), as the
+     * move path does.
      * Caller idempotency: an already-archived card is excluded from the by-ref and
      * live-search correlations THIS method's callers use, so it is never re-presented
      * here on a redelivered close. (Since DL-296 the archive side is readable — by an

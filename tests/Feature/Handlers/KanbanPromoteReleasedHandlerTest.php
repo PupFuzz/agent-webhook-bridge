@@ -643,6 +643,30 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
+    public function test_a_rate_limited_promote_move_throws_and_never_alerts(): void
+    {
+        // card#10849: a 429 is a rate limit, not a refusal — this leg has no reconcile backstop,
+        // so swallowing it as `promote_movecard_4xx` stranded the card at Shipped for good.
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']],
+            ], 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
+            '*/tasks/*.json' => Http::response(['message' => 'Too Many Attempts.'], 429, ['Retry-After' => '37']),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a 429 on the promote move must propagate for redelivery');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
     // --- card#7212: the success record names the board the write LANDED on ---
 
     public function test_a_promote_records_the_cards_own_board_beside_the_mapped_one(): void

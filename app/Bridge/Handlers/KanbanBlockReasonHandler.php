@@ -36,12 +36,13 @@ use Illuminate\Support\Facades\Log;
  * the writeback won't auto-move it while drafted; clearing on ready_for_review
  * releases the pin. No change to PinGuard.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
- * split as the move handler (DL-020/DL-274), the same board-scoped tenant check BEFORE the
- * card is read (card#8375 → card#8415) and the same belongs-to-mapped-board compare on the
- * row it gets back. Its non-4xx refusals (a non-card target_id, a malformed payload, no
- * writeback.json, the board guard) signal too since DL-285 — the board guard's twin in
- * the move handler always did, and the asymmetry was inside one guard.
+ * DURABLE, with the same transient(→ retry) / permanent(→ alert + log + no-op) split
+ * ({@see RefusalContext::isPermanent}) as the move handler (DL-020/DL-274), the same board-scoped
+ * tenant check BEFORE the card is read (card#8375 → card#8415) and the same
+ * belongs-to-mapped-board compare on the row it gets back. Its non-4xx refusals (a non-card
+ * target_id, a malformed payload, no writeback.json, the board guard) signal too since DL-285 —
+ * the board guard's twin in the move handler always did, and the asymmetry was inside one
+ * guard.
  * Idempotent: a no-op SET/CLEAR (already-marker / not-ours) writes nothing.
  *
  * A SET additionally honors the optional `card_token_uncorroborated` flag + `pr_number`
@@ -153,8 +154,8 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             return;
         }
 
-        // A kanban 4xx (deleted card) is PERMANENT — log + no-op. Only a 5xx / timeout
-        // / connection error is transient (throw → redelivery retries).
+        // A permanent refusal (a deleted card) → log + no-op. Anything else — a 5xx, a
+        // rate limit, a timeout — is transient (throw → redelivery retries).
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {

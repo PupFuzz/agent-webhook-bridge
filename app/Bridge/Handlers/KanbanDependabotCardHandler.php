@@ -56,9 +56,9 @@ use Illuminate\Support\Facades\Log;
  *    fields {@see PinGuard::PINNED_FIELDS} names — the correlation stamps this handler's
  *    siblings write still land on a held card, by design.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
- * split as the move handler (DL-020/DL-285). New cards are tagged `dependencies` +
- * `triaged` so the routine churn doesn't flood the untriaged sweep, plus an
+ * DURABLE, with the same transient(→ retry) / permanent(→ alert + log + no-op) split
+ * ({@see RefusalContext::isPermanent}) as the move handler (DL-020/DL-285). New cards are
+ * tagged `dependencies` + `triaged` so the routine churn doesn't flood the untriaged sweep, plus an
  * opt-in rendered `id:` provenance tag (#75) when the mapping sets
  * `card_id_tag_template`, so a tag-keyed Shipped→Released promoter can find
  * them — absent ⇒ no tag (back-compat).
@@ -288,7 +288,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 $this->collapseDuplicates($client, $live, $mapping, $repo, $prNumber);
             }
         } catch (RequestException $e) {
-            // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
+            // A permanent refusal → alert + log + no-op; anything else is transient (throw → redelivery retries).
             if (RefusalContext::isPermanent($e)) {
                 // FLAT reason: this one catch spans the correlation READS, the archive /
                 // move / create WRITES and the collapse, so a status-split write reason

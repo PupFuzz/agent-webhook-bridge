@@ -465,6 +465,20 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         $this->handle(['disposition' => 'terminal']);
     }
 
+    public function test_a_429_on_one_card_propagates_for_redelivery_rather_than_being_isolated_as_a_refusal(): void
+    {
+        // card#10849: per-card isolation is for PERMANENT refusals; a rate limit clears by
+        // waiting, so it escapes the loop exactly as a 5xx does.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7], ['id' => 9]]]),
+            '*/tasks/7.json' => Http::response(['message' => 'Too Many Attempts.'], 429, ['Retry-After' => '37']),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->expectException(RequestException::class);
+        $this->handle(['disposition' => 'terminal']);
+    }
+
     public function test_a_5xx_is_transient_and_throws_for_redelivery(): void
     {
         Http::fake([

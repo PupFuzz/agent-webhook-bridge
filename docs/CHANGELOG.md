@@ -23,6 +23,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#10849** — **a kanban `429 Too Many Requests` is retried, not dropped.** Every writeback arm treated every 4xx as a permanent refusal, so a rate-limited card move (and a rate-limited stamp, promote, coord move, block-reason write or board-scope lookup) was swallowed: the delivery answered 200, kanban never redelivered, the card stayed in the wrong column, and the only trace was a `{verb}_4xx` refusal alert. `RefusalContext::isPermanent()` — the one classifier every arm asks — now treats **429 and 408** as transient.
+  - ⚠ **Operator-visible:** a delivery whose write kanban rate-limits now answers **5xx** (it answered 200), so kanban redelivers it on its own retry curve and `bridge:inbox` shows the run of webhook 5xx while it lasts; it no longer raises a `*_4xx` refusal alert. The owner-tag clear and the card note, which never throw, report such a failure under their transient reasons (`owner_tag_not_cleared_transient`, `cardnote_send_failed`) instead of a `*_4xx` one.
+  - `Retry-After` is honoured by the redelivery rather than by waiting inside the request: kanban's limiter windows are per-minute and its first webhook retry comes after 5 minutes — `docs/writeback.md` § *Failure behaviour* states the bound. A retried move cannot apply twice: kanban's limiter refuses before any write runs, and the handlers are idempotent.
+  - No migration, no config key, no `.env` change, no route change; `--format=json` `schema` stays **1**.
 - **card#10832 / DL-437** — `board_get_cards` no longer refuses a call, naming the token's board membership, when an id 403s on a board with no live cards while another id of the same call resolved as `archived`: a card resolved on the seat's board in the same call is now the membership proof, whatever order the ids were sent in.
 
 ### Changed

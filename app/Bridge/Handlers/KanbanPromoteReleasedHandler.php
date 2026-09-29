@@ -47,10 +47,10 @@ use Illuminate\Support\Facades\Log;
  * shas so no sha ever joins main and nothing promotes — a documented, unguardable precondition.
  *
  * Failure posture mirrors KanbanMoveCardHandler's transient/permanent split: a permanent gap
- * (no writeback config, no GitHub token, a 4xx per card) is a durable-alert + loud-log + no-op
- * (never a 5xx-storm of an unfixable event); a transient 5xx/timeout THROWS → redelivery
- * retries. Recovery from a permanent gap: fix it → the NEXT release event re-scans (a stranded
- * card is still at Shipped). There is no reconcile backstop for this transition, so the gaps
+ * (no writeback config, no GitHub token, a permanent refusal per card) is a durable-alert +
+ * loud-log + no-op (never a 5xx-storm of an unfixable event); a transient failure THROWS →
+ * redelivery retries. Recovery from a permanent gap: fix it → the NEXT release event re-scans
+ * (a stranded card is still at Shipped). There is no reconcile backstop for this transition, so the gaps
  * are made LOUD (durable alert + bridge:check warn), not a log grep.
  *
  * SECURITY (unchanged from KanbanMoveCardHandler): board + stages come exclusively from
@@ -277,9 +277,9 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
     /**
      * Read one candidate's PR, test its merge sha for reachability from main, and move the
      * card to Released when it is on main. Returns whether the card was promoted. A permanent
-     * (4xx) GitHub/kanban error on this card is logged + skipped (return false); a transient
-     * (5xx/timeout) error PROPAGATES so redelivery re-scans (idempotent — a promoted card
-     * leaves the Shipped filter).
+     * ({@see RefusalContext::isPermanent}) GitHub/kanban refusal on this card is logged + skipped
+     * (return false); a transient error PROPAGATES so redelivery re-scans (idempotent — a
+     * promoted card leaves the Shipped filter).
      *
      * ⭐ THE NON-PROMOTING EXITS ARE NOT ALL THE SAME EXIT (card#8787). Three loud `catch`
      * arms sat beside two silent `return false`s, and the silent pair could not tell

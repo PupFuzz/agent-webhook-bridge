@@ -539,7 +539,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $client->moveCard($cardId, $stageId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                // A 4xx is a PERMANENT refusal (authz, a stage not on the board, a
+                // A PERMANENT refusal (authz, a stage not on the board, a
                 // deleted card, …): log + no-op rather than 5xx-storm. Hand over what
                 // the server actually said (`body`) instead of guessing the cause —
                 // status alone can't tell a 403 authz refusal from a config typo.
@@ -622,12 +622,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * legitimately at/entering its target stage (a self-heal no-op or a guard-passed move),
      * never from a reject-guarded event.
      *
-     * Best-effort with the move's transient/permanent split: a 4xx (e.g. the board has no
-     * `dl_number`/`pr_number` custom field) is PERMANENT → alert + log + no-op (never
-     * 5xx-storm an unfixable stamp). A 5xx/timeout PROPAGATES → redelivery re-stamps — safe
-     * because the stamp is add-if-missing-idempotent and the move is idempotent, and it
-     * closes the window where a swallowed transient failure would strand the card unstamped
-     * forever.
+     * Best-effort with the move's transient/permanent split
+     * ({@see RefusalContext::isPermanent}): a permanent refusal (e.g. the board has no
+     * `dl_number`/`pr_number` custom field) → alert + log + no-op (never 5xx-storm an unfixable
+     * stamp). A transient failure PROPAGATES → redelivery re-stamps — safe because the stamp is
+     * add-if-missing-idempotent and the move is idempotent, and it closes the window where a
+     * swallowed transient failure would strand the card unstamped forever.
      *
      * The stamp arm alerts (card#5312 / DL-274) even though a board with no `dl_number`
      * custom field 4xxs on EVERY stamp: the `(repo, outcome, reason)` dedup bounds that to

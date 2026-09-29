@@ -61,6 +61,9 @@ class RefusalContextTest extends TestCase
             'not-found' => [404, true],
             'unprocessable' => [422, true],
             'upper 4xx boundary' => [499, true],
+            'conflict — a state refusal, permanent' => [409, true],
+            'request timeout — retryable (card#10849)' => [408, false],
+            'rate limited — retryable (card#10849)' => [429, false],
             'lower 5xx boundary — retryable' => [500, false],
             'bad gateway — retryable' => [502, false],
             'service unavailable — retryable' => [503, false],
@@ -68,9 +71,32 @@ class RefusalContextTest extends TestCase
     }
 
     #[DataProvider('statuses')]
-    public function test_is_permanent_classifies_4xx_as_permanent_and_5xx_as_retryable(int $status, bool $expected): void
+    public function test_is_permanent_classifies_a_client_refusal_as_permanent_and_a_not_now_status_as_retryable(int $status, bool $expected): void
     {
         $this->assertSame($expected, RefusalContext::isPermanent($this->exception('{}', $status)));
+    }
+
+    /**
+     * A Retry-After, however long, never turns a 429 into a refusal: the wait is the redelivery
+     * curve's to honour, not a reason to drop the write (card#10849).
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function retryAfters(): array
+    {
+        return [
+            'within kanban\'s per-minute window' => ['30'],
+            'longer than any kanban window' => ['3600'],
+            'an HTTP-date' => ['Wed, 21 Oct 2037 07:28:00 GMT'],
+        ];
+    }
+
+    #[DataProvider('retryAfters')]
+    public function test_a_429_carrying_retry_after_is_retryable(string $retryAfter): void
+    {
+        $e = new RequestException(new Response(new GuzzleResponse(429, ['Retry-After' => $retryAfter], '{"message":"Too Many Attempts."}')));
+
+        $this->assertFalse(RefusalContext::isPermanent($e));
     }
 
     // --- card#5312 / DL-274: the alert-reason vocabulary the refusal arms share ---

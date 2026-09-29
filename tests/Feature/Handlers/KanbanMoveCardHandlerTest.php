@@ -1727,6 +1727,101 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
+    // --- card#10849: a kanban 429 is a rate limit, not a refusal ---
+
+    public function test_a_rate_limited_move_is_transient_it_throws_leaves_the_card_and_never_alerts(): void
+    {
+        // Until card#10849 this 429 was swallowed as a PERMANENT refusal: no throw (so no 5xx and
+        // no redelivery), a `movecard_4xx` alert, and the card left in the wrong column for good.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5([]);
+        $stub->rateLimitedPatches = 1;
+
+        try {
+            $this->handle($this->payload(['outcome' => 'merged']));
+            $this->fail('a 429 on the move PATCH must propagate for redelivery');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        $this->assertSame(50, $stub->cards[5]['workflow_stage_id']);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_redelivery_after_a_rate_limited_move_lands_the_move_exactly_once(): void
+    {
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5([]);
+        $stub->rateLimitedPatches = 1;
+
+        try {
+            $this->handle($this->payload(['outcome' => 'merged']));
+            $this->fail('the rate-limited first delivery must throw');
+        } catch (RequestException) {
+            // expected — the receiver 5xxs and kanban redelivers
+        }
+        $this->handle($this->payload(['outcome' => 'merged']));   // the redelivery
+        $this->handle($this->payload(['outcome' => 'merged']));   // and a second, late one
+
+        $this->assertSame(52, $stub->cards[5]['workflow_stage_id']);
+        $this->assertSame([['workflow_stage_id' => 52]], $stub->appliedPatchesTo(5), 'one applied move, whatever was retried');
+        $this->assertSame([['workflow_stage_id' => 52], ['workflow_stage_id' => 52]], $stub->patchesTo(5), 'the refused attempt and the one that landed');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_move_rate_limited_on_every_delivery_is_never_swallowed(): void
+    {
+        // Exhaustion: however many deliveries the upstream makes, each one still throws — the
+        // event is never converted into a swallowed refusal, so every attempt 5xxs and lands on
+        // the receiver's webhook-5xx record, which `bridge:inbox` surfaces (the receiver-level
+        // leg is RateLimitedWritebackRedeliveryTest).
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5([]);
+        $stub->rateLimitedPatches = PHP_INT_MAX;
+
+        $deliveries = 0;
+        $thrown = 0;
+        while ($deliveries++ < 5) {
+            try {
+                $this->handle($this->payload(['outcome' => 'merged']));
+            } catch (RequestException $e) {
+                $this->assertSame(429, $e->response->status());
+                $thrown++;
+            }
+        }
+
+        $this->assertSame($deliveries - 1, $thrown);
+        $this->assertSame([], $stub->appliedPatchesTo(5));
+        $this->assertSame(50, $stub->cards[5]['workflow_stage_id']);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_stamp_rate_limited_after_the_move_landed_is_restamped_by_the_redelivery_without_a_second_move(): void
+    {
+        // The move lands, then the correlation stamp is rate-limited: the throw redelivers, and
+        // the redelivery's already-in-stage self-heal stamps without moving the card again.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['payload' => ['origin' => 'preemptive']]);
+        $stub->afterWrite = static function (KanbanCardStub $s, int $id, array $data): void {
+            if (isset($data['workflow_stage_id'])) {
+                $s->rateLimitedPatches = 1;   // the next write — the stamp — is throttled
+            }
+        };
+
+        try {
+            $this->handle($this->payload(['outcome' => 'merged', 'stamp_dl' => 'DL-42']));
+            $this->fail('a 429 on the stamp must propagate for redelivery');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+        $stub->afterWrite = null;
+        $this->handle($this->payload(['outcome' => 'merged', 'stamp_dl' => 'DL-42']));
+
+        $applied = $stub->appliedPatchesTo(5);
+        $this->assertCount(1, array_filter($applied, static fn (array $p): bool => isset($p['workflow_stage_id'])), 'the move is applied once');
+        $this->assertNotSame([], array_filter($applied, static fn (array $p): bool => isset($p['payload'])), 'the redelivery landed the stamp');
+    }
+
     // --- FR #3866 / card#4852: stamp correlation refs (dl_number / pr_number / pr_url) add-if-missing ---
 
     public function test_card_fallback_move_stamps_missing_dl_and_pr(): void

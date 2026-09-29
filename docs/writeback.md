@@ -674,7 +674,7 @@ fails **closed at load** — never a silent no-op.
   no write, so a card those gates already leave alone raises no alert. **Lifting the pin does not
   replay the reopen or the label edit** — GitHub delivers each once; the reconcile is the backstop.
 - **Idempotent + redelivery-safe.** A card already in the destination is skipped, so at-least-once
-  delivery never re-PATCHes. Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
+  delivery never re-PATCHes. Durable, transient(→retry)/permanent(→log+no-op) as § *Failure behaviour* splits them.
 - **`bridge:check` cross-config compare (read this).** The bridge owns `coord_card_terminal_stage_id`
   (a **stage id**), while the consumer's reconcile derives its terminal from `terminal_columns`
   (column **names**) in the coordination project's `coordination.config.json`. If the two disagree they
@@ -1234,8 +1234,10 @@ php artisan bridge:github-owed --fix --repo owner/name --limit 20
 
 ## Failure behaviour (what retries vs not)
 
-- **Transient** (kanban 5xx/timeout, a not-yet-placed token) → the webhook **5xx**s and kanban-board redelivers; the move retries once it's fixed.
-- **Permanent** (no mapping, no stage, a malformed payload, a kanban **4xx** like a deleted card or a cross-board stage, the card isn't on the mapped board, or an uncorroborated title-only `card#` names a card carrying a PR ref not provably this one) → **logged + no-op**, the webhook acks 200 (a refused/un-actionable move is not a delivery failure — it would only retry-storm). With an `alert_channel` configured, the arms marked ✅ in *Which failures signal* above ALSO emit a live signal — the log is the durable record either way.
+- **Transient** (kanban 5xx/timeout, a kanban **429** rate limit or **408**, a not-yet-placed token) → the webhook **5xx**s and the upstream redelivers; the move retries once it's fixed. A kanban-delivered event is retried on kanban-board's own curve (first retry after 5 minutes); a GitHub-delivered one is not on that curve, and `bridge:reconcile` is its backstop. While deliveries keep failing `bridge:inbox` shows the run of webhook 5xx. The split is `RefusalContext::isPermanent()`'s, the one primitive every writeback arm asks.
+  - **A 429 is retried, not dropped (card#10849).** Until then every 4xx counted as permanent, so a rate-limited move was swallowed as a `movecard_4xx` refusal and the card stayed in the wrong column. kanban's rate limiter answers before any write runs, so the retried request cannot apply a move twice, and the handlers are idempotent besides.
+  - **`Retry-After` is honoured by the redelivery, not by a wait in the request.** The bridge has no queue or timer, so the next attempt's time is the upstream's. kanban's limiter windows are per-minute, so its `Retry-After` is at most 60 s, while its webhook retry curve starts at 5 minutes — every redelivery of a kanban event lands after the window. Sleeping in the request instead would hold a worker for up to a minute against kanban's default 10 s delivery timeout.
+- **Permanent** (no mapping, no stage, a malformed payload, a kanban **4xx** that waiting cannot clear — a deleted card, a cross-board stage, a missing permission — the card isn't on the mapped board, or an uncorroborated title-only `card#` names a card carrying a PR ref not provably this one) → **logged + no-op**, the webhook acks 200 (a refused/un-actionable move is not a delivery failure — it would only retry-storm). With an `alert_channel` configured, the arms marked ✅ in *Which failures signal* above ALSO emit a live signal — the log is the durable record either way.
 
 ### Diagnosing a silent writeback (DL-026)
 

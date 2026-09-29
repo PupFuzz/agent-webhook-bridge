@@ -444,7 +444,7 @@ final class MappedBoardGuard
      *
      * ⛔ A TRANSIENT failure PROPAGATES, and that is deliberate on both callers: the handler
      * wants the 5xx that makes kanban redeliver, and the command wants to report the mapping
-     * as unmeasured rather than as clean. Only a PERMANENT (4xx) refusal is captured — and a
+     * as unmeasured rather than as clean. Only a PERMANENT refusal is captured — and a
      * board that could not be ASKED has not answered "no", so the loop keeps going: a positive
      * establishment on another declared board is a measurement that stands on its own, and
      * black-holing every card because one board's membership lapsed would be the widest
