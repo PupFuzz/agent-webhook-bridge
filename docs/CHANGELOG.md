@@ -28,6 +28,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - `bridge:check`'s "the writeback token sees 0 cards" warning is corrected to say so: it used to say `board_my_cards` "returns an empty window" in the non-member case, which was already false — that read always refused a non-member. It now says `board_my_cards` tells the two ambiguous cases apart on its own, via that same structure read. Message text only; the check's severity and exit code are unchanged.
   - No migration, no config key, no `.env` change, no route change, no token-scope change (the status read needs the same `read` ability the search does), no response-shape change on a readable board; `--format=json` `schema` stays **1**.
 - **card#10832 / DL-437** — `board_get_cards` no longer refuses a call, naming the token's board membership, when an id 403s on a board with no live cards while another id of the same call resolved as `archived`: a card resolved on the seat's board in the same call is now the membership proof, whatever order the ids were sent in.
+- **Dependabot alert PupFuzz/agent-webhook-bridge #28** — **npm/ip-address 10.4.0 → 10.7.2 in examples/channel-servers** (transitive via express-rate-limit). The dependency is used for IPv6 subnet keying in rate limiting; exploitability is low. Bumped because it is in-range and freely available.
 
 ### Changed
 
