@@ -23,7 +23,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **The card-side hold is the pin**: a `no-automove` tag or a non-empty `block_reason`, already consulted on every merge (card#8289); `docs/writeback.md` now documents it as the hold. No new marker.
   - **No demotion:** a card DL-308 already shipped stays shipped — the writeback and `bridge:reconcile` withhold, they never move a card back. `bridge:reconcile` now prints a skip line for each such card, and for each card whose PR closed unmerged.
   - ⚠ **CI (this repo only):** `pr-title-lint`'s closure step no longer passes a card-naming branch without a closing form in the title, mirroring the runtime.
-  - Operator-facing text moves: `bridge:check`'s per-mapping closure line, the withheld-merge warning and `bridge:reconcile`'s skip lines now say the head branch is not closure evidence (`DL-305/DL-436` in place of `DL-305/DL-308`). No migration, no config key, no `.env` change, no route change, no token-scope change; `--format=json` `schema` stays **1**.
+  - Operator-facing text moves: `bridge:check`'s per-mapping closure line, the withheld-merge warning and `bridge:reconcile`'s skip lines now say the head branch is not closure evidence. The machine-matched tag `(mention-vs-closure, DL-305/DL-308)` is unchanged on both, so anything grepping it (coord's `board-mover-check.py` included) still classifies the rows; the withheld-merge warning names DL-436 in its log context (`decision`). No migration, no config key, no `.env` change, no route change, no token-scope change; `--format=json` `schema` stays **1**.
 
 ## [0.92.0] - 2026-09-28
 

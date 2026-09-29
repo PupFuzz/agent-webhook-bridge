@@ -57,7 +57,7 @@ final class PrCorrelationComment
      * that outcome must still read as a well-formed row, or one owed write would make the whole
      * record unreadable ({@see GitHubWriteDebt}).
      */
-    public const OUTCOMES = [PrOutcome::INTEGRATION_MERGE, PrOutcome::RELEASE_MERGE, 'closed_unmerged'];
+    public const OUTCOMES = [PrOutcome::INTEGRATION_MERGE, PrOutcome::RELEASE_MERGE, PrOutcome::CLOSED_UNMERGED];
 
     /** A DL token parsed, no card on the mapped board carries it, and no card token parsed to fall back to. */
     public const DL_UNRESOLVED = 'dl_unresolved';

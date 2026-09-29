@@ -448,7 +448,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
                     return new ClassifyResult(targets: array_merge(
                         $this->moveTargets($closing, $repo, $moveOutcome, $stampRefs, evidence: $this->correlationEvidence($payload, $moveOutcome)),
-                        $this->noClosingFormTargets($payload, $repo, $moveOutcome, array_values(array_diff($cardIds, $closing))),
+                        $this->noClosingFormTargets($payload, $repo, $mapping, $moveOutcome, array_values(array_diff($cardIds, $closing))),
                         $overlayTargets,
                     ));
                 }
@@ -542,7 +542,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // move. Only `Closes card#<this id>` does.
         if ($this->closingCards($payload, $moveOutcome, [$cardToken], null) === []) {
             return new ClassifyResult(targets: array_merge(
-                $this->noClosingFormTargets($payload, $repo, $moveOutcome, [$cardToken]),
+                $this->noClosingFormTargets($payload, $repo, $mapping, $moveOutcome, [$cardToken]),
                 $overlayTargets,
             ));
         }
@@ -613,16 +613,23 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * NOT for a `[no-close]` PR or a revert: the author asked for no move, or the merge undoes the
      * work, and the withheld-merge warning already names both.
      *
+     * NOT where no declared board maps this merge's outcome to a stage (an `opened`-only
+     * mapping, or a `merged_to_main` merge on a mapping without that stage): a closing form
+     * would move nothing there either, so "not moved because the title closes nothing" would
+     * be a false cause, published on the PR. Asked through the same primitive the move
+     * handler asks, so the comment and the move agree on when a stage exists.
+     *
      * @param  array<mixed>  $payload
      * @param  list<int>  $withheld
      * @return list<ReactionTarget>
      */
-    private function noClosingFormTargets(array $payload, string $repo, string $outcome, array $withheld): array
+    private function noClosingFormTargets(array $payload, string $repo, WritebackMapping $mapping, string $outcome, array $withheld): array
     {
         $title = $this->prTitle($payload);
         $head = $this->prHead($payload);
         $branchCard = CardTokenGrammar::parse($head);
         if ($branchCard === null || ! in_array($branchCard, $withheld, true)
+            || ! $mapping->anyDeclaredBoardMaps($outcome)
             || NoCloseGrammar::marks($title) || RevertGrammar::isRevert($title, $head)) {
             return [];
         }
@@ -903,9 +910,12 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $them = count($cardIds) === 1 ? 'that card' : 'them';
         $title = $this->prTitle($payload);
         $head = $this->prHead($payload);
-        // The reason is spliced as a clause and the revert / marker paragraph is appended
-        // after the machine-readable `mention-vs-closure` tag rather than in place of it, so
-        // every case keeps the tag an operator greps for.
+        // `NO stage move (mention-vs-closure, DL-305/DL-308). stays BYTE-IDENTICAL to the tag
+        // DL-305/DL-308 shipped: installs grep it, and coord's `hooks/bin/board-mover-check.py`
+        // declares that exact literal as its declined-move marker, so renaming it (even to cite
+        // a later DL) leaves every such row unclassified. That is why the reason is spliced as a
+        // clause, the revert / marker paragraph is appended after the tag rather than in place
+        // of it, and a later ruling is named in the log context instead.
         // THE MARKER ARM IS ASKED FIRST (card#8344), and the order carries a judgement rather
         // than a preference: both arms can be true at once only for a HAND-MADE revert whose
         // author typed the marker OUTSIDE the quotes (GitHub's own mint puts everything it
@@ -918,19 +928,19 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             $marked => 'the TITLE declares this PR does not finish '.$them,
             $isRevert => 'a revert closes no card',
             default => 'nothing in this merge claims that work is done: the TITLE carries no closing form naming '
-                .$them.' (a head branch ref naming a card is not closure evidence, DL-436)'
+                .$them.' (a head branch ref naming a card is not closure evidence)'
                 .', so this PR MENTIONS the card rather than claiming its work is done',
         };
         Log::warning("kanban_move_card: {$where} merged (outcome '{$outcome}') and correlates card(s) "
             .implode(',', $cardIds).' — but '.$why
-            .': NO stage move (mention-vs-closure, DL-305/DL-436). '
+            .': NO stage move (mention-vs-closure, DL-305/DL-308). '
             .match (true) {
                 $marked => NoCloseGrammar::describeRefusal().' ',
                 $isRevert => RevertGrammar::describeRefusal().' ',
                 default => '',
             }
             .'A merge moves a card on '.PrOutcome::describeClosure().'. '
-            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}", ['catalog_id' => 'card_move_classifier.mention_without_closure']);
+            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}", ['catalog_id' => 'card_move_classifier.mention_without_closure', 'decision' => 'DL-436']);
     }
 
     /**
@@ -1200,7 +1210,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
         $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
         if (($pr['merged'] ?? false) !== true) {
-            return 'closed_unmerged';
+            return PrOutcome::CLOSED_UNMERGED;
         }
         $base = is_array($pr['base'] ?? null) ? ($pr['base']['ref'] ?? '') : '';
 

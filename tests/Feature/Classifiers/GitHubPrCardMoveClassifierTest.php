@@ -2144,6 +2144,49 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains((string) $msg, 'card-4811-widget'))->once();
     }
 
+    public function test_no_closing_form_comment_is_not_posted_on_an_opened_only_mapping(): void
+    {
+        // A closing form would move nothing here either, so "not moved because the title
+        // closes nothing" would be a false cause on a public page.
+        Http::fake();
+        $this->writeMapping(['stages' => ['opened' => 50]]);
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-4811-widget'));
+
+        $this->assertSame([], $this->targetsNamed($r, PrCorrelationComment::HANDLER));
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+    }
+
+    public function test_no_closing_form_comment_follows_the_stage_the_merge_outcome_maps_to(): void
+    {
+        // `merged` is mapped and `merged_to_main` is not: the same card-branch merge is
+        // commented on into dev (the control) and not into main.
+        Http::fake();
+        $this->writeMapping(['stages' => ['opened' => 50, 'merged' => 52]]);
+
+        $dev = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-4811-widget'));
+        $main = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-4811-widget', 'main'));
+
+        $this->assertCount(1, $this->targetsNamed($dev, PrCorrelationComment::HANDLER));
+        $this->assertSame([], $this->targetsNamed($main, PrCorrelationComment::HANDLER));
+    }
+
+    public function test_the_withheld_merge_tag_is_byte_identical_on_every_arm(): void
+    {
+        // coord's `hooks/bin/board-mover-check.py` declares this exact literal as its
+        // declined-move marker; any rename leaves every such row unclassified at every
+        // install. The later ruling rides the log context, never the tag.
+        Http::fake();
+        Log::spy();
+
+        $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-4811-widget'));
+        $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework (card#4811) [no-close]'));
+        $this->classify('pull_request.closed', $this->mergedPrTitled('Revert "feat: widget rework (Closes card#4811)"', 'revert-611-card-4811-widget'));
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg, $ctx = []) => str_contains((string) $msg, ': NO stage move (mention-vs-closure, DL-305/DL-308). ')
+            && ($ctx['decision'] ?? null) === 'DL-436')->times(3);
+    }
+
     public function test_witness_5_a_release_merge_is_not_widened_by_the_branch(): void
     {
         // ⛔ WITNESS 5 — ONE VARIABLE CHANGED FROM WITNESS 4: the base ref. A release merge

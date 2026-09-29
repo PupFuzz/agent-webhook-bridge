@@ -157,7 +157,7 @@ final class WritebackMappingConfigCheck implements Check
                     if ($declared->stageFor('opened') === null) {
                         $missingRevive[] = "{$prefix}.opened";
                     }
-                    if ($declared->stageFor('closed_unmerged') === null) {
+                    if ($declared->stageFor(PrOutcome::CLOSED_UNMERGED) === null) {
                         $missingRevive[] = "{$prefix}.closed_unmerged";
                     }
                     if ($missingRevive === [] || (count($missingRevive) === 2 && $declared->isOnAdditionalDeclaredBoard())) {

@@ -439,9 +439,9 @@ class ReconcileCommand extends BridgeCommand
             // and not escaped at the client.
             $ref = $pr['head_ref']->forOperator();
             $this->line(match (true) {
-                NoCloseGrammar::marks($pr['title']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-436) — skipped. ".NoCloseGrammar::describeRefusal(),
-                RevertGrammar::isRevert($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but is a revert, which closes no card (head branch ref '{$ref}'): no expected stage (mention-vs-closure, DL-305/DL-436) — skipped. ".RevertGrammar::describeRefusal(),
-                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its title carries no closing form naming this card (head branch ref '{$ref}' is not closure evidence) — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-436) — skipped",
+                NoCloseGrammar::marks($pr['title']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its TITLE declares it does not finish this card: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".NoCloseGrammar::describeRefusal(),
+                RevertGrammar::isRevert($pr['title']->rawForMatching(), $pr['head_ref']->rawForMatching()) => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but is a revert, which closes no card (head branch ref '{$ref}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal(),
+                default => "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its title carries no closing form naming this card (head branch ref '{$ref}' is not closure evidence) — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped",
             });
             $this->skipped++;
 
@@ -643,7 +643,7 @@ class ReconcileCommand extends BridgeCommand
             return 'opened';   // an open PR (REST has no reopened) → the `opened` outcome
         }
         if (! $pr['merged']) {
-            return 'closed_unmerged';
+            return PrOutcome::CLOSED_UNMERGED;
         }
 
         return PrOutcome::forMergedBase($pr['base_ref']);
