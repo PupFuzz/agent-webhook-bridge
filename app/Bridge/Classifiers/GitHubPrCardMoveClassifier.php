@@ -70,42 +70,48 @@ use Illuminate\Support\Facades\Log;
  * the writeback re-classifies in-window PRs on every pass and returning an earlier stage
  * would mass-demote every already-correct card on the first run.
  *
- * ⚠ THE TITLE IS NO LONGER THE ONLY CLOSURE SURFACE (card#7348 / DL-308), and the
- * paragraph that stood here said it was. DL-305 excluded the head branch on the argument
- * that "the branch names the work, not its completion" — true as far as it goes, and it
- * left an accept-set that 0 of 351 real merged PRs in this shop could satisfy, because
- * the house convention has never written a closing verb. The widening does not read the
- * slug as an assertion: it reads the BRANCH IDENTITY plus the fact of a merge into the
- * integration branch, which is what the Shipped stage asserts and what a citation of
- * someone else's card id cannot produce. {@see PrOutcome::mergeClosesCard()} owns that
- * term, {@see ClosureGrammar} still owns the lexical one, and BOTH close.
+ * ⛔ THE TITLE IS THE ONLY CLOSURE SURFACE AGAIN (card#10850 / DL-436). DL-308 had added the
+ * head branch as a second one — a merge into the integration branch from a branch naming the
+ * card closed it with no closing verb — and DL-305's own residual then came true at scale: a
+ * multi-PR card promoted at its FIRST merged PR, because every partial leg of a card is built
+ * on the card's own branch. A peer's operator found ten safety requirements shipped that way.
+ * The branch still SELECTS the card ({@see cardTokenResolution()}); it no longer CLOSES it.
+ * {@see ClosureGrammar} is the one closure authority, and {@see PrOutcome::describeClosure()}
+ * renders it.
  *
- * ⚠ AND DL-305's OTHER OBSERVATION SURVIVES THE WIDENING AS A RESIDUAL, recorded here
- * because it is now reachable rather than hypothetical: three merged PRs here track one
- * card, so a multi-PR card promotes at its FIRST merged PR. The grammar layer can read
- * INTENT and cannot read AUTHORITY — no predicate over a title and a branch ref can know
- * that a human ruled this card does not close on this commit. The durable fix is
- * card-side (a hold/pin marker the writeback refuses to move past whatever the grammar
- * concludes) and is deliberately NOT built here; it is named in DL-308 as the follow-up.
+ * THE CARD-SIDE HOLD DL-308 NAMED AS ITS FOLLOW-UP ALREADY EXISTS: `PinGuard` (a `no-automove`
+ * tag or a non-empty `block_reason`) is consulted by the move handler on every outcome, merges
+ * included (card#8289). A card whose owner wants a manual close carries it.
  *
- * ⚠ AND NEITHER ROUTE SURVIVES A REVERT (card#8306). Once PR titles carry `(closes
- * card#N)`, GitHub's revert — which QUOTES the original's title and WRAPS its branch —
- * inherits a closing form and a card token for work it UNDOES, so both routes fired and
- * the card moved FORWARD on a merge that took the work out. `pr-title-lint` already
+ * ⚠ AND A REVERT CLOSES NOTHING (card#8306). Once PR titles carry `(closes card#N)`,
+ * GitHub's revert — which QUOTES the original's title and WRAPS its branch — inherits a
+ * closing form and a card token for work it UNDOES, so the card moved FORWARD on a merge
+ * that took the work out. `pr-title-lint` already
  * exempted `revert-*` branches, but that governs what CI DEMANDS, not what the writeback
- * READS. {@see RevertGrammar} owns both shapes and the ruling; the two authorities apply
- * it, so the reconciler gets it for free.
+ * READS. {@see RevertGrammar} owns both shapes and the ruling; {@see ClosureGrammar}
+ * applies it, so the reconciler gets it for free.
  *
  * {@see PrOutcome::requiresClosure()} owns which outcomes are gated and why the others
  * are not.
  *
- * A MERGE OR CLOSE WHOSE CORRELATION FAILS IS REPORTED ON THE PR (DL-390). Every move target
- * of those outcomes carries {@see PrCorrelationComment::evidence()} for the handler's refusals,
- * and the no-op arms that ARE correlation failures — a DL no card carries with no parsed card token
+ * A MERGE WHOSE CORRELATION FAILS IS REPORTED ON THE PR (DL-390; a close was too, until DL-436
+ * stopped a close moving anything). Every merge's move target carries
+ * {@see PrCorrelationComment::evidence()} for the handler's refusals, and the no-op arms that ARE correlation failures — a DL no card carries with no parsed card token
  * to fall back to, and a token present but unreadable — emit a `github_pr_correlation_comment`
  * target of their own — on a merge, only when the PR carries the closure evidence that token would
- * have needed had it resolved ({@see claimsClosure()}). A PR carrying no token at all, and a merge
- * that claims to finish nothing, are not correlation failures and emit none.
+ * have needed had it resolved ({@see claimsClosure()}). A PR carrying no token at all is not a
+ * correlation failure and emits none.
+ *
+ * A MERGE FROM THE CARD'S OWN BRANCH THAT CLOSES NOTHING IS REPORTED ON THE PR TOO (card#10850 /
+ * DL-436), with {@see PrCorrelationComment::NO_CLOSING_FORM}: until DL-436 that merge moved the
+ * card, so its author has every reason to expect a move and nothing else would tell them why it
+ * did not. A merge that merely CITES a card in its title stays silent — a title citing another
+ * card is routine, and that shape never moved a card on either side of DL-436.
+ *
+ * A PR CLOSED WITHOUT MERGING MOVES NOTHING (card#10850 / DL-436, {@see PrOutcome::movesCard()}):
+ * no move, no stamp and no correlation comment, since there is nothing to correlate a board write
+ * to. Only the dependabot lifecycle still acts on it — it archives the card that PR created
+ * (DL-161), a card that IS the pull request rather than a requirement it serves.
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
  * with no parseable card reference, or a repo with no `writeback.json` mapping →
@@ -290,16 +296,20 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
         // converted_to_draft / ready_for_review carry no move outcome → overlay only
         // (empty when not opted in, so byte-identical to the previous null-outcome no-op).
-        if ($outcome === null) {
+        // A PR closed without merging moves nothing, stamps nothing and reports nothing
+        // (card#10850 / DL-436): PrOutcome owns the ruling so bridge:reconcile plans no such
+        // move either. Asked after the dependabot branch, which archives its own card on close.
+        if ($outcome === null || ! PrOutcome::movesCard($outcome)) {
             return new ClassifyResult(targets: $overlayTargets);
         }
 
         // Won't-Do-revival (DL-195): a `reopened` action normally collapses to the `opened`
         // outcome (above). When the mapping opts in, emit a DISTINCT `reopened` MOVE outcome
-        // so the durable handler applies the revival carve-out (revive a card parked in the
+        // so the durable handler applies the revival carve-out (revive a card sitting in the
         // `closed_unmerged` abandon stage back to the `opened` stage — the backward move the
-        // DL-163 guard otherwise refuses). Computed HERE, after the dependabot branch, so the
-        // dependabot path — cards that ARCHIVE on close (DL-161), never park in
+        // DL-163 guard otherwise refuses; since DL-436 the writeback no longer parks a card
+        // there, so what it revives was put there by a person or before DL-436). Computed
+        // HERE, after the dependabot branch, so the dependabot path — cards that ARCHIVE on close (DL-161), never park in
         // `closed_unmerged` — keeps `opened` and never enters revival; and after $mapping is
         // resolved (it isn't in scope in outcome()). Absent revive_on_reopen ⇒ $moveOutcome ===
         // $outcome ⇒ byte-identical. `reopened` is a handler-internal outcome with no config
@@ -393,7 +403,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$this->titleAndHead($payload), ['catalog_id' => 'card_move_classifier.pr_dl_near_miss_card_token_refused']);
 
                     return new ClassifyResult(targets: array_merge(
-                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null)
+                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true, evidence: $this->claimsClosure($this->prTitle($payload), $moveOutcome, $dl, null)
                             || $this->claimsClosureOfUnreadableToken($payload, $moveOutcome, $dl)
                             ? $this->correlationEvidence($payload, $moveOutcome)
                             : []),
@@ -435,12 +445,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                     // `Closes card#N` closes only the card it names, so a bundled DL whose
                     // title closes one of its cards moves that one alone.
                     $closing = $this->closingCards($payload, $moveOutcome, $cardIds, $dl);
-                    if ($closing === []) {
-                        return new ClassifyResult(targets: $overlayTargets);
-                    }
 
                     return new ClassifyResult(targets: array_merge(
                         $this->moveTargets($closing, $repo, $moveOutcome, $stampRefs, evidence: $this->correlationEvidence($payload, $moveOutcome)),
+                        $this->noClosingFormTargets($payload, $repo, $mapping, $moveOutcome, array_values(array_diff($cardIds, $closing))),
                         $overlayTargets,
                     ));
                 }
@@ -479,7 +487,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 $cause = match (true) {
                     $titleClosesDl => PrCorrelationComment::DL_UNRESOLVED,
                     $nearMiss && $this->claimsClosureOfUnreadableToken($payload, $moveOutcome, $dl) => PrCorrelationComment::TOKEN_UNREADABLE,
-                    $this->claimsClosure($this->prTitle($payload), $this->prHead($payload), $moveOutcome, $dl, null) => PrCorrelationComment::DL_UNRESOLVED,
+                    $this->claimsClosure($this->prTitle($payload), $moveOutcome, $dl, null) => PrCorrelationComment::DL_UNRESOLVED,
                     default => null,
                 };
 
@@ -533,7 +541,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // form naming it is a claim about someone else's work and must not authorize this
         // move. Only `Closes card#<this id>` does.
         if ($this->closingCards($payload, $moveOutcome, [$cardToken], null) === []) {
-            return new ClassifyResult(targets: $overlayTargets);
+            return new ClassifyResult(targets: array_merge(
+                $this->noClosingFormTargets($payload, $repo, $mapping, $moveOutcome, [$cardToken]),
+                $overlayTargets,
+            ));
         }
 
         return new ClassifyResult(targets: array_merge([
@@ -571,7 +582,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * @param  array<mixed>  $payload
      * @return list<ReactionTarget>
      */
-    private function correlationCommentTargets(array $payload, string $repo, string $outcome, string $cause, ?string $dl, bool $titleClosesDl): array
+    private function correlationCommentTargets(array $payload, string $repo, string $outcome, string $cause, ?string $dl, bool $titleClosesDl, ?int $cardId = null): array
     {
         $evidence = $this->correlationEvidence($payload, $outcome);
         if ($evidence === []) {
@@ -581,8 +592,49 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         return [ReactionTarget::make(
             PrCorrelationComment::HANDLER,
             'pr-'.$evidence[PrCorrelationComment::EVIDENCE_KEY]['pr_number'],
-            payload: ['repo' => $repo, 'outcome' => $outcome, 'cause' => $cause, 'dl' => $dl, 'title_closes_dl' => $titleClosesDl] + $evidence,
+            payload: ['repo' => $repo, 'outcome' => $outcome, 'cause' => $cause, 'dl' => $dl, 'title_closes_dl' => $titleClosesDl]
+                + ($cardId !== null ? ['card_id' => $cardId] : [])
+                + $evidence,
         )];
+    }
+
+    /**
+     * The PR comment for a merge from a card's OWN branch whose title closes nothing (card#10850 /
+     * DL-436): {@see PrCorrelationComment::NO_CLOSING_FORM}, naming the card the head branch names,
+     * when the closure gate withheld exactly that card. `$withheld` is what the gate withheld on
+     * this event.
+     *
+     * WHY THE HEAD BRANCH AND NOT EVERY WITHHELD CARD. A branch naming the card says the PR is
+     * that card's own work, so a merge moving nothing is news its author needs — and until DL-436
+     * the same merge moved the card, so it is the one shape whose author expects otherwise. A card
+     * cited only in the TITLE is routine context; commenting there would put a correction on every
+     * PR that cites a peer's card.
+     *
+     * NOT for a `[no-close]` PR or a revert: the author asked for no move, or the merge undoes the
+     * work, and the withheld-merge warning already names both.
+     *
+     * NOT where no declared board maps this merge's outcome to a stage (an `opened`-only
+     * mapping, or a `merged_to_main` merge on a mapping without that stage): a closing form
+     * would move nothing there either, so "not moved because the title closes nothing" would
+     * be a false cause, published on the PR. Asked through the same primitive the move
+     * handler asks, so the comment and the move agree on when a stage exists.
+     *
+     * @param  array<mixed>  $payload
+     * @param  list<int>  $withheld
+     * @return list<ReactionTarget>
+     */
+    private function noClosingFormTargets(array $payload, string $repo, WritebackMapping $mapping, string $outcome, array $withheld): array
+    {
+        $title = $this->prTitle($payload);
+        $head = $this->prHead($payload);
+        $branchCard = CardTokenGrammar::parse($head);
+        if ($branchCard === null || ! in_array($branchCard, $withheld, true)
+            || ! $mapping->anyDeclaredBoardMaps($outcome)
+            || NoCloseGrammar::marks($title) || RevertGrammar::isRevert($title, $head)) {
+            return [];
+        }
+
+        return $this->correlationCommentTargets($payload, $repo, $outcome, PrCorrelationComment::NO_CLOSING_FORM, null, false, $branchCard);
     }
 
     /**
@@ -707,7 +759,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      */
     private function closingCards(array $payload, string $outcome, array $cardIds, ?string $dl): array
     {
-        $closing = $this->closureFilter($this->prTitle($payload), $this->prHead($payload), $outcome, $cardIds, $dl);
+        $closing = $this->closureFilter($this->prTitle($payload), $outcome, $cardIds, $dl);
         $withheld = array_values(array_diff($cardIds, $closing));
         if ($withheld !== []) {
             $this->warnMentionWithoutClosure($payload, $outcome, $withheld);
@@ -727,42 +779,25 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * an outcome {@see PrOutcome::requiresClosure()} gates, a card moves only when the
      * event carries evidence that this merge FINISHES it.
      *
-     * TWO KINDS OF EVIDENCE, and only the second is prose (card#7348 / DL-308):
-     *  - STRUCTURAL — {@see PrOutcome::mergeClosesCard()}: the PR merged into the
-     *    integration branch AND the head ref itself names the card. This is what the
-     *    house convention actually produces, and DL-305 shipped without it: measured
-     *    against the title-only accept-set, 0 of 351 correlated merged PRs in this shop
-     *    closed anything, so the gate would have frozen every board it guards. Applied
-     *    PER CARD, like the `card#` form and unlike the DL form — a branch ref names one
-     *    card, so a bundled DL whose branch names one of its cards moves that one alone.
-     *  - LEXICAL — a closing form in the TITLE, in the two spellings that mirror the two
-     *    ways the card was SELECTED:
-     *      - `Closes DL-NNN` where that DL is the one that RESOLVED this set — the claim
-     *        is made about the DL, and a DL is one-to-many (DL-148), so it closes the
-     *        whole set;
-     *      - `Closes card#<id>` — closes exactly the card it names, which is why the set
-     *        is FILTERED rather than accepted or rejected whole.
+     * ONE KIND OF EVIDENCE — a closing form in the TITLE ({@see ClosureGrammar}), in the two
+     * spellings that mirror the two ways the card was SELECTED:
+     *  - `Closes DL-NNN` where that DL is the one that RESOLVED this set — the claim is made
+     *    about the DL, and a DL is one-to-many (DL-148), so it closes the whole set;
+     *  - `Closes card#<id>` — closes exactly the card it names, which is why the set is
+     *    FILTERED rather than accepted or rejected whole.
      *
-     * ⛔ A `[no-close]` TITLE TAKES NEITHER ROUTE EITHER (card#8344 / DL-327), and it is
-     * refused in the same two authorities for the same lockstep reason: the author's
-     * declaration empties {@see ClosureGrammar}'s accept-set at its choke point and is a
-     * term in {@see PrOutcome::mergeClosesCard()}. It is the one refusal here that no
-     * predicate over the ARTIFACT could have derived — a PR that cites a card it does not
-     * finish is, on the branch and in the diff, indistinguishable from one that does.
+     * ⛔ THE HEAD BRANCH IS NOT EVIDENCE (card#10850 / DL-436), even when it names the card.
+     * DL-308 made it a second, structural route, and it shipped every multi-PR card at the
+     * first merged leg built on the card's branch — which is every leg. The branch SELECTS a
+     * card; only the author's closing form says the merge finishes it. `bin/measure-branch-only-closures.php`
+     * re-derives how many recent merges closed only that way.
      *
-     * ⛔ A REVERT TAKES NEITHER ROUTE (card#8306), and this filter is deliberately NOT
-     * where that is decided. The refusal lives inside the two authorities the line below
-     * ORs together — {@see ClosureGrammar} subtracts the quoted original title,
-     * {@see PrOutcome::mergeClosesCard()} refuses a revert on BOTH surfaces — because
-     * `bridge:reconcile` re-derives the same proposition from the same two fields on a
-     * schedule, and a term added here alone would let the backstop re-plan an hour later
-     * exactly the move this gate declined. That lockstep is DL-305 §6 / DL-308's ruling,
-     * and it is why the classifier gains no revert code at all beyond the WARNING's text.
-     *
-     * THE STRUCTURAL TERM WIDENS THE ACCEPT-SET; IT REPLACES NOTHING. Both routes close,
-     * and the upstream foreign-mention discrimination is untouched — a title citing a card
-     * the branch does not name never reaches this filter with that card in the set, which
-     * is exactly why the widening preserves the property roundtable #343 endorsed.
+     * ⛔ A `[no-close]` TITLE AND A REVERT CLOSE NOTHING (card#8344 / DL-327, card#8306), and
+     * this filter is deliberately NOT where either is decided: {@see ClosureGrammar} empties
+     * its accept-set for the marker and subtracts a quoted revert title at its one choke
+     * point, because `bridge:reconcile` re-derives the same proposition from the same field on
+     * a schedule, and a term added here alone would let the backstop re-plan an hour later
+     * exactly the move this gate declined (DL-305 §6).
      *
      * `$dl` IS THE RESOLUTION, NOT THE SUBJECT'S TEXT. Callers pass the DL only where it
      * resolved to the cards being filtered; the `card#` path passes null even when a DL
@@ -771,16 +806,16 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * resolved to this card is a claim about other work.
      *
      * RETURNS THE INPUT UNCHANGED for every ungated outcome, which is what makes
-     * `started` / `opened` / `closed_unmerged` / `reopened` byte-identical to before.
+     * `started` / `opened` / `reopened` byte-identical to before.
      *
      * @param  list<int>  $cardIds
      * @return list<int>
      */
-    private function closureFilter(string $title, string $headRef, string $outcome, array $cardIds, ?string $dl): array
+    private function closureFilter(string $title, string $outcome, array $cardIds, ?string $dl): array
     {
         return array_values(array_filter(
             $cardIds,
-            fn (int $id) => $this->claimsClosure($title, $headRef, $outcome, $dl, $id),
+            fn (int $id) => $this->claimsClosure($title, $outcome, $dl, $id),
         ));
     }
 
@@ -791,7 +826,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * can answer yes) and for the near-miss refusal's DL, so a merge that claims to finish nothing is never
      * reported as a correlation failure by a second copy of this gate.
      */
-    private function claimsClosure(string $title, string $headRef, string $outcome, ?string $dl, ?int $cardId): bool
+    private function claimsClosure(string $title, string $outcome, ?string $dl, ?int $cardId): bool
     {
         if (! PrOutcome::requiresClosure($outcome)) {
             return true;
@@ -800,17 +835,15 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return true;
         }
 
-        return $cardId !== null
-            && (ClosureGrammar::closesCard($title, $cardId) || PrOutcome::mergeClosesCard($outcome, $headRef, $cardId, $title));
+        return $cardId !== null && ClosureGrammar::closesCard($title, $cardId);
     }
 
     /**
      * {@see claimsClosure()} for a token that does not parse (DL-390): the evidence the gate would
-     * have needed had it been spelled so that it parses. The same two routes, with only the token
-     * term read by the near-miss probe instead of the grammar: a closing verb flush against the
-     * unreadable spelling ({@see ClosureGrammar::closesUnreadableCardToken()}), or an integration merge
-     * whose head ref carries a card-shaped one ({@see PrOutcome::structuralRouteOpen()}, which
-     * {@see PrOutcome::mergeClosesCard()} is composed from). Asked only where no CARD token parses:
+     * have needed had it been spelled so that it parses — a closing verb flush against the
+     * unreadable spelling ({@see ClosureGrammar::closesUnreadableCardToken()}). A card-shaped head
+     * ref is not such evidence since card#10850 / DL-436, for the reason a parsed one is not: the
+     * branch names the card, it does not claim the work is done. Asked only where no CARD token parses:
      * with no token at all, and beside a DL that resolved to nothing or to a card the unreadable
      * token appears not to name (the DL-287 refusal), where the DL's own claim is asked separately.
      * A closing verb before a DL-SHAPED spelling ({@see ClosureGrammar::closesUnreadableDlToken()})
@@ -822,12 +855,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     private function claimsClosureOfUnreadableToken(array $payload, string $outcome, ?string $dl): bool
     {
         $title = $this->prTitle($payload);
-        $head = $this->prHead($payload);
 
         return ! PrOutcome::requiresClosure($outcome)
             || ClosureGrammar::closesUnreadableCardToken($title)
-            || ($dl === null && ClosureGrammar::closesUnreadableDlToken($title))
-            || (PrOutcome::structuralRouteOpen($outcome, $head, $title) && CardTokenGrammar::looksLikeCardToken($head));
+            || ($dl === null && ClosureGrammar::closesUnreadableDlToken($title));
     }
 
     /**
@@ -836,32 +867,30 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * A merge that moves nothing is exactly the high-value miss this classifier warns
      * loudly about everywhere else: the PR publishes, the card never moves, and without a
      * line nobody is told. It says what the subject DID carry (a correlating token), what
-     * it did NOT (closure evidence, on EITHER route), and the remediation — rendered from
-     * {@see PrOutcome::describeClosure()} rather than spelled out here, so a move in either
+     * it did NOT (a closing form), and the remediation — rendered from
+     * {@see PrOutcome::describeClosure()} rather than spelled out here, so a move in the
      * underlying authority rewrites the operator-facing text by construction (the DL-239
-     * ruling; DL-308 is what gave it two authorities to compose).
+     * ruling).
      *
-     * IT NAMES THE HEAD REF, not only the title (card#7348 / DL-308). Since the branch is
-     * now one of the two things that can close a card, an operator asking *why did this
-     * merge move nothing* needs to see BOTH surfaces that were read — a line quoting only
-     * the title would send them to rewrite prose when the actual answer is that their
-     * branch is called `fix/streaming-timeout`.
+     * IT STILL QUOTES THE HEAD REF beside the title, and since card#10850 / DL-436 the default
+     * clause says outright that the ref is not closure evidence: DL-308 taught authors that a
+     * branch naming the card closed it, and an operator whose card-branch merge stopped
+     * moving cards needs the line to say why rather than to leave them comparing the branch
+     * against the card id.
      *
      * IT NAMES THE `[no-close]` MARKER WHEN THAT IS THE REASON (card#8344), for the reason
-     * the revert arm below exists: the default clauses are FALSE about a marked PR. A
-     * `[no-close]` PR is usually built ON the card's own branch — that is what makes the
-     * marker necessary at all — so telling its author that the ref does not name the card
-     * would send them to rename a branch in order to undo a refusal they deliberately
+     * the revert arm below exists: the default clause is FALSE about a marked PR, whose title
+     * may carry a closing form the marker vetoed. Telling its author the title closes nothing
+     * would send them to rewrite prose in order to undo a refusal they deliberately
      * requested. {@see NoCloseGrammar::describeRefusal()} owns the sentence, so
      * `bridge:reconcile`'s skip line renders the identical one.
      *
      * IT NAMES THE REVERT WHEN THAT IS THE REASON (card#8306), because otherwise this line
-     * is FALSE about exactly the subject the revert refusal creates. Its two clauses assert
-     * that the ref does not name the card and the title carries no closing form — on a
-     * revert both are usually untrue: GitHub quotes the original's title and wraps the
-     * original's ref, so the operator would be sent to rewrite prose that already reads
-     * correctly. {@see RevertGrammar::describeRefusal()} owns the sentence so
-     * `bridge:reconcile`'s skip line renders the same one rather than spelling a second.
+     * is FALSE about exactly the subject the revert refusal creates: GitHub quotes the
+     * original's title, which usually DOES carry a closing form, so the operator would be
+     * sent to rewrite prose that already reads correctly. {@see RevertGrammar::describeRefusal()}
+     * owns the sentence so `bridge:reconcile`'s skip line renders the same one rather than
+     * spelling a second.
      *
      * ONE LINE PER EVENT, not per card: a bundled DL resolving to several cards withholds
      * them as one set for one reason, and N lines would be N copies of one sentence.
@@ -881,10 +910,12 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $them = count($cardIds) === 1 ? 'that card' : 'them';
         $title = $this->prTitle($payload);
         $head = $this->prHead($payload);
-        // The non-revert line is BYTE-IDENTICAL to the one DL-305/DL-308 shipped, which is
-        // why the reason is spliced as a clause and the revert paragraph is appended after
-        // the machine-readable tag rather than in place of it: this change adds a case, it
-        // does not restyle an operator-facing line every install already greps.
+        // `NO stage move (mention-vs-closure, DL-305/DL-308). stays BYTE-IDENTICAL to the tag
+        // DL-305/DL-308 shipped: installs grep it, and coord's `hooks/bin/board-mover-check.py`
+        // declares that exact literal as its declined-move marker, so renaming it (even to cite
+        // a later DL) leaves every such row unclassified. That is why the reason is spliced as a
+        // clause, the revert / marker paragraph is appended after the tag rather than in place
+        // of it, and a later ruling is named in the log context instead.
         // THE MARKER ARM IS ASKED FIRST (card#8344), and the order carries a judgement rather
         // than a preference: both arms can be true at once only for a HAND-MADE revert whose
         // author typed the marker OUTSIDE the quotes (GitHub's own mint puts everything it
@@ -895,9 +926,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $isRevert = RevertGrammar::isRevert($title, $head);
         $why = match (true) {
             $marked => 'the TITLE declares this PR does not finish '.$them,
-            $isRevert => 'this merge takes NEITHER closure route',
-            default => 'nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
-                .$them.' and the TITLE carries no closing form naming '.$them
+            $isRevert => 'a revert closes no card',
+            default => 'nothing in this merge claims that work is done: the TITLE carries no closing form naming '
+                .$them.' (a head branch ref naming a card is not closure evidence)'
                 .', so this PR MENTIONS the card rather than claiming its work is done',
         };
         Log::warning("kanban_move_card: {$where} merged (outcome '{$outcome}') and correlates card(s) "
@@ -909,7 +940,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 default => '',
             }
             .'A merge moves a card on '.PrOutcome::describeClosure().'. '
-            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}", ['catalog_id' => 'card_move_classifier.mention_without_closure']);
+            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}", ['catalog_id' => 'card_move_classifier.mention_without_closure', 'decision' => 'DL-436']);
     }
 
     /**
@@ -1179,7 +1210,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
         $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
         if (($pr['merged'] ?? false) !== true) {
-            return 'closed_unmerged';
+            return PrOutcome::CLOSED_UNMERGED;
         }
         $base = is_array($pr['base'] ?? null) ? ($pr['base']['ref'] ?? '') : '';
 

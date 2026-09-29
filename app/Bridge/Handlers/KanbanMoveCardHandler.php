@@ -17,6 +17,7 @@ use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrCorrelationCommenter;
 use App\Bridge\Writeback\ProgramCardGuard;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\StoredPrNumberKind;
 use App\Bridge\Writeback\StoredPrRef;
@@ -102,13 +103,18 @@ use Throwable;
  * (Shipped/Released) stage. Fail-open when the order can't be read, so the guard
  * never breaks the writeback. (The opt-in `reopened` outcome below is a fifth,
  * handler-internal, deliberately-backward move — scoped to the abandon stage.)
+ * ⚠ Since card#10850 / DL-436 the built-in classifier emits no `closed_unmerged` move
+ * ({@see PrOutcome::movesCard()}); its arms here serve only a custom classifier that still
+ * emits one.
  *
  * The `reopened` outcome (opt-in `revive_on_reopen`, DL-195) is the writeback's other
  * legitimately-backward move: a reopened PR revives its card from the mapped
- * `closed_unmerged` (abandon) stage back to the `opened` stage. The guard allows that
- * backward move ONLY from the abandon stage (terminal-safe — a Shipped/Released card
- * is never there); elsewhere `reopened` is forward-only like `opened`. A marker-gated
- * override alert (notifyRevive) fires after the move.
+ * `closed_unmerged` (abandon) stage back to the `opened` stage — a stage the writeback no
+ * longer parks a card in since DL-436, so what it revives was put there by a person or
+ * before DL-436. The guard allows that backward move ONLY from the abandon stage
+ * (terminal-safe — a Shipped/Released card is never there); elsewhere `reopened` is
+ * forward-only like `opened`. A marker-gated override alert (notifyRevive) fires after
+ * the move.
  *
  * A refusal about WHICH CARD an event is about — a near-miss token, a card id off the mapped board,
  * a card on another board, an uncorroborated title token, a correlation ref not stamped — is ALSO
@@ -435,7 +441,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // is byte-identical. Anywhere else, a `reopened` move behaves exactly like `opened`.
         $isRevive = false;
         if ($outcome === 'reopened') {
-            $abandon = $mapping->stageFor('closed_unmerged');
+            $abandon = $mapping->stageFor(PrOutcome::CLOSED_UNMERGED);
             $isRevive = is_int($current) && $abandon !== null && $current === $abandon;
         }
 
@@ -518,7 +524,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // from the abandon stage (the revival), else is forward-only like `opened`.
         // Fail-open: when the order can't be read (preload down, or a stage not on the
         // board) the move proceeds as it did pre-guard.
-        if (in_array($outcome, ['opened', 'merged', 'merged_to_main', 'closed_unmerged', 'reopened'], true)) {
+        if (in_array($outcome, ['opened', 'merged', 'merged_to_main', PrOutcome::CLOSED_UNMERGED, 'reopened'], true)) {
             if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
                     'catalog_id' => 'move_card.would_regress',
@@ -1087,7 +1093,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             return false;   // a stage isn't on the board (config drift) → can't order → allow
         }
 
-        if ($outcome === 'closed_unmerged') {
+        if ($outcome === PrOutcome::CLOSED_UNMERGED) {
             // Legitimately backward (In-Review → In-Progress). Refuse ONLY once the
             // card has reached a terminal (Shipped/Released) stage, so a stale close
             // can't resurrect a shipped/released card. No terminal stage configured
@@ -1104,7 +1110,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // still-in-progress card, or a stale reopen on a terminal card, can't drag it
             // back). `closed_unmerged` unmapped ⇒ no abandon stage ⇒ falls through to
             // forward-only (revival can't apply without a parked-from stage).
-            $abandon = $mapping->stageFor('closed_unmerged');
+            $abandon = $mapping->stageFor(PrOutcome::CLOSED_UNMERGED);
             if ($abandon !== null && $currentStage === $abandon) {
                 return false;   // revival: the backward Won't-Do → In-Review move is allowed
             }

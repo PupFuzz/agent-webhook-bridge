@@ -16,6 +16,7 @@ use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\ProgramCardGuard;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -184,7 +185,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // not move: routine dependabot churn shouldn't linger in any column, and
             // archiving needs no stage mapping. A repo+PR may map to >1 card (a create
             // race) — archive them all. Empty (never tracked) → nothing to do.
-            if ($outcome === 'closed_unmerged') {
+            if ($outcome === PrOutcome::CLOSED_UNMERGED) {
                 foreach ($cards as $cardId => $card) {
                     if ($this->refusedAsPinned($card, $cardId, $repo, $prNumber, $mapping, 'archive')) {
                         continue;
