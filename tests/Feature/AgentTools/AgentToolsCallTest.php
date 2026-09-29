@@ -5169,6 +5169,10 @@ class AgentToolsCallTest extends TestCase
                 'args' => ['ids' => [42, 43], 'fields' => ['name', 'stage']],
                 'fake' => $this->getCardsFake(),
             ],
+            'board_search' => [
+                'args' => ['tags_any' => ['a', 'b'], 'stage' => [50], 'include_archived' => true, 'lane' => 'mine', 'name_contains' => 'c', 'updated_since' => '2026-09-01', 'fields' => ['id', 'stage'], 'limit' => 5],
+                'fake' => $this->searchFake(),
+            ],
             default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
         };
     }
@@ -5196,6 +5200,27 @@ class AgentToolsCallTest extends TestCase
             $live = str_contains($url, 'id=42') && ! str_contains($url, 'archived=1');
 
             return Http::response(['data' => $live ? [['id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'workflow_stage_id' => 50, 'name' => 'c', 'tags' => []]] : []]);
+        };
+    }
+
+    /**
+     * `board_search`'s kanban surface for the door-wide arms: card 42 on board 10 answers every
+     * search (with kanban's DL-282 parse disclosure, which the tool refuses to answer without) and
+     * the by-ref index for PR 7.
+     */
+    private function searchFake(): \Closure
+    {
+        return function ($request) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/boards/10/preload.json')) {
+                return Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]]);
+            }
+            $row = ['id' => 42, 'board_id' => 10, 'swimlane_id' => 4, 'workflow_stage_id' => 50, 'name' => 'c', 'tags' => ['a'], 'payload' => ['pr_number' => 7]];
+            if (str_contains($url, '/tasks/by-ref.json')) {
+                return Http::response(['data' => [$row]]);
+            }
+
+            return Http::response(['data' => [$row], 'meta' => ['total' => 1, 'applied_filters' => [], 'free_text_terms' => []]]);
         };
     }
 
@@ -5314,6 +5339,8 @@ class AgentToolsCallTest extends TestCase
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side',
             'board_get_cards a 403 asks the membership control',
+            'board_search by pr_number re-asks each candidate',
+            'board_search summary counts',
         ] as $scenario) {
             $extra[$scenario] = [$scenario];
         }
@@ -5345,6 +5372,8 @@ class AgentToolsCallTest extends TestCase
             'board_take_card lookup misses into the archive side' => $lookupMiss('board_take_card', ['card_id' => 42], $this->takeFake(live: [])),
             'board_comment_card lookup misses into the archive side' => $lookupMiss('board_comment_card', ['card_id' => 42, 'content' => 'a note'], $this->commentFake(live: [])),
             'board_get_cards a 403 asks the membership control' => ['tool' => 'board_get_cards', 'args' => ['ids' => [44], 'fields' => []], 'fake' => $this->getCardsFake()],
+            'board_search by pr_number re-asks each candidate' => ['tool' => 'board_search', 'args' => ['pr_number' => 7, 'lane' => 'mine'], 'fake' => $this->searchFake()],
+            'board_search summary counts' => ['tool' => 'board_search', 'args' => ['summary' => true, 'summary_tags' => ['a']], 'fake' => $this->searchFake()],
             default => ['tool' => $scenario] + $this->undeclaredKeyFixture($scenario),
         };
     }
@@ -5372,6 +5401,9 @@ class AgentToolsCallTest extends TestCase
             'board_comment_card' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks/42/comments\\.json$#']],
             'board_get_cards' => ['status' => 200, 'sends' => ["#^GET {$search}.*id=43.*archived=1#", '#^GET \\S+/tasks/43/preload\\.json$#', '#^GET \\S+/boards/10/preload\\.json#']],
             'board_get_cards a 403 asks the membership control' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/44/preload\\.json$#', "#^GET {$search}q=board_id=10&limit=1$#"]],
+            'board_search' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}q=board_id=10 tags:\"b\" workflow_stage_id=50 .*swimlane_id=4&limit=5&archived=1$#"]],
+            'board_search by pr_number re-asks each candidate' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/tasks/by-ref\\.json\\?system=github_pr&ref=7$#', "#^GET {$search}q=board_id=10 id=42 swimlane_id=4&limit=1$#"]],
+            'board_search summary counts' => ['status' => 200, 'sends' => ["#^GET {$search}q=board_id=10 workflow_stage_id=50&limit=1$#", "#^GET {$search}q=board_id=10 tags:\"a\"&limit=1$#"]],
             'board_correct_card lookup misses into the archive side',
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side' => ['status' => 422, 'sends' => ["#^GET {$search}.*archived=1#"]],

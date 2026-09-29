@@ -5,6 +5,7 @@ namespace Tests\Feature\AgentTools;
 use App\Bridge\Tools\BoardCardProjection;
 use App\Bridge\Tools\BoardCreateCardTool;
 use App\Bridge\Tools\BoardGetCardsTool;
+use App\Bridge\Tools\BoardSearchTool;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\CallerTagPolicy;
@@ -82,6 +83,8 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
     private const CAPPED_UNTAGGED_TOOLS = [
         'board_comment_card' => "required: ['card_id', 'content']",
         'board_get_cards' => "required: ['ids']",
+        // No argument is required, so its schema closes on the key after `properties`.
+        'board_search' => '      additionalProperties: false,',
     ];
 
     private function toolDefinition(string $tool): string
@@ -420,10 +423,17 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
      * the enum omits is undiscoverable, and one the enum offers and the bridge refuses turns a
      * schema-valid call into a 422.
      */
-    public function test_the_channel_server_advertises_exactly_the_fields_the_projection_offers(): void
+    /** @return array<string, array{string}> */
+    public static function projectingTools(): array
     {
-        $block = $this->property('board_get_cards', 'fields');
-        $this->assertSame(1, preg_match('/enum: \[([^\]]*)\]/', $block, $m), "board_get_cards' `fields` no longer carries an enum this test can read — re-anchor it");
+        return ['board_get_cards' => ['board_get_cards'], 'board_search' => ['board_search']];
+    }
+
+    #[DataProvider('projectingTools')]
+    public function test_the_channel_server_advertises_exactly_the_fields_the_projection_offers(string $tool): void
+    {
+        $block = $this->property($tool, 'fields');
+        $this->assertSame(1, preg_match('/enum: \[([^\]]*)\]/', $block, $m), "{$tool}' `fields` no longer carries an enum this test can read — re-anchor it");
         preg_match_all("/'([a-z_]+)'/", $m[1], $values);
 
         $advertised = $values[1];
@@ -431,5 +441,34 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         sort($advertised);
         sort($offered);
         $this->assertSame($offered, $advertised);
+    }
+
+    /**
+     * `board_search` refuses a `limit` over {@see BoardSearchTool::MAX_LIMIT} and defaults it to
+     * {@see BoardSearchTool::DEFAULT_LIMIT}; the schema states the cap as `maximum` (which a client may
+     * enforce) and both numbers in prose (which a model reads). A bare number is checked against its
+     * own property block, with a word after it, so a neighbour's digits cannot satisfy it.
+     */
+    public function test_the_channel_server_advertises_the_search_limit_the_bridge_enforces(): void
+    {
+        $block = $this->property('board_search', 'limit');
+
+        $this->assertStringContainsString('maximum: '.BoardSearchTool::MAX_LIMIT.',', $block);
+        $this->assertStringContainsString('at most '.BoardSearchTool::MAX_LIMIT.')', $block);
+        $this->assertStringContainsString('default '.BoardSearchTool::DEFAULT_LIMIT.',', $block);
+    }
+
+    /** The `lane` enum IS {@see BoardSearchTool::LANES} restated inline, so it is held equal to it. */
+    public function test_the_channel_server_advertises_exactly_the_lanes_the_bridge_accepts(): void
+    {
+        $block = $this->property('board_search', 'lane');
+        $this->assertSame(1, preg_match('/enum: \[([^\]]*)\]/', $block, $m), "board_search's `lane` no longer carries an enum this test can read — re-anchor it");
+        preg_match_all("/'([a-z_]+)'/", $m[1], $values);
+
+        $advertised = $values[1];
+        $accepted = BoardSearchTool::LANES;
+        sort($advertised);
+        sort($accepted);
+        $this->assertSame($accepted, $advertised);
     }
 }

@@ -14,6 +14,19 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - ⚠ **Reference channel-server snapshot 0.9.30 → 0.9.31** (the new tool's schema), so `bridge:check` WARNs for a seat on an older copy until it re-copies `examples/channel-servers/`, runs `npm ci` and restarts its session. A seat that does not re-deploy loses no function; it does not see the new tool.
   - `board_my_cards`' answer is unchanged (its card projection moved to `BoardCardProjection`, byte-identical).
   - No migration, no config key, no `.env` change, no route change, no token-scope change (the tool reads with the writeback token's existing `read` ability), no `bridge:check` leg; `--format=json` `schema` stays **1**.
+- **card#10832 / DL-437** — **new board tool `board_search`: the cards on the seat's own board matching filters — `tags_all`, `tags_any`, `stage` (a list of ids or names), `pr_number`, `name_contains`, `updated_since` (a date), `include_archived`, `lane: mine | any | none` (default `any`) — returning the matches only, newest first, with no lane list or column list attached.** Every filter is applied by kanban's own search and confirmed applied by kanban's parse disclosure; a filter kanban searched as text, or a kanban that does not disclose, refuses the call (422) rather than answering a count of something else. `window` carries `total` (kanban's own count), `returned`, `limit` (at most `BoardSearchTool::MAX_LIMIT`, one kanban page), `truncated` and `total_is_lower_bound` — the last true only for a `tags_any` union the bridge could not size exactly. `summary: true` returns kanban's counts per column (and per `summary_tags` tag) and no cards. `fields` projects each card as `board_get_cards` does.
+  - ⚠ **Needs kanban v0.47.0 or later** (its search's `meta.free_text_terms` disclosure); against an older kanban every call is refused as an install fault. The other tools are unaffected.
+  - ⚠ **`pr_number` with `include_archived: true` is refused**: kanban finds a card by PR number only through its by-ref index, which answers live cards only. `summary` over a `tags_any` of more than one tag is refused (a card carrying two tags would be counted twice). A call whose kanban fan-out would exceed `BoardSearchTool::REQUEST_CEILING` (`board_get_cards`' own worst case) is refused before it is sent.
+  - ⚠ **Reference channel-server snapshot 0.9.31 → 0.9.32** (the new tool's schema), so `bridge:check` WARNs for a seat on an older copy until it re-copies `examples/channel-servers/`, runs `npm ci` and restarts its session. A seat that does not re-deploy loses no function; it does not see the new tool.
+  - No migration, no config key, no `.env` change, no route change, no token-scope change, no `bridge:check` leg; `--format=json` `schema` stays **1**.
+
+### Fixed
+
+- **card#10832 / DL-437** — `board_get_cards` no longer refuses a call, naming the token's board membership, when an id 403s on a board with no live cards while another id of the same call resolved as `archived`: a card resolved on the seat's board in the same call is now the membership proof, whatever order the ids were sent in.
+
+### Changed
+
+- **card#10832 / DL-437** — `board_my_cards`' `stage` refusal for a value that is neither an integer nor a string now reads "as the board tools report it" where it named `board_my_cards`; its `tag` refusal for `"` or `*` now says "A tag filter matches ONE tag exactly" where it said "The tag read". Status codes, keys and every other refusal are unchanged.
 
 ## [0.92.0] - 2026-09-28
 

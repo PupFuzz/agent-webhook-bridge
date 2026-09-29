@@ -627,6 +627,7 @@ class ToolsCallCommandTest extends TestCase
             'board_take_card' => ['card_id' => 42],
             'board_comment_card' => ['card_id' => 42, 'content' => 'a note'],
             'board_get_cards' => ['ids' => [42]],
+            'board_search' => ['tags_all' => ['a']],
             default => $this->fail("no arguments for the registered tool `{$tool}` — add them, so this door's no-answer arm covers it"),
         };
     }

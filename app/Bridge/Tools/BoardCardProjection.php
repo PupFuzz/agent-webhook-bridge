@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 
 /**
@@ -40,6 +41,53 @@ final class BoardCardProjection
     public static function defaultFields(): array
     {
         return array_values(array_diff(self::FIELDS, [self::OPT_IN_FIELD]));
+    }
+
+    /**
+     * The `fields` argument of a read that offers a projection, validated — one rule for every such
+     * read, so they cannot come to disagree about what a field name is (hoisted from
+     * `board_get_cards` at its second caller, `board_search`). Absent (or null — the HTTP door hands
+     * `""` over as null) ⇒ {@see defaultFields}, which leaves the body out. A repeated name is kept
+     * once.
+     *
+     * @param  array<string, mixed>  $args
+     * @return list<string>
+     */
+    public static function fieldsArgument(array $args, string $tool): array
+    {
+        $fields = $args['fields'] ?? null;
+        if ($fields === null) {
+            return self::defaultFields();
+        }
+        $vocabulary = implode(', ', array_map(fn (string $f): string => "`{$f}`", self::FIELDS));
+        if (! is_array($fields) || ! array_is_list($fields)) {
+            throw new ToolRefusalException("{$tool}: `fields` must be a list of field names, from: {$vocabulary}. Omit it for every field but `description`.");
+        }
+        $selected = [];
+        foreach ($fields as $field) {
+            // Trimmed as the HTTP door's middleware would have handed it over, so the ssh door does
+            // not refuse a name the HTTP door accepts ({@see BoardToolArgs}).
+            $name = is_string($field) ? BoardToolArgs::trimmed($field) : null;
+            if ($name === null || ! in_array($name, self::FIELDS, true)) {
+                throw new ToolRefusalException("{$tool}: `fields` names ".json_encode($field)." — not a card field. The fields are: {$vocabulary}.");
+            }
+            $selected[] = $name;
+        }
+
+        return array_values(array_unique($selected));
+    }
+
+    /**
+     * The refusal reason for the one argument every projecting read is asked for and does not take:
+     * a card's body is selected per call by naming `description` in `fields`.
+     */
+    public static function refusedDescriptionArgument(string $key): ?string
+    {
+        if (in_array(strtolower($key), ['include_description', 'description'], true)) {
+            return "`{$key}` is not an argument here — a card's body is selected per call by naming `description` in `fields`.";
+        }
+
+        return null;
     }
 
     /**
