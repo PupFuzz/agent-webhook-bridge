@@ -209,11 +209,13 @@ final class OwedWriteQueue
      * by a test — at 1 the reserved slot would be the only slot): a due failing head is tried
      * within F passes, F the number of due failing heads (one per pass, round-robin). A due
      * never-failed head is tried once the older due never-failed heads ahead of it have had
-     * $maxSubjects - 1 slots each; each head a pass tries leaves that group (applied, backed off
-     * by a rate limit, or failed), and a row can re-enter it only through a rate limit — at
-     * most `MAX_ATTEMPTS` times — so the rows ahead of it are finite and so is its wait. A
-     * drain that loses the subject's lock to a live delivery consumes a slot without
-     * resolving the head; that delivery is draining it.
+     * $maxSubjects - 1 slots each; each head a pass tries leaves that group (applied, backed
+     * off, or failed). The rows ahead of it are finite (every later insert has a higher `id`),
+     * and one re-enters the group only after a backoff: a rate limit (at most `MAX_ATTEMPTS`
+     * times, then given up) or an unreadable agent config (exponential, with no attempt cap —
+     * {@see recordAttempt}). The watchdog bounds both at `MAX_AGE_S`, so the wait is finite,
+     * at worst that long. A drain that loses the subject's lock to a live delivery consumes a
+     * slot without resolving the head; that delivery is draining it.
      *
      * @return int how many subjects were drained
      */

@@ -481,6 +481,40 @@ class OwedWriteQueueTest extends TestCase
     }
 
     /**
+     * With fewer never-failed heads than slots, the rest of the pass reaches failing heads too —
+     * and the one already given the reserved slot must not be drained a second time.
+     */
+    public function test_the_reserved_failing_head_is_not_drained_twice_in_one_pass(): void
+    {
+        $attempted = [];
+        $this->behaviour = function (ReactionTarget $t) use (&$attempted): void {
+            $tag = (string) ($t->payload['tag'] ?? '');
+            $attempted[] = $tag;
+            if ($tag === 'broken') {
+                throw new RequestException(new Response(new GuzzleResponse(500, [], '{"message":"Server Error"}')));
+            }
+        };
+        $this->oweOn('probe-broken', 'broken');
+        try {
+            $this->queue()->drain(OwedWriteQueue::subjectKey('kanban', '5', 'probe_write', 'probe-broken'));
+        } catch (RequestException) {
+        }
+        $this->oweOn('probe-fresh', 'fresh');
+        $attempted = [];
+
+        $drained = null;
+        try {
+            $drained = $this->queue()->sweep(OwedWriteRetryJob::MAX_SUBJECTS_PER_PASS);
+        } catch (RequestException) {
+        }
+
+        $counts = array_count_values($attempted);
+        ksort($counts);
+        $this->assertSame(['broken' => 1, 'fresh' => 1], $counts, 'each subject is drained at most once per pass');
+        $this->assertNull($drained, 'the failing head still fails the pass');
+    }
+
+    /**
      * Two requests owing their subjects' first writes at once both see no instance and both
      * insert; `scheduled_jobs.name` is unique, so the loser's insert is refused. The instance
      * exists — that is a success, not the loud "could not declare" line.

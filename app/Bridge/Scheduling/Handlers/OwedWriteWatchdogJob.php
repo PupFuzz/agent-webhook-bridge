@@ -30,8 +30,11 @@ use App\Bridge\Writeback\OwedWriteQueue;
  *
  * ⚑ ITS INSTANCE IS DECLARED BY THE QUEUE, not shipped: {@see OwedWriteQueue} inserts
  * {@see self::spec()} at every durable write, before the row exists — so an owed write has it
- * behind it EXCEPT where that declare failed (logged `owed_write.watchdog_undeclared`), or after
- * an operator removed the instance and before the next durable write re-declares it. An install
+ * behind it EXCEPT where that declare failed (logged `owed_write.watchdog_undeclared`); after an
+ * operator removed the instance, until the next durable write re-declares it; while an operator
+ * has disabled it (`bridge:jobs disable`, which a re-declare does not undo); and while the
+ * registry runs no job at all (`BRIDGE_JOBS_ENABLED=false`, or a pass posture it cannot use —
+ * the two install-wide cases {@see OwedWriteRetryJob::clockRetryGap()} also names). An install
  * that never makes a durable write never grows this job.
  */
 final class OwedWriteWatchdogJob implements JobHandler
