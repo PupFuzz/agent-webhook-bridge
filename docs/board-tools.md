@@ -1215,6 +1215,10 @@ each the `board_get_cards` card shape (`swimlane_id` and `position` included), p
 ```
 
 `by_stage` covers the `stage` columns you named, or every column of your board, in column order.
+⛔ Without `stage`, that needs your board's column list: if kanban's read of the board answers
+without one (a 200 carrying no stage collection), the summary is **refused** (422, an INSTALL fault,
+naming that cause) rather than answered with an empty `by_stage`. Naming the columns in `stage` still
+counts them.
 Every count is **kanban's own** (`meta.total` of a one-row search), so nothing is cut: `truncated` and
 `total_is_lower_bound` are always `false` here. ⚠ Each count is a **separate** read, so a card moving
 between two of them can make the columns disagree with `total` by the cards that moved —

@@ -46,6 +46,9 @@ class BoardSearchTest extends TestCase
     /** @var array<string, mixed>|null a whole response body served for every search instead */
     private ?array $searchBody = null;
 
+    /** The board's preload answers a 200 whose body carries no stage collection (a degraded read). */
+    private bool $stagesUnreadable = false;
+
     /** The writeback user is not a member of the board: kanban's search floors it to zero rows, at 200. */
     private bool $nonMember = false;
 
@@ -188,7 +191,7 @@ class BoardSearchTest extends TestCase
     private function fakeKanban(int $byRefStatus = 200, ?int $searchStatus = null): void
     {
         Http::fake([
-            '*/boards/'.self::BOARD.'/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+            '*/boards/'.self::BOARD.'/preload.json' => Http::response(['data' => $this->stagesUnreadable ? ['name' => 'board'] : ['workflows' => [['stages' => [
                 ['id' => 50, 'name' => 'Backlog', 'position' => 1],
                 ['id' => 51, 'name' => 'In Review', 'position' => 2],
                 ['id' => 52, 'name' => 'Done', 'position' => 3],
@@ -522,6 +525,49 @@ class BoardSearchTest extends TestCase
 
         $this->assertSame(1, $res['body']['result']['summary']['total']);
         $this->assertSame([['id' => 51, 'name' => 'In Review', 'count' => 1]], $res['body']['result']['summary']['by_stage']);
+    }
+
+    /** @return array<string, array{array<string, mixed>}> */
+    public static function summariesOverEveryColumn(): array
+    {
+        return [
+            'a summary' => [['summary' => true]],
+            'a pr_number summary' => [['pr_number' => 7, 'summary' => true]],
+        ];
+    }
+
+    /**
+     * ⛔ A summary over every column, on a board whose column list could not be read, is refused
+     * naming that cause — never `by_stage: []` with `stage_counts_sum_to_total: false`, which reads
+     * as "cards moved between reads".
+     *
+     * @param  array<string, mixed>  $args
+     */
+    #[DataProvider('summariesOverEveryColumn')]
+    public function test_a_summary_over_every_column_is_refused_when_the_column_list_is_unreadable(array $args): void
+    {
+        $this->card(101, ['payload' => ['pr_number' => 7]]);
+        $this->stagesUnreadable = true;
+        $this->fakeKanban();
+
+        $res = $this->http($args);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('without its column (stage) list', (string) $res['body']['error']);
+        $this->assertSame([], self::searches(), 'refused before any count');
+    }
+
+    /** Named columns need no column list to count, so that summary is still answered. */
+    public function test_a_summary_naming_its_columns_is_answered_when_the_column_list_is_unreadable(): void
+    {
+        $this->card(101, ['workflow_stage_id' => 51]);
+        $this->stagesUnreadable = true;
+        $this->fakeKanban();
+
+        $res = $this->http(['summary' => true, 'stage' => [51]]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([['id' => 51, 'name' => null, 'count' => 1]], $res['body']['result']['summary']['by_stage']);
     }
 
     public function test_a_pr_number_summary_tallies_the_complete_by_ref_population(): void

@@ -10,6 +10,7 @@ use App\Bridge\Writeback\BoardStructure;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Bridge\Writeback\SearchPage;
+use App\Bridge\Writeback\TerminalBasis;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -146,6 +147,11 @@ final class BoardSearchTool implements Tool
             } catch (RequestException $e) {
                 throw $this->readRefusal($e, $agentName, BoardReadRoute::BoardScoped, "the structure of your board {$boardId}");
             }
+        }
+        // A summary with no `stage` answers per column of the whole board, so it needs the column
+        // list; the degraded read (no stage collection) would otherwise pass for a board of none.
+        if ($summary && $stageArg === null && $structure?->terminalBasis === TerminalBasis::Unreadable) {
+            throw new ToolRefusalException("board_search: `summary` counts per column of your board {$boardId}, and kanban's read of that board answered without its column (stage) list — a 200 whose body carried no stage collection — so there are no columns to count. NO counts were returned. Name the columns in `stage` to count those, or retry; if it persists this is an INSTALL fault, report it to your operator.", installFault: true);
         }
         $stageNames = $structure->stageNames ?? [];
         $stages = $stageArg === null ? null : $this->resolveStages($stageArg, $stageNames, $boardId);
