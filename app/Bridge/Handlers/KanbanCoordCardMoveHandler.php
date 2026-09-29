@@ -10,7 +10,6 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CoordCardLanePlacement;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
-use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\ProgramCardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
@@ -303,7 +302,6 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 return;
             }
             $client->moveCard($id, (int) $mapping->coordCardTerminalStageId);
-            OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_coord_card_move', $id, $repo, self::ALERT_OUTCOME, $issueNumber);
             Log::info('kanban_coord_card_move: moved to terminal', ['catalog_id' => 'coord_card_move.moved_to_terminal', 'card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
 
             return;

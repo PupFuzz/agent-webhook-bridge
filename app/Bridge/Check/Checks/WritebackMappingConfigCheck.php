@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
+use App\Bridge\Support\CoordConfigPath;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -440,14 +441,10 @@ final class WritebackMappingConfigCheck implements Check
         $prefix = "writeback: issue_population ({$repo}, board {$mapping->boardId})";
         $tail = 'A bridge on `all` with a reconcile on `prefixed` is the no-backstop gap — the non-prefixed set self-heals nowhere.';
 
-        $path = config('bridge.writeback.coord_config_path');
-        if (! is_string($path) || $path === '') {
-            $ambient = getenv('COORD_CONFIG');
-            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
-        }
+        $path = CoordConfigPath::resolve();
         $config = CoordConfigTerminals::load($path);
         if ($config === null) {
-            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
+            $where = CoordConfigPath::unreadableClause($path);
 
             yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 

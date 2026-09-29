@@ -784,16 +784,20 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && in_array($r['card_id'], [6, 8, 10], true));
     }
 
-    public function test_the_promote_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
+    public function test_the_promote_is_stage_only_and_the_released_card_keeps_its_assignee_and_owner_tag(): void
     {
-        // The Shipped scan is read before the GitHub loop; a tag added after it must survive.
-        $scanned = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']];
-        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
+        // card#10869: a released card is finished, and a finished card KEEPS its assignee
+        // (card#10868 Q2). The promote writes the stage and nothing else — no fresh read, no tag
+        // write, no key naming the assignee.
+        $scanned = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'assigned_user_id' => 7, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']];
+        $cards = new KanbanCardStub([5 => $scanned]);
         $this->fakeBoard([$scanned], $cards->stub());
 
         $this->handle();
 
-        $this->assertSame([['workflow_stage_id' => 53], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
+        $this->assertSame([['workflow_stage_id' => 53]], $cards->patchesTo(5));
+        $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+        $this->assertSame(7, $cards->cards[5]['assigned_user_id']);
     }
 
     /**
@@ -832,24 +836,5 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             collect(Http::recorded())->filter(fn (array $pair) => str_contains($pair[0]->url(), '/pulls/100'))->count(),
             'the parent card reached the GitHub read — the refusal is not at the candidate scan',
         );
-    }
-
-    public function test_a_refused_owner_tag_write_leaves_the_promote_standing_and_alerts(): void
-    {
-        $this->writeWritebackWithAlert(['promote_on_release' => true]);
-        Log::spy();
-        $cards = new KanbanCardStub([5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['owner:kanban/kanban'], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']]]);
-        $this->fakeBoard([$cards->cards[5]], [
-            self::ALERT_URL.'*' => Http::response(['ok' => true]),
-            '*/tasks/5.json' => fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data())
-                ? Http::response(['message' => 'The tags.0 field must not be greater than 64 characters.'], 422)
-                : $cards->stub()['*/tasks/*.json']($r),
-        ]);
-
-        $this->handle();
-
-        $this->assertSame(53, $cards->cards[5]['workflow_stage_id']);
-        Log::shouldHaveReceived('info')->withArgs(fn (string $m) => $m === 'kanban_promote_released: promoted Shipped→Released')->once();
-        $this->assertPromoteAlert('owner_tag_not_cleared_write_4xx', 5);
     }
 }

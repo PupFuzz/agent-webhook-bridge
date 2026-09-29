@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's `kb_url_host` — the parser that turns a kanban API base into the BOARD-INSTANCE key a coord roster's `kanban_user_id` object is keyed by (card#10868 / card#10869). The toolkit OWNS the rule; the bridge copies it because `bridge:check` holds each agent's `identity.kanban_user_id` against that roster in PHP. tests/Unit/Support/KanbanInstanceKeyParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors against a toolkit checkout's own `kb_url_host`.",
+  "mirror": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Support\\KanbanInstanceKey",
+    "corpus": "docs/kb-instance-key-parity-corpus.json",
+    "checked_by": "tests/Unit/Support/KanbanInstanceKeyParityTest.php",
+    "runner": "bin/kb-owner-parity.sh"
+  },
+  "authority": {
+    "repo": "PupFuzz/agent-board-toolkit",
+    "symbol": "kb_url_host",
+    "path": "bin/_kb-board-lib.sh",
+    "relationship": "The toolkit OWNS this rule (its README § \"The card owner — the kanban assignee\" names it as the key of the roster's kanban_user_id object). A disagreement is the bridge's defect to fix by re-porting, never the toolkit's to fix by matching the bridge."
+  },
+  "how_the_far_end_runs_this": "From a bridge checkout: `bin/kb-owner-parity.sh --corpus docs/kb-instance-key-parity-corpus.json --toolkit <toolkit checkout>`. It sources that checkout's bin/_kb-board-lib.sh and gives every vector's single argument to `kb_url_host`; the printed host must equal `expect` byte-for-byte. Exit 0 agreed, 1 drifted, 2 could not measure. `--control` perturbs every expectation and must report each one.",
+  "not_checked_by_this_repo": [
+    "NOTHING IN THIS REPO'S CI RUNS THE TOOLKIT: a change to `kb_url_host` reds nothing here until someone runs bin/kb-owner-parity.sh against the changed toolkit. Run it on a toolkit bump.",
+    "The check is VECTOR-granular: a toolkit change that moves no published vector is invisible to both ends."
+  ],
+  "last_measured": {
+    "date": "2026-09-29",
+    "authority_ref": "PupFuzz/agent-board-toolkit 11a6d150 (the dev merge of PR #425, card#10868), bin/_kb-board-lib.sh exported with `git archive`",
+    "authority_blob": "sha256:9aea087a25542fb9d69161a4c39ab34c8a595d35715f49502de88ec96a41c8db (bin/_kb-board-lib.sh) — copied from the runner's own `executed:` line, not typed",
+    "vectors_digest": "sha256:efae6811695a0c5e3ab84a8685069597ea78d0e5393ad3d213a8c7f0873a240c",
+    "method": "`bin/kb-owner-parity.sh --corpus docs/kb-instance-key-parity-corpus.json --toolkit <that export>` executed every vector against the authority named above; `--control` over the same export reported every perturbed expectation (exit 0). As a discrimination check the runner was also run against a copy of the same lib with the trailing-dot strip removed and the id floor lowered to 0, and reported those vectors DISAGREE.",
+    "result": "exit 0 — agreed 24 · disagreed 0 · unmeasured 0. Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
+  },
+  "mirror_local": {},
+  "mirrored_but_not_driven": {},
+  "known_divergences": {},
+  "constants": {},
+  "vectors": {
+    "of": [
+      {
+        "args": [
+          "https://kanban.victim.corp/api/v3"
+        ],
+        "expect": "kanban.victim.corp",
+        "note": "plain"
+      },
+      {
+        "args": [
+          "https://kanban.victim.corp:8443/api/v3"
+        ],
+        "expect": "kanban.victim.corp",
+        "note": "the port is not part of the key"
+      },
+      {
+        "args": [
+          "https://u:pw@kanban.victim.corp/api/v3"
+        ],
+        "expect": "kanban.victim.corp",
+        "note": "userinfo is not part of the key"
+      },
+      {
+        "args": [
+          "https://good.host@evil.example/"
+        ],
+        "expect": "evil.example",
+        "note": "the host is after the LAST @"
+      },
+      {
+        "args": [
+          "https://evil.example#@kanban.victim.corp"
+        ],
+        "expect": "evil.example",
+        "note": "a fragment ends the authority"
+      },
+      {
+        "args": [
+          "https://evil.example?@kanban.victim.corp"
+        ],
+        "expect": "evil.example",
+        "note": "a query ends the authority"
+      },
+      {
+        "args": [
+          "https://evil.example:443#@kanban.victim.corp"
+        ],
+        "expect": "evil.example",
+        "note": "port, then a fragment"
+      },
+      {
+        "args": [
+          "http://127.0.0.1:1/api"
+        ],
+        "expect": "127.0.0.1",
+        "note": "an IPv4 literal with a port"
+      },
+      {
+        "args": [
+          ""
+        ],
+        "expect": "",
+        "note": "nothing names no host"
+      },
+      {
+        "args": [
+          "kanban.victim.corp/p?x://y"
+        ],
+        "expect": "kanban.victim.corp",
+        "note": "a SCHEMELESS string whose path carries :// is not re-read as a scheme"
+      },
+      {
+        "args": [
+          "https://[::1]:8080/api/v3"
+        ],
+        "expect": "[::1]",
+        "note": "an IPv6 literal ends at ], not at its first :"
+      },
+      {
+        "args": [
+          "https://[::1]/api/v3"
+        ],
+        "expect": "[::1]",
+        "note": "an IPv6 literal with no port"
+      },
+      {
+        "args": [
+          "https://[fe80::1]/api"
+        ],
+        "expect": "[fe80::1]",
+        "note": "link-local IPv6"
+      },
+      {
+        "args": [
+          "https://[::ffff:169.254.169.254]/"
+        ],
+        "expect": "[::ffff:169.254.169.254]",
+        "note": "IPv4-mapped IPv6"
+      },
+      {
+        "args": [
+          "https://u:pw@[::1]:8080/api"
+        ],
+        "expect": "[::1]",
+        "note": "userinfo, IPv6 and a port"
+      },
+      {
+        "args": [
+          "https://[::1]"
+        ],
+        "expect": "[::1]",
+        "note": "a bare IPv6 authority"
+      },
+      {
+        "args": [
+          "https://evil.example/[::1]"
+        ],
+        "expect": "evil.example",
+        "note": "a bracket in the PATH is gone before the literal rule"
+      },
+      {
+        "args": [
+          "https://[::1]@evil.example/"
+        ],
+        "expect": "evil.example",
+        "note": "an @ after the literal still puts the host after the last @"
+      },
+      {
+        "args": [
+          "https://[::1/api"
+        ],
+        "expect": "[",
+        "note": "an UNCLOSED bracket keeps the first-colon strip"
+      },
+      {
+        "args": [
+          "https://kanban.victim.corp./api/v3"
+        ],
+        "expect": "kanban.victim.corp",
+        "note": "ONE trailing dot is the same DNS name"
+      },
+      {
+        "args": [
+          "https://kanban.victim.corp.:8443/"
+        ],
+        "expect": "kanban.victim.corp",
+        "note": "a trailing dot before the port"
+      },
+      {
+        "args": [
+          "https://kanban.victim.corp../api/v3"
+        ],
+        "expect": "kanban.victim.corp.",
+        "note": "only ONE trailing dot is dropped"
+      },
+      {
+        "args": [
+          "https://."
+        ],
+        "expect": "",
+        "note": "a lone dot"
+      },
+      {
+        "args": [
+          "https://Kanban.Example.COM/api/v3"
+        ],
+        "expect": "Kanban.Example.COM",
+        "note": "NOT case-folded: the toolkit compares hosts byte-for-byte"
+      }
+    ]
+  }
+}

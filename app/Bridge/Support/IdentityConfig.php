@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Support;
 
+use App\Bridge\Exceptions\ConfigException;
+
 /**
  * The `identity` section of a per-agent config — the agent's own IMMUTABLE
  * upstream ids. These build the AgentRegistry (recognition keys on numeric
@@ -13,10 +15,17 @@ namespace App\Bridge\Support;
  */
 final class IdentityConfig
 {
+    /**
+     * @param  ?string  $coordSeat  `identity.coord_seat` — the coord roster seat (`roster[].name`)
+     *                              this agent serves, for an agent whose name is not that seat's
+     *                              (card#10869). Null ⇒ the agent name is the seat name. Read only
+     *                              by `bridge:check`'s roster compare ({@see seatName}).
+     */
     public function __construct(
         public readonly ?int $kanbanUserId = null,
         public readonly ?int $githubUserId = null,
         public readonly ?string $githubLogin = null,
+        public readonly ?string $coordSeat = null,
     ) {}
 
     /**
@@ -28,7 +37,34 @@ final class IdentityConfig
             kanbanUserId: isset($data['kanban_user_id']) && is_numeric($data['kanban_user_id']) ? (int) $data['kanban_user_id'] : null,
             githubUserId: isset($data['github_user_id']) && is_numeric($data['github_user_id']) ? (int) $data['github_user_id'] : null,
             githubLogin: isset($data['github_login']) && is_scalar($data['github_login']) ? (string) $data['github_login'] : null,
+            coordSeat: self::coordSeat($data['coord_seat'] ?? null),
         );
+    }
+
+    /**
+     * The roster seat name this agent's `identity.kanban_user_id` is compared against: the
+     * declared `coord_seat`, else the agent name.
+     */
+    public function seatName(string $agentName): string
+    {
+        return $this->coordSeat ?? $agentName;
+    }
+
+    /**
+     * Absent ⇒ null; surrounding whitespace trimmed; a non-string or blank value THROWS, the
+     * shape rule every string key naming a seat follows (`idle_nudge.seat_agent` too) — a
+     * value that could only ever fail to match is refused where it is written.
+     */
+    private static function coordSeat(mixed $raw): ?string
+    {
+        if ($raw === null) {
+            return null;
+        }
+        if (! is_string($raw) || trim($raw) === '') {
+            throw new ConfigException('identity.coord_seat must be a non-empty coord roster seat name');
+        }
+
+        return trim($raw);
     }
 
     /**

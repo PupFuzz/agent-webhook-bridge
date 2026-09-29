@@ -189,6 +189,11 @@ class PinnedFieldWriteCoverageTest extends TestCase
             AgentToolsCallTest::class.'::test_a_take_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim',
             AgentToolsCallTest::class.'::test_a_name_correction_on_a_pinned_card_is_refused_by_name',
         ],
+        // UNGOVERNED — the card#10869 TAKEOVER writes the same single field as the take above
+        // (`assigned_user_id`), so the same ruling holds: the claim lands on a pinned card.
+        'Bridge/Tools/BoardTakeCardTool.php::takeOver#1' => [
+            AgentToolsCallTest::class.'::test_a_takeover_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim',
+        ],
         // UNGOVERNED BY THE FIELD RULE, and refused anyway — by the STAGE rule, at this
         // primitive's CALL SITES rather than here (`PinGuard`'s docblock owns that census).
         // The witness pins both facts in one delivery: no stage PATCH, and the payload PATCH
@@ -201,13 +206,6 @@ class PinnedFieldWriteCoverageTest extends TestCase
         // the backstop could never complete the move once the pin was lifted.
         'Bridge/Writeback/KanbanClient.php::stampCorrelationRefs#1' => [
             KanbanMoveCardHandlerTest::class.'::test_pinned_merge_still_stamps_the_correlation_refs_it_refuses_to_move_on',
-        ],
-        // UNGOVERNED — the DL-386 owner-tag clear writes `tags` alone, after a landed terminal move.
-        // A card pinned BEFORE the move is never moved, so never cleared; one pinned between the
-        // move and the clear still takes the clear, and keeps its hold marker.
-        'Bridge/Writeback/OwnerTag.php::clearAfterTerminalMove#1' => [
-            KanbanMoveCardHandlerTest::class.'::test_a_pinned_card_carrying_an_owner_tag_is_neither_moved_nor_cleared',
-            KanbanMoveCardHandlerTest::class.'::test_a_card_pinned_between_the_move_and_the_clear_still_loses_its_owner_tag_and_keeps_the_pin',
         ],
         // UNGOVERNED — the DL-193 draft overlay, and an explicit card#8557 ruling rather than
         // an oversight: its add-if-missing guard reads `block_reason` only, so a TAG-only pin

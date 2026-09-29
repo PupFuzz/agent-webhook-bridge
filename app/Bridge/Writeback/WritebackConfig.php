@@ -654,6 +654,28 @@ final class WritebackConfig
     }
 
     /**
+     * Every mapping that declares this board, NARROWED onto it ({@see WritebackMapping::perDeclaredBoard})
+     * so each carries that board's own stage map — the board-keyed read a board-tools seat needs,
+     * since it knows `board_tools.board_id` and no repo (card#10869: which of its columns the
+     * writeback treats as finished).
+     *
+     * @return list<WritebackMapping>
+     */
+    public function mappingsOnBoard(int $boardId): array
+    {
+        $onBoard = [];
+        foreach ($this->mappings as $mapping) {
+            foreach ($mapping->perDeclaredBoard() as $narrowed) {
+                if ($narrowed->boardId === $boardId) {
+                    $onBoard[] = $narrowed;
+                }
+            }
+        }
+
+        return $onBoard;
+    }
+
+    /**
      * Every install-declared hold-marker tag (DL-194) in force on a BOARD, deduped,
      * first-seen order — the board-keyed read of a repo-keyed key.
      *

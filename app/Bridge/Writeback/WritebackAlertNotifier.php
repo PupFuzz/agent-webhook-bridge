@@ -147,6 +147,29 @@ final class WritebackAlertNotifier
     }
 
     /**
+     * Signal that a bridge move took a card OUT OF A START COLUMN with NO OWNER recorded — no
+     * kanban assignee and no legacy `owner:` tag (card#10869, operator ruling A: the card is moved,
+     * never refused, and the alert names it). Emitted AFTER the confirmed move.
+     *
+     * DEDUPED PER (repo, card, destination stage): one alert per card per kind of start, so a
+     * redelivery that somehow re-reaches it cannot repeat it, while the same card started again
+     * into a different column (a later revival) is a new fact worth saying. One small marker per
+     * such card is the cost, bounded by the cards a seat never claimed.
+     */
+    public function notifyMovedWithoutOwner(string $repo, int $cardId, string $outcome, ?int $fromStage, int $toStage): void
+    {
+        $this->emit('writeback_moved_without_owner', "moved_without_owner\x00{$repo}\x00{$cardId}\x00{$toStage}", [
+            'repo' => $repo,
+            'card_id' => $cardId,
+            'outcome' => $outcome,
+            'from_stage' => $fromStage,
+            'to_stage' => $toStage,
+            'reason' => 'moved_without_owner',
+            'summary' => "moved card {$cardId} with no owner recorded",
+        ]);
+    }
+
+    /**
      * Signal that a card parked in the `closed_unmerged` (abandon) stage was REVIVED
      * (DL-195) back to the `opened` stage when its PR was reopened — the compensating
      * "we moved a card out of a terminal-ish stage" notification. Emitted AFTER a
