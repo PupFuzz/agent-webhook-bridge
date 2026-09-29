@@ -377,8 +377,32 @@ class BoardGetCardsTest extends TestCase
 
         $this->assertSame(422, $res['status']);
         $this->assertStringContainsString('NO cards were returned', (string) $res['body']['error']);
-        $this->assertStringContainsString('refuses (403)', (string) $res['body']['error']);
+        $this->assertStringContainsString('may not read your board', (string) $res['body']['error']);
         $this->assertStringContainsString('MEMBER', (string) $res['body']['error']);
+    }
+
+    /**
+     * ⛔ THE OWNER OF A TRASHED BOARD gets 200 from `status.json`, never 403 — the control fails
+     * closed on `data.status: "trashed"` (the shared membership control), so this refusal must
+     * NOT claim kanban answered 403 when it answered 200 (card#10856 review).
+     */
+    public function test_a_403_while_the_board_reads_as_trashed_does_not_claim_kanban_said_403(): void
+    {
+        Http::fake([
+            '*/boards/'.self::BOARD.'/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 50, 'name' => 'Backlog', 'position' => 1],
+            ]]]]]),
+            '*/boards/'.self::BOARD.'/status.json' => Http::response(['data' => ['id' => self::BOARD, 'status' => 'trashed']]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/*/preload.json' => Http::response(['message' => 'This action is unauthorized.'], 403),
+        ]);
+
+        $res = $this->http(['ids' => [101]]);
+
+        $this->assertSame(422, $res['status']);
+        $error = (string) $res['body']['error'];
+        $this->assertStringNotContainsString('refuses (403)', $error, $error);
+        $this->assertStringContainsString('TRASHED', $error);
     }
 
     /**

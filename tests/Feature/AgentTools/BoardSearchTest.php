@@ -841,9 +841,29 @@ class BoardSearchTest extends TestCase
 
         $this->assertFalse($res['ok']);
         $this->assertStringContainsString('MEMBER', (string) json_encode($res['body']));
-        $this->assertStringContainsString('refuses (403)', (string) json_encode($res['body']));
+        $this->assertStringContainsString('may not read your board', (string) json_encode($res['body']));
         $this->assertStringNotContainsString('"cards"', (string) json_encode($res['body']));
         $this->assertSame([self::BOARD], KanbanBoardStatus::asked());
+    }
+
+    /**
+     * ⛔ THE OWNER OF A TRASHED BOARD gets 200 from `status.json`, never 403 — the control fails
+     * closed on `data.status: "trashed"`, so this refusal must NOT claim kanban answered 403 when
+     * it answered 200 (card#10856 review).
+     */
+    public function test_a_403_while_the_board_reads_as_trashed_does_not_claim_kanban_said_403(): void
+    {
+        Http::fake([
+            '*/boards/'.self::BOARD.'/status.json' => Http::response(['data' => ['id' => self::BOARD, 'status' => 'trashed']]),
+            '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0, 'applied_filters' => [], 'free_text_terms' => []]]),
+        ]);
+
+        $res = $this->http(['tags_all' => ['lane:A'], 'fields' => ['id']]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $error = (string) $res['body']['error'];
+        $this->assertStringNotContainsString('refuses (403)', $error, $error);
+        $this->assertStringContainsString('TRASHED', $error);
     }
 
     /** @return array<string, array{array<string, mixed>}> */

@@ -992,6 +992,13 @@ final class KanbanClient
      * the board tools ask this only after a search of the same call succeeded, which that token
      * could not have done.
      *
+     * ⛔ FAIL CLOSED ON `data.status`: `active` and `archived` are the only values that read as
+     * readable — the two kanban documents in `BoardsController::status`'s `@response` blocks
+     * besides `trashed`. Anything else — an absent key, a null, a future third value this repo
+     * has not seen — is NOT readable, on the same reasoning DL-238(g) applies to a severity: a
+     * status this code does not recognise is a WRONG ANSWER waiting to happen if treated as the
+     * default-good case, not a reason to guess "readable" and let a caller act on it.
+     *
      * @throws RequestException any other 4xx or 5xx (a 404 is a board id that does not resolve)
      */
     public function boardReadable(int $boardId): bool
@@ -1002,7 +1009,7 @@ final class KanbanClient
         }
         $resp->throw();
 
-        return $resp->json('data.status') !== 'trashed';
+        return in_array($resp->json('data.status'), ['active', 'archived'], true);
     }
 
     /**

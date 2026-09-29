@@ -499,7 +499,7 @@ final class BoardSearchTool implements Tool
             'agent' => $agentName, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException("board_search: kanban's search matched nothing, and kanban refuses (403) the bridge's writeback token a read of your board {$boardId} — the token's user is not a MEMBER of it (or the board is trashed), and kanban's search answers a non-member zero rows, so \"no matches\" would be false. NO cards were returned. Have your operator check that token's membership of board {$boardId}.");
+        throw new ToolRefusalException("board_search: kanban's search matched nothing, and the bridge's writeback token may not read your board {$boardId} either — the token's user is not a MEMBER of it, or the board is TRASHED — and kanban's search answers a non-member zero rows, so \"no matches\" would be false. NO cards were returned. Have your operator check that token's membership of board {$boardId}, and whether it is trashed.");
     }
 
     /**

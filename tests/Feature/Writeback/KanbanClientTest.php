@@ -546,6 +546,26 @@ class KanbanClientTest extends TestCase
         }
     }
 
+    /** An archived board is one of kanban's TWO readable `data.status` values, `trashed`'s sibling. */
+    public function test_board_readable_is_true_on_an_archived_board(): void
+    {
+        Http::fake(['*/boards/8/status.json' => Http::response(['data' => ['id' => 8, 'status' => 'archived']])]);
+
+        $this->assertTrue($this->client()->boardReadable(8));
+    }
+
+    /**
+     * ⛔ FAIL CLOSED (card#10856 review). A 200 whose body carries no `data.status` — a kanban
+     * that answers a THIRD status this code has not seen, or a malformed body — is NOT read as
+     * readable. The only route to `true` is an explicit `active` or `archived`.
+     */
+    public function test_board_readable_is_false_on_a_200_with_no_recognised_status(): void
+    {
+        Http::fake(['*/boards/8/status.json' => Http::response(['data' => ['id' => 8]])]);
+
+        $this->assertFalse($this->client()->boardReadable(8));
+    }
+
     public function test_default_correlation_mode_is_ref(): void
     {
         // DL-031: constructed without an explicit mode → ref (hits by-ref, not scan).

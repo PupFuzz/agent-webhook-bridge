@@ -231,8 +231,10 @@ final class BoardGetCardsTool implements Tool
      * seat's own board would come back `other_board`. Any id of THIS call that step 1 resolved is
      * proof enough (the search that returned it floors to membership), and every step-1 lookup runs
      * before any placement, so that proof is in hand whatever order the ids came in. Only when no
-     * id resolved is the board asked, once ({@see ownBoardReadable}); when kanban refuses the token a
-     * read of it (403) the call is refused. A readable board, empty or not, makes the 403 `other_board`.
+     * id resolved is the board asked, once ({@see ownBoardReadable}); when it is NOT readable to
+     * that token — kanban's 403 (not a member), or its 200 naming the board `trashed` (which the
+     * control fails closed on, {@see BoardMembershipControl}) — the call is refused. A readable
+     * board, empty or not, makes the 403 `other_board`.
      *
      * @param  \Closure(): bool  $ownBoardReadable  {@see ownBoardReadable}, memoised for this call
      * @return array{status: string}
@@ -247,7 +249,7 @@ final class BoardGetCardsTool implements Tool
             'agent' => $agentName, 'card_id' => $id, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and kanban refuses (403) that same token a read of your board {$boardId} — the token's user is not a MEMBER of it (or the board is trashed), so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. Have your operator check that token's membership of board {$boardId}.");
+        throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and that same token may not read your board {$boardId} either — the token's user is not a MEMBER of it, or the board is TRASHED, so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. Have your operator check that token's membership of board {$boardId}, and whether it is trashed.");
     }
 
     /** The membership control {@see forbiddenVerdict} needs ({@see BoardMembershipControl}). */
