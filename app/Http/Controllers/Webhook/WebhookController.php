@@ -24,7 +24,9 @@ use Symfony\Component\HttpFoundation\Response;
  * handlers) runs inline via DispatchService and returns 200 only when every
  * subscribed agent is processed. A transient/durability failure inside dispatch
  * propagates to a 5xx (kanban-board redelivers); a deterministic classifier/
- * handler failure is recorded and still acks 200.
+ * handler failure is recorded and still acks 200. A RATE-LIMITED durable writeback is
+ * neither: DispatchService records it as owed and acks 200, and the bridge retries it
+ * itself (card#10849 / DL-440).
  *
  * Retention (DL-199) is queued here rather than in DispatchService::dispatch():
  * dispatch() has a second, non-inbound caller — `bridge:replay` — where the gate

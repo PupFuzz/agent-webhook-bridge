@@ -54,6 +54,7 @@ use App\Bridge\Check\Checks\WritebackByRefCheck;
 use App\Bridge\Check\Checks\WritebackConfigCheck;
 use App\Bridge\Check\Checks\WritebackIdentityCheck;
 use App\Bridge\Check\Checks\WritebackMappingConfigCheck;
+use App\Bridge\Check\Checks\WritebackOwedWritesTableCheck;
 use App\Bridge\Check\Checks\WritebackSourceCoverageCheck;
 use App\Bridge\Check\Checks\WritebackTokenCheck;
 use App\Bridge\Check\CheckSlot;
@@ -892,7 +893,7 @@ class CheckCommand extends BridgeCommand
     {
         return (new CheckRunner)
             ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
-            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
+            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)

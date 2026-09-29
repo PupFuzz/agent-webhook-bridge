@@ -75,9 +75,9 @@ final class BoardGetCardsTool implements Tool
      * USER (source-read, kanban `origin/dev` 4688b543, `RateLimiter::for('api', …)` in
      * `app/Providers/AppServiceProvider.php`), and this tool, every other board-tools call, and
      * the writeback all authenticate as the ONE writeback user — so the worst case above draws on
-     * a budget the writeback's own card moves draw on too, and a 429 the writeback hits mid-move is
-     * currently dropped as a PERMANENT failure rather than retried (card#10849; not addressed
-     * here).
+     * a budget the writeback's own card moves draw on too, so a burst here can make the writeback
+     * hit a 429 mid-move — which the bridge records as an owed write and retries itself rather
+     * than drops (card#10849 / DL-440, `OwedWriteQueue`).
      */
     public const MAX_IDS = BoardMyCardsTool::DEFAULT_MAX_CARDS;
 

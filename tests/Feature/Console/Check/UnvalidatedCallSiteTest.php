@@ -212,6 +212,11 @@ class UnvalidatedCallSiteTest extends TestCase
         //      The same shape as RetentionPostureCheck's marker site, and for the same
         //      reason: an unreachable cache is not evidence that the last pass succeeded.
         'app/Bridge/Check/Checks/JobsPostureCheck.php' => 2,
+        // card#10849 / DL-440 — limb (a): the database did not answer, so whether the owed-write
+        // table exists was never measured. Reporting it MISSING there would send the operator to
+        // `migrate` a database that may be fine and merely unreachable, which
+        // `database.connectivity` already reports.
+        'app/Bridge/Check/Checks/WritebackOwedWritesTableCheck.php' => 2,
         // card#8683 / DL-345 — ONE site, the same shape as the two above and limb (a): the
         // cache backend holding the standup gate's last-failure marker could not be READ.
         // An unreachable cache is not evidence that the last digest pass succeeded, and this

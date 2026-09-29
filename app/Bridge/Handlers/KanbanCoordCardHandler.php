@@ -67,10 +67,10 @@ use Illuminate\Support\Facades\Log;
  * issue — an anchored `[TASK]` title, card#6371), then re-read + collapse a raced
  * duplicate via the shared {@see CardCollapse}.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
- * split as the other writeback create handler (DL-020/DL-285). Tags at create are
- * `["id:<sid>", "type:<itype>"]` ONLY — `repo:` is omitted (non-critical; the
- * reconcile folds it on its next run).
+ * DURABLE, with the same transient(→ retry) / permanent(→ alert + log + no-op) split
+ * ({@see RefusalContext::isPermanent}) as the other writeback create handler
+ * (DL-020/DL-285). Tags at create are `["id:<sid>", "type:<itype>"]` ONLY — `repo:` is
+ * omitted (non-critical; the reconcile folds it on its next run).
  *
  * Its permanent refusals are keyed by the coordination ISSUE, not by a card — they fire
  * while *creating* the card — so the alert carries `issue_number` with a null `card_id`
@@ -313,7 +313,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 }
             }
         } catch (RequestException $e) {
-            // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
+            // A permanent refusal → alert + log + no-op; anything else is transient and throws (a rate limit is retried by the owed-write queue — RefusalContext::isPermanent).
             if (RefusalContext::isPermanent($e)) {
                 // FLAT reason, unlike the card-keyed handlers': this one catch spans the
                 // correlation READS and the create WRITE, so a status-split

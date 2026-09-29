@@ -35,8 +35,9 @@ use Illuminate\Support\Facades\Log;
  * defers this transition to (ReconcileCommand excludes merged_to_main from move-in).
  *
  * DURABLE (survives the DL-203 echo/signal strip, so an agent-merged release still promotes)
- * and IDEMPOTENT (a promoted card leaves the Shipped filter, so a redelivery — e.g. after a
- * mid-scan transient throw — re-scans and moves nothing already done; no double-move).
+ * and IDEMPOTENT (a promoted card leaves the Shipped filter, so a retry — the owed-write queue's,
+ * after a mid-scan transient throw; GitHub never redelivers, DL-183 — re-scans and moves
+ * nothing already done; no double-move).
  *
  * Reachability, not a dev-only proxy: promote iff
  * `compareStatus(merge_commit_sha, RELEASE_BASE)` ∈ {ahead, identical} — a POSITIVE "is the
@@ -46,10 +47,15 @@ use Illuminate\Support\Facades\Log;
  * shas so no sha ever joins main and nothing promotes — a documented, unguardable precondition.
  *
  * Failure posture mirrors KanbanMoveCardHandler's transient/permanent split: a permanent gap
- * (no writeback config, no GitHub token, a 4xx per card) is a durable-alert + loud-log + no-op
- * (never a 5xx-storm of an unfixable event); a transient 5xx/timeout THROWS → redelivery
- * retries. Recovery from a permanent gap: fix it → the NEXT release event re-scans (a stranded
- * card is still at Shipped). There is no reconcile backstop for this transition, so the gaps
+ * (no writeback config, no GitHub token, a permanent refusal per card) is a durable-alert +
+ * loud-log + no-op (never a 5xx-storm of an unfixable event); a transient failure THROWS at
+ * once — UNLESS it is a RATE LIMIT (card#10849 / DL-440, operator ruling 2026-09-29): a
+ * rate-limited source is called no further THIS RUN (`$rateLimited`, keyed by source), the
+ * OTHER source keeps running for every remaining candidate, the paused source is named in the
+ * `scan complete` log line, and the first such refusal is rethrown once AFTER the whole loop —
+ * so the owed-write queue holds this whole target as ONE owed row and retries the scan, which
+ * by then re-reads whatever the paused source could not answer live. Recovery from a permanent gap: fix it → the NEXT release event re-scans
+ * (a stranded card is still at Shipped). There is no reconcile backstop for this transition, so the gaps
  * are made LOUD (durable alert + bridge:check warn), not a log grep.
  *
  * SECURITY (unchanged from KanbanMoveCardHandler): board + stages come exclusively from
@@ -73,6 +79,11 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * the overflow is alerted.
      */
     public const MAX_CANDIDATES = 40;
+
+    /** The two sources a scan calls — the keys of its per-run rate-limit record. */
+    private const SOURCE_GITHUB = 'github';
+
+    private const SOURCE_KANBAN = 'kanban';
 
     private WritebackAlertNotifier $alerts;
 
@@ -262,23 +273,44 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         }
 
         $promoted = 0;
+        // Rate-limit record, keyed by source (card#10849 / DL-440 § operator ruling): once a
+        // source refuses as rate-limited, this run makes it NO further call — hammering a
+        // limiter that just refused only lengthens the refusal — but the OTHER source keeps
+        // running for every remaining candidate, so a kanban 429 does not stop GitHub reads
+        // (which still decide who is eligible) and a GitHub 429 does not stop kanban moves
+        // for candidates GitHub already cleared before it refused.
+        $rateLimited = [];
         foreach ($candidates as $cardId => $candidate) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $mapping)) {
+            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'], $mapping, $rateLimited)) {
                 $promoted++;
             }
         }
         Log::info('kanban_promote_released: scan complete', [
             'catalog_id' => 'promote_released.scan_complete',
             'repo' => $repo, 'board' => $mapping->boardId, 'candidates' => count($candidates), 'promoted' => $promoted,
+            // Named here, never silently dropped: which source(s) paused this run, if any —
+            // the source's OWN refusal is also logged at the call site, this is the summary.
+            'rate_limited_sources' => array_keys($rateLimited),
         ]);
+
+        // Rethrown AFTER the whole loop ran (never mid-loop): every candidate that could
+        // still be decided with the OTHER source was. kanban's refusal takes precedence when
+        // both occurred — a paused write matters more than a paused read once both happened.
+        $first = $rateLimited[self::SOURCE_KANBAN] ?? $rateLimited[self::SOURCE_GITHUB] ?? null;
+        if ($first !== null) {
+            throw $first;
+        }
     }
 
     /**
      * Read one candidate's PR, test its merge sha for reachability from main, and move the
      * card to Released when it is on main. Returns whether the card was promoted. A permanent
-     * (4xx) GitHub/kanban error on this card is logged + skipped (return false); a transient
-     * (5xx/timeout) error PROPAGATES so redelivery re-scans (idempotent — a promoted card
-     * leaves the Shipped filter).
+     * ({@see RefusalContext::isPermanent}) GitHub/kanban refusal on this card is logged + skipped
+     * (return false). A RATE-LIMITED refusal is recorded in $rateLimited under its source and
+     * this card is skipped; a source already recorded there is not called again this run — see
+     * {@see self::handle}'s own docblock note on the rethrow. Any other transient error
+     * PROPAGATES AT ONCE (never recorded, never waited on) so the retry re-scans (idempotent —
+     * a promoted card leaves the Shipped filter).
      *
      * ⭐ THE NON-PROMOTING EXITS ARE NOT ALL THE SAME EXIT (card#8787). Three loud `catch`
      * arms sat beside two silent `return false`s, and the silent pair could not tell
@@ -298,12 +330,22 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * (card#7212).
      *
      * @param  array{card_board: mixed, mapped_board: int}  $boardContext
+     * @param  array<string, RequestException>  $rateLimited  source => its first rate-limit refusal this run
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, WritebackMapping $mapping): bool
+    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext, WritebackMapping $mapping, array &$rateLimited): bool
     {
+        if (isset($rateLimited[self::SOURCE_GITHUB])) {
+            return false;   // GitHub already refused this run — no further call to it
+        }
+
         try {
             $pr = $github->getPull($repo, $prNumber);
         } catch (RequestException $e) {
+            if (RefusalContext::isRateLimited($e)) {
+                $rateLimited[self::SOURCE_GITHUB] = $e;
+
+                return false;
+            }
             if (RefusalContext::isPermanent($e)) {
                 // FLAT reason, unlike the kanban arms: GitHub answers 404 for a private
                 // repo this token cannot see, so a named 403/404 split here would be
@@ -317,7 +359,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
 
                 return false;
             }
-            throw $e;   // transient → 5xx → redelivery re-scans
+            throw $e;   // transient → the retry re-scans
         }
 
         // An OPEN PR carries a non-null TEST-merge sha on no branch — gate on merged, not on
@@ -342,6 +384,11 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         try {
             $status = $github->compareStatus($repo, $pr['merge_commit_sha'], PrOutcome::RELEASE_BASE);
         } catch (RequestException $e) {
+            if (RefusalContext::isRateLimited($e)) {
+                $rateLimited[self::SOURCE_GITHUB] = $e;
+
+                return false;
+            }
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
                     'promote_released.compare_4xx',
@@ -368,9 +415,18 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             return false;   // genuinely not on main yet — QUIET, the dominant normal negative
         }
 
+        if (isset($rateLimited[self::SOURCE_KANBAN])) {
+            return false;   // kanban already refused this run — no further call to it
+        }
+
         try {
             $kanban->moveCard($cardId, $released);
         } catch (RequestException $e) {
+            if (RefusalContext::isRateLimited($e)) {
+                $rateLimited[self::SOURCE_KANBAN] = $e;
+
+                return false;
+            }
             if (RefusalContext::isPermanent($e)) {
                 // The ONLY arm of this class ever observed firing in production (a 422 on
                 // 2026-07-21 that silently no-op'd a promote for 15 days). This leg has no

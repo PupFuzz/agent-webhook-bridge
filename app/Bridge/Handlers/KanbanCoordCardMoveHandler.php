@@ -73,9 +73,10 @@ use Illuminate\Support\Facades\Log;
  * widening changes what the system refuses and was taken to the operator under card#8523's
  * gate rather than settled here.
  *
- * DURABLE, with the writeback's standard transient(5xx → retry) / permanent(4xx → alert
- * + log + no-op) split (DL-020/DL-285). Idempotent under at-least-once redelivery: a card
- * already in the destination is skipped, so a re-PATCH never fires.
+ * DURABLE, with the writeback's standard transient(→ retry) / permanent(→ alert + log +
+ * no-op) split, decided by {@see RefusalContext::isPermanent} (DL-020/DL-285). Idempotent
+ * under any retry — a redelivery, or the owed-write queue's: a card already in the destination is
+ * skipped, so a re-PATCH never fires.
  *
  * Its refusals are keyed by the coordination ISSUE, so the alert carries `issue_number`
  * (DL-285); the per-card arms reached from inside the loop additionally carry that card's id.
@@ -198,11 +199,12 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             }
 
             // PER-CARD error isolation: a tag can legitimately match several cards, and
-            // a permanent 4xx on one of them (a card deleted between the search and the
+            // a permanent refusal on one of them (a card deleted between the search and the
             // read) must not abandon the rest — they would never be retried, since a
-            // permanent failure is deliberately not redelivered. A transient 5xx still
-            // propagates: redelivery re-runs the whole set, and the cards already moved
-            // are skipped as idempotent.
+            // permanent failure is deliberately not retried. A transient failure still
+            // propagates AT ONCE — a rate limit included, which is what stops every further
+            // kanban call this run (card#10849 / DL-440) — and the retry re-runs the whole set,
+            // skipping the cards already moved as idempotent.
             foreach ($ids as $id) {
                 try {
                     $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber, $p);
@@ -225,7 +227,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 }
             }
         } catch (RequestException $e) {
-            // The cardsByTag read itself: 4xx permanent (alert + log + no-op), 5xx transient (throw → retry).
+            // The cardsByTag read itself: permanent (alert + log + no-op), else transient (throw → retry).
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
                     'coord_card_move.lookup_4xx',

@@ -37,8 +37,14 @@ abstract class TestCase extends BaseTestCase
      * them writes a board_tools block — but the derivation is the reason this member is here,
      * not a substitute for it: the guard `continue`s when the table is absent, so a SQLite
      * `:memory:` run cannot see the class at all and only the MariaDB legs enforce it.
+     *
+     * ⚑ THE FOURTH (card#10849 / DL-440) IS WRITTEN BY EVERY DURABLE DISPATCH: the owed-write
+     * queue inserts each durable target before applying it, and deletes it only once it lands, so
+     * a rate-limited or failing write leaves its row behind — from ANY test that dispatches one.
+     * Unlike the three above it is NOT swallowed on SQLite `:memory:`: an un-isolated class gets
+     * no table, and the insert's failure 5xxs the delivery, which is the contract.
      */
-    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen'];
+    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls', 'board_tools_config_seen', 'writeback_owed_writes'];
 
     /**
      * A path that must not exist, so an install-reading check finds nothing rather than

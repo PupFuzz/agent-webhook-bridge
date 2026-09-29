@@ -673,7 +673,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
     public function test_kanban_5xx_is_transient_and_throws(): void
     {
-        // A kanban 5xx / timeout is TRANSIENT: throw → 5xx → redelivery retries.
+        // A kanban 5xx / timeout is TRANSIENT: throw, and the owed-write queue keeps the write owed (5xx).
         $this->writeWriteback();
         $this->writeToken();
         Http::fake(['*/tasks/5.json' => Http::response('upstream error', 503)]);
@@ -1843,6 +1843,105 @@ class KanbanMoveCardHandlerTest extends TestCase
             // expected
         }
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    // --- card#10849: a kanban 429 is a rate limit, not a refusal ---
+    //
+    // These pin the HANDLER half of the contract: a rate limit is THROWN, never swallowed as a
+    // permanent refusal. What happens to the throw — the write held as owed and retried by the
+    // bridge, the delivery answering 200 — is the owed-write queue's, and is pinned end to end in
+    // tests/Feature/Writeback/OwedWriteDispatchTest.php and OwedWriteQueueTest.php.
+
+    public function test_a_rate_limited_move_throws_to_the_owed_write_queue_leaves_the_card_and_never_alerts(): void
+    {
+        // Until card#10849 this 429 was swallowed as a PERMANENT refusal: no throw, a
+        // `movecard_4xx` alert, and the card left in the wrong column for good.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5([]);
+        $stub->rateLimitedPatches = 1;
+
+        try {
+            $this->handle($this->payload(['outcome' => 'merged']));
+            $this->fail('a 429 on the move PATCH must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        $this->assertSame(50, $stub->cards[5]['workflow_stage_id']);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_retry_after_a_rate_limited_move_lands_the_move_exactly_once(): void
+    {
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5([]);
+        $stub->rateLimitedPatches = 1;
+
+        try {
+            $this->handle($this->payload(['outcome' => 'merged']));
+            $this->fail('the rate-limited first attempt must throw');
+        } catch (RequestException) {
+            // expected — the owed-write queue holds the write and retries it
+        }
+        $this->handle($this->payload(['outcome' => 'merged']));   // the retry
+        $this->handle($this->payload(['outcome' => 'merged']));   // and a second, late one
+
+        $this->assertSame(52, $stub->cards[5]['workflow_stage_id']);
+        $this->assertSame([['workflow_stage_id' => 52]], $stub->appliedPatchesTo(5), 'one applied move, whatever was retried');
+        $this->assertSame([['workflow_stage_id' => 52], ['workflow_stage_id' => 52]], $stub->patchesTo(5), 'the refused attempt and the one that landed');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_move_rate_limited_on_every_attempt_is_never_swallowed_as_a_refusal(): void
+    {
+        // Exhaustion: however many times it is retried, each attempt still throws — the write is
+        // never converted into a swallowed refusal here. The BOUND on those attempts, and the
+        // named give-up alert when it is spent, are the owed-write queue's (OwedWriteQueueTest).
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5([]);
+        $stub->rateLimitedPatches = PHP_INT_MAX;
+
+        $deliveries = 0;
+        $thrown = 0;
+        while ($deliveries++ < 5) {
+            try {
+                $this->handle($this->payload(['outcome' => 'merged']));
+            } catch (RequestException $e) {
+                $this->assertSame(429, $e->response->status());
+                $thrown++;
+            }
+        }
+
+        $this->assertSame($deliveries - 1, $thrown);
+        $this->assertSame([], $stub->appliedPatchesTo(5));
+        $this->assertSame(50, $stub->cards[5]['workflow_stage_id']);
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_stamp_rate_limited_after_the_move_landed_is_restamped_by_the_retry_without_a_second_move(): void
+    {
+        // The move lands, then the correlation stamp is rate-limited: the throw leaves the write
+        // owed, and the retry's already-in-stage self-heal stamps without moving the card again.
+        $this->writeAllOutcomesWithAlert();
+        $stub = $this->stubCard5(['payload' => ['origin' => 'preemptive']]);
+        $stub->afterWrite = static function (KanbanCardStub $s, int $id, array $data): void {
+            if (isset($data['workflow_stage_id'])) {
+                $s->rateLimitedPatches = 1;   // the next write — the stamp — is throttled
+            }
+        };
+
+        try {
+            $this->handle($this->payload(['outcome' => 'merged', 'stamp_dl' => 'DL-42']));
+            $this->fail('a 429 on the stamp must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+        $stub->afterWrite = null;
+        $this->handle($this->payload(['outcome' => 'merged', 'stamp_dl' => 'DL-42']));
+
+        $applied = $stub->appliedPatchesTo(5);
+        $this->assertCount(1, array_filter($applied, static fn (array $p): bool => isset($p['workflow_stage_id'])), 'the move is applied once');
+        $this->assertNotSame([], array_filter($applied, static fn (array $p): bool => isset($p['payload'])), 'the retry landed the stamp');
     }
 
     // --- FR #3866 / card#4852: stamp correlation refs (dl_number / pr_number / pr_url) add-if-missing ---

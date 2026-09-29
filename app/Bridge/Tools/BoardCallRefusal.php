@@ -20,14 +20,14 @@ use Illuminate\Http\Client\RequestException;
  * copy would let two tools disagree about one refusal — the same reason
  * {@see CallerTagPolicy} owns the tag vocabulary and {@see KanbanFieldLimits} the caps.
  *
- * ⛔ THIS IS NOT {@see RefusalContext::isPermanent}, AND MUST NOT BE CONSOLIDATED WITH IT.
- * That one answers a DIFFERENT question for the WEBHOOK path — *may this handler swallow
- * the event, or must it 5xx so kanban re-delivers?* — over the whole 400–499 range, where
- * swallowing a retryable status is the expensive mistake. Here the caller is a SEAT holding
- * a live call, the fallback is a 502 it may retry, and the vocabulary is the set of causes
- * this door can actually NAME. A status outside the sets below (400, 408, 429 …) is left on
- * the retryable path deliberately: the bridge has no diagnosis to offer for it, and a rate
- * limit really does clear.
+ * ⛔ THIS IS NOT {@see RefusalContext::isPermanent}, AND MUST NOT BE CONSOLIDATED WITH IT. That
+ * one answers a DIFFERENT question for the WEBHOOK path — *may this handler swallow the event,
+ * or must it 5xx so kanban re-delivers?* — over the 400–499 range less the statuses that clear
+ * by waiting (card#10849), where swallowing a retryable status is the expensive mistake. Here
+ * the caller is a SEAT holding a live call, the fallback is a 502 it may retry, and the
+ * vocabulary is the set of causes this door can actually NAME. A status outside the sets below
+ * (400, 408, 429 …) is left on the retryable path deliberately: the bridge has no diagnosis to
+ * offer for it, and a rate limit really does clear.
  *
  * ⭐ READ AND WRITE ARE SEPARATE SETS BECAUSE 422 MEANS SOMETHING ONLY A WRITE CAN MEAN.
  * A 422 on a write is the board refusing a VALUE the write carried — deterministic, and the

@@ -37,6 +37,13 @@ final class KanbanCardStub
      */
     public ?\Closure $afterWrite = null;
 
+    /**
+     * How many of the next PATCHes kanban's rate limiter refuses: each answers 429 with a
+     * `Retry-After` and changes NOTHING, because kanban's `throttle:api` runs before the
+     * controller (card#10849). Counts down per refused PATCH.
+     */
+    public int $rateLimitedPatches = 0;
+
     /** @param  array<int, array<string, mixed>>  $cards  card id => the row kanban would answer */
     public function __construct(public array $cards, private readonly bool $moveOnlyToken = false) {}
 
@@ -55,6 +62,15 @@ final class KanbanCardStub
         ));
     }
 
+    /** @return list<array<string, mixed>> the PATCH bodies to $id that kanban APPLIED (answered 200), in order */
+    public function appliedPatchesTo(int $id): array
+    {
+        return array_values(array_map(
+            static fn (array $entry): array => $entry['data'],
+            array_filter($this->log, static fn (array $entry): bool => $entry['method'] === 'PATCH' && $entry['id'] === $id && $entry['status'] === 200),
+        ));
+    }
+
     private function answer(Request $request): PromiseInterface
     {
         if (preg_match('#/tasks/(\d+)\.json#', $request->url(), $m) !== 1) {
@@ -67,10 +83,16 @@ final class KanbanCardStub
             ! isset($this->cards[$id]) => [404, ['message' => 'No query results for model [App\\Models\\Task].']],
             $request->method() === 'GET' => [200, ['data' => $this->cards[$id]]],
             $request->method() !== 'PATCH' => [405, ['message' => 'method not stubbed']],
+            $this->rateLimitedPatches > 0 => [429, ['message' => 'Too Many Attempts.']],
             $this->moveOnlyToken && array_keys($data) !== ['workflow_stage_id'] => [403, ['message' => 'This action is unauthorized.']],
             default => [200, ['data' => $this->cards[$id] = array_replace($this->cards[$id], $data)]],
         };
         $this->log[] = ['method' => $request->method(), 'id' => $id, 'data' => $data, 'status' => $status];
+        if ($status === 429) {
+            $this->rateLimitedPatches--;
+
+            return Http::response($body, 429, ['Retry-After' => '37']);
+        }
         if ($request->method() === 'PATCH' && $status === 200 && $this->afterWrite !== null) {
             ($this->afterWrite)($this, $id, $data);
         }

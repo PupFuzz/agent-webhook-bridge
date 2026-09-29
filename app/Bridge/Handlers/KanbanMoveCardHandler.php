@@ -34,9 +34,10 @@ use Throwable;
 /**
  * Move a kanban card to a workflow stage — the bridge's first WRITEBACK
  * (FR #2016 / DL-009/020). DURABLE: a failed move must not be silently dropped,
- * so it implements DurableReaction (runs first; its throw propagates → 5xx →
- * redelivery), and it is IDEMPOTENT (no-op when the card is already in the
- * target stage), as the marker contract requires.
+ * so it implements DurableReaction (runs first, through the owed-write queue,
+ * which keeps a write whose throw escapes owed — see the TRANSIENT arm below), and
+ * it is IDEMPOTENT (no-op when the card is already in the target stage), as the
+ * marker contract requires.
  *
  * The classifier (correlation) supplies WHICH card + the repo + the
  * GitHub-controlled outcome in the payload; the BOARD + STAGE come exclusively
@@ -55,7 +56,15 @@ use Throwable;
  * Two failure modes, treated
  * differently:
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
- *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
+ *    kanban API error that is not a permanent refusal) → THROW out of handle()
+ *    to the owed-write queue (card#10849 / DL-440, `OwedWriteQueue`), which
+ *    keeps the write OWED either way. ⭐ A RATE LIMIT (408/429) on ANY call
+ *    here — the board-scoped lookup, getCard, the no-regression order read,
+ *    the move PATCH, the ref stamp — answers 200 and the bridge retries the
+ *    write itself. Any other transient failure that leaves handle() answers
+ *    5xx; the subject's next event or the retry sweep retries it, and so does
+ *    a redelivery where the upstream redelivers — GitHub, which delivers this
+ *    handler's events, never does (DL-183).
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
  *    outcome, the card id does not RESOLVE on the mapped board (refused by the board-scoped
  *    check before the card is read at all — card#8375), the card kanban handed back is NOT on
@@ -101,7 +110,8 @@ use Throwable;
  * `closed_unmerged` is the lone legitimately-backward outcome AMONG THE FOUR PR
  * outcomes and is allowed to regress UNLESS the card has reached a terminal
  * (Shipped/Released) stage. Fail-open when the order can't be read, so the guard
- * never breaks the writeback. (The opt-in `reopened` outcome below is a fifth,
+ * never breaks the writeback — except a RATE-LIMITED read, which requeues the move instead
+ * (card#10849 / DL-440). (The opt-in `reopened` outcome below is a fifth,
  * handler-internal, deliberately-backward move — scoped to the abandon stage.)
  * ⚠ Since card#10850 / DL-436 the built-in classifier emits no `closed_unmerged` move
  * ({@see PrOutcome::movesCard()}); its arms here serve only a custom classifier that still
@@ -291,8 +301,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         }
 
         // A kanban 4xx (deleted card, a stage that doesn't exist on the card's
-        // board) is PERMANENT — log + no-op, never 5xx-retry it. Only a 5xx /
-        // timeout / connection error is transient (throw → redelivery retries).
+        // board) is PERMANENT — log + no-op, never 5xx-retry it. A rate limit
+        // (408/429), a 5xx, a timeout or a connection error is transient: throw,
+        // and the owed-write queue keeps the write owed (class docblock).
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
@@ -331,7 +342,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → retry
+            throw $e;   // transient → stays owed (class docblock)
         }
 
         // SECURITY (belongs-to-mapped-board, DL-009): refuse to move a card that isn't
@@ -523,7 +534,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // resurrect a shipped card. `reopened` (DL-195) allows the backward move ONLY
         // from the abandon stage (the revival), else is forward-only like `opened`.
         // Fail-open: when the order can't be read (preload down, or a stage not on the
-        // board) the move proceeds as it did pre-guard.
+        // board) the move proceeds as it did pre-guard — except on a rate limit, which
+        // requeues the move (card#10849; isRegressiveMove says why).
         if (in_array($outcome, ['opened', 'merged', 'merged_to_main', PrOutcome::CLOSED_UNMERGED, 'reopened'], true)) {
             if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
@@ -539,7 +551,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $client->moveCard($cardId, $stageId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                // A 4xx is a PERMANENT refusal (authz, a stage not on the board, a
+                // A PERMANENT refusal (authz, a stage not on the board, a
                 // deleted card, …): log + no-op rather than 5xx-storm. Hand over what
                 // the server actually said (`body`) instead of guessing the cause —
                 // status alone can't tell a 403 authz refusal from a config typo.
@@ -555,7 +567,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → retry
+            throw $e;   // transient → stays owed (class docblock)
         }
         OwnerlessStart::noteAfterMove($this->alerts, $card, $mapping, $isRevive, $cardId, $repo, $outcome, $stageId);
         // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
@@ -618,12 +630,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * legitimately at/entering its target stage (a self-heal no-op or a guard-passed move),
      * never from a reject-guarded event.
      *
-     * Best-effort with the move's transient/permanent split: a 4xx (e.g. the board has no
-     * `dl_number`/`pr_number` custom field) is PERMANENT → alert + log + no-op (never
-     * 5xx-storm an unfixable stamp). A 5xx/timeout PROPAGATES → redelivery re-stamps — safe
-     * because the stamp is add-if-missing-idempotent and the move is idempotent, and it
-     * closes the window where a swallowed transient failure would strand the card unstamped
-     * forever.
+     * Best-effort with the move's transient/permanent split
+     * ({@see RefusalContext::isPermanent}): a permanent refusal (e.g. the board has no
+     * `dl_number`/`pr_number` custom field) → alert + log + no-op (never 5xx-storm an unfixable
+     * stamp). A transient failure PROPAGATES → the retry re-stamps (the owed-write queue's for a
+     * rate limit, card#10849) — safe because the stamp is
+     * add-if-missing-idempotent and the move is idempotent, and it closes the window where a
+     * swallowed transient failure would strand the card unstamped forever.
      *
      * The stamp arm alerts (card#5312 / DL-274) even though a board with no `dl_number`
      * custom field 4xxs on EVERY stamp: the `(repo, outcome, reason)` dedup bounds that to
@@ -820,7 +833,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
+            throw $e;   // transient → the retry re-stamps (add-if-missing idempotent)
         }
     }
 
@@ -1040,7 +1053,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * Whether applying $outcome would regress the card to an earlier workflow stage
      * in a way the no-regression guard (#2935) refuses. Fail-open (false) whenever
      * the board order can't be determined — the guard never blocks a move on missing
-     * order data, only on a definite backward step.
+     * order data, only on a definite backward step. ONE exception: a RATE-LIMITED order read
+     * rethrows (card#10849 / DL-440), so the owed-write queue retries the move rather than
+     * applying a possibly-stale one blind.
      *
      * ⭐ THERE ARE TWO FAIL-OPEN ROUTES AND BOTH ARE LOUD (card#8761). Failing open is the
      * ruled behaviour and card#8761 did not change it: refusing the move when the order
@@ -1061,6 +1076,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // later card retries (preserving the per-card fail-open below).
             $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
+            // ⛔ NOT ON A RATE LIMIT (card#10849 / DL-440). This read is the one thing standing
+            // between a QUEUED write and a card that moved on while it waited — a retried
+            // `opened` landing after `merged` — so failing open here is exactly backwards.
+            // Rethrown, the owed-write queue keeps the move queued and retries it; every other
+            // failure keeps the ruled fail-open below.
+            if ($e instanceof RequestException && RefusalContext::isRateLimited($e)) {
+                throw $e;
+            }
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
                 'catalog_id' => 'move_card.stage_order_unreadable',
                 'board' => $mapping->boardId, 'error' => RedactedErrorText::of($e),
