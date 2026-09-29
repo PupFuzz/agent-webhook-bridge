@@ -114,10 +114,11 @@ final class BoardGetCardsTool implements Tool
         // A row resolved on this board IS the membership proof (kanban's search floors to
         // membership), so the control is asked only when no id resolved, at most once per call, and
         // only if some id 403s.
-        $readable = array_filter($scoped) !== [] ? true : null;
-        $ownBoardReadable = function () use ($client, $boardId, $agentName, &$readable): bool {
-            return $readable ??= $this->ownBoardReadable($client, $boardId, $agentName);
-        };
+        $membership = new BoardMembershipControl($client, $boardId);
+        if (array_filter($scoped) !== []) {
+            $membership->proven();
+        }
+        $ownBoardReadable = fn (): bool => $this->ownBoardReadable($membership, $boardId, $agentName);
         /** @var array<int, array{status: string, row?: array<string, mixed>}> $verdicts */
         $verdicts = [];
         foreach ($ids as $id) {
@@ -246,14 +247,11 @@ final class BoardGetCardsTool implements Tool
         throw new ToolRefusalException("board_get_cards: card {$id} exists on a board the bridge's writeback token may not read, and your board {$boardId} reads back EMPTY to that same token — a board the token's user is not a MEMBER of answers exactly that way, so the bridge cannot say whether card {$id} is on your board or another one. NO cards were returned. If your board is not genuinely empty, have your operator check that token's membership of board {$boardId}.");
     }
 
-    /**
-     * Whether this board reads back at least one card to the writeback token — the membership
-     * control {@see forbiddenVerdict} needs. One `limit=1` search ({@see KanbanClient::visibility}).
-     */
-    private function ownBoardReadable(KanbanClient $client, int $boardId, string $agentName): bool
+    /** The membership control {@see forbiddenVerdict} needs ({@see BoardMembershipControl}). */
+    private function ownBoardReadable(BoardMembershipControl $membership, int $boardId, string $agentName): bool
     {
         try {
-            return $client->visibility($boardId)['total'] > 0;
+            return $membership->readable();
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId} to establish that the token can read it");
         }

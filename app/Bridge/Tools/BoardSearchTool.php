@@ -50,6 +50,10 @@ use Illuminate\Support\Facades\Log;
  * `limit` is capped at {@see KanbanClient::SEARCH_LIMIT}, kanban's own page cap, so ONE request per
  * search is the whole window: nothing is walked.
  *
+ * ⛔ "NO MATCHES" IS SAID ONLY OF A BOARD THE TOKEN CAN READ. kanban's search answers a non-member
+ * zero rows at 200, so a call whose every search answered nothing is held to the membership control
+ * `board_get_cards` asks ({@see BoardMembershipControl}, via {@see member}).
+ *
  * ⚠ IT CROSSES LANES by default (`lane: any`) — the third read on this door that does, after
  * DL-383's `tag` read and DL-435's `board_get_cards`, and the first whose population is
  * caller-FILTERED rather than caller-NAMED. It is bounded to the seat's own configured board: every
@@ -65,12 +69,18 @@ final class BoardSearchTool implements Tool
     public const DEFAULT_LIMIT = BoardMyCardsTool::DEFAULT_MAX_CARDS;
 
     /**
-     * The most kanban requests one call may fan out to — BORROWED, not chosen: the per-call ceiling
-     * `board_get_cards` already accepted against kanban's per-user rate limit, which every board-tools
-     * call and the writeback share (DL-435 bound (d)). A call whose fan-out would exceed it is refused
-     * before the fan-out is sent, with its own count; see `docs/board-tools.md` § `board_search` Cost.
+     * The most kanban requests one call may send, EVERY read counted — BORROWED, not chosen: the
+     * per-call ceiling `board_get_cards` already accepted against kanban's per-user rate limit, which
+     * every board-tools call and the writeback share (DL-435 bound (d)). {@see plan} is the call's
+     * whole planned total; a call whose total exceeds this is refused before its first request when
+     * its arguments alone decide that, and otherwise right after the one read that sizes it (the
+     * structure read or the by-ref read), before any search. See `docs/board-tools.md` § `board_search`
+     * Cost.
      */
     public const REQUEST_CEILING = 3 * BoardGetCardsTool::MAX_IDS + 1;
+
+    /** {@see plan}'s phase for the membership control ({@see member}). */
+    private const PLAN_CONTROL = 'membership control (asked only if every search answers nothing)';
 
     public const LANE_MINE = 'mine';
 
@@ -122,12 +132,15 @@ final class BoardSearchTool implements Tool
 
         $sides = $archived ? [false, true] : [false];
         $variants = $tagsAny === [] ? [null] : $tagsAny;
-        if (! $summary && $prNumber === null) {
-            $this->withinCeiling(count($variants) * count($sides), 'one search per `tags_any` tag per archive side');
-        }
+        $readsStructure = $stageArg !== null || $summary || in_array('stage', $fields, true);
+        // What only a read can size (the columns a summary counts, the cards carrying the PR) is
+        // counted at its floor, 0, here; the total is checked again once that read has sized it.
+        $plan = fn (int $scope, int $candidates, bool $reasks): array => $this->plan($readsStructure, $prNumber !== null, $summary, count($sides), count($variants), count($summaryTags), $scope, $candidates, $reasks);
+        $this->withinCeiling($plan(0, 0, false));
+        $membership = new BoardMembershipControl($client, $boardId);
 
         $structure = null;
-        if ($stageArg !== null || $summary || in_array('stage', $fields, true)) {
+        if ($readsStructure) {
             try {
                 $structure = $client->boardStructure($boardId);
             } catch (RequestException $e) {
@@ -148,15 +161,28 @@ final class BoardSearchTool implements Tool
         ], fn ($v): bool => $v !== null) + ['include_archived' => $archived, 'lane' => $lane];
 
         if ($prNumber !== null) {
-            $matches = $this->byPrNumber($client, $boardId, $prNumber, $filter, $variants, $agentName);
+            $candidates = $this->prCandidates($client, $boardId, $prNumber, $agentName);
+            $reasks = $filter->narrows() || $variants !== [null];
+            $sized = $plan(0, count($candidates), $reasks);
+            $this->withinCeiling($sized);
+            $matches = $reasks ? $this->reasked($client, $boardId, $candidates, $filter, $variants, $membership, $agentName) : $candidates;
+            $byTag = $summary ? $this->tallyByTag($client, $boardId, $matches, $filter, $summaryTags, $membership, $agentName) : [];
+            if (isset($sized[self::PLAN_CONTROL])) {
+                $this->member($membership, $boardId, $agentName);
+            }
 
             return $summary
-                ? $this->summaryResult($boardId, $echo, $this->tallyByStage($matches, $stages, $structure), $this->tallyByTag($client, $boardId, $matches, $filter, $summaryTags, $agentName), count($matches))
+                ? $this->summaryResult($boardId, $echo, $this->tallyByStage($matches, $stages, $structure), $byTag, count($matches))
                 : $this->rowsResult($boardId, $echo, $fields, $limit, $cfg, $stageNames, array_map(fn (array $r): array => ['row' => $r, 'archived' => false], $matches), count($matches), false, $archived);
         }
 
         if ($summary) {
-            return $this->summaryByCounts($client, $boardId, $echo, $filter, $variants[0], $stages, $structure, $summaryTags, $sides, $agentName);
+            $scope = $stages ?? $this->boardStageOrder($structure);
+            $this->withinCeiling($plan(count($scope), 0, false));
+            $result = $this->summaryByCounts($client, $boardId, $echo, $filter, $variants[0], $scope, $structure, $summaryTags, $sides, $membership, $agentName);
+            $this->member($membership, $boardId, $agentName);
+
+            return $result;
         }
 
         $all = [];
@@ -167,7 +193,7 @@ final class BoardSearchTool implements Tool
             $sideTotals = [];
             $complete = true;
             foreach ($variants as $variant) {
-                $page = $this->search($client, $boardId, $filter->terms($variant), $limit, $side, $agentName);
+                $page = $this->search($client, $boardId, $filter->terms($variant), $limit, $side, $membership, $agentName);
                 $sideTotals[] = (int) $page->total;
                 $complete = $complete && count((array) $page->rows) >= (int) $page->total;
                 foreach ((array) $page->rows as $row) {
@@ -186,6 +212,7 @@ final class BoardSearchTool implements Tool
                 $all[] = ['row' => $row, 'archived' => $side];
             }
         }
+        $this->member($membership, $boardId, $agentName);
 
         return $this->rowsResult($boardId, $echo, $fields, $limit, $cfg, $stageNames, $all, $total, $lowerBound, $archived);
     }
@@ -238,26 +265,23 @@ final class BoardSearchTool implements Tool
      * `summary: true` off kanban's own counts: one `limit=1` search per count, read for `meta.total`.
      *
      * @param  array<string, mixed>  $echo
-     * @param  list<int>|null  $stages
+     * @param  list<int>  $scope
      * @param  list<string>  $summaryTags
      * @param  list<bool>  $sides
      * @return array<string, mixed>
      */
-    private function summaryByCounts(KanbanClient $client, int $boardId, array $echo, BoardSearchFilter $filter, ?string $variant, ?array $stages, ?BoardStructure $structure, array $summaryTags, array $sides, string $agentName): array
+    private function summaryByCounts(KanbanClient $client, int $boardId, array $echo, BoardSearchFilter $filter, ?string $variant, array $scope, ?BoardStructure $structure, array $summaryTags, array $sides, BoardMembershipControl $membership, string $agentName): array
     {
-        $scope = $stages ?? $this->boardStageOrder($structure);
-        $this->withinCeiling(count($sides) * (1 + count($scope) + count($summaryTags)), 'per archive side, one count for the total, one per stage in scope and one per `summary_tags` tag');
-
         $total = 0;
         $byStage = array_fill_keys($scope, 0);
         $byTag = array_fill_keys($summaryTags, 0);
         foreach ($sides as $side) {
-            $total += $this->count($client, $boardId, $filter->terms($variant), $side, $agentName);
+            $total += $this->count($client, $boardId, $filter->terms($variant), $side, $membership, $agentName);
             foreach ($scope as $stageId) {
-                $byStage[$stageId] += $this->count($client, $boardId, $filter->withStages([$stageId])->terms($variant), $side, $agentName);
+                $byStage[$stageId] += $this->count($client, $boardId, $filter->withStages([$stageId])->terms($variant), $side, $membership, $agentName);
             }
             foreach ($summaryTags as $tag) {
-                $byTag[$tag] += $this->count($client, $boardId, $filter->terms($variant, $tag), $side, $agentName);
+                $byTag[$tag] += $this->count($client, $boardId, $filter->terms($variant, $tag), $side, $membership, $agentName);
             }
         }
 
@@ -293,13 +317,12 @@ final class BoardSearchTool implements Tool
     }
 
     /**
-     * Every live card carrying `$prNumber` (kanban's by-ref index), each re-asked through the search
-     * with every other filter when there is any — so kanban decides every predicate.
+     * Every live card carrying `$prNumber`: kanban's by-ref index. It authorizes the board's `view`
+     * policy, not membership, so it is no membership proof.
      *
-     * @param  list<string|null>  $variants
      * @return list<array<string, mixed>>
      */
-    private function byPrNumber(KanbanClient $client, int $boardId, int $prNumber, BoardSearchFilter $filter, array $variants, string $agentName): array
+    private function prCandidates(KanbanClient $client, int $boardId, int $prNumber, string $agentName): array
     {
         try {
             $rows = $client->cardRowsByRef($boardId, ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, (string) $prNumber);
@@ -309,16 +332,24 @@ final class BoardSearchTool implements Tool
         if ($rows === null) {
             $this->unreadable($boardId, 'the by-ref read of PR '.$prNumber, $agentName);
         }
-        $candidates = $this->onThisBoard($rows, $boardId, $agentName);
-        if (! $filter->narrows() && $variants === [null]) {
-            return $candidates;
-        }
 
-        $this->withinCeiling(count($candidates) * count($variants), 'one search per card carrying the PR number per `tags_any` tag, to apply the other filters');
+        return $this->onThisBoard($rows, $boardId, $agentName);
+    }
+
+    /**
+     * Each PR candidate re-asked through the search with every other filter, so kanban decides
+     * every predicate.
+     *
+     * @param  list<array<string, mixed>>  $candidates
+     * @param  list<string|null>  $variants
+     * @return list<array<string, mixed>>
+     */
+    private function reasked(KanbanClient $client, int $boardId, array $candidates, BoardSearchFilter $filter, array $variants, BoardMembershipControl $membership, string $agentName): array
+    {
         $matches = [];
         foreach ($candidates as $candidate) {
             foreach ($variants as $variant) {
-                $page = $this->search($client, $boardId, $filter->terms($variant, null, (int) $candidate['id']), 1, false, $agentName);
+                $page = $this->search($client, $boardId, $filter->terms($variant, null, (int) $candidate['id']), 1, false, $membership, $agentName);
                 if ((array) $page->rows !== []) {
                     $matches[] = ((array) $page->rows)[0];
 
@@ -338,13 +369,12 @@ final class BoardSearchTool implements Tool
      * @param  list<string>  $summaryTags
      * @return list<array{tag: string, count: int}>
      */
-    private function tallyByTag(KanbanClient $client, int $boardId, array $matches, BoardSearchFilter $filter, array $summaryTags, string $agentName): array
+    private function tallyByTag(KanbanClient $client, int $boardId, array $matches, BoardSearchFilter $filter, array $summaryTags, BoardMembershipControl $membership, string $agentName): array
     {
-        $this->withinCeiling(count($matches) * count($summaryTags), 'one search per matching card per `summary_tags` tag');
         $byTag = array_fill_keys($summaryTags, 0);
         foreach ($summaryTags as $tag) {
             foreach ($matches as $row) {
-                $byTag[$tag] += $this->count($client, $boardId, $filter->terms(null, $tag, (int) $row['id']), false, $agentName);
+                $byTag[$tag] += $this->count($client, $boardId, $filter->terms(null, $tag, (int) $row['id']), false, $membership, $agentName);
             }
         }
 
@@ -410,21 +440,51 @@ final class BoardSearchTool implements Tool
         return $out;
     }
 
-    private function count(KanbanClient $client, int $boardId, string $terms, bool $archivedOnly, string $agentName): int
+    private function count(KanbanClient $client, int $boardId, string $terms, bool $archivedOnly, BoardMembershipControl $membership, string $agentName): int
     {
-        return (int) $this->search($client, $boardId, $terms, 1, $archivedOnly, $agentName)->total;
+        return (int) $this->search($client, $boardId, $terms, 1, $archivedOnly, $membership, $agentName)->total;
     }
 
-    /** One search, confirmed ({@see confirmed}) — the only way this tool reads the search. */
-    private function search(KanbanClient $client, int $boardId, string $terms, int $limit, bool $archivedOnly, string $agentName): SearchPage
+    /**
+     * One search, confirmed ({@see confirmed}) — the only way this tool reads the search. A match
+     * is the call's membership proof ({@see BoardMembershipControl::proven}).
+     */
+    private function search(KanbanClient $client, int $boardId, string $terms, int $limit, bool $archivedOnly, BoardMembershipControl $membership, string $agentName): SearchPage
     {
         try {
             $page = $client->searchPage($boardId, $terms, $limit, $archivedOnly);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId}");
         }
+        $page = $this->confirmed($page, $boardId, $agentName);
+        if ((int) $page->total > 0) {
+            $membership->proven();
+        }
 
-        return $this->confirmed($page, $boardId, $agentName);
+        return $page;
+    }
+
+    /**
+     * ⛔ Every search of this call answered NOTHING: kanban's search answers a board the token's user
+     * is not a MEMBER of exactly that way, so "no matches" is reported only once the board is shown
+     * readable ({@see BoardMembershipControl} — the control `board_get_cards` asks too).
+     */
+    private function member(BoardMembershipControl $membership, int $boardId, string $agentName): void
+    {
+        try {
+            $readable = $membership->readable();
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId} to establish that the token can read it");
+        }
+        if ($readable) {
+            return;
+        }
+
+        Log::warning('board_search: every search answered nothing and the agent\'s own board reads back empty — refusing without an answer', [
+            'agent' => $agentName, 'board_id' => $boardId,
+        ]);
+
+        throw new ToolRefusalException("board_search: kanban's search matched nothing, and your board {$boardId} reads back EMPTY to the bridge's writeback token — a board the token's user is not a MEMBER of answers exactly that way (kanban's search answers members only), so \"no matches\" cannot be told from \"cannot see your board\". NO cards were returned. If your board has live cards, have your operator check that token's membership of board {$boardId}.");
     }
 
     /**
@@ -491,10 +551,44 @@ final class BoardSearchTool implements Tool
         throw new BoardReadRefused($message);
     }
 
-    private function withinCeiling(int $requests, string $how): void
+    /**
+     * The whole call's kanban requests, phase by phase — the ONE total {@see withinCeiling} holds to
+     * {@see REQUEST_CEILING}. Each phase is its worst case: a `pr_number` re-ask stops at a card's
+     * first matching `tags_any` tag, and the `summary_tags` tally runs over the matches, of which the
+     * candidates are the upper bound. The membership control is counted wherever a search is sent,
+     * though it is asked only when every search answered nothing.
+     *
+     * @return array<string, int> phase => requests, zero phases omitted
+     */
+    private function plan(bool $readsStructure, bool $byPr, bool $summary, int $sides, int $variants, int $summaryTags, int $scope, int $candidates, bool $reasks): array
     {
+        if ($byPr) {
+            $searches = [
+                're-asks (one per card carrying the PR per `tags_any` tag)' => $reasks ? $candidates * $variants : 0,
+                '`summary_tags` counts (one per card carrying the PR per tag)' => $summary ? $candidates * $summaryTags : 0,
+            ];
+        } elseif ($summary) {
+            $searches = ['counts (per archive side: the total, each stage in scope, each `summary_tags` tag)' => $sides * (1 + $scope + $summaryTags)];
+        } else {
+            $searches = ['searches (one per `tags_any` tag per archive side)' => $variants * $sides];
+        }
+
+        return array_filter([
+            'the board structure read' => $readsStructure ? 1 : 0,
+            'the PR-number index read' => $byPr ? 1 : 0,
+            ...$searches,
+            self::PLAN_CONTROL => array_sum($searches) > 0 ? 1 : 0,
+        ]);
+    }
+
+    /** @param  array<string, int>  $plan */
+    private function withinCeiling(array $plan): void
+    {
+        $requests = array_sum($plan);
         if ($requests > self::REQUEST_CEILING) {
-            throw new ToolRefusalException("board_search: this call would send {$requests} kanban requests ({$how}), over the per-call ceiling of ".self::REQUEST_CEILING.' — every board-tools call and the bridge\'s own writeback share one per-minute kanban budget. NO cards were returned; narrow the call (fewer tags, fewer stages, or a filter that matches fewer cards).');
+            $how = implode(' + ', array_map(fn (string $phase, int $n): string => "{$n} {$phase}", array_keys($plan), $plan));
+
+            throw new ToolRefusalException("board_search: this call would send {$requests} kanban requests in all ({$how}), over the per-call ceiling of ".self::REQUEST_CEILING.' — every board-tools call and the bridge\'s own writeback share one per-minute kanban budget. No search was sent and NO cards were returned; narrow the call (fewer tags, fewer stages, or a filter that matches fewer cards).');
         }
     }
 

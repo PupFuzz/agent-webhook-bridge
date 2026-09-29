@@ -46,6 +46,9 @@ class BoardSearchTest extends TestCase
     /** @var array<string, mixed>|null a whole response body served for every search instead */
     private ?array $searchBody = null;
 
+    /** The writeback user is not a member of the board: kanban's search floors it to zero rows, at 200. */
+    private bool $nonMember = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -219,7 +222,7 @@ class BoardSearchTest extends TestCase
                         $applied[] = $token;
                     }
                 }
-                foreach ($side as $row) {
+                foreach ($this->nonMember ? [] : $side as $row) {
                     foreach ($applied as $token) {
                         if (! $this->honours($token, $row)) {
                             continue 2;
@@ -254,6 +257,18 @@ class BoardSearchTest extends TestCase
         });
 
         return $qs;
+    }
+
+    /** Every request this call sent to kanban, of any route. */
+    private static function sent(): int
+    {
+        return count(Http::recorded());
+    }
+
+    /** @return list<string> the tags `t1` … `t<n>` */
+    private static function tags(int $n): array
+    {
+        return array_map(fn (int $i): string => "t{$i}", range(1, $n));
     }
 
     /** @param  array<string, mixed>  $body @return list<int> */
@@ -309,6 +324,11 @@ class BoardSearchTest extends TestCase
     #[DataProvider('serverSideFilters')]
     public function test_each_filter_kanban_supports_is_sent_as_its_search_term(array $args, string $q): void
     {
+        // A card every filter matches, in each lane shape — so no answer is empty and the membership
+        // control is never asked.
+        foreach ([101 => self::MY_LANE, 102 => null] as $id => $lane) {
+            $this->card($id, ['tags' => ['a', 'b'], 'workflow_stage_id' => 51, 'name' => 'fix login', 'swimlane_id' => $lane]);
+        }
         $this->fakeKanban();
 
         $res = $this->http($args);
@@ -574,13 +594,14 @@ class BoardSearchTest extends TestCase
         $this->assertStringStartsWith('board_search: the bridge could not read', (string) $res['body']['error']);
     }
 
+    // ─── The per-call request ceiling: ONE planned total, every read counted ────
+
     /** The fan-out is bounded before it is sent, with its own count. */
     public function test_a_call_whose_fan_out_exceeds_the_ceiling_is_refused_before_any_read(): void
     {
         $this->fakeKanban();
-        $tags = array_map(fn (int $i): string => "t{$i}", range(1, intdiv(BoardSearchTool::REQUEST_CEILING, 2) + 1));
 
-        $res = $this->http(['tags_any' => $tags, 'include_archived' => true]);
+        $res = $this->http(['tags_any' => self::tags(intdiv(BoardSearchTool::REQUEST_CEILING, 2) + 1), 'include_archived' => true]);
 
         $this->assertSame(422, $res['status']);
         $this->assertStringContainsString('per-call ceiling of '.BoardSearchTool::REQUEST_CEILING, (string) $res['body']['error']);
@@ -589,10 +610,203 @@ class BoardSearchTest extends TestCase
 
     public function test_the_ceiling_itself_is_accepted(): void
     {
+        $this->card(101, ['tags' => ['other']]);
         $this->fakeKanban();
-        $tags = array_map(fn (int $i): string => "t{$i}", range(1, intdiv(BoardSearchTool::REQUEST_CEILING, 2)));
 
-        $this->assertTrue($this->http(['tags_any' => $tags, 'include_archived' => true, 'fields' => ['id']])['ok']);
+        $res = $this->http(['tags_any' => self::tags(intdiv(BoardSearchTool::REQUEST_CEILING, 2)), 'include_archived' => true, 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertLessThanOrEqual(BoardSearchTool::REQUEST_CEILING, self::sent());
+    }
+
+    /**
+     * The default `fields` selects `stage`, so the call pays the structure read too: `tags_any` of
+     * CEILING − 1 tags is CEILING − 1 searches + 1 structure read + 1 membership control, one over.
+     */
+    public function test_the_structure_read_is_counted_so_a_default_fields_tags_any_one_over_is_refused_before_any_read(): void
+    {
+        $this->fakeKanban();
+
+        $res = $this->http(['tags_any' => self::tags(BoardSearchTool::REQUEST_CEILING - 1)]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('would send '.(BoardSearchTool::REQUEST_CEILING + 1).' kanban requests in all (1 the board structure read', (string) $res['body']['error']);
+        Http::assertNothingSent();
+    }
+
+    /** …and the same call one tag smaller sends EXACTLY the ceiling, the control included — never more. */
+    public function test_a_default_fields_tags_any_at_the_ceiling_sends_no_more_than_it(): void
+    {
+        $this->card(101, ['tags' => ['other']]);
+        $this->fakeKanban();
+
+        $res = $this->http(['tags_any' => self::tags(BoardSearchTool::REQUEST_CEILING - 2)]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame(BoardSearchTool::REQUEST_CEILING, self::sent(), 'structure read + every search + the membership control');
+    }
+
+    /** A rows call with no structure read: CEILING searches + the membership control, one over. */
+    public function test_the_membership_control_is_counted_so_a_rows_call_of_ceiling_searches_is_refused_before_any_read(): void
+    {
+        $this->fakeKanban();
+
+        $res = $this->http(['tags_any' => self::tags(BoardSearchTool::REQUEST_CEILING), 'fields' => ['id']]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('would send '.(BoardSearchTool::REQUEST_CEILING + 1).' kanban requests', (string) $res['body']['error']);
+        $this->assertStringContainsString('1 membership control', (string) $res['body']['error']);
+        Http::assertNothingSent();
+    }
+
+    /** `summary_tags` alone decide this summary is over, so it is refused before the structure read. */
+    public function test_a_summary_whose_arguments_alone_exceed_the_ceiling_is_refused_before_any_read(): void
+    {
+        $this->fakeKanban();
+
+        $res = $this->http(['summary' => true, 'summary_tags' => self::tags(BoardSearchTool::REQUEST_CEILING)]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        Http::assertNothingSent();
+    }
+
+    /**
+     * A summary over every column is sized by the structure read (the fixture board has 3): 1
+     * structure + (1 total + 3 columns + N tags) + 1 control, with N the smallest over the ceiling.
+     * The arguments alone fit, so this is refused after that one read, before any count.
+     */
+    public function test_a_summary_sized_by_the_board_s_columns_is_refused_before_any_count(): void
+    {
+        $this->fakeKanban();
+
+        $res = $this->http(['summary' => true, 'summary_tags' => self::tags(BoardSearchTool::REQUEST_CEILING - 5)]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('would send '.(BoardSearchTool::REQUEST_CEILING + 1).' kanban requests', (string) $res['body']['error']);
+        $this->assertSame([], self::searches());
+        $this->assertSame(1, self::sent(), 'only the structure read that sized it');
+    }
+
+    /** Three cards carry PR 7 in the seat's lane; `lane: mine` makes each a re-ask. */
+    private function threePrCardsInMyLane(): void
+    {
+        foreach ([101, 102, 103] as $id) {
+            $this->card($id, ['payload' => ['pr_number' => 7], 'tags' => ['t1']]);
+        }
+        $this->fakeKanban();
+    }
+
+    /**
+     * ⛔ The re-asks and the `summary_tags` tally are ONE total, sized by the by-ref read and refused
+     * before any search: 1 structure + 1 by-ref + 3 re-asks + 3 × N tallies + 1 control. N is the
+     * smallest over the ceiling, so each phase alone (≤ CEILING) would pass a per-phase check.
+     */
+    public function test_a_pr_number_summary_is_refused_on_its_whole_total_before_any_search(): void
+    {
+        $this->threePrCardsInMyLane();
+        $n = intdiv(BoardSearchTool::REQUEST_CEILING - 6, 3) + 1;
+
+        $res = $this->http(['pr_number' => 7, 'lane' => 'mine', 'summary' => true, 'summary_tags' => self::tags($n)]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('would send '.(6 + 3 * $n).' kanban requests in all', (string) $res['body']['error']);
+        $this->assertSame([], self::searches(), 'refused before the first re-ask');
+        $this->assertSame(2, self::sent(), 'only the two reads that size the call: the structure read and the by-ref read');
+    }
+
+    public function test_a_pr_number_summary_at_the_ceiling_sends_no_more_than_it(): void
+    {
+        $this->threePrCardsInMyLane();
+        $n = intdiv(BoardSearchTool::REQUEST_CEILING - 6, 3);
+
+        $res = $this->http(['pr_number' => 7, 'lane' => 'mine', 'summary' => true, 'summary_tags' => self::tags($n)]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame(3, $res['body']['result']['summary']['total']);
+        $this->assertLessThanOrEqual(BoardSearchTool::REQUEST_CEILING, self::sent());
+    }
+
+    // ─── Membership: "no matches" is said only of a board the token can read ─
+
+    /** kanban's search answers a non-member ZERO rows at 200 — the same body as "nothing matched". */
+    #[DataProvider('doors')]
+    public function test_a_board_the_token_cannot_read_is_refused_not_answered_as_no_matches(string $door): void
+    {
+        $this->card(101, ['tags' => ['lane:A']]);
+        $this->nonMember = true;
+        $this->fakeKanban();
+
+        $res = $this->through($door, ['tags_all' => ['lane:A']]);
+
+        $this->assertFalse($res['ok']);
+        $this->assertStringContainsString('MEMBER', (string) json_encode($res['body']));
+        $this->assertStringNotContainsString('"cards"', (string) json_encode($res['body']));
+    }
+
+    /** @return array<string, array{array<string, mixed>}> */
+    public static function searchedShapes(): array
+    {
+        return [
+            'a summary' => [['summary' => true]],
+            'a pr_number re-ask' => [['pr_number' => 7, 'lane' => 'mine']],
+            'a pr_number summary tally' => [['pr_number' => 7, 'summary' => true, 'summary_tags' => ['lane:A']]],
+        ];
+    }
+
+    /**
+     * Every shape that searches is held to the control — the `pr_number` tally included, whose
+     * columns come from the by-ref read (kanban's `view` policy, NOT floored to membership) and would
+     * otherwise sit beside silently-zero tag counts.
+     *
+     * @param  array<string, mixed>  $args
+     */
+    #[DataProvider('searchedShapes')]
+    public function test_every_shape_that_searches_refuses_on_a_board_the_token_cannot_read(array $args): void
+    {
+        $this->card(101, ['tags' => ['lane:A'], 'payload' => ['pr_number' => 7]]);
+        $this->nonMember = true;
+        $this->fakeKanban();
+
+        $res = $this->http($args);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $this->assertStringContainsString('MEMBER', (string) $res['body']['error']);
+    }
+
+    /** `pr_number` alone sends no search: the by-ref read's answer stands, and the control is not asked. */
+    public function test_pr_number_alone_asks_no_control(): void
+    {
+        $this->card(101, ['payload' => ['pr_number' => 7]]);
+        $this->nonMember = true;
+        $this->fakeKanban();
+
+        $res = $this->http(['pr_number' => 7, 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([101], self::ids($res['body']));
+        $this->assertSame([], self::searches());
+    }
+
+    public function test_no_matches_on_a_readable_board_is_answered_after_one_control(): void
+    {
+        $this->card(101, ['tags' => ['other']]);
+        $this->fakeKanban();
+
+        $res = $this->http(['tags_all' => ['lane:A'], 'fields' => ['id']]);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        $this->assertSame([], $res['body']['result']['cards']);
+        $this->assertSame(['board_id=10 tags:"lane:A"', 'board_id=10'], self::searches(), 'the search, then the one membership control');
+    }
+
+    public function test_a_match_is_the_membership_proof_and_no_control_is_asked(): void
+    {
+        $this->card(101, ['tags' => ['lane:A']]);
+        $this->fakeKanban();
+
+        $this->http(['tags_all' => ['lane:A'], 'fields' => ['id']]);
+
+        $this->assertSame(['board_id=10 tags:"lane:A"'], self::searches());
     }
 
     // ─── Projection ──────────────────────────────────────────────────────────

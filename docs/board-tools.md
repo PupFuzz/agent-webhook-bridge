@@ -1262,22 +1262,39 @@ collection is the retryable `502`.
 you **filter** rather than name. It stays on your own configured board: every search carries
 `board_id=<yours>`, and kanban's disclosure confirms it applied.
 
-**Errors.** A permanent 4xx on a search, the stage read or the by-ref read is a named **INSTALL-fault**
-refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339). Any other
+⛔ **"No matches" is said only of a board the bridge can read.** kanban's search answers a token
+whose user is not a **member** of your board zero rows, at 200 — the same answer as "nothing
+matched". So when every search of a call answered nothing, your board is asked once (the membership
+control `board_get_cards` uses, `BoardMembershipControl`); if it reads back empty the call is refused
+(422), naming membership, instead of answered. Anything a search returned in the same call is the
+proof, and then nothing more is asked. ⚠ That control cannot tell an **empty** board from an
+unreadable one — and it counts live cards, so a board whose every card is archived reads back empty
+too — so on such a board a search matching nothing is refused rather than answered "no matches"
+(DL-437 bound (f)). `pr_number` alone sends no search, so its by-ref answer stands without the control.
+
+**Errors.** A permanent 4xx on a search, the membership control, the stage read or the by-ref read is
+a named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339). Any other
 board failure keeps the retryable `502`.
 
 **Cost**, in kanban requests — every one against the per-user budget the writeback shares (§
 `board_get_cards` *Cost*):
 
-- one stage read when `stage` is sent, `stage` is a selected field (it is by default), or `summary` is
+- one stage read (the board structure read) when `stage` is sent, `stage` is a selected field (it is by default), or `summary` is
   set;
 - a search: **(number of `tags_any` tags, or 1) × (2 with `include_archived`, else 1)**;
 - a summary: **(2 with `include_archived`, else 1) × (1 + columns counted + `summary_tags` tags)**;
 - `pr_number`: **1** by-ref read, plus, when any other filter is sent, **(cards the index names) × (number
-  of `tags_any` tags, or 1)** searches, plus **(matches) × (`summary_tags` tags)** in a summary.
+  of `tags_any` tags, or 1)** searches, plus **(cards the index names) × (`summary_tags` tags)** in a
+  summary (the matches, of which those cards are the upper bound);
+- **1** membership control whenever the call sends any search (asked only if every search answered
+  nothing, above).
 
-⛔ **Bounded before it is sent.** A call whose fan-out would exceed `BoardSearchTool::REQUEST_CEILING`
-is refused with its own count before that fan-out is sent. The ceiling is **borrowed**, not chosen:
+⛔ **Bounded, every request counted.** The call's **whole** total — every line above that applies —
+is held to `BoardSearchTool::REQUEST_CEILING`, and no accepted call sends more. A call its arguments
+alone put over the ceiling is refused, with its count per phase, before its first request. Where the
+total depends on what a read returns — the columns a summary counts when you name no `stage`, the
+cards carrying a PR — it is refused right after that **one** sizing read (the stage read or the
+by-ref read), before any search. The ceiling is **borrowed**, not chosen:
 it is `board_get_cards`' worst case, `3 × MAX_IDS + 1`, the per-call ceiling this door already accepted
 against that shared budget (DL-435 bound (d)). Nothing is ever walked page by page: `limit` never
 exceeds one page, and every count is kanban's.
