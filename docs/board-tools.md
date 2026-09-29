@@ -1068,8 +1068,8 @@ on another board or gone. This tool answers **every id you name, with a status**
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `ids` | yes | A non-empty **list of positive integers** — the ids `board_my_cards` (or anything else) reports. At most `BoardGetCardsTool::MAX_IDS` per call (the schema's `maxItems` states the number and a test holds the two equal); it is `board_my_cards`' own per-list cap, so a full answer stays inside the same response budget. A decorated string (`"42"`), a float, zero, a repeated id or an over-long list is **refused** (422) before any request. |
-| `fields` | no | Which card fields to return, from `BoardCardProjection::FIELDS` (the schema's `enum` restates it and a test holds the two equal). **Omitted, or `null` ⇒ every field except `description`.** Naming `description` returns each card's body **and** `description_truncated`, cut to the same per-card `description_max_bytes` `board_my_cards` uses. `[]` returns statuses only. An unknown name is **refused**. |
+| `ids` | yes | A non-empty **list of positive integers** — the ids `board_my_cards` (or anything else) reports. At most `BoardGetCardsTool::MAX_IDS` per call (the schema's `maxItems` states the number and a test holds the two equal) — `board_my_cards`' own per-list **card-count** cap, but **not the same response budget**: this tool's `{id,status,card}` wrapper plus `swimlane_id`/`position` cost about 66 bytes/card more than `board_my_cards`' card (measured; stable across card-name length — see the `MAX_IDS` docblock), so a full default answer here runs roughly a fifth over the 16,384-char budget that cap was sized to (§ *The default is capped* above owns that budget's own derivation). Soft either way — nothing here truncates for it. A decorated string (`"42"`), a float, zero, a repeated id or an over-long list is **refused** (422) before any request. |
+| `fields` | no | Which card fields to return, from `BoardCardProjection::FIELDS` (the schema's `enum` restates it and a test holds the two equal). **Omitted, or `null` ⇒ every field except `description`.** Naming `description` returns each card's body **and** `description_truncated`, cut to the same per-card `description_max_bytes` `board_my_cards` uses. `[]` returns statuses only — `card` is **omitted** on a `found`/`archived` entry rather than sent empty, so it is never present as an empty value of either JSON type. An unknown name is **refused**. |
 
 That is the whole accepted set; any other key is refused (and `include_description` is told to name
 `description` in `fields` instead): see
@@ -1144,11 +1144,14 @@ most one membership control per call. **That worst case is a large slice of a bu
 board-tools call and the writeback SHARE.** kanban's default API limit is 300 req/min **per
 authenticated user** (kanban `origin/dev` 4688b543, `app/Providers/AppServiceProvider.php:40`), and
 every call on this door authenticates as the ONE writeback user (§ *A least-privilege writeback
-token* in [`writeback.md`](writeback.md)) — so at `MAX_IDS` = 52, one call naming ids that all miss
-both archive sides can cost up to 157 requests (52 × 3, plus one shared membership-control request),
-against the same per-minute budget the writeback's own card moves draw on. A 429 that lands on a
-writeback move while that budget is exhausted is currently handled as a PERMANENT failure rather
-than retried, not something this tool fixes — tracked separately as card#10849.
+token* in [`writeback.md`](writeback.md)) — so one call naming ids that all miss both archive sides
+can cost up to `3 × MAX_IDS + 1` kanban requests: 3 per missing id (the live search, the archived
+search and the by-id read) at the cap, plus 1 shared membership-control request per call. The stage
+read never adds to that ceiling — it is paid only when some id resolves as `found` or `archived`,
+which costs fewer than 3 reads, so a call where every id misses never pays it — against the same
+per-minute budget the writeback's own card moves draw on. A 429 that lands on a writeback move
+while that budget is exhausted is currently handled as a PERMANENT failure rather than retried, not
+something this tool fixes — tracked separately as card#10849.
 
 ## Errors
 

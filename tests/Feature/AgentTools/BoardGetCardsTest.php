@@ -309,7 +309,11 @@ class BoardGetCardsTest extends TestCase
 
         $res = $this->http(['ids' => [101], 'fields' => []]);
 
-        $this->assertSame([['id' => 101, 'status' => 'found', 'card' => []]], $res['body']['result']['cards']);
+        // `card` must be ABSENT, not an empty value: `[]` on the wire is a JSON array, while every
+        // other call's `card` is an object, so an empty one would be a type change a strict
+        // consumer (e.g. jq's `.card.name`) could not walk the same way as a populated one.
+        $this->assertSame([['id' => 101, 'status' => 'found']], $res['body']['result']['cards']);
+        $this->assertArrayNotHasKey('card', $res['body']['result']['cards'][0]);
     }
 
     // ─── Refused before any read ─────────────────────────────────────────────

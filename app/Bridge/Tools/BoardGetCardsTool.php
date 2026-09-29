@@ -52,19 +52,30 @@ final class BoardGetCardsTool implements Tool
 
     /**
      * The most ids one call may name. BORROWED, not chosen: {@see BoardMyCardsTool::DEFAULT_MAX_CARDS}
-     * is derived from measured titles-only card sizes against a 16 KiB list budget, and a full
-     * default-projection answer here is that same list — so the same bound keeps it inside the same
-     * budget. It also bounds the upstream fan-out: at most three reads per id (live, archived,
-     * by-id), plus one stage read and one visibility control per call.
+     * is derived from measured titles-only card sizes against a 16 KiB list budget.
+     *
+     * ⚠ IT BOUNDS THE CARD COUNT, NOT THIS TOOL'S RESPONSE SIZE. This tool's `{id,status,card}`
+     * wrapper, plus the `swimlane_id` / `position` keys it adds beyond `board_my_cards`' card, cost
+     * about 66 bytes/card more (measured against a realistic fixture by diffing the two shapes'
+     * `json_encode` length; stable within a byte or two across a short and a 90-character card
+     * name, since the overhead is fixed keys and small values, not card content). Applied to the
+     * 310.3 chars/card `DEFAULT_MAX_CARDS` was sized against (the larger of its two live
+     * measurements — see that constant), a full default answer here runs roughly a fifth over the
+     * same 16 KiB budget. Soft, like that budget itself ("a bound, not a promise" — `board-tools.md`
+     * § The default is capped): nothing enforces it, and no reply is truncated for it.
+     *
+     * It also bounds the upstream fan-out: at most `3 × MAX_IDS + 1` requests — 3 per id (live,
+     * archived, by-id), plus one shared visibility-control request per call. A stage read never
+     * adds to that ceiling: it is paid only when some id resolves in fewer than 3 reads (`found` or
+     * `archived`), which is never true on a call where every id misses.
      *
      * ⚠ THAT FAN-OUT SHARES A SCARCE BUDGET: kanban rate-limits 300 req/min per AUTHENTICATED
      * USER (source-read, kanban `origin/dev` 4688b543, `RateLimiter::for('api', …)` in
      * `app/Providers/AppServiceProvider.php`), and this tool, every other board-tools call, and
-     * the writeback all authenticate as the ONE writeback user. A call naming ids that all miss
-     * both archive sides can therefore cost up to 157 requests (3 per id at this bound, plus one
-     * shared membership-control request) against a budget the writeback's own card moves draw
-     * on too — and a 429 the writeback hits mid-move is currently dropped as a PERMANENT
-     * failure rather than retried (card#10849; not addressed here).
+     * the writeback all authenticate as the ONE writeback user — so the worst case above draws on
+     * a budget the writeback's own card moves draw on too, and a 429 the writeback hits mid-move is
+     * currently dropped as a PERMANENT failure rather than retried (card#10849; not addressed
+     * here).
      */
     public const MAX_IDS = BoardMyCardsTool::DEFAULT_MAX_CARDS;
 
@@ -120,10 +131,16 @@ final class BoardGetCardsTool implements Tool
             $entry = ['id' => $id, 'status' => $verdicts[$id]['status']];
             if (isset($verdicts[$id]['row'])) {
                 $row = $verdicts[$id]['row'];
-                $entry['card'] = BoardCardProjection::select(
+                $projected = BoardCardProjection::select(
                     BoardCardProjection::withPosition(BoardCardProjection::withSwimlane(BoardCardProjection::project($row, $stageNames, $descriptionCap), $row), $row),
                     $fields,
                 );
+                // `fields: []` selects nothing: OMIT `card` rather than send an empty value, so
+                // "statuses only" is literally true and `card` never changes JSON type (object on
+                // every other call) depending on what was asked for.
+                if ($projected !== []) {
+                    $entry['card'] = $projected;
+                }
             }
             $cards[] = $entry;
         }
