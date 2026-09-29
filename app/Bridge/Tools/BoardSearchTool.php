@@ -325,8 +325,14 @@ final class BoardSearchTool implements Tool
     }
 
     /**
-     * Every live card carrying `$prNumber`: kanban's by-ref index. It authorizes the board's `view`
-     * policy, not membership, so it is no membership proof.
+     * Every live card carrying `$prNumber`: kanban's by-ref index. It is `view`-authorized, the
+     * same scope `status.json` is — on current kanban the two agree for an API token (both
+     * owner-or-member; see `BoardMembershipControl`'s docblock), so a successful read here already
+     * implies the same membership the control asks for directly. This is NOT folded into
+     * `BoardMembershipControl::proven()`: the control is still asked afterward ({@see call}), as a
+     * check against a kanban where `view` and the task search ever disagree about who may read a
+     * board — the case the control exists to catch — rather than trusting this read's authorization
+     * to stand in for it.
      *
      * @return list<array<string, mixed>>
      */

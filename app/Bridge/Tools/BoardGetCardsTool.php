@@ -205,15 +205,18 @@ final class BoardGetCardsTool implements Tool
         }
 
         if ($onBoard === $boardId || $onBoard === null) {
-            // Either the card IS on this board and the board-scoped search did not return it — the
-            // shape of a writeback user that may VIEW the board without being its member (kanban's
-            // search floors to membership, its `view` policy does not) — or kanban answered 2xx with
-            // no board id at all. Neither is a status; both are refused rather than guessed.
+            // Either the card IS on this board and the board-scoped search did not return it —
+            // the shape kanban would produce if its VIEW authorization and its SEARCH scope
+            // disagreed about who may read this board (on current kanban, source-read, the two
+            // agree for an API token — see `BoardMembershipControl`'s docblock — so this is a
+            // defence against a kanban version or configuration where they do not, not a live case
+            // here) — or kanban answered 2xx with no board id at all. Neither is a status; both are
+            // refused rather than guessed.
             Log::warning('board_get_cards: the by-id read and the board-scoped search disagree — refusing without a verdict', [
                 'agent' => $agentName, 'card_id' => $id, 'board_id' => $boardId, 'by_id_board' => $onBoard,
             ]);
 
-            throw new ToolRefusalException("board_get_cards: card {$id} could not be placed — the board-scoped search of your board {$boardId} did not return it, and the by-id read ".($onBoard === null ? 'answered without a board id' : 'says it IS on that board').'. That is a BROKEN READ, not a status, so NO cards were returned. The usual cause is a writeback token whose user can view your board without being a MEMBER of it (kanban\'s search answers members only). This is an INSTALL fault; report it to your operator.', installFault: true);
+            throw new ToolRefusalException("board_get_cards: card {$id} could not be placed — the board-scoped search of your board {$boardId} did not return it, and the by-id read ".($onBoard === null ? 'answered without a board id' : 'says it IS on that board').'. That is a BROKEN READ, not a status, so NO cards were returned. The likely cause is a kanban whose VIEW authorization and its SEARCH scope disagree about who may read this board. This is an INSTALL fault; report it to your operator.', installFault: true);
         }
 
         return ['status' => self::STATUS_OTHER_BOARD];

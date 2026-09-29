@@ -435,7 +435,12 @@ class BoardGetCardsTest extends TestCase
         $this->assertSame([self::BOARD], KanbanBoardStatus::asked());
     }
 
-    /** A user that may VIEW the board but not search it (super-admin, not a member) reads a card of this board by id only. */
+    /**
+     * The by-id read names this board while the board-scoped search missed the same id — the shape
+     * a kanban whose VIEW authorization and its SEARCH scope disagree about membership would
+     * produce (see `BoardGetCardsTool::placedVerdict`; not a live case on current kanban, where the
+     * two agree for an API token). Refused as a BROKEN READ, never guessed into a status.
+     */
     public function test_a_by_id_answer_naming_this_board_after_a_scoped_miss_is_a_broken_read(): void
     {
         $this->fakeBoard(byId: [101 => self::BOARD]);
