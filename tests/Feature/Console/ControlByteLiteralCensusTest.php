@@ -31,6 +31,7 @@ class ControlByteLiteralCensusTest extends TestCase
         'Bridge/Writeback/OncePerKey.php::claim#1' => ['\x00', 'the delimiter joining the in-memory one-attempt-per-key dedupe key, which never leaves the map'],
         'Bridge/Writeback/WritebackAlertNotifier.php::emitMoveFailed#1' => ['\x00', 'a delimiter inside the dedupe key emit() hands to claimSignature(), which hashes it'],
         'Bridge/Writeback/WritebackAlertNotifier.php::emitMoveFailed#2' => ['\x00', 'a delimiter inside the dedupe key emit() hands to claimSignature(), which hashes it'],
+        'Bridge/Writeback/WritebackAlertNotifier.php::notifyMovedWithoutOwner#1' => ['\x00', 'a delimiter inside the dedupe key emit() hands to claimSignature(), which hashes it (card#10869)'],
         'Http/Middleware/LoopbackOnly.php::isLoopback#1' => ['\x7f', 'a byte compare against a packed IPv4-mapped address'],
     ];
 

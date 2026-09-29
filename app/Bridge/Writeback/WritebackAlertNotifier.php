@@ -158,7 +158,7 @@ final class WritebackAlertNotifier
      */
     public function notifyMovedWithoutOwner(string $repo, int $cardId, string $outcome, ?int $fromStage, int $toStage): void
     {
-        $this->emit('writeback_moved_without_owner', "moved_without_owner\x00{$repo}\x00{$cardId}\x00{$toStage}", [
+        $this->emit('writeback_moved_without_owner', implode("\x00", ['moved_without_owner', $repo, (string) $cardId, (string) $toStage]), [
             'repo' => $repo,
             'card_id' => $cardId,
             'outcome' => $outcome,
