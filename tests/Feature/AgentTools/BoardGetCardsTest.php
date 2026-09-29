@@ -398,6 +398,31 @@ class BoardGetCardsTest extends TestCase
     }
 
     /**
+     * A 404 on the membership control's OWN read (`status.json`) must not tell the operator to
+     * look for a trashed board: unlike `preload.json` / `by-ref.json`, `status.json` RESOLVES a
+     * trashed board (kanban's `->withTrashed()`), so its 404 means no board carries the id at
+     * all — trash is not a candidate cause on this route ({@see BoardReadRoute::MembershipStatus}).
+     */
+    public function test_the_control_s_own_404_does_not_blame_the_trash(): void
+    {
+        Http::fake([
+            '*/boards/'.self::BOARD.'/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 50, 'name' => 'Backlog', 'position' => 1],
+            ]]]]]),
+            '*/boards/'.self::BOARD.'/status.json' => Http::response(['message' => 'Not Found'], 404),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks/*/preload.json' => Http::response(['message' => 'This action is unauthorized.'], 403),
+        ]);
+
+        $res = $this->http(['ids' => [101], 'fields' => []]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $error = (string) $res['body']['error'];
+        $this->assertStringNotContainsString('trash', $error, $error);
+        $this->assertStringContainsString('does not resolve to any board this route can see', $error);
+    }
+
+    /**
      * ⛔ A ROW THE SAME CALL ALREADY RESOLVED IS THE MEMBERSHIP PROOF (PR #822 r3). kanban's search
      * floors to membership, so a `found` or `archived` row proves the token can read this board, and
      * the control is not asked — whichever order the ids came in, because the 403 id is placed only

@@ -489,7 +489,7 @@ final class BoardSearchTool implements Tool
         try {
             $readable = $membership->readable();
         } catch (RequestException $e) {
-            throw $this->readRefusal($e, $agentName, BoardReadRoute::BoardScoped, "the status of your board {$boardId} to establish that the token can read it");
+            throw $this->readRefusal($e, $agentName, BoardReadRoute::MembershipStatus, "the status of your board {$boardId} to establish that the token can read it");
         }
         if ($readable) {
             return;

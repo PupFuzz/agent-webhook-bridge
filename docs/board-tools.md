@@ -254,15 +254,17 @@ missing its coordination cards reads exactly like a board with none.
 
 ⛔ **"No cards" is answered only of a board the bridge can read (card#10856).** kanban's search
 answers a token whose user is not a **member** of the board zero rows, at 200 — the same answer as
-a lane with no cards. This tool does not learn that from the search: it reads your board's
-structure (`boards/{id}/preload.json`) **before any search**, unconditionally, and the coordination
-board's structure too whenever one is configured — both `view`-authorized on the board itself, so a
-**non-member gets a 403 there and the call is refused** (422, naming membership) before a search
-ever runs (§ A PERMANENT board 4xx). A member is answered as before, empty windows included — a
-new board, or one whose every card is archived. (card#10856 was investigated as a `board_get_cards`
-/ `board_search`-shaped membership control on this tool too; that control was **declined** here,
-because it can never fire — the structure read already refuses first, on every path this tool
-takes, so it would only cost an extra request. See the class docblock on `BoardMembershipControl`.)
+a lane with no cards. This tool does not learn that from the search: it reads your **own** board's
+structure (`boards/{id}/preload.json`) **unconditionally, before any search** — and, whenever a
+coordination board is configured, its structure too, though there only AFTER that board's own tag
+searches, still before any answer about it is formed. Both reads are `view`-authorized on the board
+itself, so a **non-member gets a 403 there and the call is refused** (422, naming membership)
+before an answer is ever formed (§ A PERMANENT board 4xx). A member is answered as before, empty
+windows included — a new board, or one whose every card is archived. (card#10856 was investigated as
+a `board_get_cards` / `board_search`-shaped membership control on this tool too; that control was
+**declined** here, because it can never fire — the structure read already refuses first, on every
+path this tool takes, so it would only cost an extra request. See the class docblock on
+`BoardMembershipControl`.)
 
 ### The default is capped (`cards_window`, `stage`, `limit`)
 
@@ -1156,7 +1158,7 @@ A key you did not select is absent.
 `tag` read (DL-383). You name each id, on your own board; a card anywhere else is a status with no
 content.
 
-**Errors.** A permanent 4xx on the board-scoped search, the membership control (other than its 403, the membership refusal above) or the stage read is a
+**Errors.** A permanent 4xx on the board-scoped search, the membership control (other than a not-readable answer — a 403, or a 200 it reads as unreadable — the membership refusal above) or the stage read is a
 named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339).
 On the by-id read, 403 and 404 are **statuses** (above), not refusals; any other failure there keeps
 the retryable `502`.
@@ -1293,7 +1295,7 @@ matches" — on an empty board too, or one whose every card is archived — and 
 refused (422), naming membership. Anything a search returned in the same call is the proof, and then
 nothing more is asked. `pr_number` alone sends no search, so its by-ref answer stands without the control.
 
-**Errors.** A permanent 4xx on a search, the membership control (other than its 403, the membership refusal above), the stage read or the by-ref read is
+**Errors.** A permanent 4xx on a search, the membership control (other than a not-readable answer — a 403, or a 200 it reads as unreadable — the membership refusal above), the stage read or the by-ref read is
 a named **INSTALL-fault** refusal: § [A PERMANENT board 4xx](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339). Any other
 board failure keeps the retryable `502`.
 

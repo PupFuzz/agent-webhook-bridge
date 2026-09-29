@@ -11,12 +11,14 @@ use Illuminate\Http\Client\RequestException;
  * unreadable board would also produce. One instance per board per call: the control is asked at
  * most once for each.
  *
- * ⛔ `board_my_cards` does NOT ask this (card#10856, considered and declined). It reads its own
- * board's structure (`boards/{id}/preload.json`) before any search — unconditionally, and the
- * coordination board's structure too whenever one is configured — and both are `view`-authorized
- * the same way `status.json` is, so a non-member is already refused there. Adding this control
- * would be a second guard behind one that already fires first, paying an extra request for no
- * reachable case; see the class docblock's condition below, which is what makes the guard reliable.
+ * ⛔ `board_my_cards` does NOT ask this (card#10856, considered and declined). It reads its OWN
+ * board's structure (`boards/{id}/preload.json`) unconditionally, before any search — and the
+ * COORDINATION board's structure too, whenever one is configured, though there only after that
+ * board's own tag searches, still before any answer about it is formed. Both reads are
+ * `view`-authorized the same way `status.json` is, so a non-member is already refused there.
+ * Adding this control would be a second guard behind one that already fires first, paying an
+ * extra request for no reachable case; see the class docblock's condition below, which is what
+ * makes the guard reliable.
  *
  * ⛔ kanban's search floors to the caller's own boards and answers a NON-MEMBER zero rows at 200, not
  * an error, so "nothing on this board matched" and "this token cannot see this board" are one answer
