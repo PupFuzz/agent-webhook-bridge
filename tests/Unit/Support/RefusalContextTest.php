@@ -6,6 +6,7 @@ use App\Bridge\Support\RefusalContext;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Carbon;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -77,8 +78,8 @@ class RefusalContextTest extends TestCase
     }
 
     /**
-     * A Retry-After, however long, never turns a 429 into a refusal: the wait is the redelivery
-     * curve's to honour, not a reason to drop the write (card#10849).
+     * A Retry-After, however long, never turns a 429 into a refusal: the wait is the owed-write
+     * queue's to honour, not a reason to drop the write (card#10849).
      *
      * @return array<string, array{0: string}>
      */
@@ -97,6 +98,59 @@ class RefusalContextTest extends TestCase
         $e = new RequestException(new Response(new GuzzleResponse(429, ['Retry-After' => $retryAfter], '{"message":"Too Many Attempts."}')));
 
         $this->assertFalse(RefusalContext::isPermanent($e));
+    }
+
+    // --- card#10849: the rate-limit predicate and its Retry-After, off a plain RequestException ---
+
+    /**
+     * @return array<string, array{0: int, 1: bool}>
+     */
+    public static function rateLimitStatuses(): array
+    {
+        return [
+            'rate limited' => [429, true],
+            'request timeout' => [408, true],
+            'conflict — a state refusal, not a rate limit' => [409, false],
+            'too early — permanent, like 409' => [425, false],
+            'forbidden' => [403, false],
+            'server error — transient, but not a rate limit' => [503, false],
+        ];
+    }
+
+    #[DataProvider('rateLimitStatuses')]
+    public function test_is_rate_limited_is_exactly_408_and_429(int $status, bool $expected): void
+    {
+        $this->assertSame($expected, RefusalContext::isRateLimited($this->exception('{}', $status)));
+    }
+
+    public function test_retry_after_reads_delta_seconds(): void
+    {
+        $this->assertSame(37, RefusalContext::retryAfterSeconds($this->withRetryAfter('37')));
+        $this->assertSame(0, RefusalContext::retryAfterSeconds($this->withRetryAfter('0')));
+    }
+
+    public function test_retry_after_reads_an_http_date_against_now(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2037-10-21 07:28:00', 'UTC'));
+        try {
+            $this->assertSame(90, RefusalContext::retryAfterSeconds($this->withRetryAfter('Wed, 21 Oct 2037 07:29:30 GMT')));
+            // A date already in the past means "now", never a negative wait.
+            $this->assertSame(0, RefusalContext::retryAfterSeconds($this->withRetryAfter('Wed, 21 Oct 2037 07:00:00 GMT')));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_retry_after_absent_or_unreadable_is_null(): void
+    {
+        $this->assertNull(RefusalContext::retryAfterSeconds($this->exception('{}', 429)));
+        $this->assertNull(RefusalContext::retryAfterSeconds($this->withRetryAfter('soon')));
+        $this->assertNull(RefusalContext::retryAfterSeconds($this->withRetryAfter('-5')));
+    }
+
+    private function withRetryAfter(string $value): RequestException
+    {
+        return new RequestException(new Response(new GuzzleResponse(429, ['Retry-After' => $value], '{"message":"Too Many Attempts."}')));
     }
 
     // --- card#5312 / DL-274: the alert-reason vocabulary the refusal arms share ---
