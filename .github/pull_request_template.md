@@ -40,5 +40,3 @@
      - Manual smoke-test against a live install (cite which install)
      - Senior-dev review-agent loop CLEAN
      - CI on this PR (green required for auto-merge per feedback-git-workflow) -->
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)

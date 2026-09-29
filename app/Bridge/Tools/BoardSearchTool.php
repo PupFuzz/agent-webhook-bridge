@@ -325,8 +325,14 @@ final class BoardSearchTool implements Tool
     }
 
     /**
-     * Every live card carrying `$prNumber`: kanban's by-ref index. It authorizes the board's `view`
-     * policy, not membership, so it is no membership proof.
+     * Every live card carrying `$prNumber`: kanban's by-ref index. It is `view`-authorized, the
+     * same scope `status.json` is — on current kanban the two agree for an API token (both
+     * owner-or-member; see `BoardMembershipControl`'s docblock), so a successful read here already
+     * implies the same membership the control asks for directly. This is NOT folded into
+     * `BoardMembershipControl::proven()`: the control is still asked afterward ({@see call}), as a
+     * check against a kanban where `view` and the task search ever disagree about who may read a
+     * board — the case the control exists to catch — rather than trusting this read's authorization
+     * to stand in for it.
      *
      * @return list<array<string, mixed>>
      */
@@ -475,24 +481,25 @@ final class BoardSearchTool implements Tool
     /**
      * ⛔ Every search of this call answered NOTHING: kanban's search answers a board the token's user
      * is not a MEMBER of exactly that way, so "no matches" is reported only once the board is shown
-     * readable ({@see BoardMembershipControl} — the control `board_get_cards` asks too).
+     * readable ({@see BoardMembershipControl} — the control `board_get_cards` asks too). A readable
+     * board with no match, an empty one included, is answered "no matches".
      */
     private function member(BoardMembershipControl $membership, int $boardId, string $agentName): void
     {
         try {
             $readable = $membership->readable();
         } catch (RequestException $e) {
-            throw $this->readRefusal($e, $agentName, BoardReadRoute::Search, "your board {$boardId} to establish that the token can read it");
+            throw $this->readRefusal($e, $agentName, BoardReadRoute::MembershipStatus, "the status of your board {$boardId} to establish that the token can read it");
         }
         if ($readable) {
             return;
         }
 
-        Log::warning('board_search: every search answered nothing and the agent\'s own board reads back empty — refusing without an answer', [
+        Log::warning('board_search: every search answered nothing and the token may not read the agent\'s own board — refusing without an answer', [
             'agent' => $agentName, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException("board_search: kanban's search matched nothing, and your board {$boardId} reads back EMPTY to the bridge's writeback token — a board the token's user is not a MEMBER of answers exactly that way (kanban's search answers members only), so \"no matches\" cannot be told from \"cannot see your board\". NO cards were returned. If your board has live cards, have your operator check that token's membership of board {$boardId}.");
+        throw new ToolRefusalException("board_search: kanban's search matched nothing, and the bridge's writeback token may not read your board {$boardId} either — the token's user is not a MEMBER of it, or the board is TRASHED — and kanban's search answers a non-member zero rows, so \"no matches\" would be false. NO cards were returned. Have your operator check that token's membership of board {$boardId}, and whether it is trashed.");
     }
 
     /**

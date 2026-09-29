@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeToolsCallStdio;
+use Tests\Support\KanbanBoardStatus;
 use Tests\TestCase;
 
 /**
@@ -191,12 +192,16 @@ class BoardSearchTest extends TestCase
     private function fakeKanban(int $byRefStatus = 200, ?int $searchStatus = null): void
     {
         Http::fake([
-            '*/boards/'.self::BOARD.'/preload.json' => Http::response(['data' => $this->stagesUnreadable ? ['name' => 'board'] : ['workflows' => [['stages' => [
+            '*/boards/'.self::BOARD.'/preload.json' => $this->nonMember ? KanbanBoardStatus::forbidden() : Http::response(['data' => $this->stagesUnreadable ? ['name' => 'board'] : ['workflows' => [['stages' => [
                 ['id' => 50, 'name' => 'Backlog', 'position' => 1],
                 ['id' => 51, 'name' => 'In Review', 'position' => 2],
                 ['id' => 52, 'name' => 'Done', 'position' => 3],
             ]]]]]),
+            '*/boards/'.self::BOARD.'/status.json' => $this->nonMember ? KanbanBoardStatus::forbidden() : KanbanBoardStatus::readable(self::BOARD),
             '*/boards/'.self::BOARD.'/tasks/by-ref.json*' => function (Request $request) use ($byRefStatus) {
+                if ($this->nonMember) {
+                    return KanbanBoardStatus::forbidden();
+                }
                 if ($byRefStatus !== 200) {
                     return Http::response(['message' => 'This action is unauthorized.'], $byRefStatus);
                 }
@@ -820,7 +825,11 @@ class BoardSearchTest extends TestCase
 
     // ─── Membership: "no matches" is said only of a board the token can read ─
 
-    /** kanban's search answers a non-member ZERO rows at 200 — the same body as "nothing matched". */
+    /**
+     * kanban's search answers a non-member ZERO rows at 200 — the same body as "nothing matched". A
+     * call that makes no board-scoped read (no structure read, no by-ref) meets only the search, so
+     * the membership control is what refuses it.
+     */
     #[DataProvider('doors')]
     public function test_a_board_the_token_cannot_read_is_refused_not_answered_as_no_matches(string $door): void
     {
@@ -828,11 +837,33 @@ class BoardSearchTest extends TestCase
         $this->nonMember = true;
         $this->fakeKanban();
 
-        $res = $this->through($door, ['tags_all' => ['lane:A']]);
+        $res = $this->through($door, ['tags_all' => ['lane:A'], 'fields' => ['id']]);
 
         $this->assertFalse($res['ok']);
         $this->assertStringContainsString('MEMBER', (string) json_encode($res['body']));
+        $this->assertStringContainsString('may not read your board', (string) json_encode($res['body']));
         $this->assertStringNotContainsString('"cards"', (string) json_encode($res['body']));
+        $this->assertSame([self::BOARD], KanbanBoardStatus::asked());
+    }
+
+    /**
+     * ⛔ THE OWNER OF A TRASHED BOARD gets 200 from `status.json`, never 403 — the control fails
+     * closed on `data.status: "trashed"`, so this refusal must NOT claim kanban answered 403 when
+     * it answered 200 (card#10856 review).
+     */
+    public function test_a_403_while_the_board_reads_as_trashed_does_not_claim_kanban_said_403(): void
+    {
+        Http::fake([
+            '*/boards/'.self::BOARD.'/status.json' => Http::response(['data' => ['id' => self::BOARD, 'status' => 'trashed']]),
+            '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0, 'applied_filters' => [], 'free_text_terms' => []]]),
+        ]);
+
+        $res = $this->http(['tags_all' => ['lane:A'], 'fields' => ['id']]);
+
+        $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
+        $error = (string) $res['body']['error'];
+        $this->assertStringNotContainsString('refuses (403)', $error, $error);
+        $this->assertStringContainsString('TRASHED', $error);
     }
 
     /** @return array<string, array{array<string, mixed>}> */
@@ -846,9 +877,9 @@ class BoardSearchTest extends TestCase
     }
 
     /**
-     * Every shape that searches is held to the control — the `pr_number` tally included, whose
-     * columns come from the by-ref read (kanban's `view` policy, NOT floored to membership) and would
-     * otherwise sit beside silently-zero tag counts.
+     * Every other shape that searches is refused on such a board too — by the board-scoped read it
+     * makes first (the structure read, or `pr_number`'s by-ref read), which kanban authorizes on the
+     * board and refuses a non-member (403), so no search and no control is reached.
      *
      * @param  array<string, mixed>  $args
      */
@@ -862,14 +893,15 @@ class BoardSearchTest extends TestCase
         $res = $this->http($args);
 
         $this->assertSame(422, $res['status'], json_encode($res['body']) ?: '');
-        $this->assertStringContainsString('MEMBER', (string) $res['body']['error']);
+        $this->assertStringContainsString('membership of that board', (string) $res['body']['error']);
+        $this->assertSame([], self::searches());
+        $this->assertSame([], KanbanBoardStatus::asked());
     }
 
     /** `pr_number` alone sends no search: the by-ref read's answer stands, and the control is not asked. */
     public function test_pr_number_alone_asks_no_control(): void
     {
         $this->card(101, ['payload' => ['pr_number' => 7]]);
-        $this->nonMember = true;
         $this->fakeKanban();
 
         $res = $this->http(['pr_number' => 7, 'fields' => ['id']]);
@@ -877,6 +909,7 @@ class BoardSearchTest extends TestCase
         $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
         $this->assertSame([101], self::ids($res['body']));
         $this->assertSame([], self::searches());
+        $this->assertSame([], KanbanBoardStatus::asked());
     }
 
     public function test_no_matches_on_a_readable_board_is_answered_after_one_control(): void
@@ -888,7 +921,41 @@ class BoardSearchTest extends TestCase
 
         $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
         $this->assertSame([], $res['body']['result']['cards']);
-        $this->assertSame(['board_id=10 tags:"lane:A"', 'board_id=10'], self::searches(), 'the search, then the one membership control');
+        $this->assertSame(['board_id=10 tags:"lane:A"'], self::searches());
+        $this->assertSame([self::BOARD], KanbanBoardStatus::asked(), 'the search, then the one membership control');
+    }
+
+    /**
+     * An EMPTY board the token may read — a new board, or one whose every card is archived — is
+     * answered "no matches", on a rows call and on a summary alike (card#10856: the `limit=1` search
+     * the control used to be read zero there, the same as a non-member's, and refused the call).
+     *
+     * @return array<string, array{array<string, mixed>}>
+     */
+    public static function callsOnAnEmptyBoard(): array
+    {
+        return [
+            'a rows call' => [['tags_all' => ['lane:A'], 'fields' => ['id']]],
+            'a summary' => [['summary' => true]],
+        ];
+    }
+
+    /** @param  array<string, mixed>  $args */
+    #[DataProvider('callsOnAnEmptyBoard')]
+    public function test_an_empty_readable_board_is_answered_not_refused(array $args): void
+    {
+        $this->card(102, [], archived: true);
+        $this->fakeKanban();
+
+        $res = $this->http($args);
+
+        $this->assertTrue($res['ok'], json_encode($res['body']) ?: '');
+        if (isset($args['summary'])) {
+            $this->assertSame(0, $res['body']['result']['summary']['total']);
+        } else {
+            $this->assertSame([], $res['body']['result']['cards']);
+        }
+        $this->assertSame([self::BOARD], KanbanBoardStatus::asked());
     }
 
     public function test_a_match_is_the_membership_proof_and_no_control_is_asked(): void
@@ -899,6 +966,7 @@ class BoardSearchTest extends TestCase
         $this->http(['tags_all' => ['lane:A'], 'fields' => ['id']]);
 
         $this->assertSame(['board_id=10 tags:"lane:A"'], self::searches());
+        $this->assertSame([], KanbanBoardStatus::asked());
     }
 
     // ─── Projection ──────────────────────────────────────────────────────────

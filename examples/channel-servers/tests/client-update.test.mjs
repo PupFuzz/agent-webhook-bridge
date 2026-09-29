@@ -48,7 +48,7 @@ import { launchIdentity, clientUpdateInstruction, httpRoundTrip } from '../chann
 import http from 'node:http';
 
 const UPDATER = path.join(SOURCE_DIR, 'client-update.mjs');
-const VECTORS = path.join(SOURCE_DIR, '..', '..', 'tests', 'Fixtures', 'version-comparator-vectors.json');
+const VECTORS = new URL('./fixtures/version-comparator-vectors.json', import.meta.url);
 
 // ---------------------------------------------------------------------------------------------
 // Harness

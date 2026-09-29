@@ -69,9 +69,9 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
             $vis = $client->visibility($bt->boardId);
             if ($vis['total'] === 0) {
                 // 0 cards on a 200 is AMBIGUOUS — an empty board, or a token whose user
-                // is not a member of it (then the read window is empty and the create
-                // leg's correlation reads blind). Present both; assert neither.
-                yield Finding::warn("board_tools: agent {$name}: the writeback token sees 0 cards on board {$bt->boardId} — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.");
+                // is not a member of it (then the create leg's correlation reads blind).
+                // Present both; assert neither.
+                yield Finding::warn("board_tools: agent {$name}: the writeback token sees 0 cards on board {$bt->boardId} — EITHER the board has no live cards OR the service user is not a member / board_id is wrong. board_my_cards tells the two apart on its own — its board-structure read (`preload.json`) refuses a non-member (403) before any search, so it answers the first with empty windows and REFUSES the second, naming membership; in the second, board_create_card's correlation also reads blind. Verify membership + board_id if you expect cards.");
             } else {
                 yield Finding::ok("board_tools: agent {$name}: writeback token can see board {$bt->boardId}");
             }

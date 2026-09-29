@@ -134,6 +134,7 @@ class CardWriteRosterCoverageTest extends TestCase
         'archiveCard' => 'task.archive',
         'boardCustomFieldKeys' => 'read',
         'boardCustomFields' => 'read',
+        'boardReadable' => 'read',
         'boardStageIdsByName' => 'read',
         'boardStageNames' => 'read',
         'boardStageOrder' => 'read',

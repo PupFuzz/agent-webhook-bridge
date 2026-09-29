@@ -115,6 +115,19 @@ final class BoardCallRefusal
                 403 => "the board refused the read, and this route is authorized by TWO independent gates that both need auditing: the writeback token's abilities (kanban gates the API per token and a GET needs `read`), and the writeback USER's membership of that board — a board-scoped read authorizes the board itself, so a writeback user never added to it, or removed from it, is refused here (unlike a card search, which answers zero rows instead). A 403 cannot say which of the two refused",
                 404 => 'the board answered 404 for the BOARD ITSELF — the configured id does not resolve to a board this route can see: no board carries it, or the board is in the trash (a trashed board is not resolved on this route). A missing API surface is the other, less likely candidate',
             },
+            // {@see BoardReadRoute::MembershipStatus}: `status.json` — same board-itself
+            // authorization as BoardScoped, but its 404 is NOT the same claim, because this
+            // route (alone of the two) resolves a TRASHED board too.
+            BoardReadRoute::MembershipStatus => match ($status) {
+                // Unreachable in practice: `KanbanClient::boardReadable` consumes a 403 itself
+                // as the control's own "not a member" answer and never lets it throw — a caller
+                // never reaches this arm on 403. Written out, not omitted, so a broken
+                // assumption fails LOUDLY (an UnhandledMatchError) rather than silently
+                // reusing BoardScoped's TWO-gates text, which is also true of this route but
+                // was not the reason this case was split out.
+                403 => "the board refused the read, and this route is authorized by TWO independent gates that both need auditing: the writeback token's abilities (kanban gates the API per token and a GET needs `read`), and the writeback USER's membership of that board. A 403 cannot say which of the two refused",
+                404 => 'the board answered 404 for the BOARD ITSELF — the configured id does not resolve to any board this route can see: no board carries it at all. A missing API surface is the other, less likely candidate',
+            },
         };
     }
 

@@ -7,7 +7,10 @@ name: Channel-server supply chain
 #   1. `npm ci` — fails if package.json and package-lock.json have drifted
 #      (the committed lockfile must stay reproducible: lock regenerated whenever
 #      the dep range changes).
-#   2. `node --test tests/` — the channel server's unit harness. Its sharpest leg is
+#   2. `node --test tests/` — the channel server's unit harness, run from a `git archive`
+#      extraction of examples/channel-servers/ and NOT from the checkout: a seat deploys that
+#      directory alone, so a test reading a file outside it (a `..` past the directory) passes
+#      in the checkout and fails on every seat (card#10862). Its sharpest leg is
 #      the marker-refusal regression suite for the FR #2444 refuse-and-exit paths: a
 #      refuse path that stops writing its `.FAILED` marker leaves a seat invisibly
 #      deaf to live-wake, so this fails the PR the moment that contract regresses.
@@ -54,9 +57,6 @@ jobs:
   channel-server-deps:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    defaults:
-      run:
-        working-directory: examples/channel-servers
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -67,13 +67,29 @@ jobs:
           cache: 'npm'
           cache-dependency-path: examples/channel-servers/package-lock.json
 
+      # Every later step runs in this extraction, never in the checkout, so nothing outside
+      # examples/channel-servers/ is reachable by a relative path. `git archive` reads the
+      # committed tree, a copy of the directory alone, as a seat's copy or symlink of it holds
+      # (config-schema.md `server_path`).
+      - name: Extract examples/channel-servers as a copy of the directory alone
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/channel-servers"
+          mkdir "$dest"
+          git archive HEAD examples/channel-servers | tar -x -C "$dest" --strip-components=2
+          echo "CHANNEL_DIR=$dest" >> "$GITHUB_ENV"
+
       - name: Reproducible install (fails on package.json/lock drift)
+        working-directory: ${{ env.CHANNEL_DIR }}
         run: npm ci --ignore-scripts
 
       - name: Unit tests (node --test)
+        working-directory: ${{ env.CHANNEL_DIR }}
         run: node --test tests/
 
       - name: Audit the pinned tree (fail on high/critical CVE)
+        working-directory: ${{ env.CHANNEL_DIR }}
         run: npm audit --audit-level=high
 
   client-update-windows:
