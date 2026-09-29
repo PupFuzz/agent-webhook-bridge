@@ -688,13 +688,13 @@ class BoardMyCardsTagReadTest extends TestCase
     /**
      * ⛔ `board_my_cards`' `tag` read has NO kanban version floor, so it keeps the old-kanban rule
      * (`BoardTagTerm::checkForAnyKanban`) that `board_search` dropped: the tags `board_search` now
-     * accepts are refused here with the SAME messages as before the split, byte for byte.
+     * accepts are still refused here: same trigger, and these exact messages.
      *
      * @return array<string, array{string, string}>
      */
     public static function tagsOnlyTheOldKanbanRuleRefuses(): array
     {
-        $escaped = 'board_my_cards: `tag` may not contain a control character, `/`, `\\` or any non-ASCII character. Kanban stores tags as JSON, which writes each of those as an escape, and its exact tag match compares against that stored text — so no card would match, even one carrying the tag, and the answer would look like an empty one. No spelling of such a tag can be matched by this read.';
+        $escaped = 'board_my_cards: `tag` may not contain a control character, `/`, `\\` or any non-ASCII character. This read also has to work on a kanban older than v0.46.0, which stores tags as JSON (writing each of those as an escape) and compares an exact tag match against that stored text — so there no card would match, even one carrying the tag, and the answer would look like an empty one. The tag is refused rather than risk that answer; `board_search`, which needs kanban v0.47.0 or later, matches such a tag exactly.';
 
         return [
             'a slash' => ['team/ops', $escaped],
@@ -704,7 +704,7 @@ class BoardMyCardsTagReadTest extends TestCase
     }
 
     #[DataProvider('tagsOnlyTheOldKanbanRuleRefuses')]
-    public function test_the_tags_board_search_accepts_are_still_refused_here_word_for_word(string $tag, string $message): void
+    public function test_the_tags_board_search_accepts_are_still_refused_here_with_these_messages(string $tag, string $message): void
     {
         $this->fakeTaggedBoard([], [self::taggedRow(1, 50, null)]);
 

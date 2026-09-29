@@ -52,7 +52,7 @@ final class BoardTagTerm
             throw new ToolRefusalException("{$tool}: `{$arg}` may not contain `%`. A kanban older than v0.36.0 reads `%` in an exact tag match as a wildcard, which would widen this read to other tags — `%` alone matches every tagged card on your board.");
         }
         if (json_encode($tag) !== '"'.$tag.'"') {
-            throw new ToolRefusalException("{$tool}: `{$arg}` may not contain a control character, `/`, `\\` or any non-ASCII character. Kanban stores tags as JSON, which writes each of those as an escape, and its exact tag match compares against that stored text — so no card would match, even one carrying the tag, and the answer would look like an empty one. No spelling of such a tag can be matched by this read.");
+            throw new ToolRefusalException("{$tool}: `{$arg}` may not contain a control character, `/`, `\\` or any non-ASCII character. This read also has to work on a kanban older than v0.46.0, which stores tags as JSON (writing each of those as an escape) and compares an exact tag match against that stored text — so there no card would match, even one carrying the tag, and the answer would look like an empty one. The tag is refused rather than risk that answer; `board_search`, which needs kanban v0.47.0 or later, matches such a tag exactly.");
         }
         self::length($tag, $tool, $arg);
     }
