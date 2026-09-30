@@ -995,7 +995,7 @@ class RoleBHostBLeg(unittest.TestCase):
             self._write_pair(key_path)
         return _keygen
 
-    def _run(self, extra_argv=(), keygen=None, deploy_prints=(), bootstrap_changes=False):
+    def _run(self, extra_argv=(), keygen=None, deploy_prints=(), bootstrap_changes=False, bootstrap=None):
         argv = [
             "--role", "b", "--agent", "kanban-solo",
             "--ssh-target", "bridge@127.0.0.1",
@@ -1005,8 +1005,9 @@ class RoleBHostBLeg(unittest.TestCase):
         ]
         args = pbt.build_parser().parse_args(argv)
         buf = io.StringIO()
-        # The post-certify bootstrap is stubbed here (this class tests the host-B leg itself);
-        # `SelfCertBootstrapWiring` owns what it does. `self.bootstraps` records each call.
+        # The post-certify bootstrap is stubbed here (this class tests the host-B leg and WHEN it
+        # bootstraps; `BootstrapClientEntryPoint` tests what the bootstrap does). `self.bootstraps`
+        # records each call; `bootstrap` replaces the stub's side effect.
         self.bootstraps = []
         with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
              mock.patch.object(pbt, "_keygen", side_effect=keygen or self._keygen_stub()), \
@@ -1014,7 +1015,7 @@ class RoleBHostBLeg(unittest.TestCase):
                                side_effect=lambda _d: _fake_deploy(deploy_prints)), \
              mock.patch.object(pbt, "_seed_known_hosts"), \
              mock.patch.object(pbt, "_bootstrap_after_certify",
-                               side_effect=lambda *a: self.bootstraps.append(a) or bootstrap_changes), \
+                               side_effect=bootstrap or (lambda *a: self.bootstraps.append(a) or bootstrap_changes)), \
              contextlib.redirect_stdout(buf):
             rc = pbt.run_role_b(args)
         return rc, buf.getvalue()
@@ -1152,12 +1153,12 @@ class RoleBHostBLeg(unittest.TestCase):
 
     def test_self_cert_bootstraps_after_a_successful_round_trip_and_only_then(self):
         # Design §3.5 item 1 (DL-445): --self-cert on success runs the bootstrap, after the call.
-        order = []
-        with mock.patch.object(pbt, "_self_cert", side_effect=lambda *a: order.append("self_cert") or 0):
-            rc, _ = self._run(["--self-cert"])
+        # The "after" half: when the bootstrap runs, the round-trip has already happened.
+        self_certs, seen = [], []
+        with mock.patch.object(pbt, "_self_cert", side_effect=lambda *a: self_certs.append(a) or 0):
+            rc, _ = self._run(["--self-cert"], bootstrap=lambda *a: seen.append((a, len(self_certs))) or False)
         self.assertEqual(rc, 0)
-        self.assertEqual(order, ["self_cert"])
-        self.assertEqual(self.bootstraps, [("kanban-solo", self.mcp_path, "kanbanboard-agent")])
+        self.assertEqual(seen, [(("kanban-solo", self.mcp_path, "kanbanboard-agent"), 1)])
 
     def test_a_failed_self_cert_never_bootstraps(self):
         with mock.patch.object(pbt, "_self_cert", side_effect=SystemExit("--self-cert: ssh failed")), \
@@ -3079,6 +3080,9 @@ class BootstrapClientEntryPoint(unittest.TestCase):
             pbt._bootstrap_after_certify("a", self.mcp_path, "chan")
         self.assertIn("does not exist — bootstrapping it again", out.getvalue())
         self.assertIn("offers this seat no client", str(cm.exception))
+        # Review r3: never "keeps the channel server it had" — that is the missing file — and the way out is named.
+        self.assertNotIn("keeps the channel server it had", str(cm.exception))
+        self.assertIn("Run `--role b` to deploy the legacy snapshot", str(cm.exception))
         self.assertNotIn("already starts from its client root", out.getvalue())
 
     def test_an_entry_point_leaves_a_seat_already_on_its_client_root_alone(self):

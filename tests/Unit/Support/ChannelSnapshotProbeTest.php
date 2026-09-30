@@ -526,6 +526,18 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'), 'the launch disclosure still applies');
     }
 
+    public function test_a_client_root_without_its_own_entry_mjs_fails_however_intact_its_release(): void
+    {
+        // Review r3: the release is intact, but .mcp.json launches <root>/entry.mjs and it is gone.
+        $root = $this->clientRoot('2.0.0');
+        unlink($root.'/entry.mjs');
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+
+        $this->assertSame(Severity::Fail, $this->findingWith($findings, 'is a CLIENT ROOT with no entry.mjs')->severity);
+        $this->assertSame([], $this->severities($findings, Severity::Ok));
+    }
+
     public function test_a_client_roots_entry_mjs_stands_for_the_root(): void
     {
         $root = $this->clientRoot('2.0.0');

@@ -86,7 +86,7 @@ class UnvalidatedCallSiteTest extends TestCase
         //      bare X.Y.Z release (DL-445): its `entry.mjs` then picks the newest intact
         //      release itself, which this probe does not derive, so which release would
         //      start was never measured.
-        // A FIFTH leg lived here until card#5698 — "the configured path or the deployed
+        // A further leg lived here until card#5698 — "the configured path or the deployed
         // directory is not visible to this user". It did not go away; it MOVED to
         // `PathVisibility` below, which every stat-bearing check now shares.
         'app/Bridge/Support/ChannelSnapshotProbe.php' => 5,

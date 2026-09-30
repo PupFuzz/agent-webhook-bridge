@@ -186,6 +186,21 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertStringContainsString('RESTART that session', $approved[0]['message']);
     }
 
+    /** Review r3: the third approval arm — the ledger cannot say — is named, never read either way. */
+    public function test_an_approval_required_seat_whose_approval_cannot_be_read_is_told_so(): void
+    {
+        $this->publishClient('0.9.40');
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.12');
+        $check = new BoardToolsClientHalfCheck($this->bundledDir(), null, static fn () => throw new \RuntimeException('ledger down'));
+
+        $findings = $this->findingsOfFor($check, $this->agent(['client_update' => ['approval_required' => true]]));
+
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('could not be read (the fleet ledger did not answer)', $findings[0]->message);
+        $this->assertStringContainsString('bridge:client-approve prod-agent 1.0.0', $findings[0]->message);
+        $this->assertStringNotContainsString('is not approved for it', $findings[0]->message);
+    }
+
     public function test_an_unreported_version_with_an_unreadable_record_hands_out_no_re_copy(): void
     {
         mkdir($this->stateDir.'/client-packs', 0700, true);

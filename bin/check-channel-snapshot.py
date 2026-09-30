@@ -34,7 +34,8 @@ a diagnostic must not. So the claim is bounded to that release: when `current.js
 be read, or its release has no server entry while another release does, `entry.mjs` would
 pick another intact release on its own, which this tool does not reproduce, and it says
 COULD NOT CHECK rather than guess. When NO release under `versions/` has a server entry,
-`entry.mjs` has nothing to start: LAUNCH FAILED.
+`entry.mjs` has nothing to start: LAUNCH FAILED — as when the root's own `entry.mjs`, what
+`.mcp.json` launches, is gone.
 
 EXIT CODES
   0  LAUNCH OK. The module graph resolved AND a listener bound — both, never one.
@@ -344,6 +345,16 @@ def resolve_entry(path: str):
 
     if _is_client_root(directory):
         root = directory
+        if not os.path.isfile(os.path.join(root, CLIENT_ENTRY)):
+            # What .mcp.json launches (review r3): an intact release under a root with no entry.mjs
+            # still does not start, and launching the release directly would say it does.
+            return (
+                None,
+                EXIT_LAUNCH_FAILED,
+                f"LAUNCH FAILED: {root} is a client root with no {CLIENT_ENTRY} — the file a bootstrapped "
+                f"seat's .mcp.json launches — so nothing under it starts at the next session start. "
+                f"Re-bootstrap the client (`provision-board-tools.py --role b --bootstrap-client`).",
+            )
         directory, code, message = _client_release_dir(root)
         if directory is None:
             return (None, code, message)

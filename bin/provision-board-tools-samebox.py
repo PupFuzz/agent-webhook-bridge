@@ -502,9 +502,12 @@ def execute(plan: Plan, fs) -> int:
         "chown of host-A storage failed",
     )
 
-    for err in (certify_err, check_err):
-        if err is not None:
-            raise err
+    held = [err for err in (certify_err, check_err) if err is not None]
+    # Every held failure is said, not only the first one raised (review r3).
+    for err in held[1:]:
+        print(err, file=sys.stderr)
+    if held:
+        raise held[0]
     print("Same-box board-tools enablement complete.")
     return 0
 

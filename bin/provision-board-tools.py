@@ -1320,7 +1320,7 @@ BOOTSTRAP_NOTHING_OFFERED = 3
 
 
 def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agent: str, *,
-                      keep_legacy_when_nothing_offered: bool = False) -> bool:
+                      keep_legacy_when_nothing_offered: bool = False, recorded_entry_gone: bool = False) -> bool:
     """Install this seat's client from its bridge's published pack, then point `.mcp.json` at it.
 
     The design §3.5 bootstrap, and the ONE primitive every entry point that bootstraps calls. The
@@ -1382,6 +1382,14 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agen
                 f"{agent}), run `--role b --bootstrap-client` to put it on the update path."
             )
             return False
+        if recorded_entry_gone:
+            # Not "keeps the channel server it had": that is the missing file (review r3).
+            _fail(
+                "the bridge answered and offers this seat no client to install right now (its reason is printed "
+                "above), and the client entry its .mcp.json names is gone, so this seat cannot start. .mcp.json is "
+                "unchanged. Run `--role b` to deploy the legacy snapshot so it can start, or `--bootstrap-client` "
+                "once the bridge offers a client."
+            )
         _fail(
             "the bridge answered and offers this seat no client to install right now (its reason is printed "
             "above) — .mcp.json is unchanged and this seat keeps the channel server it had."
@@ -1427,7 +1435,7 @@ def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bo
         # this is a request to reinstall, never "already on its root". The bootstrap writes the same
         # path back; nothing offered leaves the seat unable to start, which the fallback cannot fix.
         print(f"client: channel {channel_name}'s .mcp.json names {entry}, which does not exist — bootstrapping it again.")
-        return _bootstrap_client(mcp_path, text, channel_name, agent)
+        return _bootstrap_client(mcp_path, text, channel_name, agent, recorded_entry_gone=True)
     return _bootstrap_client(mcp_path, text, channel_name, agent, keep_legacy_when_nothing_offered=True)
 
 

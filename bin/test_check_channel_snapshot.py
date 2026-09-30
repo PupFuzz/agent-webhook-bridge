@@ -1255,6 +1255,13 @@ class ClientRootLaunch(_TreeCase):
             os.chmod(os.path.join(root, "versions", "1.0.0"), 0o755)
         self.assertIn("starts another intact release", text)
 
+    def test_a_root_without_its_own_entry_mjs_is_a_launch_failure_however_intact_its_release(self):
+        # Review r3: .mcp.json launches <root>/entry.mjs; the release launching fine does not mean the seat does.
+        root = self.client_root()
+        os.unlink(os.path.join(root, "entry.mjs"))
+        text = self.assert_run(root, ccs.EXIT_LAUNCH_FAILED)
+        self.assertIn("is a client root with no entry.mjs", text)
+
     def test_no_release_with_a_server_entry_is_a_conclusive_launch_failure(self):
         # Review r1: with nothing startable under versions/, entry.mjs starts nothing.
         root = self.client_root()

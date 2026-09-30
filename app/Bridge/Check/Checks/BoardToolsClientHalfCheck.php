@@ -20,6 +20,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
+use Closure;
 use Throwable;
 
 /**
@@ -86,17 +87,20 @@ use Throwable;
  * a fact only the seat can supply, and until it did, a tool absent from a STALE seat copy
  * and a tool absent from this bridge rendered identically — measured: a 0.4.4 seat against
  * a bridge bundling 0.9.12, with the missing tool attributed to the bridge. The line now
- * prints the reported version beside the version this checkout bundles:
- *   - reported and OLDER than the bundled snapshot ⇒ `warn`. It is a MEASURED conclusion
+ * prints the reported version beside the version it is compared with — the client this bridge
+ * PUBLISHES once it publishes one, else the snapshot this checkout bundles (DL-445;
+ * `docs/board-tools.md` § How it is wired owns the arms and their remedies):
+ *   - reported and OLDER than that version ⇒ `warn`. It is a MEASURED conclusion
  *     about a real install fault, which is what separates it from the two `unvalidated`
  *     arms below — nothing stopped this measurement; it came back stale.
- *   - reported and at or ahead of the bundled snapshot ⇒ `ok`, versions printed.
+ *   - reported and at or ahead of it ⇒ `ok`, versions printed.
  *   - NOT reported ⇒ `ok`, and the line says a client older than
  *     {@see ClientVersion::FIRST_REPORTING_SNAPSHOT} — or a caller that is not a channel
  *     server at all — sends no version. ⛔ An absent report is NOT a stale seat and must
  *     never be warned as one: it is the shape every pre-DL-364 client produces.
- *   - reported but this checkout's own bundled manifest could not be read ⇒ `ok`, and the
- *     line says the comparison was NOT MADE. ⛔ The whole finding deliberately does NOT
+ *   - reported but the operand could not be read — this bridge's published client pack
+ *     record, or (with nothing published) this checkout's own bundled manifest ⇒ `ok`, and
+ *     the line says the comparison was NOT MADE. ⛔ The whole finding deliberately does NOT
  *     become `unvalidated` there: its subject is the SEAT's report, which WAS measured, and
  *     spending a blind read of the BRIDGE's own file as if the seat had gone silent is the
  *     misattribution this card exists to remove, inverted.
@@ -127,17 +131,24 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
     /**
      * @param  string  $bundledDir  this checkout's `examples/channel-servers` — the
      *                              reference snapshot a reported client version is compared
-     *                              against. Injected exactly as {@see ChannelSnapshotCheck}
+     *                              against WHEN THIS BRIDGE PUBLISHES NO PACK (DL-445: once it
+     *                              publishes one, the published client is the operand).
+     *                              Injected exactly as {@see ChannelSnapshotCheck}
      *                              takes it, rather than resolved from `base_path()` inside
      *                              the check, so a test can drive a KNOWN bundled version
      *                              against a known reported one; reading it here would make
      *                              every version assertion a function of whatever this
      *                              repo's snapshot happens to be on the day it runs.
      */
-    public function __construct(private readonly string $bundledDir, ?ClientPackStore $store = null)
+    public function __construct(private readonly string $bundledDir, ?ClientPackStore $store = null, ?Closure $isApproved = null)
     {
         $this->store = $store ?? new ClientPackStore;
+        // `(agent, filesJsonSha256) => bool`, throwing when the ledger cannot say — injectable
+        // so a test can reach the arm where it cannot, which no database state reaches alone.
+        $this->isApproved = $isApproved ?? SeatClientLedger::isApproved(...);
     }
+
+    private readonly Closure $isApproved;
 
     private readonly ClientPackStore $store;
 
@@ -243,9 +254,10 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      * The version half of a green line: `[isStale, clause]` (card#8974 / DL-364).
      *
      * ⛔ `isStale` IS TRUE ON EXACTLY ONE INPUT — a reported version that COMPARED older
-     * than the bundled one. Every other shape (no report, an unreadable bundled manifest, a
-     * current or newer client) is a green line, because none of them measured a stale seat
-     * and a `warn` an operator cannot act on is worse than silence.
+     * than the operand (the published client once one is published, else the bundled
+     * snapshot). Every other shape (no report, an operand that could not be read, a current or
+     * newer client) is a green line, because none of them measured a stale seat and a `warn`
+     * an operator cannot act on is worse than silence.
      *
      * The comparator is {@see ChannelSnapshotManifest::compareVersions()} and NOT PHP's
      * `version_compare()`, for the reason that method's own docblock gives at length: the
@@ -328,7 +340,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
                 // then (review r2). A ledger that will not answer is said, never read as either.
                 if ($approvalRequired) {
                     try {
-                        $approved = SeatClientLedger::isApproved($agent, $published->filesJsonSha256);
+                        $approved = ($this->isApproved)($agent, $published->filesJsonSha256);
                     } catch (Throwable) {
                         $approved = null;
                     }

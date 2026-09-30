@@ -391,7 +391,9 @@ final class ChannelSnapshotProbe
      * same two presence questions as {@see self::presenceLeg()}, asked of
      * `versions/<release>/client/`, and nothing about version — the root updates itself.
      *
-     * Severities follow what `entry.mjs` does with each state (DL-434), never a guess past it:
+     * Severities follow what `entry.mjs` does with each state (DL-434), never a guess past it —
+     * and first, that there IS an `entry.mjs`: without it `fail`, since it is what `.mcp.json`
+     * launches and nothing under the root starts without it (review r3):
      *  - pointer absent, unreadable or malformed ⇒ `unvalidated`: `entry.mjs` then starts the
      *    newest intact release, which this probe does not re-derive (it would need the
      *    whole-tree `classifyRelease`), so which release starts is not established here.
@@ -413,6 +415,11 @@ final class ChannelSnapshotProbe
     private static function clientRootLegs(string $root): array
     {
         $echo = UntrustedText::forOperator($root);
+        // What a bootstrapped seat's `.mcp.json` launches; without it no release under the root is
+        // started, however intact (review r3). A direct child, so the caller's gate covers the stat.
+        if (! is_file($root.'/'.self::CLIENT_ENTRY)) {
+            return [Finding::fail("channel server path {$echo} is a CLIENT ROOT with no ".self::CLIENT_ENTRY.' — the file a bootstrapped seat\'s .mcp.json launches — so nothing under it starts at next session start; re-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)')];
+        }
         $pointer = ChannelSnapshotManifest::readClientPointer($root.'/'.self::CLIENT_POINTER);
         if ($pointer['status'] !== 'ok') {
             $why = $pointer['status'] === 'not_a_release'

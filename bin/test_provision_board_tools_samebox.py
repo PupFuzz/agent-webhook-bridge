@@ -324,7 +324,7 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
                 rc = e
         return rc, ran, out.getvalue()
 
-    def test_certify_only_runs_as_the_agent_from_its_own_checkout_after_role_a_and_before_the_banner(self):
+    def test_certify_only_runs_as_the_agent_from_its_own_checkout_after_role_a_and_just_before_bridge_check(self):
         fs = FakeFs()
         rc, ran, out = self._execute(fs)
         self.assertEqual(rc, 0)
@@ -333,6 +333,8 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
         self.assertIn(certify, ran)
         role_a = next(i for i, c in enumerate(ran) if "--role" in c and c[c.index("--role") + 1] == "a")
         self.assertLess(role_a, ran.index(certify), "certify runs after role-a pinned the key")
+        self.assertEqual(ran.index(certify) + 1, next(i for i, c in enumerate(ran) if "bridge:check" in c),
+                         "certify is the leg just before bridge:check, which runs after the banner")
         self.assertEqual(fs.help_asked, (_AGENT, "python3", _AGENT_BIN), "the AGENT's checkout is asked, as the agent")
         self.assertNotIn("CLIENT NOT BOOTSTRAPPED", out)
 
@@ -355,6 +357,24 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
         self.assertFalse(any("--certify-only" in c for c in ran))
         self.assertIn("could not be asked", out)
         self.assertNotIn("predates", out)
+
+    def test_when_certify_and_bridge_check_both_fail_both_are_said(self):
+        # Review r3: only the first held failure was raised; the second was never printed.
+        plan = sb.preflight(_args(), FakeFs())
+        fs = FakeFs()
+        fs._files.add(self._PUB)
+
+        def fake_run(cmd, err, *, capture=False):
+            if "--certify-only" in cmd or "bridge:check" in cmd:
+                raise SystemExit(f"provision-board-tools-samebox: {err} (exit 1)")
+            return types.SimpleNamespace(stdout=f"Same-box: hand this path to `--role a --pubkey-from`:\n  {self._PUB}\n", returncode=0)
+
+        err = io.StringIO()
+        with mock.patch.object(sb, "_run", side_effect=fake_run), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            sb.execute(plan, fs)
+        self.assertIn("certify + client bootstrap (agent leg) failed", str(cm.exception))
+        self.assertIn("bridge:check certify step failed", err.getvalue())
 
     def test_a_failed_certify_still_prints_the_banner_runs_the_chown_and_then_fails(self):
         rc, ran, out = self._execute(FakeFs(), fail_on="--certify-only")
