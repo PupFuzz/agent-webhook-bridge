@@ -276,7 +276,8 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 Locate every copy so none is missed (run from the updated repo):
 
 ```bash
-find ~ -name 'agent-webhook-bridge-channel.mjs' -not -path '*/node_modules/*'              # all channel-server copies
+find ~ -name 'agent-webhook-bridge-channel.mjs' -not -path '*/node_modules/*' \
+   -not -path '*/agent-webhook-bridge/client/*'   # all channel-server copies (client roots excluded)
 find ~ -maxdepth 4 \( -name 'start-claude.sh' -o -name 'start-channel-session.sh' \
    -o -name 'start-claude.ps1' -o -name 'start-claude.bat' \) -not -path '*/node_modules/*'
 # per .mjs copy, the one-field drift check (non-empty output ⇒ that seat is behind: bootstrap it, below):
@@ -298,7 +299,7 @@ A seat gets its channel server from **its own bridge**. A seat bootstrapped onto
 
 > ⚠ **`0.9.15` is the first reporting snapshot** — the first `examples/channel-servers/` release that sends its own `client_version` on a board-tools call at all (the pin is `App\Bridge\Tools\ClientVersion`'s `FIRST_REPORTING_SNAPSHOT`, held to this sentence by `tests/Unit/Docs/ClientVersionFloorLockstepTest.php`). A seat on an older copy sends no version, so `bridge:check` prints *CLIENT VERSION NOT REPORTED* at `ok` for it — the absence of a verdict, not a clean one. The bootstrap takes such a seat past the floor in the same step.
 
-**The copies a bootstrap leaves behind.** A bootstrap re-points `.mcp.json` and deletes nothing, so the seat's old copy stays on disk (the `find` above lists it). Nothing launches it any more; remove it once `bridge:client-fleet` reads that seat as `current`.
+**The copies a bootstrap leaves behind.** A bootstrap re-points `.mcp.json` and deletes nothing, so the seat's old copy stays on disk (the `find` above lists it). A client root (`…/agent-webhook-bridge/client/<channel>/`) is not a copy: its `versions/<release>/client/` directories are the updater's own installed releases, which it prunes itself, so the `find` excludes them — leave them alone, and never delete under a root's `versions/`. Nothing launches it any more; remove it once `bridge:client-fleet` reads that seat as `current`.
 
 ### Smoke-test the receiver with a signed delivery
 

@@ -21,6 +21,8 @@ Seat tools ship **inside the channel-server client pack** the bridge publishes f
 
 `<root>` is `${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>` (`%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>` on Windows). `examples/channel-servers/README.md` § *Installed and updated by the bridge* owns the root's layout.
 
+**Trust:** whoever can publish a pack on the seat's bridge — and, for an agent with `approval_required`, approve it — changes the code on that seat's `PATH` at its next launch. DL-428 and DL-430 own that boundary.
+
 There is **no manual staging step** and nothing for a PM to re-stage after an upgrade. The earlier path — a PM staging a pack into the coordination repo for each seat to link into — is retired (DL-447). Clearing what it left in coordination repos is the coord framework's upgrade to do (`coord:update`), not this repo's.
 
 ## Installing onto PATH
@@ -37,11 +39,11 @@ The remedy `bridge:check` prints names the tool by its BASENAME, so this install
 
 **Other seats:**
 - **A seat with a bridge checkout** can run a tool from it directly: `python3 bin/check-channel-snapshot.py` is the same program.
-- **A seat still on a copied channel server** (not bootstrapped) has no client root and so no shims. Bootstrap it; the tools arrive with the first pack. While its bridge publishes no pack, the bootstrap installs nothing, and the tool is reachable only from a bridge checkout.
+- **A seat still on a copied channel server** (not bootstrapped) has no client root and so no shims. Bootstrap it; the tools arrive with the first pack. The bootstrap runs **once, from a bridge checkout on that seat** (it runs that checkout's updater), so a seat with no checkout needs one for that step — [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *Multi-agent channel-server distribution* owns it. While its bridge publishes no pack, the bootstrap installs nothing, and the tool is reachable only from that checkout. A seat that is not bootstrapped and has no checkout has no route to the tool.
 
 **Unsupported, named so nobody reaches for them:**
 - **`--shape=copy` into a shared target such as `~/.local/bin`.** The installer keys its copy manifest by the TARGET directory alone, so a second source copied into a target the toolkit was already copied into overwrites the record of the first. That stays unsupported until the framework keys its manifests by target and source.
-- **A seat whose target directory probes `NOT_CAPABLE`**, i.e. it cannot hold a symlink. There is no supported PATH install for it today. It can still run the shim by its full path (`<root>/bin/check-channel-snapshot.py <deployed dir>`).
+- **A seat whose target directory probes `NOT_CAPABLE`**, i.e. it cannot hold a symlink. There is no supported PATH install for it today. It can still run the shim by its full path (`<root>/bin/check-channel-snapshot.py <deployed dir>`, or `<root>\bin\check-channel-snapshot.py.cmd <deployed dir>` on Windows).
 
 ## Upgrades, and what each end can see
 
