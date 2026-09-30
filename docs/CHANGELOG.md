@@ -35,6 +35,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - No `.env` change is REQUIRED (both new handlers work with no configuration); no route change, no token-scope change; `--format=json` `schema` stays **1**.
 - **card#10832 / DL-437** — `board_get_cards` no longer refuses a call, naming the token's board membership, when an id 403s on a board with no live cards while another id of the same call resolved as `archived`: a card resolved on the seat's board in the same call is now the membership proof, whatever order the ids were sent in.
 - **Dependabot alert PupFuzz/agent-webhook-bridge #28** — **npm/ip-address 10.4.0 → 10.7.2 in examples/channel-servers** (transitive via express-rate-limit). The dependency is used for IPv6 subnet keying in rate limiting; exploitability is low. Bumped because it is in-range and freely available.
+- **Dependabot alert PupFuzz/agent-webhook-bridge #29** — **npm/fast-uri 3.1.7 → 3.1.8 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk → ajv; GHSA-hrr3-gc8f-f4qj, inconsistent host case normalization via percent-encoded octets). ajv uses it only to resolve `$id`/`$ref` URIs when compiling a schema, and the SDK's server compiles one only for an elicitation request, which the channel server never sends; exploitability is low. Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.35 → 0.9.36.
 
 ### Changed
 
