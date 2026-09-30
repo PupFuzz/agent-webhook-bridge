@@ -1366,10 +1366,8 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
                 f"{mcp_path} changed while the bootstrap ran, so it is left as it is now. The client is installed "
                 f"at {root}; run --bootstrap-client again to point the channel at it."
             )
-    try:
-        merged = merge_mcp_json(existing_text, channel_name, entry, {})
-    except ValueError as e:
-        _fail(str(e))
+    # The same pure merge, on the same inputs, already passed before the install.
+    merged = merge_mcp_json(existing_text, channel_name, entry, {})
     return _install_mcp_json(mcp_path, merged, existing_text)
 
 
@@ -1440,7 +1438,10 @@ def run_role_b(args) -> int:
     # snapshot and pointing `.mcp.json` back at it would take the seat off the update path
     # (design review r3-M1).
     client_entry = recorded_client_entry(existing_text, args.channel_name)
-    if client_entry is not None and not os.path.isfile(client_entry):
+    # "Gone" only where absence is ESTABLISHED: a relative or `${…}` path is resolved by Claude Code at
+    # launch against an environment this run cannot see, so such a record is kept, never replaced.
+    if (client_entry is not None and os.path.isabs(client_entry) and "${" not in client_entry
+            and not os.path.isfile(client_entry)):
         # The seat cannot start as recorded. This run's job is a working channel on the transport it
         # is given, so it deploys the legacy snapshot and says so, rather than refusing into a dead
         # end (a root to rebuild over a transport this run may be here to change).

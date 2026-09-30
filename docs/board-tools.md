@@ -1757,11 +1757,14 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   onto the self-updating client: it asks the bridge over the transport the channel's
   `.mcp.json` env records — ssh **or HTTP**, in the environment a launch would build (this
   shell's, overlaid by that env, with Claude Code's `${VAR}` / `${VAR:-default}` expansion;
-  a `BRIDGE_TOOLS_*` key this shell sets and the channel does not record is named on a
-  `note:` line) — installs the pack the bridge OFFERS into the seat's client root
+  a door key this shell sets and the channel does not record — a `BRIDGE_TOOLS_*` key, or
+  `BRIDGE_CHANNEL_TOKEN`, the fallback bearer — is named on a `note:` line, never its value)
+  — installs the pack the bridge OFFERS into the seat's client root
   (`${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>`, or
-  `%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>`), and only then points the
-  channel's `.mcp.json` args at `<root>/entry.mjs`; the env block is not touched. The fetch,
+  `%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>`), and only then sets the
+  channel's `command`/`args` to `node <root>/entry.mjs`, through the same merge `--role b`
+  uses (the env block is unchanged, except that an ssh entry's HTTP sibling keys are dropped
+  as that merge always does). The fetch,
   checks and install are `client-update.mjs bootstrap` from the provisioner's own checkout,
   so nothing fetched is run. It needs `--agent --project-dir --channel-name`, refuses the
   transport flags. It is **refused before anything is installed — `.mcp.json` and the
@@ -1772,7 +1775,8 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   what the bridge offers now, repairing the root when that is the installed release; after a
   killed run, only once that run's lock has expired. For an ssh seat the key must already be
   pinned. A later `--role b` on a bootstrapped seat refreshes the transport and **keeps**
-  `<root>/entry.mjs` (no snapshot is deployed); when that file is gone it deploys the legacy
+  `<root>/entry.mjs` (no snapshot is deployed); when that file is established gone (an
+  absolute recorded path with no `${…}`) it deploys the legacy
   snapshot, points the channel at it and says the seat will not update itself.
   ⚠ `bridge:check`'s snapshot legs do not know the client root yet: for a bootstrapped seat
   unset `channel.server_path`, which otherwise certifies a directory nothing runs.

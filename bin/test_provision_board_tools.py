@@ -1110,6 +1110,26 @@ class RoleBHostBLeg(unittest.TestCase):
         self.assertIn("will NOT update itself", out)
         self.assertIn("--bootstrap-client", out)
 
+    def test_a_recorded_entry_this_run_cannot_resolve_is_kept_not_replaced(self):
+        # Review r3: `${…}` is expanded by Claude Code at launch, so absence is not established here.
+        entry = "${AWB_UNSEEN}/agent-webhook-bridge/client/kanbanboard-agent/entry.mjs"
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"kanbanboard-agent": {"command": "node", "args": [entry],
+                       "env": {"BRIDGE_TOOLS_SSH_TARGET": "bridge@127.0.0.1"}}}}, fh)
+        deployed = []
+        with mock.patch.object(pbt, "_deploy_snapshot", side_effect=lambda d: deployed.append(d) or True):
+            argv = ["--role", "b", "--agent", "kanban-solo", "--ssh-target", "bridge@127.0.0.1",
+                    "--project-dir", self.project, "--channel-name", "kanbanboard-agent"]
+            with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
+                 mock.patch.object(pbt, "_keygen", side_effect=self._keygen_stub()), \
+                 mock.patch.object(pbt, "_seed_known_hosts"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                rc = pbt.run_role_b(pbt.build_parser().parse_args(argv))
+        self.assertEqual(rc, 0)
+        self.assertEqual(deployed, [])
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["mcpServers"]["kanbanboard-agent"]["args"], [entry])
+
     def test_a_re_run_on_a_legacy_seat_still_deploys_and_points_at_the_snapshot(self):
         # The control for the case above: the same run on a seat that was never bootstrapped.
         rc, _ = self._run(deploy_prints=["deployed"])
