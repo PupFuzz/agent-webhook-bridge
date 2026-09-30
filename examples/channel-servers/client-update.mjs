@@ -94,7 +94,7 @@ const INSTALL_ID = /^[0-9a-z-]{1,64}$/;
 const FILES_JSON = 'FILES.json';
 const REQUIRED_ENTRIES = REQUIRED_CLIENT_FILES.map((name) => `client/${name}`);
 const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
-/** How long a bootstrap (`install`) holds the lock before a launch may take it over. */
+/** A bootstrap's budget, and so how long it holds the lock before a launch may take it over. */
 const INSTALL_LOCK_MS = 10 * 60 * 1000;
 const SHIM_MARKER = 'agent-webhook-bridge client updater: seat-tool shim';
 
@@ -948,8 +948,10 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
   } else {
     // A copy being replaced is RENAMED ASIDE, not removed, until the verified one is in place: it
     // may be the release the seat runs (not intact in full, still startable), and a rename into
-    // `versions/` that fails must leave it where it was (card#10568 comment 7236). A kill between
-    // the two renames leaves it in staging/, and re-running the bootstrap recovers the seat.
+    // `versions/` that fails must leave it where it was (card#10568 comment 7236). A kill BETWEEN
+    // the two renames is not recovered from the aside copy — nothing reads it back, and the next
+    // staging cleanup removes it — so the pointer names a missing release until a bootstrap (or a
+    // launch with another intact release) installs what the bridge offers.
     let aside = null;
     if (exists) {
       const why = c.status === 'bad' ? c.message : `${release} is not a valid X.Y.Z`;
@@ -1404,11 +1406,14 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
  * that too. `obtain` supplies the manifest, then the pack; it is where the two ways in differ.
  * Throws a Refusal or Failure, each logged.
  */
-async function bootstrapRoot({ root, source, env, obtain }) {
+async function bootstrapRoot({ root, source, env, obtain, budgetMs = INSTALL_LOCK_MS }) {
   const say = (text) => process.stderr.write(`client-update bootstrap: ${text}\n`);
   fs.mkdirSync(root, { recursive: true });
-  const ctx = { root, signal: new AbortController().signal, deadline: Infinity, launchId: null, actor: 'provision', env, source, door: null, log: null, say };
-  const lock = takeLock(root, { deadline: Date.now() + INSTALL_LOCK_MS, staleAfterMs: INSTALL_LOCK_MS });
+  // The lock's deadline IS the budget, as at a launch: every irreversible step checks it, so a
+  // bootstrap never writes after a launch could take the lock over as stale.
+  const deadline = Date.now() + budgetMs;
+  const ctx = { root, signal: new AbortController().signal, deadline, launchId: null, actor: 'provision', env, source, door: null, log: null, say };
+  const lock = takeLock(root, { deadline, staleAfterMs: budgetMs });
   const known = { from: null, to: null, manifest: null, manifestSha256: null };
   try {
     ctx.log = InstallLog.open(root, say);
@@ -1428,6 +1433,10 @@ async function bootstrapRoot({ root, source, env, obtain }) {
       settleRoot(ctx, manifest.bridge_release);
       return { release: manifest.bridge_release, installId: ctx.log.installId };
     } catch (err) {
+      if (err instanceof Aborted) {
+        // Nothing is aside at an abort: every check sits outside the rename-aside and rename-in pair.
+        fs.rmSync(path.join(root, 'staging'), { recursive: true, force: true });
+      }
       if (!(err instanceof Refusal) && !(err instanceof Failure)) {
         err = new Failure(`${err && err.message ? err.message : err}`);
       }
@@ -1440,11 +1449,12 @@ async function bootstrapRoot({ root, source, env, obtain }) {
 }
 
 /** Bootstrap from a pack and manifest already on disk. */
-export async function installFromFiles({ packFile, manifestFile, root, source = 'provision', env = process.env }) {
+export async function installFromFiles({ packFile, manifestFile, root, source = 'provision', env = process.env, budgetMs }) {
   return bootstrapRoot({
     root,
     source,
     env,
+    budgetMs,
     obtain: {
       async manifest() {
         const manifestBytes = fs.readFileSync(manifestFile);
@@ -1457,10 +1467,8 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
   });
 }
 
-/** How long a bootstrap waits for the bridge's client_manifest answer. */
+/** How long a bootstrap waits for the bridge's client_manifest answer (the pack gets what is left of the budget). */
 export const BOOTSTRAP_MANIFEST_MS = 30000;
-/** How long a bootstrap waits for the pack: its lock's own span, so the lock is never outlived. */
-const BOOTSTRAP_PACK_MS = INSTALL_LOCK_MS - BOOTSTRAP_MANIFEST_MS;
 
 /**
  * Bootstrap from this seat's own bridge, over the board-tools transport in `env` — the one a
@@ -1468,11 +1476,12 @@ const BOOTSTRAP_PACK_MS = INSTALL_LOCK_MS - BOOTSTRAP_MANIFEST_MS;
  * only what the bridge OFFERS (DL-433 Decision 2): with approval owed nothing is fetched, and the
  * refusal names the release and the command that clears it.
  */
-export async function installFromDoor({ root, env = process.env }) {
+export async function installFromDoor({ root, env = process.env, budgetMs }) {
   return bootstrapRoot({
     root,
     source: null,
     env,
+    budgetMs,
     obtain: {
       async manifest(ctx, known) {
         ctx.door = doorFromEnv(env);
@@ -1489,7 +1498,7 @@ export async function installFromDoor({ root, env = process.env }) {
         return { manifest, manifestSha256 };
       },
       async pack(ctx, manifest) {
-        return fetchPack(ctx, manifest, BOOTSTRAP_PACK_MS);
+        return fetchPack(ctx, manifest, ctx.deadline - Date.now());
       },
     },
   });

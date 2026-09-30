@@ -1755,18 +1755,22 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   will actually use.
   **`--role b --bootstrap-client`** (card#10568, DL-444) moves an already-provisioned seat
   onto the self-updating client: it asks the bridge over the transport the channel's
-  `.mcp.json` env records — ssh **or HTTP**, inherited `BRIDGE_TOOLS_*` variables ignored —
-  installs the pack the bridge OFFERS into the seat's client root
+  `.mcp.json` env records — ssh **or HTTP**, in the environment a launch would build (this
+  shell's, overlaid by that env, with Claude Code's `${VAR}` / `${VAR:-default}` expansion;
+  a `BRIDGE_TOOLS_*` key this shell sets and the channel does not record is named on a
+  `note:` line) — installs the pack the bridge OFFERS into the seat's client root
   (`${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>`, or
   `%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>`), and only then points the
   channel's `.mcp.json` args at `<root>/entry.mjs`; the env block is not touched. The fetch,
   checks and install are `client-update.mjs bootstrap` from the provisioner's own checkout,
   so nothing fetched is run. It needs `--agent --project-dir --channel-name`, refuses the
-  transport flags, and is **refused, changing nothing, when approval is owed** (it names the
-  release and `bridge:client-approve`), when the bridge publishes no pack, or on any failed
-  check; the seat keeps the channel server it had. Run again, it repairs the root. For an
-  ssh seat the key must already be pinned. A later `--role b` on a bootstrapped seat
-  refreshes the transport and **keeps** `<root>/entry.mjs`: no snapshot is deployed.
+  transport flags, and is **refused, leaving `.mcp.json` and the installed client as they
+  were, when approval is owed** (it names the release and `bridge:client-approve`), when the
+  bridge publishes no pack, or on any failed check — the refusal is logged in the root's
+  `install-log.jsonl`. Run again, it installs what the bridge offers now, repairing the root
+  when that is the installed release. For an ssh seat the key must already be pinned. A later
+  `--role b` on a bootstrapped seat refreshes the transport and **keeps** `<root>/entry.mjs`
+  (no snapshot is deployed), and refuses, naming `--bootstrap-client`, when that file is gone.
   ⚠ Not yet wired into `--certify-only`, `--self-cert` or the same-box wrapper, and the
   setup packet does not name it yet — run it by hand once the seat is certified.
   **`.mcp.json` is never written in place:** the merged config is serialised to a sibling

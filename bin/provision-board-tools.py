@@ -175,18 +175,17 @@ def is_client_entry(path: str) -> bool:
     )
 
 
-def _resolved_args(args: object, resolve) -> list:
-    if not isinstance(args, list):
-        return []
-    out = []
-    for a in args:
-        if not isinstance(a, str):
-            continue
-        try:
-            out.append(resolve(a))
-        except (OSError, ValueError):
-            out.append(a)
-    return out
+def _resolved(a: str, resolve) -> str:
+    try:
+        return resolve(a)
+    except (OSError, ValueError):
+        return a
+
+
+def _is_our_client_entry(a: str, resolve) -> bool:
+    # The recorded path OR where it resolves: a symlink INSIDE the layout (a linked
+    # `agent-webhook-bridge/` dir) moves the resolved path out of it while the recorded one is ours.
+    return is_client_entry(a) or is_client_entry(_resolved(a, resolve))
 
 
 def _args_hold_channel_mjs(args: object, resolve) -> bool:
@@ -200,9 +199,12 @@ def _args_hold_channel_mjs(args: object, resolve) -> bool:
     refusing that as foreign would strand the seat on the transport it was bootstrapped with
     (design review r3-M1).
     """
+    if not isinstance(args, list):
+        return False
     return any(
-        os.path.basename(a) == CHANNEL_MJS_BASENAME or is_client_entry(a)
-        for a in _resolved_args(args, resolve)
+        os.path.basename(_resolved(a, resolve)) == CHANNEL_MJS_BASENAME or _is_our_client_entry(a, resolve)
+        for a in args
+        if isinstance(a, str)
     )
 
 
@@ -223,7 +225,7 @@ def recorded_client_entry(existing_text, channel_name: str, *, resolve=os.path.r
     if not isinstance(args, list):
         return None
     for a in args:
-        if isinstance(a, str) and is_client_entry(_resolved_args([a], resolve)[0]):
+        if isinstance(a, str) and _is_our_client_entry(a, resolve):
             return a
     return None
 
@@ -1255,30 +1257,49 @@ def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
     return os.path.join(base, *CLIENT_ROOT_PARENT, channel_name)
 
 
-# Inherited from the provisioner's own environment, these would reach the bootstrap beside what the
-# seat recorded — and a bootstrap must ask the door the seat's channel server will ask, not the one
-# this shell happens to name.
+# Claude Code's `.mcp.json` expansion, read from its 2.1.284 Linux binary (the MCP config expander):
+# `${VAR}` or `${VAR:-default}`, from the launching environment; the default applies only when VAR
+# is UNSET (an empty VAR stays empty), and an unresolved reference is left in place and warned about.
+_MCP_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _TRANSPORT_ENV_PREFIX = "BRIDGE_TOOLS_"
 
 
-def bootstrap_env(recorded: dict, environ=None) -> dict:
-    """The environment the bootstrap runs in: this process's, minus every inherited
-    `BRIDGE_TOOLS_*`, plus the channel's recorded `.mcp.json` env — the transport its launch uses.
+def bootstrap_env(recorded: dict, environ=None) -> tuple:
+    """The environment the bootstrap runs in, built as a launch builds the channel server's: this
+    process's environment, overlaid by the channel's recorded `.mcp.json` env with Claude Code's
+    `${VAR}` / `${VAR:-default}` expansion applied from this process's environment.
 
-    A recorded value holding `${…}` is refused: Claude Code expands it when it spawns the server,
-    and a bootstrap handed the literal text would ask a door that does not exist.
+    Returns `(env, inherited)`: `inherited` names the `BRIDGE_TOOLS_*` keys this environment sets
+    that the channel does not record — the bootstrap sees them, and a session sees them only if it
+    is started from an environment that sets them too, which this process cannot know.
+    A reference to an unset variable with no default is refused: Claude Code would pass the
+    literal text, and a bootstrap handed it would ask a door that does not exist.
     """
-    env = {k: v for k, v in (os.environ if environ is None else environ).items() if not k.startswith(_TRANSPORT_ENV_PREFIX)}
+    base = dict(os.environ if environ is None else environ)
+    env = dict(base)
     for key, value in recorded.items():
         if not isinstance(value, str):
             raise ValueError(f"records {key} as a {type(value).__name__}, not a string")
-        if "${" in value:
+        missing = []
+
+        def expand(m, _missing=missing):
+            name, default = m.group(1), m.group(2)
+            if name in base:
+                return base[name]
+            if default is not None:
+                return default
+            _missing.append(name)
+            return m.group(0)
+
+        expanded = _MCP_ENV_REF.sub(expand, value)
+        if missing:
             raise ValueError(
-                f"records {key} with a ${{…}} expansion, which Claude Code resolves at launch and this "
-                f"bootstrap cannot — record the value itself, or bootstrap with it exported"
+                f"records {key} as a reference to {', '.join(missing)}, which is not set here and has no "
+                f"default — set it in this shell as your sessions have it, or record the value"
             )
-        env[key] = value
-    return env
+        env[key] = expanded
+    inherited = sorted(k for k in base if k.startswith(_TRANSPORT_ENV_PREFIX) and k not in recorded)
+    return env, inherited
 
 
 def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> bool:
@@ -1293,10 +1314,13 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
     """
     try:
         recorded = read_recorded_ssh_transport(existing_text, channel_name)
-        env = bootstrap_env(recorded)
+        env, inherited = bootstrap_env(recorded)
         root = client_root(channel_name)
     except ValueError as e:
         _fail(f"{mcp_path} {e} — nothing was installed and .mcp.json is unchanged.")
+    for key in inherited:
+        print(f"note: {key} is set in this shell and not recorded in {mcp_path}; the bootstrap uses it, "
+              f"and a session sees it only if it is started from an environment that sets it too.")
     entry = os.path.join(root, CLIENT_ENTRY_BASENAME)
     # Refused BEFORE anything is installed: a foreign or unparseable entry is refused by the same
     # merge that will write it, so an install is never left with nothing pointing at it.
@@ -1314,8 +1338,11 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
     _require_node_20()
     print(f"bootstrapping channel {channel_name}'s client into {root} from its bridge…")
     try:
-        # The token, when there is one, reaches the child through its environment, never an argv.
-        proc = subprocess.run(["node", updater, "bootstrap", "--root", root], env=env, check=False)
+        # The token, when there is one, reaches the child through its environment, never an argv; and
+        # the project dir is its working directory, as it is a session's, for any relative path.
+        proc = subprocess.run(
+            ["node", updater, "bootstrap", "--root", root], env=env, cwd=os.path.dirname(mcp_path), check=False
+        )
     except OSError as e:
         _fail(f"could not run node for the client bootstrap: {e} — .mcp.json is unchanged.")
     if proc.returncode != 0:
@@ -1326,6 +1353,13 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
         )
     if not os.path.isfile(entry):
         _fail(f"the client bootstrap reported success but {entry} does not exist — .mcp.json is unchanged.")
+    # The install can take minutes; a .mcp.json edited meanwhile is not overwritten from the stale copy.
+    with open(mcp_path, encoding="utf-8") as fh:
+        if fh.read() != existing_text:
+            _fail(
+                f"{mcp_path} changed while the bootstrap ran, so it is left as it is now. The client is installed "
+                f"at {root}; run --bootstrap-client again to point the channel at it."
+            )
     try:
         merged = merge_mcp_json(existing_text, channel_name, entry, {})
     except ValueError as e:
@@ -1400,6 +1434,12 @@ def run_role_b(args) -> int:
     # snapshot and pointing `.mcp.json` back at it would take the seat off the update path
     # (design review r3-M1).
     client_entry = recorded_client_entry(existing_text, args.channel_name)
+    if client_entry is not None and not os.path.isfile(client_entry):
+        _fail(
+            f"{mcp_path} points channel {args.channel_name} at {client_entry}, which does not exist, so its "
+            f"channel server cannot start. Run `--role b --bootstrap-client` to reinstall the client there; "
+            f"nothing was changed."
+        )
     if client_entry is not None:
         mjs_path = client_entry
         snapshot_replaced = False

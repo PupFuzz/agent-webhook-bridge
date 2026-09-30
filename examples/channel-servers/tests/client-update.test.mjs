@@ -1656,3 +1656,21 @@ test('a bootstrap killed between moving the old copy aside and the new one in is
   assert.ok(!fs.existsSync(path.join(root, 'staging')), 'nothing is left aside');
   assertChain(root);
 });
+
+test('a bootstrap that runs past its budget stops before its next irreversible step, so it never writes under a lock a launch could take over (review r1 MAJOR)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const before = treeOf(root);
+  const files = writePack(t, goodPack('2.0.0'));
+
+  // The hook holds the verified, staged pack until one second past the deadline; the lock's own
+  // deadline is that same budget, so any write after it is a write a launch could race.
+  await assert.rejects(
+    installFromFiles({ packFile: files.pack, manifestFile: files.manifest, root, budgetMs: 1500, env: { ...process.env, AWB_CLIENT_CRASH_AT: 'budget-exceeded' } }),
+    /the update budget ran out before moving release 2\.0\.0 into versions\//,
+  );
+
+  assert.deepEqual(treeOf(root), before, 'versions/ and current.json are unchanged');
+  assert.ok(!fs.existsSync(path.join(root, 'staging')), 'the staged pack is removed');
+  assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
+  assert.equal(logObjs(root).at(-1).action, 'fail');
+});
