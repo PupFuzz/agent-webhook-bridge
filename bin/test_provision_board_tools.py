@@ -3085,6 +3085,54 @@ class BootstrapClientEntryPoint(unittest.TestCase):
         self.assertIn("Run `--role b` to deploy the legacy snapshot", str(cm.exception))
         self.assertNotIn("already starts from its client root", out.getvalue())
 
+    def _gone_entry_seat(self):
+        entry = os.path.join(self.root, "entry.mjs")
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": [entry], "env": self.env}}}, fh)
+        # In the provisioner's own serialisation, so a reinstall writing the same path back is byte-identical.
+        text = self._mcp()
+        pbt._install_mcp_json(self.mcp_path, pbt.merge_mcp_json(text, "chan", entry, {}), text)
+        return entry
+
+    def test_a_gone_root_entry_whose_reinstall_fails_is_not_said_to_keep_its_server(self):
+        # Coordinator SF1: the exit≠0 arm said "keeps the channel server it had" — the missing file.
+        self._gone_entry_seat()
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", return_value=mock.Mock(returncode=1)), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaises(SystemExit) as cm:
+            pbt._bootstrap_after_certify("a", self.mcp_path, "chan")
+        self.assertIn("did not complete (exit 1", str(cm.exception))
+        self.assertNotIn("keeps the channel server it had", str(cm.exception))
+        self.assertIn("so this seat cannot start", str(cm.exception))
+        self.assertIn("Run `--role b` to deploy the legacy snapshot", str(cm.exception))
+
+    def test_a_gone_root_entry_reinstalled_owes_the_activation_block(self):
+        # Coordinator SF2: .mcp.json is byte-identical after the reinstall, yet a running session must
+        # restart to start from the entry that now exists — certify-only prints the block on True.
+        entry = self._gone_entry_seat()
+        before = self._mcp()
+
+        def fake_run(cmd, env=None, cwd=None, check=False):
+            os.makedirs(self.root, exist_ok=True)
+            open(entry, "w").close()
+            return mock.Mock(returncode=0)
+
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(pbt._bootstrap_after_certify("a", self.mcp_path, "chan"))
+        self.assertEqual(self._mcp(), before, "the same path is written back")
+
+    def test_an_explicit_bootstrap_over_a_gone_entry_prints_the_activation_block(self):
+        # The same through --bootstrap-client, end to end: the block itself is printed.
+        self._gone_entry_seat()
+        rc, _ = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"Session already running on this seat WITH channel chan loaded", self.out.getvalue())
+
     def test_an_entry_point_leaves_a_seat_already_on_its_client_root_alone(self):
         entry = os.path.join(self.root, "entry.mjs")
         os.makedirs(self.root)

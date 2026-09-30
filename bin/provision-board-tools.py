@@ -1327,8 +1327,9 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agen
     fetch, the checks and the install are the updater's (`client-update.mjs bootstrap`, the copy in
     THIS checkout — nothing fetched is run), over the transport this channel recorded. Only after it
     succeeds, and `<root>/entry.mjs` exists, are `.mcp.json` args rewritten to it; on any failure
-    `.mcp.json` is untouched and the seat keeps the channel server it had. Returns whether
-    `.mcp.json` changed.
+    `.mcp.json` is untouched and the seat keeps the channel server it had (or, with
+    `recorded_entry_gone`, is told it cannot start and how to recover). Returns whether what the
+    seat launches changed: `.mcp.json` moved, or the entry it already names was missing and now exists.
 
     `keep_legacy_when_nothing_offered` is the onboarding entry points' LEGACY FALLBACK (design
     §3.5 "R2 fallback", DL-445): when the bridge offers nothing to install right now, the seat
@@ -1363,6 +1364,16 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agen
             f"client updater (card#10568) — run the provisioner from a bridge release that carries it."
         )
     _require_node_20()
+    # What a failed or declined install leaves the seat with — said the same way on every failure arm.
+    if recorded_entry_gone:
+        left_with = (
+            "the client entry its .mcp.json names is gone, so this seat cannot start. Run `--role b` to deploy "
+            "the legacy snapshot so it can start, or `--bootstrap-client` once the bridge offers a client."
+        )
+    else:
+        left_with = "this seat keeps the channel server it had."
+    # Read before the install: an unchanged .mcp.json over an entry that was missing still changes what launches.
+    entry_was_missing = not os.path.isfile(entry)
     print(f"bootstrapping channel {channel_name}'s client into {root} from its bridge…")
     try:
         # The token, when there is one, reaches the child through its environment, never an argv; and
@@ -1382,22 +1393,14 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agen
                 f"{agent}), run `--role b --bootstrap-client` to put it on the update path."
             )
             return False
-        if recorded_entry_gone:
-            # Not "keeps the channel server it had": that is the missing file (review r3).
-            _fail(
-                "the bridge answered and offers this seat no client to install right now (its reason is printed "
-                "above), and the client entry its .mcp.json names is gone, so this seat cannot start. .mcp.json is "
-                "unchanged. Run `--role b` to deploy the legacy snapshot so it can start, or `--bootstrap-client` "
-                "once the bridge offers a client."
-            )
         _fail(
             "the bridge answered and offers this seat no client to install right now (its reason is printed "
-            "above) — .mcp.json is unchanged and this seat keeps the channel server it had."
+            f"above) — .mcp.json is unchanged and {left_with}"
         )
     if proc.returncode != 0:
         _fail(
             f"the client bootstrap did not complete (exit {proc.returncode}; its reason is printed above) — "
-            f".mcp.json is unchanged and this seat keeps the channel server it had."
+            f".mcp.json is unchanged and {left_with}"
         )
     if not os.path.isfile(entry):
         _fail(f"the client bootstrap reported success but {entry} does not exist — .mcp.json is unchanged.")
@@ -1410,7 +1413,9 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agen
             )
     # The same pure merge, on the same inputs, already passed before the install.
     merged = merge_mcp_json(existing_text, channel_name, entry, {})
-    return _install_mcp_json(mcp_path, merged, existing_text)
+    # True also when .mcp.json is byte-identical but the entry it names was missing: a running
+    # session still has to restart to start from it, so the activation block is owed.
+    return _install_mcp_json(mcp_path, merged, existing_text) or entry_was_missing
 
 
 def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bool:
@@ -1420,8 +1425,10 @@ def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bo
 
     A seat whose `.mcp.json` already starts it from a client root is left as it is — it updates
     itself at launch, and a re-provision or re-certify is not a request to reinstall it
-    (`--bootstrap-client` is, and repairs it). Otherwise the legacy fallback applies: nothing
-    offered keeps the seat on the snapshot `--role b` deployed. Returns whether `.mcp.json` changed.
+    (`--bootstrap-client` is, and repairs it) — unless the absolute entry it records is gone: that
+    seat cannot start, so it is reinstalled, and nothing offered fails rather than falling back.
+    Otherwise the legacy fallback applies: nothing offered keeps the seat on the snapshot
+    `--role b` deployed. Returns whether what the seat launches changed (the activation block is owed).
     """
     with open(mcp_path, encoding="utf-8") as fh:
         text = fh.read()
