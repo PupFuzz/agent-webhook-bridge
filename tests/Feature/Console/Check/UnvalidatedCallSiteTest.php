@@ -81,14 +81,18 @@ class UnvalidatedCallSiteTest extends TestCase
         //   3. the DEPLOYED `package.json` is absent/unreadable/malformed, so the staleness
         //      compare has no left-hand side;
         //   4. this CHECKOUT's bundled `package.json` is unreadable, so it has no
-        //      right-hand side.
-        // A FIFTH leg lived here until card#5698 — "the configured path or the deployed
+        //      right-hand side;
+        //   5. a CLIENT ROOT's `current.json` is absent/unreadable/malformed or names no
+        //      bare X.Y.Z release (DL-445): its `entry.mjs` then picks the newest intact
+        //      release itself, which this probe does not derive, so which release would
+        //      start was never measured.
+        // A further leg lived here until card#5698 — "the configured path or the deployed
         // directory is not visible to this user". It did not go away; it MOVED to
         // `PathVisibility` below, which every stat-bearing check now shares.
-        'app/Bridge/Support/ChannelSnapshotProbe.php' => 4,
-        // THE shared not-visible guard (card#5698). One construction, seven adopting call
-        // sites across six files — see the bound above on what that centralization costs
-        // this pin, and `PathVisibilityAdoptionTest` for the set itself.
+        'app/Bridge/Support/ChannelSnapshotProbe.php' => 5,
+        // THE shared not-visible guard (card#5698). One construction, shared by every adopting
+        // call site — `PathVisibilityAdoptionTest::ADOPTERS` is the set (a count here went stale
+        // twice); see the bound above on what that centralization costs this pin.
         'app/Bridge/Support/PathVisibility.php' => 1,
         // The pinned-line legs that read a possibly-relocated authorized_keys (DL-251 (a)/(b)),
         // plus the DL-259 account-lookup site: a host with no `posix_getpwnam` never

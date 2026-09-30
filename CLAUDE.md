@@ -117,8 +117,10 @@ php artisan bridge:client-approve <agent> <release> --reason=…
                                          # approval; logged with the OS user (DL-433) — gates the offer, never enforced
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
-check-channel-snapshot.py <deployed channel-server dir>
-                                         # will it LAUNCH at the next session start? (DL-237)
+check-channel-snapshot.py <deployed channel-server dir | client root>
+                                         # will it LAUNCH at the next session start? (DL-237) For a
+                                         # bootstrapped seat's client root it launches the release its
+                                         # current.json names, never entry.mjs (DL-445)
                                          # 0 = launch OK · 1 = launch FAILED (node's stderr is the
                                          # diagnosis) · 2 = could not check. A declared SEAT TOOL: it runs
                                          # with no bridge checkout, and reaches the seat's PATH through

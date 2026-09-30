@@ -279,8 +279,10 @@ final class BoardToolsSetupPacket
     private function stepFour(): array
     {
         return [
-            "STEP 4 — IMPL AGENT {$this->agent}: certify from the seat (no re-deploy, no keygen — it reads the "
-                .'target and key THIS seat recorded in its own .mcp.json):',
+            "STEP 4 — IMPL AGENT {$this->agent}: certify from the seat, then bootstrap its self-updating client (no "
+                .'keygen, no snapshot deploy — it reads the target and key THIS seat recorded in its own .mcp.json; once '
+                .'the round-trip succeeds it installs the client pack this bridge publishes and points .mcp.json at it, '
+                .'and if this bridge offers none it keeps STEP 1\'s copy and says CLIENT NOT BOOTSTRAPPED):',
             '    python3 '.self::CHECKOUT."/bin/provision-board-tools.py --role b --certify-only --agent {$this->agent}"
                 .' --project-dir '.self::PROJECT_DIR.' --channel-name '.self::CHANNEL_KEY,
             '  then start its session: claude --dangerously-load-development-channels server:'.self::CHANNEL_KEY,
@@ -298,7 +300,8 @@ final class BoardToolsSetupPacket
             '  ⚠ the channel server\'s `args` in this seat\'s .mcp.json were repointed by STEP 1 at '
                 .self::PROJECT_DIR.'/.channel-server/… — a copy it deploys there. Any previous copy '
                 .'is left on disk untouched and is no longer what the session runs; delete it only '
-                .'once this seat is certified.',
+                .'once this seat is certified. Once STEP 4 bootstraps the client they point at its client root\'s '
+                .'entry.mjs instead, which updates itself at each launch, and STEP 1\'s copy is no longer run either.',
         ];
     }
 

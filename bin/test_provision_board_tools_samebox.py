@@ -11,12 +11,15 @@ Coverage the design rests on:
     named test below (see the comments on those tests).
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -94,6 +97,13 @@ class FakeFs:
 
     def find_mcp_files(self, agent_home):
         return list(self._mcp_files)
+
+    help_text = ("usage: provision-board-tools.py ... --certify-only  [role b] fire that round-trip, ... and on\n"
+                 "                        success bootstrap the self-updating client from the bridge's pack ...")
+
+    def help_as(self, user, python, tool):
+        self.help_asked = (user, python, tool)
+        return self.help_text  # None stands for a --help that could not be asked
 
 
 def _args(**over):
@@ -283,6 +293,124 @@ class PreflightFailClosed(unittest.TestCase):
     def test_bad_ssh_account_rejected(self):
         with self.assertRaises(sb.PreflightError):
             sb.preflight(_args(ssh_account="../etc"), FakeFs())
+
+
+class ExecuteCertifyAndBootstrap(unittest.TestCase):
+    """The certify + client-bootstrap leg (DL-445; design review r3-B1): after role-a, AS THE AGENT
+    USER, from the AGENT's checkout — never in-process as root, which would install the client
+    under root's home from host A's code."""
+
+    _PUB = "/home/kanban-solo/.ssh/kanban-solo-board-tools.pub"
+
+    def _execute(self, fs, fail_on=None):
+        plan = sb.preflight(_args(), fs)
+        fs._files.add(self._PUB)
+        ran = []
+
+        def fake_run(cmd, err, *, capture=False):
+            ran.append(cmd)
+            if fail_on is not None and fail_on in cmd:
+                raise SystemExit(f"provision-board-tools-samebox: {err} (exit 1)")
+            return types.SimpleNamespace(
+                stdout=f"Same-box: hand this path to `--role a --pubkey-from`:\n  {self._PUB}\n" if capture else "",
+                returncode=0,
+            )
+
+        out = io.StringIO()
+        with mock.patch.object(sb, "_run", side_effect=fake_run), contextlib.redirect_stdout(out):
+            try:
+                rc = sb.execute(plan, fs)
+            except SystemExit as e:
+                rc = e
+        return rc, ran, out.getvalue()
+
+    def test_certify_only_runs_as_the_agent_from_its_own_checkout_after_role_a_and_just_before_bridge_check(self):
+        fs = FakeFs()
+        rc, ran, out = self._execute(fs)
+        self.assertEqual(rc, 0)
+        certify = ["sudo", "-H", "-n", "-u", _AGENT, "python3", _AGENT_BIN, "--role", "b", "--certify-only",
+                   "--agent", _AGENT, "--project-dir", os.path.dirname(_MCP), "--channel-name", "kanbanboard-agent"]
+        self.assertIn(certify, ran)
+        role_a = next(i for i, c in enumerate(ran) if "--role" in c and c[c.index("--role") + 1] == "a")
+        self.assertLess(role_a, ran.index(certify), "certify runs after role-a pinned the key")
+        self.assertEqual(ran.index(certify) + 1, next(i for i, c in enumerate(ran) if "bridge:check" in c),
+                         "certify is the leg just before bridge:check, which runs after the banner")
+        self.assertEqual(fs.help_asked, (_AGENT, "python3", _AGENT_BIN), "the AGENT's checkout is asked, as the agent")
+        self.assertNotIn("CLIENT NOT BOOTSTRAPPED", out)
+
+    def test_an_agent_checkout_that_predates_the_bootstrap_is_named_loudly_and_skipped(self):
+        fs = FakeFs()
+        # A DL-444 checkout: it names --bootstrap-client, but its --certify-only does not bootstrap.
+        fs.help_text = "usage: provision-board-tools.py ... --certify-only ... --bootstrap-client ..."
+        rc, ran, out = self._execute(fs)
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("--certify-only" in c for c in ran))
+        self.assertIn("CLIENT NOT BOOTSTRAPPED", out)
+        self.assertIn("predates the client bootstrap", out)
+
+    def test_a_help_that_could_not_be_asked_is_said_as_such_never_as_predates(self):
+        # Review r2: a failed ask is not evidence the checkout is old.
+        fs = FakeFs()
+        fs.help_text = None
+        rc, ran, out = self._execute(fs)
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("--certify-only" in c for c in ran))
+        self.assertIn("could not be asked", out)
+        self.assertNotIn("predates", out)
+
+    def test_when_certify_and_bridge_check_both_fail_both_are_said(self):
+        # Review r3: only the first held failure was raised; the second was never printed.
+        plan = sb.preflight(_args(), FakeFs())
+        fs = FakeFs()
+        fs._files.add(self._PUB)
+
+        def fake_run(cmd, err, *, capture=False):
+            if "--certify-only" in cmd or "bridge:check" in cmd:
+                raise SystemExit(f"provision-board-tools-samebox: {err} (exit 1)")
+            return types.SimpleNamespace(stdout=f"Same-box: hand this path to `--role a --pubkey-from`:\n  {self._PUB}\n", returncode=0)
+
+        err = io.StringIO()
+        with mock.patch.object(sb, "_run", side_effect=fake_run), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            sb.execute(plan, fs)
+        self.assertIn("certify + client bootstrap (agent leg) failed", str(cm.exception))
+        self.assertIn("bridge:check certify step failed", err.getvalue())
+
+    def test_a_failed_chown_does_not_hide_a_held_certify_failure(self):
+        # Review r4: the chown's own failure escaped before the held errors were said.
+        plan = sb.preflight(_args(), FakeFs())
+        fs = FakeFs()
+        fs._files.add(self._PUB)
+
+        def fake_run(cmd, err, *, capture=False):
+            if "--certify-only" in cmd or cmd[0] == "chown":
+                raise SystemExit(f"provision-board-tools-samebox: {err} (exit 1)")
+            return types.SimpleNamespace(stdout=f"Same-box: hand this path to `--role a --pubkey-from`:\n  {self._PUB}\n", returncode=0)
+
+        err = io.StringIO()
+        with mock.patch.object(sb, "_run", side_effect=fake_run), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            sb.execute(plan, fs)
+        self.assertIn("certify + client bootstrap (agent leg) failed", str(cm.exception))
+        self.assertIn("chown of host-A storage failed", err.getvalue())
+
+    def test_a_failed_certify_still_prints_the_banner_runs_the_chown_and_then_fails(self):
+        rc, ran, out = self._execute(FakeFs(), fail_on="--certify-only")
+        self.assertIsInstance(rc, SystemExit)
+        self.assertIn("certify + client bootstrap (agent leg) failed", str(rc))
+        self.assertIn("MANUAL STEP REQUIRED", out)
+        self.assertTrue(any(c[0] == "chown" for c in ran))
+
+    def test_what_is_looked_for_is_that_certify_only_bootstraps_even_across_a_wrapped_line(self):
+        self.assertTrue(sb.supports_bootstrap("... and on\n      success bootstrap the self-\n      updating client from ..."))
+        self.assertFalse(sb.supports_bootstrap("  --bootstrap-client  [role b] install ..."))
+
+    def test_the_real_provisioners_help_carries_it_at_a_narrow_terminal(self):
+        # The marker is text the provisioner's own --help prints; this reds if either is reworded.
+        import subprocess as sp
+        out = sp.run([sys.executable, os.path.join(_HERE, "provision-board-tools.py"), "--help"],
+                     capture_output=True, text=True, env={**os.environ, "COLUMNS": "60"}).stdout
+        self.assertTrue(sb.supports_bootstrap(out))
 
 
 if __name__ == "__main__":

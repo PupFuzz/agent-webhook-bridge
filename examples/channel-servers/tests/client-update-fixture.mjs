@@ -134,7 +134,7 @@ export function goodPack(release, opts = {}) {
  *   published   {manifestBytes, pack, manifest} or null (503)
  *   offer       override of the offered release (default: the published one; null = approval owed)
  *   owed        approval.owed when offer is null
- *   fail        {op: {status, error}}  answer that op with a failure
+ *   fail        {op: {status, error}}  answer that op with a failure ({op: {status, raw}}: that body, verbatim)
  *   delayMs     {op: ms}  hold that op's answer
  *   packBytes   override of the bytes served by client_pack
  * `requests` records every door request body; `reports` every client_report.
@@ -180,6 +180,11 @@ export async function fixtureBridge(t, initial = {}) {
         await new Promise((resolve) => setTimeout(resolve, state.delayMs[op]));
       }
       if (state.fail[op]) {
+        if (state.fail[op].raw !== undefined) {
+          // A body that is not the door's envelope — a framework error page, say.
+          res.writeHead(state.fail[op].status, { 'Content-Type': 'application/json' });
+          return res.end(state.fail[op].raw);
+        }
         return send(state.fail[op].status, { ok: false, error: state.fail[op].error });
       }
       if (op === 'client_report') {
