@@ -10,6 +10,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **Dependabot alert PupFuzz/agent-webhook-bridge #29** — **npm/fast-uri 3.1.7 → 3.1.8 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk → ajv; GHSA-hrr3-gc8f-f4qj, inconsistent host case normalization via percent-encoded octets). ajv uses it only to resolve `$id`/`$ref` URIs when compiling a schema, and the SDK's server compiles one only for an elicitation request, which the channel server never sends; exploitability is low. Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.35 → 0.9.36.
 - **card#10352** — **The PR-body lint (`.github/workflows/pr-body-lint.yml`) holds only a PR titled `release:` to the release section set and scope line.** A feature PR written to this repo's own `.github/pull_request_template.md` no longer reports `heading-not-allowed` on `## Summary` / `## Scope` or `scope-line`; every other rule still reports on every PR, and a release PR is judged as before. `.github/pr-body-lint/` is re-vendored byte-identical from coord v0.59.0 (which also adds the `ai-attribution` rule) and the workflow now passes the PR title. Repo CI only: reporting-only as before, nothing to do on upgrade.
 
 ## [0.93.0] - 2026-09-29
