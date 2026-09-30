@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-09-30
+
 ### Added
 
 - **card#10567 / DL-442** — **every bridge release now attaches its own channel-server client pack** (`client-pack-v<X.Y.Z>.tar.gz`, its `.manifest.json` and `SHA256SUMS`) to its GitHub release, and a new `bridge:check` leg, `board_tools.client_pack_source`, warns until this checkout's release is the one the bridge publishes.
@@ -51,6 +53,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **Dependabot alert PupFuzz/agent-webhook-bridge #29** — **npm/fast-uri 3.1.7 → 3.1.8 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk → ajv; GHSA-hrr3-gc8f-f4qj, inconsistent host case normalization via percent-encoded octets). ajv uses it only to resolve `$id`/`$ref` URIs when compiling a schema, and the SDK's server compiles one only for an elicitation request, which the channel server never sends; exploitability is low. Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.35 → 0.9.36.
 - **card#10352** — **The PR-body lint (`.github/workflows/pr-body-lint.yml`) holds only a PR titled `release:` to the release section set and scope line.** A feature PR written to this repo's own `.github/pull_request_template.md` no longer reports `heading-not-allowed` on `## Summary` / `## Scope` or `scope-line`; every other rule still reports on every PR, and a release PR is judged as before. `.github/pr-body-lint/` is re-vendored byte-identical from coord v0.59.0 (which also adds the `ai-attribution` rule) and the workflow now passes the PR title. Repo CI only: reporting-only as before, nothing to do on upgrade.
 - **card#10352** — **The PR-body lint no longer asks a bot-authored PR for the two audit rows.** `.github/workflows/pr-body-lint.yml` now passes the PR author's account type (`github.event.pull_request.user.type`) to the vendored linter, which already supported it, so a Dependabot PR stops reporting `built-missing` and `coordinated-missing`; every other rule still reports on it, and a PR by a person is judged as before. Repo CI only: reporting-only as before, nothing to do on upgrade.
+
+### Upgrade warnings
+
+- **Publish this release's client pack after the upgrade: `php artisan bridge:client-pack:install`**, as the receiver's OS user (it is in the update runbook, `CLAUDE_DEPLOYMENT.md`). This is the first release whose GitHub release carries the pack, and the command fetches it from there, so run it once the release's `Auto-tag + GitHub Release on merge to main` run has finished. If that release opens with "No client pack for this release", re-run that workflow run, then run the command. Until a pack is published no seat updates, and `bridge:check`'s new `board_tools.client_pack_source` leg warns.
+- **For an agent whose YAML sets `board_tools.client_update.approval_required: true`, approve the published pack** (`php artisan bridge:client-approve <agent> 0.94.0 --reason=…`); that seat is offered nothing, and its bootstrap is refused, until you do.
+- **Move each seat onto the self-updating client, once.** Run `php artisan bridge:client-fleet` on your bridge. For each seat it lists as `needs_bootstrap` or `off_update_path`, run `python3 bin/provision-board-tools.py --role b --bootstrap-client --agent <agent> --project-dir <dir> --channel-name <channel>` on that seat, as its own OS user, from a bridge checkout at `v0.94.0`. Then restart its session. `bin/seat-pack.py` is gone, and copying the channel server or seat tools by hand is no longer a documented update path. A seat you do not bootstrap keeps running its copy, and `bridge:check` warns that it is stale: the reference snapshot moves 0.9.35 → 0.9.39 across this release.
 
 ## [0.93.0] - 2026-09-29
 
