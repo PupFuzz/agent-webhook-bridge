@@ -2,9 +2,11 @@
 r"""pr-body-lint.py — the PR-body standard, ENFORCED instead of described (card#9073 leg B).
 
 THE MEASURED DEFECT. `skills/release-pr/SKILL.md § PR body — write it for the software installer`
-is the fleet-wide standard for what a PR body may contain, it is ratified twice by the operator
-(roundtable #255, and again on 2026-09-09 naming the READER), and until this file NOTHING CHECKED
-IT. `review-prep.py` and the wrappers around it checked field PRESENCE — `Built:`,
+is the standard for what a PR body may contain — its closed section set and scope line on a
+RELEASE PR only (the ⛔ RELEASE-SCOPE block below owns that split) — it is ratified twice by the
+operator (roundtable #255, and again on 2026-09-09 naming the READER), and until this file NOTHING
+CHECKED IT.
+`review-prep.py` and the wrappers around it checked field PRESENCE — `Built:`,
 `**Coordinated in:**` — never the ABSENCE of narration, so a body could carry every required
 machine line and still be the essay the standard forbids. It did, repeatedly:
 
@@ -32,10 +34,18 @@ their reasoning (canon #16: point, do not copy). What lives here is the executab
                         `pr-body-lint:banned-openers` marker block by the same drift check — so
                         this paragraph names the rule and not its membership, for the reason the
                         row above gives: a prose list here is a copy nothing guards.
-    built-missing       the IN table's machine-read row + `docs/built-line.md`.
+    built-missing       the IN table's machine-read row + `docs/built-line.md`. A BOT-AUTHORED
+                        PR is exempt from this row and the next, and from nothing else — the
+                        ⛔ block below owns that exemption and its discriminator.
     coordinated-missing the IN table's machine-read row.
     attribution-line    the OUT table's `FROM:` / `TO:` row — a PR body carries NO attribution
                         line, on ANY repo (see below).
+    ai-attribution      the OUT table's AI-attribution row — no line names the AI model, carries
+                        a Claude session link or co-author trailer, or carries the context stamp
+                        (operator-directed, card#10673). `AI_ATTRIBUTION_SHAPES` is the closed
+                        shape table, a vendored region shared with `squash-message.sh`, and its
+                        names are held equal to the section's `pr-body-lint:ai-attribution`
+                        marker block by the same drift check.
     live-state-reading  the OUT table's `Readings` row, for the part of it a program can decide:
                         a CLOSED table of claim shapes about LIVE CI / push / base state
                         (`LIVE_STATE_READINGS` below, held equal to the section's
@@ -51,6 +61,85 @@ coordination repo → pm; an impl repo → the seat whose roster entry owns it),
 protocol-integrity Action now enforces on `pull_request_target`. The pair that discriminates this
 rule is one PR again: fw#891's body as it stood at `2026-09-10T14:08:53Z` (it opened on
 `FROM: pm`) against the same body after the operator's ruling.
+
+⛔ A BOT-AUTHORED PR IS EXEMPT FROM THE TWO AUDIT ROWS, AND FROM NOTHING ELSE (card#9927). A
+dependency bot opens a PR with no dispatch behind it and no coordination thread to anchor to, so
+it can declare neither `Built:` nor `**Coordinated in:**` TRUTHFULLY — and on an adopter that
+gates self-merge on this workflow, that red is what stops a SECURITY BUMP from landing until a
+person hand-edits the bot's body. That is a MEASUREMENT, twice: an adopter seat reported it on its
+own live Dependabot PR (card#9927), and it re-derives here on this repo's own — `gh api
+repos/PupFuzz/agent-board-framework/pulls/426 --jq .body` into `--body-file` gives rc 1 on exactly
+`built-missing` + `coordinated-missing` and nothing else, and rc 0 with `--author-type-env` naming
+a variable set to `Bot`. No fixture is committed for it because, unlike the pairs above, the pair
+that discriminates here is not two BODIES: it is one body under two author types, which is what
+`pr-body-lint.selftest.py`'s `arm_h` drives. The exemption lives HERE, in the one
+program, rather than as an `if:` on the workflow job — an adopter's vendored copy is
+byte-identical and needs no local fork, and the review path (`review-prep.py`) reads the same
+rule rather than a second one.
+
+THE DISCRIMINATOR IS THE EVENT'S `user.type`, NEVER AN AUTHOR LOGIN — `author_is_bot` below is
+the whole of it. GitHub sets that field from the ACCOUNT KIND and the PR's author cannot choose
+it; a login is a string that enumerates one bot at a time, and is already known to arrive in more
+than one spelling for a SINGLE bot (`dependabot[bot]` on the REST / webhook payload,
+`app/dependabot` as `gh`'s projection renders it — `templates/kanban/examples/kanban-prs-sync.py`'s
+`_is_bot` carries that measurement and the double-carding defect it caused). Type covers
+Dependabot, Renovate and every other GitHub App at once, with nothing enumerated and nothing to
+add when an adopter installs a bot this repo has never heard of. The coordination-repo skeleton's
+`.github/scripts/protocol-integrity.js` decided the SAME question the same way
+(`commentSkipReason`, "this predicate never reads the author LOGIN — type is the discriminator"),
+and it states the fleet fact that makes the exemption safe here too: agents post through a SHARED
+PAT and come back `user.type: "User"`, so no agent-authored PR is exempted by this.
+
+AND IT FAILS CLOSED, WHICH IS THE ONLY DIRECTION AVAILABLE TO A PROVENANCE CHECK. Nothing but the
+exact string `Bot` is a bot: no author at all (a `--body-file` run from a terminal, and every
+caller that passes none — `review-prep.py` is one), a variable that is unset, an empty or
+whitespace value, any other account type, any other casing. An exemption that fired when it could
+not PROVE the author is a bot would let any body shed its audit rows by naming a variable the
+lint cannot read. The residue is therefore deliberate and is not a degradation to hide: a
+workflow that does not pass the field gets TODAY's behaviour — both rows required — which is a
+red the author can see, never a silent pass.
+
+⛔ THE RELEASE STANDARD JUDGES RELEASE PRs, AND ONLY THEM (card#10493). `ALLOWED_H2`'s members are
+RELEASE nouns — `Bundled` and `Release artifacts` mean nothing on a feature PR — so while every
+rule ran on every body, a feature PR failed this lint BY CONSTRUCTION. Measured: the
+`BWtek-Medical/sola-device` feature PRs card#10493 lists each spent a review finding on
+`heading-not-allowed` for `## Summary` / `## SaMD boundary check` / `## CI action-pin resync
+check`, headings that repo's own PR template and shape guard REQUIRE. A non-release PR's section
+shape is its repo's to define, so only the rules that model that SHAPE are scoped:
+  * RELEASE ONLY — `scope-line` and `heading-not-allowed`. They are § PR body's IN table read as a
+    CLOSED set of release sections opened by a release range line, and nothing else here models a
+    section shape.
+  * EVERY PR — everything else. `banned-opener` and `live-state-reading` are § PR body's OUT table,
+    and the OUT table's relocations (narration, the audit trail, findings and readings go to the
+    review-request round) bind every PR body whatever its section shape — § PR body says so, and
+    `live-state-reading` was minted on fw#873, a feature PR. `built-missing` and
+    `coordinated-missing` (`docs/built-line.md` requires `Built:` on every PR body, and plane 1 of
+    `docs/pr-review-flow.md` reads `**Coordinated in:**` off every PR), and `attribution-line`
+    (`docs/protocol-spec.md` § Addressing: no `FROM:` / `TO:` on a PR body, on any repo —
+    operator-directed) and `ai-attribution` (`docs/engineering-canon.md`'s standing instruction —
+    operator-directed) have fleet-wide owners of their own.
+The ALLOW-SET IS NOT WIDENED to admit a feature PR's headings: that would keep a closed set of
+release nouns and silence the findings about a different document (canon #3).
+
+THE DISCRIMINATOR IS THE PR TITLE'S `release:` PREFIX — `judged_as_release` below is the whole of
+it. It is the one mark the release flow ALREADY puts on every release PR (`release-pr` SKILL.md's
+checklist, criterion 5: `release: vX.Y.Z`), and it needs NO CONFIGURATION to read: the
+`pull_request` event carries it into CI, `review-prep` has it on the PR it already reads, and an
+author about to run `gh pr create --title` has it in hand. The BASE BRANCH was the alternative and
+was ruled out on exactly that: which bases are release branches is per-install config
+(`branch_model.release`, plus every `branch_model.lines` entry's `release`, which only
+`templates/bin/branch-lines.sh` resolves), and this file runs in an adopter's CI with no
+coordination config beside it — so it would have to guess `main`, and would judge a declared
+line's release PR as a feature PR.
+
+AND A MISSING TITLE IS A RELEASE PR, WHICH IS THE STRICT SIDE. No title at all — a terminal
+`--body-file` run, an old copy of the workflow that does not pass one, a caller that names an unset
+variable — cannot prove the PR is not a release, so the body gets the full standard, which is
+exactly what every body got before this split. The run SAYS so, so a feature author who forgot
+`--title` sees why their `## Summary` reds. The RESIDUE, named rather than hidden: a release PR
+whose title does not open `release:` is judged as a feature PR and escapes the section rules. The
+title is itself a release checklist item, visible on the PR page, so the miss is a checklist
+finding as well as a lint one.
 
 ⛔ IT IS ONE PROGRAM WITH TWO CONSUMERS AND THAT IS WHY IT IS SHAPED THIS WAY. It runs (1) in
 every install's CI, from `templates/workflows/pr-body-lint.yml`, on `pull_request` opened / edited
@@ -218,11 +307,6 @@ if __name__ == "__main__":
     pin_std_streams()
 # VENDOR-END(stdio-encoding)
 
-# The per-finding echo cap. A PR body line is author-written text of unbounded length and a
-# finding becomes one line of a CI log or one line of a review digest; an unclipped echo of a
-# 70 KB line is a finding nobody can read. The number is this file's own and nothing else reads
-# it — it is not a threshold anything is measured against.
-LINE_CLIP = 200
 
 # VENDOR-BEGIN(fence-mask)
 # GENERATED — do not edit; source: plugins/coord/_vendor/fence-mask.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: d436f47da573c297
@@ -290,6 +374,161 @@ def mask_fenced(text):
 # VENDOR-END(fence-mask)
 
 
+# VENDOR-BEGIN(bodylint-core)
+# GENERATED — do not edit; source: plugins/coord/_vendor/bodylint-core.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: ddc222a0d55fc3f2
+# ── The body-lint kernel ──────────────────────────────────────────────────────────────────────
+# WHAT THIS FRAGMENT IS, AND WHY IT IS A FRAGMENT RATHER THAN A SECOND COPY (card#9550 leg 1).
+#
+# A body lint is a program that reads ONE markdown body a human or an agent authored, decides
+# whether it is in the SHAPE a standard describes, and refuses it with a message that teaches the
+# standard. This repo now has two such programs, enforcing two UNRELATED standards:
+# `templates/bin/pr-body-lint.py` (the PR-body standard) and `templates/bin/coord-ask-operator`
+# (the operator-question shape). Their RULES share nothing — different closed heading sets, for
+# different reasons, owned by different documents — but the machinery under the rules is the same
+# five things, and NONE of those five is about either standard's content:
+#
+#   * `LINE_CLIP` / `Finding` — one rule, one line, that line's own text, clipped for an echo.
+#     Never a tally.
+#   * `scan` — a fence-aware per-line view of the body, with the zip-length assertion that keeps
+#     a truncated answer from reading like a clean one.
+#   * `field_values` / `field_value` — the machine-read-line grammar: `Name:` or `**Name:**` at
+#     the start of an unfenced line, with a non-blank value.
+#   * `read_body` — the `--body-file` / `--env` dual source, with `--env` existing for the
+#     shell-injection reason the workflow template states.
+#
+# ⛔ THE ARGUMENT FOR HOISTING IT IS THE HOST'S OWN HISTORY, NOT A PREFERENCE. `field_value`'s
+# ancestor `_audit_field` was itself a consolidation: `Built:` and `Coordinated in:` had been
+# matched by TWO hand-written regexes strict in OPPOSITE directions, so each rejected the spelling
+# the other required and a compliant PR was reported ABSENT. `pr-body-lint.py`'s own docstring for
+# that function calls two regexes for one family "the measured defect this consolidation fixed."
+# Hand-copying the same five mechanisms into a second lint re-creates, one layer out, exactly the
+# shape that consolidation ended (canon #5: a second divergent implementation of one behavior is a
+# defect, not a style choice).
+#
+# ⛔ WHAT IT DOES NOT CARRY, AND THE LINE IS THE POINT. No rule, no heading set, no phrase table,
+# no exit-code dispatch, no CLI parser. A standard's CONTENT is its own program's, and a rule that
+# drifted in here would be this fragment inventing a standard for two hosts at once. Host-specific
+# reasoning — why THIS host needed the kernel, what its fields mean, what it measured — stays
+# OUTSIDE the markers, hand-authored, per host, the same rule the `fence-mask` group states.
+#
+# ⛔ IT ASSUMES `os`, `re` AND `sys` ARE IMPORTED IN THE HOST, and `mask_fenced` / `fenced_flags`
+# — the `fence-mask` group. Every host here is a copy of that group too; a host that were not
+# would fail on the first body it read rather than silently, because `field_value` calls
+# `mask_fenced` unconditionally.
+
+# The per-finding echo cap. An authored line is text of unbounded length and a finding becomes one
+# line of a CI log, a review digest or a terminal refusal; an unclipped echo of a 70 KB line is a
+# finding nobody can read. The number is this fragment's own and nothing is measured against it —
+# it is not a threshold.
+LINE_CLIP = 200
+
+
+class Finding:
+    """One rule, one line, the line's own text. NEVER a tally.
+
+    A COUNT IS A FIGURE THAT IS FALSE ON THE NEXT EDIT (canon #16), and a lint that reports "3
+    findings" has told the author nothing they can act on. Every finding names its rule, points at
+    a line, quotes that line, and states the fix in prose."""
+
+    def __init__(self, rule, line, text, message):
+        # ⛔ THE QUOTED LINE LOSES A CRLF BODY'S `\r` HERE, IN THE ONE CONSTRUCTOR, RATHER THAN AT
+        # THE N PRINT SITES. `body.split("\n")` leaves the carriage return on every line of a CRLF
+        # body, and the finding then renders as `> ## Correlation gaps\r` in a CI log and in the
+        # review digest's JSON. Matching is unaffected (driven end to end on a CRLF body) — this
+        # is the echo only.
+        self.rule, self.line, self.message = rule, line, message
+        self.text = text.rstrip("\r") if text else text
+
+    def clipped(self):
+        text = self.text
+        return text if len(text) <= LINE_CLIP else text[:LINE_CLIP] + "… [clipped]"
+
+    def as_dict(self):
+        return {"rule": self.rule, "line": self.line, "text": self.clipped(),
+                "message": self.message}
+
+
+def scan(body):
+    r"""`[(lineno, text, fenced)]`, one row per `body.split("\n")` line, 1-based.
+
+    ⛔ THE LINE LISTS ARE NEVER ZIPPED ACROSS TWO PROVENANCES WITHOUT THE LENGTH ASSERTED —
+    `zip` TRUNCATES SILENTLY to the shorter, and a per-line answer that ran out halfway would
+    report the tail of a body as unfenced and read exactly like a clean scan. `hooks/bin/_fence.py`
+    states the same rule over the same tracker; both are consumers of one fragment, not two
+    opinions about it.
+    """
+    lines = body.split("\n")
+    flags = fenced_flags(body)
+    if len(flags) != len(lines):
+        raise AssertionError(
+            "bodylint-core.scan: the fence tracker returned %d flag(s) for %d line(s). Both are "
+            "computed over `text.split(chr(10))` and must agree." % (len(flags), len(lines)))
+    return [(i + 1, line, bool(f)) for i, (line, f) in enumerate(zip(lines, flags))]
+
+
+def field_values(body, name):
+    r"""EVERY value of the machine-read line `name` in `body`, in document order — `[]` for none.
+
+    ⛔ ONE GRAMMAR FOR EVERY MACHINE-READ LINE IN EVERY HOST. Both accepted spellings are
+    `**Name:**` and plain `Name:`, line-anchored, at the start of the line, with a non-blank value.
+    Both are measured-live in this repo's own PR bodies (`pr-body-lint._audit_field`'s docstring
+    owns that measurement and the sample it came from); the colon-OUTSIDE spelling `**Name**:`
+    appears zero times in it and is deliberately NOT accepted, because tolerating an unmeasured
+    form widens the guard for nobody (canon #3).
+
+    ⛔ `[ \t]*`, NEVER `\s*`, BETWEEN THE FIELD NAME AND ITS VALUE. `\s` matches `\n`, so the
+    shipped pattern once matched ACROSS a newline (driven: `"Built:\ndispatched (…)"` matched,
+    taking the NEXT line as the value). Read over the fence mask that makes a quoted example
+    payload, that spanning arm would take the first non-blank line AFTER a fenced block as the
+    field's value — the fence rule manufacturing the machine line it exists to suppress.
+
+    ⛔ AND IT IS READ OUTSIDE THE BODY'S FENCES. A body that DOCUMENTS this grammar in a fenced
+    example — ordinary in a repo whose bodies are largely about the lines these tools read — would
+    otherwise have its EXAMPLE read as its FIELD. The fail-safe direction is deliberate: a body
+    whose only `Name:` line is inside a fence reads as ABSENT, which is a finding the author fixes
+    by unfencing their own line, rather than a PASS computed from somebody else's text.
+    """
+    pattern = r"^(?:\*\*%(n)s:\*\*|%(n)s:)[ \t]*(?P<v>\S.*)$" % {"n": re.escape(name)}
+    return [m.group("v").strip()
+            for m in re.finditer(pattern, mask_fenced(body or ""), re.MULTILINE)]
+
+
+def field_value(body, name):
+    """The FIRST value of the machine-read line `name`, or `None` when the body carries none.
+
+    One arity over `field_values`, never a second regex: a field a standard declares once and a
+    field it allows to repeat are read by the SAME grammar, and the only difference is which
+    program wants how many. Two patterns for one family is the defect this fragment's header
+    names."""
+    values = field_values(body, name)
+    return values[0] if values else None
+
+
+def read_body(args):
+    """The body text, from the ONE source the caller named. Raises `ValueError` on a fault.
+
+    TWO SOURCES AND NO DEFAULT. `--body-file` is what a caller with the text already on disk uses;
+    `--env` exists because a body interpolated into a `run:` script or any other shell argument is
+    an injection by construction — double quotes do not stop backticks or `$(...)` — and the same
+    value passed through the environment is not. Every host offers both for that reason, and the
+    choice of which is the CALLER's; a default here would make one of them the silent path.
+    """
+    if args.body_file:
+        if args.body_file == "-":
+            return sys.stdin.read()
+        try:
+            with open(args.body_file, encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError as exc:
+            raise ValueError("--body-file %s could not be read: %s" % (args.body_file, exc))
+    if args.env not in os.environ:
+        raise ValueError("--env %s names a variable that is not set. An UNSET variable is not an "
+                         "empty body: the caller did not pass one, and a lint that treated the "
+                         "two alike would red on a body it never saw." % args.env)
+    return os.environ[args.env]
+# VENDOR-END(bodylint-core)
+
+
 # ── The standard, as data ─────────────────────────────────────────────────────────────────────
 # ⛔ BOTH TABLES BELOW ARE THE EXECUTABLE FORM OF `skills/release-pr/SKILL.md § PR body`'s IN and
 # OUT tables. They are DATA so that the rules read off one place; they are NOT a second statement
@@ -312,12 +551,12 @@ def mask_fenced(text):
 # (canon #16 GUARD: a restatement a program must load inline gets a drift check, not a comment).
 #
 # ⛔ `Release artifacts` IS HERE BECAUSE THE GENERATOR EMITS IT AND THE IN TABLE ADMITS IT —
-# operator ruling, 2026-09-11, on fw#898 r1. `## Card coverage` and `## Correlation gaps` are the
-# other two H2s the release generator emits and they are deliberately NOT here: they are process
-# diagnostics about card promotion, they are what the operator struck from the v0.50.0 and v0.51.0
-# release bodies, and the fix is the GENERATOR's (card#9073 leg A, toolkit-owned) rather than a
-# widened guard here (canon #3). § PR body names that seam and what an author does until leg A
-# lands; a red on one of those two headings is that known defect, not a finding against the author.
+# operator ruling, 2026-09-11, on fw#898 r1. `## Card coverage` and `## Correlation gaps` are
+# deliberately NOT here: they are process diagnostics about card promotion, the operator struck them
+# from the v0.50.0 and v0.51.0 release bodies, and the fix was the GENERATOR's, not a widened guard
+# here (canon #3). The toolkit's generator from v0.34.0 (DL-224) emits neither; a stale copy still
+# can — § PR body names which, and what an author does with a red on one: not a finding against the
+# author.
 ALLOWED_H2 = ("Highlights", "Upgrade warnings", "Bundled", "Release artifacts")
 
 # The OUT table, read as the phrases its rows actually BEGIN with in a body. Every phrase is homed
@@ -448,44 +687,66 @@ LIVE_STATE_READINGS = (
 _LIVE_STATE_RES = tuple((shape, re.compile(pattern, re.IGNORECASE))
                         for shape, pattern in LIVE_STATE_READINGS)
 
+# The OUT table's AI-attribution row, as a CLOSED table of line shapes (card#10673). The table and
+# its matcher are a VENDORED REGION, shared with `squash-message.sh`, which composes the landed
+# commit message out of this same PR description — so the lint and the composer cannot disagree
+# about what a matching line is. The shape NAMES are held equal, in order, to § PR body's
+# `<!-- pr-body-lint:ai-attribution … -->` marker block by the same drift check that holds the
+# tuples above.
+# VENDOR-BEGIN(ai-attribution)
+# GENERATED — do not edit; source: plugins/coord/_vendor/ai-attribution.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: 47fd60580caf7208
+# ── AI attribution — the lines no GitHub-bound text may carry (card#10673, operator-directed) ──
+# The operator's ruling, verbatim: "On all github posts (PRs, Tasks, etc), I do not want bodies or
+# comments to indicate the AI model used to generate the code or provide a session link." The
+# ruling on the context stamp followed it: "Yes, remove any AI attributions". So no commit message,
+# PR description, issue, comment or card is to carry the lines below. The rule's owner is
+# `docs/engineering-canon.md`'s standing instruction (for the context stamp, card#10673's operator
+# ruling); this table is its executable form.
+#
+# `(shape name, pattern)`. Each pattern is applied with `search` to ONE line and never spans a
+# line break (`[ \t]`, never `\s`). The table is CLOSED: a line that names a model in words no
+# shape matches is NOT judged, so a clean result means only "no line matched one of these shapes".
+#   co-author-trailer  the harness's commit trailer, `Co-Authored-By: <name> <noreply@anthropic.com>`.
+#                      It is the line that makes GitHub list a second author on the commit.
+#                      Anchored at the line start (after an optional `>` quote), so a trailer quoted
+#                      mid-line in prose is not judged. It is keyed on the harness's own
+#                      `noreply@anthropic.com` ADDRESS alone, whatever name precedes it — never on
+#                      the name: a human co-author named `Claude …` is a person's credit, and
+#                      dropping it would erase that person from the landed commit (fw#1095 r1).
+#   session-trailer    the `Claude-Session:` commit trailer, anchored the same way.
+#   session-link       a claude.ai session URL anywhere on the line. It requires a real session-id
+#                      character after `session_`, so a placeholder written `session_…` or
+#                      `session_<id>` is not a link and is not judged.
+#   generated-footer   the harness's PR footer, `🤖 Generated with [Claude Code](…)`, with or without
+#                      the link brackets. Before it only spaces, `>` quote marks and the harness's
+#                      own robot emoji (U+1F916, optionally with its variation selector) may stand,
+#                      so prose that quotes the words — a list item, a backtick — is not judged
+#                      (fw#1095 r1).
+#   ctx-stamp          the context-fill stamp, `<!-- CTX: <digits>% … -->`. It requires the digits,
+#                      as the stamp's own reader does, so the form written `<pct>%` is not judged.
+AI_ATTRIBUTION_SHAPES = (
+    ("co-author-trailer",
+     r"^[ \t>]*Co-Authored-By:[^\n]*noreply@anthropic\.com"),
+    ("session-trailer", r"^[ \t>]*Claude-Session:"),
+    ("session-link", r"claude\.ai/code/session_[A-Za-z0-9]"),
+    ("generated-footer", r"^[ \t>]*(?:\U0001F916\uFE0F?[ \t]*)?Generated with \[?Claude Code\b"),
+    ("ctx-stamp", r"<!--[ \t]*CTX:[ \t]*[0-9]+%"),
+)
+_AI_ATTRIBUTION_RES = tuple((shape, re.compile(pattern, re.IGNORECASE))
+                            for shape, pattern in AI_ATTRIBUTION_SHAPES)
 
-class Finding:
-    """One rule, one line, the line's own text. NEVER a tally — see the module header."""
 
-    def __init__(self, rule, line, text, message):
-        # ⛔ THE QUOTED LINE LOSES A CRLF BODY'S `\r` HERE, IN THE ONE CONSTRUCTOR, RATHER THAN AT
-        # THE N PRINT SITES. `body.split("\n")` leaves the carriage return on every line of a CRLF
-        # body, and the finding then renders as `> ## Correlation gaps\r` in a CI log and in the
-        # review digest's JSON. Matching is unaffected (driven end to end on a CRLF body: both
-        # rules fire and a compliant CRLF body passes) — this is the echo only.
-        self.rule, self.line, self.message = rule, line, message
-        self.text = text.rstrip("\r") if text else text
+def ai_attribution_shape(line):
+    """The NAME of the first shape `line` matches, or `None` when it matches none.
 
-    def clipped(self):
-        text = self.text
-        return text if len(text) <= LINE_CLIP else text[:LINE_CLIP] + "… [clipped]"
-
-    def as_dict(self):
-        return {"rule": self.rule, "line": self.line, "text": self.clipped(),
-                "message": self.message}
-
-
-def scan(body):
-    r"""`[(lineno, text, fenced)]`, one row per `body.split("\n")` line, 1-based.
-
-    ⛔ THE LINE LISTS ARE NEVER ZIPPED ACROSS TWO PROVENANCES WITHOUT THE LENGTH ASSERTED —
-    `zip` TRUNCATES SILENTLY to the shorter, and a per-line answer that ran out halfway would
-    report the tail of a body as unfenced and read exactly like a clean scan. `hooks/bin/_fence.py`
-    states the same rule over the same tracker; both are consumers of one fragment, not two
-    opinions about it.
-    """
-    lines = body.split("\n")
-    flags = fenced_flags(body)
-    if len(flags) != len(lines):
-        raise AssertionError(
-            "pr-body-lint.scan: the fence tracker returned %d flag(s) for %d line(s). Both are "
-            "computed over `text.split(chr(10))` and must agree." % (len(flags), len(lines)))
-    return [(i + 1, line, bool(f)) for i, (line, f) in enumerate(zip(lines, flags))]
+    One line in, one verdict out. WHICH lines are the population — every line of a commit message,
+    or only the unfenced lines of a PR body — is the caller's decision, because the two surfaces
+    differ on what a fenced block means."""
+    for shape, rx in _AI_ATTRIBUTION_RES:
+        if rx.search(line):
+            return shape
+    return None
+# VENDOR-END(ai-attribution)
 
 
 # ── The audit-row grammar — ONE OWNER FOR BOTH CONSUMERS ─────────────────────────────────────
@@ -530,6 +791,10 @@ def _audit_field(body, name):
     ⚠ THAT MODE ARGUMENT NO LONGER HOLDS: since card#9211 this file is a PATH entry point listed
     in `templates/bin/.entrypoints`, which the engine holds to 100755, so an `exec: True` group
     over the pair would keep both executable. The choice of (3) has not been revisited since.
+    (Read the pair's modes from git, never from this sentence: `git ls-tree <ref>
+    --format='%(objectmode) %(path)' -- plugins/coord/hooks/bin/review-prep.py
+    plugins/coord/templates/bin/pr-body-lint.py`. `templates/bin` as a whole is a MIX of both
+    modes, which is why no directory-wide mode claim belongs here.)
     (3) ONE OWNER, TRANSPORTED — this. `review-prep.py`
     loads this file BY PATH through `hooks/bin/_modload.py` (the family's sanctioned loader) and
     reads `audit_fields()` and `findings()` off it, exactly as it delegates plane 1 to `ci-read`
@@ -550,20 +815,60 @@ def _audit_field(body, name):
     reads as ABSENT, which is a finding the author fixes by unfencing their own line, rather than
     a PASS computed from somebody else's text.
     """
-    # ⛔ `[ \t]*`, NEVER `\s*`, BETWEEN THE FIELD NAME AND ITS VALUE. `\s` matches `\n`, so the
-    # shipped pattern matched ACROSS a newline (driven: `"Built:\ndispatched (…)"` matched, taking
-    # the NEXT line as the value). Read over the fence mask that makes a quoted example payload,
-    # that spanning arm would take the first non-blank line AFTER a fenced block as the field's
-    # value — the fence rule manufacturing the machine line it exists to suppress.
-    # `hooks/bin/_fence.py`'s header owns the mask doctrine and the measurement over its reads.
-    pattern = r"^(?:\*\*%(n)s:\*\*|%(n)s:)[ \t]*(?P<v>\S.*)$" % {"n": re.escape(name)}
-    match = re.search(pattern, mask_fenced(body or ""), re.MULTILINE)
-    return match.group("v").strip() if match else None
+    return field_value(body, name)
 
 
 def audit_fields(body):
     """`{field: value_or_None}` for the two audit rows the IN table's machine-read row names."""
     return {name: _audit_field(body, name) for name in ("Built", "Coordinated in")}
+
+
+# ── The bot-author exemption — ONE PREDICATE, AND IT IS THE WHOLE OF IT ──────────────────────
+# The account type GitHub reports for a BOT account, verbatim and case-sensitive. It is an
+# enumerated value of the event payload's `user.type` (`User` | `Bot` | `Organization`), measured
+# on this repo's own Dependabot PR — `PupFuzz/agent-board-framework#426`, whose `user.login` is
+# `dependabot[bot]` and whose `user.type` is `Bot` — not recalled. It is a PROTOCOL CONSTANT, not
+# prose, which is why it is written down once here and compared to rather than spelled at the
+# comparison site.
+BOT_AUTHOR_TYPE = "Bot"
+
+
+def author_is_bot(author_type):
+    """True only when `author_type` PROVES a bot account authored the PR. The header's ⛔ block
+    owns why this reads a type and never a login, and why every other answer is `False`.
+
+    ⛔ EXACT, AND THE STRICTNESS IS THE SAFETY PROPERTY. `.strip()` absorbs the transport (a value
+    that arrived through a file or a shell with a trailing newline is the same value); the compare
+    itself is exact, because this is the one input that switches a provenance rule OFF. A
+    case-insensitive compare would accept a spelling GitHub does not emit, and the only caller
+    that could supply one is a caller wiring this flag to something that is not `user.type` —
+    exactly the case that must not win the exemption. The cost of being wrong in this direction is
+    that a bot PR reds on the two rows, which is the behaviour that shipped before this existed;
+    the cost of being wrong in the other direction is a body-provenance check any author can
+    disarm.
+    """
+    return (author_type or "").strip() == BOT_AUTHOR_TYPE
+
+
+# ── The release scope — ONE PREDICATE, AND THE TITLE IS ITS WHOLE INPUT (card#10493) ────────────
+# The prefix the release flow gives every release PR's title — `release-pr` SKILL.md's checklist,
+# criterion 5 (`release: vX.Y.Z`). Written once here and compared to, for the reason
+# `BOT_AUTHOR_TYPE` is: it is the release flow's convention, not this file's prose.
+RELEASE_TITLE_PREFIX = "release:"
+
+
+def judged_as_release(title):
+    """True when the body must meet the RELEASE standard. The header's ⛔ RELEASE-SCOPE block owns
+    why the title is the discriminator and why a missing one is judged as a release.
+
+    ⛔ A BLANK TITLE IS A MISSING ONE — `None`, `""` and whitespace alike — because each of them
+    fails to prove the PR is NOT a release, and that proof is the only thing that switches the
+    release rules OFF. The compare is case-insensitive and ignores leading whitespace, and both
+    choices push toward the STRICT side: `Release: v1.4.0` is still a release PR's own declaration,
+    and judging it as a feature PR would let a release body shed its section rules on a typo.
+    """
+    t = (title or "").strip()
+    return not t or t.lower().startswith(RELEASE_TITLE_PREFIX)
 
 
 # ── The rules ─────────────────────────────────────────────────────────────────────────────────
@@ -671,6 +976,31 @@ def rule_attribution_line(rows):
     return out
 
 
+def rule_ai_attribution(rows):
+    """No line names the AI model, carries a Claude session link or co-author trailer, or carries
+    the context stamp — operator-directed (card#10673), EVERY PR, any repo.
+
+    THE RULE IS `docs/engineering-canon.md`'s standing instruction, and the shapes are the vendored
+    `ai-attribution` region above, shared with `squash-message.sh`. It runs over the unfenced rows
+    like every rule here, so a body that quotes a trailer inside a fence to document it is not
+    judged. One finding per line, naming the shape it matched."""
+    out = []
+    for lineno, text in _content_rows(rows):
+        shape = ai_attribution_shape(text)
+        if shape is None:
+            continue
+        out.append(Finding("ai-attribution", lineno, text,
+                           "the line carries AI attribution (shape: `%s`). No GitHub-bound text "
+                           "names the AI model, carries a Claude session link or co-author "
+                           "trailer, or carries the context stamp — operator-directed, card#10673. "
+                           "Delete the line. The harness adds these by default; `attribution` in "
+                           "`~/.claude/settings.json` turns that off, and `hooks/bin/"
+                           "ai-attribution-settings.py` reports whether it is off. "
+                           "`skills/release-pr/SKILL.md § PR body`'s OUT table carries the row."
+                           % shape))
+    return out
+
+
 def rule_live_state_reading(rows):
     """The OUT table's `Readings` row, for the CLOSED shape table `LIVE_STATE_READINGS` names.
 
@@ -694,8 +1024,17 @@ def rule_live_state_reading(rows):
     return out
 
 
-def rule_audit_rows(body):
-    """The IN table's machine-read row, for the two fields it names by name."""
+def rule_audit_rows(body, author_type=None):
+    """The IN table's machine-read row, for the two fields it names by name.
+
+    ⛔ THE BOT EXEMPTION IS APPLIED HERE, IN THE RULE THAT OWNS BOTH ROWS, AND NOWHERE ELSE — which
+    is what makes "only these two rows are excused" a property of the code rather than a promise.
+    A filter over `findings`' output would have to name the two rules by string and would silently
+    widen the day a third finding of this family is added. `author_type=None` — every caller that
+    does not pass one, `review-prep.py` included — is not a bot, so nothing changes for them.
+    """
+    if author_is_bot(author_type):
+        return []
     out = []
     fields = audit_fields(body)
     if not fields["Coordinated in"]:
@@ -713,51 +1052,89 @@ def rule_audit_rows(body):
     return out
 
 
-def findings(body):
-    """Every finding in `body`, ordered by line. THE ONE ENTRY POINT — both consumers call this."""
+def findings(body, author_type=None, title=None):
+    """Every finding in `body`, ordered by line. THE ONE ENTRY POINT — both consumers call this.
+
+    `author_type` is the PR author's ACCOUNT TYPE as the event payload reports it, or `None` when
+    the caller has none to give — a terminal run over a file, and `review-prep.py`, which builds a
+    reviewer's digest rather than a gate. `None` is not a bot.
+
+    `title` is the PR's title, or `None` when the caller has none. It decides which rules run —
+    `judged_as_release` is the predicate and the header's ⛔ RELEASE-SCOPE block owns the split.
+    `None` is judged as a release, so a caller that passes no title gets every rule, as before
+    card#10493.
+    """
     rows = scan(body or "")
-    out = (rule_scope_line(rows) + rule_headings(rows) + rule_banned_openers(rows)
-           + rule_live_state_reading(rows)
-           + rule_attribution_line(rows) + rule_audit_rows(body or ""))
+    out = (rule_banned_openers(rows) + rule_live_state_reading(rows)
+           + rule_attribution_line(rows) + rule_ai_attribution(rows)
+           + rule_audit_rows(body or "", author_type))
+    if judged_as_release(title):
+        out += rule_scope_line(rows) + rule_headings(rows)
     return sorted(out, key=lambda f: (f.line, f.rule))
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────────────────────
-def read_body(args):
-    """The body text, from the ONE source the caller named. Raises `ValueError` on a fault.
+def read_author_type(args):
+    """The PR author's account type, or `None` when the caller named no source for it.
 
-    TWO SOURCES AND NO DEFAULT. `--body-file` is what the review path uses (review-prep writes
-    the body it already read to a temp file); `--env` is what CI uses, because
-    `${{ github.event.pull_request.body }}` interpolated into a `run:` script is a shell
-    injection by construction and the same value passed through `env:` is not — the workflow
-    template carries that argument where an adopter reads it.
+    ⛔ AN UNSET VARIABLE IS `None` HERE, AND A FAULT IN `read_body` — THE ASYMMETRY IS THE POINT.
+    For the BODY there is no correct answer when the variable is missing: the program would grade
+    a body it never saw, and either verdict it printed would be about nothing, so it refuses with
+    exit 2. For the AUTHOR there IS a correct answer, and it is the strict one — nothing proves a
+    bot wrote this, so no exemption. Faulting here would turn a workflow that passes the body
+    correctly and the author not at all into a hard CI error on every PR, in exchange for a
+    question that already has a safe answer.
     """
-    if args.body_file:
-        if args.body_file == "-":
-            return sys.stdin.read()
-        try:
-            with open(args.body_file, encoding="utf-8", errors="replace") as fh:
-                return fh.read()
-        except OSError as exc:
-            raise ValueError("--body-file %s could not be read: %s" % (args.body_file, exc))
-    if args.env not in os.environ:
-        raise ValueError("--env %s names a variable that is not set. An UNSET variable is not an "
-                         "empty body: the caller did not pass one, and a lint that treated the "
-                         "two alike would red on a body it never saw." % args.env)
-    return os.environ[args.env]
+    if not args.author_type_env:
+        return None
+    return os.environ.get(args.author_type_env)
+
+
+def read_title(args):
+    """The PR's title, or `None` when the caller named no source for it — or named a variable that
+    is unset. `None` is judged as a release PR (`judged_as_release`), which is the strict side.
+
+    ⛔ AN UNSET VARIABLE IS `None`, NOT A FAULT, for `read_author_type`'s reason: the question has a
+    safe answer without it. An adopter who re-copies this file and keeps a workflow that passes no
+    title gets the full standard on every PR, as before card#10493, and a line saying so — never a
+    hard CI error on every PR.
+    """
+    if args.title is not None:
+        return args.title
+    if args.title_env:
+        return os.environ.get(args.title_env)
+    return None
 
 
 def main(argv):
     ap = argparse.ArgumentParser(
         prog="pr-body-lint",
         description="Red on a PR body that does not meet `release-pr` SKILL.md § PR body — write "
-                    "it for the software installer. The standard is that section's; this is its "
-                    "enforcement.",
+                    "it for the software installer. The PR's title decides how much of it: one "
+                    "opening `release:` gets the full standard, any other title everything but the "
+                    "release-only section set and scope line (the header's RELEASE-SCOPE block "
+                    "owns the split), and no title at all the full standard.",
         epilog="exit: 0 = meets the standard | 1 = at least one finding | 2 = usage/input fault")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--body-file", help="read the body from this path (`-` for stdin)")
     src.add_argument("--env", help="read the body from this ENVIRONMENT VARIABLE (CI: pass "
                                    "${{ github.event.pull_request.body }} through `env:`)")
+    ap.add_argument("--author-type-env",
+                    help="read the PR AUTHOR'S ACCOUNT TYPE from this ENVIRONMENT VARIABLE (CI: "
+                         "pass ${{ github.event.pull_request.user.type }} through `env:`). The "
+                         "exact value `Bot` exempts the body from `Built:` and "
+                         "`**Coordinated in:**`, and from NOTHING else. Every other value — "
+                         "including an unset variable — is not a bot and both rows are required, "
+                         "which is also what happens when this flag is absent")
+    ttl = ap.add_mutually_exclusive_group()
+    ttl.add_argument("--title",
+                     help="the PR's TITLE, literally — what an author passes before `gh pr "
+                          "create --title`. A title opening `release:` is a release PR")
+    ttl.add_argument("--title-env",
+                     help="read the PR's TITLE from this ENVIRONMENT VARIABLE (CI: pass "
+                          "${{ github.event.pull_request.title }} through `env:`, for the "
+                          "injection reason `--env` states). With neither flag, or with an unset "
+                          "variable, the body is judged as a RELEASE PR body — the full standard")
     ap.add_argument("--label", default="PR body",
                     help="what to call the body in the output (default: %(default)s)")
     ap.add_argument("--json", action="store_true",
@@ -770,28 +1147,76 @@ def main(argv):
         sys.stderr.write("pr-body-lint: %s\n" % exc)
         return 2
 
-    found = findings(body)
+    author_type = read_author_type(args)
+    title = read_title(args)
+    release = judged_as_release(title)
+    found = findings(body, author_type, title)
     if args.json:
+        # `author_type` is emitted RAW — the value as read, `null` when none was given — and the
+        # exemption itself is NOT emitted beside it. A consumer that wants to know whether the
+        # audit rows were waived reads this field against the one rule (`author_is_bot`); a second
+        # boolean here would be that rule restated in the output, free to disagree with it. The
+        # TITLE is emitted RAW for the same reason, and the release scope is `judged_as_release`'s.
         json.dump({"tool": "pr-body-lint", "label": args.label, "clean": not found,
+                   "author_type": author_type, "title": title,
                    "fields": audit_fields(body),
                    "findings": [f.as_dict() for f in found]},
                   sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
         return 1 if found else 0
 
+    # ⛔ AN EXEMPTION THAT FIRES SILENTLY IS THE ONE A LATER READER MIS-READS AS A CLEAN BODY. When
+    # the two audit rows were waived, the run SAYS SO — on the pass path and the fail path alike,
+    # because a bot PR that reds on some other rule must not look like a bot PR that was never
+    # exempted at all.
+    if author_is_bot(author_type):
+        sys.stdout.write("pr-body-lint: the PR's author type is `%s`, so `Built:` and "
+                         "`**Coordinated in:**` are NOT required of this body — a bot can declare "
+                         "neither truthfully. Every other rule of the standard still applies.\n"
+                         % BOT_AUTHOR_TYPE)
+
+    # ⛔ THE SCOPE IS STATED ON EVERY RUN THAT DID NOT GET THE PLAIN RELEASE CASE, for the reason
+    # the bot line above is: a scope decided silently is the one a reader mis-reads. A feature PR
+    # author who forgot `--title` must see WHY `## Summary` reds; a feature PR's green must not
+    # read as "this body meets the release standard".
+    if title is None or not title.strip():
+        sys.stdout.write("pr-body-lint: no PR title was given (`--title` / `--title-env`), so this "
+                         "body is judged as a RELEASE PR body — the full standard. A PR whose "
+                         "title does not open `%s` is not held to the release-only section set "
+                         "and scope line; pass its title to get that.\n" % RELEASE_TITLE_PREFIX)
+    elif not release:
+        sys.stdout.write("pr-body-lint: this is NOT a release PR (its title does not open `%s`), "
+                         "so the release-only rules — the closed section set and the scope line — "
+                         "are not applied: its section shape is your repo's own PR template's. "
+                         "Every other rule is, on every PR.\n" % RELEASE_TITLE_PREFIX)
+
     if not found:
-        sys.stdout.write("pr-body-lint: %s meets `release-pr` SKILL.md § PR body.\n" % args.label)
+        if release:
+            sys.stdout.write("pr-body-lint: %s meets `release-pr` SKILL.md § PR body.\n"
+                             % args.label)
+        else:
+            sys.stdout.write("pr-body-lint: %s meets every rule a non-release PR body is held "
+                             "to.\n" % args.label)
         return 0
-    sys.stdout.write("pr-body-lint: %s does NOT meet `release-pr` SKILL.md § PR body — write it "
-                     "for the software installer.\n" % args.label)
+    if release:
+        sys.stdout.write("pr-body-lint: %s does NOT meet `release-pr` SKILL.md § PR body — write "
+                         "it for the software installer.\n" % args.label)
+    else:
+        sys.stdout.write("pr-body-lint: %s does NOT meet the rules every PR body is held to.\n"
+                         % args.label)
     for f in found:
         where = "line %d" % f.line if f.line else "the body"
         sys.stdout.write("\n  %s · %s\n    %s\n" % (where, f.rule, f.message))
         if f.text.strip():
             sys.stdout.write("    > %s\n" % f.clipped())
-    sys.stdout.write("\nThe standard, and the home it names for everything it keeps out, are in "
-                     "`skills/release-pr/SKILL.md § PR body` in your coord install. Nothing is "
-                     "dropped by fixing this — only the home moves.\n")
+    if release:
+        sys.stdout.write("\nThe standard, and the home it names for everything it keeps out, are "
+                         "in `skills/release-pr/SKILL.md § PR body` in your coord install. Nothing "
+                         "is dropped by fixing this — only the home moves.\n")
+    else:
+        sys.stdout.write("\nThe OUT table a `banned-opener` or `live-state-reading` finding cites "
+                         "is `skills/release-pr/SKILL.md § PR body`'s, in your coord install; every "
+                         "other finding names the document that owns its rule.\n")
     return 1
 
 

@@ -35,6 +35,26 @@ the rule reds on, each replaced by the command that re-derives it and its pass c
 `arm_g` drives the pair through a mutant with the rule unwired, because the positive ALSO reds on
 older rules.
 
+`arm_h` is the BOT-AUTHOR exemption (card#9927) and it has no PR pair, because its subject is not a
+body at all — it is WHO authored one. Its positive and negative are therefore the same body under
+two author types, and the arm's long half is the negative side: every value that is not the exact
+string GitHub emits must leave the two audit rows required, the author LOGIN spellings a
+login-based discriminator would have keyed on included.
+
+`arm_i` is the RELEASE SCOPE (card#10493), and like `arm_h` its pair is not two bodies but one body
+under two TITLES: a feature title must not judge a feature repo's own `## Summary` against the
+release allow-set, and a release title must still red on it — while the OUT table's content rules
+still red on a feature PR, fw#873's own body under its own feature title included. Its controls force
+the one predicate, `judged_as_release`, each way, plus a copy that reads a blank title as a feature
+PR, and two copies that move rules BEHIND the predicate: the content rules, and every rule.
+
+`arm_j` is `ai-attribution` (card#10673). Its known positive is a REAL body: fw#891's live body
+ends on the harness's `Generated with [Claude Code]` footer. Its negative is that body with that one
+line removed by its literal text, never by the matcher under test. Every shape is driven red on a
+line the harness (or `coord-post`) actually writes, and each has a near miss that must pass — a
+placeholder, or the same words mid-line in prose. Its control unwires the rule, and fw#891's footer
+must then pass.
+
 A rule that reds on both is measuring length, not the standard. The pair is what tells them apart,
 and it is why a hand-written "compliant body" fixture is present as well but is not the whole of
 the negative side: a body someone wrote to pass the lint they just wrote proves nothing about a
@@ -173,9 +193,14 @@ def load_tool(path=TOOL):
     return mod
 
 
-def rules_on(mod, body):
-    """The set of RULE NAMES `mod` reports on `body`."""
-    return sorted({f.rule for f in mod.findings(body)})
+def rules_on(mod, body, author_type=None, title=None):
+    """The set of RULE NAMES `mod` reports on `body`, for a PR whose author account type is
+    `author_type` (`None` = the caller has none, which is every caller but CI) and whose TITLE is
+    `title`. `title=None` passes NO title at all, which is how every arm but `arm_i` calls it — and
+    that is deliberate: those arms keep driving the no-title path, which is judged as a RELEASE body
+    (the behaviour before card#10493), so the whole release standard stays pinned by them."""
+    kw = {} if title is None else {"title": title}
+    return sorted({f.rule for f in mod.findings(body, author_type, **kw)})
 
 
 def read_fixture(key):
@@ -439,8 +464,12 @@ def arm_f_attribution(mod, td):
     check("F ...on its FIRST line, quoting the offending line rather than a tally",
           len(hit) == 1 and hit[0].line == 1 and hit[0].text.strip() == "FROM: pm",
           [(f.line, f.text) for f in hit])
-    check("F the ATTRIBUTION NEGATIVE — the same body after the line was struck — passes EVERY "
-          "rule", rules_on(mod, negative) == [], rules_on(mod, negative))
+    # The negative passes every rule that EXISTED when it was captured. It ends on the harness's
+    # `Generated with [Claude Code]` footer, which `ai-attribution` (card#10673) now reds — that is
+    # `arm_j`'s known positive, so it is excluded here BY NAME rather than by editing the evidence.
+    check("F the ATTRIBUTION NEGATIVE — the same body after the line was struck — passes every "
+          "rule but `ai-attribution` (arm_j's positive)",
+          rules_on(mod, negative) == ["ai-attribution"], rules_on(mod, negative))
 
     # Both rows of the family, and the indent the protocol's own parser tolerates. `parse_body` /
     # the Action's `parseBody` TRIM each line before `startswith`, so an indented attribution line
@@ -471,8 +500,8 @@ def arm_f_attribution(mod, td):
     # was TRUE OF THAT BODY BEFORE THIS RULE EXISTED. Unwire the rule from the one entry point and
     # the attribution finding must be the thing that disappears.
     unwired = mutant(td, "attribution-unwired",
-                     ("           + rule_attribution_line(rows) + rule_audit_rows(body or \"\")",
-                      "           + rule_audit_rows(body or \"\")"))
+                     ("+ rule_attribution_line(rows) + rule_ai_attribution(rows)",
+                      "+ rule_ai_attribution(rows)"))
     got_u = rules_on(unwired, positive)
     if check("F CONTROL: with `rule_attribution_line` UNWIRED, the attribution positive stops "
              "reding on `attribution-line` — and still reds on its other row, so the mutant "
@@ -666,7 +695,8 @@ def arm_g_live_state(mod, td):
     # ⛔ THE CONTROLS. The positive reds on older rules too, so "the positive reds" was true
     # before this rule existed: unwire it, and the live-state finding must be what disappears.
     unwired = mutant(td, "live-state-unwired",
-                     ("           + rule_live_state_reading(rows)\n", ""))
+                     ("rule_banned_openers(rows) + rule_live_state_reading(rows)\n",
+                      "rule_banned_openers(rows)\n"))
     got_u = rules_on(unwired, positive)
     if check("G CONTROL: with `rule_live_state_reading` UNWIRED, fw#873's reading lines stop reding on "
              "`live-state-reading` — and every other rule still reds, so the mutant disabled one "
@@ -719,11 +749,496 @@ def arm_g_live_state(mod, td):
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
+# H — THE BOT-AUTHOR EXEMPTION (card#9927): TWO ROWS WAIVED, FOR AN AUTHOR THE EVENT PROVES IS A BOT
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# ⛔ THIS ARM IS A SECURITY ARM, NOT A CONVENIENCE ARM, AND ITS TWO SIDES ARE NOT THE SAME CLAIM.
+# "A bot PR passes" is the defect being closed (every Dependabot PR redded on `built-missing` +
+# `coordinated-missing`, so an adopter gating self-merge on this workflow could not land a security
+# bump without a person hand-editing the bot's body). "NOTHING ELSE passes" is the property that
+# keeps closing it from opening a hole in a body-PROVENANCE check, and it is the side with the long
+# row list: every value that is not the exact string GitHub emits must leave the two rows required,
+# because the alternative is a body that sheds its audit trail by naming a variable the lint could
+# not read.
+#
+# EVERY VALUE BELOW IS A VALUE, NEVER A LOGIN. The discriminator is the event payload's
+# `user.type`, measured on this repo's own Dependabot PR (`PupFuzz/agent-board-framework#426`:
+# `user.login` `dependabot[bot]`, `user.type` `Bot`) — which is why the two real dependabot LOGIN
+# spellings appear in the NOT-a-bot list below. They are what a login-based discriminator would
+# have keyed on, and this program must not accept them from this field.
+
+# Values that must NOT win the exemption. `None` is the absent author every non-CI caller passes —
+# a `--body-file` run from a terminal, and `review-prep.py`.
+NOT_A_BOT = (
+    (None, "no author at all — a terminal run over a file, and review-prep's digest"),
+    ("", "an environment variable set to nothing"),
+    ("   ", "whitespace only"),
+    ("bot", "the right word, the wrong casing — GitHub emits `Bot`"),
+    ("BOT", "upper-cased"),
+    ("User", "the account type a human, and every fleet agent on the shared PAT, reports"),
+    ("Organization", "the third member of GitHub's own enum"),
+    ("Bot account", "a value that CONTAINS the token — a substring test would accept this"),
+    ("dependabot[bot]", "the author LOGIN, from the REST / webhook payload"),
+    ("app/dependabot", "the author LOGIN as `gh`'s projection renders it"),
+    ("true", "a boolean-ish value from a caller wiring the flag to something else"),
+)
+
+
+def _body_without_audit_rows():
+    """The compliant body with BOTH audit rows struck — and nothing else touched, so any finding
+    on it is one of the two this exemption waives."""
+    return "\n".join(l for l in COMPLIANT_BODY.split("\n")
+                     if not (l.startswith("**Built:") or l.startswith("**Coordinated in:")))
+
+
+def arm_h_bot_author(mod, td):
+    no_rows = _body_without_audit_rows()
+    both = ["built-missing", "coordinated-missing"]
+
+    # THE BASELINE, FIRST: the body is one that reds on exactly the two rows and nothing else.
+    # Without this the green below is equally consistent with a body that was never a positive.
+    check("H the audit-row-less body reds on exactly the two rows when no author is given — the "
+          "pre-change behaviour, unchanged", rules_on(mod, no_rows) == both, rules_on(mod, no_rows))
+
+    check("H a BOT-authored body missing BOTH audit rows PASSES — the card#9927 defect, closed",
+          rules_on(mod, no_rows, "Bot") == [], rules_on(mod, no_rows, "Bot"))
+
+    # …and the transport's whitespace is absorbed, because a value read from a file or a shell can
+    # carry a newline and that is the same value.
+    for raw in ("Bot\n", " Bot", "\tBot  "):
+        check("H ...and %r is the same value once its transport is stripped" % raw,
+              rules_on(mod, no_rows, raw) == [], rules_on(mod, no_rows, raw))
+
+    for value, why in NOT_A_BOT:
+        check("H NOT a bot — %s (%r): both audit rows are still required" % (why, value),
+              rules_on(mod, no_rows, value) == both, rules_on(mod, no_rows, value))
+
+    # ⛔ ONLY THOSE TWO ROWS. Each row here is a body that ALSO lacks both audit rows, so the
+    # equality is two claims at once: the waiver fired, and the other rule survived it.
+    others = (
+        # ⛔ `## Correlation gaps`, NOT `## Review round 2`: the latter is ALSO a banned
+        # opener, and a row asserting "this rule ALONE" cannot be written on a line that
+        # breaks two rules.
+        ("heading-not-allowed", no_rows + "\n## Correlation gaps\n"),
+        ("banned-opener", no_rows + "\nVerification: the suite is green at this head.\n"),
+        ("attribution-line", no_rows + "\nFROM: pm\n"),
+        ("live-state-reading", no_rows + "\n- CI has not run on this head.\n"),
+        ("scope-line", "## Highlights\n\n- the daemon reads `/etc/acme/sync.env`.\n"),
+    )
+    for rule, body in others:
+        check("H a BOT-authored body still reds on `%s`, and on that ALONE — the waiver reaches "
+              "the two audit rows and no further rule" % rule,
+              rules_on(mod, body, "Bot") == [rule], rules_on(mod, body, "Bot"))
+
+    # …and the same bodies, from a human, red on that rule AND both audit rows — which is what
+    # says the rows above were WAIVED rather than never triggered.
+    for rule, body in others:
+        want = sorted([rule] + both)
+        check("H ...while the SAME body from a human reds on `%s` and both audit rows" % rule,
+              rules_on(mod, body, "User") == want, rules_on(mod, body, "User"))
+
+    # ⛔ CONTROL 1 — the waiver itself. Unwire the early return and the bot body must red on both
+    # rows again: the exemption is what produced the green, not a body that satisfied the rule.
+    unwired = mutant(td, "bot-exemption-unwired",
+                     ("    if author_is_bot(author_type):\n        return []\n", ""))
+    if check("H CONTROL: with the bot exemption UNWIRED, the bot-authored body reds on both audit "
+             "rows again — while a human-authored body is unchanged, so the mutant removed the "
+             "waiver rather than a rule",
+             rules_on(unwired, no_rows, "Bot") == both
+             and rules_on(unwired, no_rows, "User") == both,
+             (rules_on(unwired, no_rows, "Bot"), rules_on(unwired, no_rows, "User"))):
+        seen_red("H the bot-author exemption, driven red by a copy with the waiver removed, which "
+                 "reds a Dependabot body on `built-missing` + `coordinated-missing` — the exact "
+                 "measurement card#9927 was minted on")
+
+    # ⛔ CONTROL 2 — the DISCRIMINATOR, which is the security half and a different claim. Open it
+    # to "any non-empty value" and the rows this suite pins as NOT-a-bot must start passing. A
+    # green on the rows above is otherwise equally consistent with a lint that waives for anybody
+    # who passes anything at all.
+    opened = mutant(td, "bot-discriminator-open",
+                    ('    return (author_type or "").strip() == BOT_AUTHOR_TYPE',
+                     '    return bool((author_type or "").strip())'))
+    leaked = [v for v, _ in NOT_A_BOT if v and v.strip()
+              and rules_on(opened, no_rows, v) == []]
+    still = [v for v, _ in NOT_A_BOT if not (v or "").strip()
+             and rules_on(opened, no_rows, v) != both]
+    if check("H CONTROL: with the discriminator OPENED to any non-empty value, every non-empty "
+             "NOT-a-bot value — the author LOGIN spellings among them — wins the exemption, while "
+             "the empty ones still do not: the EXACT compare is what refuses them",
+             len(leaked) == len([v for v, _ in NOT_A_BOT if v and v.strip()]) and not still,
+             (leaked, still)):
+        seen_red("H the exact `== BOT_AUTHOR_TYPE` compare, driven red by an opened discriminator "
+                 "that hands the waiver to `User`, `bot`, `dependabot[bot]` and `app/dependabot`")
+
+    # THE CLI — what CI actually runs, including the `--env` + `--author-type-env` pair the shipped
+    # workflow invokes and the UNSET case an adopter on the old workflow will hit.
+    path = os.path.join(td, "no-audit-rows.md")
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(no_rows)
+
+    proc = run_cli(["--body-file", path])
+    check("H CLI: with NO `--author-type-env` at all, the body reds on both rows (exit 1)",
+          proc.returncode == 1 and "built-missing" in proc.stdout
+          and "coordinated-missing" in proc.stdout, (proc.returncode, proc.stdout[-300:]))
+
+    proc = run_cli(["--body-file", path, "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
+                   env={"COORD_PR_AUTHOR_TYPE": "Bot"})
+    check("H CLI: `--author-type-env` naming a variable set to `Bot` exits 0 and SAYS the two rows "
+          "were waived — a silent exemption is the one a later reader mis-reads as a clean body",
+          proc.returncode == 0 and "author type is `Bot`" in proc.stdout
+          and "NOT required" in proc.stdout, (proc.returncode, proc.stdout[-400:]))
+
+    proc = run_cli(["--body-file", path, "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
+                   env={"COORD_PR_AUTHOR_TYPE": "User"})
+    check("H CLI: the same flag with `User` exits 1 on both rows",
+          proc.returncode == 1 and "built-missing" in proc.stdout, (proc.returncode,
+                                                                    proc.stdout[-300:]))
+
+    # ⛔ AN UNSET AUTHOR VARIABLE IS NOT A FAULT, WHICH IS THE OPPOSITE OF `--env`'s ANSWER FOR THE
+    # BODY — and the asymmetry is deliberate: an unread BODY has no correct verdict, an unread
+    # AUTHOR has one (not provably a bot). An adopter who copies the new lint and keeps the old
+    # workflow lands exactly here, and must get the PRE-CHANGE behaviour rather than a hard error.
+    proc = run_cli(["--body-file", path, "--author-type-env", "COORD_PR_AUTHOR_TYPE"])
+    check("H CLI: an UNSET author variable is NOT a bot and NOT a fault — exit 1 on the two rows, "
+          "never exit 2", proc.returncode == 1 and "not set" not in proc.stderr,
+          (proc.returncode, proc.stderr[:200], proc.stdout[-200:]))
+
+    # The exact pair the shipped workflow runs, both values through the environment.
+    proc = run_cli(["--env", "COORD_PR_BODY", "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
+                   env={"COORD_PR_BODY": no_rows, "COORD_PR_AUTHOR_TYPE": "Bot"})
+    check("H CLI: the shipped workflow's invocation — body and author type BOTH through `env:` — "
+          "exits 0 on a Dependabot-shaped body", proc.returncode == 0,
+          (proc.returncode, proc.stdout[-300:], proc.stderr[-200:]))
+
+    # …and the note is on the FAIL path too: a bot PR that reds on another rule must not look like
+    # a bot PR that was never exempted at all.
+    other_path = os.path.join(td, "no-audit-rows-plus-heading.md")
+    with open(other_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(no_rows + "\n## Correlation gaps\n")
+    proc = run_cli(["--body-file", other_path, "--author-type-env", "COORD_PR_AUTHOR_TYPE"],
+                   env={"COORD_PR_AUTHOR_TYPE": "Bot"})
+    check("H CLI: a bot body that breaks ANOTHER rule exits 1 on that rule, and still states the "
+          "waiver", proc.returncode == 1 and "heading-not-allowed" in proc.stdout
+          and "author type is `Bot`" in proc.stdout
+          and "built-missing" not in proc.stdout, (proc.returncode, proc.stdout[-400:]))
+
+    proc = run_cli(["--body-file", path, "--author-type-env", "COORD_PR_AUTHOR_TYPE", "--json"],
+                   env={"COORD_PR_AUTHOR_TYPE": "Bot"})
+    check("H CLI: `--json` exits 0 and carries the author type it decided on, RAW",
+          proc.returncode == 0 and '"author_type": "Bot"' in proc.stdout
+          and '"clean": true' in proc.stdout, proc.stdout[:400])
+    proc = run_cli(["--body-file", path, "--json"])
+    check("H CLI: `--json` with no author source carries `null` and the two findings",
+          proc.returncode == 1 and '"author_type": null' in proc.stdout
+          and '"clean": false' in proc.stdout, proc.stdout[:400])
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# I — THE RELEASE SCOPE (card#10493): the release standard judges RELEASE PRs, and only them
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# THE KNOWN POSITIVE IS A SHAPE card#10493 MEASURED, NOT ONE INVENTED HERE — the measurement is the
+# card author's (sola-pm), cited, not re-taken. `BWtek-Medical/sola-device` mandates
+# `## Summary`, `## SaMD boundary check` and `## CI action-pin resync check` on its feature PRs (its
+# own PR template and `pr_body_shape_guard.py`), and each of its PRs card#10493 lists spent a
+# review finding on this lint's `heading-not-allowed` rows for exactly those headings. The body
+# below carries them — the SECTION CONTENT under them is hand-written, because that repo is not
+# readable from this seat, and the rows below assert on headings and audit rows only.
+FEATURE_BODY = """## Summary
+
+Adds the retry window to the sync daemon.
+
+## SaMD boundary check
+
+No change to the SaMD boundary.
+
+## CI action-pin resync check
+
+No workflow touched.
+
+Built: dispatched (coder ×1 / mechanic ×0)
+**Coordinated in:** acme/coordination#412
+"""
+FEATURE_TITLE = "feat(sync): refuse an unset retry window"
+RELEASE_TITLE = "release: v1.4.0"
+# fw#873's title, verbatim as `gh pr view 873 --json title` returns it: the live-state positive's
+# PR is a FEATURE PR (base `dev`), and this is the title CI hands the lint for it.
+FW873_TITLE = ("fix(ci-read): a `continue-on-error` step that FAILED is invisible to every "
+               "conclusion-only gate — declare the limit, and scan for it (card#8935)")
+
+
+def arm_i_release_scope(mod, td):
+    # (1) THE DEFECT, CLOSED — a feature PR in its own repo's shape is not judged against the
+    # release allow-set, and says nothing about `## Summary`.
+    got = rules_on(mod, FEATURE_BODY, title=FEATURE_TITLE)
+    check("I a FEATURE PR's body carrying its own repo's `## Summary` / `## SaMD boundary check` / "
+          "`## CI action-pin resync check` is NOT red — the release allow-set does not reach it",
+          got == [], got)
+
+    # (2) …AND THE RELEASE STANDARD IS UNCHANGED FOR A RELEASE PR. The same `## Summary`, on a body
+    # whose title declares a release, reds on the heading rule, and the message names the heading.
+    rel = COMPLIANT_BODY + "\n## Summary\n"
+    found = [f for f in mod.findings(rel, None, title=RELEASE_TITLE)
+             if f.rule == "heading-not-allowed"]
+    check("I a RELEASE PR's body with a disallowed H2 (`## Summary`) is STILL red on "
+          "`heading-not-allowed`, and the finding names the heading and the allowed set",
+          len(found) == 1 and "`## Summary` is not one of the sections" in found[0].message
+          and "`Highlights`" in found[0].message and found[0].text == "## Summary",
+          [(f.rule, f.text, f.message[:80]) for f in found])
+
+    # (3) NO TITLE IS NOT A NON-RELEASE PR. With nothing to prove the PR is not a release, the body
+    # is judged by the full release standard — the pre-card#10493 answer, and the stricter one.
+    got = rules_on(mod, FEATURE_BODY)
+    check("I with NO title the feature-shaped body is judged as a RELEASE body — `heading-not-"
+          "allowed` and `scope-line` red exactly as before card#10493",
+          "heading-not-allowed" in got and "scope-line" in got, got)
+    for blank in ("", "   ", "\n"):
+        check("I a BLANK title (%r) is no title — judged as a release body" % blank,
+              "heading-not-allowed" in rules_on(mod, FEATURE_BODY, title=blank),
+              rules_on(mod, FEATURE_BODY, title=blank))
+
+    # (4) THE TITLE PREDICATE — its prefix, its case and its transport.
+    for title in ("release: v1.4.0", "Release: v1.4.0", "RELEASE: v1.4.0", "  release: v1.4.0",
+                  "release: post-aimla-v1.0.0"):
+        check("I title %r is a RELEASE PR" % title, mod.judged_as_release(title) is True,
+              mod.judged_as_release(title))
+    for title in ("feat: add release notes", "fix(release-pr): scope the claim", "releases: x",
+                  "sync: merge main into dev post-v1.4.0 (Rule E)", "chore: release prep",
+                  "release v1.4.0"):
+        check("I title %r is NOT a release PR" % title, mod.judged_as_release(title) is False,
+              mod.judged_as_release(title))
+
+    # (5) WHAT A NON-RELEASE PR IS STILL HELD TO — the rows whose owner is NOT § PR body's release
+    # standard, each red ALONE so the row says which rule fired.
+    still = (
+        ("built-missing", FEATURE_BODY.replace("Built: dispatched (coder ×1 / mechanic ×0)\n", "")),
+        ("coordinated-missing", FEATURE_BODY.replace("**Coordinated in:** acme/coordination#412\n",
+                                                     "")),
+        ("attribution-line", "FROM: impl\n" + FEATURE_BODY),
+    )
+    for rule, body in still:
+        got = rules_on(mod, body, title=FEATURE_TITLE)
+        check("I a NON-release body still reds on `%s`, and on that alone — its owner is fleet-wide, "
+              "not the release standard" % rule, got == [rule], got)
+
+    # (5b) THE BODY `live-state-reading` WAS MINTED ON IS A FEATURE PR'S, AND IT STILL REDS AS ONE.
+    # fw#873 is a `fix(ci-read): …` PR into `dev`, so a scope that dropped the OUT table's content
+    # rules for non-release titles would stop reding on the very instance the rule exists for.
+    live = read_fixture("live_positive")
+    got = rules_on(mod, live, title=FW873_TITLE)
+    check("I fw#873's body under its REAL feature title still reds on `live-state-reading` and "
+          "`banned-opener` — the OUT table binds every PR body — and on nothing release-only",
+          got == ["banned-opener", "live-state-reading"], got)
+
+    # (6) WHERE THE LINE IS DRAWN: only the rules that model a SECTION SHAPE are scoped. The OUT
+    # table's content rules — a narration opener, a live-state reading — bind every PR body, so the
+    # same two lines red under a feature title as under a release one; the release title adds only
+    # the section set and the scope line.
+    extra = (FEATURE_BODY + "\nVerification: the suite is green at this head.\n"
+             "- CI has not run on this head.\n")
+    got_feat = rules_on(mod, extra, title=FEATURE_TITLE)
+    got_rel = rules_on(mod, extra, title=RELEASE_TITLE)
+    check("I a NON-release body reds on `banned-opener` + `live-state-reading` and nothing else, "
+          "while the SAME body titled as a release adds exactly `scope-line` + "
+          "`heading-not-allowed`",
+          got_feat == ["banned-opener", "live-state-reading"]
+          and set(got_rel) - set(got_feat) == {"scope-line", "heading-not-allowed"},
+          (got_feat, got_rel))
+
+    # (7) THE CONTROLS — the predicate is what produced each answer above, in both directions.
+    always = mutant(td, "release-scope-always",
+                    ("    return not t or t.lower().startswith(RELEASE_TITLE_PREFIX)",
+                     "    return True"))
+    got = [f for f in always.findings(FEATURE_BODY, None, title=FEATURE_TITLE)
+           if f.rule == "heading-not-allowed"]
+    if check("I CONTROL: with the scope predicate forced to RELEASE — the pre-card#10493 lint — the "
+             "feature body reds on `heading-not-allowed` for `## Summary`, the finding each "
+             "sola-device PR card#10493 lists carried", any(f.text == "## Summary" for f in got),
+             [f.text for f in got]):
+        seen_red("I the release scope, driven red by a copy that judges every PR as a release and "
+                 "reds a feature body's own `## Summary`")
+    never = mutant(td, "release-scope-never",
+                   ("    return not t or t.lower().startswith(RELEASE_TITLE_PREFIX)",
+                    "    return False"))
+    got = rules_on(never, rel, title=RELEASE_TITLE)
+    if check("I CONTROL: with the scope predicate forced to NON-release, the RELEASE body's "
+             "`## Summary` PASSES — the release judgement is what produced row (2)'s red",
+             "heading-not-allowed" not in got, got):
+        seen_red("I the release judgement, driven red by a copy that judges no PR as a release and "
+                 "lets a release body's disallowed H2 through")
+    blank_open = mutant(td, "release-scope-blank-is-feature",
+                        ("    return not t or t.lower().startswith(RELEASE_TITLE_PREFIX)",
+                         "    return t.lower().startswith(RELEASE_TITLE_PREFIX)"))
+    got = rules_on(blank_open, FEATURE_BODY, title="")
+    if check("I CONTROL: with the no-title arm removed, a BLANK title lets the feature-shaped body "
+             "pass — the `not t` arm is what keeps a missing title on the strict side",
+             got == [], got):
+        seen_red("I the no-title arm, driven red by a copy that reads a blank title as a feature PR")
+
+    # ⛔ AND THE OTHER HALF OF THE SPLIT — WHICH RULES SIT OUTSIDE THE GATE. The three predicate
+    # mutants above cannot move a rule that runs whatever the predicate says, so rows (5), (5b) and
+    # (6) get their own controls: a copy that puts the rule back BEHIND the gate.
+    gate_anchor = "        out += rule_scope_line(rows) + rule_headings(rows)\n"
+    content_gated = mutant(td, "content-rules-release-only",
+                           (gate_anchor, gate_anchor + "    else:\n        out = [f for f in out "
+                            "if f.rule not in (\"banned-opener\", \"live-state-reading\")]\n"))
+    got_live = rules_on(content_gated, live, title=FW873_TITLE)
+    got_extra = rules_on(content_gated, extra, title=FEATURE_TITLE)
+    if check("I CONTROL: with `banned-opener` / `live-state-reading` moved behind the release "
+             "predicate — card#10493's first-round shape — fw#873's body under its own feature "
+             "title comes back clean, and so does row (6)'s opener + reading",
+             got_live == [] and got_extra == [], (got_live, got_extra)):
+        seen_red("I the OUT table's content rules on every PR, driven red by a copy that scopes "
+                 "them to release PRs and lets fw#873's live-state readings through")
+    all_gated = mutant(td, "every-pr-rows-gated",
+                       (gate_anchor, gate_anchor + "    else:\n        out = []\n"))
+    got = {rule: rules_on(all_gated, body, title=FEATURE_TITLE) for rule, body in still}
+    if check("I CONTROL: with EVERY rule behind the release predicate, row (5)'s three bodies each "
+             "stop reding on their own rule under a feature title",
+             all(v == [] for v in got.values()), got):
+        seen_red("I the every-PR rows (`built-missing`, `coordinated-missing`, `attribution-line`), "
+                 "driven red by a copy that runs them on release PRs only")
+
+    # (8) THE CLI — what the shipped workflow runs, title through `env:` beside body and author.
+    fpath = os.path.join(td, "feature-body.md")
+    with open(fpath, "w", encoding="utf-8", newline="") as fh:
+        fh.write(FEATURE_BODY)
+    proc = run_cli(["--env", "COORD_PR_BODY", "--author-type-env", "COORD_PR_AUTHOR_TYPE",
+                    "--title-env", "COORD_PR_TITLE"],
+                   env={"COORD_PR_BODY": FEATURE_BODY, "COORD_PR_AUTHOR_TYPE": "User",
+                        "COORD_PR_TITLE": FEATURE_TITLE})
+    check("I CLI: the shipped workflow's invocation on a feature PR exits 0 and SAYS it judged a "
+          "NON-release body, naming the rows it checked",
+          proc.returncode == 0 and "NOT a release PR" in proc.stdout
+          and "heading-not-allowed" not in proc.stdout, (proc.returncode, proc.stdout[-500:]))
+    proc = run_cli(["--body-file", fpath, "--title", RELEASE_TITLE])
+    check("I CLI: `--title` naming a release judges the same body by the release standard — exit 1 "
+          "on `heading-not-allowed`, quoting `## Summary`",
+          proc.returncode == 1 and "heading-not-allowed" in proc.stdout
+          and "> ## Summary" in proc.stdout, (proc.returncode, proc.stdout[-500:]))
+    proc = run_cli(["--body-file", fpath])
+    check("I CLI: NO title source judges it as a release body AND says why, so a feature author who "
+          "forgot `--title` sees the cause, not only the red",
+          proc.returncode == 1 and "no PR title was given" in proc.stdout
+          and "heading-not-allowed" in proc.stdout, (proc.returncode, proc.stdout[:500]))
+    proc = run_cli(["--body-file", fpath, "--title-env", "COORD_PR_TITLE"])
+    check("I CLI: an UNSET title variable is no title — judged as a release body, exit 1, never "
+          "exit 2", proc.returncode == 1 and "no PR title was given" in proc.stdout,
+          (proc.returncode, proc.stderr[:200], proc.stdout[:300]))
+    proc = run_cli(["--body-file", fpath, "--title", FEATURE_TITLE, "--json"])
+    check("I CLI: `--json` carries the title it decided on, RAW",
+          proc.returncode == 0 and ('"title": "%s"' % FEATURE_TITLE) in proc.stdout
+          and '"clean": true' in proc.stdout, proc.stdout[:400])
+    proc = run_cli(["--body-file", fpath, "--title", "x", "--title-env", "COORD_PR_TITLE"])
+    check("I CLI: `--title` and `--title-env` together are a usage fault — one source, as for the "
+          "body", proc.returncode == 2, (proc.returncode, proc.stderr[:200]))
+
+    # (9) THE SHIPPED WORKFLOW PASSES THE TITLE. The lint cannot scope a PR nobody named, and a
+    # workflow that does not pass it runs every PR as a release — the defect, reinstated silently.
+    wf = os.path.join(HERE, "..", "workflows", "pr-body-lint.yml")
+    with open(wf, encoding="utf-8") as fh:
+        wf_text = fh.read()
+    check("I the shipped workflow passes the PR TITLE through `env:` and names it to the lint",
+          "COORD_PR_TITLE: ${{ github.event.pull_request.title }}" in wf_text
+          and re.search(r"--title-env COORD_PR_TITLE\b", wf_text) is not None, wf)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
 # E — THE CLI, WHICH IS WHAT CI AND THE REVIEW PATH ACTUALLY RUN
 # ══════════════════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# J — `ai-attribution`: NO LINE NAMES THE AI MODEL OR CARRIES A SESSION LINK (card#10673)
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# The literal footer line the harness wrote on fw#891 — the known positive's own last line. The
+# negative is that body with THIS line removed by its literal text, never by the matcher under
+# test: a negative built with the rule's own matcher would pass by construction.
+FW891_FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+
+# One row per shape, each a line the harness actually writes (or the stamp `coord-post` writes),
+# and one row per shape that must NOT red: a placeholder or a mid-line mention of the same words.
+AI_REDS = (
+    ("co-author-trailer", "Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"),
+    ("co-author-trailer", "co-authored-by: Claude <noreply@anthropic.com>"),
+    ("co-author-trailer", "Co-Authored-By: Some Model <noreply@anthropic.com>"),
+    ("session-trailer", "Claude-Session: https://claude.ai/code/session_01ABCdef"),
+    ("session-link", "https://claude.ai/code/session_01M3jAPrz9zCGzdm9HJMQeFV"),
+    ("generated-footer", "🤖 Generated with [Claude Code](https://claude.com/claude-code)"),
+    ("generated-footer", "Generated with Claude Code"),
+    ("generated-footer", "> 🤖 Generated with [Claude Code](https://claude.com/claude-code)"),
+    ("ctx-stamp", "<!-- CTX: 47% | 94200tok | base 31000+20000 | KEEP -->"),
+    ("ctx-stamp", "status update <!-- CTX: 70% -->"),
+)
+AI_PASSES = (
+    "Co-authored-by: Fix Human <human@example.invalid>",
+    # A HUMAN co-author whose name opens `Claude` (fw#1095 r1): only the harness's own address
+    # marks the harness trailer, so this person's credit is not judged.
+    "Co-authored-by: Claude Monet <claude.monet@example.com>",
+    # Prose that QUOTES the footer's words in backticks is not the footer (fw#1095 r1).
+    "- `Generated with [Claude Code]` footer is now dropped",
+    "The harness adds a `Co-Authored-By: Claude` trailer by default.",
+    # BOTH TRAILERS QUOTED MID-LINE, IN FULL (fw#1095 r2). The trailer shapes are anchored at the
+    # line start, and these two lines are what holds that anchor: the co-author line carries the
+    # harness's own address, so only the anchor keeps it from red; the session line is the
+    # session-trailer's one near miss.
+    "The harness ends each commit on `Co-Authored-By: Claude Opus 4.6 (1M context) "
+    "<noreply@anthropic.com>` unless the composer drops it.",
+    "The composer also drops the Claude-Session: trailer the harness writes after it.",
+    "A session link has the form `claude.ai/code/session_<id>`.",
+    "The stamp is written `<!-- CTX: <pct>% -->`.",
+    "This was generated with care.",
+)
+
+
+def arm_j_ai_attribution(mod, td):
+    positive = read_fixture("attr_negative")
+    check("J fixture: the known positive still ends on the harness footer this arm is about",
+          FW891_FOOTER in positive.split("\n"), "footer line not found in fw#891's body")
+    hits = [f for f in mod.findings(positive) if f.rule == "ai-attribution"]
+    check("J the KNOWN POSITIVE — fw#891's live body, harness footer and all — reds on "
+          "`ai-attribution`, on that line, quoting it",
+          len(hits) == 1 and hits[0].text == FW891_FOOTER, [(f.line, f.text) for f in hits])
+    negative = "\n".join(l for l in positive.split("\n") if l != FW891_FOOTER)
+    check("J the NEGATIVE — the same body without that one line — passes EVERY rule",
+          rules_on(mod, negative) == [], rules_on(mod, negative))
+
+    for shape, line in AI_REDS:
+        body = COMPLIANT_BODY + "\n" + line + "\n"
+        got = [mod.ai_attribution_shape(line)]
+        check("J `%s` reds on %r" % (shape, line),
+              got == [shape] and "ai-attribution" in rules_on(mod, body),
+              (got, rules_on(mod, body)))
+    for line in AI_PASSES:
+        body = COMPLIANT_BODY + "\n" + line + "\n"
+        check("J `ai-attribution` does not fire on %r" % line,
+              "ai-attribution" not in rules_on(mod, body), rules_on(mod, body))
+
+    fenced = COMPLIANT_BODY + "\n```\n%s\n```\n" % AI_REDS[0][1]
+    check("J a trailer that exists only INSIDE A FENCE is payload in a PR body, not a finding",
+          "ai-attribution" not in rules_on(mod, fenced), rules_on(mod, fenced))
+    feature = rules_on(mod, "fix: a thing.\n\nBuilt: x\nCoordinated in: acme/c#1\n\n%s\n"
+                       % FW891_FOOTER, title="fix(x): a feature PR")
+    check("J it runs on EVERY PR — a FEATURE title does not scope it out", feature == ["ai-attribution"],
+          feature)
+
+    # ⛔ THE CONTROL. Unwire the rule from the one entry point: the known positive must stop reding
+    # on `ai-attribution` — and with nothing else left to red on, pass outright — or the green above
+    # is not evidence the rule is what reds it.
+    unwired = mutant(td, "ai-attribution-unwired",
+                     ("+ rule_attribution_line(rows) + rule_ai_attribution(rows)",
+                      "+ rule_attribution_line(rows)"))
+    got_u = rules_on(unwired, positive)
+    if check("J CONTROL: with `rule_ai_attribution` UNWIRED, fw#891's footer passes — so the rule "
+             "is what reds it", got_u == [], got_u):
+        seen_red("J the ai-attribution rule, driven red by an unwired copy that lets fw#891's own "
+                 "harness footer through")
+
+
 def run_cli(args, env=None, cwd=None):
     full = dict(os.environ)
     full.pop("COORD_PR_BODY", None)
+    # ⛔ AND THE AUTHOR-TYPE VARIABLE TOO. A row here asserting that an UNSET variable is not a bot
+    # would be measuring the machine it ran on if the seat happened to export this name.
+    full.pop("COORD_PR_AUTHOR_TYPE", None)
+    # …and the title variable, for the same reason: an unset title is judged as a release body.
+    full.pop("COORD_PR_TITLE", None)
     full.update(env or {})
     return subprocess.run([sys.executable, TOOL] + args, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=60, env=full, cwd=cwd)
@@ -774,6 +1289,9 @@ def main():
         arm_d_mutants(td)
         arm_f_attribution(mod_main, td)
         arm_g_live_state(mod_main, td)
+        arm_h_bot_author(mod_main, td)
+        arm_i_release_scope(mod_main, td)
+        arm_j_ai_attribution(mod_main, td)
         arm_e_cli(td)
     after = sha256_file(TOOL)
     check("the shipped file was not touched by this suite (sha256 before == after)",
