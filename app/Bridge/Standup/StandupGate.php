@@ -41,8 +41,10 @@ use Illuminate\Support\Facades\Log;
  * worker for that timeout before the pass gives up. It also reads the inbox once PER SEAT,
  * and under the default `shared` layout that is one whole-file read each (bounded by
  * retention, and by the fact that a multi-agent install is the one documented to run the
- * `per-agent` layout, where each read is that seat's own file). That, and not caution, is
- * why the digest is OFF by default where retention is on: it is opt-in per install.
+ * `per-agent` layout, where each read is that seat's own file). That is why DL-306 shipped the
+ * digest opt-in; since card#10918 / DL-441 it ships ON (new functionality defaults on), and the
+ * cost is paid only once `BRIDGE_STANDUP_AGENT` names a recipient — until then a pass reads
+ * nothing and backs off a day. `BRIDGE_STANDUP_ENABLED=false` declines it.
  *
  * ⭐ THE GATE SHAPE ITSELF NOW LIVES IN {@see AfterResponseGate} (card#8432). The interval
  * marker, the non-blocking lock and the never-throws recording were restated by hand here,

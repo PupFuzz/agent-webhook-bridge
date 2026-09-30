@@ -20,8 +20,15 @@ use App\Bridge\Support\UrlValidator;
  *
  * ⚑ `problem` IS ABOUT THE MEZZANINE KEYS ONLY, and binds only when some agent needs Mezzanine
  * ({@see IdleNudgeSources::mezzanineNeeded()}): an install whose agents are all seat-record-
- * sourced (rt#562) sets `BRIDGE_IDLE_NUDGE_ENABLED` and nothing else. The value is computed
- * either way so the two readers ask the same question of the same object.
+ * sourced (rt#562) needs nothing else. The value is computed either way so the two readers ask
+ * the same question of the same object.
+ *
+ * ⭐ UNSET IS NOT INVALID (card#10918 / DL-441). The nudge is ON by default, so a required key
+ * nobody set is the NOT-SET-UP state of every install with a Mezzanine-sourced agent, where a
+ * value somebody set wrongly is a broken config. `problem` covers both — the job cannot read the
+ * fleet either way — and `unsetKeys` says which of them it is, so the preflight can `warn` on
+ * the first and keep `fail` for the second. An invalid value outranks an unset one in
+ * `problem`, because it is the one an operator already acted on.
  */
 final class IdleNudgeConfig
 {
@@ -41,6 +48,13 @@ final class IdleNudgeConfig
         public readonly int $timeoutS,
         public readonly int $defaultAfterS,
         public readonly ?string $problem,
+        /**
+         * The required Mezzanine keys nobody set, when that is the WHOLE of `problem`; empty when
+         * `problem` names a value that was set wrongly, or is null.
+         *
+         * @var list<string>
+         */
+        public readonly array $unsetKeys,
     ) {}
 
     /**
@@ -61,23 +75,35 @@ final class IdleNudgeConfig
         $defaultAfter = self::positiveInt(config('bridge.idle_nudge.default_after'));
 
         $baseUrl = null;
-        $problem = null;
+        $invalid = null;
+        /** @var array<string, string> $unset key => why it is required */
+        $unset = [];
         if ($enabled) {
-            try {
-                $baseUrl = rtrim(UrlValidator::secureHttpUrl(config('bridge.idle_nudge.base_url'), 'BRIDGE_IDLE_NUDGE_BASE_URL'), '/');
-            } catch (ConfigException $e) {
-                // UrlValidator composes its message through SecretScrubber::url().
-                $problem = $e->getMessage();
+            $rawBaseUrl = config('bridge.idle_nudge.base_url');
+            if (self::nonEmptyString($rawBaseUrl) === null) {
+                $unset['BRIDGE_IDLE_NUDGE_BASE_URL'] = 'BRIDGE_IDLE_NUDGE_BASE_URL is unset — the Mezzanine the fleet snapshot is read from';
+            } else {
+                try {
+                    $baseUrl = rtrim(UrlValidator::secureHttpUrl($rawBaseUrl, 'BRIDGE_IDLE_NUDGE_BASE_URL'), '/');
+                } catch (ConfigException $e) {
+                    // UrlValidator composes its message through SecretScrubber::url().
+                    $invalid = $e->getMessage();
+                }
+            }
+            if ($install === null) {
+                $unset['BRIDGE_IDLE_NUDGE_INSTALL'] = 'BRIDGE_IDLE_NUDGE_INSTALL is unset — it is REQUIRED: the fleet token reads every install, and without the install id this bridge serves, a seat of another install named like a local agent would be nudged here';
+            }
+            if ($rawToken === null) {
+                $unset['BRIDGE_IDLE_NUDGE_TOKEN_PATH'] = 'BRIDGE_IDLE_NUDGE_TOKEN_PATH is unset — the fleet_read token is read from a FILE, never inline';
             }
 
-            $problem ??= match (true) {
-                $install === null => 'BRIDGE_IDLE_NUDGE_INSTALL is unset — it is REQUIRED: the fleet token reads every install, and without the install id this bridge serves, a seat of another install named like a local agent would be nudged here',
-                $rawToken === null => 'BRIDGE_IDLE_NUDGE_TOKEN_PATH is unset — the fleet_read token is read from a FILE, never inline',
+            $invalid ??= match (true) {
                 $timeout === null || $timeout < self::TIMEOUT_MIN || $timeout > self::TIMEOUT_MAX => 'BRIDGE_IDLE_NUDGE_TIMEOUT must be a whole number of seconds in '.self::TIMEOUT_MIN.'…'.self::TIMEOUT_MAX.' (refused, not clamped)',
                 $defaultAfter === null || $defaultAfter < self::DEFAULT_AFTER_MIN || $defaultAfter > self::DEFAULT_AFTER_MAX => 'BRIDGE_IDLE_NUDGE_DEFAULT_AFTER must be a whole number of seconds in '.self::DEFAULT_AFTER_MIN.'…'.self::DEFAULT_AFTER_MAX.' (refused, not clamped)',
                 default => null,
             };
         }
+        $problem = $invalid ?? ($unset === [] ? null : implode('; ', $unset));
 
         return new self(
             enabled: $enabled,
@@ -87,6 +113,7 @@ final class IdleNudgeConfig
             timeoutS: $timeout ?? 0,
             defaultAfterS: $defaultAfter ?? 0,
             problem: $problem,
+            unsetKeys: $invalid === null ? array_keys($unset) : [],
         );
     }
 

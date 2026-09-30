@@ -5,6 +5,8 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
+use App\Bridge\Scheduling\JobCapability;
+use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\JobsConfig;
 use App\Bridge\Scheduling\TickAssertRecord;
@@ -63,8 +65,9 @@ use Throwable;
  *
  * ⛔ A REFUSED INSTANCE IS `fail`, and that asymmetry is deliberate. A refusal means the row
  * names a handler this build does not have, or names a state-mutating handler this install
- * never armed — a job that CANNOT run, and will not start running by itself. That is a
- * broken install, not a transient one.
+ * has disarmed (DL-441) — a job that CANNOT run, and will not start running by itself. That
+ * is a broken install, not a transient one: a disarmed handler's instance wants disabling
+ * (`bridge:jobs disable`) too.
  */
 final class JobsPostureCheck implements Check
 {
@@ -85,6 +88,8 @@ final class JobsPostureCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
+        yield from $this->armingFindings();
+
         $cfg = JobsConfig::fromConfig();
 
         try {
@@ -132,6 +137,37 @@ final class JobsPostureCheck implements Check
         yield from $this->passErrorFindings();
 
         yield Silence::because('the registry is enabled with a usable cadence, no tick horizon is declared (an adopted one always yields its state and its reader posture), and no instance is refused or repeatedly failing');
+    }
+
+    /**
+     * The two kill-switch settings that can read as a decision while doing nothing (card#10918 /
+     * DL-441). `warn`: neither stops a job the operator wanted, but each is a setting whose
+     * author believes it is in force.
+     *
+     * @return iterable<Finding>
+     */
+    private function armingFindings(): iterable
+    {
+        $retired = config('bridge.jobs.armed_mutators');
+        if (is_string($retired) && trim($retired) !== '') {
+            yield Finding::warn('jobs: BRIDGE_JOBS_ARMED_MUTATORS is set ('.trim($retired).') and has NO effect — every state-mutating job handler is armed by default since DL-441. '
+                .'Remove it; to switch a handler OFF, name it in BRIDGE_JOBS_DISARMED_MUTATORS instead.');
+        }
+
+        $inert = app(JobHandlerRegistry::class)->disarmEntriesThatNameNoMutator();
+        if ($inert !== []) {
+            yield Finding::warn('jobs: BRIDGE_JOBS_DISARMED_MUTATORS names '.implode(', ', $inert)
+                .' — not a state-mutating job handler in this build, so that entry switches nothing off. Mutators this build has: '
+                .$this->mutatorNames().'. Stop a read-and-alert job with `php artisan bridge:jobs disable <instance>` instead.');
+        }
+    }
+
+    private function mutatorNames(): string
+    {
+        $registry = app(JobHandlerRegistry::class);
+        $names = array_filter($registry->known(), static fn (string $name): bool => $registry->resolve($name)?->capability() === JobCapability::MutatesState);
+
+        return implode(', ', $names);
     }
 
     /**

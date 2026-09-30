@@ -54,7 +54,7 @@ use Illuminate\Support\Carbon;
  * ⚑ `last_status` HAS THREE VALUES AND A NULL, and collapsing them loses the remedy.
  * `ok` / `failed` / `refused` / never-run: a refusal means the scheduler declined to invoke
  * anything (the handler name resolves to nothing, or names a state-mutating handler this
- * install has not armed), which is a different fact from a handler that ran and threw.
+ * install has disarmed), which is a different fact from a handler that ran and threw.
  *
  * The `@property` block below is not decoration: `app/Models` is outside the analysed paths
  * (see `phpstan-laravel.neon`), so a reader in `app/Bridge` — which IS analysed — otherwise

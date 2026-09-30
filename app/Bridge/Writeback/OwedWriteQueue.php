@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
 use App\Bridge\Scheduling\Handlers\OwedWriteWatchdogJob;
+use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Support\AgentConfig;
@@ -83,8 +84,8 @@ final class OwedWriteQueue
 
     /**
      * How long a row may sit owed before the watchdog gives it up (`reason: expired`). It is
-     * the bound for an UNARMED install, where nothing but the subject's next event retries a
-     * row — so it is sized in hours, well past the whole retry schedule
+     * the bound for an install that DISARMED the retry sweep, where nothing but the subject's
+     * next event retries a row — so it is sized in hours, well past the whole retry schedule
      * (`BASE_BACKOFF_S * 2^MAX_ATTEMPTS`, held by a test), and unrelated to `GitHubWriteDebt`.
      */
     public const MAX_AGE_S = 6 * 3600;
@@ -500,12 +501,12 @@ final class OwedWriteQueue
             ]);
         }
 
-        // ⛔ NOT ATTEMPTED WHILE THE KILL SWITCH IS SET: an unarmed mutator's spec is REFUSED
+        // ⛔ NOT ATTEMPTED WHILE A KILL SWITCH DISARMS IT: a disarmed mutator's spec is REFUSED
         // at insert (JobRegistry::insert), so trying it here would be an ordinary, expected
         // outcome of the operator's own choice — not the config gap this exists to report
         // loudly. Checked directly rather than caught, so a disabled retry sweep never logs as
         // though something were missing.
-        if ((bool) config('bridge.jobs.owed_write_retry_disabled')) {
+        if (JobHandlerRegistry::disarmedBy(OwedWriteRetryJob::NAME) !== null) {
             return;
         }
         try {

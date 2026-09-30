@@ -93,16 +93,34 @@ class StandupPostureCheckTest extends TestCase
     public function test_a_misconfigured_digest_warns_and_does_not_claim_to_be_armed(): void
     {
         // `warn`, never `fail`: this leg gates deployment runbooks through `bridge:check`'s
-        // exit code, and an opt-in report with a fat-fingered recipient leaves the receiver
+        // exit code, and a report with a fat-fingered recipient leaves the receiver
         // serving every webhook correctly. The severity is invisible to the golden capture,
         // so a demotion to `ok` — a green line confirming the posture the operator is being
-        // warned about — would be caught only here.
-        config(['bridge.standup.agent' => '']);
+        // warned about — would be caught only here. A recipient SET to a non-name: an unset
+        // one is the separate not-set-up line.
+        config(['bridge.standup.agent' => '../pm']);
 
         $findings = $this->findingsOf(new StandupPostureCheck);
 
         $this->assertSame(Severity::Warn, $findings[0]->severity);
         $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+    }
+
+    /**
+     * Since card#10918 / DL-441 the digest is ON without anyone asking, so an install that never
+     * named a recipient is NOT SET UP rather than broken: the line names the key to set AND the
+     * switch that declines the digest, because either is a complete answer.
+     */
+    public function test_an_unset_recipient_names_the_key_to_set_and_the_switch_to_decline(): void
+    {
+        config(['bridge.standup.agent' => null]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('BRIDGE_STANDUP_AGENT', $findings[0]->message);
+        $this->assertStringContainsString('BRIDGE_STANDUP_ENABLED=false', $findings[0]->message);
     }
 
     public function test_the_marker_read_still_happens_on_a_misconfigured_install(): void
@@ -111,7 +129,7 @@ class StandupPostureCheckTest extends TestCase
         // behind the first would cost the operator a round trip — fix the recipient, re-run,
         // discover the digest has also been failing — which is the reason JobsPostureCheck's
         // misconfigured arm deliberately does not return either.
-        config(['bridge.standup.agent' => '']);
+        config(['bridge.standup.agent' => '../pm']);
         Cache::put(StandupGate::ERROR_KEY, ['exception' => 'X', 'error' => 'y', 'at' => 'then'], 60);
 
         $findings = $this->findingsOf(new StandupPostureCheck);
@@ -123,7 +141,7 @@ class StandupPostureCheckTest extends TestCase
 
     public function test_a_disabled_digest_is_silent_even_with_a_standing_fault_marker(): void
     {
-        // The default install, and the arm the whole corpus is the control for. A marker
+        // The declined install (BRIDGE_STANDUP_ENABLED=false). A marker
         // standing under a digest the operator has since switched OFF states a fault about
         // work nobody wants; it expires on its own. Both siblings skip their marker read on
         // the disabled arm, and this mirrors them rather than deciding it afresh.

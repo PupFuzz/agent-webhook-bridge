@@ -107,11 +107,41 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->assertSame([], $this->findings());
     }
 
-    public function test_a_missing_install_fails(): void
+    /**
+     * Since card#10918 / DL-441 the nudge is ON without anyone asking, so a Mezzanine key nobody
+     * set is the NOT-SET-UP state of every install with a push-routed agent, not a broken config:
+     * `warn`, naming every unset key at once and the switch that declines the nudge.
+     */
+    public function test_an_unset_mezzanine_key_warns_naming_it_and_the_switch_to_decline(): void
     {
         config(['bridge.idle_nudge.install' => null]);
 
-        $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_ENABLED=false');
+    }
+
+    public function test_every_unset_mezzanine_key_is_named_in_one_line(): void
+    {
+        config([
+            'bridge.idle_nudge.base_url' => null,
+            'bridge.idle_nudge.token_path' => null,
+            'bridge.idle_nudge.install' => null,
+        ]);
+
+        $findings = $this->findings();
+        $this->assertCount(1, $findings, implode("\n", array_map(fn (Finding $f) => $f->message, $findings)));
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        foreach (['BRIDGE_IDLE_NUDGE_BASE_URL', 'BRIDGE_IDLE_NUDGE_TOKEN_PATH', 'BRIDGE_IDLE_NUDGE_INSTALL'] as $key) {
+            $this->assertStringContainsString($key, $findings[0]->message);
+        }
+    }
+
+    /** A key somebody SET, wrongly, is still a broken config — the control for the two above. */
+    public function test_a_set_but_invalid_base_url_still_fails(): void
+    {
+        config(['bridge.idle_nudge.base_url' => 'http://mezzanine.example', 'bridge.idle_nudge.install' => null]);
+
+        $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_BASE_URL');
     }
 
     public function test_an_out_of_bound_default_horizon_fails_rather_than_clamping(): void
@@ -133,6 +163,7 @@ class IdleNudgePostureCheckTest extends TestCase
     public function test_enabled_with_no_instance_warns(): void
     {
         $this->assertOne(Severity::Warn, 'no ENABLED `idle_nudge` job instance exists');
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_ENABLED=false');
     }
 
     public function test_more_than_one_enabled_instance_fails(): void
@@ -297,7 +328,7 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->seatRecordOnly();
         $this->agentYaml('impl', "channel:\n  url: http://127.0.0.1:8789/\n  route_intents: true\n");
 
-        $this->assertOne(Severity::Fail, 'idle_nudge: enabled but MISCONFIGURED — BRIDGE_IDLE_NUDGE_BASE_URL');
+        $this->assertOne(Severity::Warn, 'idle_nudge: ON (the default since DL-441) but NOT SET UP for the agents it reads from Mezzanine');
     }
 
     /** @return array<string, array{string, string}> */

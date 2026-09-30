@@ -32,6 +32,12 @@ final class StandupConfig
         public readonly int $interval,
         /** Why this config pushes nothing, in operator vocabulary; null when usable. */
         public readonly ?string $problem,
+        /**
+         * True when the reason is that nobody named a recipient — the NOT-SET-UP state every
+         * install starts in since the digest ships on (card#10918 / DL-441), as opposed to a
+         * value somebody set wrongly.
+         */
+        public readonly bool $recipientUnset,
     ) {}
 
     public static function fromConfig(): self
@@ -45,6 +51,7 @@ final class StandupConfig
             agent: $agent === '' ? null : $agent,
             interval: $interval,
             problem: self::problemWith($rawAgent, $agent, $interval),
+            recipientUnset: $rawAgent === null || $agent === '',
         );
     }
 

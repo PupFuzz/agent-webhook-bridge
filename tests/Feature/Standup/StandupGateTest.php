@@ -90,8 +90,8 @@ class StandupGateTest extends TestCase
 
     public function test_a_disabled_gate_pushes_nothing(): void
     {
-        // Off by default is the shipped posture, so this is the arm every install that has
-        // not opted in runs. It must register no callback at all, not push an empty digest.
+        // The declined posture (BRIDGE_STANDUP_ENABLED=false; the digest ships ON since
+        // DL-441). It must register no callback at all, not push an empty digest.
         config(['bridge.standup.enabled' => false]);
         $this->fakeChannel();
 

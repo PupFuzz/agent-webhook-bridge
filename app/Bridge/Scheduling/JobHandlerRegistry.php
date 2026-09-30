@@ -11,9 +11,9 @@ use App\Bridge\Support\CsvEnv;
 use App\Bridge\Support\HandlerRegistry;
 
 /**
- * The set of periodic-job handlers THIS BUILD has, and which of them this INSTALL has armed
- * (card#8425 / DL-325 — with one named exception, {@see self::armedFromConfig}). The code
- * half of the governance split; {@see JobRegistry} is the data half.
+ * The set of periodic-job handlers THIS BUILD has, and which of them this INSTALL has
+ * DISARMED (card#8425 / DL-325, arming inverted by card#10918 / DL-441). The code half of the
+ * governance split; {@see JobRegistry} is the data half.
  *
  * A container singleton, exactly like `App\Bridge\Support\HandlerRegistry` and for the same
  * reason: an operator registers custom handlers against the instance the scheduler
@@ -22,12 +22,19 @@ use App\Bridge\Support\HandlerRegistry;
  * `bridge:tick` are different processes with their own container, so a handler wired in one
  * request is not wired for the tick unless it is registered in a provider both load.
  *
- * ⭐ ARMING IS SEPARATE FROM REGISTRATION, and the separation is the governance. Every
- * handler is REGISTERED unconditionally — the registry must be able to say "that handler
- * exists but is not armed", which is a different fact from "no such handler" and takes a
- * different remedy. Only {@see JobCapability::MutatesState} handlers need arming; a
- * read-and-alert handler is runnable as soon as it exists, which is what makes inserting
- * instances of it free.
+ * ⭐ ARMING IS SEPARATE FROM REGISTRATION. Every handler is REGISTERED unconditionally — the
+ * registry must be able to say "that handler exists but is disarmed", which is a different
+ * fact from "no such handler" and takes a different remedy. Only
+ * {@see JobCapability::MutatesState} handlers can be disarmed; a read-and-alert handler is
+ * stopped by disabling its instance.
+ *
+ * ⭐ ARMED UNLESS DISARMED (DL-441). DL-325 shipped every state-mutating handler inert until
+ * an operator named it; the operator reversed that (2026-09-29): new functionality ships
+ * enabled, and a per-handler kill switch stays. The kill switch is
+ * `BRIDGE_JOBS_DISARMED_MUTATORS`, plus `owed_write_retry`'s own
+ * `BRIDGE_OWED_WRITE_RETRY_DISABLED` (card#10849 / DL-440), both read in this class and
+ * nowhere else: {@see self::disarmedFromConfig()} builds the set the scheduler refuses, and
+ * {@see self::disarmedBy()} names the setting to anyone explaining why a job is not running.
  */
 final class JobHandlerRegistry
 {
@@ -35,13 +42,11 @@ final class JobHandlerRegistry
     private array $handlers = [];
 
     /**
-     * @param  list<string>  $armedMutators  handler names this install's operator has armed —
-     *                                       see {@see self::armedFromConfig} for the one name
-     *                                       ({@see OwedWriteRetryJob::NAME}) a caller resolving
-     *                                       this from config gets ADDED to what it read
+     * @param  list<string>  $disarmedMutators  handler names this install's operator has switched
+     *                                          off — {@see self::disarmedFromConfig()} reads them
      */
     public function __construct(
-        private readonly array $armedMutators,
+        private readonly array $disarmedMutators,
         StandupGate $standupGate,
         HandlerRegistry $handlers,
     ) {
@@ -52,37 +57,58 @@ final class JobHandlerRegistry
     }
 
     /**
-     * Parse the operator's armed list out of the resolved config value, THEN add
-     * {@see OwedWriteRetryJob::NAME} unless its OWN kill switch
-     * (`bridge.jobs.owed_write_retry_disabled` / `BRIDGE_OWED_WRITE_RETRY_DISABLED`) is set.
-     * The `env()` reads stay in config/bridge.php (larastan's noEnvCallsOutsideOfConfig).
-     *
-     * ⭐ THE ONE NAMED EXCEPTION TO DL-325's DEFAULT-OFF, AND SCOPED TO THAT ONE NAME —
-     * never read this as a pattern for arming a mutator by default. DL-325 governs every
-     * OTHER state-mutating handler exactly as before: unlisted in `BRIDGE_JOBS_ARMED_MUTATORS`
-     * ⇒ unarmed. `owed_write_retry` is carved out by explicit operator ruling (2026-09-29,
-     * card#10849 / DL-440): new functionality defaults ON and needs no setup, where DL-325's
-     * board-writing-jobs-off-by-default is being reversed BRIDGE-WIDE under a separate card —
-     * this PR reverses it for this one handler only, ahead of that wider change.
+     * The handler names this install has disarmed: `BRIDGE_JOBS_DISARMED_MUTATORS`, plus
+     * {@see OwedWriteRetryJob::NAME} when its own kill switch is set. The `env()` reads stay in
+     * config/bridge.php (larastan's noEnvCallsOutsideOfConfig).
      *
      * @return list<string>
      */
-    public static function armedFromConfig(): array
+    public static function disarmedFromConfig(): array
     {
-        $raw = config('bridge.jobs.armed_mutators');
-        $armed = is_string($raw) ? CsvEnv::parse($raw) : [];
-
-        // The kill switch wins OUTRIGHT, whether or not the operator also (redundantly, or
-        // left over from before disabling) named it explicitly — a kill switch that an
-        // explicit list entry could silently override would not be a kill switch.
-        if ((bool) config('bridge.jobs.owed_write_retry_disabled')) {
-            return array_values(array_filter($armed, static fn (string $name): bool => $name !== OwedWriteRetryJob::NAME));
-        }
-        if (! in_array(OwedWriteRetryJob::NAME, $armed, true)) {
-            $armed[] = OwedWriteRetryJob::NAME;
+        $disarmed = self::disarmList();
+        if ((bool) config('bridge.jobs.owed_write_retry_disabled') && ! in_array(OwedWriteRetryJob::NAME, $disarmed, true)) {
+            $disarmed[] = OwedWriteRetryJob::NAME;
         }
 
-        return $armed;
+        return $disarmed;
+    }
+
+    /**
+     * The setting that disarms `$name` on this install, in the words an operator would type to
+     * undo it — or null when nothing does. Read at call time, so a caller that decides whether
+     * to declare an instance, and one that explains why a job is not running, both answer from
+     * the config in force rather than from whatever the singleton was built with.
+     */
+    public static function disarmedBy(string $name): ?string
+    {
+        if ($name === OwedWriteRetryJob::NAME && (bool) config('bridge.jobs.owed_write_retry_disabled')) {
+            return 'BRIDGE_OWED_WRITE_RETRY_DISABLED=true';
+        }
+
+        return in_array($name, self::disarmList(), true) ? 'BRIDGE_JOBS_DISARMED_MUTATORS' : null;
+    }
+
+    /**
+     * The entries of `BRIDGE_JOBS_DISARMED_MUTATORS` that name no state-mutating handler in this
+     * build — a typo, a read-and-alert handler, or one an upgrade removed. Each switches nothing
+     * off while the operator believes it did, so `bridge:check` names them.
+     *
+     * @return list<string>
+     */
+    public function disarmEntriesThatNameNoMutator(): array
+    {
+        return array_values(array_filter(
+            self::disarmList(),
+            fn (string $name): bool => $this->resolve($name)?->capability() !== JobCapability::MutatesState,
+        ));
+    }
+
+    /** @return list<string> */
+    private static function disarmList(): array
+    {
+        $raw = config('bridge.jobs.disarmed_mutators');
+
+        return is_string($raw) ? CsvEnv::parse($raw) : [];
     }
 
     public function register(JobHandler $handler): void
@@ -140,8 +166,8 @@ final class JobHandlerRegistry
         }
 
         if ($handler->capability() === JobCapability::MutatesState
-            && ! in_array($name, $this->armedMutators, true)) {
-            return JobRefusal::unarmedMutator($name);
+            && in_array($name, $this->disarmedMutators, true)) {
+            return JobRefusal::disarmedMutator($name);
         }
 
         return $handler;

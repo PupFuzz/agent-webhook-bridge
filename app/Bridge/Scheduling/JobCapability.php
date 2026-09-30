@@ -16,15 +16,17 @@ namespace App\Bridge\Scheduling;
  * state-mutating jobs "need approval" is enforced by whoever happens to review the PR, and
  * is silently satisfied by a handler that grows a write six months later. Declaring the
  * capability puts the claim in the type system, where {@see JobHandlerRegistry} can act on
- * it at runtime: a {@see self::MutatesState} handler is INERT unless this install's
- * operator armed it by name (`BRIDGE_JOBS_ARMED_MUTATORS`), and the scheduler records a
- * loud refusal rather than running it.
+ * it at runtime: a {@see self::MutatesState} handler can be DISARMED by this install's
+ * operator by name (`BRIDGE_JOBS_DISARMED_MUTATORS`), and the scheduler then records a loud
+ * refusal rather than running it. ⚠ Since card#10918 / DL-441 it is ARMED BY DEFAULT: DL-325
+ * shipped it inert until armed, and the operator reversed that (new functionality ships on;
+ * a per-handler kill switch stays).
  *
  * ⛔ WHAT THE DECLARATION DOES NOT ESTABLISH, stated because an unstated bound reads as a
  * guarantee: it records what the AUTHOR CLAIMS, not what the code does. A handler that
  * writes to a board while declaring {@see self::ReadAndAlert} is mis-declared, and nothing
- * here detects that — the declaration's job is to make the claim reviewable and to make
- * arming an explicit operator act, not to sandbox the handler.
+ * here detects that — the declaration's job is to make the claim reviewable and to give the
+ * operator a per-handler kill switch, not to sandbox the handler.
  */
 enum JobCapability: string
 {
@@ -35,10 +37,9 @@ enum JobCapability: string
     case ReadAndAlert = 'read_and_alert';
 
     /**
-     * Mutates board or install state. REQUIRES OPERATOR APPROVAL TO EXIST AT ALL, and the
-     * approval is mechanised: the handler is registered but stays unarmed until this
-     * install names it in `bridge.jobs.armed_mutators`. An unarmed instance is refused at
-     * insert and, if it was armed and later disarmed, refused again at run.
+     * Mutates board or install state. Armed by default (DL-441); an operator switches one off
+     * by naming it in `bridge.jobs.disarmed_mutators`. A disarmed handler's instance is
+     * refused at insert and, if it was armed at insert and disarmed since, refused again at run.
      */
     case MutatesState = 'mutates_state';
 }

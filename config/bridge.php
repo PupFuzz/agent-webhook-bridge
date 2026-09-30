@@ -205,8 +205,13 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | PM standup digest (DL-306) — OFF by default, event-gated like retention
+    | PM standup digest (DL-306) — ON by default (DL-441), event-gated like retention
     |--------------------------------------------------------------------------
+    |
+    | ⭐ ON UNLESS DECLINED (card#10918 / DL-441, amending DL-306's opt-in): new
+    | functionality ships enabled and names its missing setup. With no `agent` it
+    | pushes nothing, logs once a day, and `bridge:check` warns naming
+    | BRIDGE_STANDUP_AGENT; BRIDGE_STANDUP_ENABLED=false declines the digest.
     |
     | A periodic fleet-snapshot push to one seat (the PM), carrying ONLY facts the
     | bridge can derive from its own stores. It rides the SAME event gate retention
@@ -233,27 +238,28 @@ return [
     | agent — the seat the digest is pushed to, by per-agent YAML name. Its own
     | `channel` block is the endpoint (and its `channel.auth.token_path` the bearer),
     | so the push reuses the `channel_push` handler rather than minting a second
-    | transport. Unset ⇒ the digest is misconfigured and pushes nothing.
+    | transport. Unset ⇒ the digest is not set up and pushes nothing.
     |
     */
 
     'standup' => [
-        'enabled' => (bool) env('BRIDGE_STANDUP_ENABLED', false),
+        'enabled' => (bool) env('BRIDGE_STANDUP_ENABLED', true),
         'agent' => env('BRIDGE_STANDUP_AGENT'),
         'interval' => (int) env('BRIDGE_STANDUP_INTERVAL', 86400),
     ],
 
     /*
     |--------------------------------------------------------------------------
-    | Idle-with-pending-work nudge (DL-380) — OFF by default, a periodic-job handler
+    | Idle-with-pending-work nudge (DL-380) — ON by default (DL-441), a periodic-job handler
     |--------------------------------------------------------------------------
     |
     | The `idle_nudge` job handler pushes ONE nudge at a seat that has sat idle past its
     | horizon with work waiting — judged from the seat's own offer record where its YAML
     | declares `idle_nudge.seat_record` (DL-424), otherwise from Mezzanine's fleet snapshot
-    | and the intents pushed at it since it went idle. Read-and-alert only. Inert until
-    | ENABLED here AND an `idle_nudge` instance is inserted (`bridge:jobs add`).
-    | docs/periodic-jobs.md.
+    | and the intents pushed at it since it went idle. Read-and-alert only. ENABLED by
+    | default (card#10918 / DL-441); it runs once an `idle_nudge` instance is inserted
+    | (`bridge:jobs add`), and until then `bridge:check` warns naming that step.
+    | BRIDGE_IDLE_NUDGE_ENABLED=false declines it. docs/periodic-jobs.md.
     |
     | ⛔ The numbers are deliberately NOT cast: a value outside its bound is refused,
     | never clamped, and a cast would turn `ten` into 0 before anything could say so.
@@ -269,7 +275,7 @@ return [
     */
 
     'idle_nudge' => [
-        'enabled' => (bool) env('BRIDGE_IDLE_NUDGE_ENABLED', false),
+        'enabled' => (bool) env('BRIDGE_IDLE_NUDGE_ENABLED', true),
         'base_url' => env('BRIDGE_IDLE_NUDGE_BASE_URL'),
         'token_path' => env('BRIDGE_IDLE_NUDGE_TOKEN_PATH'),
         'install' => env('BRIDGE_IDLE_NUDGE_INSTALL'),
@@ -324,22 +330,23 @@ return [
     | this runs inside an FPM worker after the response, and DL-001's latency bet is
     | what an unbounded pass spends.
     |
-    | ⭐ armed_mutators — THE GOVERNANCE GATE, and the only ask-the-operator one here.
-    | A handler declaring the state-mutating capability is INERT until this install
-    | names it in this list: it is refused at insert AND at run, loudly, with the row
-    | recording `refused` rather than a silent skip. Read-and-alert handlers
-    | (staleness, wakes, watches, cleanups) need no entry — they exist under normal
-    | code review, which is what makes inserting instances of them free. Comma-
-    | separated handler names.
-    | ⛔ ONE NAMED EXCEPTION: `owed_write_retry` (card#10849 / DL-440, operator ruling
-    | 2026-09-29) is armed by DEFAULT regardless of this list — new functionality
-    | defaults on — and is disabled only by `owed_write_retry_disabled` below. Every
-    | other mutator is governed by this list exactly as DL-325 states; this is not a
-    | pattern to extend to another handler without the same kind of explicit ruling.
+    | ⭐ disarmed_mutators — THE PER-HANDLER KILL SWITCH. A handler declaring the
+    | state-mutating capability is ARMED BY DEFAULT (card#10918 / DL-441, amending
+    | DL-325's opt-in arming): naming it here disarms it, and it is then refused at
+    | insert AND at run, loudly, with the row recording `refused` rather than a silent
+    | skip. Read-and-alert handlers are never disarmed here — stop one by disabling its
+    | instance (`bridge:jobs disable`). Comma-separated handler names; `bridge:check`
+    | warns on a name that is not a state-mutating handler in this build, because that
+    | entry switches nothing off.
     |
-    | ⭐ owed_write_retry_disabled — THE KILL SWITCH for that one exception. `true`
-    | (`BRIDGE_OWED_WRITE_RETRY_DISABLED=true`) withholds `owed_write_retry` from the
-    | armed set above, exactly as if it were never named in `armed_mutators`.
+    | ⭐ owed_write_retry_disabled — `owed_write_retry`'s own named kill switch
+    | (card#10849 / DL-440), kept beside the list: `true`
+    | (`BRIDGE_OWED_WRITE_RETRY_DISABLED=true`) disarms it exactly as naming it in
+    | `disarmed_mutators` does.
+    |
+    | ⛔ armed_mutators (`BRIDGE_JOBS_ARMED_MUTATORS`) is RETIRED: it was DL-325's
+    | opt-in list and arms nothing since DL-441. It is read only so `bridge:check` can
+    | say a set value has no effect.
     |
     | ⭐ tick_expected_every — DEATH IS THE ALARM, and this is the declaration that
     | arms it. Set it to the crontab line's interval in seconds (600 for a ten-minute crontab line). The
@@ -361,6 +368,7 @@ return [
         'enabled' => (bool) env('BRIDGE_JOBS_ENABLED', true),
         'min_pass_interval' => (int) env('BRIDGE_JOBS_MIN_PASS_INTERVAL', 60),
         'max_per_pass' => (int) env('BRIDGE_JOBS_MAX_PER_PASS', 3),
+        'disarmed_mutators' => env('BRIDGE_JOBS_DISARMED_MUTATORS', ''),
         'armed_mutators' => env('BRIDGE_JOBS_ARMED_MUTATORS', ''),
         'owed_write_retry_disabled' => (bool) env('BRIDGE_OWED_WRITE_RETRY_DISABLED', false),
         // ⚠ Deliberately NOT cast: a null must stay a null. `(int) null` is 0, which

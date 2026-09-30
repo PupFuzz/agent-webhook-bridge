@@ -2899,7 +2899,10 @@ the work distinguishes those.
   card#7756 entry predicts and nothing more:** all 45 committed captures moved their inventory
   line (`39 registered · 23 ran (…, 14 …)` → `40 · 24 (…, 15 …)`) and **not one line of
   content**, because the leg is silent on an install that left the digest off — which every
-  fixture but the three added here does. `UnvalidatedCallSiteTest` reds as designed (one new
+  fixture but the three added here does. *(Annotation, card#10918 / DL-441: that premise no
+  longer holds — the digest ships ON, so the leg now prints a NOT-SET-UP `warn` on every fixture
+  that names no recipient, and the corpus was regenerated for it. The measurement above is a
+  record of that stage and is not edited.)* `UnvalidatedCallSiteTest` reds as designed (one new
   site, argued in place). ⚑ **The `39` literal is a SECOND statement of the registered total on
   purpose** and must be moved by hand in the same commit; deriving it from the registration
   list would make the two terms agree by construction and cost the independent statement. ⚑

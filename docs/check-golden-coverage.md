@@ -59,6 +59,15 @@
 > red. A green suite is therefore evidence that this file describes THIS `handle()`, and no
 > evidence at all about how current the three columns are.
 
+> ⚑ **A CONFIG DEFAULT MOVED UNDER THIS MEASUREMENT (card#10918 / DL-441), and it was not
+> re-run.** The standup digest and the idle nudge now ship ENABLED, so their two legs
+> (`CheckSlot::Standup`, `CheckSlot::IdleNudge`) print a `warn` on every golden capture where
+> they were silent when the run above was taken. Both slots' own predicates are already in the
+> never-measured list in the banner above, so no verdict below claims them. For every OTHER
+> predicate the change can only ADD differing output to a mutant's capture — a line that was
+> already different stays different — so it can turn an UNOBSERVED verdict observed, never an
+> observed one unobserved; the table may therefore overstate the gaps, not understate them.
+
 The DL-242 plan holds stages 0-7 to a byte-identical output contract, enforced by
 `tests/Feature/Console/Check/CheckGoldenTest.php`. The plan also requires that the bound on
 that contract be stated rather than implied: *"no operator-visible change" holds only over

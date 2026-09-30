@@ -56,7 +56,7 @@ final class IdleNudgePostureCheck implements Check
         $cfg = IdleNudgeConfig::fromConfig();
 
         if (! $cfg->enabled) {
-            yield Silence::because('the idle nudge is off (its default), so this install reads no fleet snapshot and pushes no nudge');
+            yield Silence::because('the idle nudge is declined (BRIDGE_IDLE_NUDGE_ENABLED=false), so this install reads no fleet snapshot and pushes no nudge');
 
             return;
         }
@@ -70,6 +70,17 @@ final class IdleNudgePostureCheck implements Check
         }
 
         if ($sources->mezzanineNeeded()) {
+            // ⚑ NOT SET UP IS A `warn`, SET WRONGLY STAYS A `fail` (card#10918 / DL-441). The
+            // nudge is on by default, so unset keys are where every install with a push-routed
+            // agent starts — a `fail` there would red the deploy gate of an install nobody
+            // touched, for a feature nobody set up.
+            if ($cfg->unsetKeys !== []) {
+                yield Finding::warn('idle_nudge: ON (the default since DL-441) but NOT SET UP for the agents it reads from Mezzanine (those with `channel.route_intents: true` and no `idle_nudge.seat_record`) — '
+                    .$cfg->problem.'. None of them is nudged. Set '.implode(', ', $cfg->unsetKeys)
+                    .', give each such agent an `idle_nudge.seat_record` instead, or decline the nudge with BRIDGE_IDLE_NUDGE_ENABLED=false (docs/periodic-jobs.md § The idle nudge).');
+
+                return;
+            }
             if ($cfg->problem !== null) {
                 yield Finding::fail('idle_nudge: enabled but MISCONFIGURED — '.$cfg->problem.'. Every Mezzanine-sourced agent is unmeasured and none is nudged.');
 
@@ -93,7 +104,8 @@ final class IdleNudgePostureCheck implements Check
         }
 
         if ($instances->isEmpty()) {
-            yield Finding::warn('idle_nudge: enabled, but no ENABLED `'.IdleNudgeJob::NAME.'` job instance exists, so nothing runs it. Insert one with `php artisan bridge:jobs add … --handler='.IdleNudgeJob::NAME.'` (docs/periodic-jobs.md).');
+            yield Finding::warn('idle_nudge: enabled, but no ENABLED `'.IdleNudgeJob::NAME.'` job instance exists, so nothing runs it. Insert one with `php artisan bridge:jobs add … --handler='.IdleNudgeJob::NAME.'` (docs/periodic-jobs.md § The idle nudge), '
+                .'or decline the nudge with BRIDGE_IDLE_NUDGE_ENABLED=false.');
 
             return;
         }
