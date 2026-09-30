@@ -1262,6 +1262,8 @@ def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
 # is UNSET (an empty VAR stays empty), and an unresolved reference is left in place and warned about.
 _MCP_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _TRANSPORT_ENV_PREFIX = "BRIDGE_TOOLS_"
+# The one door key outside that prefix: channel-lib.mjs `resolveToolsToken`'s last-resort bearer.
+_TRANSPORT_ENV_EXTRA = ("BRIDGE_CHANNEL_TOKEN",)
 
 
 def bootstrap_env(recorded: dict, environ=None) -> tuple:
@@ -1269,8 +1271,8 @@ def bootstrap_env(recorded: dict, environ=None) -> tuple:
     process's environment, overlaid by the channel's recorded `.mcp.json` env with Claude Code's
     `${VAR}` / `${VAR:-default}` expansion applied from this process's environment.
 
-    Returns `(env, inherited)`: `inherited` names the `BRIDGE_TOOLS_*` keys this environment sets
-    that the channel does not record — the bootstrap sees them, and a session sees them only if it
+    Returns `(env, inherited)`: `inherited` names the door keys (`BRIDGE_TOOLS_*`, and the
+    `BRIDGE_CHANNEL_TOKEN` fallback bearer) this environment sets that the channel does not record — the bootstrap sees them, and a session sees them only if it
     is started from an environment that sets them too, which this process cannot know.
     A reference to an unset variable with no default is refused: Claude Code would pass the
     literal text, and a bootstrap handed it would ask a door that does not exist.
@@ -1298,7 +1300,9 @@ def bootstrap_env(recorded: dict, environ=None) -> tuple:
                 f"default — set it in this shell as your sessions have it, or record the value"
             )
         env[key] = expanded
-    inherited = sorted(k for k in base if k.startswith(_TRANSPORT_ENV_PREFIX) and k not in recorded)
+    inherited = sorted(
+        k for k in base if (k.startswith(_TRANSPORT_ENV_PREFIX) or k in _TRANSPORT_ENV_EXTRA) and k not in recorded
+    )
     return env, inherited
 
 
@@ -1313,9 +1317,12 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
     `.mcp.json` changed.
     """
     try:
+        root = client_root(channel_name)
+    except ValueError as e:
+        _fail(f"{e} — nothing was installed and .mcp.json is unchanged.")
+    try:
         recorded = read_recorded_ssh_transport(existing_text, channel_name)
         env, inherited = bootstrap_env(recorded)
-        root = client_root(channel_name)
     except ValueError as e:
         _fail(f"{mcp_path} {e} — nothing was installed and .mcp.json is unchanged.")
     for key in inherited:
@@ -1347,9 +1354,8 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
         _fail(f"could not run node for the client bootstrap: {e} — .mcp.json is unchanged.")
     if proc.returncode != 0:
         _fail(
-            f"the client bootstrap did not install a client (exit {proc.returncode}; its reason is above, and "
-            f"in {os.path.join(root, 'install-log.jsonl')}) — .mcp.json is unchanged and this seat keeps the "
-            f"channel server it had."
+            f"the client bootstrap did not complete (exit {proc.returncode}; its reason is printed above) — "
+            f".mcp.json is unchanged and this seat keeps the channel server it had."
         )
     if not os.path.isfile(entry):
         _fail(f"the client bootstrap reported success but {entry} does not exist — .mcp.json is unchanged.")
@@ -1435,11 +1441,13 @@ def run_role_b(args) -> int:
     # (design review r3-M1).
     client_entry = recorded_client_entry(existing_text, args.channel_name)
     if client_entry is not None and not os.path.isfile(client_entry):
-        _fail(
-            f"{mcp_path} points channel {args.channel_name} at {client_entry}, which does not exist, so its "
-            f"channel server cannot start. Run `--role b --bootstrap-client` to reinstall the client there; "
-            f"nothing was changed."
-        )
+        # The seat cannot start as recorded. This run's job is a working channel on the transport it
+        # is given, so it deploys the legacy snapshot and says so, rather than refusing into a dead
+        # end (a root to rebuild over a transport this run may be here to change).
+        print(f"channel server: {client_entry} does not exist, so this seat cannot start its bootstrapped client; "
+              f"deploying the legacy snapshot so it can start. It will NOT update itself — run "
+              f"`--role b --bootstrap-client` afterwards to put it back on the update path.")
+        client_entry = None
     if client_entry is not None:
         mjs_path = client_entry
         snapshot_replaced = False

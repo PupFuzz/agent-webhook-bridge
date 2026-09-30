@@ -967,7 +967,9 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
     } catch (err) {
       if (aside !== null) {
         try {
-          fs.renameSync(aside, target);
+          // Retried like the rename in (a Windows EPERM/EBUSY is what most likely failed it), for
+          // at most half the lock's grace, so the restore stays inside the lock this process holds.
+          renameWithRetry(aside, target, { deadline: Date.now() + LOCK_GRACE_MS / 2 });
         } catch (restoreErr) {
           throw new Failure(`versions/${release} could not be replaced (${err && err.code ? err.code : err && err.message ? err.message : err}), and the previous copy could not be moved back from ${aside} (${restoreErr && restoreErr.code ? restoreErr.code : restoreErr && restoreErr.message ? restoreErr.message : restoreErr}); bootstrap again`);
         }

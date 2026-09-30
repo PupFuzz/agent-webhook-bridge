@@ -1636,7 +1636,7 @@ test('a bootstrap whose rename into versions/ fails puts the copy it was replaci
   assert.equal(classifyRelease(root, '1.0.0', 'full').status, 'ok', 'bootstrapping again repairs it');
 });
 
-test('a bootstrap killed between moving the old copy aside and the new one in is recovered by bootstrapping again', async (t) => {
+test('a bootstrap killed between moving the old copy aside and the new one in is recovered by bootstrapping again once its lock expires', async (t) => {
   const root = await seatWith(t, '1.0.0', { pack: packWithExtraDep('1.0.0') });
   fs.writeFileSync(path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs'), 'export const ok = true; // damaged\n');
   const files = writePack(t, packWithExtraDep('1.0.0'));
@@ -1647,6 +1647,7 @@ test('a bootstrap killed between moving the old copy aside and the new one in is
   });
   assert.ok(killed.signal === 'SIGKILL' || killed.status !== 0, `the bootstrap was killed (${killed.status}/${killed.signal})`);
   assert.ok(fs.existsSync(path.join(root, 'staging', '1.0.0.replaced', 'client', 'agent-webhook-bridge-channel.mjs')), 'the old copy is aside, not deleted');
+  // The dead bootstrap's lock holds until its deadline plus the grace; move it into the past rather than wait.
   const held = JSON.parse(fs.readFileSync(path.join(root, '.lock'), 'utf8'));
   fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ ...held, deadline_ms: Date.now() - 60000 }));
 

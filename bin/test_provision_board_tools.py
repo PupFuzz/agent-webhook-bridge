@@ -1097,15 +1097,18 @@ class RoleBHostBLeg(unittest.TestCase):
         self.assertEqual(recorded["env"]["BRIDGE_TOOLS_SSH_PORT"], "2222")
         self.assertIn("runs its bootstrapped client", buf.getvalue())
 
-    def test_a_re_run_on_a_seat_whose_bootstrapped_entry_is_gone_refuses_and_names_the_bootstrap(self):
+    def test_a_re_run_on_a_seat_whose_bootstrapped_entry_is_gone_deploys_the_snapshot_and_says_so(self):
+        # Review r2: refusing here was a dead end for a seat whose root is gone AND whose transport is
+        # what this run changes (--bootstrap-client asks the old, recorded door).
         self._write_bootstrapped_mcp(create=False)
+        rc, out = self._run(["--ssh-target", "bridge@127.0.0.2"], deploy_prints=["deployed"])
+        self.assertEqual(rc, 0)
         with open(self.mcp_path, encoding="utf-8") as fh:
-            before = fh.read()
-        with self.assertRaises(SystemExit) as cm:
-            self._run(["--ssh-port", "2222"])
-        self.assertIn("--bootstrap-client", str(cm.exception))
-        with open(self.mcp_path, encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), before)
+            recorded = json.load(fh)["mcpServers"]["kanbanboard-agent"]
+        self.assertEqual(recorded["args"], [os.path.join(self.project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)])
+        self.assertEqual(recorded["env"]["BRIDGE_TOOLS_SSH_TARGET"], "bridge@127.0.0.2")
+        self.assertIn("will NOT update itself", out)
+        self.assertIn("--bootstrap-client", out)
 
     def test_a_re_run_on_a_legacy_seat_still_deploys_and_points_at_the_snapshot(self):
         # The control for the case above: the same run on a seat that was never bootstrapped.
@@ -2811,14 +2814,16 @@ class BootstrapEnv(unittest.TestCase):
     """The bootstrap's environment is built as a launch builds the channel server's: this process's
     environment overlaid by the recorded env, with Claude Code's `${VAR}` expansion."""
 
-    def test_the_recorded_env_overlays_this_one_and_unrecorded_transport_keys_are_named(self):
+    def test_the_recorded_env_overlays_this_one_and_unrecorded_door_keys_are_named(self):
         env, inherited = pbt.bootstrap_env(
             {"BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:8/agent-tools/call"},
-            {"PATH": "/bin", "BRIDGE_TOOLS_ENDPOINT": "http://elsewhere/agent-tools/call", "BRIDGE_TOOLS_TOKEN": "t"},
+            {"PATH": "/bin", "BRIDGE_TOOLS_ENDPOINT": "http://elsewhere/agent-tools/call", "BRIDGE_TOOLS_TOKEN": "t",
+             "BRIDGE_CHANNEL_TOKEN": "c", "BRIDGE_CHANNEL_NAME": "n"},
         )
         self.assertEqual(env, {"PATH": "/bin", "BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:8/agent-tools/call",
-                               "BRIDGE_TOOLS_TOKEN": "t"})
-        self.assertEqual(inherited, ["BRIDGE_TOOLS_TOKEN"])
+                               "BRIDGE_TOOLS_TOKEN": "t", "BRIDGE_CHANNEL_TOKEN": "c", "BRIDGE_CHANNEL_NAME": "n"})
+        # BRIDGE_CHANNEL_TOKEN is resolveToolsToken's fallback bearer (review r2); the channel NAME is not a door key.
+        self.assertEqual(inherited, ["BRIDGE_CHANNEL_TOKEN", "BRIDGE_TOOLS_TOKEN"])
 
     def test_expansion_follows_claude_code(self):
         env, _ = pbt.bootstrap_env(
@@ -2852,7 +2857,7 @@ class BootstrapClientEntryPoint(unittest.TestCase):
         with open(self.mcp_path, encoding="utf-8") as fh:
             self.before = fh.read()
 
-    def _run(self, rc=0, writes_entry=True, extra=(), edit_mcp_to=None):
+    def _run(self, rc=0, writes_entry=True, extra=(), edit_mcp_to=None, environ=None):
         seen = []
 
         def fake_run(cmd, env=None, cwd=None, check=False):
@@ -2867,10 +2872,11 @@ class BootstrapClientEntryPoint(unittest.TestCase):
 
         argv = ["--role", "b", "--agent", "a", "--bootstrap-client", "--project-dir", self.project,
                 "--channel-name", "chan", *extra]
-        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.data}), \
+        self.out = io.StringIO()
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.data, **(environ or {})}), \
              mock.patch.object(pbt, "_require_node_20"), \
              mock.patch.object(pbt.subprocess, "run", side_effect=fake_run), \
-             contextlib.redirect_stdout(io.StringIO()):
+             contextlib.redirect_stdout(self.out):
             rc_out = pbt.main(argv)
         return rc_out, seen
 
@@ -2889,6 +2895,14 @@ class BootstrapClientEntryPoint(unittest.TestCase):
         entry = json.loads(self._mcp())["mcpServers"]["chan"]
         self.assertEqual(entry["args"], [os.path.join(self.root, "entry.mjs")])
         self.assertEqual(entry["env"], self.env)
+
+    def test_an_unrecorded_door_key_in_this_shell_is_named_never_its_value(self):
+        rc, _ = self._run(environ={"BRIDGE_TOOLS_SSH_PORT": "2222", "BRIDGE_CHANNEL_TOKEN": "inherited-secret"})
+        self.assertEqual(rc, 0)
+        out = self.out.getvalue()
+        self.assertIn("note: BRIDGE_TOOLS_SSH_PORT is set in this shell and not recorded", out)
+        self.assertIn("note: BRIDGE_CHANNEL_TOKEN is set in this shell and not recorded", out)
+        self.assertNotIn("inherited-secret", out)
 
     def test_a_second_bootstrap_is_accepted_and_changes_nothing(self):
         # RED-when-reverted (r3-M1): the merge refused its own entry.mjs, so the named recovery for a
@@ -2912,7 +2926,7 @@ class BootstrapClientEntryPoint(unittest.TestCase):
         open(os.path.join(self.root, "entry.mjs"), "w").close()
         with self.assertRaises(SystemExit) as cm:
             self._run(rc=1)
-        self.assertIn("did not install a client", str(cm.exception))
+        self.assertIn("did not complete", str(cm.exception))
         self.assertEqual(self._mcp(), self.before)
 
     def test_a_mcp_json_edited_while_the_bootstrap_ran_is_left_as_edited(self):

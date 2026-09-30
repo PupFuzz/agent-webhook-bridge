@@ -1764,13 +1764,18 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   channel's `.mcp.json` args at `<root>/entry.mjs`; the env block is not touched. The fetch,
   checks and install are `client-update.mjs bootstrap` from the provisioner's own checkout,
   so nothing fetched is run. It needs `--agent --project-dir --channel-name`, refuses the
-  transport flags, and is **refused, leaving `.mcp.json` and the installed client as they
-  were, when approval is owed** (it names the release and `bridge:client-approve`), when the
-  bridge publishes no pack, or on any failed check — the refusal is logged in the root's
-  `install-log.jsonl`. Run again, it installs what the bridge offers now, repairing the root
-  when that is the installed release. For an ssh seat the key must already be pinned. A later
-  `--role b` on a bootstrapped seat refreshes the transport and **keeps** `<root>/entry.mjs`
-  (no snapshot is deployed), and refuses, naming `--bootstrap-client`, when that file is gone.
+  transport flags. It is **refused before anything is installed — `.mcp.json` and the
+  installed client as they were — when approval is owed** (it names the release and
+  `bridge:client-approve`), when the bridge publishes no pack, or when a check on what it
+  sent fails; any failure leaves `.mcp.json` unchanged, and one after the switch (DL-444
+  bound 9) leaves the new release installed for a re-run to point at. Run again, it installs
+  what the bridge offers now, repairing the root when that is the installed release; after a
+  killed run, only once that run's lock has expired. For an ssh seat the key must already be
+  pinned. A later `--role b` on a bootstrapped seat refreshes the transport and **keeps**
+  `<root>/entry.mjs` (no snapshot is deployed); when that file is gone it deploys the legacy
+  snapshot, points the channel at it and says the seat will not update itself.
+  ⚠ `bridge:check`'s snapshot legs do not know the client root yet: for a bootstrapped seat
+  unset `channel.server_path`, which otherwise certifies a directory nothing runs.
   ⚠ Not yet wired into `--certify-only`, `--self-cert` or the same-box wrapper, and the
   setup packet does not name it yet — run it by hand once the seat is certified.
   **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
