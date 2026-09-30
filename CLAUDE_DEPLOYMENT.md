@@ -112,6 +112,8 @@ php artisan bridge:provision-tools --agent=<name>  # PER AGENT, AND IT IS A QUES
                                                   # that has answered neither way, and that block is the entry point.
                                                   # Roles/handoff (ssh door): docs/board-tools-enablement.md
                                                   # HTTP-door runbook: docs/board-tools.md § Same-box enablement (Apache/FPM).
+php artisan bridge:client-pack:install            # publish this release's channel-server client pack, which board-tools
+                                                  # seats install and update from (DL-430 / DL-442) — as in § Update
 sudo systemctl reload apache2 php8.5-fpm
 # NOT DONE YET: configure AND verify the live-event path — § "Live-event path" right below.
 # GitHub answering 200 is not evidence that any agent will ever be woken.
@@ -220,6 +222,10 @@ composer install --no-dev --optimize-autoloader
 ( cd examples/channel-servers && npm ci --no-audit --no-fund )
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
+php artisan bridge:client-pack:install             # publish THIS release's channel-server client pack for seats to
+                                                  # update from (DL-430). Exit 1 "carries no client pack" means the
+                                                  # release's pack build failed; bridge:check's client_pack_source
+                                                  # leg then names the re-run that attaches it (DL-442)
 php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```
@@ -503,8 +509,11 @@ php artisan bridge:client-pack:install                # publish THIS release's c
                                                       #     as root or as a user other than the store's owner, another run
                                                       #     holding the store's lock, or a failed write — a write failing
                                                       #     part-way leaves the previous publication in service.
-                                                      #   ⚠ Releases do not carry a pack yet (the release-time build is the next
-                                                      #   slice of card#10567), so today it answers 1 on every release.
+                                                      #   A release carries its pack from the first release built with DL-442;
+                                                      #   an earlier release, or one whose release-time build failed, answers 1
+                                                      #   "carries no client pack". bridge:check's client_pack_source leg warns
+                                                      #   until this checkout's release is the published one, and names the
+                                                      #   workflow re-run that attaches a missing pack.
 php artisan bridge:client-fleet [--json]              # each board-tools seat's REPORTED client, update state and capability gap (DL-432)
                                                       #   0 read · 1 the fleet ledger could not be read · 2 agent YAMLs did not load
 php artisan bridge:client-approve <agent> <release> --reason=…   # approve the published pack's CONTENT for one agent (DL-433);

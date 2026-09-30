@@ -375,6 +375,11 @@ class UnvalidatedCallSiteTest extends TestCase
         // whose state is unknown because it never REPORTED is a state (`needs_bootstrap`), not
         // this; the leg did measure that.
         'app/Bridge/Check/Checks/ClientFleetCheck.php' => 1,
+        // card#10567 B2: this checkout's VERSION is missing or not bare X.Y.Z, so the release the
+        // published pack is compared against does not resolve — limb (c). A publication record that
+        // cannot be read is a `warn`, not a site here: the leg did establish that the door answers
+        // every seat 503.
+        'app/Bridge/Check/Checks/ClientPackSourceCheck.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void
