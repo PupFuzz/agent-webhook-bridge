@@ -1496,9 +1496,9 @@ test('no release classifies ok and one has a read fault: not started, and the re
  * `client-update.mjs bootstrap --root <root>` with the seat's env, as the provisioner spawns it.
  * Asynchronous: the fixture bridge answers from THIS process's event loop, which spawnSync blocks.
  */
-function bootstrapFromDoor(root, env) {
+function bootstrapFromDoor(root, env, extra = []) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [UPDATER, 'bootstrap', '--root', root], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [UPDATER, 'bootstrap', '--root', root, ...extra], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (c) => (stdout += c));
@@ -1537,7 +1537,7 @@ test('bootstrap from the door with approval owed fetches nothing, installs nothi
 
   const r = await bootstrapFromDoor(root, seatEnv(t, bridge));
 
-  assert.equal(r.status, 1);
+  assert.equal(r.status, 3, 'approval owed is "nothing offered right now", exit 3');
   assert.match(r.stderr, /refused: approval owed: .*release 1\.0\.0 is not approved.*bridge:client-approve <agent> 1\.0\.0/);
   assert.deepEqual(bridge.requests.map((q) => q.body.op), ['client_manifest'], 'the pack is never asked for');
   assert.equal(resolveInstalled(root).release, null);
@@ -1565,15 +1565,22 @@ test('bootstrap from a door onto an older installed release installs the offered
   assertChain(root);
 });
 
-for (const [name, setup, expect] of [
-  ['a bridge that publishes nothing', (b) => { b.state.published = null; }, /failed: the bridge answered client_manifest with HTTP 503: this bridge publishes no client pack yet/],
-  ['a pack whose bytes are not the manifest\'s', (b) => { b.state.packBytes = Buffer.from('not the pack'); }, /refused: /],
-  ['a manifest that does not hash to the digest the door named', (b) => { b.state.manifestSha256 = 'f'.repeat(64); }, /refused: the manifest the bridge sent does not hash/],
-  ['a bridge that is not there', null, /failed: bridge unreachable/],
-  ['an offer that is not the release the bridge publishes', (b) => { b.state.offer = '9.9.9'; }, /refused: the bridge offered release 9\.9\.9 but publishes 1\.0\.0/],
-  ['an offer outside bare X.Y.Z', (b) => { b.state.offer = 'v1.0.0'; }, /refused: the bridge offered "v1\.0\.0", not a bare X\.Y\.Z release/],
+// The exit is the contract an onboarding entry point branches on: 3 = the bridge offers nothing to
+// install right now (it keeps the seat's legacy channel server), 1 = anything else (it fails loudly).
+for (const [name, setup, expect, exit] of [
+  ['a bridge that publishes nothing', (b) => { b.state.published = null; }, /failed: the bridge answered client_manifest with HTTP 503: this bridge publishes no client pack yet/, 3],
+  ['a bridge whose store cannot serve its pack (any 5xx)', (b) => { b.state.fail = { client_manifest: { status: 500, error: 'store fault' } }; }, /failed: the bridge answered client_manifest with HTTP 500: store fault/, 3],
+  ['a bridge older than the door, refusing the op body (a 4xx to the manifest)', (b) => { b.state.fail = { client_manifest: { status: 422, error: 'request must carry a non-empty tool' } }; }, /failed: the bridge answered client_manifest with HTTP 422: request must carry a non-empty tool/, 3],
+  ['a publication that moved between manifest and pack (a 4xx to the pack)', (b) => { b.state.fail = { client_pack: { status: 404, error: 'this bridge serves the client pack for release 2.0.0 only' } }; }, /failed: the bridge answered client_pack with HTTP 404/, 1],
+  ['a manifest answer that is not an {ok:false} envelope (a framework error page)', (b) => { b.state.fail = { client_manifest: { status: 500, raw: '{"message":"Server Error"}' } }; }, /failed: the bridge answered client_manifest with HTTP 500: no error text/, 1],
+  ['a pack the bridge cannot serve after offering it', (b) => { b.state.fail = { client_pack: { status: 503, error: 'gone' } }; }, /failed: the bridge answered client_pack with HTTP 503: gone/, 3],
+  ['a pack whose bytes are not the manifest\'s', (b) => { b.state.packBytes = Buffer.from('not the pack'); }, /refused: /, 1],
+  ['a manifest that does not hash to the digest the door named', (b) => { b.state.manifestSha256 = 'f'.repeat(64); }, /refused: the manifest the bridge sent does not hash/, 1],
+  ['a bridge that is not there', null, /failed: bridge unreachable/, 1],
+  ['an offer that is not the release the bridge publishes', (b) => { b.state.offer = '9.9.9'; }, /refused: the bridge offered release 9\.9\.9 but publishes 1\.0\.0/, 1],
+  ['an offer outside bare X.Y.Z', (b) => { b.state.offer = 'v1.0.0'; }, /refused: the bridge offered "v1\.0\.0", not a bare X\.Y\.Z release/, 1],
 ]) {
-  test(`bootstrap from the door: ${name} — refused or failed, logged, nothing installed`, async (t) => {
+  test(`bootstrap from the door: ${name} — exit ${exit}, logged, nothing installed`, async (t) => {
     const root = newRoot(t);
     const bridge = setup === null ? null : await fixtureBridge(t, { published: goodPack('1.0.0') });
     if (setup !== null) {
@@ -1582,7 +1589,7 @@ for (const [name, setup, expect] of [
 
     const r = await bootstrapFromDoor(root, seatEnv(t, bridge));
 
-    assert.equal(r.status, 1, r.stdout);
+    assert.equal(r.status, exit, r.stdout);
     assert.match(r.stderr, expect);
     assert.equal(resolveInstalled(root).release, null);
     assert.ok(!fs.existsSync(path.join(root, 'current.json')));
@@ -1603,7 +1610,43 @@ test('bootstrap from the door with no board-tools transport in the environment s
   assert.match(r.stderr, /failed: no board-tools transport is configured/);
 });
 
-test('the bootstrap CLI refuses anything but --root', (t) => {
+test('bootstrap --agent names that agent in the approval command, and an agent outside the bridge grammar is a usage error', async (t) => {
+  const root = newRoot(t);
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0'), offer: null, owed: '1.0.0' });
+
+  const r = await bootstrapFromDoor(root, seatEnv(t, bridge), ['--agent', 'kb-impl']);
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /bridge:client-approve kb-impl 1\.0\.0 --reason=/);
+  assert.doesNotMatch(r.stderr, /<agent>/);
+
+  const bad = await bootstrapFromDoor(newRoot(t), seatEnv(t, bridge), ['--agent', 'KB impl']);
+  assert.equal(bad.status, 2);
+});
+
+test('over ssh, an {ok:false} answer to the manifest is "nothing offered" at exit 2 (a 5xx) and exit 1 (an older bridge); a non-envelope is a failure', { skip: process.platform === 'win32' && 'a POSIX shell stands in for ssh' }, async (t) => {
+  const bin = scratch(t, 'cu-fakessh-');
+  fs.writeFileSync(path.join(bin, 'ssh'), '#!/bin/sh\ncat > /dev/null\nprintf "%s" "$FAKE_SSH_STDOUT"\nexit "$FAKE_SSH_EXIT"\n', { mode: 0o755 });
+  const env = (exit, body) => {
+    const e = seatEnv(t, null, { PATH: `${bin}${path.delimiter}${process.env.PATH}`, BRIDGE_TOOLS_SSH_TARGET: 'bridge@testhost', FAKE_SSH_EXIT: String(exit), FAKE_SSH_STDOUT: JSON.stringify(body) });
+    delete e.BRIDGE_TOOLS_ENDPOINT;
+    delete e.BRIDGE_TOOLS_TOKEN;
+    return e;
+  };
+
+  const declined = await bootstrapFromDoor(newRoot(t), env(2, { ok: false, error: 'this bridge publishes no client pack yet' }));
+  assert.equal(declined.status, 3, declined.stderr);
+  assert.match(declined.stderr, /publishes no client pack yet/);
+
+  // A bridge older than the door answers the op body as a malformed board-tools call: exit 1.
+  const old = await bootstrapFromDoor(newRoot(t), env(1, { ok: false, error: 'request must carry a non-empty tool' }));
+  assert.equal(old.status, 3, old.stderr);
+
+  // Not an {ok:false} envelope — a PHP fatal's output, say — is a failure, whatever the exit.
+  const fatal = await bootstrapFromDoor(newRoot(t), env(255, 'PHP Fatal error: …'));
+  assert.equal(fatal.status, 1, fatal.stderr);
+});
+
+test('the bootstrap CLI refuses anything but --root and --agent', (t) => {
   const r = spawnSync(process.execPath, [UPDATER, 'bootstrap', '--root', newRoot(t), '--pack', 'x'], { encoding: 'utf8' });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /client-update\.mjs bootstrap --root <dir>/);

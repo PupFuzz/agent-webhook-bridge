@@ -1173,6 +1173,9 @@ def run_certify_only(args) -> int:
     ⛔ So `--ssh-target` / `--ssh-key` are REFUSED here rather than honoured: a certify
     run that used a target the channel server does not use would certify the wrong door
     and print a green line for it.
+    Once the round-trip succeeds it bootstraps the self-updating client over that same door
+    (`_bootstrap_after_certify`, DL-445) — the one `.mcp.json` write this mode makes, and only
+    after the install succeeded.
     """
     if not _AGENT_RE.fullmatch(args.agent):
         _fail(f"--agent {args.agent!r} must match ^[a-z0-9_-]+$")
@@ -1227,7 +1230,10 @@ def run_certify_only(args) -> int:
     if args.expect_fingerprint is not None:
         _assert_expected_fingerprint(args.expect_fingerprint, pub_path)
     _seed_known_hosts(str(target).rsplit("@", 1)[-1], port)
-    return _self_cert(str(target), key_path, port)
+    rc = _self_cert(str(target), key_path, port)
+    if _bootstrap_after_certify(args.agent, mcp_path, args.channel_name):
+        _print_activation_block(args.channel_name)
+    return rc
 
 
 def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
@@ -1306,15 +1312,30 @@ def bootstrap_env(recorded: dict, environ=None) -> tuple:
     return env, inherited
 
 
-def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> bool:
+# `client-update.mjs bootstrap`'s exit when the bridge ANSWERED and offers nothing to install right
+# now (its `EXIT_NOTHING_OFFERED`; `ServerDeclined` owns which answers): a refusal to the manifest
+# (nothing published, a 5xx, a bridge older than the door), a 5xx to the pack, or approval owed.
+# Anything else non-zero is a refused or failed install.
+BOOTSTRAP_NOTHING_OFFERED = 3
+
+
+def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agent: str, *,
+                      keep_legacy_when_nothing_offered: bool = False, recorded_entry_gone: bool = False) -> bool:
     """Install this seat's client from its bridge's published pack, then point `.mcp.json` at it.
 
     The design §3.5 bootstrap, and the ONE primitive every entry point that bootstraps calls. The
     fetch, the checks and the install are the updater's (`client-update.mjs bootstrap`, the copy in
     THIS checkout — nothing fetched is run), over the transport this channel recorded. Only after it
     succeeds, and `<root>/entry.mjs` exists, are `.mcp.json` args rewritten to it; on any failure
-    `.mcp.json` is untouched and the seat keeps the channel server it had. Returns whether
-    `.mcp.json` changed.
+    `.mcp.json` is untouched and the seat keeps the channel server it had (or, with
+    `recorded_entry_gone`, is told it cannot start and how to recover). Returns whether what the
+    seat launches changed: `.mcp.json` moved, or the entry it already names was missing and now exists.
+
+    `keep_legacy_when_nothing_offered` is the onboarding entry points' LEGACY FALLBACK (design
+    §3.5 "R2 fallback", DL-445): when the bridge offers nothing to install right now, the seat
+    keeps the channel server `--role b` deployed, a red line says it will not update itself, and
+    the caller carries on. Without it — `--bootstrap-client`, where installing IS the request —
+    the same answer is a failure.
     """
     try:
         root = client_root(channel_name)
@@ -1343,19 +1364,43 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
             f"client updater (card#10568) — run the provisioner from a bridge release that carries it."
         )
     _require_node_20()
+    # What a failed or declined install leaves the seat with — said the same way on every failure arm.
+    if recorded_entry_gone:
+        left_with = (
+            "the client entry its .mcp.json names is gone, so this seat cannot start. Run `--role b` to deploy "
+            "the legacy snapshot so it can start, or `--bootstrap-client` once the bridge offers a client."
+        )
+    else:
+        left_with = "this seat keeps the channel server it had."
+    # Read before the install: an unchanged .mcp.json over an entry that was missing still changes what launches.
+    entry_was_missing = not os.path.isfile(entry)
     print(f"bootstrapping channel {channel_name}'s client into {root} from its bridge…")
     try:
         # The token, when there is one, reaches the child through its environment, never an argv; and
         # the project dir is its working directory, as it is a session's, for any relative path.
         proc = subprocess.run(
-            ["node", updater, "bootstrap", "--root", root], env=env, cwd=os.path.dirname(mcp_path), check=False
+            ["node", updater, "bootstrap", "--root", root, "--agent", agent],
+            env=env, cwd=os.path.dirname(mcp_path), check=False,
         )
     except OSError as e:
         _fail(f"could not run node for the client bootstrap: {e} — .mcp.json is unchanged.")
+    if proc.returncode == BOOTSTRAP_NOTHING_OFFERED:
+        if keep_legacy_when_nothing_offered:
+            print(
+                f"CLIENT NOT BOOTSTRAPPED — the bridge offers channel {channel_name} no client to install right now "
+                f"(its reason is printed above). This seat KEEPS the legacy channel server .mcp.json already names, "
+                f"which does NOT update itself. Once the bridge publishes a client pack (or approves it for "
+                f"{agent}), run `--role b --bootstrap-client` to put it on the update path."
+            )
+            return False
+        _fail(
+            "the bridge answered and offers this seat no client to install right now (its reason is printed "
+            f"above) — .mcp.json is unchanged and {left_with}"
+        )
     if proc.returncode != 0:
         _fail(
             f"the client bootstrap did not complete (exit {proc.returncode}; its reason is printed above) — "
-            f".mcp.json is unchanged and this seat keeps the channel server it had."
+            f".mcp.json is unchanged and {left_with}"
         )
     if not os.path.isfile(entry):
         _fail(f"the client bootstrap reported success but {entry} does not exist — .mcp.json is unchanged.")
@@ -1368,7 +1413,37 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> b
             )
     # The same pure merge, on the same inputs, already passed before the install.
     merged = merge_mcp_json(existing_text, channel_name, entry, {})
-    return _install_mcp_json(mcp_path, merged, existing_text)
+    # True also when .mcp.json is byte-identical but the entry it names was missing: a running
+    # session still has to restart to start from it, so the activation block is owed.
+    return _install_mcp_json(mcp_path, merged, existing_text) or entry_was_missing
+
+
+def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bool:
+    """The bootstrap an onboarding entry point runs once its ssh round-trip SUCCEEDED (design §3.5,
+    r3-B1/r3-M2; DL-445). Called only after `_self_cert` returned: a failed round-trip exits first,
+    so a door that just refused is never asked for a pack.
+
+    A seat whose `.mcp.json` already starts it from a client root is left as it is — it updates
+    itself at launch, and a re-provision or re-certify is not a request to reinstall it
+    (`--bootstrap-client` is, and repairs it) — unless the absolute entry it records is gone: that
+    seat cannot start, so it is reinstalled, and nothing offered fails rather than falling back.
+    Otherwise the legacy fallback applies: nothing offered keeps the seat on the snapshot
+    `--role b` deployed. Returns whether what the seat launches changed (the activation block is owed).
+    """
+    with open(mcp_path, encoding="utf-8") as fh:
+        text = fh.read()
+    entry = recorded_client_entry(text, channel_name)
+    if entry is not None and (not os.path.isabs(entry) or "${" in entry or os.path.isfile(entry)):
+        print(f"client: channel {channel_name} already starts from its client root ({entry}) and updates itself "
+              f"at launch — not bootstrapped again (`--bootstrap-client` repairs it).")
+        return False
+    if entry is not None:
+        # Recorded, absolute and established gone (review r2): the seat cannot start as recorded, so
+        # this is a request to reinstall, never "already on its root". The bootstrap writes the same
+        # path back; nothing offered leaves the seat unable to start, which the fallback cannot fix.
+        print(f"client: channel {channel_name}'s .mcp.json names {entry}, which does not exist — bootstrapping it again.")
+        return _bootstrap_client(mcp_path, text, channel_name, agent, recorded_entry_gone=True)
+    return _bootstrap_client(mcp_path, text, channel_name, agent, keep_legacy_when_nothing_offered=True)
 
 
 def run_bootstrap_client(args) -> int:
@@ -1398,7 +1473,7 @@ def run_bootstrap_client(args) -> int:
         _fail(f"{mcp_path} does not exist — provision first (`--role b`, or the HTTP setup packet).")
     with open(mcp_path, encoding="utf-8") as fh:
         existing_text = fh.read()
-    if _bootstrap_client(mcp_path, existing_text, args.channel_name):
+    if _bootstrap_client(mcp_path, existing_text, args.channel_name, args.agent):
         _print_activation_block(args.channel_name)
     print(f"--bootstrap-client: OK — channel {args.channel_name} now starts from its client root and updates "
           f"itself from the bridge at each launch.")
@@ -1519,11 +1594,17 @@ def run_role_b(args) -> int:
     # snapshot one moves without `.mcp.json` moving at all (it holds args, ssh target
     # and channel name — nothing version-derived), so gating on the merge alone left
     # the seat that got a NEW connector with `.mcp.json unchanged:` and silence.
-    if mcp_changed or snapshot_replaced:
+    activation_printed = mcp_changed or snapshot_replaced
+    if activation_printed:
         _print_activation_block(args.channel_name)
 
     if args.self_cert:
-        return _self_cert(args.ssh_target, key_path, args.ssh_port)
+        rc = _self_cert(args.ssh_target, key_path, args.ssh_port)
+        # Only on SUCCESS (`_self_cert` exits on a failed round-trip): a fresh seat's --self-cert
+        # fails here until host A pins the key, and bootstrap must not ask a door that refused it.
+        if _bootstrap_after_certify(args.agent, mcp_path, args.channel_name) and not activation_printed:
+            _print_activation_block(args.channel_name)
+        return rc
     return 0
 
 
@@ -2242,13 +2323,15 @@ def build_parser() -> argparse.ArgumentParser:
     # MUTUALLY EXCLUSIVE AT THE PARSER, so the conflict is rc 2 and one message rather
     # than a hand-rolled check that has to be kept in step with the flags.
     cert = p.add_mutually_exclusive_group()
-    cert.add_argument("--self-cert", action="store_true", help="[role b] fire one real ssh board_my_cards round-trip")
+    cert.add_argument("--self-cert", action="store_true", help="[role b] fire one real ssh board_my_cards round-trip, "
+                      "and on success bootstrap the client as --certify-only does")
     cert.add_argument(
         "--certify-only",
         action="store_true",
-        help="[role b] ONLY fire that round-trip, using the target and key this seat already "
-        "recorded in its .mcp.json — no keygen, no snapshot deploy, no .mcp.json write. Needs "
-        "--agent --project-dir --channel-name; --ssh-target/--ssh-key are refused",
+        help="[role b] fire that round-trip, using the target and key this seat already recorded in "
+        "its .mcp.json — no keygen, no snapshot deploy — and on success bootstrap the self-updating client "
+        "from the bridge's pack (as --bootstrap-client, keeping the legacy snapshot when the bridge offers "
+        "none). Needs --agent --project-dir --channel-name; --ssh-target/--ssh-key are refused",
     )
     cert.add_argument(
         "--bootstrap-client",

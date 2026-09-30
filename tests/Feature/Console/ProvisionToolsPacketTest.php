@@ -443,6 +443,11 @@ class ProvisionToolsPacketTest extends TestCase
             $out,
         );
         $this->assertStringContainsString('delete it only once this seat is certified.', $out);
+        // DL-445: STEP 4's --certify-only now bootstraps the client, and the packet says what that
+        // does to `.mcp.json` — and what it does when the bridge offers no pack.
+        $this->assertStringContainsString('then bootstrap its self-updating client', $out);
+        $this->assertStringContainsString('if this bridge offers none it keeps STEP 1\'s copy and says CLIENT NOT BOOTSTRAPPED', $out);
+        $this->assertStringContainsString('Once STEP 4 bootstraps the client they point at its client root\'s entry.mjs instead', $out);
     }
 
     /**

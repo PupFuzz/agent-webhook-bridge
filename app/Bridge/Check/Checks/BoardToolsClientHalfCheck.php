@@ -5,16 +5,22 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Check\Silence;
+use App\Bridge\ClientUpdate\ClientPackRefused;
+use App\Bridge\ClientUpdate\ClientPackStore;
+use App\Bridge\ClientUpdate\PublishedClientPack;
+use App\Bridge\ClientUpdate\SeatClientLedger;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\HumanAge;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\Severity;
+use App\Bridge\Support\UntrustedText;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
+use Closure;
 use Throwable;
 
 /**
@@ -81,17 +87,20 @@ use Throwable;
  * a fact only the seat can supply, and until it did, a tool absent from a STALE seat copy
  * and a tool absent from this bridge rendered identically — measured: a 0.4.4 seat against
  * a bridge bundling 0.9.12, with the missing tool attributed to the bridge. The line now
- * prints the reported version beside the version this checkout bundles:
- *   - reported and OLDER than the bundled snapshot ⇒ `warn`. It is a MEASURED conclusion
+ * prints the reported version beside the version it is compared with — the client this bridge
+ * PUBLISHES once it publishes one, else the snapshot this checkout bundles (DL-445;
+ * `docs/board-tools.md` § How it is wired owns the arms and their remedies):
+ *   - reported and OLDER than that version ⇒ `warn`. It is a MEASURED conclusion
  *     about a real install fault, which is what separates it from the two `unvalidated`
  *     arms below — nothing stopped this measurement; it came back stale.
- *   - reported and at or ahead of the bundled snapshot ⇒ `ok`, versions printed.
+ *   - reported and at or ahead of it ⇒ `ok`, versions printed.
  *   - NOT reported ⇒ `ok`, and the line says a client older than
  *     {@see ClientVersion::FIRST_REPORTING_SNAPSHOT} — or a caller that is not a channel
  *     server at all — sends no version. ⛔ An absent report is NOT a stale seat and must
  *     never be warned as one: it is the shape every pre-DL-364 client produces.
- *   - reported but this checkout's own bundled manifest could not be read ⇒ `ok`, and the
- *     line says the comparison was NOT MADE. ⛔ The whole finding deliberately does NOT
+ *   - reported but the operand could not be read — this bridge's published client pack
+ *     record, or (with nothing published) this checkout's own bundled manifest ⇒ `ok`, and
+ *     the line says the comparison was NOT MADE. ⛔ The whole finding deliberately does NOT
  *     become `unvalidated` there: its subject is the SEAT's report, which WAS measured, and
  *     spending a blind read of the BRIDGE's own file as if the seat had gone silent is the
  *     misattribution this card exists to remove, inverted.
@@ -122,14 +131,26 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
     /**
      * @param  string  $bundledDir  this checkout's `examples/channel-servers` — the
      *                              reference snapshot a reported client version is compared
-     *                              against. Injected exactly as {@see ChannelSnapshotCheck}
+     *                              against WHEN THIS BRIDGE PUBLISHES NO PACK (DL-445: once it
+     *                              publishes one, the published client is the operand).
+     *                              Injected exactly as {@see ChannelSnapshotCheck}
      *                              takes it, rather than resolved from `base_path()` inside
      *                              the check, so a test can drive a KNOWN bundled version
      *                              against a known reported one; reading it here would make
      *                              every version assertion a function of whatever this
      *                              repo's snapshot happens to be on the day it runs.
      */
-    public function __construct(private readonly string $bundledDir) {}
+    public function __construct(private readonly string $bundledDir, ?ClientPackStore $store = null, ?Closure $isApproved = null)
+    {
+        $this->store = $store ?? new ClientPackStore;
+        // `(agent, filesJsonSha256) => bool`, throwing when the ledger cannot say — injectable
+        // so a test can reach the arm where it cannot, which no database state reaches alone.
+        $this->isApproved = $isApproved ?? SeatClientLedger::isApproved(...);
+    }
+
+    private readonly Closure $isApproved;
+
+    private readonly ClientPackStore $store;
 
     public function id(): string
     {
@@ -214,7 +235,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // ONE clause, appended to BOTH green lines, so the two arms cannot drift into
         // reporting the seat's version differently — they differ in what they claim about
         // the CALLER, and nothing about the version depends on that.
-        [$stale, $versionClause] = $this->versionClause($record->clientVersion);
+        [$stale, $versionClause] = $this->versionClause($record->clientVersion, $name, $bt->clientUpdateApprovalRequired);
 
         if ($record->provenance === CallProvenance::Sshd) {
             $sshd = ("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".HumanAge::floored($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.").' '.$versionClause;
@@ -233,9 +254,10 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      * The version half of a green line: `[isStale, clause]` (card#8974 / DL-364).
      *
      * ⛔ `isStale` IS TRUE ON EXACTLY ONE INPUT — a reported version that COMPARED older
-     * than the bundled one. Every other shape (no report, an unreadable bundled manifest, a
-     * current or newer client) is a green line, because none of them measured a stale seat
-     * and a `warn` an operator cannot act on is worse than silence.
+     * than the operand (the published client once one is published, else the bundled
+     * snapshot). Every other shape (no report, an operand that could not be read, a current or
+     * newer client) is a green line, because none of them measured a stale seat and a `warn`
+     * an operator cannot act on is worse than silence.
      *
      * The comparator is {@see ChannelSnapshotManifest::compareVersions()} and NOT PHP's
      * `version_compare()`, for the reason that method's own docblock gives at length: the
@@ -246,10 +268,33 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      *
      * @return array{0: bool, 1: string}
      */
-    private function versionClause(?string $reported): array
+    private function versionClause(?string $reported, string $agent, bool $approvalRequired = false): array
     {
+        // ⭐ THE OPERAND IS THE CLIENT THIS BRIDGE PUBLISHES WHEN IT PUBLISHES ONE (card#10568
+        // comment 7177, DL-445), and this checkout's bundled snapshot only when it does not. Seats
+        // take their client from the published pack now — bootstrapped onto it, then updating at
+        // launch — so "behind the bundled copy" is the wrong question once a pack is published:
+        // on a dev checkout ahead of its last release it warned forever, with a re-copy remedy
+        // that takes a seat OFF the update path. The remedy moves with the operand: bootstrap,
+        // never re-copy. With nothing published, both are exactly what they were.
+        $bootstrap = "on the seat, `provision-board-tools.py --role b --bootstrap-client --agent {$agent} --project-dir <its-claude-project-dir> --channel-name <its-mcp-servers-key>`";
+        try {
+            $published = $this->store->published();
+            $publishedFault = null;
+        } catch (ClientPackRefused $e) {
+            $published = null;
+            $publishedFault = RedactedErrorText::of($e);
+        }
+
         if ($reported === null) {
-            return [false, 'CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.') — the reference channel server sends its own snapshot version from '.ClientVersion::FIRST_REPORTING_SNAPSHOT.' onward, so this call came from an older copy, or from a caller that is not a channel server at all (`bridge:check --probe-tools`, `provision-board-tools.py --self-cert`, a hand-run `bridge:tools-call`). THAT IS NOT EVIDENCE THE SEAT IS STALE — nothing was compared. Re-deploy the seat\'s channel server to get the comparison.'];
+            $toCompare = match (true) {
+                $published instanceof PublishedClientPack => "Bootstrap the seat onto the {$published->clientVersion} client this bridge publishes ({$bootstrap}) to get the comparison.",
+                // Not the re-copy remedy: the record may well name a pack (review r1).
+                $publishedFault !== null => 'This bridge\'s published client pack record cannot be read, so what the seat should run is not established here — board_tools.client_pack_source names the recovery.',
+                default => 'Re-deploy the seat\'s channel server to get the comparison.',
+            };
+
+            return [false, 'CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.') — the reference channel server sends its own snapshot version from '.ClientVersion::FIRST_REPORTING_SNAPSHOT.' onward, so this call came from an older copy, or from a caller that is not a channel server at all (`bridge:check --probe-tools`, `provision-board-tools.py --self-cert`, a hand-run `bridge:tools-call`). THAT IS NOT EVIDENCE THE SEAT IS STALE — nothing was compared. '.$toCompare];
         }
 
         // ⚑ THE BUNDLED MANIFEST IS THE BRIDGE'S OWN TRACKED FILE, which is why this reads
@@ -278,6 +323,40 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // leading non-digit is the case where the whole tuple is a fabrication.
         if (preg_match('/^[0-9]/', $reported) !== 1) {
             return [false, self::notCompared($reported, "`{$reported}` does not begin with a digit, so it is not a version the staleness comparator can order — that comparator matches `bin/provision-board-tools.py`, the tool that actually decides whether a deployed snapshot is replaced, and it reads each dot-separated chunk's leading digits. Comparing it would rank a fabricated 0 rather than the seat's version. Ask that seat what it is running")];
+        }
+
+        if ($publishedFault !== null) {
+            // Not compared against the BUNDLED copy instead: that is the stale question this
+            // leg stopped asking once a pack is published, and a record that will not read does
+            // not establish that none is published. board_tools.client_pack_source names it.
+            return [false, self::notCompared($reported, 'this bridge\'s published client pack record cannot be read ('.UntrustedText::forOperator($publishedFault).'), so the client its seats take could not be established; board_tools.client_pack_source names the recovery')];
+        }
+
+        if ($published instanceof PublishedClientPack) {
+            if (ChannelSnapshotManifest::compareVersions($reported, $published->clientVersion) < 0) {
+                $behind = "CLIENT VERSION {$reported} IS OLDER THAN THE {$published->clientVersion} THIS BRIDGE PUBLISHES — that seat runs a STALE channel server, so a tool it does not offer may be missing from ITS copy rather than from this bridge, and reading that as a bridge fault sends the remedy to the wrong side.";
+                // An agent that requires approval is offered nothing until the published content is
+                // approved for it (DL-433), so neither a restart nor a bootstrap can clear this until
+                // then (review r2). A ledger that will not answer is said, never read as either.
+                if ($approvalRequired) {
+                    try {
+                        $approved = ($this->isApproved)($agent, $published->filesJsonSha256);
+                    } catch (Throwable) {
+                        $approved = null;
+                    }
+                    if ($approved !== true) {
+                        $approve = "`php artisan bridge:client-approve {$agent} {$published->bridgeRelease} --reason=…`";
+
+                        return [true, $behind.($approved === false
+                            ? " This agent requires approval and release {$published->bridgeRelease}'s client is not approved for it, so the bridge offers it nothing: approve it ({$approve}), then restart that session — it updates at launch (a seat still on a copied snapshot bootstraps instead: {$bootstrap})."
+                            : " This agent requires approval, and whether release {$published->bridgeRelease}'s client is approved for it could not be read (the fleet ledger did not answer): if it is not, approve it ({$approve}); a seat is offered nothing until then. bridge:client-fleet names the seat's state.")];
+                    }
+                }
+
+                return [true, $behind." A seat on its client root updates itself at its next launch: RESTART that session (bridge:client-fleet shows whether an update is owed or failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
+            }
+
+            return [false, "Client version {$reported} is at or ahead of the {$published->clientVersion} this bridge publishes."];
         }
 
         $bundled = ChannelSnapshotManifest::readManifest($this->bundledDir.'/package.json');

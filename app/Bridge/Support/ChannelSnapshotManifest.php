@@ -126,31 +126,77 @@ final class ChannelSnapshotManifest
      */
     public static function readManifest(string $path): array
     {
+        [$status, $decoded] = self::readJsonObject($path, 'package.json');
+        if ($decoded === null) {
+            return ['status' => $status, 'version' => ''];
+        }
+        $version = $decoded['version'] ?? '';
+
+        return ['status' => 'ok', 'version' => is_scalar($version) ? (string) $version : ''];
+    }
+
+    /**
+     * A bare `X.Y.Z` bridge release — the name of a client root's `versions/<release>` directory.
+     * A COPY of `App\Bridge\ClientUpdate\ClientPackManifest::STRICT_VERSION`, because naming that
+     * class here would pull its imports into `ChannelSnapshotProbe`'s scanned closure
+     * (`bin/test_check_channel_snapshot.py`); `ClientRootReleaseGrammarTest` reds if they differ.
+     */
+    public const CLIENT_RELEASE = '/\A[0-9]+\.[0-9]+\.[0-9]+\z/';
+
+    /**
+     * Read a client root's `current.json` — the release its `entry.mjs` starts (DL-434) — through
+     * the same guarded reader as {@see self::readManifest()}, with the same status vocabulary.
+     * `not_a_release` is a parsed pointer whose `bridge_release` is outside
+     * {@see self::CLIENT_RELEASE}: such a value would name a path this process must not build
+     * (a `..` in it, say), so no path is built from it.
+     *
+     * @return array{status: 'ok'|'absent'|'unreadable'|'malformed'|'not_a_release', release: string}
+     */
+    public static function readClientPointer(string $path): array
+    {
+        [$status, $decoded] = self::readJsonObject($path, 'current.json');
+        if ($decoded === null) {
+            return ['status' => $status, 'release' => ''];
+        }
+        $release = $decoded['bridge_release'] ?? null;
+        if (! is_string($release) || preg_match(self::CLIENT_RELEASE, $release) !== 1) {
+            return ['status' => 'not_a_release', 'release' => ''];
+        }
+
+        return ['status' => 'ok', 'release' => $release];
+    }
+
+    /**
+     * One guarded read of a JSON-object file: `['ok', array]` or `[<status>, null]`.
+     *
+     * @return array{0: 'ok'|'absent'|'unreadable'|'malformed', 1: array<mixed>|null}
+     */
+    private static function readJsonObject(string $path, string $subject): array
+    {
         try {
-            $raw = UntrustedPathContents::read($path, 'package.json');
+            $raw = UntrustedPathContents::read($path, $subject);
         } catch (PathResolvesToNoFileException) {
             // ESTABLISHING: a reader following this path gets no bytes, ever — and every
             // shape that reaches this arm was `is_file()`-false before the migration, so
             // it lands where it always landed. It IS the `absent` operator situation: the
-            // deployment has no manifest, and the re-copy is the answer.
-            return ['status' => 'absent', 'version' => ''];
+            // deployment has no such file.
+            return ['absent', null];
         } catch (UnreadableFileException) {
             // WITHHOLDING: something is at the path (a refusal is only raised after an
             // `lstat` found it) and this process did not read it. Which is what `unreadable`
             // has always meant here — see {@see self::manifestReason()} for the wording that
             // had to stop naming permissions as the sole cause.
-            return ['status' => 'unreadable', 'version' => ''];
+            return ['unreadable', null];
         }
         if ($raw === null) {
-            return ['status' => 'absent', 'version' => ''];
+            return ['absent', null];
         }
         $decoded = json_decode($raw, true);
         if (! is_array($decoded)) {
-            return ['status' => 'malformed', 'version' => ''];
+            return ['malformed', null];
         }
-        $version = $decoded['version'] ?? '';
 
-        return ['status' => 'ok', 'version' => is_scalar($version) ? (string) $version : ''];
+        return ['ok', $decoded];
     }
 
     /**
