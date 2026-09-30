@@ -3,6 +3,8 @@
 namespace App\Bridge\Scheduling;
 
 use App\Bridge\Scheduling\Handlers\IdleNudgeJob;
+use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
+use App\Bridge\Scheduling\Handlers\OwedWriteWatchdogJob;
 use App\Bridge\Scheduling\Handlers\StandupDigestJob;
 use App\Bridge\Standup\StandupGate;
 use App\Bridge\Support\CsvEnv;
@@ -10,8 +12,8 @@ use App\Bridge\Support\HandlerRegistry;
 
 /**
  * The set of periodic-job handlers THIS BUILD has, and which of them this INSTALL has armed
- * (card#8425 / DL-325). The code half of the governance split; {@see JobRegistry} is the
- * data half.
+ * (card#8425 / DL-325 — with one named exception, {@see self::armedFromConfig}). The code
+ * half of the governance split; {@see JobRegistry} is the data half.
  *
  * A container singleton, exactly like `App\Bridge\Support\HandlerRegistry` and for the same
  * reason: an operator registers custom handlers against the instance the scheduler
@@ -33,7 +35,10 @@ final class JobHandlerRegistry
     private array $handlers = [];
 
     /**
-     * @param  list<string>  $armedMutators  handler names this install's operator has armed
+     * @param  list<string>  $armedMutators  handler names this install's operator has armed —
+     *                                       see {@see self::armedFromConfig} for the one name
+     *                                       ({@see OwedWriteRetryJob::NAME}) a caller resolving
+     *                                       this from config gets ADDED to what it read
      */
     public function __construct(
         private readonly array $armedMutators,
@@ -42,19 +47,42 @@ final class JobHandlerRegistry
     ) {
         $this->register(new StandupDigestJob($standupGate));
         $this->register(new IdleNudgeJob($handlers));
+        $this->register(new OwedWriteRetryJob($handlers));
+        $this->register(new OwedWriteWatchdogJob($handlers));
     }
 
     /**
-     * Parse the operator's armed list out of the resolved config value. The `env()` read
-     * stays in config/bridge.php (larastan's noEnvCallsOutsideOfConfig).
+     * Parse the operator's armed list out of the resolved config value, THEN add
+     * {@see OwedWriteRetryJob::NAME} unless its OWN kill switch
+     * (`bridge.jobs.owed_write_retry_disabled` / `BRIDGE_OWED_WRITE_RETRY_DISABLED`) is set.
+     * The `env()` reads stay in config/bridge.php (larastan's noEnvCallsOutsideOfConfig).
+     *
+     * ⭐ THE ONE NAMED EXCEPTION TO DL-325's DEFAULT-OFF, AND SCOPED TO THAT ONE NAME —
+     * never read this as a pattern for arming a mutator by default. DL-325 governs every
+     * OTHER state-mutating handler exactly as before: unlisted in `BRIDGE_JOBS_ARMED_MUTATORS`
+     * ⇒ unarmed. `owed_write_retry` is carved out by explicit operator ruling (2026-09-29,
+     * card#10849 / DL-440): new functionality defaults ON and needs no setup, where DL-325's
+     * board-writing-jobs-off-by-default is being reversed BRIDGE-WIDE under a separate card —
+     * this PR reverses it for this one handler only, ahead of that wider change.
      *
      * @return list<string>
      */
     public static function armedFromConfig(): array
     {
         $raw = config('bridge.jobs.armed_mutators');
+        $armed = is_string($raw) ? CsvEnv::parse($raw) : [];
 
-        return is_string($raw) ? CsvEnv::parse($raw) : [];
+        // The kill switch wins OUTRIGHT, whether or not the operator also (redundantly, or
+        // left over from before disabling) named it explicitly — a kill switch that an
+        // explicit list entry could silently override would not be a kill switch.
+        if ((bool) config('bridge.jobs.owed_write_retry_disabled')) {
+            return array_values(array_filter($armed, static fn (string $name): bool => $name !== OwedWriteRetryJob::NAME));
+        }
+        if (! in_array(OwedWriteRetryJob::NAME, $armed, true)) {
+            $armed[] = OwedWriteRetryJob::NAME;
+        }
+
+        return $armed;
     }
 
     public function register(JobHandler $handler): void

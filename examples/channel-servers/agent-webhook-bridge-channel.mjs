@@ -292,7 +292,7 @@ const TOOL_DEFINITIONS = [
             'could not stand behind is null with a reason in its *_unmeasured key — never ' +
             'read a null as zero. Terminal columns are left out unless include_terminal is ' +
             'true. Refused when it contains " * % / \\, a control character or any non-ASCII ' +
-            'character (kanban cannot match those exactly). Omit it and the response is ' +
+            'character (a kanban before v0.46.0 cannot match those exactly). Omit it and the response is ' +
             'exactly the default.',
         },
         include_terminal: {
@@ -335,8 +335,9 @@ const TOOL_DEFINITIONS = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:) ' +
-            'and the bare tag "triaged" are refused, and each tag is capped at 64 ' +
+            'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:), ' +
+            'the retired owner tag (owner:) and the bare tag "triaged" are refused — ' +
+            'claim a card with board_take_card instead — and each tag is capped at 64 ' +
             "characters (kanban's own limit).",
         },
         idempotency_key: {
@@ -379,7 +380,7 @@ const TOOL_DEFINITIONS = [
       'Your tag list replaces only YOUR OWN tags: because kanban replaces ' +
       'the tag list wholesale, the bridge re-sends every tag on the card that is ' +
       "somebody else's — the ones you may not supply (created-by:, idem:, id:, " +
-      'type:, triaged) AND the holds anyone may set but nobody else may drop ' +
+      'type:, owner:, triaged) AND the holds anyone may set but nobody else may drop ' +
       "(no-automove, plus your install's own hold tags).",
     inputSchema: {
       type: 'object',
@@ -406,10 +407,11 @@ const TOOL_DEFINITIONS = [
           items: { type: 'string' },
           description:
             'Your replacement tag list (an empty list drops YOUR tags). The same ' +
-            'reserved prefixes (created-by:, idem:, id:, type:) and the bare tag ' +
+            'reserved prefixes (created-by:, idem:, id:, type:, owner:) and the bare tag ' +
             '"triaged" are refused as at create, and each tag is capped at 64 ' +
             'characters (kanban\'s own limit). Tags that are not yours to drop are ' +
-            'preserved: the reserved ones and any hold marker (no-automove).',
+            'preserved: the reserved ones (a legacy owner: tag included) and any hold ' +
+            'marker (no-automove).',
         },
       },
       required: ['card_id'],
@@ -436,11 +438,17 @@ const TOOL_DEFINITIONS = [
       'response is a DIFFERENT board, addressed to you by tag rather than held in a ' +
       'lane, and those cards are not takeable here. The refusal names that as the likely ' +
       'cause when your bridge has a coordination leg. ' +
-      'A card ALREADY HELD BY SOMEBODY ELSE is REFUSED (422) naming the user holding ' +
-      'it, and nothing is written — that refusal is the collision detector, so treat ' +
-      'it as "another seat is on this" and pick up different work rather than ' +
-      'retrying. There is no override here; taking a card off another seat is a ' +
-      'decision for your operator. ' +
+      'A card ALREADY HELD BY SOMEBODY ELSE (another kanban user as assignee, or — ' +
+      'with no assignee — another seat\'s legacy owner: tag) is TAKEN OVER: it is ' +
+      'reassigned to you, a card comment names whom it replaced, and the result says ' +
+      'so (replaced, warning, takeover_confirmed, takeover_comment). Read the warning: ' +
+      'that holder may still be working it, so talk to them. The exception is replacing ' +
+      'the ASSIGNEE of a card in a FINISHED column (Done, Won\'t Do, Shipped to dev, ' +
+      'Shipped to main) — that assignee is the record of who did the work, so it is ' +
+      'REFUSED (422) and nothing is written, and so is replacing the assignee of a card ' +
+      'whose column the bridge cannot show is unfinished. A card held only by a legacy ' +
+      'owner: tag is taken wherever it sits (the tag stays on it). There is no override ' +
+      'here; replacing a finished card\'s assignee is a decision for your operator. ' +
       'Re-taking a card you already hold SUCCEEDS, writes nothing, and answers ' +
       'already_held: true, so it is safe to call again if you are unsure. ' +
       'A board fault that cannot clear (the bridge token revoked/rotated, or the ' +
@@ -500,6 +508,151 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ['card_id', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_get_cards',
+    description:
+      'Read cards you already know the ids of in ONE call, whatever lane, column or archive ' +
+      'state they are in. EVERY id you send comes back exactly once, in the order ' +
+      'you sent it, with a status: found (live on your board), archived (on your board, ' +
+      'archived), other_board (the id is a card on a different board, the coordination board ' +
+      'included; nothing of that card is returned), or not_found (no card has that id, or it ' +
+      'is in kanban\'s trash). An id is never silently left out. found and archived entries ' +
+      'carry the card under card, each with its swimlane_id (null means no lane) and its ' +
+      'position. Card order within a column IS its priority order: sort by (position, id) ' +
+      'ascending within a stage — the lowest position is the top card. Read-only. ' +
+      'There is no window here, so no truncated flag: nothing is cut, because the request ' +
+      'itself is bounded. Where the bridge cannot establish a status for an id it REFUSES the ' +
+      'whole call (422) and says why; it never answers with a hole. A board fault that cannot ' +
+      'clear (the bridge token revoked/rotated, or its scope too narrow to read) is REFUSED ' +
+      '(422) naming the INSTALL fault — do not retry it; tell your operator.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'integer', minimum: 1 },
+          minItems: 1,
+          maxItems: 52,
+          description:
+            'The card ids to read (at most 52, each once). Integers only — a decorated string ' +
+            'is refused, never coerced. A repeated id is refused.',
+        },
+        fields: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: ['id', 'name', 'stage', 'position', 'swimlane_id', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at', 'description'],
+          },
+          description:
+            'Which card fields to return. Omit it for every field EXCEPT description. ' +
+            'description is opt-in per call: name it here to get each card\'s body (with ' +
+            'description_truncated: true when the bridge cut it — never read a cut body as ' +
+            'the whole scope). An empty list returns statuses only.',
+        },
+      },
+      required: ['ids'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_search',
+    description:
+      'Search the cards on YOUR board by filter and get the MATCHES ONLY — no lane list, no column ' +
+      'list, no grouping. Every filter is applied by the board itself, and the filters combine ' +
+      '(AND). lane defaults to any: cards in every lane of your board, each with its swimlane_id ' +
+      '(null means no lane). Results are the NEWEST matches first, cut to limit; window says ' +
+      'total (how many matched), returned, truncated (true when more matched than were returned) ' +
+      'and total_is_lower_bound (true only when a tags_any union could not be sized exactly — ' +
+      'truncated is then true too). summary: true returns counts instead of cards: total and ' +
+      'by_stage, plus by_tag for the tags you name in summary_tags. Read-only. Where the board ' +
+      'cannot show it applied a filter, the call is REFUSED (422) rather than answered with a ' +
+      'count of something else. A board fault that cannot clear (the bridge token revoked/rotated, ' +
+      'or its scope too narrow to read) is REFUSED (422) naming the INSTALL fault — do not retry ' +
+      'it; tell your operator.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tags_all: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description: 'Cards carrying EVERY one of these tags (each matched exactly).',
+        },
+        tags_any: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description:
+            'Cards carrying AT LEAST ONE of these tags (each matched exactly). Costs one board ' +
+            'read per tag. Cannot be combined with summary when it names more than one tag.',
+        },
+        stage: {
+          type: 'array',
+          items: { anyOf: [{ type: 'integer' }, { type: 'string' }] },
+          minItems: 1,
+          description:
+            'Cards in any of these columns — each a numeric stage id or a stage name (matched ' +
+            'case-insensitively; a name matching two columns is refused).',
+        },
+        pr_number: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Cards tracking this pull-request number (any repo — each card carries source and ' +
+            'pr_url to tell them apart). Live cards only: refused with include_archived.',
+        },
+        name_contains: {
+          type: 'string',
+          description: 'Cards whose name contains this text (the board\'s own match; no double quote).',
+        },
+        updated_since: {
+          type: 'string',
+          description: 'Cards updated on or after this DATE, YYYY-MM-DD (the board compares dates, not times).',
+        },
+        include_archived: {
+          type: 'boolean',
+          description: 'Also search archived cards; each card then carries archived: true or false.',
+        },
+        lane: {
+          type: 'string',
+          enum: ['mine', 'any', 'none'],
+          description: 'mine = your own swimlane, none = cards in no lane, any = every lane (default).',
+        },
+        summary: {
+          type: 'boolean',
+          description: 'Return counts (total, by_stage, and by_tag for summary_tags) and no cards.',
+        },
+        summary_tags: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description: 'With summary: true, also count the matches carrying each of these tags.',
+        },
+        fields: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: ['id', 'name', 'stage', 'position', 'swimlane_id', 'tags', 'assigned_user_id', 'dl_number', 'pr_number', 'pr_url', 'source', 'updated_at', 'description'],
+          },
+          minItems: 1,
+          description:
+            'Which card fields to return. Omit it for every field EXCEPT description. ' +
+            'description is opt-in per call: name it here to get each card\'s body (with ' +
+            'description_truncated: true when the bridge cut it — never read a cut body as ' +
+            'the whole scope). Not with summary.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 200,
+          description:
+            'How many cards to return, newest first (default 52, at most 200). To see past it, ' +
+            'narrow the filters. Not with summary.',
+        },
+      },
       additionalProperties: false,
     },
   },

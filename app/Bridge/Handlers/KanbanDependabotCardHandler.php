@@ -13,9 +13,9 @@ use App\Bridge\Writeback\BoardCustomFields;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
-use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\ProgramCardGuard;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -55,9 +55,9 @@ use Illuminate\Support\Facades\Log;
  *    fields {@see PinGuard::PINNED_FIELDS} names — the correlation stamps this handler's
  *    siblings write still land on a held card, by design.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
- * split as the move handler (DL-020/DL-285). New cards are tagged `dependencies` +
- * `triaged` so the routine churn doesn't flood the untriaged sweep, plus an
+ * DURABLE, with the same transient(→ retry) / permanent(→ alert + log + no-op) split
+ * ({@see RefusalContext::isPermanent}) as the move handler (DL-020/DL-285). New cards are
+ * tagged `dependencies` + `triaged` so the routine churn doesn't flood the untriaged sweep, plus an
  * opt-in rendered `id:` provenance tag (#75) when the mapping sets
  * `card_id_tag_template`, so a tag-keyed Shipped→Released promoter can find
  * them — absent ⇒ no tag (back-compat).
@@ -184,7 +184,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // not move: routine dependabot churn shouldn't linger in any column, and
             // archiving needs no stage mapping. A repo+PR may map to >1 card (a create
             // race) — archive them all. Empty (never tracked) → nothing to do.
-            if ($outcome === 'closed_unmerged') {
+            if ($outcome === PrOutcome::CLOSED_UNMERGED) {
                 foreach ($cards as $cardId => $card) {
                     if ($this->refusedAsPinned($card, $cardId, $repo, $prNumber, $mapping, 'archive')) {
                         continue;
@@ -242,11 +242,6 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                         return;
                     }
                     $client->moveCard((int) $survivor['id'], $stageId);
-                    // No stage-order read on this path, so terminality answers from the merged /
-                    // merged_to_main stages alone.
-                    if ($mapping->isTerminalStage($stageId, [])) {
-                        OwnerTag::clearAfterTerminalMove($this->alerts, $client, $mapping, 'kanban_dependabot_card', (int) $survivor['id'], $repo, self::ALERT_OUTCOME, $prNumber);
-                    }
                     // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
                     // resolved by search, not by a token, so its own board is recorded here.
                     Log::info('kanban_dependabot_card: moved', ['catalog_id' => 'dependabot_card.moved', 'card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));
@@ -287,7 +282,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 $this->collapseDuplicates($client, $live, $mapping, $repo, $prNumber);
             }
         } catch (RequestException $e) {
-            // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
+            // A permanent refusal → alert + log + no-op; anything else is transient and throws (a rate limit is retried by the owed-write queue — RefusalContext::isPermanent).
             if (RefusalContext::isPermanent($e)) {
                 // FLAT reason: this one catch spans the correlation READS, the archive /
                 // move / create WRITES and the collapse, so a status-split write reason
@@ -308,12 +303,13 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     /**
      * Drop every {@see CONSTANT_PAYLOAD_VALUES} key the mapped board does not accept (DL-392).
      *
-     * ⛔ AN UNREADABLE READ OMITS TOO, LOUDLY. A throw or a body with no collection says nothing
+     * ⛔ AN UNREADABLE READ OMITS TOO, LOUDLY — except a RATE-LIMITED one, which propagates to the
+     * owed-write queue (card#10849; the catch says why). A throw or a body with no collection says nothing
      * about the board, so neither "accepted" nor "not accepted" is established; the card is the
      * record of the PR and the constant is metadata about it, so the create goes ahead without
      * the constant and a `warning` names the read that failed. Sending it instead would stake the
      * card on a value this read could not vouch for — the exact 422 this method exists to stop.
-     * Rethrowing a 5xx for redelivery instead would stake it on this one endpoint recovering.
+     * Rethrowing a 5xx to be retried instead would stake it on this one endpoint recovering.
      *
      * @param  array<string, int|string>  $payload
      * @return array<string, int|string>
@@ -324,6 +320,13 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         try {
             $fields = $client->boardCustomFields($mapping->boardId);
         } catch (RequestException|ConnectionException $e) {
+            // ⛔ EXCEPT A RATE LIMIT (card#10849 / DL-440): that read clears by waiting, and the
+            // owed-write queue retries the WHOLE create once it does — so creating now, without a
+            // constant the retry could have read, trades a short delay for a permanently thinner
+            // card. Every other failure keeps the omit-and-warn below.
+            if ($e instanceof RequestException && RefusalContext::isRateLimited($e)) {
+                throw $e;
+            }
             $fields = null;
             $error = RedactedErrorText::note($e);
         }

@@ -1383,7 +1383,7 @@ class VersionComparatorLockstep(unittest.TestCase):
     stale deployed snapshot from a current one WITHOUT shelling out to this script.
 
     These vectors are the LOCKSTEP CONTRACT, held in ONE file,
-    `tests/Fixtures/version-comparator-vectors.json`, which this class,
+    `examples/channel-servers/tests/fixtures/version-comparator-vectors.json`, which this class,
     `tests/Unit/Support/ChannelSnapshotManifestTest.php` and the seat updater's
     `examples/channel-servers/tests/client-update.test.mjs` all read — so the provisioner,
     `bridge:check` and the seat cannot disagree about which version is newer without one
@@ -1403,7 +1403,7 @@ class VersionComparatorLockstep(unittest.TestCase):
     # ONE table for all three implementations (the seat updater's `compareReleases` in
     # examples/channel-servers/entry.mjs reads it too); the rows where PHP's
     # version_compare() diverges are listed in the same file.
-    with open(os.path.join(_HERE, "..", "tests", "Fixtures", "version-comparator-vectors.json"), encoding="utf-8") as _fh:
+    with open(os.path.join(_HERE, "..", "examples", "channel-servers", "tests", "fixtures", "version-comparator-vectors.json"), encoding="utf-8") as _fh:
         VECTORS = [tuple(row) for row in json.load(_fh)["vectors"]]
 
     @staticmethod

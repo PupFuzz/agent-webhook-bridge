@@ -85,8 +85,8 @@ class RevertGrammarTest extends TestCase
     public function test_the_controls_that_make_every_row_above_evidence(): void
     {
         // ⛔ WITHOUT THESE, every assertion above is satisfied by a predicate that simply
-        // refuses everything. An ordinary closing title still closes; an ordinary card
-        // branch still closes structurally; and neither surface reads as a revert.
+        // refuses everything. An ordinary closing title still closes, and neither it nor an
+        // ordinary card branch reads as a revert.
         $ordinary = 'fix(ci): red a PR that correlates a card (closes card#8294)';
         $this->assertTrue(ClosureGrammar::closesCard($ordinary, 8294));
         $this->assertFalse(RevertGrammar::quotesRevertedTitle($ordinary));
@@ -124,8 +124,7 @@ class RevertGrammarTest extends TestCase
     public function test_the_refusal_sentence_names_both_surfaces_and_the_escape_hatch(): void
     {
         // An operator reading it must be able to tell WHY nothing moved and what to do —
-        // the failure DL-308 fixed for the branch half and this change re-created for the
-        // revert half. Asserted on content, never on a whole-string snapshot.
+        // the failure a default sentence re-creates when it is false about the subject. Asserted on content, never on a whole-string snapshot.
         $sentence = RevertGrammar::describeRefusal();
         $this->assertStringContainsString('REVERT', $sentence);
         $this->assertStringContainsString('card#8306', $sentence);

@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
+use App\Bridge\Support\CoordConfigPath;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -157,7 +158,7 @@ final class WritebackMappingConfigCheck implements Check
                     if ($declared->stageFor('opened') === null) {
                         $missingRevive[] = "{$prefix}.opened";
                     }
-                    if ($declared->stageFor('closed_unmerged') === null) {
+                    if ($declared->stageFor(PrOutcome::CLOSED_UNMERGED) === null) {
                         $missingRevive[] = "{$prefix}.closed_unmerged";
                     }
                     if ($missingRevive === [] || (count($missingRevive) === 2 && $declared->isOnAdditionalDeclaredBoard())) {
@@ -373,12 +374,10 @@ final class WritebackMappingConfigCheck implements Check
             // surfaced and nothing in the setup path told them what they were inheriting;
             // this is that sentence, on the surface that actually runs.
             //
-            // ⚠ DL-308 GAVE THE CLAIM A SECOND ROUTE, and this line is the reason the
-            // sentence is composed at `PrOutcome::describeClosure()` rather than here: the
-            // text that stood here said the TITLE was the only thing that could move a
-            // card, which an operator would read as a rule the structural route violates.
-            // A restated accept-set on a surface whose job is telling operators what they
-            // inherited is the DL-239 defect on the worst possible surface.
+            // ⚠ THE ACCEPT-SET IS COMPOSED AT `PrOutcome::describeClosure()`, never here: it
+            // has already moved twice (DL-308 added a head-branch route, card#10850 / DL-436
+            // retired it), and a restated accept-set on a surface whose job is telling
+            // operators what they inherited is the DL-239 defect on the worst possible surface.
             //
             // SCOPED TO MAPPINGS THAT HAVE A MERGE LEG AT ALL, so a started/opened-only
             // mapping stays silent — the emptiness there is the operator's own config
@@ -408,9 +407,9 @@ final class WritebackMappingConfigCheck implements Check
             if ($gated !== []) {
                 yield Finding::ok("writeback: mapping for {$repo} moves a card on MERGE only when the merge CLAIMS that card is done — "
                     .implode(' and ', $gated).' '.(count($gated) === 1 ? 'is' : 'are')
-                    .' gated this way (card#7348 / DL-305, widened DL-308). A PR that merely MENTIONS a card#/DL token is a NO-OP for the stage: the card is left exactly where it is, never moved back — so nothing needs backfilling, and a missing claim costs an UNDER-promoted card you can move by hand. '
+                    .' gated this way (card#7348 / DL-305; the head-branch route DL-308 added is retired, DL-436). A PR that merely MENTIONS a card#/DL token is a NO-OP for the stage: the card is left exactly where it is, never moved back — so nothing needs backfilling, and a missing claim costs an UNDER-promoted card you can move by hand. '
                     .'Accepted: '.PrOutcome::describeClosureAccepted()
-                    .'. The token still selects WHICH card; the claim is what says the merge finishes it. (The REJECTED side of BOTH sets — the branch shapes that name no card, and the title shapes that name a card without claiming it done — is rendered by the runtime warning at the moment one is seen, where it is diagnostic rather than noise.)');
+                    .'. The token — in the title or the head branch — still selects WHICH card; the claim is what says the merge finishes it. (The REJECTED side — the title shapes that name a card without claiming it done — is rendered by the runtime warning at the moment one is seen, where it is diagnostic rather than noise.)');
             }
         }
 
@@ -442,14 +441,10 @@ final class WritebackMappingConfigCheck implements Check
         $prefix = "writeback: issue_population ({$repo}, board {$mapping->boardId})";
         $tail = 'A bridge on `all` with a reconcile on `prefixed` is the no-backstop gap — the non-prefixed set self-heals nowhere.';
 
-        $path = config('bridge.writeback.coord_config_path');
-        if (! is_string($path) || $path === '') {
-            $ambient = getenv('COORD_CONFIG');
-            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
-        }
+        $path = CoordConfigPath::resolve();
         $config = CoordConfigTerminals::load($path);
         if ($config === null) {
-            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
+            $where = CoordConfigPath::unreadableClause($path);
 
             yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 

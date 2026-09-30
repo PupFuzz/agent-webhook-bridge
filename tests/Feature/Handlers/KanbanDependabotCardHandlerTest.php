@@ -531,6 +531,30 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && $ctx['key'] === 'origin' && $ctx['board'] === 8 && str_contains((string) $ctx['error'], '500'))->once();
     }
 
+    /**
+     * card#10849 / DL-440: a RATE-LIMITED custom-field read is the one unreadable answer this guard
+     * does not create past. Every other failure keeps the fail-open above (the 500 leg); a rate
+     * limit propagates so the owed-write queue retries the WHOLE create once the limiter clears,
+     * rather than minting the card without a constant the retry could have read.
+     */
+    public function test_a_rate_limited_custom_field_read_propagates_and_creates_nothing(): void
+    {
+        $this->customFieldsStatus = 429;
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        try {
+            $this->handle('opened');
+            $this->fail('a rate-limited custom-field read must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+    }
+
     /** A 200 carrying no collection is could-not-see too (card#5698), never "no fields registered". */
     public function test_a_custom_field_read_carrying_no_collection_creates_the_card_without_origin_and_warns(): void
     {
@@ -1483,21 +1507,23 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
-    public function test_a_merged_move_is_stage_only_then_clears_the_owner_tag_in_a_separate_write(): void
+    public function test_a_merged_move_is_stage_only_and_keeps_the_assignee_and_owner_tag(): void
     {
-        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]);
+        // card#10869: the retired DL-386 clear no longer follows a terminal move, and a finished
+        // card KEEPS its assignee (card#10868 Q2).
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'assigned_user_id' => 3, 'tags' => ['dependencies', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]);
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]])] + $cards->stub());
 
         $this->handle('merged');
 
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['dependencies']]], $cards->patchesTo(7));
+        $this->assertSame([['workflow_stage_id' => 52]], $cards->patchesTo(7));
+        $this->assertSame(['dependencies', 'owner:kanban/kanban'], $cards->cards[7]['tags']);
+        $this->assertSame(3, $cards->cards[7]['assigned_user_id']);
     }
 
     /**
-     * The terminal check's other side. A reopen moves the card out of `closed_unmerged` into
-     * `opened`, which is not terminal, so the owner tag is the seat's live claim and stays. The
-     * PATCH is the presence witness that the run reached the move; the log after it must be empty,
-     * because the clear's first step is a read.
+     * A reopen moves the card out of `closed_unmerged` into `opened`. The PATCH is the presence
+     * witness that the run reached the move; nothing may follow it.
      */
     public function test_a_non_terminal_move_of_an_owner_tagged_card_is_stage_only_with_no_fresh_read_or_tag_write(): void
     {

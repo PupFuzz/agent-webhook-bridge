@@ -137,7 +137,7 @@ final class SeatKanbanUser
                 'agent' => $callingAgentName, 'tool' => $tool,
             ]);
 
-            throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: add `identity.kanban_user_id` to that agent's YAML (it is the same numeric id the board shows for your account) and report it to your operator.");
+            throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: the seat's kanban user id is kept in the coord roster (`roster[].kanban_user_id` in coordination.config.json, keyed by kanban host) and this bridge reads its copy from `identity.kanban_user_id` in that agent's YAML — set it there to the roster's value (`bridge:check` holds the two against each other; no id exists until the seat has its own kanban account) and report it to your operator.");
         }
 
         return $kanbanUserId;
@@ -167,11 +167,25 @@ final class SeatKanbanUser
     }
 
     /**
+     * The coord roster SEAT name the calling seat's own YAML says it is — `identity.coord_seat`,
+     * else its agent name (card#10869). Read from the same roster read as the id, so the two
+     * cannot answer about different configs. `board_take_card` uses it to tell a legacy
+     * `owner:<project>/<seat>` tag naming ANOTHER seat from one that may be this seat's own.
+     *
+     * @throws ToolRefusalException
+     * @throws \LogicException if no front door established a seat for this process
+     */
+    public static function seatNameForCallingSeat(string $tool): string
+    {
+        return self::lookup($tool)[2];
+    }
+
+    /**
      * The ONE roster read both answers share, so the two cannot drift on what counts as a fault:
      * the sealed seat's name and its declared id (null when undeclared), or a named refusal for
      * every state in which the id would not identify the caller.
      *
-     * @return array{0: string, 1: ?int}
+     * @return array{0: string, 1: ?int, 2: string}
      *
      * @throws ToolRefusalException
      * @throws \LogicException if no front door established a seat for this process
@@ -204,8 +218,9 @@ final class SeatKanbanUser
 
         if ($mine !== null) {
             $kanbanUserId = $mine->identity->kanbanUserId;
+            $seatName = $mine->identity->seatName($callingAgentName);
             if ($kanbanUserId === null) {
-                return [$callingAgentName, null];
+                return [$callingAgentName, null, $seatName];
             }
 
             $sharing = [];
@@ -224,7 +239,7 @@ final class SeatKanbanUser
                 throw new ToolRefusalException("{$tool}: this bridge's config declares `identity.kanban_user_id` {$kanbanUserId} for MORE THAN ONE agent (".implode(', ', $sharing).'), so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each agent a distinct `identity.kanban_user_id` (`bridge:check` already WARNS on this collision — it does not fail, so an install can run in this state for a long time) and report it to your operator.');
             }
 
-            return [$callingAgentName, $kanbanUserId];
+            return [$callingAgentName, $kanbanUserId, $seatName];
         }
 
         Log::warning('board tools: the agent this call authenticated as is no longer in the roster', [

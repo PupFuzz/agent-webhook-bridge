@@ -14,6 +14,7 @@ use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
 use App\Bridge\Check\Checks\AgentCoordinationIdentityCheck;
 use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
 use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
+use App\Bridge\Check\Checks\AgentKanbanUserRosterCheck;
 use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
 use App\Bridge\Check\Checks\AgentWebhookSecretCheck;
 use App\Bridge\Check\Checks\BoardToolsBearerCheck;
@@ -53,6 +54,7 @@ use App\Bridge\Check\Checks\WritebackByRefCheck;
 use App\Bridge\Check\Checks\WritebackConfigCheck;
 use App\Bridge\Check\Checks\WritebackIdentityCheck;
 use App\Bridge\Check\Checks\WritebackMappingConfigCheck;
+use App\Bridge\Check\Checks\WritebackOwedWritesTableCheck;
 use App\Bridge\Check\Checks\WritebackSourceCoverageCheck;
 use App\Bridge\Check\Checks\WritebackTokenCheck;
 use App\Bridge\Check\CheckSlot;
@@ -891,7 +893,7 @@ class CheckCommand extends BridgeCommand
     {
         return (new CheckRunner)
             ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
-            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
+            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)
@@ -911,6 +913,7 @@ class CheckCommand extends BridgeCommand
             ->register(
                 CheckSlot::AgentRoster,
                 new AgentIdentityCollisionsCheck,
+                new AgentKanbanUserRosterCheck,
                 new AgentTreatAsSignalCheck,
                 new AgentDefaultAgentCheck,
                 new SharedIdentitiesCheck,

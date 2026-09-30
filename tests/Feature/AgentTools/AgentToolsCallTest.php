@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
 use Tests\Support\FakeServingProcessEnvironment;
+use Tests\Support\KanbanBoardStatus;
 use Tests\Support\KanbanSearchSim;
 use Tests\TestCase;
 
@@ -1462,6 +1463,124 @@ class AgentToolsCallTest extends TestCase
         $this->assertArrayNotHasKey('coord_board_observed', $result);
         $this->assertArrayNotHasKey('configured_coord_board_id', $result);
         $this->assertArrayNotHasKey('coord_cards', $result);
+    }
+
+    // ─── board_my_cards: a non-member is refused by the board-scoped structure read (card#10856) ──
+
+    /**
+     * Board 10 (and coord board 12 when `$coord`), modelled as kanban answers a token whose user is,
+     * or is not, a member of each (`$member`): kanban authorizes `preload.json` on the board itself
+     * (`view`), 200 to a member whatever the board holds, 403 to a non-member — for an API token
+     * `view` is owner-or-member (kanban's super-admin mode is session-only, and the v3 API runs
+     * without a session), the same set the search is floored to. `board_my_cards` reads this BEFORE
+     * any search — its own board's structure always, the coord board's structure whenever a coord
+     * block is configured — so a non-member is refused there and no search names "no cards".
+     *
+     * @param  list<array<string, mixed>>  $laneRows
+     * @param  array<int, bool>  $member  board id => whether the token's user is a member of it
+     * @param  list<array<string, mixed>>  $coordRows
+     */
+    private function fakeMembershipBoard(array $laneRows, array $member, bool $coord = false, array $coordRows = []): void
+    {
+        if ($coord) {
+            $this->writeAgent('me', $this->token, [
+                'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+            ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        }
+        Http::fake([
+            '*/boards/10/preload.json' => ($member[10] ?? false) ? Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]) : KanbanBoardStatus::forbidden(),
+            '*/boards/12/preload.json' => ($member[12] ?? false) ? Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
+            ]]]) : KanbanBoardStatus::forbidden(),
+            '*/tasks/search.json*' => function ($request) use ($laneRows, $member, $coordRows) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+                $q = (string) ($query['q'] ?? '');
+                preg_match('/^board_id=(\d+)/', $q, $m);
+                $rows = ! ($member[(int) ($m[1] ?? 0)] ?? false) ? [] : (str_contains($q, 'tags:"repo:me"') ? $coordRows : $laneRows);
+
+                return Http::response(['data' => $rows, 'links' => ['next' => null], 'meta' => ['total' => count($rows)]]);
+            },
+        ]);
+    }
+
+    /** @return list<string> the `q` of every search this test sent, in order */
+    private static function searchQueries(): array
+    {
+        $qs = [];
+        foreach (Http::recorded() as [$request]) {
+            if (str_contains($request->url(), '/tasks/search.json')) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+                $qs[] = (string) ($query['q'] ?? '');
+            }
+        }
+
+        return $qs;
+    }
+
+    /** @return array<string, mixed> */
+    private static function laneRow(int $id, int $swimlane, int $board = 10): array
+    {
+        return ['id' => $id, 'name' => "card {$id}", 'workflow_stage_id' => 50, 'swimlane_id' => $swimlane,
+            'board_id' => $board, 'tags' => [], 'payload' => [], 'updated_at' => '2026-09-29'];
+    }
+
+    /**
+     * ⭐ THE GUARD THIS TOOL ACTUALLY HOLDS (card#10856). No membership control is asked here — a
+     * non-member is refused by the board-structure read this tool makes FIRST (`boards/{id}/preload.json`,
+     * `view`-authorized), before any search runs. The refusal names membership, from the board's own
+     * 403, and no card search happened to answer "no cards" over.
+     */
+    public function test_my_cards_refuses_a_board_the_token_cannot_read_via_the_structure_read(): void
+    {
+        $this->fakeMembershipBoard([self::laneRow(1, 4)], [10 => false]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('the structure of your board 10', (string) $res->json('error'));
+        $this->assertStringContainsString('membership of that board', (string) $res->json('error'));
+        $this->assertNull($res->json('result'));
+        $this->assertSame([], self::searchQueries(), 'refused before any search — the structure read is what refuses it');
+    }
+
+    public function test_my_cards_answers_an_empty_readable_board_with_empty_windows(): void
+    {
+        // A board with no card at all — a new board, or one whose every card is archived — is still
+        // one the token may read, and "no cards" is then the truth.
+        $this->fakeMembershipBoard([], [10 => true]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertSame([], $result['cards_by_stage']);
+        $this->assertSame(0, $result['cards_window']['total']);
+        $this->assertSame(['board_id=10 swimlane_id=4'], self::searchQueries());
+    }
+
+    public function test_my_cards_refuses_a_coord_board_the_token_cannot_read(): void
+    {
+        // The coord board is configured apart from board_id, so the token can be a member of the
+        // product board and not of it. `coordBlock` reads the coord board's structure
+        // (`boardStageNames`, `view`-authorized) after its tag searches, unconditionally — so a
+        // non-member is refused there, whether or not the tag search found a row.
+        $this->fakeMembershipBoard([self::laneRow(1, 4)], [10 => true, 12 => false], coord: true);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('the structure of the coordination board 12', (string) $res->json('error'));
+        $this->assertSame(['board_id=10 swimlane_id=4', 'board_id=12 tags:"repo:me"'], self::searchQueries());
+    }
+
+    public function test_an_empty_coord_leg_on_a_readable_coord_board_is_answered(): void
+    {
+        $this->fakeMembershipBoard([self::laneRow(1, 4)], [10 => true, 12 => true], coord: true);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertSame([], $result['coord_cards']);
+        $this->assertSame(1, $result['cards_window']['total']);
     }
 
     // ─── board_my_cards: the identity echo is UNCONDITIONAL (card#7325, DL-304) ──
@@ -2913,7 +3032,7 @@ class AgentToolsCallTest extends TestCase
     // ─── board_correct_card: what a wholesale replace must NOT delete (card#8378 R1) ─
 
     /** Write a `writeback.json` into the config dir this test's bridge reads. */
-    private function writeWriteback(string $json): void
+    public function writeWriteback(string $json): void
     {
         File::put($this->dir.'/writeback.json', $json);
     }
@@ -3176,6 +3295,59 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(422);
         $this->assertStringContainsString('64', (string) $res->json('error'));
         Http::assertNothingSent();
+    }
+
+    // ─── card#10869, operator ruling B: the retired owner: tag is refused as input, kept on a card ─
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function ownerTagWriteTools(): array
+    {
+        return [
+            'create' => ['board_create_card', 'title', 'owner:proj/someone'],
+            'correct' => ['board_correct_card', 'card_id', 'owner:proj/someone'],
+            'create, case-folded' => ['board_create_card', 'title', 'Owner:proj/someone'],
+            'correct, case-folded' => ['board_correct_card', 'card_id', 'OWNER:proj/someone'],
+        ];
+    }
+
+    #[DataProvider('ownerTagWriteTools')]
+    public function test_a_caller_supplied_owner_tag_is_refused_by_name_and_nothing_is_sent(string $tool, string $key, string $tag): void
+    {
+        Http::fake(['*' => Http::response(['data' => ['id' => 1]], 201)]);
+        $args = ['tags' => [$tag]] + ($key === 'title' ? ['title' => 'a card'] : ['card_id' => 42]);
+
+        $res = $this->callTool(['tool' => $tool, 'args' => $args]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('retired seat owner tag', $error);
+        $this->assertStringContainsString('board_take_card', $error);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * A tag correction KEEPS a legacy owner tag already on the card — it may be the only record
+     * of who holds a tag-only card, until `kbcard owner-migrate` turns it into an assignee. The
+     * caller's own stale tag is still dropped and its new one written: the control that the
+     * correction was not simply made to keep everything.
+     */
+    public function test_a_tag_correction_keeps_a_legacy_owner_tag_and_still_replaces_the_callers_tags(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'owner:proj/other-seat', 'stale-caller-tag'],
+        ])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(200);
+        $this->assertSame(
+            ['tags' => ['fresh-caller-tag', 'created-by:me', 'owner:proj/other-seat']],
+            $this->sentPatchBody(),
+        );
     }
 
     public function test_create_refuses_a_tag_longer_than_kanban_accepts(): void
@@ -4209,17 +4381,260 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_take_refuses_a_card_already_held_by_a_different_user_and_names_the_holder(): void
+    // ─── board_take_card takeover: warn, take, comment — never a finished card (card#10869) ─
+
+    /**
+     * The reference board's columns, by the shape the bridge reads them: Shipped to dev is
+     * `lane_type: waiting` (the board does NOT declare it done), Released / Won't Do / Done are
+     * `done`. Only the writeback mapping's `merged` stage makes Shipped to dev finished.
+     */
+    private const TAKEOVER_STAGES = [
+        ['id' => 48, 'name' => 'Backlog', 'position' => 1, 'lane_type' => 'backlog_inventory'],
+        ['id' => 49, 'name' => 'In Progress', 'position' => 2, 'lane_type' => 'in_progress'],
+        ['id' => 50, 'name' => 'In Review', 'position' => 3, 'lane_type' => 'in_progress'],
+        ['id' => 52, 'name' => 'Shipped to dev', 'position' => 4, 'lane_type' => 'waiting'],
+        ['id' => 53, 'name' => 'Released to main', 'position' => 5, 'lane_type' => 'done'],
+        ['id' => 113, 'name' => 'Done', 'position' => 6, 'lane_type' => 'done'],
+        ['id' => 78, 'name' => "Won't Do", 'position' => 7, 'lane_type' => 'done'],
+    ];
+
+    public function writeTakeoverWriteback(): void
     {
-        Http::fake($this->takeFake(live: [$this->takeableCardRow(['assigned_user_id' => 4242])]));
+        $this->writeWriteback((string) json_encode(['mappings' => [
+            'o/mine' => ['board_id' => 10, 'stages' => ['merged' => 52, 'merged_to_main' => 53]],
+        ]]));
+    }
+
+    /**
+     * A STATEFUL board for a takeover: the search answers the card as it stands, a PATCH
+     * changes its assignee (or, with $raceTo, loses to another writer), the column read answers
+     * TAKEOVER_STAGES, and a comment POST answers $commentStatus.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array<int, array<string, mixed>>  $comments  filled with each posted comment body
+     */
+    private function takeoverFake(array $row, array &$comments, ?int $raceTo = null, int $commentStatus = 201): \Closure
+    {
+        $card = $row;
+
+        return function ($request) use (&$card, &$comments, $raceTo, $commentStatus) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                return Http::response(['data' => str_contains($url, 'archived=1') ? [] : [$card]]);
+            }
+            if (str_contains($url, '/boards/10/preload.json')) {
+                return Http::response(['data' => ['workflows' => [['stages' => self::TAKEOVER_STAGES]]]]);
+            }
+            if (str_contains($url, '/comments.json')) {
+                $comments[] = $request->data();
+
+                return Http::response(['data' => ['id' => 1]], $commentStatus);
+            }
+            if ($request->method() === 'PATCH') {
+                $card['assigned_user_id'] = $raceTo ?? $request->data()['assigned_user_id'];
+
+                return Http::response(['data' => ['id' => 42]]);
+            }
+
+            return Http::response('unexpected '.$request->method().' '.$url, 500);
+        };
+    }
+
+    public function test_take_warns_then_takes_a_card_another_user_holds_and_comments_naming_them(): void
+    {
+        $this->writeTakeoverWriteback();
+        $comments = [];
+        Log::spy();
+        Http::fake($this->takeoverFake($this->takeableCardRow(['assigned_user_id' => 4242, 'workflow_stage_id' => 49]), $comments));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.taken', true)
+            ->assertJsonPath('result.already_held', false)
+            ->assertJsonPath('result.assigned_user_id', $this->myKanbanUserId())
+            ->assertJsonPath('result.replaced.assigned_user_id', 4242)
+            ->assertJsonPath('result.replaced.owner_tags', [])
+            ->assertJsonPath('result.takeover_confirmed', true)
+            ->assertJsonPath('result.takeover_comment', 'posted');
+        $this->assertStringContainsString('kanban user 4242', (string) $res->json('result.warning'));
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+        $this->assertCount(1, $comments);
+        $this->assertStringContainsString('took this card over from kanban user 4242', (string) $comments[0]['content']);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx = []) => str_contains($m, 'TAKING a card another holder has')
+            && $ctx['replaced_assignee'] === 4242)->once();
+    }
+
+    /**
+     * ⛔ A FINISHED CARD IS NEVER TAKEN OVER (ruling 7624). Shipped to dev is the column the
+     * board itself does not call done — only the writeback mapping's `merged` stage makes it
+     * finished — which is why the union in FinishedStages is load-bearing.
+     *
+     * @return array<string, array{int, string}>
+     */
+    public static function finishedColumns(): array
+    {
+        return [
+            'Shipped to dev (mapping merged; board says waiting)' => [52, 'Shipped to dev'],
+            'Released to main (mapping merged_to_main)' => [53, 'Released to main'],
+            'Done (board done; past the floor)' => [113, 'Done'],
+            "Won't Do (board done)" => [78, "Won't Do"],
+        ];
+    }
+
+    #[DataProvider('finishedColumns')]
+    public function test_take_refuses_to_replace_the_assignee_of_a_finished_card(int $stage, string $column): void
+    {
+        $this->writeTakeoverWriteback();
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['assigned_user_id' => 4242, 'workflow_stage_id' => $stage]), $comments));
 
         $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
 
         $res->assertStatus(422);
         $error = (string) $res->json('error');
-        $this->assertStringContainsString('4242', $error, 'the holder is NAMED — that refusal IS the collision detector');
-        $this->assertStringContainsString('ALREADY HELD', $error);
+        $this->assertStringContainsString("FINISHED column ({$column})", $error);
+        $this->assertStringContainsString('kanban user 4242', $error);
+        $this->assertStringContainsString('--steal', $error);
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+        $this->assertSame([], $comments);
+    }
+
+    /**
+     * An unanswerable leg is never read as "current": each of these leaves a finished card able
+     * to look unfinished, so the takeover refuses. The CONTROL is the first test above — the
+     * same fixture with every leg answerable takes the card.
+     *
+     * @return array<string, array{\Closure(self): void, int, string}>
+     */
+    public static function unanswerableFinishedLegs(): array
+    {
+        return [
+            'no writeback.json' => [static function (self $t): void {}, 49, 'maps `merged`'],
+            'writeback.json will not parse' => [static function (self $t): void {
+                $t->writeWriteback('{not json');
+            }, 49, 'cannot read its own writeback.json'],
+            'a mapping on another board only' => [static function (self $t): void {
+                $t->writeWriteback((string) json_encode(['mappings' => ['o/x' => ['board_id' => 999, 'stages' => ['merged' => 52]]]]));
+            }, 49, 'maps `merged`'],
+            'a column the order does not place' => [static function (self $t): void {
+                $t->writeTakeoverWriteback();
+            }, 777, 'not placed in the board\'s column order'],
+        ];
+    }
+
+    #[DataProvider('unanswerableFinishedLegs')]
+    public function test_take_refuses_a_takeover_it_cannot_show_is_of_an_unfinished_card(\Closure $setUp, int $stage, string $why): void
+    {
+        $setUp($this);
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['assigned_user_id' => 4242, 'workflow_stage_id' => $stage]), $comments));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString($why, (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * The pin (DL-178) governs a card's NAME, not the claim — the ruling the plain take's witness
+     * below already pins. A takeover writes the same single field, so it lands on a pinned card too.
+     */
+    public function test_a_takeover_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim(): void
+    {
+        $this->writeTakeoverWriteback();
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow([
+            'assigned_user_id' => 4242, 'workflow_stage_id' => 49, 'block_reason' => 'held by an operator', 'tags' => ['no-automove'],
+        ]), $comments));
+
+        $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]])
+            ->assertStatus(200)
+            ->assertJsonPath('result.takeover_confirmed', true);
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+    }
+
+    public function test_a_takeover_that_loses_a_race_is_reported_unconfirmed_and_posts_no_comment(): void
+    {
+        $this->writeTakeoverWriteback();
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['assigned_user_id' => 4242, 'workflow_stage_id' => 49]), $comments, raceTo: 5151));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.takeover_confirmed', false)
+            ->assertJsonPath('result.board_now_names', 5151)
+            ->assertJsonPath('result.takeover_comment', 'not_attempted');
+        $this->assertSame([], $comments, 'a comment naming a replacement that did not happen would be a false record');
+    }
+
+    public function test_a_takeover_whose_comment_is_refused_still_reports_the_replaced_holder(): void
+    {
+        $this->writeTakeoverWriteback();
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['assigned_user_id' => 4242, 'workflow_stage_id' => 49]), $comments, commentStatus: 403));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.takeover_confirmed', true)
+            ->assertJsonPath('result.takeover_comment', 'failed')
+            ->assertJsonPath('result.replaced.assigned_user_id', 4242);
+    }
+
+    /**
+     * The migration fallback (card#10868 step 1): with no assignee, ANOTHER seat's legacy
+     * `owner:` tag is the holder — the takeover path, comment included. This seat's own seat
+     * name in the tag is the control: that tag may be its own, so the card is taken the
+     * ordinary way, with no comment.
+     */
+    public function test_an_unassigned_card_carrying_another_seats_owner_tag_is_taken_over_with_a_comment(): void
+    {
+        $this->writeTakeoverWriteback();
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['workflow_stage_id' => 49, 'tags' => ['type:feature', 'owner:proj/other-seat']]), $comments));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.replaced.assigned_user_id', null)
+            ->assertJsonPath('result.replaced.owner_tags', ['owner:proj/other-seat'])
+            ->assertJsonPath('result.takeover_comment', 'posted');
+        $this->assertStringContainsString('owner:proj/other-seat', (string) $comments[0]['content']);
+    }
+
+    /**
+     * A tag-held takeover replaces NO record — the take writes `assigned_user_id` alone and the
+     * tag stays on the card — so it is not column-gated: with no writeback.json at all, on a card
+     * in a column that would be finished, it is still taken, warned and commented, and no column
+     * read is made. The assignee twin of this fixture is refused (the unanswerable-legs test).
+     */
+    public function test_a_tag_held_takeover_is_not_column_gated_because_it_replaces_no_record(): void
+    {
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['workflow_stage_id' => 52, 'tags' => ['owner:proj/other-seat']]), $comments));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.replaced.owner_tags', ['owner:proj/other-seat'])
+            ->assertJsonPath('result.takeover_comment', 'posted');
+        $this->assertSame(['assigned_user_id' => $this->myKanbanUserId()], $this->sentPatchBody());
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'preload.json'));
+    }
+
+    public function test_an_unassigned_card_carrying_this_seats_own_owner_tag_is_taken_the_ordinary_way(): void
+    {
+        $comments = [];
+        Http::fake($this->takeoverFake($this->takeableCardRow(['workflow_stage_id' => 49, 'tags' => ['owner:proj/me']]), $comments));
+
+        $res = $this->callTool(['tool' => 'board_take_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(200)->assertJsonMissingPath('result.replaced');
+        $this->assertSame([], $comments);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'preload.json'));
     }
 
     /**
@@ -5143,6 +5558,8 @@ class AgentToolsCallTest extends TestCase
         return match ($tool) {
             'board_my_cards' => [
                 'args' => ['include_description' => false, 'stage' => 50, 'limit' => 5],
+                // The board-structure read succeeds (member), and every lane and coord search
+                // answers nothing, so the call answers empty windows.
                 'fake' => function ($request) {
                     return str_contains($request->url(), '/preload.json')
                         ? Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]])
@@ -5165,7 +5582,62 @@ class AgentToolsCallTest extends TestCase
                 'args' => ['card_id' => 42, 'content' => 'a note'],
                 'fake' => $this->commentFake(live: [$this->commentableCardRow()]),
             ],
+            'board_get_cards' => [
+                'args' => ['ids' => [42, 43], 'fields' => ['name', 'stage']],
+                'fake' => $this->getCardsFake(),
+            ],
+            'board_search' => [
+                'args' => ['tags_any' => ['a', 'b'], 'stage' => [50], 'include_archived' => true, 'lane' => 'mine', 'name_contains' => 'c', 'updated_since' => '2026-09-01', 'fields' => ['id', 'stage'], 'limit' => 5],
+                'fake' => $this->searchFake(),
+            ],
             default => $this->fail("no undeclared-key fixture for the registered tool `{$tool}` — add one, so its refusal is covered"),
+        };
+    }
+
+    /**
+     * `board_get_cards`' kanban surface for the door-wide arms: card 42 live on board 10, 43 on no
+     * board (by-id 404), 44 on a board the token may not view (by-id 403) while board 10 is readable.
+     */
+    private function getCardsFake(): \Closure
+    {
+        return function ($request) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/boards/10/preload.json')) {
+                return Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]]);
+            }
+            if (str_contains($url, '/tasks/43/preload.json')) {
+                return Http::response(['message' => 'Not Found'], 404);
+            }
+            if (str_contains($url, '/tasks/44/preload.json')) {
+                return Http::response(['message' => 'This action is unauthorized.'], 403);
+            }
+            if (str_contains($url, '/boards/10/status.json')) {
+                return KanbanBoardStatus::readable();
+            }
+            $live = str_contains($url, 'id=42') && ! str_contains($url, 'archived=1');
+
+            return Http::response(['data' => $live ? [['id' => 42, 'board_id' => 10, 'swimlane_id' => 99, 'workflow_stage_id' => 50, 'name' => 'c', 'tags' => []]] : []]);
+        };
+    }
+
+    /**
+     * `board_search`'s kanban surface for the door-wide arms: card 42 on board 10 answers every
+     * search (with kanban's DL-282 parse disclosure, which the tool refuses to answer without) and
+     * the by-ref index for PR 7.
+     */
+    private function searchFake(): \Closure
+    {
+        return function ($request) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/boards/10/preload.json')) {
+                return Http::response(['data' => ['workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]]]]]);
+            }
+            $row = ['id' => 42, 'board_id' => 10, 'swimlane_id' => 4, 'workflow_stage_id' => 50, 'name' => 'c', 'tags' => ['a'], 'payload' => ['pr_number' => 7]];
+            if (str_contains($url, '/tasks/by-ref.json')) {
+                return Http::response(['data' => [$row]]);
+            }
+
+            return Http::response(['data' => [$row], 'meta' => ['total' => 1, 'applied_filters' => [], 'free_text_terms' => []]]);
         };
     }
 
@@ -5283,6 +5755,9 @@ class AgentToolsCallTest extends TestCase
             'board_correct_card lookup misses into the archive side',
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side',
+            'board_get_cards a 403 asks the membership control',
+            'board_search by pr_number re-asks each candidate',
+            'board_search summary counts',
         ] as $scenario) {
             $extra[$scenario] = [$scenario];
         }
@@ -5313,6 +5788,9 @@ class AgentToolsCallTest extends TestCase
             'board_correct_card lookup misses into the archive side' => $lookupMiss('board_correct_card', ['card_id' => 42, 'name' => 'n'], $this->correctFake(live: [])),
             'board_take_card lookup misses into the archive side' => $lookupMiss('board_take_card', ['card_id' => 42], $this->takeFake(live: [])),
             'board_comment_card lookup misses into the archive side' => $lookupMiss('board_comment_card', ['card_id' => 42, 'content' => 'a note'], $this->commentFake(live: [])),
+            'board_get_cards a 403 asks the membership control' => ['tool' => 'board_get_cards', 'args' => ['ids' => [44], 'fields' => []], 'fake' => $this->getCardsFake()],
+            'board_search by pr_number re-asks each candidate' => ['tool' => 'board_search', 'args' => ['pr_number' => 7, 'lane' => 'mine'], 'fake' => $this->searchFake()],
+            'board_search summary counts' => ['tool' => 'board_search', 'args' => ['summary' => true, 'summary_tags' => ['a']], 'fake' => $this->searchFake()],
             default => ['tool' => $scenario] + $this->undeclaredKeyFixture($scenario),
         };
     }
@@ -5338,6 +5816,11 @@ class AgentToolsCallTest extends TestCase
             'board_correct_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
             'board_take_card' => ['status' => 200, 'sends' => ['#^PATCH \\S+/tasks/42\\.json$#']],
             'board_comment_card' => ['status' => 200, 'sends' => ['#^POST \\S+/tasks/42/comments\\.json$#']],
+            'board_get_cards' => ['status' => 200, 'sends' => ["#^GET {$search}.*id=43.*archived=1#", '#^GET \\S+/tasks/43/preload\\.json$#', '#^GET \\S+/boards/10/preload\\.json#']],
+            'board_get_cards a 403 asks the membership control' => ['status' => 200, 'sends' => ['#^GET \\S+/tasks/44/preload\\.json$#', '#^GET \\S+/boards/10/status\\.json$#']],
+            'board_search' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/preload\\.json#', "#^GET {$search}q=board_id=10 tags:\"b\" workflow_stage_id=50 .*swimlane_id=4&limit=5&archived=1$#"]],
+            'board_search by pr_number re-asks each candidate' => ['status' => 200, 'sends' => ['#^GET \\S+/boards/10/tasks/by-ref\\.json\\?system=github_pr&ref=7$#', "#^GET {$search}q=board_id=10 id=42 swimlane_id=4&limit=1$#"]],
+            'board_search summary counts' => ['status' => 200, 'sends' => ["#^GET {$search}q=board_id=10 workflow_stage_id=50&limit=1$#", "#^GET {$search}q=board_id=10 tags:\"a\"&limit=1$#"]],
             'board_correct_card lookup misses into the archive side',
             'board_take_card lookup misses into the archive side',
             'board_comment_card lookup misses into the archive side' => ['status' => 422, 'sends' => ["#^GET {$search}.*archived=1#"]],

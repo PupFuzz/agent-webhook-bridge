@@ -8,17 +8,18 @@ use App\Bridge\Writeback\PinGuard;
  * THE AUTHOR'S OWN DECLARATION: `[no-close]` in a PR title means *this PR CITES a card it
  * does not finish*, and since card#8344 the writeback READS it (DL-327).
  *
- * WHY IT HAD TO EXIST, measured twice rather than argued. Since DL-308 a merge closes a
- * card STRUCTURALLY whenever the head ref names it — which is what this fleet's own
+ * WHY IT HAD TO EXIST, measured twice rather than argued. Under DL-308 a merge closed a
+ * card STRUCTURALLY whenever the head ref named it — which is what this fleet's own
  * tooling mints — so a PR built *for* a card while deliberately not finishing it (a design
  * note, a reference doc, a partial spike on the card's branch) promoted that card on
- * merge: a TERMINAL stage move asserting work landed that did not. Measured on real
+ * merge: a TERMINAL stage move asserting work landed that did not. (card#10850 / DL-436
+ * then retired that route outright; the marker still vetoes a closing form in the title.) Measured on real
  * merges (`mezzanine#24` → card 7341, roundtable 388; the same shape again in card#7348's
  * population). Under-promotion is recoverable by hand; this direction is not.
  *
  * ⛔ NO PREDICATE OVER TITLE, BRANCH AND DIFF CAN READ INTENT, which is why this is a
  * declaration and not a heuristic. The three routes already closed into the terminal move
- * — {@see PrOutcome::mergeClosesCard()}'s strict token (card#8294), {@see RevertGrammar}
+ * — the strict branch token (card#8294, since retired with the route by DL-436), {@see RevertGrammar}
  * (card#8306), {@see PinGuard} (card#8289) — each answer a question
  * about the ARTIFACT. *"I am citing this card, not closing it"* is a fact about the
  * author, and the only place it can come from is the author.
@@ -55,12 +56,12 @@ use App\Bridge\Writeback\PinGuard;
  * assumed by analogy). {@see self::marks()} reads the title with GitHub's quoted revert
  * wrapper REMOVED, so `[no-close]` inside `Revert "…"` is the ORIGINAL author's declaration
  * about the ORIGINAL PR and does not veto this author's own closing form written outside
- * the quotes. That difference is REACHABLE and was checked rather than waved at: a revert
- * takes no structural route at all, so the two readings can only differ on the LEXICAL
- * route — which is exactly where DL-318's positional escape hatch lives.
+ * the quotes. That difference is REACHABLE and was checked rather than waved at: the two
+ * readings differ on the closing form — which is exactly where DL-318's positional escape
+ * hatch lives.
  *
  * CORRELATION IS UNTOUCHED, exactly as it is for a revert. The card is still selected, the
- * PR refs are still stamped, `opened` / `started` / `closed_unmerged` still fire, and
+ * PR refs are still stamped, `opened` / `started` still fire, and
  * `bridge:reconcile` still sees the card. Only the completion claim is refused, which is
  * what keeps the card inside the backstop's population instead of stranding it.
  */
@@ -127,7 +128,7 @@ final class NoCloseGrammar
     public static function describeRefusal(): string
     {
         return 'This PR TITLE carries the literal `'.self::MARKER.'`, which is the author declaring that it '
-            .'CITES the card rather than finishing it (card#8344) — so neither closure route fires and no '
+            .'CITES the card rather than finishing it (card#8344) — so no closing form in it closes the card and no '
             .'terminal move is emitted, on the merge into the integration branch or on a release merge. '
             .'It only ever WITHHOLDS a move: it can never select a card, authorize a stage, or move one the '
             .'writeback would otherwise have left alone. Correlation is untouched — the card is still '

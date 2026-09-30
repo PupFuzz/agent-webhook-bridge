@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\AssertsNoLiveControlByte;
 use Tests\Support\KanbanCardStub;
 use Tests\Support\KanbanSearchSim;
@@ -946,7 +947,7 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
-    // --- card#7348 / DL-308: the structural route, in lockstep on the backstop ---
+    // --- card#10850 / DL-436: the head branch closes nothing, in lockstep on the backstop ---
 
     /**
      * A merged PR whose title only MENTIONS the card, on a head branch that names `$card`.
@@ -959,18 +960,32 @@ class ReconcileCommandTest extends TestCase
             'title' => "work, follows card#{$card}", 'head' => ['ref' => $head]];
     }
 
-    public function test_the_backstop_reconciles_a_merge_whose_branch_names_the_card(): void
+    public function test_the_backstop_plans_nothing_for_a_merge_whose_branch_names_the_card(): void
     {
-        // THE LOCKSTEP POSITIVE. This is byte-for-byte the situation
-        // `test_a_bare_mention_merge_plans_no_forward_move_either` above refuses — same
-        // card, same stage, same mention-only title — with ONE field added: a head branch
-        // ref naming card 5. The classifier moves this card (witness 4); if the backstop
-        // did not, the two paths would disagree about which merges close a card, and
-        // `--fix` on a schedule would keep declining a move the event path had made. That
-        // is the drift `PrOutcome` owns the term to prevent, and this is the assertion
-        // that the term is actually WIRED here rather than only there.
+        // THE LOCKSTEP with the classifier's witness 4. Under DL-308 this merge — card 5's own
+        // branch, a title that merely mentions it — reconciled card 5 forward to the merged
+        // stage; since DL-436 the event path moves nothing on it, and if the backstop still
+        // did, `--fix` on a schedule would re-apply an hour later exactly the move the event
+        // path stopped making. (Restore the branch route here only ⇒ card 5 PATCHed to 52 ⇒ RED.)
         $this->writeWriteback();
         $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedPrOnBranch('card-5-widget')]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain("its title carries no closing form naming this card (head branch ref 'card-5-widget' is not closure evidence) — a MENTION, not a closure claim")
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_backstop_reconciles_the_same_merge_once_its_title_closes_the_card(): void
+    {
+        // THE CONTROL, one variable away from the test above: the title now closes card 5.
+        // It reconciles forward, so the refusal above is evidence about the missing closing
+        // form and not about a backstop that stopped closing anything.
+        $this->writeWriteback();
+        $pr = $this->mergedPrOnBranch('card-5-widget');
+        $pr['title'] = 'work (closes card#5)';
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $pr]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
             ->doesntExpectOutputToContain('a MENTION, not a closure claim')
@@ -981,40 +996,44 @@ class ReconcileCommandTest extends TestCase
             && $r->data() === ['workflow_stage_id' => 52]);
     }
 
-    public function test_the_backstop_refuses_a_branch_that_names_another_card(): void
+    public function test_the_backstop_does_not_demote_a_card_the_retired_branch_route_already_shipped(): void
     {
-        // ⛔ THE NEGATIVE, on the leg that runs unattended on a schedule — which is where a
-        // wrong widening does the most damage, because nobody is watching a cron the way
-        // they watch a merge. One variable changed from the test above: the branch names
-        // card 9999, so nothing about this merge claims card 5 is done. (Key the term on
-        // "the ref names any card" ⇒ card 5 is PATCHed to the merged stage by a cron ⇒ RED.)
-        $this->writeWriteback();
-        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedPrOnBranch('card-9999-other')]);
-
-        $this->artisan('bridge:reconcile', ['--fix' => true])
-            // ONE matcher, spanning BOTH claims — the skip line names the ref it read (so
-            // an operator debugging a card that will not move sees the surface that decided
-            // it) AND states the ruling. Two chained `expectsOutputToContain` calls against
-            // one line do not both match: the first consumes it.
-            ->expectsOutputToContain("neither its head branch ref ('card-9999-other') nor a closing form in its title names this card — a MENTION, not a closure claim")
-            ->assertExitCode(0);
-
-        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
-    }
-
-    public function test_the_backstop_does_not_demote_a_shipped_card_whose_branch_named_it(): void
-    {
-        // The DL-305 no-demotion property, re-asserted through the new route: a card
-        // already at the merged stage whose PR closes it structurally must reconcile to
-        // IN-SYNC, not to a move. Widening what closes a card widens the population this
-        // command re-derives an expectation for on every pass, so the property that made
-        // DL-305 safe to ship has to be re-witnessed against the wider population rather
-        // than inherited from it.
+        // ⛔ THE DL-305 NO-DEMOTION PROPERTY, against the population DL-436 creates: every card
+        // DL-308's branch route already moved to the merged stage has a PR that is now a bare
+        // mention. This command re-derives an expectation for each of them on every pass, so a
+        // gate that returned an earlier stage would walk them all backwards on the first run.
+        // It skips them instead, and the card stays shipped.
         $this->writeWriteback();
         $this->fake([$this->card(5, 52, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedPrOnBranch('card-5-widget')]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
             ->doesntExpectOutputToContain('SKIP-DRIFT')
+            ->expectsOutputToContain('1 skipped')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * card#10850 / DL-436 — a PR closed without merging plans no move, even where the mapped
+     * `closed_unmerged` stage sits AHEAD of the card (a Won't Do column ordered after In
+     * Review, as on the installs that reported the defect): before DL-436 that was forward
+     * drift, and `--fix` PATCHed the card into it on a schedule.
+     */
+    public function test_the_backstop_plans_nothing_for_a_pr_closed_without_merging(): void
+    {
+        $this->writeWriteback(['owner/repo' => [
+            'board_id' => 8,
+            'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 78],
+        ]]);
+        $this->fake(
+            [$this->card(5, 50, ['pr_url' => $this->prUrl(5)])],
+            [5 => ['state' => 'closed', 'merged' => false, 'base' => ['ref' => 'dev'], 'html_url' => 'x', 'title' => 'work (closes card#5)', 'head' => ['ref' => 'card-5-widget']]],
+            self::ORDER + [78 => 7.0],
+        );
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('card 5 (owner/repo#5): PR is closed without merging — a close moves no card (DL-436), so it is left where it is — skipped')
             ->assertExitCode(0);
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
@@ -1022,15 +1041,14 @@ class ReconcileCommandTest extends TestCase
 
     // --- card#8306: the revert refusal, in lockstep on the backstop ---
 
-    public function test_the_backstop_refuses_a_github_revert_on_both_routes(): void
+    public function test_the_backstop_refuses_a_github_revert(): void
     {
         // ⛔ THE LOCKSTEP THAT MATTERS MOST HERE, because this leg runs on a schedule with
         // nobody watching: the classifier declines the revert at merge time, and without
         // the same term the backstop would PATCH the card forward an hour later with a
-        // CLI's name on it — the DL-305 §6 failure, re-minted through the revert door. Both
-        // routes are live in this one fixture (the title quotes `Closes card#5`, the ref
-        // wraps `card-5`), and the term lives on the two shared authorities so neither path
-        // spells it. (Delete either conjunct ⇒ card 5 is PATCHed to stage 52 by a cron.)
+        // CLI's name on it — the DL-305 §6 failure, re-minted through the revert door. The
+        // title quotes `Closes card#5`, and `ClosureGrammar` subtracts the quotation on both
+        // paths. (Stop subtracting it ⇒ card 5 is PATCHed to stage 52 by a cron.)
         $this->writeWriteback();
         $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
             'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
@@ -1039,10 +1057,9 @@ class ReconcileCommandTest extends TestCase
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
             // The skip line must NAME the revert rather than assert the default sentence,
-            // which is false here on both of its clauses — the ref does name card 5 and the
-            // title does carry a closing form. One matcher, because the first consumes the
-            // line (the constraint the negative above already records).
-            ->expectsOutputToContain('takes NEITHER closure route')
+            // which is false here — the title does carry a closing form. One matcher,
+            // because the first consumes the line.
+            ->expectsOutputToContain('is a revert, which closes no card')
             ->assertExitCode(0);
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
@@ -1050,14 +1067,10 @@ class ReconcileCommandTest extends TestCase
 
     public function test_the_backstop_refuses_a_hand_made_revert_on_an_ordinary_branch(): void
     {
-        // ⛔ THE HALF THE FIRST REVISION LEFT UNTESTED HERE, and a mutation caught it: with
-        // this leg absent, passing a BLANK title into the backstop's structural gate left
-        // the suite GREEN — because the only revert fixture above rides a `revert-<n>-` ref
-        // that `isRevertRef()` catches whatever the title says. A HAND-MADE `git revert`
-        // wraps no ref, so the title is the only surface that can refuse it, and this is
-        // the leg that proves the backstop reads it. Same lockstep, other direction: if the
-        // classifier declines this at merge time and the cron does not, the cron wins an
-        // hour later. `card-5-widget` is the spelling `board-card-start` mints.
+        // ⛔ A HAND-MADE `git revert` wraps no ref, so the quoted title is the only thing that
+        // marks it. Same lockstep: if the classifier declines this at merge time and the
+        // cron does not, the cron wins an hour later. `card-5-widget` is the spelling
+        // `board-card-start` mints.
         $this->writeWriteback();
         $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
             'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
@@ -1065,7 +1078,7 @@ class ReconcileCommandTest extends TestCase
         ]]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
-            ->expectsOutputToContain('takes NEITHER closure route')
+            ->expectsOutputToContain('is a revert, which closes no card')
             ->assertExitCode(0);
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
@@ -1149,24 +1162,20 @@ class ReconcileCommandTest extends TestCase
         // ⛔ THE LOCKSTEP, on the leg that runs unattended. The classifier declines this
         // merge at event time; without the same term the cron would PATCH card 5 forward an
         // hour later with a CLI's name on it — the DL-305 §6 failure re-minted through a
-        // third door. The term is not spelled here: it lives inside the two authorities
-        // `closes()` already ORs (`ClosureGrammar`, `PrOutcome::mergeClosesCard()`), which
+        // third door. The term is not spelled here: it lives inside `ClosureGrammar`, which
         // is exactly why this leg is needed — nothing in this file would otherwise show it
-        // reached the backstop at all.
-        //
-        // The fixture is the shape the card was filed for: a context PR built ON the card's
-        // own branch, so the STRUCTURAL route would close it. (Delete the term ⇒ card 5 is
-        // PATCHed to stage 52 by a cron.)
+        // reached the backstop at all. The title carries a closing form, so only the marker
+        // can be what withholds the move. (Delete the term ⇒ card 5 is PATCHed to stage 52.)
         $this->writeWriteback();
         $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
             'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
-            'title' => 'docs: cite the prior ruling [no-close] (card#5)', 'head' => ['ref' => 'card-5-widget'],
+            'title' => 'docs: cite the prior ruling [no-close] (closes card#5)', 'head' => ['ref' => 'card-5-widget'],
         ]]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
             // The line must NAME the author's declaration rather than assert the default
-            // sentence, which is FALSE here — the ref DOES name card 5. One matcher,
-            // because the first consumes the line.
+            // sentence, which is FALSE here — the title DOES carry a closing form. One
+            // matcher, because the first consumes the line.
             ->expectsOutputToContain('its TITLE declares it does not finish this card')
             ->assertExitCode(0);
 
@@ -1182,7 +1191,7 @@ class ReconcileCommandTest extends TestCase
         $this->writeWriteback();
         $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
             'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
-            'title' => 'docs: cite the prior ruling (card#5)', 'head' => ['ref' => 'card-5-widget'],
+            'title' => 'docs: cite the prior ruling (closes card#5)', 'head' => ['ref' => 'card-5-widget'],
         ]]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
@@ -1194,36 +1203,25 @@ class ReconcileCommandTest extends TestCase
             && $r->data() === ['workflow_stage_id' => 52]);
     }
 
-    public function test_fix_into_a_terminal_stage_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
+    public function test_fix_into_a_terminal_stage_is_stage_only_and_keeps_the_assignee_and_owner_tag(): void
     {
-        // The board read is the SCAN; a tag another writer adds after it must survive the clear,
-        // which it can only do if the clear's tag list comes from a read taken at the write.
+        // card#10869: the retired DL-386 clear no longer follows a terminal move, and a finished
+        // card KEEPS its assignee (card#10868 Q2).
         $this->writeWriteback();
-        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban']]);
-        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
-        $this->fake([$scanned], [5 => $this->mergedToDevPr()], cardEndpoint: $cards);
-
-        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
-
-        $this->assertSame([['workflow_stage_id' => 52], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
-    }
-
-    public function test_fix_makes_no_tag_write_when_the_fresh_read_shows_no_owner_tag(): void
-    {
-        $this->writeWriteback();
-        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'tags' => ['owner:kanban/kanban']]);
-        $cards = new KanbanCardStub([5 => ['tags' => ['triaged']] + $scanned]);
+        $scanned = $this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'assigned_user_id' => 7, 'tags' => ['triaged', 'owner:kanban/kanban']]);
+        $cards = new KanbanCardStub([5 => $scanned]);
         $this->fake([$scanned], [5 => $this->mergedToDevPr()], cardEndpoint: $cards);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
 
         $this->assertSame([['workflow_stage_id' => 52]], $cards->patchesTo(5));
+        $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+        $this->assertSame(7, $cards->cards[5]['assigned_user_id']);
     }
 
     /**
-     * The terminal check's other side: a forward drift into `opened` is not terminal, so the
-     * applied move carries no clear. The PATCH is the presence witness that `--fix` applied the
-     * move; nothing may follow it, because the clear's first step is a read.
+     * A forward drift into `opened`: the PATCH is the presence witness that `--fix` applied the
+     * move, and nothing may follow it.
      */
     public function test_fix_into_a_non_terminal_stage_moves_an_owner_tagged_card_stage_only_with_no_fresh_read_or_tag_write(): void
     {
@@ -1238,6 +1236,61 @@ class ReconcileCommandTest extends TestCase
         $movedAt = array_key_last(array_filter($cards->log, static fn (array $e): bool => $e['method'] === 'PATCH'));
         $this->assertSame([], array_slice($cards->log, $movedAt + 1));
         $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+    }
+
+    /**
+     * card#10869, operator ruling A covers EVERY bridge move out of a start column — `--fix`
+     * included: a forward drift that takes a card with no owner recorded out of
+     * `started_from_stages` is applied and alerted. The assignee-carrying twin is the control.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: int}>
+     */
+    public static function fixStartOwners(): array
+    {
+        return [
+            'no owner recorded' => [['assigned_user_id' => null, 'tags' => ['triaged']], 1],
+            'an assignee' => [['assigned_user_id' => 7, 'tags' => []], 0],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $owner
+     */
+    #[DataProvider('fixStartOwners')]
+    public function test_fix_alerts_a_move_out_of_a_start_column_on_a_card_with_no_owner(array $owner, int $alerts): void
+    {
+        $this->writeWriteback(['owner/repo' => [
+            'board_id' => 8,
+            'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+            'started_from_stages' => [46],
+        ]], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $scanned = $this->card(5, 46, ['pr_url' => $this->prUrl(5)], ['block_reason' => null] + $owner);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $this->assertCount($alerts, Http::recorded(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL)
+            && $r['type'] === 'writeback_moved_without_owner' && $r['card_id'] === 5 && $r['to_stage'] === 50));
+    }
+
+    public function test_fix_alerts_the_reconciles_revival_out_of_the_abandon_stage_on_a_card_with_no_owner(): void
+    {
+        // The abandon stage (`closed_unmerged`, 49 here) is a start column for a move into `opened`:
+        // work resumed, as on the event path's `reopened` revival. No start sets are declared, so
+        // only the abandon leg can raise this.
+        $this->writeWriteback([], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $scanned = $this->card(5, 49, ['pr_url' => $this->prUrl(5)], ['block_reason' => null, 'assigned_user_id' => null, 'tags' => []]);
+        $cards = new KanbanCardStub([5 => $scanned]);
+        $this->fake([$scanned], [5 => $this->openPr()], cardEndpoint: $cards);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        $this->assertSame([['workflow_stage_id' => 50]], $cards->patchesTo(5));
+        $this->assertCount(1, Http::recorded(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL) && $r['type'] === 'writeback_moved_without_owner'));
     }
 
     public function test_report_only_run_sends_nothing_for_an_owner_tagged_terminal_drift(): void

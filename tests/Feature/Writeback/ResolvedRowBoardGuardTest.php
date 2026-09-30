@@ -165,7 +165,7 @@ class ResolvedRowBoardGuardTest extends TestCase
         $this->assertNoWriteTo(6);
         $this->assertRefused(6, 'promote_on_release');
         // The alert dedups per (repo, outcome, reason), so a second refusal — of the mapped
-        // row, by the post-promote owner-tag clear — could only show up in the ledger.
+        // row — could only show up in the ledger.
         $this->assertSame([6], WritebackBoardDivergence::query()->pluck('card_id')->all());
     }
 

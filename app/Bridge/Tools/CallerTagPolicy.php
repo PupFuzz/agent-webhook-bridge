@@ -4,6 +4,7 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackConfig;
 
@@ -29,6 +30,13 @@ use App\Bridge\Writeback\WritebackConfig;
  * accepting different tags — which is the whole hazard of adding a second write
  * path. A tag the create tool refuses at birth must be refused by the correction
  * too, or the correction becomes the laundering route around the create guard.
+ *
+ * ⭐ THE RETIRED SEAT OWNER TAG (`owner:<project>/<seat>`) IS IN BOTH SETS (card#10869, operator
+ * ruling B). Card ownership is the kanban ASSIGNEE; the tag is read only as the migration fallback
+ * for a card with no assignee ({@see OwnerTag}). So a caller may not ADD one — a seat claims a card
+ * with `board_take_card`, and a forged tag would name a holder nobody is — and a `tags` correction
+ * must KEEP one already on the card, or the correction deletes the only record of who holds a
+ * tag-only card before `kbcard owner-migrate` can turn it into an assignee.
  *
  * The reasoning the two constants encode is unchanged and belongs to DL-217 /
  * {@see BoardCreateCardTool}'s docblock, which still owns it: `created-by:` is the
@@ -107,6 +115,9 @@ final class CallerTagPolicy
             }
         }
         if (in_array($folded, self::RESERVED_BARE, true) || in_array($folded, self::PRESERVED_BARE, true)) {
+            return true;
+        }
+        if (OwnerTag::is($folded)) {
             return true;
         }
         foreach ($installHoldTags as $hold) {
@@ -189,6 +200,9 @@ final class CallerTagPolicy
             }
             if (in_array($folded, self::RESERVED_BARE, true)) {
                 throw new ToolRefusalException("{$tool}: the tag `{$tag}` is reserved — tool-created cards are born untriaged by design (they surface to the triage pass)");
+            }
+            if (OwnerTag::is($folded)) {
+                throw new ToolRefusalException("{$tool}: the tag `{$tag}` is the retired seat owner tag (`".OwnerTag::PREFIX."<project>/<seat>`) and cannot be caller-supplied — card ownership is the card's kanban ASSIGNEE now, and the tag is only read as a migration fallback. To claim a card for yourself, use `board_take_card`.");
             }
             $tags[] = $tag;
         }

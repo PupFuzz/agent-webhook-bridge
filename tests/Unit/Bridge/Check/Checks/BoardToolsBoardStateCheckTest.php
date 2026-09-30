@@ -41,7 +41,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
 
         $this->assertSame(Severity::Warn, $findings[0]['severity']);
         $this->assertSame(
-            'board_tools: agent prod-agent: the writeback token sees 0 cards on board 10 — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card\'s correlation reads blind). Verify membership + board_id if you expect cards.',
+            'board_tools: agent prod-agent: the writeback token sees 0 cards on board 10 — EITHER the board has no live cards OR the service user is not a member / board_id is wrong. board_my_cards tells the two apart on its own — its board-structure read (`preload.json`) refuses a non-member (403) before any search, so it answers the first with empty windows and REFUSES the second, naming membership; in the second, board_create_card\'s correlation also reads blind. Verify membership + board_id if you expect cards.',
             $findings[0]['message'],
         );
     }

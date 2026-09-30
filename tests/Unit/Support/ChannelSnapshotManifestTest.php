@@ -25,7 +25,7 @@ use Tests\TestCase;
 class ChannelSnapshotManifestTest extends TestCase
 {
     /** The shared comparator vectors: one file, read by the python, PHP and Node implementations alike. */
-    private const VECTORS_FILE = __DIR__.'/../../Fixtures/version-comparator-vectors.json';
+    private const VECTORS_FILE = __DIR__.'/../../../examples/channel-servers/tests/fixtures/version-comparator-vectors.json';
 
     /**
      * The SHARED comparator vector table (DL-229). The declared authority for comparison
@@ -33,7 +33,9 @@ class ChannelSnapshotManifestTest extends TestCase
      * asserted against it in `bin/test_provision_board_tools.py` (class
      * `VersionComparatorLockstep`) and against the seat updater's `compareReleases` in
      * `examples/channel-servers/tests/client-update.test.mjs` — all three READ
-     * `tests/Fixtures/version-comparator-vectors.json`, so there is no second copy to drift.
+     * `examples/channel-servers/tests/fixtures/version-comparator-vectors.json`, so there is no
+     * second copy to drift. It lives inside the channel-server directory because a seat deploys
+     * that directory alone and runs the node suite there (card#10862).
      *
      * @return list<array{string, string, int}>
      */

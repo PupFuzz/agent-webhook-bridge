@@ -147,6 +147,29 @@ final class WritebackAlertNotifier
     }
 
     /**
+     * Signal that a bridge move took a card OUT OF A START COLUMN with NO OWNER recorded — no
+     * kanban assignee and no legacy `owner:` tag (card#10869, operator ruling A: the card is moved,
+     * never refused, and the alert names it). Emitted AFTER the confirmed move.
+     *
+     * DEDUPED PER (repo, card, destination stage): one alert per card per kind of start, so a
+     * redelivery that somehow re-reaches it cannot repeat it, while the same card started again
+     * into a different column (a later revival) is a new fact worth saying. One small marker per
+     * such card is the cost, bounded by the cards a seat never claimed.
+     */
+    public function notifyMovedWithoutOwner(string $repo, int $cardId, string $outcome, ?int $fromStage, int $toStage): void
+    {
+        $this->emit('writeback_moved_without_owner', implode("\x00", ['moved_without_owner', $repo, (string) $cardId, (string) $toStage]), [
+            'repo' => $repo,
+            'card_id' => $cardId,
+            'outcome' => $outcome,
+            'from_stage' => $fromStage,
+            'to_stage' => $toStage,
+            'reason' => 'moved_without_owner',
+            'summary' => "moved card {$cardId} with no owner recorded",
+        ]);
+    }
+
+    /**
      * Signal that a card parked in the `closed_unmerged` (abandon) stage was REVIVED
      * (DL-195) back to the `opened` stage when its PR was reopened — the compensating
      * "we moved a card out of a terminal-ish stage" notification. Emitted AFTER a
@@ -167,6 +190,60 @@ final class WritebackAlertNotifier
     }
 
     /**
+     * Signal that the bridge GAVE UP on a durable write it owed (card#10849 / DL-440) — the
+     * rate-limit bound was spent, the owed row aged out, its owner is gone, or its subject
+     * overflowed. Log FIRST (the durable record, carrying everything including the card id),
+     * then the live push.
+     *
+     * ⛔ UNMARKED — `dedupKey: null`, the {@see notifyUnpark} path — AND THAT IS THE WHOLE POINT.
+     * Each give-up is its own OCCURRENCE: the same subject can exhaust, recover, and exhaust
+     * again next week, and each is a write that did not land. The `(repo, outcome, reason)`
+     * marker {@see warnAndNotify} claims is never removed except by a failed push, so reusing
+     * it here would alert on a subject's FIRST give-up and silently swallow every later one,
+     * forever. What bounds the volume instead is the queue: a row is given up exactly once,
+     * because giving it up deletes it.
+     *
+     * ⛔ THE CARD ID IS WITHHELD FROM THE CHANNEL where the subject is keyed by one (DL-314):
+     * `kanban_move_card` and `kanban_block_reason` subjects carry an id parsed out of
+     * author-controlled text that nothing in the queue has verified as this install's. The
+     * body then says `card_id_withheld: true`, exactly as {@see warnAndNotifyCardIdWithheld}
+     * does; the log context keeps the id.
+     *
+     * @param  array<string, mixed>  $logContext
+     * @param  list<int>  $webhookEventIds  every owed write this alert gives up — one, except on overflow
+     */
+    public function notifyOwedWriteGaveUp(
+        string $catalogId,
+        string $message,
+        array $logContext,
+        string $repo,
+        string $handler,
+        string $reason,
+        bool $cardIdWithheld,
+        array $webhookEventIds,
+        int $attempts,
+        string $remedy,
+        ?string $retrySweepGap,
+    ): void {
+        Log::warning($message, ['catalog_id' => $catalogId] + $logContext);
+        $this->emit('writeback_owed_write_gave_up', null, [
+            'repo' => $repo,
+            'handler' => $handler,
+            'reason' => $reason,
+            // Why no clock retried it first, naming the key or command that fixes that; null
+            // when the retry sweep was in place (OwedWriteRetryJob::clockRetryGap()).
+            'retry_sweep_gap' => $retrySweepGap,
+            // No owed subject names a VERIFIED card, so the key is always null — present so the
+            // body keeps the `writeback_move_failed` shape, beside `card_id_withheld` where the
+            // subject IS a card id.
+            'card_id' => null,
+            'webhook_event_ids' => $webhookEventIds,
+            'attempts' => $attempts,
+            'remedy' => $remedy,
+        ] + ($cardIdWithheld ? ['card_id_withheld' => true] : []));
+    }
+
+    /**
      * Push one alert to the configured channel. BEST-EFFORT, STRUCTURALLY: the ENTIRE
      * body is wrapped so nothing — a bad channel config, a connection refusal, an HTTP
      * error, OR an internal failure like an unwritable state dir (`mkdir` warns →
@@ -175,8 +252,8 @@ final class WritebackAlertNotifier
      * outcome these alerts must not cause. The caller's own Log line already ran
      * regardless; only this additive push is at stake.
      *
-     * $dedupKey === null ⇒ skip the O_EXCL dedup entirely and ALWAYS push (the unpark
-     * path). A non-null key is the raw signature string claimSignature hashes.
+     * $dedupKey === null ⇒ skip the O_EXCL dedup entirely and ALWAYS push (the unpark,
+     * revive and owed-write give-up paths). A non-null key is the raw signature string claimSignature hashes.
      *
      * @param  array<string, mixed>  $body
      */

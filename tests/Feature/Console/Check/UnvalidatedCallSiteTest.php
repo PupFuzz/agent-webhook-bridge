@@ -212,6 +212,11 @@ class UnvalidatedCallSiteTest extends TestCase
         //      The same shape as RetentionPostureCheck's marker site, and for the same
         //      reason: an unreachable cache is not evidence that the last pass succeeded.
         'app/Bridge/Check/Checks/JobsPostureCheck.php' => 2,
+        // card#10849 / DL-440 — limb (a): the database did not answer, so whether the owed-write
+        // table exists was never measured. Reporting it MISSING there would send the operator to
+        // `migrate` a database that may be fine and merely unreachable, which
+        // `database.connectivity` already reports.
+        'app/Bridge/Check/Checks/WritebackOwedWritesTableCheck.php' => 2,
         // card#8683 / DL-345 — ONE site, the same shape as the two above and limb (a): the
         // cache backend holding the standup gate's last-failure marker could not be READ.
         // An unreachable cache is not evidence that the last digest pass succeeded, and this
@@ -310,6 +315,11 @@ class UnvalidatedCallSiteTest extends TestCase
         // is deliberately NOT here: those bytes were read, so it is a measured fault and
         // reports `warn`.
         'app/Bridge/Check/Checks/SharedIdentitiesCheck.php' => 1,
+        // card#10869: the coord roster could not be read (no path, unreadable, malformed), or
+        // the kanban API base names no host to key the roster by — either way no agent's
+        // identity.kanban_user_id was held against the store it is a copy of. Two sites, one
+        // per missing input; a MISSING roster id is a measured answer and reports `warn`.
+        'app/Bridge/Check/Checks/AgentKanbanUserRosterCheck.php' => 2,
         // card#5698 sub-shape (2): the channel token EXISTS and this process cannot read
         // it. `bridge:check` reads that token as the operator while `channel_push` reads it
         // inside the receiver request as another OS user, so the mode that stopped US is no

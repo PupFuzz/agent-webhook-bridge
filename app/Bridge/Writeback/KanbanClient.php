@@ -5,6 +5,7 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -122,6 +123,34 @@ final class KanbanClient
     }
 
     /**
+     * WHICH BOARD CARD `$cardId` IS ON — and nothing else about it (card#10832). `GET
+     * /tasks/{id}/preload.json`, the lightweight task read (no subtasks, comments or attachments).
+     *
+     * ⛔ UNSCOPED, like {@see getCard}, and for that reason it returns the `board_id` ALONE: the
+     * row may be another tenant's card, so none of its content leaves this method. It exists for
+     * the one question a board-scoped read cannot answer — after {@see cardRowsOnBoard} missed on
+     * both sides of the archive switch, is the id on ANOTHER board or on none?
+     *
+     * ⚠ THE CALLER READS THE STATUS, and the two it can act on are kanban's, source-read (kanban
+     * `routes/api.php` binds `{task}` `->withTrashed()`; `TasksController::preload` 404s a trashed
+     * task before `authorize('view')`): **404** = no task carries the id, or it is in the trash —
+     * the binding and the trash check both answer before authorization, so this holds whatever the
+     * token may see; **403** = a task carries it, on a board the token's user may not view (or the
+     * token lacks `read`, which a caller that has just searched with the same token has excluded).
+     * Every other non-2xx throws as it always does.
+     *
+     * @return int|null the task's `board_id`, or null when a 2xx body carried none
+     *
+     * @throws RequestException on any non-2xx
+     */
+    public function cardBoardId(int $cardId): ?int
+    {
+        $boardId = $this->http()->get("/tasks/{$cardId}/preload.json")->throw()->json('data.board_id');
+
+        return is_numeric($boardId) ? (int) $boardId : null;
+    }
+
+    /**
      * WRITE A FLAT FIELD SET ONTO A CARD — the one PATCH primitive the narrow write
      * verbs below are expressed in (card#8378). `PATCH /tasks/{id}.json` with a FLAT
      * body: kanban DL-219 dropped the `{"task":{…}}` wrapper and now strict-rejects a
@@ -211,7 +240,8 @@ final class KanbanClient
      * failure is deterministic, so 5xx-ing it would retry-storm an unfixable
      * event for ~11 days (the DL-020 / DispatchService anti-pattern) — the caller
      * treats it as permanent (log + no-op). A real HTTP error still throws via
-     * `->throw()` (transient 5xx → retry, 4xx → permanent), as the move path does.
+     * `->throw()` (RefusalContext::isPermanent() splits permanent from transient), as the
+     * move path does.
      * Caller idempotency: an already-archived card is excluded from the by-ref and
      * live-search correlations THIS method's callers use, so it is never re-presented
      * here on a redelivered close. (Since DL-296 the archive side is readable — by an
@@ -346,6 +376,28 @@ final class KanbanClient
      */
     public function findCardsByRef(int $boardId, string $system, string $ref, ?string $source = null): array
     {
+        return self::correlationIds(self::idList($this->byRefData($boardId, $system, $ref, $source)), "by-ref {$system}", $boardId);
+    }
+
+    /**
+     * {@see findCardsByRef}'s read, returning the ROWS — kanban answers by-ref with full task rows
+     * (`TaskResource::collection`, source-read at kanban `TasksController::byRef`), board-scoped by
+     * the route (`authorize('view', $board)` — a user who may not VIEW the board 403s here; for an
+     * API token VIEW is owner-or-member, the set the search floors to, because kanban's super-admin
+     * mode is session-only — see `docs/kanban-integration-contract.md` § 2, `status.json`) and LIVE
+     * only: archived rows are hard-excluded with no parameter to include them. Unpaginated: the
+     * collection is every live card on the board carrying the ref.
+     *
+     * @return list<array<string, mixed>>|null null when the 200 body carried no card collection —
+     *                                         never folded into "no match" here; the caller decides
+     */
+    public function cardRowsByRef(int $boardId, string $system, string $ref): ?array
+    {
+        return self::rowList($this->byRefData($boardId, $system, $ref, null));
+    }
+
+    private function byRefData(int $boardId, string $system, string $ref, ?string $source): mixed
+    {
         $query = ['system' => $system, 'ref' => $ref];
         // Repo qualifier (kanban DL-163): on a board aggregating multiple repos a
         // bare ref collides; pass the source so the server returns only this repo's
@@ -354,9 +406,8 @@ final class KanbanClient
         if ($source !== null && $source !== '') {
             $query['source'] = $source;
         }
-        $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
 
-        return self::correlationIds(self::idList($data), "by-ref {$system}", $boardId);
+        return $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
     }
 
     /**
@@ -728,13 +779,56 @@ final class KanbanClient
      */
     private function searchTotal(int $boardId, string $terms): SearchTotal
     {
-        $body = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} {$terms}", 'limit' => 1])->throw()->json();
+        $page = $this->searchPage($boardId, $terms, 1);
+
+        return new SearchTotal($page->total, $page->freeTextRan);
+    }
+
+    /**
+     * ONE page of a board-scoped search: the newest `$limit` rows matching `board_id=<b> <terms>`
+     * (kanban orders the search `orderByDesc('id')` before paginating, and ids are allocated
+     * monotonically, so page 1 IS the newest cards), plus everything the response's `meta` says —
+     * {@see SearchPage}. `$terms` are the `q` terms after the board scope, space-separated; `''`
+     * sends the bare scope. `$archivedOnly` is the archive SWITCH (DL-296, {@see cardRowsByTag}).
+     *
+     * ⛔ NO PAGE WALK, deliberately: a caller that needs every row takes {@see pagedSearch}. This is
+     * for a caller that needs a bounded window and the exact size of what it cut — `meta.total`
+     * gives the second without reading the rows behind the cut. `$limit` above kanban's own page cap
+     * (`min(200, …)` in `TasksController::search`, = {@see SEARCH_LIMIT}) would be silently lowered
+     * by the server, so it is the caller's to keep it within.
+     */
+    public function searchPage(int $boardId, string $terms, int $limit, bool $archivedOnly = false): SearchPage
+    {
+        $query = ['q' => "board_id={$boardId}".($terms === '' ? '' : " {$terms}"), 'limit' => $limit];
+        if ($archivedOnly) {
+            $query['archived'] = 1;
+        }
+        $body = $this->http()->get('/tasks/search.json', $query)->throw()->json();
         $meta = is_array($body) && is_array($body['meta'] ?? null) ? $body['meta'] : null;
 
-        return new SearchTotal(
+        return new SearchPage(
+            self::rowList(is_array($body) ? ($body['data'] ?? null) : null),
             $meta !== null && is_numeric($meta['total'] ?? null) ? (int) $meta['total'] : null,
+            self::stringList($meta['free_text_terms'] ?? null),
             $meta !== null && array_key_exists('match_mode', $meta),
         );
+    }
+
+    /**
+     * @return list<string>|null null unless `$value` is a list of strings
+     */
+    private static function stringList(mixed $value): ?array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return null;
+        }
+        foreach ($value as $item) {
+            if (! is_string($item)) {
+                return null;
+            }
+        }
+
+        return $value;
     }
 
     /** @param  non-empty-list<int>|null  $stageIds */
@@ -886,6 +980,37 @@ final class KanbanClient
         $data = is_array($body) && is_array($body['data'] ?? null) ? $body['data'] : [];
 
         return ['total' => count($data), 'exact' => false];
+    }
+
+    /**
+     * Whether the token's user may read the board: `GET /boards/{id}/status.json`, which kanban
+     * authorizes on the board itself (`BoardsController::status` → the `view` policy) — 200 to a
+     * member, 403 to a non-member. It answers membership directly, so an EMPTY board reads as
+     * readable, which the `limit=1` search ({@see visibility}) cannot show. The route resolves a
+     * trashed board too and then authorizes `restore`: a trashed board 403s to all but its owner,
+     * and answers the owner `data.status: "trashed"` — not readable either, because the search
+     * does not reach a trashed board's cards. A token lacking the `read` ability 403s here as well;
+     * the board tools ask this only after a search of the same call succeeded, which that token
+     * could not have done.
+     *
+     * ⛔ FAIL CLOSED ON `data.status`: `active` and `archived` are the only values that read as
+     * readable — the two kanban documents in `BoardsController::status`'s `@response` blocks
+     * besides `trashed`. Anything else — an absent key, a null, a future third value this repo
+     * has not seen — is NOT readable, on the same reasoning DL-238(g) applies to a severity: a
+     * status this code does not recognise is a WRONG ANSWER waiting to happen if treated as the
+     * default-good case, not a reason to guess "readable" and let a caller act on it.
+     *
+     * @throws RequestException any other 4xx or 5xx (a 404 is a board id that does not resolve)
+     */
+    public function boardReadable(int $boardId): bool
+    {
+        $resp = $this->http()->get("/boards/{$boardId}/status.json");
+        if ($resp->status() === 403) {
+            return false;
+        }
+        $resp->throw();
+
+        return in_array($resp->json('data.status'), ['active', 'archived'], true);
     }
 
     /**

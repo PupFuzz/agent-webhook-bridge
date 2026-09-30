@@ -10,8 +10,9 @@ use App\Bridge\Writeback\PrCorrelationComment;
 use App\Bridge\Writeback\PrCorrelationCommenter;
 
 /**
- * Posts the correlation-failure comment for a merge or close the CLASSIFIER could not correlate
- * (DL-390): a DL no card carries, or a token that does not parse. Those events emit no move target,
+ * Posts the correlation-failure comment for a merge the CLASSIFIER could not correlate
+ * (DL-390): a DL no card carries, or a token that does not parse — and, since card#10850 / DL-436,
+ * a merge from the card's own branch whose title closes nothing. Those events emit no move target,
  * so without this reaction nothing downstream of classify would ever see them. The refusals the
  * move handler makes itself are reported from inside {@see KanbanMoveCardHandler}, through the same
  * {@see PrCorrelationCommenter}.
@@ -21,7 +22,8 @@ use App\Bridge\Writeback\PrCorrelationCommenter;
  * merged itself is exactly the one whose correlation failure must still be reported.
  *
  * Payload: `repo`, `outcome`, `cause` ({@see PrCorrelationComment}), `dl` (the DL the classifier
- * looked up, or null) and `title_closes_dl`, and the classifier's `pr_correlation` evidence.
+ * looked up, or null) and `title_closes_dl`, `card_id` (the head branch's card, on
+ * {@see PrCorrelationComment::NO_CLOSING_FORM} only), and the classifier's `pr_correlation` evidence.
  */
 final class GitHubPrCorrelationCommentHandler implements DurableReaction, Handler
 {

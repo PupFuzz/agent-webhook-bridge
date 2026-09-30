@@ -366,18 +366,17 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertStringContainsString('NO-OP for the stage', $message);
         $this->assertStringContainsString('never moved back', $message);
         // The accept-set is RENDERED from the authority, never spelled out here (DL-239) —
-        // asserted through the authority so this cannot pin a stale copy of it. Since
-        // DL-308 that is `PrOutcome::describeClosure()`, which composes BOTH routes: this
-        // surface tells an operator what they inherited, so a line still claiming the
-        // title is the only thing that moves a card is the DL-239 defect on the worst
-        // possible surface. Both halves are asserted, each through its own grammar.
+        // asserted through the authority so this cannot pin a stale copy of it. That is
+        // `PrOutcome::describeClosure()`, and since card#10850 / DL-436 it names one route
+        // and says the head branch is not one: this surface tells an operator what they
+        // inherited, so a line still offering the retired branch route would be the DL-239
+        // defect on the worst possible surface.
         $this->assertStringContainsString(PrOutcome::describeClosureAccepted(), $message);
         $this->assertStringContainsString(implode(', ', ClosureGrammar::accepted()), $message);
-        $this->assertStringContainsString(implode(', ', CardTokenGrammar::accepted()), $message);
-        $this->assertStringContainsString('HEAD BRANCH REF', $message);
+        $this->assertStringContainsString('the head branch ref is not closure evidence', $message);
+        $this->assertStringNotContainsString(implode(', ', CardTokenGrammar::accepted()), $message);
         // …and the SETUP flavour, not the diagnostic one: DL-305 kept the rejected shapes
-        // off this surface deliberately (noise at setup, diagnosis at runtime), and
-        // composing two routes must not quietly overturn that. The trailing sentence here
+        // off this surface deliberately (noise at setup, diagnosis at runtime). The trailing sentence here
         // PROMISES the rejected side is deferred to the runtime warning, so printing it
         // would make this line contradict itself.
         $this->assertStringNotContainsString('does NOT close', $message);

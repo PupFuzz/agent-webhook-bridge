@@ -1,0 +1,644 @@
+{
+  "schema": 1,
+  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#10869: the bridge holds each agent's identity.kanban_user_id against it in `bridge:check`). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
+  "mirror": {
+    "repo": "PupFuzz/agent-webhook-bridge",
+    "class": "App\\Bridge\\Support\\RosterKanbanUser",
+    "corpus": "docs/kb-roster-uid-parity-corpus.json",
+    "checked_by": "tests/Unit/Support/RosterKanbanUserParityTest.php",
+    "runner": "bin/kb-owner-parity.sh"
+  },
+  "authority": {
+    "repo": "PupFuzz/agent-board-toolkit",
+    "symbol": "kb_owner_resolve (KB_JQ_ROSTER roster_seats / seat_uid_verdict)",
+    "path": "bin/_kb-board-lib.sh",
+    "relationship": "The toolkit OWNS this rule (README § \"The card owner — the kanban assignee\"). A disagreement is the bridge's defect to fix by re-porting, never the toolkit's to fix by matching the bridge."
+  },
+  "how_the_far_end_runs_this": "From a bridge checkout: `bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <toolkit checkout>`. For each vector [config, seat, host] it writes `config` to a file — the string VERBATIM when `config` is a string (the file's exact text, used where a number literal must survive), else serialised and calls the toolkit's own `kb_owner_resolve` with COORD_CONFIG at that file, COORD_AGENT=seat and KB_API=https://<host>/api/v3. rc 0 must give KB_OWNER_USER_ID == expect.uid; rc 1 must give a KB_OWNER_WHY naming expect.why (absent: not a roster[].name; nofield: no `kanban_user_id` object; nohost: no entry for this board instance; bad: not a positive integer). A WHY the runner cannot classify is exit 2, never agreement. Exit 0 agreed, 1 drifted, 2 could not measure; `--control` perturbs every expectation and every pinned constant and must report each.",
+  "not_checked_by_this_repo": [
+    "NOTHING IN THIS REPO'S CI RUNS THE TOOLKIT: a change to `kb_owner_resolve` or KB_JQ_ROSTER reds nothing here until someone runs bin/kb-owner-parity.sh against the changed toolkit. Run it on a toolkit bump.",
+    "The runner reads the authority's verdict through the WORDING of KB_OWNER_WHY (the function exposes no verdict code). A rewording it cannot classify is reported as could-not-measure (exit 2), so it fails loud rather than agreeing — but a rewording that moves one verdict's sentence onto another verdict's fragment would be misread.",
+    "`found` (the value that made a verdict `nofield`/`bad`) is bridge-local message detail and is not compared."
+  ],
+  "last_measured": {
+    "date": "2026-09-29",
+    "authority_ref": "PupFuzz/agent-board-toolkit 11a6d150 (the dev merge of PR #425, card#10868), bin/_kb-board-lib.sh exported with `git archive`",
+    "authority_blob": "sha256:9aea087a25542fb9d69161a4c39ab34c8a595d35715f49502de88ec96a41c8db (bin/_kb-board-lib.sh) — copied from the runner's own `executed:` line, not typed",
+    "vectors_digest": "sha256:0c5844f59bae4ed336976bc0945ea0416d529f8a0e72c02e228dd07908ef0d99",
+    "method": "`bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <that export>` executed every vector, every known divergence and every pinned constant against the authority named above; `--control` over the same export reported every perturbed expectation (exit 0). As a discrimination check the runner was also run against a copy of the same lib with the trailing-dot strip removed and the id floor lowered to 0, and reported those vectors DISAGREE.",
+    "result": "exit 1 — agreed 29 · disagreed 3 · unmeasured 0, and the three disagreements are DELIBERATE: they are the integral-float vectors (`7.0`, `7.00`, `7e0`), published with the verdict `bad` that the toolkit's in-flight fix for card#10868 comment 7670 (a false self-takeover on a float id) is to return, and 11a6d150 still accepts them (`7e0` reaches it as `7`, since jq normalises the literal at parse). `--control` reported every perturbed row (exit 0). Re-take this measurement against the toolkit commit that lands that fix; exit 0 is then required, and the PHP_INT_MAX divergence is expected to converge with it and be deleted. Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
+  },
+  "mirror_local": {},
+  "mirrored_but_not_driven": {},
+  "known_divergences": {
+    "lookUp": [
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": []
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "authority": {
+          "uid": null,
+          "why": "nofield"
+        },
+        "mirror": {
+          "uid": null,
+          "why": "nohost"
+        },
+        "why": "PHP's json_decode gives `[]` and `{}` the same value, so the port cannot tell an empty LIST (authority: not the per-instance object, `nofield`) from an empty OBJECT (authority: `nohost`). Both verdicts mean the id is MISSING and both reach the same `warn`; only the verdict name in the message differs."
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 1e+300
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "authority": {
+          "uid": 1e+300,
+          "why": null
+        },
+        "mirror": {
+          "uid": null,
+          "why": "bad"
+        },
+        "why": "jq accepts any integral number at least 1; the port refuses a value that is not a JSON integer, and one larger than PHP_INT_MAX decodes to a float. The authority's answer is not a user id the board could hold either. The toolkit's integer-literal fix (card#10868 comment 7670) should converge this entry; the runner then reports it stale."
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": {
+              "0": {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            }
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "authority": {
+          "uid": null,
+          "why": "absent"
+        },
+        "mirror": {
+          "uid": 7,
+          "why": null
+        },
+        "why": "PHP's json_decode turns an OBJECT whose keys are \"0\"..\"n\" into the same list an array decodes to, so the port reads such a roster as an array of seats; the toolkit's `roster | if type == \"array\"` reads it as no seats. The framework writes `roster` as an array; this shape is not one it produces."
+      }
+    ]
+  },
+  "constants": {
+    "ABSENT": "absent",
+    "NO_FIELD": "nofield",
+    "NO_HOST": "nohost",
+    "BAD": "bad"
+  },
+  "vectors": {
+    "lookUp": [
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": 7,
+          "why": null
+        },
+        "note": "the ordinary shape: the seat maps to a user on this instance"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "other",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "absent"
+        },
+        "note": "no roster entry carries the name"
+      },
+      {
+        "args": [
+          {
+            "project": "p"
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "absent"
+        },
+        "note": "no roster at all"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": {
+              "impl": {
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            }
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "absent"
+        },
+        "note": "a roster that is an OBJECT, not an array, holds no seats"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              "impl",
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": 7,
+          "why": null
+        },
+        "note": "a non-object entry is not a seat and is skipped"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": 7,
+                "kanban_user_id": {
+                  "kanban.example.com": 8
+                }
+              },
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": 7,
+          "why": null
+        },
+        "note": "an entry whose name is not a string is not a seat"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              },
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 8
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": 7,
+          "why": null
+        },
+        "note": "the FIRST entry with the name decides"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl"
+              },
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 8
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nofield"
+        },
+        "note": "the first entry decides even when it carries no id and a later one does"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl"
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nofield"
+        },
+        "note": "the seat carries no kanban_user_id — the state every roster is in before kanban card#10867"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": 7
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nofield"
+        },
+        "note": "a bare number is not the per-instance object"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": [
+                  7
+                ]
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nofield"
+        },
+        "note": "a list is not the per-instance object"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {}
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nohost"
+        },
+        "note": "an empty object has no entry for this instance"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "other.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nohost"
+        },
+        "note": "an id for another instance only"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "KANBAN.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "nohost"
+        },
+        "note": "the instance key is compared byte-for-byte, not case-folded"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": "7"
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "a STRING id is refused, not coerced"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 0
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "zero is not a user id"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": -3
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "a negative number is not a user id"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7.5
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "a fraction is not a user id"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": null
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "a present null is not a user id"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": true
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "a boolean is not a user id"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7,
+                  "other.example.com": 9
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": 7,
+          "why": null
+        },
+        "note": "each instance carries its own id; this one answers for its own key"
+      },
+      {
+        "args": [
+          {
+            "project": "p",
+            "roster": [
+              {
+                "name": "Impl",
+                "kanban_user_id": {
+                  "kanban.example.com": 7
+                }
+              }
+            ]
+          },
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "absent"
+        },
+        "note": "seat names are compared byte-for-byte"
+      },
+      {
+        "args": [
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7.0}}]}",
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "an integral FLOAT is not an id: refused, never coerced — the toolkit at 11a6d150 accepted it and then read the seat's own card as another holder's (card#10868 comment 7670) (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
+      },
+      {
+        "args": [
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7.00}}]}",
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "the same integral float spelled with two zeros (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
+      },
+      {
+        "args": [
+          "{\"project\":\"p\",\"roster\":[{\"name\":\"impl\",\"kanban_user_id\":{\"kanban.example.com\":7e0}}]}",
+          "impl",
+          "kanban.example.com"
+        ],
+        "expect": {
+          "uid": null,
+          "why": "bad"
+        },
+        "note": "the same integral float in exponent form — jq 1.7 normalises it to 7 at parse, so a far end that only inspects the decoded value cannot see it (args[0] is the config file's exact TEXT, so the literal survives to both ends)"
+      }
+    ]
+  }
+}

@@ -643,6 +643,93 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
+    /**
+     * Two promotable candidates, in board order: card 5 (PR 100) and card 7 (PR 103), both merged
+     * and on main.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function twoPromotableCards(): array
+    {
+        return [
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']],
+            ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 103, 'pr_url' => 'https://github.com/owner/repo/pull/103']],
+        ];
+    }
+
+    // --- card#10849 / DL-440 § 3b: a rate limit stops the scan's calls, once, for the whole target ---
+
+    public function test_a_github_rate_limit_on_the_first_candidate_pauses_github_only_and_nothing_can_still_move(): void
+    {
+        // Before card#10849 this 429 was a PERMANENT per-card refusal: alerted, skipped, and the
+        // scan went on hammering GitHub for every later candidate. Now GitHub is called no
+        // further THIS RUN once it refuses — but every candidate here needs GitHub BEFORE
+        // kanban, so pausing GitHub alone still means no candidate reaches a move; the sibling
+        // test below proves the "other source keeps running" half on a KANBAN-first refusal,
+        // where GitHub genuinely has independent work left to do.
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
+        $this->fakeBoard($this->twoPromotableCards(), [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'API rate limit exceeded'], 429, ['Retry-After' => '60']),
+            'https://api.github.com/repos/owner/repo/pulls/103' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA7', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA7...main' => Http::response(['status' => 'ahead']),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a GitHub rate limit must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/103') || str_contains($r->url(), '/compare/'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        // Named in the scan's own output, never silently dropped.
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: scan complete'
+            && $ctx['rate_limited_sources'] === ['github'])->once();
+    }
+
+    /**
+     * The "other source keeps running" half of the operator ruling, on its only exercisable
+     * shape: kanban refuses candidate 1's MOVE, after GitHub already cleared it — so GitHub
+     * has independent work left (deciding candidate 2's eligibility) that a kanban pause must
+     * not stop. Candidate 2's GitHub calls succeed; its kanban move is never attempted.
+     */
+    public function test_a_kanban_rate_limit_on_a_promote_move_pauses_kanban_only_and_github_keeps_deciding_other_candidates(): void
+    {
+        // card#10849: swallowing this as `promote_movecard_4xx` stranded the card at Shipped for
+        // good — this leg has no reconcile backstop.
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
+        $this->fakeBoard($this->twoPromotableCards(), [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            'https://api.github.com/repos/owner/repo/pulls/103' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA7', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA7...main' => Http::response(['status' => 'ahead']),
+            '*/tasks/*.json' => fn (Request $r) => $r->method() === 'PATCH'
+                ? Http::response(['message' => 'Too Many Attempts.'], 429, ['Retry-After' => '37'])
+                : Http::response(['message' => 'no card read is expected on this leg'], 405),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a kanban rate limit must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        // ⭐ Source B: GitHub is STILL processed for candidate 2 after kanban (source A) 429'd
+        // on candidate 1 — the operator's condition, proved directly rather than inferred.
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/pulls/103'));
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/compare/SHA7...main'));
+        // But kanban is paused: exactly one PATCH (candidate 1's refused move), none for candidate 2.
+        $this->assertCount(1, Http::recorded(fn (Request $r) => $r->method() === 'PATCH'), 'one refused move, and no move for the next candidate');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: scan complete'
+            && $ctx['rate_limited_sources'] === ['kanban'])->once();
+    }
+
     // --- card#7212: the success record names the board the write LANDED on ---
 
     public function test_a_promote_records_the_cards_own_board_beside_the_mapped_one(): void
@@ -784,16 +871,20 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && in_array($r['card_id'], [6, 8, 10], true));
     }
 
-    public function test_the_promote_moves_stage_only_then_clears_the_owner_tag_from_a_fresh_read(): void
+    public function test_the_promote_is_stage_only_and_the_released_card_keeps_its_assignee_and_owner_tag(): void
     {
-        // The Shipped scan is read before the GitHub loop; a tag added after it must survive.
-        $scanned = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']];
-        $cards = new KanbanCardStub([5 => ['tags' => ['triaged', 'owner:kanban/kanban', 'added-after-the-scan']] + $scanned]);
+        // card#10869: a released card is finished, and a finished card KEEPS its assignee
+        // (card#10868 Q2). The promote writes the stage and nothing else — no fresh read, no tag
+        // write, no key naming the assignee.
+        $scanned = ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'assigned_user_id' => 7, 'tags' => ['triaged', 'owner:kanban/kanban'], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']];
+        $cards = new KanbanCardStub([5 => $scanned]);
         $this->fakeBoard([$scanned], $cards->stub());
 
         $this->handle();
 
-        $this->assertSame([['workflow_stage_id' => 53], ['tags' => ['triaged', 'added-after-the-scan']]], $cards->patchesTo(5));
+        $this->assertSame([['workflow_stage_id' => 53]], $cards->patchesTo(5));
+        $this->assertSame(['triaged', 'owner:kanban/kanban'], $cards->cards[5]['tags']);
+        $this->assertSame(7, $cards->cards[5]['assigned_user_id']);
     }
 
     /**
@@ -832,24 +923,5 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             collect(Http::recorded())->filter(fn (array $pair) => str_contains($pair[0]->url(), '/pulls/100'))->count(),
             'the parent card reached the GitHub read — the refusal is not at the candidate scan',
         );
-    }
-
-    public function test_a_refused_owner_tag_write_leaves_the_promote_standing_and_alerts(): void
-    {
-        $this->writeWritebackWithAlert(['promote_on_release' => true]);
-        Log::spy();
-        $cards = new KanbanCardStub([5 => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'block_reason' => null, 'tags' => ['owner:kanban/kanban'], 'payload' => ['pr_number' => 100, 'pr_url' => 'https://github.com/owner/repo/pull/100']]]);
-        $this->fakeBoard([$cards->cards[5]], [
-            self::ALERT_URL.'*' => Http::response(['ok' => true]),
-            '*/tasks/5.json' => fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data())
-                ? Http::response(['message' => 'The tags.0 field must not be greater than 64 characters.'], 422)
-                : $cards->stub()['*/tasks/*.json']($r),
-        ]);
-
-        $this->handle();
-
-        $this->assertSame(53, $cards->cards[5]['workflow_stage_id']);
-        Log::shouldHaveReceived('info')->withArgs(fn (string $m) => $m === 'kanban_promote_released: promoted Shipped→Released')->once();
-        $this->assertPromoteAlert('owner_tag_not_cleared_write_4xx', 5);
     }
 }

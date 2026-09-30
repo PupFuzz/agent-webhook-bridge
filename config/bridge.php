@@ -331,6 +331,15 @@ return [
     | (staleness, wakes, watches, cleanups) need no entry — they exist under normal
     | code review, which is what makes inserting instances of them free. Comma-
     | separated handler names.
+    | ⛔ ONE NAMED EXCEPTION: `owed_write_retry` (card#10849 / DL-440, operator ruling
+    | 2026-09-29) is armed by DEFAULT regardless of this list — new functionality
+    | defaults on — and is disabled only by `owed_write_retry_disabled` below. Every
+    | other mutator is governed by this list exactly as DL-325 states; this is not a
+    | pattern to extend to another handler without the same kind of explicit ruling.
+    |
+    | ⭐ owed_write_retry_disabled — THE KILL SWITCH for that one exception. `true`
+    | (`BRIDGE_OWED_WRITE_RETRY_DISABLED=true`) withholds `owed_write_retry` from the
+    | armed set above, exactly as if it were never named in `armed_mutators`.
     |
     | ⭐ tick_expected_every — DEATH IS THE ALARM, and this is the declaration that
     | arms it. Set it to the crontab line's interval in seconds (600 for a ten-minute crontab line). The
@@ -353,6 +362,7 @@ return [
         'min_pass_interval' => (int) env('BRIDGE_JOBS_MIN_PASS_INTERVAL', 60),
         'max_per_pass' => (int) env('BRIDGE_JOBS_MAX_PER_PASS', 3),
         'armed_mutators' => env('BRIDGE_JOBS_ARMED_MUTATORS', ''),
+        'owed_write_retry_disabled' => (bool) env('BRIDGE_OWED_WRITE_RETRY_DISABLED', false),
         // ⚠ Deliberately NOT cast: a null must stay a null. `(int) null` is 0, which
         // this reads back as "declared, zero seconds" — an install that never adopted
         // the tick would then be judged against a horizon it never set.

@@ -4,11 +4,9 @@ namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
-use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Writeback\BoardRead;
 use App\Bridge\Writeback\BoardStructure;
 use App\Bridge\Writeback\KanbanClient;
-use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Bridge\Writeback\SearchTotal;
 use App\Bridge\Writeback\TerminalBasis;
 use Illuminate\Http\Client\RequestException;
@@ -45,7 +43,7 @@ use Illuminate\Support\Facades\Log;
  *
  * ⛔ THE CARD IS NO LONGER BYTE-IDENTICAL TO THE DL-217 SHAPE, and this paragraph used to
  * say it was (of the default, description-less call). card#9170 added `assigned_user_id`
- * to EVERY projected card, unconditionally — see {@see projectCard} for why it carries no
+ * to EVERY projected card, unconditionally — see {@see BoardCardProjection::project} for why it carries no
  * opt-in and no name — so the claim is retired rather than re-scoped: the ENVELOPE had
  * already grown the DL-302 board keys and card#8985's window blocks, and now the CARD has
  * grown a key too (card#9837 later added `pr_url` and `source` the same way). What holds
@@ -231,10 +229,8 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         }
 
         try {
-            $ownRead = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
-            $sharedRead = $cfg->sharedSwimlaneId === null
-                ? null
-                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+            $ownRows = $client->swimlaneCards($boardId, $swimlaneId);
+            $sharedRows = $cfg->sharedSwimlaneId === null ? null : $client->swimlaneCards($boardId, $cfg->sharedSwimlaneId);
         } catch (RequestException $e) {
             throw $this->readRefusal($e, $agentName, 'own+shared', BoardReadRoute::Search, "your board {$boardId}");
         }
@@ -247,6 +243,9 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
                 throw $this->readRefusal($e, $agentName, 'tag', BoardReadRoute::Search, "the cards carrying your `tag` on your board {$boardId}");
             }
         }
+
+        $ownRead = $this->filterSwimlane($ownRows, $swimlaneId, $agentName, 'own');
+        $sharedRead = $sharedRows === null ? null : $this->filterSwimlane($sharedRows, (int) $cfg->sharedSwimlaneId, $agentName, 'shared');
 
         // ⛔ THE BOARD AXIS IS READ OVER EVERY ROW THIS CALL READ — before the stage filter
         // and before the cut (r1). DL-302 built it as a defence-in-depth report against a
@@ -347,23 +346,9 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * null, and folding that into absent would answer the default response — the lane read, the
      * very shape this argument exists to see past — as though the tag read had come back.
      *
-     * ⛔ `"` AND `*` ARE REFUSED because they change what kanban's `tags:"…"` term means: a quote
-     * ends the term early, and `*` turns an exact match into a glob, which would make this
-     * cross-lane read a whole-board read.
-     *
-     * ⛔ `%` IS REFUSED because kanban escapes the LIKE wildcards of an exact tag match only from
-     * v0.36.0 (`LikePattern::escape`). Before it, `tag: "%"` matches every tagged card on the board.
-     * `_` is the other wildcard and is NOT refused: agent names carry it ({@see AgentNameShape}), so
-     * `created-by:` and `idem:` tags do. From kanban v0.36.0 both match literally; before it a `_`
-     * matches any one character, which widens the read to tags differing there, never to the board.
-     *
-     * ⛔ A TAG KANBAN STORES ESCAPED IS REFUSED, NEVER ANSWERED AS AN EMPTY BLOCK. Kanban casts `tags`
-     * to `array`, which Laravel stores through `json_encode` with no flags (`getJsonCastFlags`, read in
-     * the Laravel version kanban v0.45.0 locks), and matches `tags LIKE '%"<tag>"%'` over that stored text. A
-     * character the encoding rewrites — a control byte 0x00–0x1F, `"`, `/`, `\`, or any byte ≥ 0x80
-     * (every non-ASCII character; invalid UTF-8 fails the encode) — so makes the tag match no card, even
-     * one carrying it, and the block would answer `cards: []` beside two counts agreeing on `0`. The
-     * check IS that encoding, so it cannot drift from a hand-kept list. Kanban's side: kanban card#9522.
+     * What may be inside a present, non-empty tag — the `"`, `*`, `%`, JSON-escape and length
+     * refusals and why each exists — is {@see BoardTagTerm::checkForAnyKanban}'s: this read has no kanban
+     * version floor, so it keeps the old-kanban rule.
      *
      * @param  array<string, mixed>  $args
      */
@@ -380,18 +365,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         if ($tag === '') {
             throw new ToolRefusalException('board_my_cards: `tag` was sent EMPTY. Omit the argument entirely for the default response; an empty value is not a tag and is refused rather than silently ignored, which would answer the lane read as though no card carried the tag.');
         }
-        if (strpbrk($tag, '"*') !== false) {
-            throw new ToolRefusalException('board_my_cards: `tag` may not contain `"` or `*`. The tag read matches ONE tag exactly; a quote would break the board search term and `*` would turn it into a wildcard over every lane.');
-        }
-        if (str_contains($tag, '%')) {
-            throw new ToolRefusalException('board_my_cards: `tag` may not contain `%`. A kanban older than v0.36.0 reads `%` in an exact tag match as a wildcard, which would widen this read to other tags — `%` alone matches every tagged card on your board.');
-        }
-        if (json_encode($tag) !== '"'.$tag.'"') {
-            throw new ToolRefusalException('board_my_cards: `tag` may not contain a control character, `/`, `\\` or any non-ASCII character. Kanban stores tags as JSON, which writes each of those as an escape, and its exact tag match compares against that stored text — so no card would match, even one carrying the tag, and the answer would look like an empty one. No spelling of such a tag can be matched by this read.');
-        }
-        if (mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
-            throw new ToolRefusalException('board_my_cards: `tag` is '.mb_strlen($tag).' characters — kanban accepts at most '.KanbanFieldLimits::TAG_MAX.' per tag, so no card can carry it.');
-        }
+        BoardTagTerm::checkForAnyKanban($tag, $this->name(), 'tag');
 
         return $tag;
     }
@@ -454,7 +428,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * `no_swimlane` are all counted over it, so they can be read against one another.
      *
      * ⛔ NO READ-ISOLATION ROW FILTER, deliberately: crossing lanes is the whole point, and the
-     * lane a card is in is reported on the card instead ({@see withSwimlane}).
+     * lane a card is in is reported on the card instead ({@see BoardCardProjection::withSwimlane}).
      *
      * ⛔ A TAG READ THAT STOPPED AT THE PAGE CEILING IS NOT THE POPULATION. `cards_window.total_is_lower_bound`
      * says so, and both counts are `tag_read_incomplete` with no count request sent: a count is checked
@@ -535,7 +509,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             'include_terminal' => $includeTerminal,
             'terminal_basis' => $structure->terminalBasis->value,
             'excluded_terminal_stage_ids' => $excluded,
-            'cards' => array_map(fn (array $row): array => $this->withSwimlane($this->projectCard($row, $structure->stageNames, $descriptionCap), $row), $cards),
+            'cards' => array_map(fn (array $row): array => BoardCardProjection::withSwimlane(BoardCardProjection::project($row, $structure->stageNames, $descriptionCap), $row), $cards),
             'cards_window' => $window,
             'other_swimlanes' => $other,
             'other_swimlanes_unmeasured' => $otherUnmeasured,
@@ -625,28 +599,6 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
     }
 
     /**
-     * The projected card plus the lane the row says it is in. ⚠ A PRESENT NULL AND AN ABSENT KEY
-     * ARE DIFFERENT ANSWERS ON THIS AXIS — a card really can be in no lane (DL-302's asymmetry,
-     * {@see observedBoard}). So `null` is reported only when the row said null; a row that
-     * carried no readable lane field gets no `swimlane_id` key at all, never a null that would
-     * call it laneless.
-     *
-     * @param  array<string, mixed>  $card
-     * @param  array<string, mixed>  $row
-     * @return array<string, mixed>
-     */
-    private function withSwimlane(array $card, array $row): array
-    {
-        if (array_key_exists('swimlane_id', $row) && $row['swimlane_id'] === null) {
-            $card['swimlane_id'] = null;
-        } elseif (is_numeric($row['swimlane_id'] ?? null)) {
-            $card['swimlane_id'] = (int) $row['swimlane_id'];
-        }
-
-        return $card;
-    }
-
-    /**
      * Drop the rows in any of `$stageIds`. A row with no readable stage is kept: it cannot be
      * shown to be in a terminal column.
      *
@@ -720,18 +672,9 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
     }
 
     /**
-     * The NUMERIC stage id this call is narrowed to, or null when the caller named
-     * none. The numeric id is the primary form — it is what the rows carry and what
-     * every other board consumer keys on — and a string is accepted as a NAME, never
-     * as an id: `"7"` is looked up as a stage called `7`, not as stage 7. That is the
-     * one reading a caller cannot be surprised by, because the alternative (guess
-     * which the caller meant) picks a column for them.
-     *
-     * ⛔ AN AMBIGUOUS NAME IS A REFUSAL, NOT A GUESS. Two stages that differ only in
-     * case, or two genuinely identical names, resolve to a set — and answering about
-     * one of them produces a window that is indistinguishable from a correct answer
-     * about the other. The refusal names the board's stages so the caller can send an
-     * id instead.
+     * The NUMERIC stage id this call is narrowed to, or null when the caller named none. What one
+     * value means — id or name, the ambiguous-name refusal, the degraded-read rule — is
+     * {@see BoardStageArgument}'s; this owns only presence.
      *
      * ⛔ A PRESENT `stage` THAT NAMES NO COLUMN IS REFUSED, INCLUDING A PRESENT NULL, AND
      * THE HTTP DOOR IS WHY (r1). Laravel's global `TrimStrings` + `ConvertEmptyStringsToNull`
@@ -742,21 +685,6 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
      * caller asked for — while the other refused the identical input. Only an ABSENT key
      * means "no filter", and that is the same on both doors.
      *
-     * ⚠ The trim is {@see BoardToolArgs::trimmed}, which delegates to the framework's own
-     * `Str::trim` — NOT PHP's ASCII `trim()`. That is the same lockstep in the other
-     * direction: `TrimStrings` strips a non-breaking space (it is in
-     * `Str::INVISIBLE_CHARACTERS`) and `trim()` does not, so a name carrying one resolved
-     * at the HTTP door and was refused at the ssh door. This tool was the FIRST site to
-     * converge (DL-365 Decision 10) and card#9155 hoisted the rule into a primitive every
-     * board tool now shares, which is what keeps the next tool from hand-rolling it again.
-     *
-     * ⚠ An id is checked against the board's stages ONLY when the stage read
-     * produced any. `boardStageNames()` answers an empty map when the preload read
-     * carried no stages (already logged upstream), and validating against an empty
-     * map would refuse every filter on a board whose structure this bridge could
-     * not read — turning a degraded read into a dead argument. A NAME still cannot
-     * be resolved in that state and says so.
-     *
      * @param  array<string, mixed>  $args
      * @param  array<int, string>  $stageNames
      */
@@ -765,47 +693,11 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         if (! array_key_exists('stage', $args)) {
             return null;
         }
-        $stage = $args['stage'];
-
-        if ($stage === null) {
+        if ($args['stage'] === null) {
             throw new ToolRefusalException("board_my_cards: `stage` was sent EMPTY. Omit the argument entirely to read every column of board {$boardId}; an empty value is not a filter and is refused rather than silently ignored, which would hand you more cards than you asked for.");
         }
 
-        if (is_int($stage)) {
-            if ($stageNames !== [] && ! isset($stageNames[$stage])) {
-                throw new ToolRefusalException("board_my_cards: `stage` {$stage} is not a stage on board {$boardId} — its stages are ".$this->stageList($stageNames).'. Nothing was filtered; no cards were returned for a column that does not exist.');
-            }
-
-            return $stage;
-        }
-
-        if (! is_string($stage)) {
-            throw new ToolRefusalException('board_my_cards: `stage` must be the NUMERIC stage id (as `board_my_cards` reports it under each card\'s `stage`), or a stage NAME as a string. It is never coerced from another type.');
-        }
-
-        if ($stageNames === []) {
-            throw new ToolRefusalException("board_my_cards: `stage` was given as a NAME, but this bridge read no stages for board {$boardId}, so there is nothing to resolve it against. Pass the numeric stage id, and tell your operator the board structure read came back empty.");
-        }
-
-        $wanted = mb_strtolower(BoardToolArgs::trimmed($stage));
-        if ($wanted === '') {
-            throw new ToolRefusalException("board_my_cards: `stage` was sent EMPTY (it contains nothing but invisible characters). Omit the argument entirely to read every column of board {$boardId}; an empty value is not a filter and is refused rather than silently ignored, which would hand you more cards than you asked for.");
-        }
-        $matches = [];
-        foreach ($stageNames as $id => $name) {
-            if (mb_strtolower(BoardToolArgs::trimmed($name)) === $wanted) {
-                $matches[$id] = $name;
-            }
-        }
-
-        if (count($matches) === 1) {
-            return (int) array_key_first($matches);
-        }
-        if ($matches === []) {
-            throw new ToolRefusalException("board_my_cards: `stage` does not name any stage on board {$boardId} — its stages are ".$this->stageList($stageNames).'. Names are matched case-insensitively and whitespace-trimmed; nothing else is inferred.');
-        }
-
-        throw new ToolRefusalException("board_my_cards: `stage` names MORE THAN ONE stage on board {$boardId} — ".$this->stageList($matches).'. The bridge does not guess which column you meant, because a guessed answer is indistinguishable from a correct one. Pass the numeric stage id.');
+        return BoardStageArgument::resolve($args['stage'], $stageNames, $boardId, $this->name());
     }
 
     /**
@@ -848,24 +740,6 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         }
 
         return $stages;
-    }
-
-    /**
-     * `50 (Backlog), 51 (In Review)` — the board\'s own stages, id first because the
-     * id is what the refusal is asking the caller to send. Sorted by id so the
-     * message is stable across calls.
-     *
-     * @param  array<int, string>  $stageNames
-     */
-    private function stageList(array $stageNames): string
-    {
-        ksort($stageNames);
-        $parts = [];
-        foreach ($stageNames as $id => $name) {
-            $parts[] = "{$id} ({$name})";
-        }
-
-        return implode(', ', $parts);
     }
 
     /**
@@ -1187,10 +1061,13 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         ksort($byId);
         $rows = array_values($byId);
 
-        // Split for the same reason as the own/shared legs above: this one is board-scoped,
-        // and on the COORD board it is the likeliest place a membership gap actually shows —
-        // `coord_board_id` is configured separately from `board_id`, so an install can hold
-        // membership of one and not the other.
+        // Board-scoped, and on the COORD board it is the likeliest place a membership gap
+        // actually shows — `coord_board_id` is configured separately from `board_id`, so an
+        // install can hold membership of one and not the other. A non-member 403s HERE
+        // (kanban authorizes `view` on the board itself, and for an API token `view` is
+        // owner-or-member — the same set the search above is floored to): this read is what
+        // refuses the call for a coord board the token cannot read, whether or not the tag
+        // search above found any row.
         try {
             $coordStageNames = $client->boardStageNames($coordBoardId);
         } catch (RequestException $e) {
@@ -1208,7 +1085,7 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
             'coord_board_id' => $observedBoard,
             'coord_board_observed' => $boardObserved,
             'configured_coord_board_id' => $coordBoardId,
-            'coord_cards' => array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames, $descriptionCap), $coordCards),
+            'coord_cards' => array_map(fn (array $row): array => BoardCardProjection::project($row, $coordStageNames, $descriptionCap), $coordCards),
             'coord_cards_window' => $coordWindow,
         ];
     }
@@ -1224,97 +1101,9 @@ final class BoardMyCardsTool implements ReadsCallerClientVersion, Tool
         foreach ($rows as $row) {
             $stageId = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
             $stageName = $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : ('stage:'.($stageId ?? '?'));
-            $grouped[$stageName][] = $this->projectCard($row, $stageNames, $descriptionCap);
+            $grouped[$stageName][] = BoardCardProjection::project($row, $stageNames, $descriptionCap);
         }
 
         return $grouped;
-    }
-
-    /**
-     * Project a raw kanban card row to the tool's card shape (DL-217): id, name,
-     * stage, tags, assigned_user_id, dl_number, pr_number, pr_url, source, updated_at —
-     * plus, ONLY when the caller opted in (DL-245), description + description_truncated.
-     * Nothing else leaves the bridge.
-     *
-     * `source` (card#9837) is the repo qualifier kanban applies to this card's refs, derived
-     * by {@see ExternalReferenceNormalizer::sourceFor} (the bridge's mirror of kanban's own
-     * derivation, which owns the input order) over the row's payload and its top-level
-     * `external_link`. It matters only on a shared board, only to by-ref correlation, and
-     * only on a card carrying a `dl_number` / `pr_number` / `issue_number` — a `card#` token
-     * is not filtered by it; `docs/board-tools.md` § `board_my_cards` states the scope.
-     * `pr_url` is one input to it, not the answer, and is also returned raw, as stored card
-     * text given the same treatment as `name`: a scalar is stringified, and anything else
-     * reads null, exactly as an absent key does.
-     *
-     * ⭐ `assigned_user_id` IS THE RAW BOARD FIELD AND CARRIES NO NAME (card#9170). It is
-     * what makes a claimed-but-unmoved card legible: a card whose column never moved is
-     * otherwise indistinguishable from an unclaimed one, so two seats pull the same work.
-     * ⛔ THE BRIDGE DOES NOT RESOLVE THE ID TO A SEAT, deliberately and permanently —
-     * doing so would need a fleet-wide seat→kanban-user map, which is the cross-repo table
-     * canon #7 warns about and which {@see SeatKanbanUser} exists to make unnecessary. The
-     * raw id is REPORTED and never a failure; a consumer that knows a name for it renders
-     * one (`kbcard` does, from its own board env), and one that does not shows the id.
-     * `null` is a real value meaning UNASSIGNED; a row answering nothing about its
-     * assignment also reads null here, because on a READ projection the two are the same
-     * to a caller — {@see BoardTakeCardTool} is where that distinction is load-bearing,
-     * and it refuses rather than guessing.
-     *
-     * @param  array<string, mixed>  $row
-     * @param  array<int, string>  $stageNames
-     * @param  ?int  $descriptionCap  null ⇒ omit both description keys entirely
-     * @return array<string, mixed>
-     */
-    private function projectCard(array $row, array $stageNames, ?int $descriptionCap): array
-    {
-        $stageId = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
-        $payload = is_array($row['payload'] ?? null) ? $row['payload'] : [];
-        $tags = [];
-        foreach (is_array($row['tags'] ?? null) ? $row['tags'] : [] as $tag) {
-            if (is_string($tag)) {
-                $tags[] = $tag;
-            }
-        }
-
-        $card = [
-            'id' => is_numeric($row['id'] ?? null) ? (int) $row['id'] : null,
-            'name' => is_scalar($row['name'] ?? null) ? (string) $row['name'] : null,
-            'stage' => $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : null,
-            'tags' => $tags,
-            'assigned_user_id' => is_numeric($row['assigned_user_id'] ?? null) ? (int) $row['assigned_user_id'] : null,
-            'dl_number' => is_scalar($payload['dl_number'] ?? null) ? $payload['dl_number'] : null,
-            'pr_number' => is_scalar($payload['pr_number'] ?? null) ? $payload['pr_number'] : null,
-            'pr_url' => is_scalar($payload['pr_url'] ?? null) ? (string) $payload['pr_url'] : null,
-            'source' => (new ExternalReferenceNormalizer)->sourceFor($payload, is_string($row['external_link'] ?? null) ? $row['external_link'] : null),
-            'updated_at' => is_scalar($row['updated_at'] ?? null) ? (string) $row['updated_at'] : null,
-        ];
-
-        if ($descriptionCap !== null) {
-            [$card['description'], $card['description_truncated']] = $this->capDescription($row['description'] ?? null, $descriptionCap);
-        }
-
-        return $card;
-    }
-
-    /**
-     * Cut a description to the byte cap, reporting whether anything was cut. The
-     * flag is load-bearing: a seat must never be able to mistake a truncated
-     * scope for the whole scope.
-     *
-     * `mb_strcut`, not `substr` — the cap is a BYTE budget (response size is what
-     * the opt-in bounds), and a raw byte cut can split a multi-byte character. The
-     * invalid UTF-8 that produces would fail `json_encode` for the WHOLE response,
-     * so one emoji at the cut point would blank the caller's entire board window.
-     *
-     * @return array{0: ?string, 1: bool}
-     */
-    private function capDescription(mixed $raw, int $cap): array
-    {
-        if (! is_scalar($raw)) {
-            return [null, false];
-        }
-        $description = (string) $raw;
-        $cut = mb_strcut($description, 0, $cap, 'UTF-8');
-
-        return [$cut, $cut !== $description];
     }
 }

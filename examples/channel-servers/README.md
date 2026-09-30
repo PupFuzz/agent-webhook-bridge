@@ -300,9 +300,13 @@ you filed or that is assigned to you, instead of minting a second card to say th
 one is wrong) and
 `board_take_card` (DL-372: claim a card for YOURSELF — the assignee is resolved from
 your bridge identity, never from the payload, so there is no argument for a user id
-and a seat can claim only for itself) and `board_comment_card` (DL-381: append a comment to
+and a seat can claim only for itself; since card#10869 a card another user holds is taken
+over with a warning and a card comment naming them, and only a card in a finished column
+is refused) and `board_comment_card` (DL-381: append a comment to
 a live card on your own board; the bridge writes the `FROM: <seat>` attribution line, and
-nothing is edited or deleted) — and acts as a
+nothing is edited or deleted) and `board_get_cards` (DL-435: read known card ids in one call,
+each answered with an explicit status — never silently omitted) and `board_search` (DL-437: the
+cards on your board matching filters, matches only, or `summary: true` for counts) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
 forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
 `Authorization: Bearer <token>` and returns the bridge's response verbatim.

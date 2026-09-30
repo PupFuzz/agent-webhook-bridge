@@ -465,6 +465,32 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         $this->handle(['disposition' => 'terminal']);
     }
 
+    public function test_a_429_on_one_card_stops_every_later_kanban_call_and_escapes_the_loop_once(): void
+    {
+        // card#10849 / DL-440 § 3b: per-card isolation is for PERMANENT refusals. A rate limit
+        // escapes the loop at once — so the run sends kanban nothing more (card 9 is never read,
+        // let alone moved) — and the owed-write queue holds this whole issue as ONE owed row and
+        // retries the set. Before card#10849 the 429 was isolated as a refusal and card 9 moved
+        // anyway, leaving card 7 behind for good.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7], ['id' => 9]]]),
+            '*/tasks/7.json' => Http::response(['message' => 'Too Many Attempts.'], 429, ['Retry-After' => '37']),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50]]),
+        ]);
+
+        try {
+            $this->handle(['disposition' => 'terminal']);
+            $this->fail('a rate limit must reach the owed-write queue');
+        } catch (RequestException $e) {
+            $this->assertSame(429, $e->response->status());
+        }
+
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/tasks/9.json'));
+        Http::assertNotSent(fn ($r) => str_starts_with($r->url(), self::ALERT_URL));
+    }
+
     public function test_a_5xx_is_transient_and_throws_for_redelivery(): void
     {
         Http::fake([
@@ -1315,13 +1341,17 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
-    public function test_close_moves_stage_only_then_clears_the_owner_tag_in_a_separate_write(): void
+    public function test_close_is_stage_only_and_the_card_keeps_its_assignee_and_owner_tag(): void
     {
-        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => ['id:QUERY-4', 'owner:kanban/kanban']]]);
+        // card#10869: the coord close finishes the card, and a finished card KEEPS its assignee
+        // (card#10868 Q2); the retired DL-386 clear no longer follows the move.
+        $cards = new KanbanCardStub([7 => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'assigned_user_id' => 3, 'tags' => ['id:QUERY-4', 'owner:kanban/kanban']]]);
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]])] + $cards->stub());
 
         $this->handle(['disposition' => 'terminal']);
 
-        $this->assertSame([['workflow_stage_id' => 99], ['tags' => ['id:QUERY-4']]], $cards->patchesTo(7));
+        $this->assertSame([['workflow_stage_id' => 99]], $cards->patchesTo(7));
+        $this->assertSame(['id:QUERY-4', 'owner:kanban/kanban'], $cards->cards[7]['tags']);
+        $this->assertSame(3, $cards->cards[7]['assigned_user_id']);
     }
 }

@@ -186,6 +186,7 @@ class SeatIdentityCallSiteGuardTest extends TestCase
     private const DISPOSITIONED = [
         'app/Bridge/Tools/BoardCorrectCardTool.php::callerKanbanUserId#1' => 'THE SECOND CONSUMER (card#9202, DL-376), and it READS rather than writes: the id — `declaredForCallingSeat`, null when the seat declares none — is COMPARED with the row\'s own `assigned_user_id` to decide whether the assignee arm authorizes a correction. It passes only the tool name, the tool accepts no user-naming argument, and it is the one site in that tool — every assignee check and the no-such-card non-disclosure resolve go through it.',
         'app/Bridge/Tools/BoardTakeCardTool.php::call#1' => 'THE call site the feature rests on. It passes only the TOOL NAME (for the refusal message); the identity comes from `CallingSeat` inside the resolver. The id it returns is the ONLY value the tool writes to `assigned_user_id`.',
+        'app/Bridge/Tools/BoardTakeCardTool.php::otherSeatsOwnerTags#1' => 'card#10869: reads the calling seat\'s roster SEAT NAME (`seatNameForCallingSeat`), never an id, to tell a legacy `owner:<project>/<seat>` tag naming ANOTHER seat from one that may be this seat\'s own. It passes only the tool name, and nothing it returns is written — it decides whether a take is a takeover.',
     ];
 
     /**

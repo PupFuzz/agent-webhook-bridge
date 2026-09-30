@@ -50,6 +50,7 @@ class CheckCommandRegistrationTest extends TestCase
         'install.secret_dir',
         'database.connectivity',
         'database.install_suffix',
+        'writeback.owed_writes_table',
         'install.inbox_config',
         'retention.posture',
         'jobs.posture',
@@ -68,6 +69,7 @@ class CheckCommandRegistrationTest extends TestCase
         'channel.server_snapshot',
         // post-loop roster plane (stage 5c)
         'agent.identity_collisions',
+        'agent.kanban_user_roster',
         'agent.treat_as_signal',
         'agent.default_agent',
         'agent.shared_identities',
