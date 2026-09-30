@@ -8,6 +8,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+
+- **card#10918 / DL-441 (amends DL-325, DL-306, DL-380)** — ⚠ **New functionality ships ON and names its missing setup: every state-mutating periodic-job handler is armed unless you switch it off, and the PM standup digest and the idle nudge are enabled by default.** Operator rule, 2026-09-29: *"When adding new functionality, the default is to enable and require setup of the functionality."* Each keeps a kill switch.
+  - ⚠ **UPGRADE — A JOB CAN START WRITING.** A custom state-mutating job handler you registered but never named in `BRIDGE_JOBS_ARMED_MUTATORS` was refused on every run; it now **runs** wherever an instance of it exists. To keep one off, name it in the new **`BRIDGE_JOBS_DISARMED_MUTATORS`** (comma-separated) before upgrading, or `php artisan bridge:jobs disable <instance>`. The only shipped state-mutating handler, `owed_write_retry`, was already on (card#10849 / DL-440) and keeps `BRIDGE_OWED_WRITE_RETRY_DISABLED`.
+  - ⚠ **`BRIDGE_JOBS_ARMED_MUTATORS` is retired** — it arms nothing now; `bridge:check` warns while it is set. Remove it.
+  - ⚠ **`BRIDGE_STANDUP_ENABLED` now defaults to `true`.** An install that had set `BRIDGE_STANDUP_AGENT` but not the enable flag starts pushing the digest. One with no recipient pushes nothing, logs once a day, and `bridge:check`'s `standup.posture` warns **NOT SET UP**, naming `BRIDGE_STANDUP_AGENT`. `BRIDGE_STANDUP_ENABLED=false` declines it.
+  - ⚠ **`BRIDGE_IDLE_NUDGE_ENABLED` now defaults to `true`.** It still runs only once an `idle_nudge` job instance exists; `idle_nudge.posture` warns until then, and on unset Mezzanine keys for an agent that needs them (`channel.route_intents: true`, no `idle_nudge.seat_record`) — a **warn** naming every unset key, where an enabled nudge with an unset key used to **fail**. A key SET to an invalid value still fails. The receiver now stamps `agent_dispatches.push_attempted_at` on every install. `BRIDGE_IDLE_NUDGE_ENABLED=false` declines it.
+  - `bridge:check`: every install without a standup recipient or an idle-nudge instance gains a `warn` line for each until it sets them up or declines them; **the exit code does not move** for either. `jobs.posture` also warns on a `BRIDGE_JOBS_DISARMED_MUTATORS` entry that names no state-mutating handler, since that entry switches nothing off. No new check id, so the inventory line does not move.
+  - **Deliberately NOT turned on** (each is a security boundary, a consent list or a per-repo policy, and is left to an operator ruling on card#10918): `BRIDGE_SPAWN_ENABLED`, `BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`, and the `writeback.json` mapping opt-ins (`promote_on_release`, `create_dependabot_cards`, `draft_overlay`, `revive_on_reopen`, `create_coord_cards`). `CLAUDE_DECISIONS.md` DL-441 holds the population and why each was or was not flipped.
+  - No migration, no route change, no token-scope change; `--format=json` `schema` stays **1**. `.env.example` now lists `BRIDGE_JOBS_DISARMED_MUTATORS` and `BRIDGE_OWED_WRITE_RETRY_DISABLED`.
+
 ## [0.94.0] - 2026-09-30
 
 ### Added
@@ -36,17 +47,6 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - The setup packet's STEP 4 says it bootstraps the client, and what the fallback looks like.
   - ⚠ **Reference channel-server snapshot 0.9.37 → 0.9.38** (`client-update.mjs`), so `bridge:check` WARNs for a seat on an older copy until it re-copies `examples/channel-servers/`, runs `npm ci` and restarts its session. A seat that does not re-deploy loses no function.
   - No migration, config key, `.env` change, route or token scope.
-
-### Changed
-
-- **card#10918 / DL-441 (amends DL-325, DL-306, DL-380)** — ⚠ **New functionality ships ON and names its missing setup: every state-mutating periodic-job handler is armed unless you switch it off, and the PM standup digest and the idle nudge are enabled by default.** Operator rule, 2026-09-29: *"When adding new functionality, the default is to enable and require setup of the functionality."* Each keeps a kill switch.
-  - ⚠ **UPGRADE — A JOB CAN START WRITING.** A custom state-mutating job handler you registered but never named in `BRIDGE_JOBS_ARMED_MUTATORS` was refused on every run; it now **runs** wherever an instance of it exists. To keep one off, name it in the new **`BRIDGE_JOBS_DISARMED_MUTATORS`** (comma-separated) before upgrading, or `php artisan bridge:jobs disable <instance>`. The only shipped state-mutating handler, `owed_write_retry`, was already on (card#10849 / DL-440) and keeps `BRIDGE_OWED_WRITE_RETRY_DISABLED`.
-  - ⚠ **`BRIDGE_JOBS_ARMED_MUTATORS` is retired** — it arms nothing now; `bridge:check` warns while it is set. Remove it.
-  - ⚠ **`BRIDGE_STANDUP_ENABLED` now defaults to `true`.** An install that had set `BRIDGE_STANDUP_AGENT` but not the enable flag starts pushing the digest. One with no recipient pushes nothing, logs once a day, and `bridge:check`'s `standup.posture` warns **NOT SET UP**, naming `BRIDGE_STANDUP_AGENT`. `BRIDGE_STANDUP_ENABLED=false` declines it.
-  - ⚠ **`BRIDGE_IDLE_NUDGE_ENABLED` now defaults to `true`.** It still runs only once an `idle_nudge` job instance exists; `idle_nudge.posture` warns until then, and on unset Mezzanine keys for an agent that needs them (`channel.route_intents: true`, no `idle_nudge.seat_record`) — a **warn** naming every unset key, where an enabled nudge with an unset key used to **fail**. A key SET to an invalid value still fails. The receiver now stamps `agent_dispatches.push_attempted_at` on every install. `BRIDGE_IDLE_NUDGE_ENABLED=false` declines it.
-  - `bridge:check`: every install without a standup recipient or an idle-nudge instance gains a `warn` line for each until it sets them up or declines them; **the exit code does not move** for either. `jobs.posture` also warns on a `BRIDGE_JOBS_DISARMED_MUTATORS` entry that names no state-mutating handler, since that entry switches nothing off. No new check id, so the inventory line does not move.
-  - **Deliberately NOT turned on** (each is a security boundary, a consent list or a per-repo policy, and is left to an operator ruling on card#10918): `BRIDGE_SPAWN_ENABLED`, `BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`, and the `writeback.json` mapping opt-ins (`promote_on_release`, `create_dependabot_cards`, `draft_overlay`, `revive_on_reopen`, `create_coord_cards`). `CLAUDE_DECISIONS.md` DL-441 holds the population and why each was or was not flipped.
-  - No migration, no route change, no token-scope change; `--format=json` `schema` stays **1**. `.env.example` now lists `BRIDGE_JOBS_DISARMED_MUTATORS` and `BRIDGE_OWED_WRITE_RETRY_DISABLED`.
 
 ### Removed
 
