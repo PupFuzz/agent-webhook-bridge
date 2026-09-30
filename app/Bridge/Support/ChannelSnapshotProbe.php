@@ -33,7 +33,10 @@ namespace App\Bridge\Support;
  * verdict), the deployed directory (once, covering every stat the version + presence legs
  * make — all of them DIRECT children of it, so neither re-guards), and, for a CLIENT ROOT
  * only, the release directory its pointer names (`versions/<release>/client`, below a direct
- * child — DL-445). The population DL-230 added — the deployed SUBDIRECTORIES its completeness
+ * child — DL-445). The OTHER releases under a client root, looked at only to tell "no release
+ * can start" from "another may" ({@see self::anotherReleaseWithAnEntry()}), take the same question
+ * through {@see PathVisibility::ancestorIsTraversable()}, and one it cannot answer is never read
+ * as "none" — so they are not a guard call site. The population DL-230 added — the deployed SUBDIRECTORIES its completeness
  * walk descended into — went with that walk (DL-237). The ONE deliberately unguarded stat is this
  * CHECKOUT's own bundled `package.json` ({@see self::versionLeg()}), which lands on its
  * own accurate, non-destructive finding naming that file rather than the agent's

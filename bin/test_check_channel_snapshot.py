@@ -1242,6 +1242,19 @@ class ClientRootLaunch(_TreeCase):
             text = self.assert_run(path, ccs.EXIT_COULD_NOT_CHECK)
             self.assertIn("is a client root with no current.json", text)
 
+    def test_an_unreadable_sibling_release_is_could_not_check_not_a_failure(self):
+        # Review r2: a sibling this user cannot look into is never read as "none has an entry".
+        self.skip_as_root()
+        root = self.client_root()
+        os.unlink(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE))
+        os.makedirs(os.path.join(root, "versions", "1.0.0", "client"))
+        os.chmod(os.path.join(root, "versions", "1.0.0"), 0)
+        try:
+            text = self.assert_run(root, ccs.EXIT_COULD_NOT_CHECK)
+        finally:
+            os.chmod(os.path.join(root, "versions", "1.0.0"), 0o755)
+        self.assertIn("starts another intact release", text)
+
     def test_no_release_with_a_server_entry_is_a_conclusive_launch_failure(self):
         # Review r1: with nothing startable under versions/, entry.mjs starts nothing.
         root = self.client_root()

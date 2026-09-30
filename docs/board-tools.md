@@ -1754,7 +1754,8 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   recorded values are the ones the channel server will actually use. **Once that round-trip
   succeeds it bootstraps the client** (DL-445) exactly as `--bootstrap-client` below does —
   its one `.mcp.json` write — with two differences: a seat whose `.mcp.json` already starts
-  it from a client root is left alone (re-certifying is not a request to reinstall), and
+  it from a client root is left alone (re-certifying is not a request to reinstall; a recorded
+  root `entry.mjs` that is gone is bootstrapped again, without the fallback), and
   when the bridge answers and offers nothing to install right now (nothing published, a 5xx,
   a bridge older than the client-update door, approval owed) the seat **keeps the legacy snapshot** `--role b` deployed, a `CLIENT NOT
   BOOTSTRAPPED` line says it will not update itself, and the command still succeeds — the
@@ -1863,7 +1864,8 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   the seat by having the seat itself call.
 - **⭐ There are TWO REPORTED lines since DL-316, and the difference is what they CLAIM.**
   (Both were `ok` until DL-364, which added the version clause below — either line reads
-  `warn` when the seat's reported snapshot version is older than the bundled one, and the
+  `warn` when the seat's reported snapshot version is older than the one it is compared with
+  (the published client, else the bundled one — the version clause below), and the
   distinction drawn here is unaffected by that: it is about the CLAIM, not the severity.) The ssh door records how the serving process was started, so a
   call that arrived through the pinned forced command reports the stronger of the two:
   `board_tools: agent X: client half REPORTED **THROUGH THE SSH DOOR** — … the process that
@@ -1910,6 +1912,18 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   snapshot never advertised — was reported *"absent from my surface"*, and it was
   attributed to the **BRIDGE**, because nothing compared the two numbers. The line now
   prints both.
+  - ⭐ **Which version it is compared with (card#10568 comment 7177, DL-445).** Once this
+    bridge PUBLISHES a client pack, the reported version is compared with the **published
+    client**, never this checkout's bundled copy — seats take their client from the pack now.
+    Behind it ⇒ **`warn`**, and the remedy is a **restart** for a seat on its client root (it
+    updates itself at launch) or the **bootstrap** (`provision-board-tools.py --role b
+    --bootstrap-client` on the seat) for one still on a copy — never a re-copy, which would take
+    a seat off the update path. For an agent with `board_tools.client_update.approval_required`
+    whose published content is not approved, the remedy is `bridge:client-approve` (the bridge
+    offers that seat nothing until then). A published record that cannot be read ⇒ **not
+    compared**, never a fallback to the bundled copy (`board_tools.client_pack_source` names its
+    recovery). **With nothing published**, the arms below are exactly as they were, against the
+    bundled snapshot:
   - reported and **older** than the bundled snapshot ⇒ **`warn`**, naming both versions and
     the remedy: re-copy this checkout's `examples/channel-servers` over the seat's deployed
     directory, `npm ci`, and **restart that session** — the version is read when the channel
@@ -2307,9 +2321,11 @@ It orchestrates, on `127.0.0.1`:
 3b. **`--role b --certify-only` as the agent user**, from the **agent's own checkout**
    (DL-445): one real round-trip through the key just pinned, then the client bootstrap —
    installed under the AGENT's home, never root's (design review r3-B1). The legacy fallback
-   applies (see `--certify-only` above). An agent checkout whose `--help` names no
-   `--bootstrap-client` predates it: the step is skipped with a `CLIENT NOT BOOTSTRAPPED`
-   block naming the command to run once that checkout is updated. A failure here is held
+   applies (see `--certify-only` above). An agent checkout whose `--help` does not say its
+   `--certify-only` bootstraps predates it (DL-445 bound 3 — not the `--bootstrap-client` flag,
+   which DL-444 shipped earlier), and a `--help` that could not be asked is said as such; either
+   way the step is skipped with a `CLIENT NOT BOOTSTRAPPED` block naming the command to run. A
+   failure here is held
    until the banner, `bridge:check` and the `chown` below have run, then fails the wrapper.
 4. Prints the one unavoidable **manual step**: restart the agent's Claude session so the
    channel re-spawns and reads the merged `.mcp.json`.

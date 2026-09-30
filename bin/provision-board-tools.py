@@ -1418,10 +1418,16 @@ def _bootstrap_after_certify(agent: str, mcp_path: str, channel_name: str) -> bo
     with open(mcp_path, encoding="utf-8") as fh:
         text = fh.read()
     entry = recorded_client_entry(text, channel_name)
-    if entry is not None:
+    if entry is not None and (not os.path.isabs(entry) or "${" in entry or os.path.isfile(entry)):
         print(f"client: channel {channel_name} already starts from its client root ({entry}) and updates itself "
               f"at launch — not bootstrapped again (`--bootstrap-client` repairs it).")
         return False
+    if entry is not None:
+        # Recorded, absolute and established gone (review r2): the seat cannot start as recorded, so
+        # this is a request to reinstall, never "already on its root". The bootstrap writes the same
+        # path back; nothing offered leaves the seat unable to start, which the fallback cannot fix.
+        print(f"client: channel {channel_name}'s .mcp.json names {entry}, which does not exist — bootstrapping it again.")
+        return _bootstrap_client(mcp_path, text, channel_name, agent)
     return _bootstrap_client(mcp_path, text, channel_name, agent, keep_legacy_when_nothing_offered=True)
 
 

@@ -8,6 +8,7 @@ use App\Bridge\Check\Silence;
 use App\Bridge\ClientUpdate\ClientPackRefused;
 use App\Bridge\ClientUpdate\ClientPackStore;
 use App\Bridge\ClientUpdate\PublishedClientPack;
+use App\Bridge\ClientUpdate\SeatClientLedger;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelSnapshotManifest;
 use App\Bridge\Support\Finding;
@@ -223,7 +224,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         // ONE clause, appended to BOTH green lines, so the two arms cannot drift into
         // reporting the seat's version differently — they differ in what they claim about
         // the CALLER, and nothing about the version depends on that.
-        [$stale, $versionClause] = $this->versionClause($record->clientVersion, $name);
+        [$stale, $versionClause] = $this->versionClause($record->clientVersion, $name, $bt->clientUpdateApprovalRequired);
 
         if ($record->provenance === CallProvenance::Sshd) {
             $sshd = ("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".HumanAge::floored($age).' ago, over '.$record->transport.", and the process that served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY — the shape of the pinned pty-less forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe and every other http call, since that door states its provenance as a constant and never measures; EVERY hand-run FROM A TERMINAL — an ssh login shell, a tmux pane, a screen window, this host's own console — because a terminal hand-run keeps its controlling terminal even when stdin is a pipe, and this process had none; a hand-run whose lineage held a pty and still carried SSH_TTY; and anything running with no ssh session environment at all. TWO THINGS IT DOES NOT RULE OUT, so it STILL DOES NOT NAME THE CALLER: ANY OTHER PTY-LESS ssh INVOCATION of this command, `ssh <host> '<command>'` included — `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run; and a hand-run from a TERMINAL-LESS context carrying SSH_CONNECTION — a cron entry or a systemd user unit after `systemctl --user import-environment`, an agent tool harness, or a setsid wrapper.").' '.$versionClause;
@@ -255,7 +256,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
      *
      * @return array{0: bool, 1: string}
      */
-    private function versionClause(?string $reported, string $agent): array
+    private function versionClause(?string $reported, string $agent, bool $approvalRequired = false): array
     {
         // ⭐ THE OPERAND IS THE CLIENT THIS BRIDGE PUBLISHES WHEN IT PUBLISHES ONE (card#10568
         // comment 7177, DL-445), and this checkout's bundled snapshot only when it does not. Seats
@@ -321,7 +322,26 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
 
         if ($published instanceof PublishedClientPack) {
             if (ChannelSnapshotManifest::compareVersions($reported, $published->clientVersion) < 0) {
-                return [true, "CLIENT VERSION {$reported} IS OLDER THAN THE {$published->clientVersion} THIS BRIDGE PUBLISHES — that seat runs a STALE channel server, so a tool it does not offer may be missing from ITS copy rather than from this bridge, and reading that as a bridge fault sends the remedy to the wrong side. A seat on its client root updates itself at its next launch: RESTART that session (bridge:client-fleet shows whether an update is owed or failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
+                $behind = "CLIENT VERSION {$reported} IS OLDER THAN THE {$published->clientVersion} THIS BRIDGE PUBLISHES — that seat runs a STALE channel server, so a tool it does not offer may be missing from ITS copy rather than from this bridge, and reading that as a bridge fault sends the remedy to the wrong side.";
+                // An agent that requires approval is offered nothing until the published content is
+                // approved for it (DL-433), so neither a restart nor a bootstrap can clear this until
+                // then (review r2). A ledger that will not answer is said, never read as either.
+                if ($approvalRequired) {
+                    try {
+                        $approved = SeatClientLedger::isApproved($agent, $published->filesJsonSha256);
+                    } catch (Throwable) {
+                        $approved = null;
+                    }
+                    if ($approved !== true) {
+                        $approve = "`php artisan bridge:client-approve {$agent} {$published->bridgeRelease} --reason=…`";
+
+                        return [true, $behind.($approved === false
+                            ? " This agent requires approval and release {$published->bridgeRelease}'s client is not approved for it, so the bridge offers it nothing: approve it ({$approve}), then restart that session — it updates at launch (a seat still on a copied snapshot bootstraps instead: {$bootstrap})."
+                            : " This agent requires approval, and whether release {$published->bridgeRelease}'s client is approved for it could not be read (the fleet ledger did not answer): if it is not, approve it ({$approve}); a seat is offered nothing until then. bridge:client-fleet names the seat's state.")];
+                    }
+                }
+
+                return [true, $behind." A seat on its client root updates itself at its next launch: RESTART that session (bridge:client-fleet shows whether an update is owed or failed). A seat still on a copied snapshot does not: bootstrap it onto the published client ({$bootstrap}), then restart that session. The version is read when the channel server starts, so neither changes what this line reports until the restart."];
             }
 
             return [false, "Client version {$reported} is at or ahead of the {$published->clientVersion} this bridge publishes."];

@@ -585,6 +585,28 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
+     * Review r2: a sibling release this process cannot look into is never read as "none has an
+     * entry" — that would turn a not-measured state into a FAIL.
+     */
+    public function test_an_unreadable_sibling_release_keeps_a_missing_entry_a_warn_not_a_fail(): void
+    {
+        $this->skipAsRoot();
+        $root = $this->clientRoot('2.0.0', entry: false);
+        mkdir($root.'/versions/1.0.0/client', 0755, true);
+        chmod($root.'/versions/1.0.0', 0000);
+        try {
+            $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+        } finally {
+            chmod($root.'/versions/1.0.0', 0755);
+        }
+
+        $warn = $this->findingWith($findings, 'passes that release over');
+        $this->assertSame(Severity::Warn, $warn->severity);
+        $this->assertStringContainsString('release 1.0.0 could not be looked at', $warn->message);
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
+    }
+
+    /**
      * Review r1: a root whose pointer is gone still starts (entry.mjs recovers to the newest intact
      * release), so it is a CLIENT ROOT with an unusable pointer — never "not a deployment".
      */

@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackStore;
+use App\Bridge\ClientUpdate\SeatClientLedger;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
@@ -161,6 +162,28 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertStringContainsString('The seat reports client version 0.4.4, NOT COMPARED', $findings[0]['message']);
         $this->assertStringContainsString('board_tools.client_pack_source', $findings[0]['message']);
         $this->assertStringNotContainsString('OLDER THAN', $findings[0]['message']);
+    }
+
+    /**
+     * Review r2: an approval-required seat behind an UNAPPROVED published client is offered nothing,
+     * so a restart or a bootstrap cannot clear it — the remedy is the approval. The control: the
+     * same seat once the content is approved gets the restart/bootstrap remedy.
+     */
+    public function test_an_approval_required_seat_behind_an_unapproved_client_is_told_to_approve_it(): void
+    {
+        $this->publishClient('0.9.40');
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.12');
+
+        $findings = $this->findings(['client_update' => ['approval_required' => true]]);
+
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringContainsString('bridge:client-approve prod-agent 1.0.0', $findings[0]['message']);
+        $this->assertStringContainsString('is not approved for it', $findings[0]['message']);
+
+        SeatClientLedger::approve('prod-agent', (new ClientPackStore)->published(), 'tester', 'test');
+        $approved = $this->findings(['client_update' => ['approval_required' => true]]);
+        $this->assertStringNotContainsString('bridge:client-approve', $approved[0]['message']);
+        $this->assertStringContainsString('RESTART that session', $approved[0]['message']);
     }
 
     public function test_an_unreported_version_with_an_unreadable_record_hands_out_no_re_copy(): void
@@ -904,12 +927,15 @@ class BoardToolsClientHalfCheckTest extends TestCase
         ]);
     }
 
-    /** @return list<array{severity: Severity, message: string}> */
-    private function findings(): array
+    /**
+     * @param  array<string, mixed>  $boardTools
+     * @return list<array{severity: Severity, message: string}>
+     */
+    private function findings(array $boardTools = []): array
     {
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            $this->findingsOfFor(new BoardToolsClientHalfCheck($this->bundledDir()), $this->agent()),
+            $this->findingsOfFor(new BoardToolsClientHalfCheck($this->bundledDir()), $this->agent($boardTools)),
         );
     }
 

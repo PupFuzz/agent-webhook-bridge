@@ -226,13 +226,20 @@ class RealFs:
         return os.access(path, os.R_OK)
 
     def help_as(self, user, python, tool):
-        """`<tool> --help` as `user` — what that user's own checkout of the tool supports. '' on failure."""
+        """`<tool> --help` as `user` — what that user's own checkout of the tool supports. Returns the
+        help text, or None when it could not be asked (with the reason on stderr): a failed ask is not
+        evidence the checkout is old."""
         try:
             proc = subprocess.run(["sudo", "-H", "-n", "-u", user, python, tool, "--help"],
                                   capture_output=True, text=True)
-        except OSError:
-            return ""
-        return proc.stdout if proc.returncode == 0 else ""
+        except OSError as e:
+            print(f"provision-board-tools-samebox: could not run {tool} --help as {user}: {e}", file=sys.stderr)
+            return None
+        if proc.returncode != 0:
+            print(f"provision-board-tools-samebox: {tool} --help as {user} exited {proc.returncode}: "
+                  f"{proc.stderr.strip()[:300]}", file=sys.stderr)
+            return None
+        return proc.stdout
 
     def find_agent_provisioners(self, agent_home):
         """The agent's OWN bin/provision-board-tools.py candidates under its home."""
@@ -434,7 +441,18 @@ def execute(plan: Plan, fs) -> int:
     # failure here is held, like bridge:check's below: role-b already rewrote .mcp.json, so the
     # restart banner is owed either way, and the storage chown must still run.
     certify_err = None
-    if supports_bootstrap(fs.help_as(plan.agent, "python3", plan.agent_bin)):
+    help_text = fs.help_as(plan.agent, "python3", plan.agent_bin)
+    certify_cmd = " ".join(shlex.quote(c) for c in build_certify_argv(
+        "python3", plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name))
+    if help_text is None:
+        print()
+        print("━━━ CLIENT NOT BOOTSTRAPPED ━━━")
+        print(f"  {plan.agent_bin} --help could not be asked as {plan.agent!r} (the reason is above), so")
+        print("  whether its --certify-only bootstraps the client is unknown and it was not run. The seat")
+        print("  stays on the legacy snapshot role-b deployed, which does NOT update itself. Run, as that user:")
+        print(f"  {certify_cmd}")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    elif supports_bootstrap(help_text):
         certify = build_certify_argv("python3", plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name)
         try:
             _run(["sudo", "-H", "-n", "-u", plan.agent] + certify,
@@ -447,7 +465,7 @@ def execute(plan: Plan, fs) -> int:
         print(f"  {plan.agent_bin} predates the client bootstrap (its --help does not say --certify-only bootstraps), so this")
         print(f"  seat stays on the legacy channel-server snapshot role-b deployed, which does NOT update itself.")
         print(f"  Update agent {plan.agent!r}'s own checkout to a bridge release that carries it, then run, as")
-        print(f"  that user: {' '.join(shlex.quote(c) for c in build_certify_argv('python3', plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name))}")
+        print(f"  that user: {certify_cmd}")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     # 4. the one unavoidable manual step.

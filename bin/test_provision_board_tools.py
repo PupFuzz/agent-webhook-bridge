@@ -3063,8 +3063,28 @@ class BootstrapClientEntryPoint(unittest.TestCase):
         self.assertIn("did not complete", str(cm.exception))
         self.assertEqual(self._mcp(), self.before)
 
+    def test_a_recorded_root_entry_that_is_gone_is_bootstrapped_again_without_the_fallback(self):
+        # Review r2: "already on its client root" was printed for a seat whose entry.mjs is gone —
+        # a green certify for a seat that cannot start. It is reinstalled, and nothing offered is a
+        # failure there (the fallback would leave it unable to start).
+        entry = os.path.join(self.root, "entry.mjs")
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": [entry], "env": self.env}}}, fh)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", return_value=mock.Mock(returncode=pbt.BOOTSTRAP_NOTHING_OFFERED)), \
+             contextlib.redirect_stdout(out), \
+             self.assertRaises(SystemExit) as cm:
+            pbt._bootstrap_after_certify("a", self.mcp_path, "chan")
+        self.assertIn("does not exist — bootstrapping it again", out.getvalue())
+        self.assertIn("offers this seat no client", str(cm.exception))
+        self.assertNotIn("already starts from its client root", out.getvalue())
+
     def test_an_entry_point_leaves_a_seat_already_on_its_client_root_alone(self):
         entry = os.path.join(self.root, "entry.mjs")
+        os.makedirs(self.root)
+        open(entry, "w").close()
         with open(self.mcp_path, "w", encoding="utf-8") as fh:
             json.dump({"mcpServers": {"chan": {"command": "node", "args": [entry], "env": self.env}}}, fh)
         out = io.StringIO()

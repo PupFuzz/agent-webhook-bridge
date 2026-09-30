@@ -103,7 +103,7 @@ class FakeFs:
 
     def help_as(self, user, python, tool):
         self.help_asked = (user, python, tool)
-        return self.help_text
+        return self.help_text  # None stands for a --help that could not be asked
 
 
 def _args(**over):
@@ -345,6 +345,16 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
         self.assertFalse(any("--certify-only" in c for c in ran))
         self.assertIn("CLIENT NOT BOOTSTRAPPED", out)
         self.assertIn("predates the client bootstrap", out)
+
+    def test_a_help_that_could_not_be_asked_is_said_as_such_never_as_predates(self):
+        # Review r2: a failed ask is not evidence the checkout is old.
+        fs = FakeFs()
+        fs.help_text = None
+        rc, ran, out = self._execute(fs)
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("--certify-only" in c for c in ran))
+        self.assertIn("could not be asked", out)
+        self.assertNotIn("predates", out)
 
     def test_a_failed_certify_still_prints_the_banner_runs_the_chown_and_then_fails(self):
         rc, ran, out = self._execute(FakeFs(), fail_on="--certify-only")
