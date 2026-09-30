@@ -223,9 +223,11 @@ composer install --no-dev --optimize-autoloader
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
 php artisan bridge:client-pack:install             # publish THIS release's channel-server client pack for seats to
-                                                  # update from (DL-430). Exit 1 "carries no client pack" means the
-                                                  # release's pack build failed; bridge:check's client_pack_source
-                                                  # leg then names the re-run that attaches it (DL-442)
+                                                  # update from (DL-430). Exit 1 "carries no client pack" means
+                                                  # either this release predates DL-442 (ship a newer one; no
+                                                  # re-run attaches a pack to it) or its release-time build failed;
+                                                  # bridge:check's client_pack_source leg names which and, on the
+                                                  # second, the re-run that attaches it (DL-442)
 php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
 sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```

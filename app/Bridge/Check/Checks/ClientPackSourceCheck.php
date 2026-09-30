@@ -63,7 +63,7 @@ final class ClientPackSourceCheck implements Check
             return;
         }
 
-        $publish = 'Run `php artisan bridge:client-pack:install` as the receiver\'s user. If it answers that the release carries no client pack, the release\'s pack build failed: re-run that release\'s `'.self::RELEASE_WORKFLOW.'` workflow run, which attaches a missing pack, then run the command again.';
+        $publish = 'Run `php artisan bridge:client-pack:install` as the receiver\'s user. If it answers that the release carries no client pack: on a release built before DL-442, no re-run attaches one — ship a newer release; otherwise the release\'s pack build failed — re-run that release\'s `'.self::RELEASE_WORKFLOW.'` workflow run, which attaches a missing pack, then run the command again.';
 
         if ($published === null) {
             yield Finding::warn("client_pack_source: this bridge publishes no client pack, so no seat can install or update its channel server from it. {$publish}");
