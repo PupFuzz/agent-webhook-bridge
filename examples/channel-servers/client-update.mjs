@@ -5,8 +5,13 @@
 //       what entry.mjs runs at every NEW launch, under its deadline (design §3.3): ask the
 //       bridge's client-update door what it publishes, and install a newer release before the
 //       channel server starts. Never mid-session — a running session's tool list never changes.
+//   node client-update.mjs bootstrap --root <root>
+//       the bootstrap (design §3.5): ask the bridge over the board-tools transport in the
+//       environment — the seat's `.mcp.json` env, which the provisioner's `--bootstrap-client`
+//       passes — and install what it offers. Nothing fetched is run: the installing code is this
+//       file, the copy in the provisioner's own checkout.
 //   node client-update.mjs install --pack <file> --manifest <file> --root <root>
-//       the bootstrap: install a pack the provisioner already fetched (design §3.5, wired by C2).
+//       the same bootstrap, from a pack and manifest already on disk.
 //
 // ⛔ THE SEAT TRUSTS ITS OWN BRIDGE, AND CHECKS WHAT IT RECEIVED (operator ruling, card#10567
 // comment 6744: no signing — sha256 plus tagged releases). The manifest must hash to the digest
@@ -122,6 +127,13 @@ function crashAt(ctx, point) {
   // the kernel still writes out what the process wrote; `classifyRelease` covers a power cut.
   if (ctx.env.AWB_CLIENT_CRASH_AT === point) {
     process.kill(process.pid, 'SIGKILL');
+  }
+}
+
+function failAt(ctx, point) {
+  // Test hook: a non-transient OS failure at a named point, so the code that must survive one runs.
+  if (ctx.env.AWB_CLIENT_FAIL_AT === point) {
+    throw Object.assign(new Error(`${point} refused by the test hook`), { code: 'EIO' });
   }
 }
 
@@ -588,6 +600,42 @@ export function manifestFromAnswer(answer) {
   return { manifest: m, manifestSha256: p.manifest_sha256 };
 }
 
+/**
+ * What a client_manifest answer offers this seat: `{offer, owed: null}`, or `{offer: null, owed}`
+ * when its agent requires approval and the published content is not approved (DL-433). One reading
+ * for the launch and the bootstrap, so the two can never disagree about what was offered.
+ */
+export function offerFromAnswer(answer, manifest) {
+  const offer = answer.offer;
+  if (offer === null || offer === undefined) {
+    const owed = answer.approval && typeof answer.approval === 'object' ? answer.approval.owed : null;
+    if (typeof owed !== 'string' || !STRICT_RELEASE.test(owed)) {
+      throw new Failure('the bridge offered no release and named no approval owed');
+    }
+    return { offer: null, owed };
+  }
+  if (typeof offer !== 'string' || !STRICT_RELEASE.test(offer)) {
+    throw new Refusal(`the bridge offered ${JSON.stringify(offer)}, not a bare X.Y.Z release`);
+  }
+  if (offer !== manifest.bridge_release) {
+    throw new Refusal(`the bridge offered release ${offer} but publishes ${manifest.bridge_release}`);
+  }
+  return { offer, owed: null };
+}
+
+/** The offered release's pack bytes from the door, checked against the manifest's release and sha256. */
+async function fetchPack(ctx, manifest, legMs) {
+  const release = manifest.bridge_release;
+  const pack = await ask(ctx, { op: 'client_pack', bridge_release: release }, legMs);
+  if (pack.bridge_release !== release || pack.encoding !== 'base64' || typeof pack.data !== 'string') {
+    throw new Refusal(`the bridge's client_pack answer is not release ${release}'s pack in base64`);
+  }
+  if (pack.sha256 !== manifest.pack.sha256) {
+    throw new Refusal('the bridge\'s client_pack answer names a different sha256 than its manifest');
+  }
+  return Buffer.from(pack.data, 'base64');
+}
+
 function octal(header, offset, length, what, name) {
   const text = header.subarray(offset, offset + length).toString('latin1').replace(/[\0 ]+$/, '').replace(/^ +/, '');
   if (!/^[0-7]+$/.test(text)) {
@@ -898,13 +946,42 @@ function commitInstall(ctx, { release, manifest, manifestSha256, staging, from, 
     // The same verified bytes are already there, intact: reuse them.
     fs.rmSync(staging, { recursive: true, force: true });
   } else {
+    // A copy being replaced is RENAMED ASIDE, not removed, until the verified one is in place: it
+    // may be the release the seat runs (not intact in full, still startable), and a rename into
+    // `versions/` that fails must leave it where it was (card#10568 comment 7236). A kill between
+    // the two renames leaves it in staging/, and re-running the bootstrap recovers the seat.
+    let aside = null;
     if (exists) {
       const why = c.status === 'bad' ? c.message : `${release} is not a valid X.Y.Z`;
       ctx.say(`versions/${release} is not intact (${why}); replacing it with the verified pack`);
-      fs.rmSync(target, { recursive: true, force: true });
+      aside = path.join(root, 'staging', `${release}.replaced`);
+      fs.rmSync(aside, { recursive: true, force: true });
+      renameWithRetry(target, aside, { deadline: ctx.deadline });
+      crashAt(ctx, 'after-aside');
     }
-    renameWithRetry(staging, target, { deadline: ctx.deadline });
+    try {
+      failAt(ctx, 'rename-in');
+      renameWithRetry(staging, target, { deadline: ctx.deadline });
+    } catch (err) {
+      if (aside !== null) {
+        try {
+          fs.renameSync(aside, target);
+        } catch (restoreErr) {
+          throw new Failure(`versions/${release} could not be replaced (${err && err.code ? err.code : err && err.message ? err.message : err}), and the previous copy could not be moved back from ${aside} (${restoreErr && restoreErr.code ? restoreErr.code : restoreErr && restoreErr.message ? restoreErr.message : restoreErr}); bootstrap again`);
+        }
+      }
+      throw err;
+    }
     fsyncDirectory(path.join(root, 'versions'));
+    if (aside !== null) {
+      try {
+        fs.rmSync(aside, { recursive: true, force: true });
+      } catch (err) {
+        // The verified copy is in place; the old one is only clutter, and the staging cleanup
+        // after the switch tries again.
+        ctx.say(`the replaced copy of release ${release} could not be removed from ${aside} (${err && err.code ? err.code : err && err.message ? err.message : err}); left in place`);
+      }
+    }
   }
   crashAt(ctx, 'after-rename');
   checkBudget(ctx, `switching current.json to release ${release}`);
@@ -1268,12 +1345,8 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
       known.manifestSha256 = manifestSha256;
       result.published = manifest.bridge_release;
 
-      const offer = answer.offer;
-      if (offer === null || offer === undefined) {
-        const owed = answer.approval && typeof answer.approval === 'object' ? answer.approval.owed : null;
-        if (typeof owed !== 'string' || !STRICT_RELEASE.test(owed)) {
-          throw new Failure('the bridge offered no release and named no approval owed');
-        }
+      const { offer, owed } = offerFromAnswer(answer, manifest);
+      if (offer === null) {
         result.state = 'approval_owed';
         result.approval_owed = owed;
         // Once per owed content: the latest approval_owed line, wherever it sits in the log.
@@ -1284,12 +1357,6 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
         }
         settleRoot(ctx, installed.release);
       } else {
-        if (typeof offer !== 'string' || !STRICT_RELEASE.test(offer)) {
-          throw new Refusal(`the bridge offered ${JSON.stringify(offer)}, not a bare X.Y.Z release`);
-        }
-        if (offer !== manifest.bridge_release) {
-          throw new Refusal(`the bridge offered release ${offer} but publishes ${manifest.bridge_release}`);
-        }
         result.offer = offer;
         known.to = offer;
         if (refuseAgainstInstalled(installed.release, installed.packSha, manifest) === 0) {
@@ -1297,14 +1364,8 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
           recordUnloggedInstall(ctx, installed.release, manifest, manifestSha256);
           settleRoot(ctx, installed.release);
         } else {
-          const pack = await ask(ctx, { op: 'client_pack', bridge_release: offer }, ctx.deadline - Date.now());
-          if (pack.bridge_release !== offer || pack.encoding !== 'base64' || typeof pack.data !== 'string') {
-            throw new Refusal(`the bridge's client_pack answer is not release ${offer}'s pack in base64`);
-          }
-          if (pack.sha256 !== manifest.pack.sha256) {
-            throw new Refusal('the bridge\'s client_pack answer names a different sha256 than its manifest');
-          }
-          await installPack(ctx, { manifest, manifestSha256, packBytes: Buffer.from(pack.data, 'base64'), from: installed.release, action: 'install' });
+          const packBytes = await fetchPack(ctx, manifest, ctx.deadline - Date.now());
+          await installPack(ctx, { manifest, manifestSha256, packBytes, from: installed.release, action: 'install' });
           result.state = 'current';
           result.installed = offer;
           say(`installed release ${offer} (was ${installed.release})`);
@@ -1337,13 +1398,14 @@ export async function runLaunchUpdate({ root, budgetMs, signal, launchId, instal
 }
 
 /**
- * Install a pack and manifest already on disk into `root` — the bootstrap (design §3.5; the
- * provisioner fetches both over the door and calls this, C2). The same checks and the same commit
- * as a launch; the line is `bootstrap`, actor `provision`. Re-running it with the installed release
- * repairs the root (pointer, entry.mjs, shims) and logs that too. Throws a Refusal or Failure.
+ * The bootstrap (design §3.5): install one pack into `root` outside any launch — under the lock,
+ * logged `bootstrap` with actor `provision`, with the same checks and the same commit as a launch.
+ * Re-running it with the installed release repairs the root (pointer, entry.mjs, shims) and logs
+ * that too. `obtain` supplies the manifest, then the pack; it is where the two ways in differ.
+ * Throws a Refusal or Failure, each logged.
  */
-export async function installFromFiles({ packFile, manifestFile, root, source = 'provision', env = process.env }) {
-  const say = (text) => process.stderr.write(`client-update install: ${text}\n`);
+async function bootstrapRoot({ root, source, env, obtain }) {
+  const say = (text) => process.stderr.write(`client-update bootstrap: ${text}\n`);
   fs.mkdirSync(root, { recursive: true });
   const ctx = { root, signal: new AbortController().signal, deadline: Infinity, launchId: null, actor: 'provision', env, source, door: null, log: null, say };
   const lock = takeLock(root, { deadline: Date.now() + INSTALL_LOCK_MS, staleAfterMs: INSTALL_LOCK_MS });
@@ -1351,10 +1413,9 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
   try {
     ctx.log = InstallLog.open(root, say);
     try {
-      const manifestBytes = fs.readFileSync(manifestFile);
-      const manifest = parseManifest(manifestBytes);
+      const { manifest, manifestSha256 } = await obtain.manifest(ctx, known);
       known.manifest = manifest;
-      known.manifestSha256 = sha256(manifestBytes);
+      known.manifestSha256 = manifestSha256;
       known.to = manifest.bridge_release;
       const resolved = resolveInstalled(root);
       const installed = resolved.release === null ? null : resolved;
@@ -1362,7 +1423,8 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
       if (installed) {
         refuseAgainstInstalled(installed.release, installed.packSha, manifest);
       }
-      await installPack(ctx, { manifest, manifestSha256: known.manifestSha256, packBytes: fs.readFileSync(packFile), from: known.from, action: 'bootstrap' });
+      const packBytes = await obtain.pack(ctx, manifest);
+      await installPack(ctx, { manifest, manifestSha256, packBytes, from: known.from, action: 'bootstrap' });
       settleRoot(ctx, manifest.bridge_release);
       return { release: manifest.bridge_release, installId: ctx.log.installId };
     } catch (err) {
@@ -1377,35 +1439,112 @@ export async function installFromFiles({ packFile, manifestFile, root, source = 
   }
 }
 
+/** Bootstrap from a pack and manifest already on disk. */
+export async function installFromFiles({ packFile, manifestFile, root, source = 'provision', env = process.env }) {
+  return bootstrapRoot({
+    root,
+    source,
+    env,
+    obtain: {
+      async manifest() {
+        const manifestBytes = fs.readFileSync(manifestFile);
+        return { manifest: parseManifest(manifestBytes), manifestSha256: sha256(manifestBytes) };
+      },
+      async pack() {
+        return fs.readFileSync(packFile);
+      },
+    },
+  });
+}
+
+/** How long a bootstrap waits for the bridge's client_manifest answer. */
+export const BOOTSTRAP_MANIFEST_MS = 30000;
+/** How long a bootstrap waits for the pack: its lock's own span, so the lock is never outlived. */
+const BOOTSTRAP_PACK_MS = INSTALL_LOCK_MS - BOOTSTRAP_MANIFEST_MS;
+
+/**
+ * Bootstrap from this seat's own bridge, over the board-tools transport in `env` — the one a
+ * launch uses (`doorFromEnv`), so a bootstrap proves the door the next launch will ask. It installs
+ * only what the bridge OFFERS (DL-433 Decision 2): with approval owed nothing is fetched, and the
+ * refusal names the release and the command that clears it.
+ */
+export async function installFromDoor({ root, env = process.env }) {
+  return bootstrapRoot({
+    root,
+    source: null,
+    env,
+    obtain: {
+      async manifest(ctx, known) {
+        ctx.door = doorFromEnv(env);
+        ctx.source = ctx.door.source;
+        const answer = await ask(ctx, { op: 'client_manifest' }, BOOTSTRAP_MANIFEST_MS);
+        const { manifest, manifestSha256 } = manifestFromAnswer(answer);
+        const { offer, owed } = offerFromAnswer(answer, manifest);
+        if (offer === null) {
+          known.manifest = manifest;
+          known.manifestSha256 = manifestSha256;
+          known.to = owed;
+          throw new Refusal(`approval owed: this seat's agent requires approval, and release ${owed} is not approved for it — on the bridge, \`php artisan bridge:client-approve <agent> ${owed} --reason=…\`, then bootstrap again; nothing was fetched or installed`);
+        }
+        return { manifest, manifestSha256 };
+      },
+      async pack(ctx, manifest) {
+        return fetchPack(ctx, manifest, BOOTSTRAP_PACK_MS);
+      },
+    },
+  });
+}
+
 function usage() {
-  process.stderr.write('usage: client-update.mjs install --pack <file> --manifest <file> --root <dir> [--actor provision] [--source <text>]\n');
+  process.stderr.write(
+    'usage: client-update.mjs install --pack <file> --manifest <file> --root <dir> [--actor provision] [--source <text>]\n' +
+      '       client-update.mjs bootstrap --root <dir>   (the board-tools transport is read from the environment)\n',
+  );
   return 2;
 }
 
-export async function cli(argv) {
-  if (argv[0] !== 'install') {
-    return usage();
-  }
+function parseOptions(argv, allowed) {
   const opts = {};
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i];
     const value = argv[i + 1];
-    if (!['--pack', '--manifest', '--root', '--source', '--actor'].includes(key) || value === undefined) {
-      return usage();
+    if (!allowed.includes(key) || value === undefined) {
+      return null;
     }
     opts[key.slice(2)] = value;
   }
-  // `--actor provision` is what the design's bootstrap passes (§3.5 step 4). A bootstrap's lines
-  // are the provisioner's whether or not it says so; `launch` is entry.mjs's and needs a launch id.
-  if (!opts.pack || !opts.manifest || !opts.root || (opts.actor !== undefined && opts.actor !== 'provision')) {
+  return opts;
+}
+
+export async function cli(argv, env = process.env) {
+  let run;
+  let root;
+  if (argv[0] === 'install') {
+    const opts = parseOptions(argv, ['--pack', '--manifest', '--root', '--source', '--actor']);
+    // `--actor provision` is what the design's bootstrap passes (§3.5 step 4). A bootstrap's lines
+    // are the provisioner's whether or not it says so; `launch` is entry.mjs's and needs a launch id.
+    if (!opts || !opts.pack || !opts.manifest || !opts.root || (opts.actor !== undefined && opts.actor !== 'provision')) {
+      return usage();
+    }
+    root = path.resolve(opts.root);
+    run = () => installFromFiles({ packFile: opts.pack, manifestFile: opts.manifest, root, source: opts.source });
+  } else if (argv[0] === 'bootstrap') {
+    const opts = parseOptions(argv, ['--root']);
+    if (!opts || !opts.root) {
+      return usage();
+    }
+    root = path.resolve(opts.root);
+    run = () => installFromDoor({ root, env });
+  } else {
     return usage();
   }
+  const verb = argv[0];
   try {
-    const done = await installFromFiles({ packFile: opts.pack, manifestFile: opts.manifest, root: path.resolve(opts.root), source: opts.source });
-    process.stdout.write(`client-update install: release ${done.release} installed at ${path.resolve(opts.root)} (install ${done.installId})\n`);
+    const done = await run();
+    process.stdout.write(`client-update ${verb}: release ${done.release} installed at ${root} (install ${done.installId})\n`);
     return 0;
   } catch (err) {
-    process.stderr.write(`client-update install: ${err instanceof Refusal ? 'refused' : 'failed'}: ${err.message}\n`);
+    process.stderr.write(`client-update ${verb}: ${err instanceof Refusal ? 'refused' : 'failed'}: ${err.message}\n`);
     return 1;
   }
 }

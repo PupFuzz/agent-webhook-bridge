@@ -1058,6 +1058,50 @@ class RoleBHostBLeg(unittest.TestCase):
         self.assertEqual(self._recorded_env()["BRIDGE_TOOLS_SSH_KEY"], derived)
         self.assertIn("Same-box: hand this path to `--role a --pubkey-from`:\n  " + derived + ".pub", out)
 
+    # --- a seat bootstrapped onto its client root keeps it (design review r3-M1) --- #
+
+    def _write_bootstrapped_mcp(self):
+        entry = os.path.join(self.tmp.name, "data", "agent-webhook-bridge", "client", "kanbanboard-agent", "entry.mjs")
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"kanbanboard-agent": {
+                "command": "node", "args": [entry],
+                "env": {"BRIDGE_TOOLS_SSH_TARGET": "bridge@127.0.0.1", "BRIDGE_CHANNEL_TRANSPORT": "unix",
+                        "BRIDGE_CHANNEL_NAME": "kanbanboard-agent"},
+            }}}, fh)
+        return entry
+
+    def test_a_re_run_on_a_bootstrapped_seat_refreshes_the_transport_and_keeps_its_client(self):
+        # RED-when-reverted: the merge refused `entry.mjs` as a foreign server, so the re-run could not
+        # refresh the port at all; and a merge that merely accepted it re-pointed the seat at a freshly
+        # deployed legacy snapshot, off the update path.
+        entry = self._write_bootstrapped_mcp()
+        deployed = []
+        with mock.patch.object(pbt, "_deploy_snapshot", side_effect=lambda d: deployed.append(d) or True):
+            argv = ["--role", "b", "--agent", "kanban-solo", "--ssh-target", "bridge@127.0.0.1",
+                    "--project-dir", self.project, "--channel-name", "kanbanboard-agent", "--ssh-port", "2222"]
+            args = pbt.build_parser().parse_args(argv)
+            buf = io.StringIO()
+            with mock.patch.object(pbt, "_host_b_home", return_value=self.home), \
+                 mock.patch.object(pbt, "_keygen", side_effect=self._keygen_stub()), \
+                 mock.patch.object(pbt, "_seed_known_hosts"), \
+                 contextlib.redirect_stdout(buf):
+                rc = pbt.run_role_b(args)
+        self.assertEqual(rc, 0)
+        self.assertEqual(deployed, [], "no legacy snapshot is deployed onto a bootstrapped seat")
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            recorded = json.load(fh)["mcpServers"]["kanbanboard-agent"]
+        self.assertEqual(recorded["args"], [entry])
+        self.assertEqual(recorded["env"]["BRIDGE_TOOLS_SSH_PORT"], "2222")
+        self.assertIn("runs its bootstrapped client", buf.getvalue())
+
+    def test_a_re_run_on_a_legacy_seat_still_deploys_and_points_at_the_snapshot(self):
+        # The control for the case above: the same run on a seat that was never bootstrapped.
+        rc, _ = self._run(deploy_prints=["deployed"])
+        self.assertEqual(rc, 0)
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            args = json.load(fh)["mcpServers"]["kanbanboard-agent"]["args"]
+        self.assertEqual(args, [os.path.join(self.project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)])
+
     def test_self_cert_probes_the_key_that_was_recorded(self):
         # The recorded key is only meaningful if it is the one certified.
         given = self._write_pair(os.path.join(self.tmp.name, "operator-key"))
@@ -2677,6 +2721,313 @@ class CertifyOnlyPrintsNoActivationBlock(unittest.TestCase):
         # PRESENCE witness first, so a run that printed nothing cannot pass this.
         self.assertIn("recorded in this seat's .mcp.json", out)
         self.assertNotIn(ActivationBlock.PHRASE, out)
+
+
+class ClientEntryRecognition(unittest.TestCase):
+    """A client root's `entry.mjs` is ours by LAYOUT; any other `entry.mjs` is foreign."""
+
+    def test_the_layout_is_what_makes_an_entry_ours(self):
+        self.assertTrue(pbt.is_client_entry("/home/a/.local/share/agent-webhook-bridge/client/kb-agent/entry.mjs"))
+        self.assertTrue(pbt.is_client_entry("C:\\Users\\a\\AppData\\Local\\agent-webhook-bridge\\client\\kb\\entry.mjs"))
+        for foreign in ("entry.mjs", "/srv/other/entry.mjs", "/x/client/kb/entry.mjs",
+                        "/x/agent-webhook-bridge/client/KB/entry.mjs", "/x/agent-webhook-bridge/client/kb/main.mjs"):
+            self.assertFalse(pbt.is_client_entry(foreign), foreign)
+
+    def _existing(self, args):
+        return json.dumps({"mcpServers": {"chan": {"command": "node", "args": args, "env": {"K": "v"}}}})
+
+    def test_merge_accepts_a_bootstrapped_entry_as_ours(self):
+        entry = "/h/.local/share/agent-webhook-bridge/client/chan/entry.mjs"
+        merged = pbt.merge_mcp_json(self._existing([entry]), "chan", entry, {}, resolve=_IDENTITY)
+        self.assertEqual(merged["mcpServers"]["chan"]["args"], [entry])
+        self.assertEqual(merged["mcpServers"]["chan"]["env"], {"K": "v"})
+
+    def test_merge_still_refuses_a_foreign_entry_mjs(self):
+        with self.assertRaisesRegex(ValueError, "held by a foreign server"):
+            pbt.merge_mcp_json(self._existing(["/srv/other/entry.mjs"]), "chan", "/x/entry.mjs", {}, resolve=_IDENTITY)
+
+    def test_recorded_client_entry_reads_only_a_client_root(self):
+        entry = "/h/.local/share/agent-webhook-bridge/client/chan/entry.mjs"
+        self.assertEqual(pbt.recorded_client_entry(self._existing([entry]), "chan", resolve=_IDENTITY), entry)
+        self.assertIsNone(pbt.recorded_client_entry(self._existing(["/p/.channel-server/" + pbt.CHANNEL_MJS_BASENAME]), "chan", resolve=_IDENTITY))
+        self.assertIsNone(pbt.recorded_client_entry(None, "chan"))
+        self.assertIsNone(pbt.recorded_client_entry("{not json", "chan"))
+        self.assertIsNone(pbt.recorded_client_entry(self._existing([entry]), "other", resolve=_IDENTITY))
+
+
+class ClientRoot(unittest.TestCase):
+    def test_posix_uses_an_absolute_xdg_data_home(self):
+        self.assertEqual(pbt.client_root("kb", {"XDG_DATA_HOME": "/d", "HOME": "/h"}, "posix"),
+                         "/d/agent-webhook-bridge/client/kb")
+
+    def test_posix_ignores_a_relative_xdg_data_home(self):
+        self.assertEqual(pbt.client_root("kb", {"XDG_DATA_HOME": "rel", "HOME": "/h"}, "posix"),
+                         "/h/.local/share/agent-webhook-bridge/client/kb")
+
+    def test_windows_uses_localappdata(self):
+        self.assertEqual(pbt.client_root("kb", {"LOCALAPPDATA": "C:\\Users\\a\\AppData\\Local"}, "nt"),
+                         "C:\\Users\\a\\AppData\\Local\\agent-webhook-bridge\\client\\kb")
+
+    def test_refusals(self):
+        with self.assertRaisesRegex(ValueError, "LOCALAPPDATA"):
+            pbt.client_root("kb", {}, "nt")
+        with self.assertRaisesRegex(ValueError, "must match"):
+            pbt.client_root("../kb", {"HOME": "/h"}, "posix")
+
+    def test_every_root_it_places_holds_an_entry_the_merge_recognises(self):
+        for root in (pbt.client_root("kb", {"HOME": "/h"}, "posix"),
+                     pbt.client_root("kb", {"LOCALAPPDATA": "C:\\L"}, "nt")):
+            sep = "\\" if root.startswith("C:") else "/"
+            self.assertTrue(pbt.is_client_entry(root + sep + pbt.CLIENT_ENTRY_BASENAME), root)
+
+
+class BootstrapEnv(unittest.TestCase):
+    def test_the_recorded_transport_replaces_every_inherited_one(self):
+        env = pbt.bootstrap_env({"BRIDGE_TOOLS_SSH_TARGET": "b@h"},
+                                {"PATH": "/bin", "BRIDGE_TOOLS_ENDPOINT": "http://elsewhere/agent-tools/call",
+                                 "BRIDGE_TOOLS_TOKEN": "inherited"})
+        self.assertEqual(env, {"PATH": "/bin", "BRIDGE_TOOLS_SSH_TARGET": "b@h"})
+
+    def test_an_expansion_or_a_non_string_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "expansion"):
+            pbt.bootstrap_env({"BRIDGE_TOOLS_TOKEN": "${TOKEN}"}, {})
+        with self.assertRaisesRegex(ValueError, "not a string"):
+            pbt.bootstrap_env({"BRIDGE_TOOLS_SSH_PORT": 22}, {})
+
+
+class BootstrapClientEntryPoint(unittest.TestCase):
+    """`--role b --bootstrap-client`, with the updater stubbed: what the provisioner itself owns."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(self.project)
+        self.mcp_path = os.path.join(self.project, ".mcp.json")
+        self.data = os.path.join(self.tmp.name, "data")
+        self.root = os.path.join(self.data, "agent-webhook-bridge", "client", "chan")
+        self.legacy = os.path.join(self.project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)
+        self.env = {"BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:9/agent-tools/call", "BRIDGE_TOOLS_TOKEN": "s3cret"}
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": [self.legacy], "env": self.env}}}, fh)
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.before = fh.read()
+
+    def _run(self, rc=0, writes_entry=True, extra=()):
+        seen = []
+
+        def fake_run(cmd, env=None, check=False):
+            seen.append((cmd, env))
+            if rc == 0 and writes_entry:
+                os.makedirs(self.root, exist_ok=True)
+                open(os.path.join(self.root, "entry.mjs"), "w").close()
+            return mock.Mock(returncode=rc)
+
+        argv = ["--role", "b", "--agent", "a", "--bootstrap-client", "--project-dir", self.project,
+                "--channel-name", "chan", *extra]
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": self.data}), \
+             mock.patch.object(pbt, "_require_node_20"), \
+             mock.patch.object(pbt.subprocess, "run", side_effect=fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc_out = pbt.main(argv)
+        return rc_out, seen
+
+    def _mcp(self):
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_success_points_the_channel_at_the_root_entry_and_keeps_its_env(self):
+        rc, seen = self._run()
+        self.assertEqual(rc, 0)
+        (cmd, env), = seen
+        self.assertEqual(cmd[1:], [os.path.join(pbt._bundled_snapshot_dir(), "client-update.mjs"), "bootstrap", "--root", self.root])
+        self.assertNotIn("s3cret", " ".join(cmd), "the token never reaches an argv")
+        self.assertEqual(env["BRIDGE_TOOLS_TOKEN"], "s3cret")
+        entry = json.loads(self._mcp())["mcpServers"]["chan"]
+        self.assertEqual(entry["args"], [os.path.join(self.root, "entry.mjs")])
+        self.assertEqual(entry["env"], self.env)
+
+    def test_a_second_bootstrap_is_accepted_and_changes_nothing(self):
+        # RED-when-reverted (r3-M1): the merge refused its own entry.mjs, so the named recovery for a
+        # broken updater — bootstrapping again — failed on every seat that had ever been bootstrapped.
+        self._run()
+        after_first = self._mcp()
+        rc, _ = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._mcp(), after_first)
+
+    def test_a_failed_bootstrap_leaves_mcp_json_untouched(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run(rc=1)
+        self.assertIn(".mcp.json is unchanged", str(cm.exception))
+        self.assertEqual(self._mcp(), self.before)
+
+    def test_a_failed_bootstrap_onto_a_root_that_already_has_an_entry_is_still_a_failure(self):
+        # The exit code decides, not what happens to be on disk: a refused re-bootstrap (a downgrade,
+        # approval owed) leaves the earlier install's entry.mjs in place.
+        os.makedirs(self.root)
+        open(os.path.join(self.root, "entry.mjs"), "w").close()
+        with self.assertRaises(SystemExit) as cm:
+            self._run(rc=1)
+        self.assertIn("did not install a client", str(cm.exception))
+        self.assertEqual(self._mcp(), self.before)
+
+    def test_success_with_no_entry_written_is_refused_not_trusted(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run(writes_entry=False)
+        self.assertIn("does not exist", str(cm.exception))
+        self.assertEqual(self._mcp(), self.before)
+
+    def test_a_foreign_entry_is_refused_before_anything_is_installed(self):
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"chan": {"command": "node", "args": ["/srv/other.mjs"], "env": self.env}}}, fh)
+        with self.assertRaises(SystemExit) as cm:
+            _, seen = self._run()
+        self.assertIn("foreign server", str(cm.exception))
+        self.assertFalse(os.path.exists(self.root), "nothing was installed")
+
+    def test_transport_flags_are_refused(self):
+        for flag in (["--ssh-target", "b@h"], ["--ssh-port", "22"], ["--ssh-key", "/k"]):
+            with self.assertRaises(SystemExit) as cm:
+                self._run(extra=flag)
+            self.assertIn("cannot be given with --bootstrap-client", str(cm.exception))
+
+    def test_it_is_a_role_b_flag(self):
+        with self.assertRaises(SystemExit) as cm:
+            pbt.main(["--role", "a", "--agent", "a", "--bootstrap-client"])
+        self.assertIn("--role b flag", str(cm.exception))
+
+    def test_it_excludes_the_other_certify_modes_at_the_parser(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            pbt.build_parser().parse_args(["--role", "b", "--agent", "a", "--bootstrap-client", "--self-cert"])
+        self.assertEqual(cm.exception.code, 2)
+
+
+_NODE = shutil.which("node")
+_NODE_OK = False
+if _NODE is not None:
+    try:
+        _NODE_OK = int(subprocess.run([_NODE, "-p", "process.versions.node.split('.')[0]"],
+                                      capture_output=True, text=True, check=True).stdout.strip()) >= 20
+    except (OSError, ValueError, subprocess.CalledProcessError):  # pragma: no cover
+        _NODE_OK = False
+if not _NODE_OK:  # pragma: no cover — CI sets node up
+    print(
+        "\n*** bin/test_provision_board_tools.py: node >= 20 NOT on PATH — the whole "
+        "BootstrapClientEndToEnd class SKIPS. --bootstrap-client is NOT exercised against a bridge "
+        "by this run. ***\n",
+        file=sys.stderr,
+    )
+
+# A fixture bridge speaking the client-update door, from the channel server's own test fixture
+# (examples/channel-servers/tests/client-update-fixture.mjs): stdlib only, no node_modules needed.
+_FIXTURE_BRIDGE = """
+import { fixtureBridge, goodPack } from %s;
+const cfg = JSON.parse(process.argv[1]);
+const bridge = await fixtureBridge({ after() {} }, { published: cfg.release ? goodPack(cfg.release) : null, offer: cfg.offer, owed: cfg.owed });
+process.stdout.write(JSON.stringify({ endpoint: bridge.endpoint, token: bridge.state.token }) + '\\n');
+process.stdin.on('end', () => { process.stdout.write(JSON.stringify(bridge.requests.map((r) => r.body.op)) + '\\n'); process.exit(0); });
+process.stdin.resume();
+"""
+
+
+@unittest.skipUnless(_NODE_OK, "node >= 20 not on PATH (banner printed at import)")
+class BootstrapClientEndToEnd(unittest.TestCase):
+    """`--role b --bootstrap-client` through the REAL updater against a fixture bridge over HTTP."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = os.path.join(self.tmp.name, "project")
+        os.makedirs(self.project)
+        self.mcp_path = os.path.join(self.project, ".mcp.json")
+        self.data = os.path.join(self.tmp.name, "data")
+        self.root = os.path.join(self.data, "agent-webhook-bridge", "client", "cu-test")
+
+    def _bridge(self, **cfg):
+        fixture = os.path.join(pbt._bundled_snapshot_dir(), "tests", "client-update-fixture.mjs")
+        script = _FIXTURE_BRIDGE % json.dumps(pathlib_uri(fixture))
+        proc = subprocess.Popen([_NODE, "--input-type=module", "-e", script, json.dumps(cfg)],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        def stop():
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+            for pipe in (proc.stdin, proc.stdout):
+                if not pipe.closed:
+                    pipe.close()
+
+        self.addCleanup(stop)
+        info = json.loads(proc.stdout.readline())
+
+        def requests():
+            proc.stdin.close()
+            ops = json.loads(proc.stdout.readline())
+            proc.wait(timeout=10)
+            return ops
+
+        return info, requests
+
+    def _write_mcp(self, info):
+        env = {"BRIDGE_TOOLS_ENDPOINT": info["endpoint"], "BRIDGE_TOOLS_TOKEN": info["token"],
+               "BRIDGE_CHANNEL_NAME": "cu-test", "BRIDGE_CHANNEL_TRANSPORT": "http"}
+        with open(self.mcp_path, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {"cu-test": {"command": "node", "args": [
+                os.path.join(self.project, ".channel-server", pbt.CHANNEL_MJS_BASENAME)], "env": env}}}, fh)
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def _run(self):
+        # An inherited ssh transport beside the recorded HTTP one: passed through, the updater would
+        # refuse the pair ("both are set") — the bootstrap must use only what the seat recorded.
+        inherited = {"XDG_DATA_HOME": self.data, "BRIDGE_TOOLS_SSH_TARGET": "nobody@127.0.0.1"}
+        with mock.patch.dict(os.environ, inherited), contextlib.redirect_stdout(io.StringIO()):
+            return pbt.main(["--role", "b", "--agent", "a", "--bootstrap-client",
+                             "--project-dir", self.project, "--channel-name", "cu-test"])
+
+    def test_it_installs_the_published_client_and_points_the_channel_at_it(self):
+        info, requests = self._bridge(release="1.0.0")
+        self._write_mcp(info)
+
+        self.assertEqual(self._run(), 0)
+
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            entry = json.load(fh)["mcpServers"]["cu-test"]
+        self.assertEqual(entry["args"], [os.path.join(self.root, "entry.mjs")])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "entry.mjs")))
+        with open(os.path.join(self.root, "current.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["bridge_release"], "1.0.0")
+        self.assertEqual(requests(), ["client_manifest", "client_pack"])
+
+    def test_approval_owed_installs_nothing_and_leaves_mcp_json_untouched(self):
+        info, requests = self._bridge(release="1.0.0", offer=None, owed="1.0.0")
+        before = self._write_mcp(info)
+
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+
+        self.assertIn(".mcp.json is unchanged", str(cm.exception))
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "entry.mjs")))
+        self.assertEqual(requests(), ["client_manifest"], "the pack is never fetched")
+
+    def test_a_bridge_publishing_nothing_installs_nothing(self):
+        info, requests = self._bridge()
+        before = self._write_mcp(info)
+
+        with self.assertRaises(SystemExit):
+            self._run()
+
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(requests(), ["client_manifest"])
+
+
+def pathlib_uri(path):
+    import pathlib
+
+    return pathlib.Path(path).as_uri()
 
 
 if __name__ == "__main__":

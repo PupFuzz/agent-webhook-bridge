@@ -1606,7 +1606,7 @@ A seat's channel server updates itself from its own bridge at launch (card#10568
 
 It serves `client_manifest` (what this bridge publishes, the release a seat should install, whether an approval is owed, and the last install-log entry this bridge holds for the seat), `client_pack` (that release's pack, base64), `client_report` (the seat's install-log lines, chain-checked) and `client_fleet` (every seat's reported client and state — only to an agent with `board_tools.fleet_view: true`). The request and response shapes, and every refusal, are owned by `App\Bridge\ClientUpdate\ClientUpdateDoor`'s class docblock; this section deliberately does not restate them. What it serves is whatever `php artisan bridge:client-pack:install` last published (CLAUDE_DEPLOYMENT.md § Commands); until that has run, `client_manifest` and `client_pack` answer `503` and a seat keeps its installed client. Each release's pack is attached to its GitHub release by the release workflow (DL-442), and `bridge:check`'s `board_tools.client_pack_source` leg warns until this checkout's release is the published one.
 
-**The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a probe or self-certification says so, and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, card#10568's second slice. Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
+**The fleet ledger (DL-432) and approval (DL-433).** What each seat reports — through `client_report`, and through two optional keys on every board-tools call, `caller` (a probe or self-certification says so, and then never overwrites the seat's own report) and `launch` (`{id, bridge_release}`, sent by a client the updater started) — lands in one row per agent. `php artisan bridge:client-fleet` prints each seat's state, and `bridge:check`'s `board_tools.client_fleet` leg warns on the seats that need you. For an agent with `board_tools.client_update.approval_required: true`, `client_manifest` offers nothing until `php artisan bridge:client-approve` has approved the published pack's content for it; a seat that installs without that approval is reported, never blocked. **Client 0.9.29 sends both** (card#10568, DL-434), but only once it is started through its updater's entry point, `<root>/entry.mjs` — getting a seat there is the bootstrap, `provision-board-tools.py --role b --bootstrap-client` (DL-444; below). Until a seat is bootstrapped it sends neither, and a calling seat reads `off_update_path`.
 
 ## How it is wired (operator view)
 
@@ -1753,6 +1753,22 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `.mcp.json` write; it needs `--agent --project-dir --channel-name` and refuses
   `--ssh-target`/`--ssh-key`, because the recorded values are the ones the channel server
   will actually use.
+  **`--role b --bootstrap-client`** (card#10568, DL-444) moves an already-provisioned seat
+  onto the self-updating client: it asks the bridge over the transport the channel's
+  `.mcp.json` env records — ssh **or HTTP**, inherited `BRIDGE_TOOLS_*` variables ignored —
+  installs the pack the bridge OFFERS into the seat's client root
+  (`${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>`, or
+  `%LOCALAPPDATA%\agent-webhook-bridge\client\<channel>`), and only then points the
+  channel's `.mcp.json` args at `<root>/entry.mjs`; the env block is not touched. The fetch,
+  checks and install are `client-update.mjs bootstrap` from the provisioner's own checkout,
+  so nothing fetched is run. It needs `--agent --project-dir --channel-name`, refuses the
+  transport flags, and is **refused, changing nothing, when approval is owed** (it names the
+  release and `bridge:client-approve`), when the bridge publishes no pack, or on any failed
+  check; the seat keeps the channel server it had. Run again, it repairs the root. For an
+  ssh seat the key must already be pinned. A later `--role b` on a bootstrapped seat
+  refreshes the transport and **keeps** `<root>/entry.mjs`: no snapshot is deployed.
+  ⚠ Not yet wired into `--certify-only`, `--self-cert` or the same-box wrapper, and the
+  setup packet does not name it yet — run it by hand once the seat is certified.
   **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
   `.tmp`, compared against what is there, and `os.replace`d in — an unchanged re-run
   writes nothing (it prints `unchanged`), a changed one first copies the previous file to
