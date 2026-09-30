@@ -134,6 +134,8 @@ class ChannelSnapshotProbeTest extends TestCase
         // whole reason this is not a bridge:check leg.
         $this->assertRemedyIsADeclaredSeatTool($notMeasured->message);
         $this->assertStringContainsString('docs/seat-tools.md', $notMeasured->message);
+        // Where a seat has the tool: the client pack puts it in the root's bin/ (DL-447).
+        $this->assertStringContainsString("shipped in the client pack: a seat on the self-updating client has it in its client root's bin/", $notMeasured->message);
         $this->assertStringContainsString('ON THAT SEAT', $notMeasured->message);
         $this->assertStringContainsString('the OS user whose session launches the channel server', $notMeasured->message);
         // And it must never flip the exit: the deployment may be perfect, and every

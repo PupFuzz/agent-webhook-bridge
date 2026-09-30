@@ -1946,16 +1946,13 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
     last call that is being described. `--self-cert` and a hand-run `bridge:tools-call` are
     the routine way that happens; the line then reads *not reported* until the seat calls
     again.
-  - ⛔ **A FLEET RECONCILED TO A TAG BELOW THAT FLOOR LANDS EVERY SEAT ON THE *not reported* ARM** —
-    `ok`, *not reported*, nothing compared — which is how a fleet runs
-    [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *Multi-agent channel-server
-    distribution* correctly, to completion, on every seat and measure nothing. That section owns
-    the reconcile and states the floor at the point the tag is chosen. ⚠ **The floor is crossed
-    ONCE per seat, by hand:** the surface that reports staleness is distributed BY the artifact
-    whose staleness was the problem, so the range it can never speak about is exactly the range
-    that predates it — a seat below the floor cannot be told by this leg that it is below the
-    floor. Re-deploy that seat once at or above the floor and restart its session; re-running the
-    reconcile at the same tag re-reads the same `ok`.
+  - ⛔ **A SEAT ON A COPY BELOW THAT FLOOR LANDS ON THE *not reported* ARM** — `ok`, *not
+    reported*, nothing compared. The surface that reports staleness is distributed BY the
+    artifact whose staleness was the problem, so the range it can never speak about is exactly
+    the range that predates it — a seat below the floor cannot be told by this leg that it is
+    below the floor. The bootstrap (`--role b --bootstrap-client`, then a session restart) takes
+    it past the floor once; [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *Multi-agent
+    channel-server distribution* owns moving a copied seat.
 
 ### Which spelling the probe read — and when the version-skew fallback can go
 
