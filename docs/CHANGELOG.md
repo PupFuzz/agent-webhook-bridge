@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dependabot alert PupFuzz/agent-webhook-bridge #29** — **npm/fast-uri 3.1.7 → 3.1.8 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk → ajv; GHSA-hrr3-gc8f-f4qj, inconsistent host case normalization via percent-encoded octets). ajv uses it only to resolve `$id`/`$ref` URIs when compiling a schema, and the SDK's server compiles one only for an elicitation request, which the channel server never sends; exploitability is low. Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.35 → 0.9.36.
+
 ## [0.93.0] - 2026-09-29
 
 ### Added
