@@ -14,6 +14,16 @@ name: Auto-tag + GitHub Release on merge to main
 # Adapted from kanban-board's auto-tag-version.yml (same shape, swaps
 # config/app.php → VERSION). VERSION is the single source of
 # truth.
+#
+# THEN IT ATTACHES THE RELEASE'S CHANNEL-SERVER CLIENT PACK (card#10567 B2,
+# DL-442): the pack, its manifest and SHA256SUMS, built from the tag by
+# bin/build-client-pack.py — what `bridge:client-pack:install` publishes to
+# seats. bin/release-client-pack.py owns the rules. FAIL-SOFT like the
+# CHANGELOG extraction (card#5910's doctrine, operator ruling 8 on card#10567):
+# the step runs AFTER the release exists, so a pack that does not build or
+# attach cannot block the tag or the release; the release ships without one,
+# says so in its notes, and every install's bridge:check warns. Re-running
+# this workflow run attaches a missing pack (all three assets or none).
 
 on:
   push:
@@ -128,3 +138,19 @@ jobs:
 
           gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
           echo "Created GitHub Release $TAG"
+
+      # The builder runs `npm ci --ignore-scripts --omit=dev` on the committed lockfile.
+      - name: Set up Node 20 for the client pack build
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Attach the release's client pack (fail-soft)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python3 -VV
+          node --version
+          python3 bin/release-client-pack.py --tag "v${VERSION}" --work "$RUNNER_TEMP/client-pack"

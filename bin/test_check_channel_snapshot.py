@@ -59,6 +59,7 @@ false negative. Every entry above was produced by omission, under the module san
 
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import re
@@ -1183,6 +1184,93 @@ class ShippedReference(_TreeCase):
 
 
 @unittest.skipIf(_NODE is None, _NO_NODE_REASON)
+class ClientRootLaunch(_TreeCase):
+    """A client root (DL-434/DL-445): the release `current.json` names is launched, never
+    `entry.mjs` (whose update step would reach the network and write the root)."""
+
+    def client_root(self, release="2.0.0", pointer=None):
+        root = os.path.join(self.tmp, "client-root")
+        release_client = os.path.join(root, "versions", release)
+        os.makedirs(release_client)
+        shutil.copytree(self.whole_copy("src"), os.path.join(release_client, "client"))
+        # An entry.mjs that would PROVE it ran: it writes a marker. Never launched by this tool.
+        with open(os.path.join(root, "entry.mjs"), "w", encoding="utf-8") as fh:
+            fh.write("import fs from 'node:fs'; fs.writeFileSync(new URL('./ENTRY_RAN', import.meta.url), 'x');\n")
+        with open(os.path.join(root, ccs.CLIENT_POINTER), "w", encoding="utf-8") as fh:
+            fh.write(pointer if pointer is not None else json.dumps({"bridge_release": release}))
+        return root
+
+    def test_the_release_its_pointer_names_is_launched_and_entry_mjs_is_not(self):
+        root = self.client_root()
+        text = self.assert_run(root, ccs.EXIT_LAUNCH_OK)
+        self.assertIn("launching release 2.0.0's channel server", text)
+        self.assertIn(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE), text)
+        self.assertFalse(os.path.exists(os.path.join(root, "ENTRY_RAN")), "entry.mjs must never run")
+
+    def test_its_entry_mjs_stands_for_the_root(self):
+        root = self.client_root()
+        text = self.assert_run(os.path.join(root, "entry.mjs"), ccs.EXIT_LAUNCH_OK)
+        self.assertIn("launching release 2.0.0", text)
+
+    def test_a_broken_release_launch_fails_conclusively(self):
+        root = self.client_root()
+        os.unlink(os.path.join(root, "versions", "2.0.0", "client", "channel-lib.mjs"))
+        text = self.assert_run(root, ccs.EXIT_LAUNCH_FAILED)
+        self.assertIn("channel-lib.mjs", text)
+
+    def test_an_unusable_pointer_or_a_missing_release_is_could_not_check(self):
+        for pointer, needle in (("{nope", "could not be read as a JSON object"),
+                                (json.dumps({"bridge_release": "../x"}), "names no bare X.Y.Z release"),
+                                (json.dumps([1]), "could not be read as a JSON object")):
+            with self.subTest(pointer=pointer):
+                root = self.client_root(pointer=pointer)
+                text = self.assert_run(root, ccs.EXIT_COULD_NOT_CHECK)
+                self.assertIn(needle, text)
+                shutil.rmtree(root)
+        # The release it names has no entry, but another release does: entry.mjs may start that one.
+        root = self.client_root()
+        os.makedirs(os.path.join(root, "versions", "1.0.0", "client"))
+        open(os.path.join(root, "versions", "1.0.0", "client", ccs.ENTRY_FILE), "w").close()
+        os.unlink(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE))
+        text = self.assert_run(root, ccs.EXIT_COULD_NOT_CHECK)
+        self.assertIn("starts another intact release", text)
+        shutil.rmtree(root)
+        # Review r1: a root whose pointer is gone is still a client root, not "not a deployment".
+        root = self.client_root()
+        os.unlink(os.path.join(root, ccs.CLIENT_POINTER))
+        for path in (root, os.path.join(root, "entry.mjs")):
+            text = self.assert_run(path, ccs.EXIT_COULD_NOT_CHECK)
+            self.assertIn("is a client root with no current.json", text)
+
+    def test_an_unreadable_sibling_release_is_could_not_check_not_a_failure(self):
+        # Review r2: a sibling this user cannot look into is never read as "none has an entry".
+        self.skip_as_root()
+        root = self.client_root()
+        os.unlink(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE))
+        os.makedirs(os.path.join(root, "versions", "1.0.0", "client"))
+        os.chmod(os.path.join(root, "versions", "1.0.0"), 0)
+        try:
+            text = self.assert_run(root, ccs.EXIT_COULD_NOT_CHECK)
+        finally:
+            os.chmod(os.path.join(root, "versions", "1.0.0"), 0o755)
+        self.assertIn("starts another intact release", text)
+
+    def test_a_root_without_its_own_entry_mjs_is_a_launch_failure_however_intact_its_release(self):
+        # Review r3: .mcp.json launches <root>/entry.mjs; the release launching fine does not mean the seat does.
+        root = self.client_root()
+        os.unlink(os.path.join(root, "entry.mjs"))
+        text = self.assert_run(root, ccs.EXIT_LAUNCH_FAILED)
+        self.assertIn("is a client root with no entry.mjs", text)
+
+    def test_no_release_with_a_server_entry_is_a_conclusive_launch_failure(self):
+        # Review r1: with nothing startable under versions/, entry.mjs starts nothing.
+        root = self.client_root()
+        os.unlink(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE))
+        text = self.assert_run(root, ccs.EXIT_LAUNCH_FAILED)
+        self.assertIn("no other release under", text)
+
+
+@unittest.skipIf(_NODE is None, _NO_NODE_REASON)
 class PipedConsumption(_TreeCase):
     """The tool's whole product is a machine-readable exit code, so `| head`, `| tee`
     and `| grep -q` are the DOCUMENTED usage — not an edge case.
@@ -1420,7 +1508,7 @@ class ToolShape(unittest.TestCase):
                 module = line.split()[1].split(".")[0]
                 self.assertIn(
                     module,
-                    {"argparse", "io", "os", "shutil", "signal", "subprocess", "sys", "tempfile"},
+                    {"argparse", "io", "json", "os", "re", "shutil", "signal", "subprocess", "sys", "tempfile"},
                     f"non-stdlib import: {line}",
                 )
 

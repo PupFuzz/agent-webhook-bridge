@@ -23,8 +23,8 @@
 # findings arm of `report.py` exit 1 (or call `pr-body-lint.py` directly, as the framework's own
 # workflow template does), THEN add `pr-body-lint` to the required status checks.
 #
-# `edited` is in the trigger because the body is not part of the diff: a body edit fires `edited`,
-# never `synchronize`.
+# `edited` is in the trigger because the body is not part of the diff: a body or title edit fires
+# `edited`, never `synchronize`, so a PR retitled to or from a release is re-judged.
 
 name: PR body lint
 
@@ -63,6 +63,19 @@ jobs:
         # The body reaches the program through `env:`, never through the script text: interpolated
         # into `run:`, `${{ github.event.pull_request.body }}` would be substituted into the shell
         # source before bash runs, so a body could inject commands. As an env value it is data.
+        # The title comes through the same door for the same reason. It decides which rules run: a
+        # title opening `release:` is judged as a release PR, any other title is not (the lint's
+        # header owns that split). Drop it and every PR is judged as a release again.
+        # The author's account type comes through the same door and is a pass-through, not a rule:
+        # `user.type` is GitHub's own `User` | `Bot` | `Organization`, set by the account kind and
+        # not choosable by the PR's author. The lint waives only the `Built:` and
+        # `**Coordinated in:**` rows for `Bot`, since a dependency bot can declare neither
+        # truthfully; every other rule still applies. Drop it and every PR is asked for both rows.
         env:
           COORD_PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 .github/pr-body-lint/report.py --env COORD_PR_BODY --label "this PR's body"
+          COORD_PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          COORD_PR_TITLE: ${{ github.event.pull_request.title }}
+        run: >-
+          python3 .github/pr-body-lint/report.py --env COORD_PR_BODY
+          --author-type-env COORD_PR_AUTHOR_TYPE --title-env COORD_PR_TITLE
+          --label "this PR's body"

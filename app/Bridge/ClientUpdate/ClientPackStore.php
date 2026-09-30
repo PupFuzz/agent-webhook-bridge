@@ -136,6 +136,15 @@ final class ClientPackStore
         );
     }
 
+    /**
+     * How an operator recovers a publication record that cannot be read — this install's own paths,
+     * so it is printed whole wherever it is shown.
+     */
+    public function recordRecovery(): string
+    {
+        return 'restore '.$this->publishedPath().' from a backup, or, to republish from scratch, remove it and run bridge:client-pack:install again (the release it named is then not held against a lower one)';
+    }
+
     private function publishLocked(ClientPackManifest $manifest, string $manifestBytes, string $packBytes, string $publishedAt): bool
     {
         try {
@@ -143,7 +152,7 @@ final class ClientPackStore
         } catch (ClientPackRefused $e) {
             // Not a verdict on the pack: the record that says what is published cannot be read,
             // so "never lower" and "one release, one pack" cannot be applied.
-            throw new ClientPackStoreFault(RedactedErrorText::of($e), 'restore '.$this->publishedPath().' from a backup, or, to republish from scratch, remove it and run bridge:client-pack:install again (the release it named is then not held against a lower one)', $e);
+            throw new ClientPackStoreFault(RedactedErrorText::of($e), $this->recordRecovery(), $e);
         }
         if ($current !== null) {
             $order = ChannelSnapshotManifest::compareVersions($manifest->bridgeRelease, $current->bridgeRelease);

@@ -116,8 +116,8 @@ jobs:
 
   version-bump-guard:
     # Consumers copy examples/channel-servers/ into a per-deployment (often
-    # per-agent) snapshot, so a change to a shipped file drifts every copy with
-    # no detectable signal. Require a package.json `version` bump on any shipped
+    # per-agent) snapshot, and the client pack ships it to bootstrapped seats,
+    # so a change to a shipped file drifts every copy with no detectable signal. Require a package.json `version` bump on any shipped
     # change, so a snapshot can detect staleness by comparing one field (DL-038),
     # AND require package-lock.json to carry that same version — the field is only
     # a signal while every file that states it agrees (DL-268).

@@ -64,9 +64,10 @@ class PathVisibilityAdoptionTest extends TestCase
      */
     private const ADOPTERS = [
         // The channel snapshot legs — the original implementation, now a consumer of the
-        // hoisted guard. TWO populations whose traversability is an independent question:
-        // the configured path, and the deployed directory.
-        'app/Bridge/Support/ChannelSnapshotProbe.php' => 2,
+        // hoisted guard. THREE populations whose traversability is an independent question:
+        // the configured path, the deployed directory, and — for a client root only — the
+        // release directory its current.json names, below a direct child (DL-445).
+        'app/Bridge/Support/ChannelSnapshotProbe.php' => 3,
         // channel.socket parent dir — "does not exist" also sent the operator to repoint
         // channel.socket, which is the wrong action when the dir is merely unseeable.
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,

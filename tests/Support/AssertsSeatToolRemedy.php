@@ -9,7 +9,7 @@ namespace Tests\Support;
  * The assertion this replaces checked that the message CONTAINED `bin/check-channel-snapshot.py`,
  * and so passed on exactly the defect: a checkout-relative path handed to a seat that has no
  * checkout. Resolvability is the property, so it is asserted against `seat-tools.json` — the
- * declaration `bin/seat-pack.py` stages from — rather than against a second spelling of the name.
+ * declaration `bin/build-client-pack.py` packs from — rather than against a second spelling of the name.
  * The probe itself never reads that file; this is the join.
  */
 trait AssertsSeatToolRemedy
