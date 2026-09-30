@@ -8,6 +8,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#10567 / DL-442** — **every bridge release now attaches its own channel-server client pack** (`client-pack-v<X.Y.Z>.tar.gz`, its `.manifest.json` and `SHA256SUMS`) to its GitHub release, and a new `bridge:check` leg, `board_tools.client_pack_source`, warns until this checkout's release is the one the bridge publishes.
+  - `auto-tag-version.yml` gains a last step, `bin/release-client-pack.py`, which runs after the release exists. It builds the pack from the tag with `bin/build-client-pack.py` and attaches all three assets, or none. **Fail-soft:** a pack that does not build or upload leaves the release without one. The release notes then open with a "No client pack for this release" paragraph and the run prints an `::error::`, but the tag and the release still ship. Re-running that release's `Auto-tag + GitHub Release on merge to main` workflow run attaches the pack and removes the paragraph. A release carrying only part of the set turns the run red and names the assets to remove.
+  - ⚠ **The update and fresh-install runbooks now run `php artisan bridge:client-pack:install`** (`CLAUDE_DEPLOYMENT.md`), so an install that follows them publishes its release's pack and the client-update door starts serving seats. ⚠ **Once a pack is published, `board_tools.client_fleet` warns on every seat not yet bootstrapped onto the updater** (`off_update_path` / `needs_bootstrap`, DL-432 Decision 5). The bootstrap is card#10568's next slice, so ship the two together.
+  - `board_tools.client_pack_source` (warn-only, never `fail`, run inside the enabled-subset guard before `board_tools.client_fleet`) compares the published pack's release with `VERSION`. It warns when nothing is published or an older release's pack is, naming `bridge:client-pack:install` and the workflow re-run. It also warns on a rolled-back bridge that publishes a newer pack (the seats were not rolled back) and on an unreadable publication record (every seat is answered `503`). It is `unvalidated` when `VERSION` is missing or not bare `X.Y.Z`. Every golden inventory line gains the leg. `--format=json` `schema` stays **1**.
+  - No migration, config key, `.env` change, route or token scope.
+
 ### Fixed
 
 - **Dependabot alert PupFuzz/agent-webhook-bridge #29** — **npm/fast-uri 3.1.7 → 3.1.8 in examples/channel-servers** (transitive via @modelcontextprotocol/sdk → ajv; GHSA-hrr3-gc8f-f4qj, inconsistent host case normalization via percent-encoded octets). ajv uses it only to resolve `$id`/`$ref` URIs when compiling a schema, and the SDK's server compiles one only for an elicitation request, which the channel server never sends; exploitability is low. Bumped because it is in-range and freely available. Reference channel-server snapshot 0.9.35 → 0.9.36.

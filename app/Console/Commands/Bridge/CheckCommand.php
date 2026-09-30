@@ -29,6 +29,7 @@ use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\ClientFleetCheck;
+use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
@@ -733,7 +734,8 @@ class CheckCommand extends BridgeCommand
                 }
             }
 
-            // card#10567 B4: the fleet's client states, over the same enabled subset.
+            // card#10567: whether this release's client pack is published (B2), then the fleet's
+            // client states over the same enabled subset (B4).
             if (! $this->emitReport($runner->run(CheckSlot::ClientFleet, $ctx))) {
                 $ok = false;
             }
@@ -943,7 +945,7 @@ class CheckCommand extends BridgeCommand
             ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck(base_path('examples/channel-servers')))
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
-            ->register(CheckSlot::ClientFleet, new ClientFleetCheck)
+            ->register(CheckSlot::ClientFleet, new ClientPackSourceCheck(base_path('VERSION')), new ClientFleetCheck)
             ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($probeTools))
             ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $probeToolsSsh));
     }
