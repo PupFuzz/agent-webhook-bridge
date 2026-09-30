@@ -1312,9 +1312,10 @@ def bootstrap_env(recorded: dict, environ=None) -> tuple:
     return env, inherited
 
 
-# `client-update.mjs bootstrap`'s exit when the bridge offers nothing to install right now (its
-# `EXIT_NOTHING_OFFERED`): nothing published, the bridge could not serve its pack (a 5xx), or
-# approval owed. Anything else non-zero is a refused or failed install.
+# `client-update.mjs bootstrap`'s exit when the bridge ANSWERED and offers nothing to install right
+# now (its `EXIT_NOTHING_OFFERED`; `ServerDeclined` owns which answers): a refusal to the manifest
+# (nothing published, a 5xx, a bridge older than the door), a 5xx to the pack, or approval owed.
+# Anything else non-zero is a refused or failed install.
 BOOTSTRAP_NOTHING_OFFERED = 3
 
 
@@ -1382,9 +1383,8 @@ def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str, agen
             )
             return False
         _fail(
-            f"the bridge offers this seat no client to install right now (its reason is printed above: nothing "
-            f"published, the bridge could not serve its pack, or approval owed) — .mcp.json is unchanged and this "
-            f"seat keeps the channel server it had."
+            "the bridge answered and offers this seat no client to install right now (its reason is printed "
+            "above) — .mcp.json is unchanged and this seat keeps the channel server it had."
         )
     if proc.returncode != 0:
         _fail(

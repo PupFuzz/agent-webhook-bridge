@@ -98,7 +98,8 @@ class FakeFs:
     def find_mcp_files(self, agent_home):
         return list(self._mcp_files)
 
-    help_text = "usage: provision-board-tools.py ... --certify-only ... --bootstrap-client ..."
+    help_text = ("usage: provision-board-tools.py ... --certify-only  [role b] fire that round-trip, ... and on\n"
+                 "                        success bootstrap the self-updating client from the bridge's pack ...")
 
     def help_as(self, user, python, tool):
         self.help_asked = (user, python, tool)
@@ -337,7 +338,8 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
 
     def test_an_agent_checkout_that_predates_the_bootstrap_is_named_loudly_and_skipped(self):
         fs = FakeFs()
-        fs.help_text = "usage: provision-board-tools.py ... --certify-only ..."
+        # A DL-444 checkout: it names --bootstrap-client, but its --certify-only does not bootstrap.
+        fs.help_text = "usage: provision-board-tools.py ... --certify-only ... --bootstrap-client ..."
         rc, ran, out = self._execute(fs)
         self.assertEqual(rc, 0)
         self.assertFalse(any("--certify-only" in c for c in ran))
@@ -351,9 +353,16 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
         self.assertIn("MANUAL STEP REQUIRED", out)
         self.assertTrue(any(c[0] == "chown" for c in ran))
 
-    def test_the_bootstrap_flag_is_what_is_looked_for(self):
-        self.assertTrue(sb.supports_bootstrap("  --bootstrap-client  [role b] install ..."))
-        self.assertFalse(sb.supports_bootstrap("  --certify-only  [role b] ..."))
+    def test_what_is_looked_for_is_that_certify_only_bootstraps_even_across_a_wrapped_line(self):
+        self.assertTrue(sb.supports_bootstrap("... and on\n      success bootstrap the self-\n      updating client from ..."))
+        self.assertFalse(sb.supports_bootstrap("  --bootstrap-client  [role b] install ..."))
+
+    def test_the_real_provisioners_help_carries_it_at_a_narrow_terminal(self):
+        # The marker is text the provisioner's own --help prints; this reds if either is reworded.
+        import subprocess as sp
+        out = sp.run([sys.executable, os.path.join(_HERE, "provision-board-tools.py"), "--help"],
+                     capture_output=True, text=True, env={**os.environ, "COLUMNS": "60"}).stdout
+        self.assertTrue(sb.supports_bootstrap(out))
 
 
 if __name__ == "__main__":

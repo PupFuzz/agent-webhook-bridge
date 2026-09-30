@@ -163,6 +163,18 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertStringNotContainsString('OLDER THAN', $findings[0]['message']);
     }
 
+    public function test_an_unreported_version_with_an_unreadable_record_hands_out_no_re_copy(): void
+    {
+        mkdir($this->stateDir.'/client-packs', 0700, true);
+        file_put_contents($this->stateDir.'/client-packs/published.json', '{not json');
+        $this->recordCall(ageSeconds: 60, clientVersion: null);
+
+        $findings = $this->findings();
+
+        $this->assertStringContainsString('board_tools.client_pack_source names the recovery', $findings[0]['message']);
+        $this->assertStringNotContainsString('Re-deploy the seat', $findings[0]['message']);
+    }
+
     public function test_an_unreported_version_names_the_bootstrap_once_a_pack_is_published(): void
     {
         $this->publishClient('0.9.40');

@@ -1570,7 +1570,9 @@ test('bootstrap from a door onto an older installed release installs the offered
 for (const [name, setup, expect, exit] of [
   ['a bridge that publishes nothing', (b) => { b.state.published = null; }, /failed: the bridge answered client_manifest with HTTP 503: this bridge publishes no client pack yet/, 3],
   ['a bridge whose store cannot serve its pack (any 5xx)', (b) => { b.state.fail = { client_manifest: { status: 500, error: 'store fault' } }; }, /failed: the bridge answered client_manifest with HTTP 500: store fault/, 3],
-  ['a bridge refusing the seat (a 4xx is not "nothing offered")', (b) => { b.state.fail = { client_manifest: { status: 403, error: 'no' } }; }, /failed: the bridge answered client_manifest with HTTP 403: no/, 1],
+  ['a bridge older than the door, refusing the op body (a 4xx to the manifest)', (b) => { b.state.fail = { client_manifest: { status: 422, error: 'request must carry a non-empty tool' } }; }, /failed: the bridge answered client_manifest with HTTP 422: request must carry a non-empty tool/, 3],
+  ['a publication that moved between manifest and pack (a 4xx to the pack)', (b) => { b.state.fail = { client_pack: { status: 404, error: 'this bridge serves the client pack for release 2.0.0 only' } }; }, /failed: the bridge answered client_pack with HTTP 404/, 1],
+  ['a manifest answer that is not an {ok:false} envelope (a framework error page)', (b) => { b.state.fail = { client_manifest: { status: 500, raw: '{"message":"Server Error"}' } }; }, /failed: the bridge answered client_manifest with HTTP 500: no error text/, 1],
   ['a pack the bridge cannot serve after offering it', (b) => { b.state.fail = { client_pack: { status: 503, error: 'gone' } }; }, /failed: the bridge answered client_pack with HTTP 503: gone/, 3],
   ['a pack whose bytes are not the manifest\'s', (b) => { b.state.packBytes = Buffer.from('not the pack'); }, /refused: /, 1],
   ['a manifest that does not hash to the digest the door named', (b) => { b.state.manifestSha256 = 'f'.repeat(64); }, /refused: the manifest the bridge sent does not hash/, 1],
@@ -1621,7 +1623,7 @@ test('bootstrap --agent names that agent in the approval command, and an agent o
   assert.equal(bad.status, 2);
 });
 
-test('over ssh, the door\'s exit 2 (its rendering of a >= 500 answer) is "nothing offered"; exit 1 (a 4xx) is a failure', { skip: process.platform === 'win32' && 'a POSIX shell stands in for ssh' }, async (t) => {
+test('over ssh, an {ok:false} answer to the manifest is "nothing offered" at exit 2 (a 5xx) and exit 1 (an older bridge); a non-envelope is a failure', { skip: process.platform === 'win32' && 'a POSIX shell stands in for ssh' }, async (t) => {
   const bin = scratch(t, 'cu-fakessh-');
   fs.writeFileSync(path.join(bin, 'ssh'), '#!/bin/sh\ncat > /dev/null\nprintf "%s" "$FAKE_SSH_STDOUT"\nexit "$FAKE_SSH_EXIT"\n', { mode: 0o755 });
   const env = (exit, body) => {
@@ -1633,10 +1635,15 @@ test('over ssh, the door\'s exit 2 (its rendering of a >= 500 answer) is "nothin
 
   const declined = await bootstrapFromDoor(newRoot(t), env(2, { ok: false, error: 'this bridge publishes no client pack yet' }));
   assert.equal(declined.status, 3, declined.stderr);
-  assert.match(declined.stderr, /ssh exit 2: .*publishes no client pack yet|publishes no client pack yet/);
+  assert.match(declined.stderr, /publishes no client pack yet/);
 
-  const refused = await bootstrapFromDoor(newRoot(t), env(1, { ok: false, error: 'unknown agent' }));
-  assert.equal(refused.status, 1, refused.stderr);
+  // A bridge older than the door answers the op body as a malformed board-tools call: exit 1.
+  const old = await bootstrapFromDoor(newRoot(t), env(1, { ok: false, error: 'request must carry a non-empty tool' }));
+  assert.equal(old.status, 3, old.stderr);
+
+  // Not an {ok:false} envelope — a PHP fatal's output, say — is a failure, whatever the exit.
+  const fatal = await bootstrapFromDoor(newRoot(t), env(255, 'PHP Fatal error: …'));
+  assert.equal(fatal.status, 1, fatal.stderr);
 });
 
 test('the bootstrap CLI refuses anything but --root and --agent', (t) => {

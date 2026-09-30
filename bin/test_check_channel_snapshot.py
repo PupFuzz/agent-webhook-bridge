@@ -1227,10 +1227,27 @@ class ClientRootLaunch(_TreeCase):
                 text = self.assert_run(root, ccs.EXIT_COULD_NOT_CHECK)
                 self.assertIn(needle, text)
                 shutil.rmtree(root)
+        # The release it names has no entry, but another release does: entry.mjs may start that one.
         root = self.client_root()
+        os.makedirs(os.path.join(root, "versions", "1.0.0", "client"))
+        open(os.path.join(root, "versions", "1.0.0", "client", ccs.ENTRY_FILE), "w").close()
         os.unlink(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE))
         text = self.assert_run(root, ccs.EXIT_COULD_NOT_CHECK)
         self.assertIn("starts another intact release", text)
+        shutil.rmtree(root)
+        # Review r1: a root whose pointer is gone is still a client root, not "not a deployment".
+        root = self.client_root()
+        os.unlink(os.path.join(root, ccs.CLIENT_POINTER))
+        for path in (root, os.path.join(root, "entry.mjs")):
+            text = self.assert_run(path, ccs.EXIT_COULD_NOT_CHECK)
+            self.assertIn("is a client root with no current.json", text)
+
+    def test_no_release_with_a_server_entry_is_a_conclusive_launch_failure(self):
+        # Review r1: with nothing startable under versions/, entry.mjs starts nothing.
+        root = self.client_root()
+        os.unlink(os.path.join(root, "versions", "2.0.0", "client", ccs.ENTRY_FILE))
+        text = self.assert_run(root, ccs.EXIT_LAUNCH_FAILED)
+        self.assertIn("no other release under", text)
 
 
 @unittest.skipIf(_NODE is None, _NO_NODE_REASON)

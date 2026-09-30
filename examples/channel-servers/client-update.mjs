@@ -107,10 +107,17 @@ export class Failure extends Error {}
 /** The budget ran out (the signal, or the wall clock): logged `fail`, nothing further happens. */
 export class Aborted extends Error {}
 /**
- * The bridge ANSWERED, with its own `{ok: false}` refusal and a server-side status (HTTP 5xx; the
- * ssh door's exit 2, which is how it carries one): it could not serve this now — no pack
- * published, or its store or ledger unreadable. A Failure like any other everywhere but the
- * bootstrap, which reads it as "nothing is offered right now" rather than as a broken install.
+ * The bridge ANSWERED, with its own well-formed `{ok: false}` refusal, and offered nothing:
+ *   - to `client_manifest`, whatever the status — a bridge that publishes no pack or cannot
+ *     serve it (a 5xx), and a bridge older than the client-update door, which refuses the `op`
+ *     body as a malformed board-tools call (a 4xx: `request must carry a non-empty tool`);
+ *   - to `client_pack`, with a server-side status (HTTP >= 500, or the ssh door's exit 2) — its
+ *     store could not serve the pack it had just named.
+ * A 4xx to `client_pack` stays a plain Failure: the publication moved between the two calls.
+ * A Failure like any other everywhere but the bootstrap, which reads it as "nothing is offered
+ * right now" rather than as a broken install (DL-445 Decision 2). An answer that is not a JSON
+ * object with `ok: false` — unreachable, a timeout, a PHP fatal, a framework error page — is
+ * never this.
  */
 export class ServerDeclined extends Failure {}
 
@@ -468,7 +475,7 @@ function interpret(op, text, legOk, legWhy, serverSide) {
     throw new Failure(`the bridge's answer to ${op} is not a JSON object (${legWhy()})`);
   }
   if (body.ok !== true || !legOk) {
-    const Kind = body.ok === false && serverSide ? ServerDeclined : Failure;
+    const Kind = body.ok === false && (op === 'client_manifest' || serverSide) ? ServerDeclined : Failure;
     throw new Kind(`the bridge answered ${op} with ${legWhy()}: ${typeof body.error === 'string' ? scrubSnippet(body.error) : 'no error text'}`);
   }
   return body;
@@ -502,7 +509,9 @@ export function doorFromEnv(env) {
         }
         const how = r.code === null ? `ssh killed by ${r.killSignal}` : `ssh exit ${r.code}`;
         const stderr = r.stderrHead.trim();
-        // Exit 2 is the ssh door's rendering of a server-side (>= 500) answer (DispatchOutcome::exitCodeFor).
+        // Exit 2 is the ssh door's rendering of a server-side (>= 500) answer (DispatchOutcome::exitCodeFor),
+        // and of its own three pre-dispatch refusals (agent config error, unknown agent, not a live
+        // ssh agent) — which the certifying call through the same door would already have hit.
         return interpret(body.op, r.stdout, r.code === 0, () => scrubSnippet(stderr ? `${how}: ${stderr}` : how), r.code === 2);
       },
     };
@@ -1526,7 +1535,7 @@ function usage() {
   process.stderr.write(
     'usage: client-update.mjs install --pack <file> --manifest <file> --root <dir> [--actor provision] [--source <text>]\n' +
       '       client-update.mjs bootstrap --root <dir> [--agent <name>]   (the board-tools transport is read from the environment;\n' +
-      '       exit 0 installed, 1 refused or failed, 2 usage, 3 the bridge offers nothing to install right now)\n',
+      '       exit 0 installed, 1 refused or failed, 2 usage, 3 the bridge answered and offers nothing to install right now)\n',
   );
   return 2;
 }

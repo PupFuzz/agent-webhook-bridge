@@ -556,13 +556,50 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->assertStringContainsString('--bootstrap-client', $fail->message);
     }
 
-    public function test_a_client_release_without_its_server_entry_warns_because_entry_mjs_may_start_another(): void
+    public function test_a_client_release_without_its_server_entry_warns_when_another_release_has_one(): void
     {
         $root = $this->clientRoot('2.0.0', entry: false);
+        mkdir($root.'/versions/1.0.0/client', 0755, true);
+        file_put_contents($root.'/versions/1.0.0/client/'.ChannelSnapshotProbe::ENTRY_FILE, "export {};\n");
 
         $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
 
-        $this->assertSame(Severity::Warn, $this->findingWith($findings, 'passes that release over')->severity);
+        $warn = $this->findingWith($findings, 'passes that release over');
+        $this->assertSame(Severity::Warn, $warn->severity);
+        $this->assertStringContainsString('release 1.0.0 has one', $warn->message);
+    }
+
+    /**
+     * Review r1: with the only release missing its server entry — the state straight after a first
+     * bootstrap — entry.mjs has nothing to start, which is the snapshot legs' own FAIL criterion.
+     */
+    public function test_a_client_release_without_its_server_entry_fails_when_no_release_has_one(): void
+    {
+        $root = $this->clientRoot('2.0.0', entry: false);
+        mkdir($root.'/versions/not-a-release/client', 0755, true);
+        file_put_contents($root.'/versions/not-a-release/client/'.ChannelSnapshotProbe::ENTRY_FILE, "export {};\n");
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+
+        $this->assertSame(Severity::Fail, $this->findingWith($findings, 'no other release under versions/ has one')->severity);
+    }
+
+    /**
+     * Review r1: a root whose pointer is gone still starts (entry.mjs recovers to the newest intact
+     * release), so it is a CLIENT ROOT with an unusable pointer — never "not a deployment".
+     */
+    public function test_a_client_root_that_lost_its_pointer_is_still_a_client_root(): void
+    {
+        $root = $this->clientRoot('2.0.0');
+        unlink($root.'/current.json');
+        $reference = $this->reference('1.0.0');
+
+        foreach ([$root, $root.'/entry.mjs'] as $path) {
+            $findings = ChannelSnapshotProbe::probe($path, $reference);
+
+            $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'is a CLIENT ROOT, but its current.json is not present')->severity, $path);
+            $this->assertSame([], $this->severities($findings, Severity::Fail), $path);
+        }
     }
 
     /**

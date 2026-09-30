@@ -1755,8 +1755,8 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   succeeds it bootstraps the client** (DL-445) exactly as `--bootstrap-client` below does —
   its one `.mcp.json` write — with two differences: a seat whose `.mcp.json` already starts
   it from a client root is left alone (re-certifying is not a request to reinstall), and
-  when the bridge offers nothing to install right now (nothing published, a 5xx, approval
-  owed) the seat **keeps the legacy snapshot** `--role b` deployed, a `CLIENT NOT
+  when the bridge answers and offers nothing to install right now (nothing published, a 5xx,
+  a bridge older than the client-update door, approval owed) the seat **keeps the legacy snapshot** `--role b` deployed, a `CLIENT NOT
   BOOTSTRAPPED` line says it will not update itself, and the command still succeeds — the
   LEGACY FALLBACK. Any other bootstrap failure fails the command. **`--role b --self-cert`**
   does the same after its round-trip succeeds; a failed round-trip never bootstraps.

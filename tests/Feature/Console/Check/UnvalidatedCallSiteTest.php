@@ -90,9 +90,9 @@ class UnvalidatedCallSiteTest extends TestCase
         // directory is not visible to this user". It did not go away; it MOVED to
         // `PathVisibility` below, which every stat-bearing check now shares.
         'app/Bridge/Support/ChannelSnapshotProbe.php' => 5,
-        // THE shared not-visible guard (card#5698). One construction, seven adopting call
-        // sites across six files — see the bound above on what that centralization costs
-        // this pin, and `PathVisibilityAdoptionTest` for the set itself.
+        // THE shared not-visible guard (card#5698). One construction, shared by every adopting
+        // call site — `PathVisibilityAdoptionTest::ADOPTERS` is the set (a count here went stale
+        // twice); see the bound above on what that centralization costs this pin.
         'app/Bridge/Support/PathVisibility.php' => 1,
         // The pinned-line legs that read a possibly-relocated authorized_keys (DL-251 (a)/(b)),
         // plus the DL-259 account-lookup site: a host with no `posix_getpwnam` never

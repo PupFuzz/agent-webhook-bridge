@@ -45,6 +45,7 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import shlex
 import shutil
 import subprocess
@@ -144,15 +145,18 @@ def build_certify_argv(python, agent_bin, agent, project_dir, channel_name):
     ]
 
 
-# The flag a provisioner carrying the client bootstrap names in its --help (card#10568). Pure
-# and textual on purpose: the agent's checkout may be ANY bridge version, and its help is the
-# one surface every version of it has.
-_BOOTSTRAP_FLAG = "--bootstrap-client"
+# What a provisioner whose `--certify-only` bootstraps the client says in its --help (DL-445).
+# Not the `--bootstrap-client` flag itself: DL-444 shipped that flag before `--certify-only`
+# bootstrapped, so a checkout from between the two names the flag and does not bootstrap
+# (review r1). Pure and textual on purpose: the agent's checkout may be ANY bridge version, and
+# its help is the one surface every version has. Whitespace is collapsed and a hyphen-break
+# rejoined first, because argparse wraps help text at the terminal's width, breaking "self-updating".
+_CERTIFY_BOOTSTRAPS = "on success bootstrap the self-updating client"
 
 
 def supports_bootstrap(help_text: str) -> bool:
-    """Does this provisioner's `--help` show it can bootstrap the client (so `--certify-only` does)?"""
-    return _BOOTSTRAP_FLAG in help_text
+    """Does this provisioner's `--help` show that its `--certify-only` bootstraps the client?"""
+    return _CERTIFY_BOOTSTRAPS in re.sub(r"-\s+", "-", " ".join(help_text.split()))
 
 
 _PUBKEY_MARKER = "hand this path to `--role a --pubkey-from`"
@@ -440,7 +444,7 @@ def execute(plan: Plan, fs) -> int:
     else:
         print()
         print("━━━ CLIENT NOT BOOTSTRAPPED ━━━")
-        print(f"  {plan.agent_bin} predates the client bootstrap (its --help names no {_BOOTSTRAP_FLAG}), so this")
+        print(f"  {plan.agent_bin} predates the client bootstrap (its --help does not say --certify-only bootstraps), so this")
         print(f"  seat stays on the legacy channel-server snapshot role-b deployed, which does NOT update itself.")
         print(f"  Update agent {plan.agent!r}'s own checkout to a bridge release that carries it, then run, as")
         print(f"  that user: {' '.join(shlex.quote(c) for c in build_certify_argv('python3', plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name))}")

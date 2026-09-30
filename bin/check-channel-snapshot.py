@@ -24,14 +24,17 @@ ZERO REFERENCE ACCESS. No version, no file list, no bridge config, no bridge
 checkout — copy this one file to a seat that has none of those and it still works.
 
 A CLIENT ROOT (the self-updating client a seat is bootstrapped onto, DL-434/DL-445) is
-recognised by its `current.json`: point this at the root, or at its `entry.mjs`, and it
+recognised by its `current.json` (or, that lost, by its `entry.mjs` beside a `versions/`
+directory): point this at the root, or at its `entry.mjs`, and it
 launches the server of the release `current.json` names —
 `<root>/versions/<release>/client/agent-webhook-bridge-channel.mjs`, what `entry.mjs` starts.
 It never launches `entry.mjs` itself: that would run the launch-time UPDATE, which asks the
 bridge over the network and writes the root (`launch.json`, `state.json`, the install log) —
 a diagnostic must not. So the claim is bounded to that release: when `current.json` cannot
-be read, or its release is not there, `entry.mjs` would pick another intact release on its
-own, which this tool does not reproduce, and it says COULD NOT CHECK rather than guess.
+be read, or its release has no server entry while another release does, `entry.mjs` would
+pick another intact release on its own, which this tool does not reproduce, and it says
+COULD NOT CHECK rather than guess. When NO release under `versions/` has a server entry,
+`entry.mjs` has nothing to start: LAUNCH FAILED.
 
 EXIT CODES
   0  LAUNCH OK. The module graph resolved AND a listener bound — both, never one.
@@ -253,7 +256,7 @@ def resolve_entry(path: str):
         # The `channel.server_path` ergonomic: the entry `.mjs` names its directory.
         directory = os.path.dirname(path)
     elif (os.path.isfile(path) and os.path.basename(path) == CLIENT_ENTRY
-          and os.path.isfile(os.path.join(os.path.dirname(path), CLIENT_POINTER))):
+          and _is_client_root(os.path.dirname(path))):
         # What a bootstrapped seat's `.mcp.json` names: the client root's own entry.
         directory = os.path.dirname(path)
     elif os.path.exists(path):
@@ -339,17 +342,25 @@ def resolve_entry(path: str):
             f"session launches the channel server, or grant that user traversal.",
         )
 
-    note = None
-    if os.path.isfile(os.path.join(directory, CLIENT_POINTER)):
-        directory, code, message = _client_release_dir(directory)
+    if _is_client_root(directory):
+        root = directory
+        directory, code, message = _client_release_dir(root)
         if directory is None:
             return (None, code, message)
-        note = message
         entry = os.path.join(directory, ENTRY_FILE)
         if not os.path.isfile(entry):
-            # NOT conclusive for the seat: `entry.mjs` passes a release missing a required file
-            # over and starts another intact one, if there is one — a choice this tool does not
-            # reproduce.
+            # `entry.mjs` passes a release missing a required file over and starts another intact
+            # one if there is one — a choice this tool does not reproduce, so only "none has an
+            # entry at all" is conclusive.
+            if not _other_release_with_entry(root, os.path.basename(os.path.dirname(directory))):
+                return (
+                    None,
+                    EXIT_LAUNCH_FAILED,
+                    f"LAUNCH FAILED: {entry} does not exist, and no other release under "
+                    f"{os.path.join(root, 'versions')} has a server entry either — this seat's entry.mjs "
+                    f"has no release it can start. Re-bootstrap the client "
+                    f"(`provision-board-tools.py --role b --bootstrap-client`).",
+                )
             return (
                 None,
                 EXIT_COULD_NOT_CHECK,
@@ -358,7 +369,7 @@ def resolve_entry(path: str):
                 f"installed, which this run does not reproduce. Nothing was launched. Re-bootstrap "
                 f"the client (`provision-board-tools.py --role b --bootstrap-client`).",
             )
-        return (entry, None, note)
+        return (entry, None, message)
 
     entry = os.path.join(directory, ENTRY_FILE)
     if not os.path.isfile(entry):
@@ -374,11 +385,44 @@ def resolve_entry(path: str):
     return (entry, None, None)
 
 
+def _is_client_root(directory: str) -> bool:
+    """A client root: its pointer, or — the pointer lost — its `entry.mjs` beside `versions/`."""
+    return os.path.isfile(os.path.join(directory, CLIENT_POINTER)) or (
+        os.path.isfile(os.path.join(directory, CLIENT_ENTRY))
+        and os.path.isdir(os.path.join(directory, "versions"))
+    )
+
+
+def _other_release_with_entry(root: str, release: str) -> bool:
+    """Does any OTHER release under `versions/` have a server entry — or might it (one this user
+    cannot look into counts as might, never as none)? Presence only, not intactness."""
+    versions = os.path.join(root, "versions")
+    try:
+        names = os.listdir(versions)
+    except OSError:
+        return True
+    for name in names:
+        if name == release or not _CLIENT_RELEASE.match(name):
+            continue
+        entry = os.path.join(versions, name, "client", ENTRY_FILE)
+        if not os.access(_nearest_existing_ancestor(entry), os.X_OK) or os.path.isfile(entry):
+            return True
+    return False
+
+
 def _client_release_dir(root: str):
     """The release directory a client root's `current.json` names, as `(dir, None, note)`, or
     `(None, exit_code, message)`. Every refusal is COULD NOT CHECK: with the pointer unusable,
     `entry.mjs` picks the newest intact release itself, and this run does not reproduce that."""
     pointer = os.path.join(root, CLIENT_POINTER)
+    if not os.path.isfile(pointer):
+        return (
+            None,
+            EXIT_COULD_NOT_CHECK,
+            f"COULD NOT CHECK: {root} is a client root with no {CLIENT_POINTER} — this seat's entry.mjs "
+            f"then starts the newest intact release on its own, which this run does not reproduce. "
+            f"Nothing was launched.",
+        )
     try:
         with open(pointer, encoding="utf-8") as fh:
             release = json.load(fh).get("bridge_release")

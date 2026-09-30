@@ -1170,6 +1170,13 @@ class RoleBHostBLeg(unittest.TestCase):
         self._run()
         self.assertEqual(self.bootstraps, [])
 
+    def test_when_both_role_b_and_its_bootstrap_change_mcp_json_the_block_prints_once(self):
+        # Review r1: the `not activation_printed` guard had no case where both writes moved.
+        with mock.patch.object(pbt, "_self_cert", return_value=0):
+            rc, out = self._run(["--self-cert"], bootstrap_changes=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.count(ActivationBlock.PHRASE), 1)
+
     def test_a_self_cert_bootstrap_that_repoints_mcp_json_prints_the_activation_block_once(self):
         # The first run writes .mcp.json (block printed); the re-run changes nothing itself, so
         # the block comes from the bootstrap alone.
@@ -3273,9 +3280,18 @@ class CertifyOnlyBootstrapEndToEnd(unittest.TestCase):
         with open(self.mcp_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), self.before)
 
-    def test_a_4xx_from_the_door_is_a_failure_not_a_fallback(self):
+    def test_a_bridge_older_than_the_door_keeps_the_legacy_server_and_certify_succeeds(self):
+        # Design §3.5 "R2 fallback, while a bridge publishes no pack (pre-B3)": such a bridge answers
+        # the op body as a malformed board-tools call — a 4xx, the ssh door's exit 1 (review r1).
+        rc, out = self._run(1, {"ok": False, "error": "request must carry a non-empty tool"})
+        self.assertEqual(rc, 0)
+        self.assertIn("CLIENT NOT BOOTSTRAPPED", out)
+        with open(self.mcp_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.before)
+
+    def test_an_answer_that_is_not_the_doors_envelope_is_a_failure_not_a_fallback(self):
         with self.assertRaises(SystemExit) as cm:
-            self._run(1, {"ok": False, "error": "unknown op"})
+            self._run(255, "PHP Fatal error: Allowed memory size exhausted")
         self.assertIn("did not complete", str(cm.exception))
         with open(self.mcp_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), self.before)

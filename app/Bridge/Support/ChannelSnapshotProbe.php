@@ -132,7 +132,7 @@ final class ChannelSnapshotProbe
             // for it sends them after a symlink that isn't the problem.
             // A client root's `entry.mjs` — the file a bootstrapped seat's `.mcp.json` names —
             // stands for its directory, as the snapshot's `.mjs` entry does in AgentConfig.
-            if (basename($resolved) === self::CLIENT_ENTRY && is_file(dirname($resolved).'/'.self::CLIENT_POINTER)) {
+            if (basename($resolved) === self::CLIENT_ENTRY && self::isClientRoot(dirname($resolved))) {
                 return self::probe(dirname($resolved), $bundledDir);
             }
             if (file_exists($resolved)) {
@@ -173,7 +173,7 @@ final class ChannelSnapshotProbe
         // (is it behind THIS checkout?) is the wrong one for it — its currency is the fleet
         // ledger's (`board_tools.client_fleet`) — and its files live under the release its
         // pointer names, not beside the pointer. The launch disclosure below applies unchanged.
-        if (is_file($deployedDir.'/'.self::CLIENT_POINTER)) {
+        if (self::isClientRoot($deployedDir)) {
             return array_merge(self::clientRootLegs($deployedDir), [self::launchNotMeasured($deployedDir)]);
         }
 
@@ -389,11 +389,14 @@ final class ChannelSnapshotProbe
      * `versions/<release>/client/`, and nothing about version — the root updates itself.
      *
      * Severities follow what `entry.mjs` does with each state (DL-434), never a guess past it:
-     *  - pointer unreadable, absent-but-racing or malformed ⇒ `unvalidated`: `entry.mjs` then
-     *    starts the newest intact release, which this probe does not re-derive (it would need the
+     *  - pointer absent, unreadable or malformed ⇒ `unvalidated`: `entry.mjs` then starts the
+     *    newest intact release, which this probe does not re-derive (it would need the
      *    whole-tree `classifyRelease`), so which release starts is not established here.
-     *  - the named release has no server entry ⇒ `warn`: `entry.mjs` passes a release missing a
-     *    required file over and starts another intact one when there is one — or none.
+     *  - the named release has no server entry ⇒ `entry.mjs` passes it over (the server is a
+     *    required file) and starts another intact release if there is one: `fail` when NO other
+     *    release under `versions/` has a server entry either (nothing can start), `warn` when one
+     *    does or when one could not be looked at (whether it is intact is `classifyRelease`'s
+     *    hash check, not this presence check).
      *  - the named release has no `node_modules` ⇒ `fail`: that is not a required file, so the
      *    release is imported and dies on `ERR_MODULE_NOT_FOUND`, and an import failure is not
      *    retried on another release (DL-434 bound 4).
@@ -423,13 +426,64 @@ final class ChannelSnapshotProbe
             return [$unverified];
         }
         if (! is_file($client.'/'.self::ENTRY_FILE)) {
-            return [Finding::warn("channel server path {$echo} is a CLIENT ROOT whose ".self::CLIENT_POINTER." names release {$release}, but {$clientEcho} has no ".self::ENTRY_FILE.' — its entry.mjs passes that release over and starts another intact one if one is installed, and otherwise does not start the channel; re-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)')];
+            $head = "channel server path {$echo} is a CLIENT ROOT whose ".self::CLIENT_POINTER." names release {$release}, but {$clientEcho} has no ".self::ENTRY_FILE;
+            $fix = 're-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)';
+            $other = self::anotherReleaseWithAnEntry($root, $release);
+            if ($other === null) {
+                return [Finding::fail("{$head}, and no other release under versions/ has one — its entry.mjs has no release it can start, so the channel will not start at next session start; {$fix}")];
+            }
+
+            return [Finding::warn("{$head} — its entry.mjs passes that release over and starts another intact one if there is one ({$other}; whether it is intact is not checked here); {$fix}")];
         }
         if (! is_dir($client.'/'.self::NODE_MODULES)) {
             return [Finding::fail("channel server path {$echo} is a CLIENT ROOT whose release {$release} has no node_modules at {$clientEcho} — the server's bare imports die on ERR_MODULE_NOT_FOUND at next session start, and entry.mjs does not try another release after a failed import; re-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)")];
         }
 
         return [Finding::ok("channel server path {$echo} is a CLIENT ROOT: ".self::CLIENT_POINTER." names release {$release}, whose server entry and node_modules are present — a presence check, not a load test. It is not version-compared with this checkout: it updates itself from this bridge at each launch, and board_tools.client_fleet reports what it runs")];
+    }
+
+    /**
+     * A CLIENT ROOT: a directory holding the pointer, or — the pointer lost — the root's own
+     * `entry.mjs` beside a `versions/` directory, which `entry.mjs` still starts from (it
+     * recovers to the newest intact release, DL-434). Both are DIRECT children, so the caller's
+     * one traversability gate covers these stats.
+     */
+    private static function isClientRoot(string $dir): bool
+    {
+        return is_file($dir.'/'.self::CLIENT_POINTER)
+            || (is_file($dir.'/'.self::CLIENT_ENTRY) && is_dir($dir.'/versions'));
+    }
+
+    /**
+     * Another release under `versions/` that has a server entry, described for the message; a
+     * description too when one could not be looked at; null when there is none. Presence only —
+     * whether that release is INTACT is `classifyRelease`'s hash check, which this does not do.
+     * Each candidate is below a direct child, so each gets the visibility question before its
+     * stat, and an unanswerable one is never read as "none".
+     */
+    private static function anotherReleaseWithAnEntry(string $root, string $release): ?string
+    {
+        $names = @scandir($root.'/versions');
+        if ($names === false) {
+            return 'versions/ could not be listed';
+        }
+        $unknown = null;
+        foreach ($names as $name) {
+            if ($name === $release || preg_match(ChannelSnapshotManifest::CLIENT_RELEASE, $name) !== 1) {
+                continue;
+            }
+            $entry = $root.'/versions/'.$name.'/client/'.self::ENTRY_FILE;
+            if (! PathVisibility::ancestorIsTraversable($entry)) {
+                $unknown = "release {$name} could not be looked at";
+
+                continue;
+            }
+            if (is_file($entry)) {
+                return "release {$name} has one";
+            }
+        }
+
+        return $unknown;
     }
 
     /**

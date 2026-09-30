@@ -64,7 +64,7 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   once the round-trip succeeds it installs the client pack this bridge publishes and points
   the args at the seat's client root (`…/agent-webhook-bridge/client/<channel>/entry.mjs`),
   which updates itself at each launch — or, when the bridge offers none (nothing published,
-  a 5xx, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`. If a
+  a 5xx, a bridge older than the client-update door, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`. If a
   session is **already running** on that seat, see
   [§ Activating on a running seat](#activating-on-a-running-seat) — it owns what activation
   takes and who does it.

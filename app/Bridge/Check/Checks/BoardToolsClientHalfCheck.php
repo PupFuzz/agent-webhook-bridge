@@ -274,9 +274,12 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         }
 
         if ($reported === null) {
-            $toCompare = $published instanceof PublishedClientPack
-                ? "Bootstrap the seat onto the {$published->clientVersion} client this bridge publishes ({$bootstrap}) to get the comparison."
-                : 'Re-deploy the seat\'s channel server to get the comparison.';
+            $toCompare = match (true) {
+                $published instanceof PublishedClientPack => "Bootstrap the seat onto the {$published->clientVersion} client this bridge publishes ({$bootstrap}) to get the comparison.",
+                // Not the re-copy remedy: the record may well name a pack (review r1).
+                $publishedFault !== null => 'This bridge\'s published client pack record cannot be read, so what the seat should run is not established here — board_tools.client_pack_source names the recovery.',
+                default => 'Re-deploy the seat\'s channel server to get the comparison.',
+            };
 
             return [false, 'CLIENT VERSION NOT REPORTED (client < '.ClientVersion::FIRST_REPORTING_SNAPSHOT.') — the reference channel server sends its own snapshot version from '.ClientVersion::FIRST_REPORTING_SNAPSHOT.' onward, so this call came from an older copy, or from a caller that is not a channel server at all (`bridge:check --probe-tools`, `provision-board-tools.py --self-cert`, a hand-run `bridge:tools-call`). THAT IS NOT EVIDENCE THE SEAT IS STALE — nothing was compared. '.$toCompare];
         }
