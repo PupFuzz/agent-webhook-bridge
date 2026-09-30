@@ -11,7 +11,7 @@ generated, per agent, by `php artisan bridge:provision-tools --agent=<name>` —
 | actor | runs |
 | --- | --- |
 | **PM agent** (host A, the bridge's own OS user) | `bridge:provision-tools --agent=X …`; edits `X.yml`; saves the key line the seat posts; runs `bridge:check`. **Does NOT run STEP 3.** |
-| **impl agent** (host B — its own seat, its own OS user) | `provision-board-tools.py --role b` from its own clone; posts its PUBLIC key line; runs `--role b --certify-only`; starts its session |
+| **impl agent** (host B — its own seat, its own OS user) | `provision-board-tools.py --role b` from its own clone; posts its PUBLIC key line; runs `--role b --certify-only` (which also bootstraps its self-updating client); starts its session |
 | **operator** (a human) | runs STEP 3 — the pin — after deciding the posted key is that seat's. `sudo` only when the forced-command account is not the one `bridge:provision-tools` ran as |
 
 **The security statement, stated plainly.** The pin's only boundary is **a person choosing
@@ -60,7 +60,12 @@ nothing for a person to adjudicate there, and the packet does not ask them to.
   server's `args` in that seat's `.mcp.json` were repointed by STEP 1 at
   `<project-dir>/.channel-server/…`, a copy it deploys there** — any previous copy is left on
   disk untouched and is no longer what the session runs; delete it only once the seat is
-  certified. If a session is **already running** on that seat, see
+  certified. **STEP 4's `--certify-only` then bootstraps the self-updating client** (DL-445):
+  once the round-trip succeeds it installs the client pack this bridge publishes and points
+  the args at the seat's client root (`…/agent-webhook-bridge/client/<channel>/entry.mjs`),
+  which updates itself at each launch — or, when the bridge offers none (nothing published,
+  a 5xx, approval owed), keeps STEP 1's copy and prints `CLIENT NOT BOOTSTRAPPED`. If a
+  session is **already running** on that seat, see
   [§ Activating on a running seat](#activating-on-a-running-seat) — it owns what activation
   takes and who does it.
 

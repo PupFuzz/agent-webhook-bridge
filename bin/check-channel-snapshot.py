@@ -23,6 +23,16 @@ never executes node; this program is what the seat runs on its own box.
 ZERO REFERENCE ACCESS. No version, no file list, no bridge config, no bridge
 checkout — copy this one file to a seat that has none of those and it still works.
 
+A CLIENT ROOT (the self-updating client a seat is bootstrapped onto, DL-434/DL-445) is
+recognised by its `current.json`: point this at the root, or at its `entry.mjs`, and it
+launches the server of the release `current.json` names —
+`<root>/versions/<release>/client/agent-webhook-bridge-channel.mjs`, what `entry.mjs` starts.
+It never launches `entry.mjs` itself: that would run the launch-time UPDATE, which asks the
+bridge over the network and writes the root (`launch.json`, `state.json`, the install log) —
+a diagnostic must not. So the claim is bounded to that release: when `current.json` cannot
+be read, or its release is not there, `entry.mjs` would pick another intact release on its
+own, which this tool does not reproduce, and it says COULD NOT CHECK rather than guess.
+
 EXIT CODES
   0  LAUNCH OK. The module graph resolved AND a listener bound — both, never one.
      Bounded claim: it says nothing about STEADY STATE (whether the server stays
@@ -114,7 +124,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -122,6 +134,11 @@ import sys
 import tempfile
 
 ENTRY_FILE = "agent-webhook-bridge-channel.mjs"
+
+# A client root's pointer and frozen entry point (DL-434) — see the module docstring.
+CLIENT_POINTER = "current.json"
+CLIENT_ENTRY = "entry.mjs"
+_CLIENT_RELEASE = re.compile(r"\A[0-9]+\.[0-9]+\.[0-9]+\Z")
 
 # The basename of the throwaway socket, inside the private temp dir this run mints.
 SOCKET_BASENAME = "launch-assert.sock"
@@ -220,7 +237,8 @@ def _nearest_existing_ancestor(path: str) -> str:
 def resolve_entry(path: str):
     """Where is the entry to launch — and are we entitled to say it is not there?
 
-    Returns `(entry_path, None, None)` on success, else `(None, exit_code, message)`.
+    Returns `(entry_path, None, note)` on success — `note` is None, or for a client root the line
+    naming the release launched — else `(None, exit_code, message)`.
 
     `os.path.isfile()` is false for a permission denial exactly as it is for a
     removed file, so "absent" is only a conclusion once `+x` on the containing
@@ -233,6 +251,10 @@ def resolve_entry(path: str):
         directory = path
     elif os.path.isfile(path) and os.path.basename(path) == ENTRY_FILE:
         # The `channel.server_path` ergonomic: the entry `.mjs` names its directory.
+        directory = os.path.dirname(path)
+    elif (os.path.isfile(path) and os.path.basename(path) == CLIENT_ENTRY
+          and os.path.isfile(os.path.join(os.path.dirname(path), CLIENT_POINTER))):
+        # What a bootstrapped seat's `.mcp.json` names: the client root's own entry.
         directory = os.path.dirname(path)
     elif os.path.exists(path):
         return (
@@ -317,6 +339,27 @@ def resolve_entry(path: str):
             f"session launches the channel server, or grant that user traversal.",
         )
 
+    note = None
+    if os.path.isfile(os.path.join(directory, CLIENT_POINTER)):
+        directory, code, message = _client_release_dir(directory)
+        if directory is None:
+            return (None, code, message)
+        note = message
+        entry = os.path.join(directory, ENTRY_FILE)
+        if not os.path.isfile(entry):
+            # NOT conclusive for the seat: `entry.mjs` passes a release missing a required file
+            # over and starts another intact one, if there is one — a choice this tool does not
+            # reproduce.
+            return (
+                None,
+                EXIT_COULD_NOT_CHECK,
+                f"COULD NOT CHECK: {entry} does not exist, so the release current.json names cannot "
+                f"start — but this seat's entry.mjs then starts another intact release if one is "
+                f"installed, which this run does not reproduce. Nothing was launched. Re-bootstrap "
+                f"the client (`provision-board-tools.py --role b --bootstrap-client`).",
+            )
+        return (entry, None, note)
+
     entry = os.path.join(directory, ENTRY_FILE)
     if not os.path.isfile(entry):
         # Conclusive: the directory was just PROVEN traversable, so this absence is
@@ -329,6 +372,46 @@ def resolve_entry(path: str):
         )
 
     return (entry, None, None)
+
+
+def _client_release_dir(root: str):
+    """The release directory a client root's `current.json` names, as `(dir, None, note)`, or
+    `(None, exit_code, message)`. Every refusal is COULD NOT CHECK: with the pointer unusable,
+    `entry.mjs` picks the newest intact release itself, and this run does not reproduce that."""
+    pointer = os.path.join(root, CLIENT_POINTER)
+    try:
+        with open(pointer, encoding="utf-8") as fh:
+            release = json.load(fh).get("bridge_release")
+    except (OSError, ValueError, AttributeError) as err:
+        return (
+            None,
+            EXIT_COULD_NOT_CHECK,
+            f"COULD NOT CHECK: {root} is a client root, but its {CLIENT_POINTER} could not be read as a "
+            f"JSON object ({err}) — this seat's entry.mjs then starts the newest intact release on its "
+            f"own, which this run does not reproduce. Nothing was launched.",
+        )
+    if not isinstance(release, str) or not _CLIENT_RELEASE.match(release):
+        return (
+            None,
+            EXIT_COULD_NOT_CHECK,
+            f"COULD NOT CHECK: {root} is a client root, but its {CLIENT_POINTER} names no bare X.Y.Z "
+            f"release ({release!r}), so no release directory is built from it. Nothing was launched.",
+        )
+    directory = os.path.join(root, "versions", release, "client")
+    if not os.access(_nearest_existing_ancestor(os.path.join(directory, ENTRY_FILE)), os.X_OK):
+        return (
+            None,
+            EXIT_COULD_NOT_CHECK,
+            f"COULD NOT CHECK: {directory} is not traversable by this user. Nothing was measured. "
+            f"Re-run as the OS user whose session launches the channel server.",
+        )
+    return (
+        directory,
+        None,
+        f"client root {root}: launching release {release}'s channel server, the one its "
+        f"{CLIENT_POINTER} names and entry.mjs starts. entry.mjs itself is NOT run — its "
+        f"launch-time update would ask the bridge and write this root.",
+    )
 
 
 def _pass_message(entry: str) -> str:
@@ -387,6 +470,9 @@ def run_launch_assert(
     if entry is None:
         print(message, file=out)
         return code
+    if message is not None:
+        # A client root: which release is launched, and that entry.mjs is not (see the docstring).
+        print(message, file=out)
 
     try:
         tmpdir = mkdtemp(prefix="channel-launch-assert-")
@@ -611,7 +697,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "server_path",
-        help="the deployed channel-server DIRECTORY (or its " + ENTRY_FILE + " entry)",
+        help="the deployed channel-server DIRECTORY (or its " + ENTRY_FILE + " entry), or a client "
+        "root (or its " + CLIENT_ENTRY + ") — whose " + CLIENT_POINTER + " release is launched",
     )
     p.add_argument(
         "--live-socket",

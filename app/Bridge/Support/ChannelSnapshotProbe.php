@@ -28,13 +28,13 @@ namespace App\Bridge\Support;
  *
  * EVERY VERDICT HERE THAT WOULD ASSERT ABSENCE — or hand out destructive remediation
  * (`cp -R` over a healthy deployment) — sits behind
- * {@see PathVisibility::unverifiedUnlessVisible()}, at TWO call sites, one per population
- * whose traversability is an INDEPENDENT question: the configured path (before the
- * existence verdict) and the deployed directory (once, covering every stat the version +
- * presence legs make — all of them DIRECT children of it, so neither re-guards). Two is
- * the complete set again as of DL-237: the third population DL-230 added — the deployed
- * SUBDIRECTORIES its completeness walk descended into — went with that walk, and nothing
- * here stats below a direct child any more. The ONE deliberately unguarded stat is this
+ * {@see PathVisibility::unverifiedUnlessVisible()}, one call site per population whose
+ * traversability is an INDEPENDENT question: the configured path (before the existence
+ * verdict), the deployed directory (once, covering every stat the version + presence legs
+ * make — all of them DIRECT children of it, so neither re-guards), and, for a CLIENT ROOT
+ * only, the release directory its pointer names (`versions/<release>/client`, below a direct
+ * child — DL-445). The population DL-230 added — the deployed SUBDIRECTORIES its completeness
+ * walk descended into — went with that walk (DL-237). The ONE deliberately unguarded stat is this
  * CHECKOUT's own bundled `package.json` ({@see self::versionLeg()}), which lands on its
  * own accurate, non-destructive finding naming that file rather than the agent's
  * directory.
@@ -72,6 +72,17 @@ final class ChannelSnapshotProbe
 
     /** The directory `npm ci` creates, and the one the dependency leg owns. */
     private const NODE_MODULES = 'node_modules';
+
+    /**
+     * A client root's pointer (DL-434): the file whose presence makes a `channel.server_path`
+     * directory a CLIENT ROOT — the self-updating client a seat is bootstrapped onto — rather
+     * than a copied snapshot. Its `bridge_release` names `versions/<release>/client/`, the
+     * directory `entry.mjs` starts the server from.
+     */
+    private const CLIENT_POINTER = 'current.json';
+
+    /** A client root's frozen entry point — what a bootstrapped seat's `.mcp.json` names. */
+    private const CLIENT_ENTRY = 'entry.mjs';
 
     /**
      * The seat-side launch-assert this probe DELEGATES the loadability question to
@@ -119,6 +130,11 @@ final class ChannelSnapshotProbe
             // `server.js` / a wrapper script lands here — a different operator
             // action than a dangling link, and reporting "repoint the symlink"
             // for it sends them after a symlink that isn't the problem.
+            // A client root's `entry.mjs` — the file a bootstrapped seat's `.mcp.json` names —
+            // stands for its directory, as the snapshot's `.mjs` entry does in AgentConfig.
+            if (basename($resolved) === self::CLIENT_ENTRY && is_file(dirname($resolved).'/'.self::CLIENT_POINTER)) {
+                return self::probe(dirname($resolved), $bundledDir);
+            }
             if (file_exists($resolved)) {
                 return [Finding::fail("channel server path {$where} names a file, not the channel-server directory — point channel.server_path at the deployed DIRECTORY (only the ".self::ENTRY_FILE.' entry form is normalized to its directory for you)')];
             }
@@ -145,11 +161,20 @@ final class ChannelSnapshotProbe
         // of an otherwise-traversable deployment — a shape the channel-server README
         // rules out ("copy or symlink the WHOLE directory"). Do not read this comment
         // as a blanket licence: a stat on a path that is NOT a direct child of the
-        // deployed directory needs its own guard. No leg makes one today — the
-        // completeness walk that did was retired with its leg (DL-237) — so adding
-        // one means adding that guard with it.
+        // deployed directory needs its own guard. The client-root legs make one (the
+        // release directory, DL-445) and carry it; the completeness walk that also did
+        // was retired with its leg (DL-237).
         if (($unverified = PathVisibility::unverifiedUnlessVisible($deployedDir.'/'.self::ENTRY_FILE, 'channel server path '.UntrustedText::forOperator($deployedDir))) !== null) {
             return [$unverified];
+        }
+
+        // A CLIENT ROOT (DL-434; card#10568 C2, DL-445) is a different deployment, not a stale
+        // snapshot: it updates itself from this bridge at launch, so the drift leg's question
+        // (is it behind THIS checkout?) is the wrong one for it — its currency is the fleet
+        // ledger's (`board_tools.client_fleet`) — and its files live under the release its
+        // pointer names, not beside the pointer. The launch disclosure below applies unchanged.
+        if (is_file($deployedDir.'/'.self::CLIENT_POINTER)) {
+            return array_merge(self::clientRootLegs($deployedDir), [self::launchNotMeasured($deployedDir)]);
         }
 
         // Classify on the RESOLVED REALPATH, never a string/prefix test on the
@@ -356,6 +381,55 @@ final class ChannelSnapshotProbe
         }
 
         return [Finding::ok("channel server deployment at {$echo} has its entry file and node_modules — a presence check, not a load test: nothing here executes node, and whether the installed dependency TREE is complete is npm ci's business")];
+    }
+
+    /**
+     * THE CLIENT-ROOT LEGS: does the release `current.json` names hold what a launch needs? The
+     * same two presence questions as {@see self::presenceLeg()}, asked of
+     * `versions/<release>/client/`, and nothing about version — the root updates itself.
+     *
+     * Severities follow what `entry.mjs` does with each state (DL-434), never a guess past it:
+     *  - pointer unreadable, absent-but-racing or malformed ⇒ `unvalidated`: `entry.mjs` then
+     *    starts the newest intact release, which this probe does not re-derive (it would need the
+     *    whole-tree `classifyRelease`), so which release starts is not established here.
+     *  - the named release has no server entry ⇒ `warn`: `entry.mjs` passes a release missing a
+     *    required file over and starts another intact one when there is one — or none.
+     *  - the named release has no `node_modules` ⇒ `fail`: that is not a required file, so the
+     *    release is imported and dies on `ERR_MODULE_NOT_FOUND`, and an import failure is not
+     *    retried on another release (DL-434 bound 4).
+     *
+     * PRECONDITION: the caller's gate proved `$root` traversable, which covers the pointer (a
+     * DIRECT child). The release directory is NOT a direct child, so it gets its own gate — the
+     * probe's rule for any stat below a direct child.
+     *
+     * @return list<Finding>
+     */
+    private static function clientRootLegs(string $root): array
+    {
+        $echo = UntrustedText::forOperator($root);
+        $pointer = ChannelSnapshotManifest::readClientPointer($root.'/'.self::CLIENT_POINTER);
+        if ($pointer['status'] !== 'ok') {
+            $why = $pointer['status'] === 'not_a_release'
+                ? 'does not name a bare X.Y.Z bridge_release'
+                : ChannelSnapshotManifest::manifestReason($pointer['status']);
+
+            return [Finding::unvalidated("channel server path {$echo} is a CLIENT ROOT, but its ".self::CLIENT_POINTER." {$why} — its entry.mjs then starts the newest intact release under versions/, which this check does not establish, so whether it will start is not known here; re-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)")];
+        }
+
+        $release = $pointer['release'];
+        $client = $root.'/versions/'.$release.'/client';
+        $clientEcho = UntrustedText::forOperator($client);
+        if (($unverified = PathVisibility::unverifiedUnlessVisible($client.'/'.self::ENTRY_FILE, "client release {$release} at {$clientEcho}")) !== null) {
+            return [$unverified];
+        }
+        if (! is_file($client.'/'.self::ENTRY_FILE)) {
+            return [Finding::warn("channel server path {$echo} is a CLIENT ROOT whose ".self::CLIENT_POINTER." names release {$release}, but {$clientEcho} has no ".self::ENTRY_FILE.' — its entry.mjs passes that release over and starts another intact one if one is installed, and otherwise does not start the channel; re-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)')];
+        }
+        if (! is_dir($client.'/'.self::NODE_MODULES)) {
+            return [Finding::fail("channel server path {$echo} is a CLIENT ROOT whose release {$release} has no node_modules at {$clientEcho} — the server's bare imports die on ERR_MODULE_NOT_FOUND at next session start, and entry.mjs does not try another release after a failed import; re-bootstrap it (`provision-board-tools.py --role b --bootstrap-client` on the seat)")];
+        }
+
+        return [Finding::ok("channel server path {$echo} is a CLIENT ROOT: ".self::CLIENT_POINTER." names release {$release}, whose server entry and node_modules are present — a presence check, not a load test. It is not version-compared with this checkout: it updates itself from this bridge at each launch, and board_tools.client_fleet reports what it runs")];
     }
 
     /**

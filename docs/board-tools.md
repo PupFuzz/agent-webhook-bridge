@@ -1748,11 +1748,18 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   those three is a **heuristic over the bare `--agent=<name>` spelling**, and a hand line
   written `--agent="<name>"` is **not seen** — a declared bound, whose miss direction is
   the behaviour that was already there.
-  **`--role b --certify-only`** fires just the ssh round-trip using the target and key the
-  seat already recorded in its own `.mcp.json` — no keygen, no snapshot deploy, no
-  `.mcp.json` write; it needs `--agent --project-dir --channel-name` and refuses
-  `--ssh-target`/`--ssh-key`, because the recorded values are the ones the channel server
-  will actually use.
+  **`--role b --certify-only`** fires the ssh round-trip using the target and key the
+  seat already recorded in its own `.mcp.json` — no keygen, no snapshot deploy; it needs
+  `--agent --project-dir --channel-name` and refuses `--ssh-target`/`--ssh-key`, because the
+  recorded values are the ones the channel server will actually use. **Once that round-trip
+  succeeds it bootstraps the client** (DL-445) exactly as `--bootstrap-client` below does —
+  its one `.mcp.json` write — with two differences: a seat whose `.mcp.json` already starts
+  it from a client root is left alone (re-certifying is not a request to reinstall), and
+  when the bridge offers nothing to install right now (nothing published, a 5xx, approval
+  owed) the seat **keeps the legacy snapshot** `--role b` deployed, a `CLIENT NOT
+  BOOTSTRAPPED` line says it will not update itself, and the command still succeeds — the
+  LEGACY FALLBACK. Any other bootstrap failure fails the command. **`--role b --self-cert`**
+  does the same after its round-trip succeeds; a failed round-trip never bootstraps.
   **`--role b --bootstrap-client`** (card#10568, DL-444) moves an already-provisioned seat
   onto the self-updating client: it asks the bridge over the transport the channel's
   `.mcp.json` env records — ssh **or HTTP**, in the environment a launch would build (this
@@ -1778,10 +1785,9 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `<root>/entry.mjs` (no snapshot is deployed); when that file is established gone (an
   absolute recorded path with no `${…}`) it deploys the legacy
   snapshot, points the channel at it and says the seat will not update itself.
-  ⚠ `bridge:check`'s snapshot legs do not know the client root yet: for a bootstrapped seat
-  unset `channel.server_path`, which otherwise certifies a directory nothing runs.
-  ⚠ Not yet wired into `--certify-only`, `--self-cert` or the same-box wrapper, and the
-  setup packet does not name it yet — run it by hand once the seat is certified.
+  For a bootstrapped seat, point `channel.server_path` at its client root (or leave it
+  unset across hosts, as for any seat): `bridge:check`'s snapshot legs check the release its
+  `current.json` names (DL-445; `docs/config-schema.md` owns the verdicts).
   **`.mcp.json` is never written in place:** the merged config is serialised to a sibling
   `.tmp`, compared against what is there, and `os.replace`d in — an unchanged re-run
   writes nothing (it prints `unchanged`), a changed one first copies the previous file to
@@ -2298,13 +2304,20 @@ It orchestrates, on `127.0.0.1`:
    A until step 3).
 3. **`--role a` as root**, from the **host-A checkout**, pinning that captured key by path
    (`--pubkey-from`, no paste).
+3b. **`--role b --certify-only` as the agent user**, from the **agent's own checkout**
+   (DL-445): one real round-trip through the key just pinned, then the client bootstrap —
+   installed under the AGENT's home, never root's (design review r3-B1). The legacy fallback
+   applies (see `--certify-only` above). An agent checkout whose `--help` names no
+   `--bootstrap-client` predates it: the step is skipped with a `CLIENT NOT BOOTSTRAPPED`
+   block naming the command to run once that checkout is updated. A failure here is held
+   until the banner, `bridge:check` and the `chown` below have run, then fails the wrapper.
 4. Prints the one unavoidable **manual step**: restart the agent's Claude session so the
    channel re-spawns and reads the merged `.mcp.json`.
 5. Certifies with `php <host-A artisan> bridge:check`.
 6. `chown -R <ssh-account>:<ssh-account>` on the host-A `storage/` (a root-run `artisan`
    can leave root-owned logs).
 
-`--dry-run` runs the read-only preflight and prints the exact argv for both legs without
+`--dry-run` runs the read-only preflight and prints the exact argv for every leg without
 changing anything. Overrides — `--agent-home`, `--agent-bin`, `--hostA-checkout`,
 `--project-dir`, `--channel-name` — pin any value discovery can't (or shouldn't) infer,
 e.g. an agent with several `.mcp.json` under its home. Re-running is safe: the underlying

@@ -12,6 +12,12 @@ machine, this wrapper:
      (`sudo -H -u <agent> python3 <agent-checkout>/bin/provision-board-tools.py`), captures
      the printed public-key path, and validates it.
   3. Runs `--role a` AS ROOT from the HOST-A checkout, pinning that captured key.
+  3b. Runs `--role b --certify-only` AS THE AGENT USER from the AGENT's OWN checkout: one real
+     round-trip through the key role-a just pinned, then the client bootstrap onto the
+     self-updating client (DL-445; design review r3-B1 — run in-process as root it would install
+     the client under ROOT's home, from host A's code). A bridge offering no pack keeps the
+     legacy snapshot role-b deployed. An agent checkout that predates the bootstrap is said so,
+     loudly, and the step is skipped: that seat stays on its legacy snapshot.
   4. Prints the one unavoidable manual step: RESTART the agent's Claude session.
      /mcp reconnect does not stop the previous channel server — restart the session, and
      the restart is the operator's, not this script's (docs/board-tools-enablement.md
@@ -126,6 +132,29 @@ def build_role_a_argv(python, hostA_bin, agent, ssh_account, artisan, pubkey_fro
     ]
 
 
+def build_certify_argv(python, agent_bin, agent, project_dir, channel_name):
+    """The exact `--role b --certify-only` argv: certify through the pinned key, then bootstrap."""
+    return [
+        python, agent_bin,
+        "--role", "b",
+        "--certify-only",
+        "--agent", agent,
+        "--project-dir", project_dir,
+        "--channel-name", channel_name,
+    ]
+
+
+# The flag a provisioner carrying the client bootstrap names in its --help (card#10568). Pure
+# and textual on purpose: the agent's checkout may be ANY bridge version, and its help is the
+# one surface every version of it has.
+_BOOTSTRAP_FLAG = "--bootstrap-client"
+
+
+def supports_bootstrap(help_text: str) -> bool:
+    """Does this provisioner's `--help` show it can bootstrap the client (so `--certify-only` does)?"""
+    return _BOOTSTRAP_FLAG in help_text
+
+
 _PUBKEY_MARKER = "hand this path to `--role a --pubkey-from`"
 
 
@@ -191,6 +220,15 @@ class RealFs:
 
     def readable(self, path):
         return os.access(path, os.R_OK)
+
+    def help_as(self, user, python, tool):
+        """`<tool> --help` as `user` — what that user's own checkout of the tool supports. '' on failure."""
+        try:
+            proc = subprocess.run(["sudo", "-H", "-n", "-u", user, python, tool, "--help"],
+                                  capture_output=True, text=True)
+        except OSError:
+            return ""
+        return proc.stdout if proc.returncode == 0 else ""
 
     def find_agent_provisioners(self, agent_home):
         """The agent's OWN bin/provision-board-tools.py candidates under its home."""
@@ -388,7 +426,27 @@ def execute(plan: Plan, fs) -> int:
     )
     _run(role_a, "role-a (root leg) failed")
 
-    # 3. the one unavoidable manual step.
+    # 3b. certify + client bootstrap AS THE AGENT USER, from the agent's OWN checkout (r3-B1). A
+    # failure here is held, like bridge:check's below: role-b already rewrote .mcp.json, so the
+    # restart banner is owed either way, and the storage chown must still run.
+    certify_err = None
+    if supports_bootstrap(fs.help_as(plan.agent, "python3", plan.agent_bin)):
+        certify = build_certify_argv("python3", plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name)
+        try:
+            _run(["sudo", "-H", "-n", "-u", plan.agent] + certify,
+                 "certify + client bootstrap (agent leg) failed — the seat keeps the channel server role-b deployed")
+        except SystemExit as e:
+            certify_err = e
+    else:
+        print()
+        print("━━━ CLIENT NOT BOOTSTRAPPED ━━━")
+        print(f"  {plan.agent_bin} predates the client bootstrap (its --help names no {_BOOTSTRAP_FLAG}), so this")
+        print(f"  seat stays on the legacy channel-server snapshot role-b deployed, which does NOT update itself.")
+        print(f"  Update agent {plan.agent!r}'s own checkout to a bridge release that carries it, then run, as")
+        print(f"  that user: {' '.join(shlex.quote(c) for c in build_certify_argv('python3', plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name))}")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    # 4. the one unavoidable manual step.
     print()
     print("━━━ MANUAL STEP REQUIRED ━━━")
     print(f"  Restart agent {plan.agent!r}'s Claude session so the '{plan.channel_name}' channel")
@@ -409,21 +467,22 @@ def execute(plan: Plan, fs) -> int:
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print()
 
-    # 4. certify (offline validation of the host-A forced-command path).
+    # 5. bridge:check (offline validation of the host-A forced-command path).
     check_err = None
     try:
         _run([plan.php, plan.artisan, "bridge:check"], "bridge:check certify step failed")
     except SystemExit as e:
         check_err = e
 
-    # 5. chown host-A storage back to the ssh-account (root-run artisan can leave root logs).
+    # 6. chown host-A storage back to the ssh-account (root-run artisan can leave root logs).
     _run(
         ["chown", "-R", f"{plan.ssh_account}:{plan.ssh_account}", plan.storage],
         "chown of host-A storage failed",
     )
 
-    if check_err is not None:
-        raise check_err
+    for err in (certify_err, check_err):
+        if err is not None:
+            raise err
     print("Same-box board-tools enablement complete.")
     return 0
 
@@ -449,6 +508,9 @@ def _print_dry_run(plan: Plan) -> None:
     print("  " + " ".join(shlex.quote(c) for c in (["sudo", "-H", "-n", "-u", plan.agent] + role_b)))
     print(f"Then capture the printed pubkey path (expected: {expected_pub}) and run (role-a, as root):")
     print("  " + " ".join(shlex.quote(c) for c in role_a))
+    certify = build_certify_argv("python3", plan.agent_bin, plan.agent, plan.project_dir, plan.channel_name)
+    print("Then certify + bootstrap the client (as the agent user, if its checkout carries the bootstrap):")
+    print("  " + " ".join(shlex.quote(c) for c in (["sudo", "-H", "-n", "-u", plan.agent] + certify)))
     print(f"Then: bridge:check via `{plan.php} {plan.artisan}`, and chown -R "
           f"{plan.ssh_account}:{plan.ssh_account} {plan.storage}")
 

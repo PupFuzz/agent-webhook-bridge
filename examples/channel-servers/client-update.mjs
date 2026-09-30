@@ -91,6 +91,8 @@ const KIND = 'agent-webhook-bridge-client-pack';
 const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const INSTALL_ID = /^[0-9a-z-]{1,64}$/;
+/** The bridge's agent-name grammar (provision-board-tools.py `_AGENT_RE`). */
+const AGENT_NAME = /^[a-z0-9_-]+$/;
 const FILES_JSON = 'FILES.json';
 const REQUIRED_ENTRIES = REQUIRED_CLIENT_FILES.map((name) => `client/${name}`);
 const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
@@ -104,6 +106,16 @@ export class Refusal extends Error {}
 export class Failure extends Error {}
 /** The budget ran out (the signal, or the wall clock): logged `fail`, nothing further happens. */
 export class Aborted extends Error {}
+/**
+ * The bridge ANSWERED, with its own `{ok: false}` refusal and a server-side status (HTTP 5xx; the
+ * ssh door's exit 2, which is how it carries one): it could not serve this now — no pack
+ * published, or its store or ledger unreadable. A Failure like any other everywhere but the
+ * bootstrap, which reads it as "nothing is offered right now" rather than as a broken install.
+ */
+export class ServerDeclined extends Failure {}
+
+/** `client-update.mjs bootstrap`'s exit when the bridge offers nothing to install right now. */
+export const EXIT_NOTHING_OFFERED = 3;
 
 export function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -442,7 +454,7 @@ export function clientDoorUrl(endpoint) {
   return url.toString();
 }
 
-function interpret(op, text, legOk, legWhy) {
+function interpret(op, text, legOk, legWhy, serverSide) {
   let body;
   try {
     body = JSON.parse(text);
@@ -456,7 +468,8 @@ function interpret(op, text, legOk, legWhy) {
     throw new Failure(`the bridge's answer to ${op} is not a JSON object (${legWhy()})`);
   }
   if (body.ok !== true || !legOk) {
-    throw new Failure(`the bridge answered ${op} with ${legWhy()}: ${typeof body.error === 'string' ? scrubSnippet(body.error) : 'no error text'}`);
+    const Kind = body.ok === false && serverSide ? ServerDeclined : Failure;
+    throw new Kind(`the bridge answered ${op} with ${legWhy()}: ${typeof body.error === 'string' ? scrubSnippet(body.error) : 'no error text'}`);
   }
   return body;
 }
@@ -489,7 +502,8 @@ export function doorFromEnv(env) {
         }
         const how = r.code === null ? `ssh killed by ${r.killSignal}` : `ssh exit ${r.code}`;
         const stderr = r.stderrHead.trim();
-        return interpret(body.op, r.stdout, r.code === 0, () => scrubSnippet(stderr ? `${how}: ${stderr}` : how));
+        // Exit 2 is the ssh door's rendering of a server-side (>= 500) answer (DispatchOutcome::exitCodeFor).
+        return interpret(body.op, r.stdout, r.code === 0, () => scrubSnippet(stderr ? `${how}: ${stderr}` : how), r.code === 2);
       },
     };
   }
@@ -508,7 +522,7 @@ export function doorFromEnv(env) {
         } catch (err) {
           throw new Failure(`bridge unreachable (${url}: ${errorDetail(err)})`);
         }
-        return interpret(body.op, r.text, r.ok, () => `HTTP ${r.status}`);
+        return interpret(body.op, r.text, r.ok, () => `HTTP ${r.status}`, r.status >= 500);
       },
     };
   }
@@ -1478,7 +1492,7 @@ export const BOOTSTRAP_MANIFEST_MS = 30000;
  * only what the bridge OFFERS (DL-433 Decision 2): with approval owed nothing is fetched, and the
  * refusal names the release and the command that clears it.
  */
-export async function installFromDoor({ root, env = process.env, budgetMs }) {
+export async function installFromDoor({ root, env = process.env, budgetMs, agent = null }) {
   return bootstrapRoot({
     root,
     source: null,
@@ -1495,7 +1509,9 @@ export async function installFromDoor({ root, env = process.env, budgetMs }) {
           known.manifest = manifest;
           known.manifestSha256 = manifestSha256;
           known.to = owed;
-          throw new Refusal(`approval owed: this seat's agent requires approval, and release ${owed} is not approved for it — on the bridge, \`php artisan bridge:client-approve <agent> ${owed} --reason=…\`, then bootstrap again; nothing was fetched or installed`);
+          const err = new Refusal(`approval owed: this seat's agent requires approval, and release ${owed} is not approved for it — on the bridge, \`php artisan bridge:client-approve ${agent ?? '<agent>'} ${owed} --reason=…\`, then bootstrap again; nothing was fetched or installed`);
+          err.nothingOffered = true;
+          throw err;
         }
         return { manifest, manifestSha256 };
       },
@@ -1509,7 +1525,8 @@ export async function installFromDoor({ root, env = process.env, budgetMs }) {
 function usage() {
   process.stderr.write(
     'usage: client-update.mjs install --pack <file> --manifest <file> --root <dir> [--actor provision] [--source <text>]\n' +
-      '       client-update.mjs bootstrap --root <dir>   (the board-tools transport is read from the environment)\n',
+      '       client-update.mjs bootstrap --root <dir> [--agent <name>]   (the board-tools transport is read from the environment;\n' +
+      '       exit 0 installed, 1 refused or failed, 2 usage, 3 the bridge offers nothing to install right now)\n',
   );
   return 2;
 }
@@ -1540,12 +1557,14 @@ export async function cli(argv, env = process.env) {
     root = path.resolve(opts.root);
     run = () => installFromFiles({ packFile: opts.pack, manifestFile: opts.manifest, root, source: opts.source });
   } else if (argv[0] === 'bootstrap') {
-    const opts = parseOptions(argv, ['--root']);
-    if (!opts || !opts.root) {
+    const opts = parseOptions(argv, ['--root', '--agent']);
+    // `--agent` only names the agent in the approval command a refusal prints; the door already
+    // knows who is asking, from the transport's own credential.
+    if (!opts || !opts.root || (opts.agent !== undefined && !AGENT_NAME.test(opts.agent))) {
       return usage();
     }
     root = path.resolve(opts.root);
-    run = () => installFromDoor({ root, env });
+    run = () => installFromDoor({ root, env, agent: opts.agent ?? null });
   } else {
     return usage();
   }
@@ -1556,7 +1575,9 @@ export async function cli(argv, env = process.env) {
     return 0;
   } catch (err) {
     process.stderr.write(`client-update ${verb}: ${err instanceof Refusal ? 'refused' : 'failed'}: ${err.message}\n`);
-    return 1;
+    // Only the bootstrap tells "nothing offered right now" apart: it is what lets an onboarding
+    // entry point keep the seat's legacy channel server instead of failing (DL-445).
+    return verb === 'bootstrap' && (err instanceof ServerDeclined || err.nothingOffered === true) ? EXIT_NOTHING_OFFERED : 1;
   }
 }
 

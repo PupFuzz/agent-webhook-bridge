@@ -11,12 +11,15 @@ Coverage the design rests on:
     named test below (see the comments on those tests).
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
 import types
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -94,6 +97,12 @@ class FakeFs:
 
     def find_mcp_files(self, agent_home):
         return list(self._mcp_files)
+
+    help_text = "usage: provision-board-tools.py ... --certify-only ... --bootstrap-client ..."
+
+    def help_as(self, user, python, tool):
+        self.help_asked = (user, python, tool)
+        return self.help_text
 
 
 def _args(**over):
@@ -283,6 +292,68 @@ class PreflightFailClosed(unittest.TestCase):
     def test_bad_ssh_account_rejected(self):
         with self.assertRaises(sb.PreflightError):
             sb.preflight(_args(ssh_account="../etc"), FakeFs())
+
+
+class ExecuteCertifyAndBootstrap(unittest.TestCase):
+    """The certify + client-bootstrap leg (DL-445; design review r3-B1): after role-a, AS THE AGENT
+    USER, from the AGENT's checkout — never in-process as root, which would install the client
+    under root's home from host A's code."""
+
+    _PUB = "/home/kanban-solo/.ssh/kanban-solo-board-tools.pub"
+
+    def _execute(self, fs, fail_on=None):
+        plan = sb.preflight(_args(), fs)
+        fs._files.add(self._PUB)
+        ran = []
+
+        def fake_run(cmd, err, *, capture=False):
+            ran.append(cmd)
+            if fail_on is not None and fail_on in cmd:
+                raise SystemExit(f"provision-board-tools-samebox: {err} (exit 1)")
+            return types.SimpleNamespace(
+                stdout=f"Same-box: hand this path to `--role a --pubkey-from`:\n  {self._PUB}\n" if capture else "",
+                returncode=0,
+            )
+
+        out = io.StringIO()
+        with mock.patch.object(sb, "_run", side_effect=fake_run), contextlib.redirect_stdout(out):
+            try:
+                rc = sb.execute(plan, fs)
+            except SystemExit as e:
+                rc = e
+        return rc, ran, out.getvalue()
+
+    def test_certify_only_runs_as_the_agent_from_its_own_checkout_after_role_a_and_before_the_banner(self):
+        fs = FakeFs()
+        rc, ran, out = self._execute(fs)
+        self.assertEqual(rc, 0)
+        certify = ["sudo", "-H", "-n", "-u", _AGENT, "python3", _AGENT_BIN, "--role", "b", "--certify-only",
+                   "--agent", _AGENT, "--project-dir", os.path.dirname(_MCP), "--channel-name", "kanbanboard-agent"]
+        self.assertIn(certify, ran)
+        role_a = next(i for i, c in enumerate(ran) if "--role" in c and c[c.index("--role") + 1] == "a")
+        self.assertLess(role_a, ran.index(certify), "certify runs after role-a pinned the key")
+        self.assertEqual(fs.help_asked, (_AGENT, "python3", _AGENT_BIN), "the AGENT's checkout is asked, as the agent")
+        self.assertNotIn("CLIENT NOT BOOTSTRAPPED", out)
+
+    def test_an_agent_checkout_that_predates_the_bootstrap_is_named_loudly_and_skipped(self):
+        fs = FakeFs()
+        fs.help_text = "usage: provision-board-tools.py ... --certify-only ..."
+        rc, ran, out = self._execute(fs)
+        self.assertEqual(rc, 0)
+        self.assertFalse(any("--certify-only" in c for c in ran))
+        self.assertIn("CLIENT NOT BOOTSTRAPPED", out)
+        self.assertIn("predates the client bootstrap", out)
+
+    def test_a_failed_certify_still_prints_the_banner_runs_the_chown_and_then_fails(self):
+        rc, ran, out = self._execute(FakeFs(), fail_on="--certify-only")
+        self.assertIsInstance(rc, SystemExit)
+        self.assertIn("certify + client bootstrap (agent leg) failed", str(rc))
+        self.assertIn("MANUAL STEP REQUIRED", out)
+        self.assertTrue(any(c[0] == "chown" for c in ran))
+
+    def test_the_bootstrap_flag_is_what_is_looked_for(self):
+        self.assertTrue(sb.supports_bootstrap("  --bootstrap-client  [role b] install ..."))
+        self.assertFalse(sb.supports_bootstrap("  --certify-only  [role b] ..."))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
+use App\Bridge\ClientUpdate\ClientPackManifest;
+use App\Bridge\ClientUpdate\ClientPackStore;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
@@ -11,10 +13,12 @@ use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Bridge\Tools\ClientVersion;
 use App\Models\BoardToolsClientCall;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
+use Tests\Support\ClientPackFixture;
 use Tests\Support\MaterializesChecks;
 use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
@@ -69,6 +73,20 @@ class BoardToolsClientHalfCheckTest extends TestCase
 
     private string $bundledDir;
 
+    private string $stateDir;
+
+    /**
+     * Every test gets its own empty state dir, so what `ClientPackStore` reads as published is
+     * what the test publishes — never a record on the box running the suite.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->stateDir = sys_get_temp_dir().'/client-half-state-'.uniqid();
+        mkdir($this->stateDir, 0700, true);
+        config(['bridge.state_dir' => $this->stateDir]);
+    }
+
     /**
      * ⚑ AFTER `parent::tearDown()`, never before. A throw in a tearDown that runs first
      * cascades into every later test in the class and hides the real failure; nothing here
@@ -82,6 +100,79 @@ class BoardToolsClientHalfCheckTest extends TestCase
             @unlink($this->bundledDir.'/package.json');
             @rmdir($this->bundledDir);
         }
+        if (isset($this->stateDir)) {
+            (new Filesystem)->deleteDirectory($this->stateDir);
+        }
+    }
+
+    // ─── against the PUBLISHED client (card#10568 comment 7177, DL-445) ─────────────────
+
+    private function publishClient(string $clientVersion): void
+    {
+        $f = new ClientPackFixture('1.0.0', clientVersion: $clientVersion);
+        (new ClientPackStore)->publish(ClientPackManifest::parse($f->manifest), $f->manifest, $f->pack, '2026-09-30T00:00:00Z');
+    }
+
+    /**
+     * THE BEHAVIOUR CHANGE, as a pair: a seat EQUAL to this checkout's bundled copy but behind
+     * the published client warns, and the remedy is the bootstrap — a re-copy of the bundled
+     * snapshot would take the seat off the update path.
+     */
+    public function test_once_a_pack_is_published_a_seat_behind_it_warns_with_the_bootstrap_remedy(): void
+    {
+        $this->publishClient('0.9.40');
+        $this->recordCall(ageSeconds: 60, clientVersion: self::BUNDLED_VERSION);
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertStringContainsString('CLIENT VERSION 0.9.12 IS OLDER THAN THE 0.9.40 THIS BRIDGE PUBLISHES', $findings[0]['message']);
+        $this->assertStringContainsString('--bootstrap-client --agent prod-agent', $findings[0]['message']);
+        $this->assertStringContainsString('RESTART that session', $findings[0]['message']);
+        $this->assertStringNotContainsString('Re-copy', $findings[0]['message']);
+        $this->assertStringNotContainsString('npm ci', $findings[0]['message']);
+    }
+
+    /**
+     * The other half: a seat at the PUBLISHED client is current even when this checkout bundles
+     * something newer (a dev checkout ahead of its last release — DL-442 Decision 4's case).
+     */
+    public function test_once_a_pack_is_published_a_seat_at_it_is_current_whatever_this_checkout_bundles(): void
+    {
+        $this->publishClient('0.9.5');
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.9.5');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('Client version 0.9.5 is at or ahead of the 0.9.5 this bridge publishes', $findings[0]['message']);
+        $this->assertStringNotContainsString('BUNDLES', $findings[0]['message']);
+    }
+
+    public function test_an_unreadable_published_record_is_not_compared_and_never_falls_back_to_the_bundled_copy(): void
+    {
+        mkdir($this->stateDir.'/client-packs', 0700, true);
+        file_put_contents($this->stateDir.'/client-packs/published.json', '{not json');
+        $this->recordCall(ageSeconds: 60, clientVersion: '0.4.4');
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('The seat reports client version 0.4.4, NOT COMPARED', $findings[0]['message']);
+        $this->assertStringContainsString('board_tools.client_pack_source', $findings[0]['message']);
+        $this->assertStringNotContainsString('OLDER THAN', $findings[0]['message']);
+    }
+
+    public function test_an_unreported_version_names_the_bootstrap_once_a_pack_is_published(): void
+    {
+        $this->publishClient('0.9.40');
+        $this->recordCall(ageSeconds: 60, clientVersion: null);
+
+        $findings = $this->findings();
+
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('Bootstrap the seat onto the 0.9.40 client this bridge publishes', $findings[0]['message']);
+        $this->assertStringNotContainsString('Re-deploy the seat', $findings[0]['message']);
     }
 
     public function test_a_fresh_call_reports_the_recorded_call_and_names_its_age(): void

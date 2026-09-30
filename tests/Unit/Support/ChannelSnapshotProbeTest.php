@@ -508,6 +508,132 @@ class ChannelSnapshotProbeTest extends TestCase
         }
     }
 
+    // ---- A CLIENT ROOT (card#10568 C2 / DL-445): the self-updating client a seat is bootstrapped onto.
+
+    public function test_a_client_root_is_checked_at_the_release_its_pointer_names_and_never_version_compared(): void
+    {
+        $root = $this->clientRoot('2.0.0');
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('9.9.9'));
+
+        $ok = $this->findingWith($findings, 'is a CLIENT ROOT: current.json names release 2.0.0');
+        $this->assertSame(Severity::Ok, $ok->severity);
+        $this->assertStringContainsString('board_tools.client_fleet', $ok->message);
+        // The checkout bundles 9.9.9, far ahead: a snapshot here would be STALE. A root is not.
+        $this->assertNoFinding($findings, 'STALE');
+        $this->assertSame([], $this->severities($findings, Severity::Warn));
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
+        $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'), 'the launch disclosure still applies');
+    }
+
+    public function test_a_client_roots_entry_mjs_stands_for_the_root(): void
+    {
+        $root = $this->clientRoot('2.0.0');
+
+        $findings = ChannelSnapshotProbe::probe($root.'/entry.mjs', $this->reference('1.0.0'));
+
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'is a CLIENT ROOT')->severity);
+        $this->assertNoFinding($findings, 'names a file, not the channel-server directory');
+    }
+
+    public function test_a_bare_entry_mjs_outside_a_client_root_is_still_a_file(): void
+    {
+        $dir = $this->tree('not-a-root', ['entry.mjs' => "\n"]);
+
+        $findings = ChannelSnapshotProbe::probe($dir.'/entry.mjs', $this->reference('1.0.0'));
+
+        $this->assertSame(Severity::Fail, $this->findingWith($findings, 'names a file, not the channel-server directory')->severity);
+    }
+
+    public function test_a_client_release_without_node_modules_fails_because_entry_mjs_does_not_retry_an_import(): void
+    {
+        $root = $this->clientRoot('2.0.0', nodeModules: false);
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+
+        $fail = $this->findingWith($findings, 'has no node_modules');
+        $this->assertSame(Severity::Fail, $fail->severity);
+        $this->assertStringContainsString('--bootstrap-client', $fail->message);
+    }
+
+    public function test_a_client_release_without_its_server_entry_warns_because_entry_mjs_may_start_another(): void
+    {
+        $root = $this->clientRoot('2.0.0', entry: false);
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+
+        $this->assertSame(Severity::Warn, $this->findingWith($findings, 'passes that release over')->severity);
+    }
+
+    /**
+     * @return iterable<string, array{0: string, 1: string}>
+     */
+    public static function unusablePointers(): iterable
+    {
+        yield 'not JSON' => ['{not json', 'does not parse as a JSON object'];
+        yield 'a path in bridge_release' => [(string) json_encode(['bridge_release' => '../../etc']), 'does not name a bare X.Y.Z bridge_release'];
+        yield 'a v-prefixed release' => [(string) json_encode(['bridge_release' => 'v1.0.0']), 'does not name a bare X.Y.Z bridge_release'];
+    }
+
+    #[DataProvider('unusablePointers')]
+    public function test_an_unusable_pointer_is_unvalidated_and_no_path_is_built_from_it(string $pointer, string $why): void
+    {
+        $root = $this->clientRoot('2.0.0');
+        file_put_contents($root.'/current.json', $pointer);
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+
+        $finding = $this->findingWith($findings, 'is a CLIENT ROOT, but its current.json '.$why);
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('newest intact release', $finding->message);
+    }
+
+    public function test_a_symlinked_pointer_is_not_read(): void
+    {
+        $root = $this->clientRoot('2.0.0');
+        file_put_contents($this->tmp.'/elsewhere.json', (string) json_encode(['bridge_release' => '2.0.0']));
+        unlink($root.'/current.json');
+        symlink($this->tmp.'/elsewhere.json', $root.'/current.json');
+
+        $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+
+        $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'current.json exists but was NOT read by this process')->severity);
+    }
+
+    public function test_an_untraversable_client_release_is_not_visible_rather_than_absent(): void
+    {
+        $this->skipAsRoot();
+        $root = $this->clientRoot('2.0.0');
+        chmod($root.'/versions/2.0.0', 0000);
+        try {
+            $findings = ChannelSnapshotProbe::probe($root, $this->reference('1.0.0'));
+        } finally {
+            chmod($root.'/versions/2.0.0', 0755);
+        }
+
+        $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'is not visible to this user')->severity);
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
+        $this->assertSame([], $this->severities($findings, Severity::Warn));
+    }
+
+    private function clientRoot(string $release, bool $entry = true, bool $nodeModules = true): string
+    {
+        $files = [
+            'current.json' => (string) json_encode(['bridge_release' => $release, 'client_version' => '0.9.37']),
+            'entry.mjs' => "// frozen entry\n",
+            "versions/{$release}/client/package.json" => (string) json_encode(['version' => '0.9.37']),
+        ];
+        if ($entry) {
+            $files["versions/{$release}/client/".ChannelSnapshotProbe::ENTRY_FILE] = "export {};\n";
+        }
+        $root = $this->tree('awb-client-root', $files);
+        if ($nodeModules) {
+            mkdir("{$root}/versions/{$release}/client/node_modules");
+        }
+
+        return $root;
+    }
+
     private function reference(string $version): string
     {
         return $this->tree('reference', [
