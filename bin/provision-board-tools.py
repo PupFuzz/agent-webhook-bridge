@@ -42,6 +42,12 @@ import sys
 import tempfile
 
 CHANNEL_MJS_BASENAME = "agent-webhook-bridge-channel.mjs"
+# The client updater's entry point (DL-434) and where a bootstrap installs it — design §3.1's
+# `<root>`, one per channel. `client_root()` is the one derivation; the updater itself takes the
+# root it is given and never re-derives it.
+CLIENT_ENTRY_BASENAME = "entry.mjs"
+CLIENT_UPDATER_BASENAME = "client-update.mjs"
+CLIENT_ROOT_PARENT = ("agent-webhook-bridge", "client")
 
 # The three env vars that carry the mutually-exclusive HTTP transport. Setting the
 # SSH transport must remove them: the channel server `process.exit(2)`s
@@ -104,6 +110,8 @@ _KEY_LINE_RE = re.compile(
 )
 
 _AGENT_RE = re.compile(r"^[a-z0-9_-]+$")
+# BRIDGE_CHANNEL_NAME as a client root's directory name (design §3.1).
+_CHANNEL_RE = re.compile(r"^[a-z0-9_-]+$")
 _ARTISAN_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 _SSH_ACCOUNT_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
 
@@ -152,26 +160,74 @@ def build_forced_command(agent: str, artisan: str, timeout_secs: int) -> str:
     )
 
 
-def _args_hold_channel_mjs(args: object, resolve) -> bool:
-    """True iff any element of `args` resolves to the channel server .mjs by BASENAME.
+def is_client_entry(path: str) -> bool:
+    """Is `path` the `entry.mjs` of a client root (`…/agent-webhook-bridge/client/<channel>/entry.mjs`)?
 
-    Basename (not full-path) equality is deliberate: the seat's own prior entry uses
-    an absolute path that changes when the deploy dir moves (prod → new checkout) or
-    a symlink resolves differently; a full-path compare would misclassify it as
-    foreign and break the idempotent re-run.
+    Pure over the path: the layout, not whatever file happens to sit there, is what makes an
+    `entry.mjs` ours — a bare basename match would claim any foreign server's `entry.mjs`.
+    """
+    parts = os.path.normpath(path).replace("\\", "/").split("/")
+    return (
+        len(parts) >= 4
+        and parts[-1] == CLIENT_ENTRY_BASENAME
+        and tuple(parts[-4:-2]) == CLIENT_ROOT_PARENT
+        and _CHANNEL_RE.fullmatch(parts[-2]) is not None
+    )
+
+
+def _resolved(a: str, resolve) -> str:
+    try:
+        return resolve(a)
+    except (OSError, ValueError):
+        return a
+
+
+def _is_our_client_entry(a: str, resolve) -> bool:
+    # The recorded path OR where it resolves: a symlink INSIDE the layout (a linked
+    # `agent-webhook-bridge/` dir) moves the resolved path out of it while the recorded one is ours.
+    return is_client_entry(a) or is_client_entry(_resolved(a, resolve))
+
+
+def _args_hold_channel_mjs(args: object, resolve) -> bool:
+    """True iff any element of `args` is our channel server: the legacy `.mjs` by BASENAME, or a
+    client root's `entry.mjs` (`is_client_entry`).
+
+    Basename (not full-path) equality is deliberate for the legacy file: the seat's own prior entry
+    uses an absolute path that changes when the deploy dir moves (prod → new checkout) or a symlink
+    resolves differently; a full-path compare would misclassify it as foreign and break the
+    idempotent re-run. A bootstrapped seat's args name `<root>/entry.mjs` instead, and a re-run
+    refusing that as foreign would strand the seat on the transport it was bootstrapped with
+    (design review r3-M1).
     """
     if not isinstance(args, list):
         return False
+    return any(
+        os.path.basename(_resolved(a, resolve)) == CHANNEL_MJS_BASENAME or _is_our_client_entry(a, resolve)
+        for a in args
+        if isinstance(a, str)
+    )
+
+
+def recorded_client_entry(existing_text, channel_name: str, *, resolve=os.path.realpath):
+    """The client root `entry.mjs` this seat's `.mcp.json` points the channel at, or None.
+
+    None for anything else — no file, unparseable, no entry, a legacy `.channel-server` path —
+    because every one of those is `merge_mcp_json`'s to refuse or accept, not this reader's.
+    The path is returned AS RECORDED, so a re-run writes back the value it read.
+    """
+    if existing_text is None:
+        return None
+    try:
+        entry = json.loads(existing_text)["mcpServers"][channel_name]
+        args = entry["args"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(args, list):
+        return None
     for a in args:
-        if not isinstance(a, str):
-            continue
-        try:
-            resolved = resolve(a)
-        except (OSError, ValueError):
-            resolved = a
-        if os.path.basename(resolved) == CHANNEL_MJS_BASENAME:
-            return True
-    return False
+        if isinstance(a, str) and _is_our_client_entry(a, resolve):
+            return a
+    return None
 
 
 def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None, *, resolve=os.path.realpath):
@@ -221,7 +277,8 @@ def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None
         if not _args_hold_channel_mjs(existing_entry.get("args"), resolve):
             raise ValueError(
                 f"refuse: mcpServers.{channel_name} is held by a foreign server "
-                f"(its args do not reference {CHANNEL_MJS_BASENAME})"
+                f"(its args reference neither {CHANNEL_MJS_BASENAME} nor a client root's "
+                f"{'/'.join(CLIENT_ROOT_PARENT)}/<channel>/{CLIENT_ENTRY_BASENAME})"
             )
         entry = existing_entry
     else:
@@ -1173,6 +1230,181 @@ def run_certify_only(args) -> int:
     return _self_cert(str(target), key_path, port)
 
 
+def client_root(channel_name: str, environ=None, os_name=os.name) -> str:
+    """The seat's client root for one channel (design §3.1) — where a bootstrap installs the client
+    and what `.mcp.json` args point into.
+
+    POSIX: `${XDG_DATA_HOME:-~/.local/share}/agent-webhook-bridge/client/<channel>` (a relative
+    XDG_DATA_HOME is ignored, as the XDG spec requires). Windows:
+    `%LOCALAPPDATA%\\agent-webhook-bridge\\client\\<channel>`. Pure over `environ` / `os_name`.
+    """
+    env = os.environ if environ is None else environ
+    if not _CHANNEL_RE.fullmatch(channel_name or ""):
+        raise ValueError(f"channel name {channel_name!r} must match ^[a-z0-9_-]+$ to name a client root")
+    if os_name == "nt":
+        base = env.get("LOCALAPPDATA") or ""
+        if not base:
+            raise ValueError("%LOCALAPPDATA% is not set, so this seat's client root cannot be placed")
+        import ntpath
+
+        return ntpath.join(base, *CLIENT_ROOT_PARENT, channel_name)
+    base = env.get("XDG_DATA_HOME") or ""
+    if not os.path.isabs(base):
+        home = env.get("HOME") or os.path.expanduser("~")
+        if not os.path.isabs(home):
+            raise ValueError("neither XDG_DATA_HOME nor HOME is an absolute path, so this seat's client root cannot be placed")
+        base = os.path.join(home, ".local", "share")
+    return os.path.join(base, *CLIENT_ROOT_PARENT, channel_name)
+
+
+# Claude Code's `.mcp.json` expansion, read from its 2.1.284 Linux binary (the MCP config expander):
+# `${VAR}` or `${VAR:-default}`, from the launching environment; the default applies only when VAR
+# is UNSET (an empty VAR stays empty), and an unresolved reference is left in place and warned about.
+_MCP_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_TRANSPORT_ENV_PREFIX = "BRIDGE_TOOLS_"
+# The one door key outside that prefix: channel-lib.mjs `resolveToolsToken`'s last-resort bearer.
+_TRANSPORT_ENV_EXTRA = ("BRIDGE_CHANNEL_TOKEN",)
+
+
+def bootstrap_env(recorded: dict, environ=None) -> tuple:
+    """The environment the bootstrap runs in, built as a launch builds the channel server's: this
+    process's environment, overlaid by the channel's recorded `.mcp.json` env with Claude Code's
+    `${VAR}` / `${VAR:-default}` expansion applied from this process's environment.
+
+    Returns `(env, inherited)`: `inherited` names the door keys (`BRIDGE_TOOLS_*`, and the
+    `BRIDGE_CHANNEL_TOKEN` fallback bearer) this environment sets that the channel does not record — the bootstrap sees them, and a session sees them only if it
+    is started from an environment that sets them too, which this process cannot know.
+    A reference to an unset variable with no default is refused: Claude Code would pass the
+    literal text, and a bootstrap handed it would ask a door that does not exist.
+    """
+    base = dict(os.environ if environ is None else environ)
+    env = dict(base)
+    for key, value in recorded.items():
+        if not isinstance(value, str):
+            raise ValueError(f"records {key} as a {type(value).__name__}, not a string")
+        missing = []
+
+        def expand(m, _missing=missing):
+            name, default = m.group(1), m.group(2)
+            if name in base:
+                return base[name]
+            if default is not None:
+                return default
+            _missing.append(name)
+            return m.group(0)
+
+        expanded = _MCP_ENV_REF.sub(expand, value)
+        if missing:
+            raise ValueError(
+                f"records {key} as a reference to {', '.join(missing)}, which is not set here and has no "
+                f"default — set it in this shell as your sessions have it, or record the value"
+            )
+        env[key] = expanded
+    inherited = sorted(
+        k for k in base if (k.startswith(_TRANSPORT_ENV_PREFIX) or k in _TRANSPORT_ENV_EXTRA) and k not in recorded
+    )
+    return env, inherited
+
+
+def _bootstrap_client(mcp_path: str, existing_text: str, channel_name: str) -> bool:
+    """Install this seat's client from its bridge's published pack, then point `.mcp.json` at it.
+
+    The design §3.5 bootstrap, and the ONE primitive every entry point that bootstraps calls. The
+    fetch, the checks and the install are the updater's (`client-update.mjs bootstrap`, the copy in
+    THIS checkout — nothing fetched is run), over the transport this channel recorded. Only after it
+    succeeds, and `<root>/entry.mjs` exists, are `.mcp.json` args rewritten to it; on any failure
+    `.mcp.json` is untouched and the seat keeps the channel server it had. Returns whether
+    `.mcp.json` changed.
+    """
+    try:
+        root = client_root(channel_name)
+    except ValueError as e:
+        _fail(f"{e} — nothing was installed and .mcp.json is unchanged.")
+    try:
+        recorded = read_recorded_ssh_transport(existing_text, channel_name)
+        env, inherited = bootstrap_env(recorded)
+    except ValueError as e:
+        _fail(f"{mcp_path} {e} — nothing was installed and .mcp.json is unchanged.")
+    for key in inherited:
+        print(f"note: {key} is set in this shell and not recorded in {mcp_path}; the bootstrap uses it, "
+              f"and a session sees it only if it is started from an environment that sets it too.")
+    entry = os.path.join(root, CLIENT_ENTRY_BASENAME)
+    # Refused BEFORE anything is installed: a foreign or unparseable entry is refused by the same
+    # merge that will write it, so an install is never left with nothing pointing at it.
+    try:
+        merge_mcp_json(existing_text, channel_name, entry, {})
+    except ValueError as e:
+        _fail(f"{e} — nothing was installed.")
+
+    updater = os.path.join(_bundled_snapshot_dir(), CLIENT_UPDATER_BASENAME)
+    if not os.path.isfile(updater):
+        _fail(
+            f"this checkout has no {CLIENT_UPDATER_BASENAME} beside its channel server, so it predates the "
+            f"client updater (card#10568) — run the provisioner from a bridge release that carries it."
+        )
+    _require_node_20()
+    print(f"bootstrapping channel {channel_name}'s client into {root} from its bridge…")
+    try:
+        # The token, when there is one, reaches the child through its environment, never an argv; and
+        # the project dir is its working directory, as it is a session's, for any relative path.
+        proc = subprocess.run(
+            ["node", updater, "bootstrap", "--root", root], env=env, cwd=os.path.dirname(mcp_path), check=False
+        )
+    except OSError as e:
+        _fail(f"could not run node for the client bootstrap: {e} — .mcp.json is unchanged.")
+    if proc.returncode != 0:
+        _fail(
+            f"the client bootstrap did not complete (exit {proc.returncode}; its reason is printed above) — "
+            f".mcp.json is unchanged and this seat keeps the channel server it had."
+        )
+    if not os.path.isfile(entry):
+        _fail(f"the client bootstrap reported success but {entry} does not exist — .mcp.json is unchanged.")
+    # The install can take minutes; a .mcp.json edited meanwhile is not overwritten from the stale copy.
+    with open(mcp_path, encoding="utf-8") as fh:
+        if fh.read() != existing_text:
+            _fail(
+                f"{mcp_path} changed while the bootstrap ran, so it is left as it is now. The client is installed "
+                f"at {root}; run --bootstrap-client again to point the channel at it."
+            )
+    # The same pure merge, on the same inputs, already passed before the install.
+    merged = merge_mcp_json(existing_text, channel_name, entry, {})
+    return _install_mcp_json(mcp_path, merged, existing_text)
+
+
+def run_bootstrap_client(args) -> int:
+    """`--role b --bootstrap-client`: bootstrap an ALREADY-PROVISIONED seat's client (either transport).
+
+    Like `--certify-only` it reads the transport back out of the seat's `.mcp.json` rather than
+    taking it as flags, so the door it proves is the one the channel server will use; the flags that
+    would name another are refused. For an ssh seat the key must already be pinned on host A.
+    """
+    if not _AGENT_RE.fullmatch(args.agent):
+        _fail(f"--agent {args.agent!r} must match ^[a-z0-9_-]+$")
+    missing = [n for n in ("project_dir", "channel_name") if getattr(args, n) is None]
+    if missing:
+        _fail("--role b --bootstrap-client requires " + ", ".join("--" + n.replace("_", "-") for n in missing))
+    supplied = [
+        f"--{n.replace('_', '-')}"
+        for n in ("ssh_target", "ssh_key", "ssh_port", "expect_fingerprint")
+        if getattr(args, n) is not None
+    ]
+    if supplied:
+        _fail(
+            f"{' and '.join(supplied)} cannot be given with --bootstrap-client: it uses the transport THIS "
+            f"SEAT RECORDED. Drop the flag, or run a full `--role b` to change what is recorded."
+        )
+    mcp_path = os.path.join(os.path.abspath(args.project_dir), ".mcp.json")
+    if not os.path.isfile(mcp_path):
+        _fail(f"{mcp_path} does not exist — provision first (`--role b`, or the HTTP setup packet).")
+    with open(mcp_path, encoding="utf-8") as fh:
+        existing_text = fh.read()
+    if _bootstrap_client(mcp_path, existing_text, args.channel_name):
+        _print_activation_block(args.channel_name)
+    print(f"--bootstrap-client: OK — channel {args.channel_name} now starts from its client root and updates "
+          f"itself from the bridge at each launch.")
+    return 0
+
+
 def run_role_b(args) -> int:
     if not _AGENT_RE.fullmatch(args.agent):
         _fail(f"--agent {args.agent!r} must match ^[a-z0-9_-]+$")
@@ -1195,9 +1427,37 @@ def run_role_b(args) -> int:
     if not is_authorized_key_shape(pubkey):
         _fail(f"public key at {pub_path} failed the shape check — refusing to hand it off")
 
-    deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
-    mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
-    snapshot_replaced = _deploy_snapshot(deploy_dir)
+    mcp_path = os.path.join(os.path.abspath(args.project_dir), ".mcp.json")
+    existing_text = None
+    if os.path.isfile(mcp_path):
+        with open(mcp_path, encoding="utf-8") as fh:
+            existing_text = fh.read()
+
+    # A seat already bootstrapped onto its client root keeps it: this run refreshes the transport,
+    # and the channel server updates itself from the bridge at launch. Deploying the legacy
+    # snapshot and pointing `.mcp.json` back at it would take the seat off the update path
+    # (design review r3-M1).
+    client_entry = recorded_client_entry(existing_text, args.channel_name)
+    # "Gone" only where absence is ESTABLISHED: a relative or `${…}` path is resolved by Claude Code at
+    # launch against an environment this run cannot see, so such a record is kept, never replaced.
+    if (client_entry is not None and os.path.isabs(client_entry) and "${" not in client_entry
+            and not os.path.isfile(client_entry)):
+        # The seat cannot start as recorded. This run's job is a working channel on the transport it
+        # is given, so it deploys the legacy snapshot and says so, rather than refusing into a dead
+        # end (a root to rebuild over a transport this run may be here to change).
+        print(f"channel server: {client_entry} does not exist, so this seat cannot start its bootstrapped client; "
+              f"deploying the legacy snapshot so it can start. It will NOT update itself — run "
+              f"`--role b --bootstrap-client` afterwards to put it back on the update path.")
+        client_entry = None
+    if client_entry is not None:
+        mjs_path = client_entry
+        snapshot_replaced = False
+        print(f"channel server: this seat runs its bootstrapped client ({client_entry}), which updates "
+              f"itself from the bridge at launch — no snapshot deployed.")
+    else:
+        deploy_dir = os.path.join(os.path.abspath(args.project_dir), ".channel-server")
+        mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
+        snapshot_replaced = _deploy_snapshot(deploy_dir)
 
     # Tools transport keys this provisioner OWNS — force-set (overwrite) on every re-run.
     force_env = {
@@ -1222,11 +1482,6 @@ def run_role_b(args) -> int:
         "BRIDGE_CHANNEL_NAME": args.channel_name,
     }
 
-    mcp_path = os.path.join(os.path.abspath(args.project_dir), ".mcp.json")
-    existing_text = None
-    if os.path.isfile(mcp_path):
-        with open(mcp_path, encoding="utf-8") as fh:
-            existing_text = fh.read()
     try:
         merged = merge_mcp_json(existing_text, args.channel_name, mjs_path, force_env, channel_defaults)
     except ValueError as e:
@@ -1995,6 +2250,13 @@ def build_parser() -> argparse.ArgumentParser:
         "recorded in its .mcp.json — no keygen, no snapshot deploy, no .mcp.json write. Needs "
         "--agent --project-dir --channel-name; --ssh-target/--ssh-key are refused",
     )
+    cert.add_argument(
+        "--bootstrap-client",
+        action="store_true",
+        help="[role b] install this seat's channel-server client from its bridge's published pack, over the "
+        "transport (ssh or HTTP) its .mcp.json records, then point .mcp.json at it; after that the client "
+        "updates itself at each launch. Needs --agent --project-dir --channel-name; transport flags are refused",
+    )
     return p
 
 
@@ -2009,7 +2271,14 @@ def main(argv=None) -> int:
                 "--certify-only is a --role b flag: it certifies the transport the SEAT "
                 "recorded, from the seat. Run it there, or drop it to pin from here."
             )
+        if args.bootstrap_client:
+            _fail(
+                "--bootstrap-client is a --role b flag: it installs the client on the SEAT, from the seat. "
+                "Run it there."
+            )
         return run_role_a(args)
+    if args.bootstrap_client:
+        return run_bootstrap_client(args)
     if args.certify_only:
         # ⭐ THE REQUIRED-ARG SET IS DELIBERATELY NARROWER HERE (card#8971): --ssh-target
         # is where the seat is CONFIGURED to call, and this mode reads that back rather

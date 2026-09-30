@@ -1487,3 +1487,191 @@ test('no release classifies ok and one has a read fault: not started, and the re
   assert.equal(run.code, 2);
   assert.match(fs.readFileSync(failureMarkerPath(env), 'utf8'), /bootstrap this seat's client from its bridge's published pack, or fix versions\/1\.0\.0\/client\/package\.json \(EISDIR\); THIS Claude Code session is deaf/);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Bootstrap from the door (card#10568 C2): `client-update.mjs bootstrap --root`, over the
+// board-tools transport in the environment — what the provisioner's `--bootstrap-client` runs.
+
+/**
+ * `client-update.mjs bootstrap --root <root>` with the seat's env, as the provisioner spawns it.
+ * Asynchronous: the fixture bridge answers from THIS process's event loop, which spawnSync blocks.
+ */
+function bootstrapFromDoor(root, env) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [UPDATER, 'bootstrap', '--root', root], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => (stdout += c));
+    child.stderr.on('data', (c) => (stderr += c));
+    child.on('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
+  });
+}
+
+test('bootstrap from the door installs the offered release, logs it with the door as source, and the seat then launches on it', async (t) => {
+  const root = newRoot(t);
+  const built = goodPack('1.0.0');
+  const bridge = await fixtureBridge(t, { published: built });
+  const env = seatEnv(t, bridge);
+
+  const r = await bootstrapFromDoor(root, env);
+
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /client-update bootstrap: release 1\.0\.0 installed at /);
+  assert.deepEqual(bridge.requests.map((q) => q.body.op), ['client_manifest', 'client_pack']);
+  assert.equal(read(root, 'current.json').bridge_release, '1.0.0');
+  const [line] = assertChain(root).filter((l) => l.action === 'bootstrap');
+  assert.equal(line.actor, 'provision');
+  assert.equal(line.result, 'ok');
+  assert.equal(line.source, `bridge-http:${bridge.endpoint.replace(/call$/, 'client')}`);
+  assert.equal(line.manifest_sha256, sha256(built.manifestBytes));
+  assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
+
+  const run = await launch(root, env);
+  assert.equal(run.started.release, '1.0.0');
+  assert.equal(read(root, 'state.json').state, 'current');
+});
+
+test('bootstrap from the door with approval owed fetches nothing, installs nothing, and names the release and the approve command', async (t) => {
+  const root = newRoot(t);
+  const bridge = await fixtureBridge(t, { published: goodPack('1.0.0'), offer: null, owed: '1.0.0' });
+
+  const r = await bootstrapFromDoor(root, seatEnv(t, bridge));
+
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /refused: approval owed: .*release 1\.0\.0 is not approved.*bridge:client-approve <agent> 1\.0\.0/);
+  assert.deepEqual(bridge.requests.map((q) => q.body.op), ['client_manifest'], 'the pack is never asked for');
+  assert.equal(resolveInstalled(root).release, null);
+  assert.ok(!fs.existsSync(path.join(root, 'current.json')));
+  const lines = assertChain(root);
+  assert.deepEqual(lines.map((l) => [l.action, l.result, l.to_bridge_release]), [['refuse', 'refused', '1.0.0']]);
+});
+
+test('bootstrap from a door onto an older installed release installs the offered one; a downgrade offer is refused and changes nothing', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const bridge = await fixtureBridge(t, { published: goodPack('2.0.0') });
+
+  const up = await bootstrapFromDoor(root, seatEnv(t, bridge));
+  assert.equal(up.status, 0, up.stderr);
+  const [line] = logObjs(root).filter((l) => l.action === 'bootstrap' && l.to_bridge_release === '2.0.0');
+  assert.equal(line.from_bridge_release, '1.0.0');
+
+  bridge.state.published = goodPack('1.5.0');
+  const before = treeOf(root);
+  const down = await bootstrapFromDoor(root, seatEnv(t, bridge));
+  assert.equal(down.status, 1);
+  assert.match(down.stderr, /refused: downgrade offered: release 1\.5\.0 is below the installed 2\.0\.0/);
+  assert.deepEqual(treeOf(root), before);
+  assert.ok(!bridge.requests.slice(2).some((q) => q.body.op === 'client_pack'), 'a downgrade is refused before the pack is fetched');
+  assertChain(root);
+});
+
+for (const [name, setup, expect] of [
+  ['a bridge that publishes nothing', (b) => { b.state.published = null; }, /failed: the bridge answered client_manifest with HTTP 503: this bridge publishes no client pack yet/],
+  ['a pack whose bytes are not the manifest\'s', (b) => { b.state.packBytes = Buffer.from('not the pack'); }, /refused: /],
+  ['a manifest that does not hash to the digest the door named', (b) => { b.state.manifestSha256 = 'f'.repeat(64); }, /refused: the manifest the bridge sent does not hash/],
+  ['a bridge that is not there', null, /failed: bridge unreachable/],
+  ['an offer that is not the release the bridge publishes', (b) => { b.state.offer = '9.9.9'; }, /refused: the bridge offered release 9\.9\.9 but publishes 1\.0\.0/],
+  ['an offer outside bare X.Y.Z', (b) => { b.state.offer = 'v1.0.0'; }, /refused: the bridge offered "v1\.0\.0", not a bare X\.Y\.Z release/],
+]) {
+  test(`bootstrap from the door: ${name} — refused or failed, logged, nothing installed`, async (t) => {
+    const root = newRoot(t);
+    const bridge = setup === null ? null : await fixtureBridge(t, { published: goodPack('1.0.0') });
+    if (setup !== null) {
+      setup(bridge);
+    }
+
+    const r = await bootstrapFromDoor(root, seatEnv(t, bridge));
+
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.stderr, expect);
+    assert.equal(resolveInstalled(root).release, null);
+    assert.ok(!fs.existsSync(path.join(root, 'current.json')));
+    assert.ok(!fs.existsSync(path.join(root, 'entry.mjs')), 'no entry.mjs, so nothing can be pointed at it');
+    assert.equal(assertChain(root).length, 1, 'the failure is one log line');
+  });
+}
+
+test('bootstrap from the door with no board-tools transport in the environment says so', async (t) => {
+  const root = newRoot(t);
+  const env = seatEnv(t, null);
+  delete env.BRIDGE_TOOLS_ENDPOINT;
+  delete env.BRIDGE_TOOLS_TOKEN;
+
+  const r = await bootstrapFromDoor(root, env);
+
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /failed: no board-tools transport is configured/);
+});
+
+test('the bootstrap CLI refuses anything but --root', (t) => {
+  const r = spawnSync(process.execPath, [UPDATER, 'bootstrap', '--root', newRoot(t), '--pack', 'x'], { encoding: 'utf8' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /client-update\.mjs bootstrap --root <dir>/);
+});
+
+// card#10568 comment 7236: a bootstrap replacing a copy that is not intact must not lose it when the
+// verified copy cannot be moved in. The copy is renamed aside, not removed, until then.
+
+test('a bootstrap whose rename into versions/ fails puts the copy it was replacing back, still startable', async (t) => {
+  const root = await seatWith(t, '1.0.0', { pack: packWithExtraDep('1.0.0') });
+  fs.writeFileSync(path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs'), 'export const ok = true; // damaged\n');
+  assert.equal(classifyRelease(root, '1.0.0', 'full').status, 'bad', 'precondition: not intact in full');
+  const pointer = fs.readFileSync(path.join(root, 'current.json'));
+  const files = writePack(t, packWithExtraDep('1.0.0'));
+
+  const r = spawnSync(process.execPath, [UPDATER, 'install', '--pack', files.pack, '--manifest', files.manifest, '--root', root], {
+    env: { ...process.env, AWB_CLIENT_FAIL_AT: 'rename-in' },
+    encoding: 'utf8',
+  });
+
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /failed: rename-in refused by the test hook/);
+  assert.equal(classifyRelease(root, '1.0.0', 'required').status, 'ok', 'the release the seat runs is back in versions/, startable');
+  assert.equal(fs.readFileSync(path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs'), 'utf8'), 'export const ok = true; // damaged\n', 'it is the old copy, put back');
+  assert.deepEqual(fs.readFileSync(path.join(root, 'current.json')), pointer);
+  assert.equal(logObjs(root).at(-1).action, 'fail');
+
+  const again = bootstrap(t, root, packWithExtraDep('1.0.0'));
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(classifyRelease(root, '1.0.0', 'full').status, 'ok', 'bootstrapping again repairs it');
+});
+
+test('a bootstrap killed between moving the old copy aside and the new one in is recovered by bootstrapping again once its lock expires', async (t) => {
+  const root = await seatWith(t, '1.0.0', { pack: packWithExtraDep('1.0.0') });
+  fs.writeFileSync(path.join(root, 'versions', '1.0.0', 'client', 'extra-dep.mjs'), 'export const ok = true; // damaged\n');
+  const files = writePack(t, packWithExtraDep('1.0.0'));
+
+  const killed = spawnSync(process.execPath, [UPDATER, 'install', '--pack', files.pack, '--manifest', files.manifest, '--root', root], {
+    env: { ...process.env, AWB_CLIENT_CRASH_AT: 'after-aside' },
+    encoding: 'utf8',
+  });
+  assert.ok(killed.signal === 'SIGKILL' || killed.status !== 0, `the bootstrap was killed (${killed.status}/${killed.signal})`);
+  assert.ok(fs.existsSync(path.join(root, 'staging', '1.0.0.replaced', 'client', 'agent-webhook-bridge-channel.mjs')), 'the old copy is aside, not deleted');
+  // The dead bootstrap's lock holds until its deadline plus the grace; move it into the past rather than wait.
+  const held = JSON.parse(fs.readFileSync(path.join(root, '.lock'), 'utf8'));
+  fs.writeFileSync(path.join(root, '.lock'), JSON.stringify({ ...held, deadline_ms: Date.now() - 60000 }));
+
+  const again = bootstrap(t, root, packWithExtraDep('1.0.0'));
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(classifyRelease(root, '1.0.0', 'full').status, 'ok');
+  assert.ok(!fs.existsSync(path.join(root, 'staging')), 'nothing is left aside');
+  assertChain(root);
+});
+
+test('a bootstrap that runs past its budget stops before its next irreversible step, so it never writes under a lock a launch could take over (review r1 MAJOR)', async (t) => {
+  const root = await seatWith(t, '1.0.0');
+  const before = treeOf(root);
+  const files = writePack(t, goodPack('2.0.0'));
+
+  // The hook holds the verified, staged pack until one second past the deadline; the lock's own
+  // deadline is that same budget, so any write after it is a write a launch could race.
+  await assert.rejects(
+    installFromFiles({ packFile: files.pack, manifestFile: files.manifest, root, budgetMs: 1500, env: { ...process.env, AWB_CLIENT_CRASH_AT: 'budget-exceeded' } }),
+    /the update budget ran out before moving release 2\.0\.0 into versions\//,
+  );
+
+  assert.deepEqual(treeOf(root), before, 'versions/ and current.json are unchanged');
+  assert.ok(!fs.existsSync(path.join(root, 'staging')), 'the staged pack is removed');
+  assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
+  assert.equal(logObjs(root).at(-1).action, 'fail');
+});
