@@ -376,6 +376,24 @@ class ExecuteCertifyAndBootstrap(unittest.TestCase):
         self.assertIn("certify + client bootstrap (agent leg) failed", str(cm.exception))
         self.assertIn("bridge:check certify step failed", err.getvalue())
 
+    def test_a_failed_chown_does_not_hide_a_held_certify_failure(self):
+        # Review r4: the chown's own failure escaped before the held errors were said.
+        plan = sb.preflight(_args(), FakeFs())
+        fs = FakeFs()
+        fs._files.add(self._PUB)
+
+        def fake_run(cmd, err, *, capture=False):
+            if "--certify-only" in cmd or cmd[0] == "chown":
+                raise SystemExit(f"provision-board-tools-samebox: {err} (exit 1)")
+            return types.SimpleNamespace(stdout=f"Same-box: hand this path to `--role a --pubkey-from`:\n  {self._PUB}\n", returncode=0)
+
+        err = io.StringIO()
+        with mock.patch.object(sb, "_run", side_effect=fake_run), contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            sb.execute(plan, fs)
+        self.assertIn("certify + client bootstrap (agent leg) failed", str(cm.exception))
+        self.assertIn("chown of host-A storage failed", err.getvalue())
+
     def test_a_failed_certify_still_prints_the_banner_runs_the_chown_and_then_fails(self):
         rc, ran, out = self._execute(FakeFs(), fail_on="--certify-only")
         self.assertIsInstance(rc, SystemExit)

@@ -496,13 +496,18 @@ def execute(plan: Plan, fs) -> int:
     except SystemExit as e:
         check_err = e
 
-    # 6. chown host-A storage back to the ssh-account (root-run artisan can leave root logs).
-    _run(
-        ["chown", "-R", f"{plan.ssh_account}:{plan.ssh_account}", plan.storage],
-        "chown of host-A storage failed",
-    )
+    # 6. chown host-A storage back to the ssh-account (root-run artisan can leave root logs). Held
+    # like the others, so its failure does not hide one held above (review r4).
+    chown_err = None
+    try:
+        _run(
+            ["chown", "-R", f"{plan.ssh_account}:{plan.ssh_account}", plan.storage],
+            "chown of host-A storage failed",
+        )
+    except SystemExit as e:
+        chown_err = e
 
-    held = [err for err in (certify_err, check_err) if err is not None]
+    held = [err for err in (certify_err, check_err, chown_err) if err is not None]
     # Every held failure is said, not only the first one raised (review r3).
     for err in held[1:]:
         print(err, file=sys.stderr)
