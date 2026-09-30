@@ -16,8 +16,8 @@ report a crash as "has findings" and publish nothing, which is a broken check re
 working one. So rc 1 counts as findings only when stdout is the lint's own JSON document and
 that document agrees with the code; anything else is a crash.
 
-Every argument is passed to `pr-body-lint.py` unchanged (it owns `--env` / `--body-file` /
-`--label`); `--json` is added here.
+Every argument is passed to `pr-body-lint.py` unchanged (it owns its flags: the body source, the
+title source, `--label`); `--json` is added here.
 """
 import html
 import json
