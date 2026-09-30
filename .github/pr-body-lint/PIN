@@ -17,13 +17,13 @@
 # a new rule changes which bodies get findings. Never edit a vendored file in place; the pin check
 # exists to refuse that. `report.py` is this repo's own wrapper, not vendored, and is not pinned.
 
-version 0.54.0
-sha256  cc0345efeecd16f546aa41dcadf3205d75a4744161b607c12378da0cfea0366d  pr-body-lint.py
-sha256  416ed3d5a37dc60a1ded316b7b0226d09ce88c1acfb75e450410d69718e949b2  pr-body-lint.selftest.py
+version 0.59.0
+sha256  4243d5dba057cbfaa7c40a1d3520861af9730b22fff01520ab85a0ff8678e657  pr-body-lint.py
+sha256  c48f787318ab7e62a42a18cd68c600302927296b0b419f664c0881c6213b3557  pr-body-lint.selftest.py
 sha256  31cfc5649c34f09601c76aaed5817c62d413cd5a5a1e6b8ae2456b3c751a8be4  pr-body-lint-fixtures/fw847-v0.50.0-body-2026-09-08T220229Z.md.txt
 sha256  85c244b7d3fbfa4bf79d2718c28ed902cb490e1ab16b3d4cd4196d98cb0fb21a  pr-body-lint-fixtures/fw847-v0.50.0-body-rewritten.md.txt
 sha256  bfb44759b25a3cbea31a63ecddadea35c9065fae9d5c0e4c6a1c56414783d3f9  pr-body-lint-fixtures/fw873-body-2026-09-08T205957Z.md.txt
 sha256  4ec27d315998a93c41658a0f08437561ae009d01574e0d75c7051cac6a132656  pr-body-lint-fixtures/fw873-body-hand-built-derivations.md.txt
 sha256  7f269aeb45243018829929c80c9c76a460bad26e1e237f229fca19707a225331  pr-body-lint-fixtures/fw891-v0.51.0-body-2026-09-10T140853Z.md.txt
 sha256  63ca4812628c7055faa5d2c8ca5e922b3cfa28904e2c1869deaa48e9c7c4c8eb  pr-body-lint-fixtures/fw891-v0.51.0-body-rewritten.md.txt
-sha256  1549b8d40352589d19e7bce608e4ab0b8d8a1d414805c59b9d49c6eeb651907f  pr-body-lint-fixtures/README.md
+sha256  898836573e14f8d14bb8d61cd383dae93884231c0ad13601a2d1663e464cff9b  pr-body-lint-fixtures/README.md

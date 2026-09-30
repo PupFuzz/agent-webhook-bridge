@@ -35,6 +35,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - No `.env` change is REQUIRED (both new handlers work with no configuration); no route change, no token-scope change; `--format=json` `schema` stays **1**.
 - **card#10832 / DL-437** — `board_get_cards` no longer refuses a call, naming the token's board membership, when an id 403s on a board with no live cards while another id of the same call resolved as `archived`: a card resolved on the seat's board in the same call is now the membership proof, whatever order the ids were sent in.
 - **Dependabot alert PupFuzz/agent-webhook-bridge #28** — **npm/ip-address 10.4.0 → 10.7.2 in examples/channel-servers** (transitive via express-rate-limit). The dependency is used for IPv6 subnet keying in rate limiting; exploitability is low. Bumped because it is in-range and freely available.
+- **card#10352** — **The PR-body lint (`.github/workflows/pr-body-lint.yml`) holds only a PR titled `release:` to the release section set and scope line.** A feature PR written to this repo's own `.github/pull_request_template.md` no longer reports `heading-not-allowed` on `## Summary` / `## Scope` or `scope-line`; every other rule still reports on every PR, and a release PR is judged as before. `.github/pr-body-lint/` is re-vendored byte-identical from coord v0.59.0 (which also adds the `ai-attribution` rule) and the workflow now passes the PR title. Repo CI only: reporting-only as before, nothing to do on upgrade.
 
 ### Changed
 
