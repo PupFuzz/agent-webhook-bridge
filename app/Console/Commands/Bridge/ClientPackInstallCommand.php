@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\ClientUpdate\BridgeRelease;
 use App\Bridge\ClientUpdate\ClientPackManifest;
 use App\Bridge\ClientUpdate\ClientPackRefused;
 use App\Bridge\ClientUpdate\ClientPackStore;
@@ -55,7 +56,7 @@ class ClientPackInstallCommand extends BridgeCommand
 
     public function handle(ClientPackStore $store): int
     {
-        $release = $this->thisRelease();
+        $release = BridgeRelease::of(base_path('VERSION'));
         if ($release === null) {
             $this->error('bridge:client-pack:install: this checkout\'s VERSION file is missing or is not bare X.Y.Z, so there is no release to publish a pack for. Nothing was changed.');
 
@@ -160,17 +161,6 @@ class ClientPackInstallCommand extends BridgeCommand
             : "bridge:client-pack:install: the client pack for {$what} was already published; nothing changed.");
 
         return 0;
-    }
-
-    private function thisRelease(): ?string
-    {
-        $raw = @file_get_contents(base_path('VERSION'));
-        if (! is_string($raw)) {
-            return null;
-        }
-        $version = trim($raw);
-
-        return preg_match(ClientPackManifest::STRICT_VERSION, $version) === 1 ? $version : null;
     }
 
     /** What stays in service when this run publishes nothing — for the refusal text only. */
