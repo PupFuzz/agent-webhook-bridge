@@ -186,6 +186,35 @@ class StandupPostureCheckTest extends TestCase
         $this->assertStringContainsString('positive number of seconds', $findings[0]->message);
     }
 
+    /**
+     * The interval and the recipient are independent axes, so both reasons land on the one line:
+     * reporting only the first would leave the second to surface on the NEXT run, after the
+     * operator fixed the first and believed the digest was set up.
+     */
+    public function test_a_bad_interval_and_an_unset_recipient_are_both_named(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null, 'bridge.standup.interval' => 0]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString('positive number of seconds', $findings[0]->message);
+        $this->assertStringContainsString('names no seat', $findings[0]->message);
+    }
+
+    public function test_a_non_string_recipient_names_one_agent_reason_not_a_redundant_pair(): void
+    {
+        // A bare `true` is both "not a string" and "no usable name"; the type error is the
+        // specific one, and naming both would describe the same unusable value twice.
+        config(['bridge.standup.agent' => true, 'bridge.standup.interval' => 0]);
+
+        $message = $this->findingsOf(new StandupPostureCheck)[0]->message;
+
+        $this->assertStringContainsString('positive number of seconds', $message);
+        $this->assertStringContainsString('a bare true/false is read as a boolean', $message);
+        $this->assertStringNotContainsString('names no seat', $message);
+    }
+
     public function test_the_marker_read_still_happens_on_a_misconfigured_install(): void
     {
         // The two faults are independent and have different remedies. Suppressing the second

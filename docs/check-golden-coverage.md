@@ -67,12 +67,11 @@
 > generic default-on one.** Standup: `standup-enabled` (already configured — `OK`),
 > `standup-misconfigured` (a bad recipient — `MISCONFIGURED`) and `standup-last-pass-failed`
 > (configured, plus its own failed-push line) each exercise a branch the new default does not
-> touch, so every other capture gains the generic NOT-SET-UP `warn`. Idle nudge:
-> `agent-yaml-malformed` and `writeback-move-leg-agent-unread` fail to load the agent YAMLs
-> before the leg ever reaches the default-flip branch, so those two keep the `UNVALIDATED`
-> YAML-load line instead of the generic no-instance `warn`; every other capture gains it. The
-> exceptions are re-derived, not restated — each command prints the captures WITHOUT its line
-> (`-l` in place of `-L`, piped to `wc -l`, counts the ones with it):
+> touch, so every other capture gains the generic NOT-SET-UP `warn`. Idle nudge: no capture
+> reaches a different branch first, so every capture gains the generic no-instance `warn`.
+> Both are re-derived, not restated — each command prints the captures WITHOUT its line, so
+> an empty result is the no-exceptions fact (`-l` in place of `-L`, piped to `wc -l`, counts
+> the ones with it):
 >
 > - `command grep -L 'standup: ON (the default since DL-441) but NOT SET UP' tests/Fixtures/check-golden/*.txt`
 > - `command grep -L 'no ENABLED .idle_nudge. job instance exists' tests/Fixtures/check-golden/*.txt`

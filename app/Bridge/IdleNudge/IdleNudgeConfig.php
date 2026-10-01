@@ -73,8 +73,8 @@ final class IdleNudgeConfig
     ) {}
 
     /**
-     * The ONE enabled predicate, shared by the job and by the receiver's push-time stamp — so the
-     * receiver pays for the stamp exactly on installs that asked for the nudge.
+     * The ONE enabled predicate, shared by the job and by the receiver's push-time stamp — which
+     * installs pay for that stamp is stated once, on `DispatchService::stampPushAttempt()`.
      */
     public static function enabled(): bool
     {

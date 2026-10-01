@@ -73,31 +73,37 @@ final class StandupConfig
     }
 
     /**
-     * ⚑ THE INTERVAL IS CHECKED BEFORE THE RECIPIENT (review round 1, card#10918). An earlier
-     * cut returned the "no recipient" message first, so an install with BOTH an unset recipient
-     * and a bad `BRIDGE_STANDUP_INTERVAL` only ever saw the recipient problem — `recipientUnset`
-     * then routed it to the friendlier NOT-SET-UP `warn`, which never mentions the interval at
-     * all, and a bad interval SURVIVED with nothing pointing at it. Checking it first, and
-     * gating `recipientUnset` on the interval also being valid, means a bad interval is always in
-     * `problem` and always drops the recipient-unset branch to the MISCONFIGURED one that reads
-     * `problem` back.
+     * ⚑ EVERY APPLICABLE REASON IS REPORTED, INTERVAL FIRST. The interval and the recipient are
+     * independent axes, so each contributes its own reason and `problem` joins them with `; ` —
+     * the composition `IdleNudgeConfig::fromConfig()` uses. Returning on the first hit
+     * (review round 4, card#10918) left the second problem to surface only on the next run,
+     * after the operator fixed the first. Within the recipient axis exactly ONE reason is
+     * reported — not a string, then unset, then malformed — because all three describe the
+     * same unusable value.
+     *
+     * The interval leads, and `recipientUnset` stays gated on the interval also being valid
+     * (review round 1): an earlier cut let an unset recipient claim the friendlier NOT-SET-UP
+     * `warn`, which never mentions the interval, so a bad interval SURVIVED with nothing
+     * pointing at it. A bad interval therefore always drops the recipient-unset branch to the
+     * MISCONFIGURED one that reads `problem` back.
      */
     private static function problemWith(mixed $rawAgent, ?string $agent, int $interval): ?string
     {
-        if ($rawAgent !== null && ! is_string($rawAgent)) {
-            return 'standup.agent must be an agent name (a quoted string in .env) — a bare true/false is read as a boolean, not a name';
-        }
+        $reasons = [];
         if ($interval < 1) {
-            return "standup.interval must be a positive number of seconds, got {$interval}";
+            $reasons[] = "standup.interval must be a positive number of seconds, got {$interval}";
         }
-        if ($agent === null || $agent === '') {
-            return 'standup is enabled but standup.agent names no seat (BRIDGE_STANDUP_AGENT) — there is no default recipient for a fleet snapshot';
-        }
-        if (preg_match(self::AGENT_NAME, $agent) !== 1) {
-            return "standup.agent '{$agent}' is not an agent name — it must match the <agent>.yml filename convention (letters, digits, '.', '_', '-')";
+        $agentReason = match (true) {
+            $rawAgent !== null && ! is_string($rawAgent) => 'standup.agent must be an agent name (a quoted string in .env) — a bare true/false is read as a boolean, not a name',
+            $agent === null || $agent === '' => 'standup is enabled but standup.agent names no seat (BRIDGE_STANDUP_AGENT) — there is no default recipient for a fleet snapshot',
+            preg_match(self::AGENT_NAME, $agent) !== 1 => "standup.agent '{$agent}' is not an agent name — it must match the <agent>.yml filename convention (letters, digits, '.', '_', '-')",
+            default => null,
+        };
+        if ($agentReason !== null) {
+            $reasons[] = $agentReason;
         }
 
-        return null;
+        return $reasons === [] ? null : implode('; ', $reasons);
     }
 
     /** One-line operator summary of what this install will actually do. */
