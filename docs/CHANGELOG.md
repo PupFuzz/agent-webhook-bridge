@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-10-01
+
 ### Changed
 
 - **card#10918 / DL-441 (amends DL-325, DL-306, DL-380)** — ⚠ **New functionality ships ON and names its missing setup: every state-mutating periodic-job handler is armed unless you switch it off, and the PM standup digest and the idle nudge are enabled by default.** Operator rule, 2026-09-29: *"When adding new functionality, the default is to enable and require setup of the functionality."* Each keeps a kill switch.
