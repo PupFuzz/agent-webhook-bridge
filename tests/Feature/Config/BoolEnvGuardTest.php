@@ -69,6 +69,48 @@ class BoolEnvGuardTest extends TestCase
     }
 
     /**
+     * THE CONTROL for the leg above: the predicate hits an IMPORTED `unreadable()` call and an
+     * FQCN `get()` call, and does not hit `BoolEnv::KEYS` (a property, not a call — no `(`
+     * follows) or a `{@see BoolEnv}` docblock mention (comments are dropped by
+     * {@see SourceScan::significantTokens()} before the walk ever sees them).
+     */
+    public function test_the_static_call_predicate_discriminates(): void
+    {
+        $planted = <<<'PHP'
+            <?php
+
+            namespace App\Bridge\Tmp;
+
+            /**
+             * {@see BoolEnv} describes the config-time reader.
+             */
+            use App\Bridge\Support\BoolEnv;
+
+            final class Planted
+            {
+                public function a(): array
+                {
+                    return BoolEnv::unreadable();
+                }
+
+                public function b(): bool
+                {
+                    return \App\Bridge\Support\BoolEnv::get('APP_DEBUG', false);
+                }
+
+                public function c(): array
+                {
+                    return BoolEnv::KEYS;
+                }
+            }
+            PHP;
+
+        $hits = SourceScan::sites($planted, 'planted.php', static fn (array $tokens, int $i): ?string => self::boolEnvStaticCallAt($tokens, $i));
+
+        $this->assertSame(['unreadable', 'get'], array_values($hits));
+    }
+
+    /**
      * @return array<string, string> file => source
      */
     private function configSources(): array
