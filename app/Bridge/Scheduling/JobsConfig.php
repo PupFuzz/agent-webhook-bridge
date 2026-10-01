@@ -6,7 +6,7 @@ use App\Bridge\Retention\RetentionConfig;
 
 /**
  * The resolved, validated PASS posture — `jobs.enabled`, `jobs.min_pass_interval` and
- * `jobs.max_per_pass` (card#8425 / DL-325). ⚑ Those three and no others: `jobs.armed_mutators`
+ * `jobs.max_per_pass` (card#8425 / DL-325). ⚑ Those three and no others: `jobs.disarmed_mutators`
  * belongs to {@see JobHandlerRegistry} (it governs what a HANDLER may do, not how a pass is
  * paced) and `jobs.tick_expected_every` to {@see TickRecord} (it is the tick's adoption knob,
  * read by an install that may run no pass at all). Widening this class to "the `bridge.jobs.*`

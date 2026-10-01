@@ -196,7 +196,7 @@ Subject line: `<type>(<scope>): <short description>` (matches Conventional Commi
 - `test`: test-only
 - `refactor`: code restructure without behavior change
 
-Body: paragraphs describing what + why (NOT how — that's in the diff). Include test count delta. Include `Co-Authored-By:` trailer when generated.
+Body: paragraphs describing what + why (NOT how — that's in the diff). Include test count delta. No AI attribution: no `Co-Authored-By:` trailer, model name or session link.
 
 ### PR descriptions
 

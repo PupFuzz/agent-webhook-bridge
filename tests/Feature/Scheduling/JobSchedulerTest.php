@@ -193,8 +193,8 @@ class JobSchedulerTest extends TestCase
 
     public function test_a_state_mutating_handler_disarmed_after_insert_is_refused_at_run(): void
     {
-        // Armed at insert…
-        $handlers = new JobHandlerRegistry(['mutating_job'], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
+        // Armed at insert (nothing disarmed)…
+        $handlers = new JobHandlerRegistry([], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         $handlers->register(new RecordingJobHandler('mutating_job', JobCapability::MutatesState));
         (new JobRegistry($handlers))->insert(new JobSpec(
             name: 'mutator',
@@ -206,11 +206,13 @@ class JobSchedulerTest extends TestCase
         ));
 
         // …and DISARMED by the time it runs. This is why the refusal predicate is asked
-        // twice: arming is operator config and can be withdrawn after a row exists.
-        $result = $this->scheduler()->pass(JobPassSource::Manual);
+        // twice: the kill switch is operator config and can be set after a row exists.
+        $disarmed = new JobHandlerRegistry(['mutating_job'], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
+        $disarmed->register(new RecordingJobHandler('mutating_job', JobCapability::MutatesState));
+        $result = (new JobScheduler($disarmed))->pass(JobPassSource::Manual);
 
         $this->assertSame(1, $result->refused);
-        $this->assertSame(JobRefusal::UNARMED_MUTATOR, ScheduledJob::query()->where('name', 'mutator')->value('last_summary'));
+        $this->assertSame(JobRefusal::DISARMED_MUTATOR, ScheduledJob::query()->where('name', 'mutator')->value('last_summary'));
     }
 
     public function test_a_throwing_handler_is_recorded_and_does_not_stop_the_other_jobs(): void

@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Scheduling;
 
+use App\Bridge\Scheduling\Handlers\OwedWriteRetryJob;
+
 /**
  * WHY the scheduler will not invoke a handler — a refusal, which is not a failure
  * (card#8425 / DL-325).
@@ -16,15 +18,15 @@ namespace App\Bridge\Scheduling;
  * ⚑ THE TWO REASONS TAKE OPPOSITE REMEDIES, which is why they are not one string:
  *  - {@see self::UNKNOWN_HANDLER} — the row names a handler this build does not have. The
  *    fix is a name (a typo, or an instance that outlived a handler removed in an upgrade).
- *  - {@see self::UNARMED_MUTATOR} — the handler EXISTS and declares
- *    {@see JobCapability::MutatesState}, and this install has not armed it. The fix is an
- *    operator decision, not a code change.
+ *  - {@see self::DISARMED_MUTATOR} — the handler EXISTS and declares
+ *    {@see JobCapability::MutatesState}, and this install's operator has switched it off
+ *    (card#10918 / DL-441). The fix is an operator decision, not a code change.
  */
 final class JobRefusal
 {
     public const UNKNOWN_HANDLER = 'unknown_handler';
 
-    public const UNARMED_MUTATOR = 'unarmed_mutating_handler';
+    public const DISARMED_MUTATOR = 'disarmed_mutating_handler';
 
     private function __construct(
         public readonly string $reason,
@@ -42,12 +44,13 @@ final class JobRefusal
         );
     }
 
-    public static function unarmedMutator(string $handler): self
+    public static function disarmedMutator(string $handler): self
     {
         return new self(
-            self::UNARMED_MUTATOR,
-            "handler '{$handler}' declares the state-mutating capability and this install has NOT armed it — "
-                .'add it to BRIDGE_JOBS_ARMED_MUTATORS (operator decision; see docs/periodic-jobs.md). Nothing was run.',
+            self::DISARMED_MUTATOR,
+            "handler '{$handler}' declares the state-mutating capability and this install has DISARMED it — "
+                .'it is named in BRIDGE_JOBS_DISARMED_MUTATORS'.($handler === OwedWriteRetryJob::NAME ? ' or BRIDGE_OWED_WRITE_RETRY_DISABLED=true is set' : '')
+                .'. Nothing was run. Remove that setting to re-arm it, or `php artisan bridge:jobs disable` this instance to stop it without a refusal (see docs/periodic-jobs.md).',
         );
     }
 }

@@ -394,7 +394,7 @@ class OwedWriteDispatchTest extends TestCase
     }
 
     /**
-     * The sweep, armed the way an operator arms it: the handler named in the armed list, and
+     * The sweep, armed the way it ships (nothing disarmed, DL-441), and
      * one instance declared. Built after the first delivery so the event gate's own pass during
      * that delivery cannot have advanced the instance's clock.
      *
@@ -402,7 +402,7 @@ class OwedWriteDispatchTest extends TestCase
      */
     private function armedSweep(): array
     {
-        $handlers = new JobHandlerRegistry([OwedWriteRetryJob::NAME], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
+        $handlers = new JobHandlerRegistry([], $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         (new JobRegistry($handlers))->insert(new JobSpec(
             name: 'writeback-owed-writes',
             handler: OwedWriteRetryJob::NAME,

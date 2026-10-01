@@ -188,8 +188,9 @@ class CheckGoldenTest extends TestCase
                 return $default;
 
                 // ---- the standup digest's posture (card#8683 / DL-345). `minimal` is the
-                // fourth arm and needs no fixture of its own: the digest is OFF by default,
-                // so every other capture in this corpus is the silent control. ----
+                // fourth arm and needs no fixture of its own: the digest is ON by default with
+                // no recipient (DL-441), so every other capture carries the NOT-SET-UP warn.
+                // The declined (silent) arm is StandupPostureCheckTest's. ----
             case 'standup-enabled':
                 // The armed install, and the DISCRIMINATING PAIR for the fixture below: same
                 // config, no marker. Its absent subject is what makes the fault leg's silence
@@ -218,11 +219,12 @@ class CheckGoldenTest extends TestCase
                 return $default;
 
             case 'standup-misconfigured':
-                // Enabled with no recipient: the arm that pushes nothing and backs off a
+                // A recipient SET to a non-name: the arm that pushes nothing and backs off a
                 // DAY, so an operator who fat-fingered the key learns it here or a day at a
-                // time in the log.
+                // time in the log. (An EMPTY recipient is NOT-SET-UP since DL-441 — that is
+                // `minimal`, and using it here made the two captures byte-identical.)
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
-                config(['bridge.standup.enabled' => true, 'bridge.standup.agent' => '']);
+                config(['bridge.standup.enabled' => true, 'bridge.standup.agent' => '../pm']);
 
                 return $default;
 
@@ -845,7 +847,7 @@ class CheckGoldenTest extends TestCase
             // ---- standup posture (card#8683 / DL-345) ----
             'standup-enabled' => ['standup: on (push to prod-agent, every 86400s (on the first delivery after))'],
             'standup-last-pass-failed' => ['standup: the LAST PASS FAILED and no digest has been pushed since (App\\Bridge\\Exceptions\\HandlerException: channel_push: connection refused at 2026-01-01T00:00:00+00:00)'],
-            'standup-misconfigured' => ['standup: enabled but MISCONFIGURED — standup is enabled but standup.agent names no seat'],
+            'standup-misconfigured' => ["standup: enabled but MISCONFIGURED — standup.agent '../pm' is not an agent name"],
 
             // ---- per-agent legs ----
             'agent-yaml-malformed' => ['is not valid YAML'],
@@ -1031,7 +1033,7 @@ class CheckGoldenTest extends TestCase
             // Enabled-but-broken must not also print the healthy posture line: `on (…)` and
             // `MISCONFIGURED` are exclusive arms, and a leg that yielded both would read as
             // an install that is armed AND unarmed.
-            'standup-misconfigured' => ['standup: on ('],
+            'standup-misconfigured' => ['standup: on (', 'NOT SET UP'],
         ];
     }
 

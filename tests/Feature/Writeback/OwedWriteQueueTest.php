@@ -160,11 +160,12 @@ class OwedWriteQueueTest extends TestCase
     public static function sweepGaps(): iterable
     {
         yield 'kill switch' => [fn () => config(['bridge.jobs.owed_write_retry_disabled' => true]), 'BRIDGE_OWED_WRITE_RETRY_DISABLED=true'];
+        yield 'disarm list' => [fn () => config(['bridge.jobs.disarmed_mutators' => 'owed_write_retry']), 'BRIDGE_JOBS_DISARMED_MUTATORS switches the owed-write retry sweep off'];
         yield 'jobs disabled' => [fn () => config(['bridge.jobs.enabled' => false]), 'BRIDGE_JOBS_ENABLED=false'];
         yield 'pass unusable' => [fn () => config(['bridge.jobs.max_per_pass' => 0]), 'the job registry can run no pass'];
         yield 'instance disabled' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->update(['enabled' => false]), 'bridge:jobs enable '.OwedWriteRetryJob::INSTANCE];
         yield 'instance removed' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->delete(), 'bridge:jobs add '.OwedWriteRetryJob::INSTANCE];
-        yield 'instance refused' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->update(['last_status' => ScheduledJob::STATUS_REFUSED, 'last_error' => 'unarmed']), 'was REFUSED at its last run: unarmed'];
+        yield 'instance refused' => [fn () => ScheduledJob::query()->where('name', OwedWriteRetryJob::INSTANCE)->update(['last_status' => ScheduledJob::STATUS_REFUSED, 'last_error' => 'disarmed']), 'was REFUSED at its last run: disarmed'];
     }
 
     #[DataProvider('sweepGaps')]
@@ -210,15 +211,15 @@ class OwedWriteQueueTest extends TestCase
         $this->assertSame(0, WritebackOwedWrite::query()->count());
     }
 
-    public function test_the_watchdog_needs_no_arming_and_the_sweep_does(): void
+    public function test_the_watchdog_cannot_be_disarmed_and_the_sweep_can(): void
     {
-        $registry = new JobHandlerRegistry([], $this->app->make(StandupGate::class), $this->handlers);
+        $registry = new JobHandlerRegistry([OwedWriteWatchdogJob::NAME, OwedWriteRetryJob::NAME], $this->app->make(StandupGate::class), $this->handlers);
 
         $this->assertInstanceOf(OwedWriteWatchdogJob::class, $registry->runnable(OwedWriteWatchdogJob::NAME));
         $this->assertSame(JobCapability::ReadAndAlert, $registry->resolve(OwedWriteWatchdogJob::NAME)?->capability());
         $refusal = $registry->runnable(OwedWriteRetryJob::NAME);
         $this->assertInstanceOf(JobRefusal::class, $refusal);
-        $this->assertSame(JobRefusal::UNARMED_MUTATOR, $refusal->reason);
+        $this->assertSame(JobRefusal::DISARMED_MUTATOR, $refusal->reason);
     }
 
     public function test_the_first_durable_write_declares_the_watchdog_instance(): void
@@ -235,7 +236,9 @@ class OwedWriteQueueTest extends TestCase
 
     /**
      * Operator ruling, 2026-09-29 (card#10849 / DL-440): `owed_write_retry` ships ARMED and its
-     * instance is declared by default, the one named exception to DL-325's default-off.
+     * instance is declared by default. card#10918 / DL-441 later flipped DL-325's own default to
+     * armed-unless-disarmed for every `MutatesState` handler, so this is no longer a named
+     * exception to that default — it is an instance of the general rule now.
      */
     public function test_the_first_durable_write_also_declares_the_retry_instance_armed_by_default(): void
     {
@@ -253,7 +256,7 @@ class OwedWriteQueueTest extends TestCase
     {
         config(['bridge.jobs.owed_write_retry_disabled' => true]);
 
-        $this->assertSame(JobRefusal::UNARMED_MUTATOR, $this->app->make(JobHandlerRegistry::class)->runnable(OwedWriteRetryJob::NAME)?->reason ?? null);
+        $this->assertSame(JobRefusal::DISARMED_MUTATOR, $this->app->make(JobHandlerRegistry::class)->runnable(OwedWriteRetryJob::NAME)?->reason ?? null);
 
         $this->rateLimitFirst(retryAfter: null);
         $this->owe('a');

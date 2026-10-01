@@ -4,6 +4,7 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\IdleNudge\AgentVerdict;
+use App\Bridge\IdleNudge\IdleNudgeConfig;
 use App\Bridge\IdleNudge\IdleNudgePassRecord;
 use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobSpec;
@@ -13,6 +14,7 @@ use App\Models\ScheduledJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -107,11 +109,176 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->assertSame([], $this->findings());
     }
 
-    public function test_a_missing_install_fails(): void
+    /**
+     * Since card#10918 / DL-441 the nudge is ON without anyone asking, so a Mezzanine key nobody
+     * set is the NOT-SET-UP state of every install with a push-routed agent, not a broken config:
+     * `warn`, naming every unset key at once and the switch that declines the nudge.
+     */
+    public function test_an_unset_mezzanine_key_warns_naming_it_and_the_switch_to_decline(): void
     {
-        config(['bridge.idle_nudge.install' => null]);
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => null]);
+
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+        $notSetUp = array_values(array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'NOT SET UP')));
+        $this->assertCount(1, $notSetUp);
+        $this->assertStringContainsString('BRIDGE_IDLE_NUDGE_ENABLED=false', $notSetUp[0]->message);
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an EXPLICIT `BRIDGE_IDLE_NUDGE_ENABLED=true` with a
+     * required Mezzanine key still unset is an operator who acted and left the job unusable — the
+     * pre-DL-441 `fail`, not the default install's NOT-SET-UP `warn` above. The tri-state
+     * `enabled_explicit` config key is the only thing that differs between this test and the one
+     * above; both leave the same Mezzanine key unset.
+     */
+    public function test_an_explicit_enable_with_an_unset_mezzanine_key_fails_not_warns(): void
+    {
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => true]);
 
         $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+    }
+
+    /**
+     * `env()` casts only `true`/`(true)` (any case) to a bool; every other truthy spelling an
+     * operator writes reaches `enabled_explicit` as the raw STRING (`Illuminate\Support\Env`).
+     * Those are explicit enables too, so "was the key touched" is `!== null`, never `=== true`
+     * (review round 2 of card#10918: `=1` fell into the NOT-SET-UP `warn`).
+     *
+     * @return array<string, array{string}>
+     */
+    public static function explicitTruthyStrings(): array
+    {
+        return ['1' => ['1'], 'yes' => ['yes'], 'on' => ['on']];
+    }
+
+    #[DataProvider('explicitTruthyStrings')]
+    public function test_an_explicit_enable_spelled_as_a_string_with_an_unset_mezzanine_key_fails_not_warns(string $raw): void
+    {
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => $raw]);
+
+        $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+    }
+
+    /**
+     * The NOT-SET-UP `warn` gates no other leg: the job still nudges seat-record agents and still
+     * records its pass with the Mezzanine keys unset, so a second instance is the same `fail` it
+     * is on a set-up install (review round 2 of card#10918).
+     */
+    public function test_the_not_set_up_warn_does_not_swallow_a_second_instance_fail(): void
+    {
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => null]);
+        $this->nudgeInstance('idle-nudge-a');
+        $this->nudgeInstance('idle-nudge-b');
+
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+        $this->assertOne(Severity::Fail, 'exactly one is supported');
+    }
+
+    /**
+     * Both ways into the MISCONFIGURED `fail`: a value set wrongly, and an explicit enable with a
+     * key left unset.
+     *
+     * @return array<string, array{array<string, mixed>, string}>
+     */
+    public static function misconfigured(): array
+    {
+        return [
+            'invalid base url' => [['bridge.idle_nudge.base_url' => 'http://mezzanine.example'], 'BRIDGE_IDLE_NUDGE_BASE_URL'],
+            'explicit enable, key unset' => [['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => true], 'BRIDGE_IDLE_NUDGE_INSTALL is unset'],
+        ];
+    }
+
+    /**
+     * The MISCONFIGURED `fail` gates no other leg, like the NOT-SET-UP `warn`: the job still
+     * judges seat-record agents and records its pass with `problem` set (`IdleNudgeJob::mezzanine()`),
+     * so a second instance is still its own `fail`.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    #[DataProvider('misconfigured')]
+    public function test_the_misconfigured_fail_does_not_swallow_a_second_instance_fail(array $config, string $names): void
+    {
+        config($config);
+        $this->nudgeInstance('idle-nudge-a');
+        $this->nudgeInstance('idle-nudge-b');
+
+        $this->assertOne(Severity::Fail, 'MISCONFIGURED');
+        $this->assertOne(Severity::Fail, $names);
+        $this->assertOne(Severity::Fail, 'exactly one is supported');
+    }
+
+    /**
+     * The token file is judged whenever `BRIDGE_IDLE_NUDGE_TOKEN_PATH` names one, whatever the
+     * OTHER Mezzanine keys are: an operator who set the path and never placed the file has a
+     * fault the NOT-SET-UP `warn` for a different key says nothing about (review round 3 of
+     * card#10918 — the `fail` was swallowed, so `bridge:check` exited 0 over it).
+     */
+    public function test_a_configured_token_path_with_no_file_fails_beside_the_not_set_up_warn(): void
+    {
+        config([
+            'bridge.idle_nudge.install' => null,
+            'bridge.idle_nudge.enabled_explicit' => null,
+            'bridge.idle_nudge.token_path' => $this->dir.'/nonexistent-token',
+        ]);
+
+        $this->assertOne(Severity::Warn, 'NOT SET UP');
+        $this->assertOne(Severity::Fail, 'the fleet token file '.$this->dir.'/nonexistent-token is absent or unreachable');
+    }
+
+    /** The same sibling leg beside the MISCONFIGURED `fail`: the two are different faults. */
+    public function test_an_insecure_token_file_fails_beside_the_misconfigured_fail(): void
+    {
+        chmod($this->dir.'/fleet-token', 0o644);
+        config(['bridge.idle_nudge.base_url' => 'http://mezzanine.example']);
+
+        $this->assertOne(Severity::Fail, 'MISCONFIGURED');
+        $this->assertOne(Severity::Fail, 'is group/world-readable');
+    }
+
+    public function test_every_unset_mezzanine_key_is_named_in_one_line(): void
+    {
+        config([
+            'bridge.idle_nudge.base_url' => null,
+            'bridge.idle_nudge.token_path' => null,
+            'bridge.idle_nudge.install' => null,
+        ]);
+
+        $all = $this->findings();
+        $findings = array_values(array_filter($all, fn (Finding $f): bool => str_contains($f->message, 'BRIDGE_IDLE_NUDGE_INSTALL')
+            || str_contains($f->message, 'BRIDGE_IDLE_NUDGE_BASE_URL') || str_contains($f->message, 'BRIDGE_IDLE_NUDGE_TOKEN_PATH')));
+        $this->assertCount(1, $findings, implode("\n", array_map(fn (Finding $f) => $f->message, $all)));
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        foreach (['BRIDGE_IDLE_NUDGE_BASE_URL', 'BRIDGE_IDLE_NUDGE_TOKEN_PATH', 'BRIDGE_IDLE_NUDGE_INSTALL'] as $key) {
+            $this->assertStringContainsString($key, $findings[0]->message);
+        }
+    }
+
+    /** A key somebody SET, wrongly, is still a broken config — the control for the two above. */
+    public function test_a_set_but_invalid_base_url_still_fails(): void
+    {
+        config(['bridge.idle_nudge.base_url' => 'http://mezzanine.example', 'bridge.idle_nudge.install' => null]);
+
+        $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_BASE_URL');
+    }
+
+    /**
+     * A value set wrongly AND a key left unset at once: `problem` names both, the invalid value
+     * first (it decides the `fail`), so fixing the one it names does not reveal the other only on
+     * the next run (review round 3 of card#10918 — the unset key used to be dropped).
+     */
+    public function test_an_invalid_value_beside_an_unset_key_names_both_in_one_misconfigured_fail(): void
+    {
+        config(['bridge.idle_nudge.timeout' => '99', 'bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => null]);
+
+        $cfg = IdleNudgeConfig::fromConfig();
+        $this->assertSame(
+            'BRIDGE_IDLE_NUDGE_TIMEOUT must be a whole number of seconds in 1…30 (refused, not clamped); BRIDGE_IDLE_NUDGE_INSTALL is unset — it is REQUIRED: the fleet token reads every install, '
+            .'and without the install id this bridge serves, a seat of another install named like a local agent would be nudged here',
+            $cfg->problem,
+        );
+        $this->assertSame([], $cfg->unsetKeys);
+        $this->assertOne(Severity::Fail, 'MISCONFIGURED — BRIDGE_IDLE_NUDGE_TIMEOUT must be a whole number of seconds in 1…30 (refused, not clamped); BRIDGE_IDLE_NUDGE_INSTALL is unset');
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'NOT SET UP')));
     }
 
     public function test_an_out_of_bound_default_horizon_fails_rather_than_clamping(): void
@@ -133,6 +300,7 @@ class IdleNudgePostureCheckTest extends TestCase
     public function test_enabled_with_no_instance_warns(): void
     {
         $this->assertOne(Severity::Warn, 'no ENABLED `idle_nudge` job instance exists');
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_ENABLED=false');
     }
 
     public function test_more_than_one_enabled_instance_fails(): void
@@ -297,7 +465,7 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->seatRecordOnly();
         $this->agentYaml('impl', "channel:\n  url: http://127.0.0.1:8789/\n  route_intents: true\n");
 
-        $this->assertOne(Severity::Fail, 'idle_nudge: enabled but MISCONFIGURED — BRIDGE_IDLE_NUDGE_BASE_URL');
+        $this->assertOne(Severity::Warn, 'idle_nudge: ON (the default since DL-441) but NOT SET UP for the agents it reads from Mezzanine');
     }
 
     /** @return array<string, array{string, string}> */
@@ -509,5 +677,131 @@ class IdleNudgePostureCheckTest extends TestCase
 
         $this->assertOne(Severity::Unvalidated, 'the agent YAMLs could not be loaded');
         $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => $f->severity === Severity::Fail));
+    }
+
+    /*
+     * card#10918 review round 3: every leg skips only on its OWN missing input. Each test below
+     * pins a leg that an earlier `return` used to swallow although it never read what that
+     * branch tested.
+     */
+
+    public function test_agent_yamls_that_do_not_load_do_not_swallow_the_instance_or_last_pass_legs(): void
+    {
+        $this->agentYaml('broken', "idle_nudge:\n  seat_record: relative/offer.json\n");
+        $this->nudgeInstance('one', Carbon::now());
+        $this->nudgeInstance('two', Carbon::now());
+        $this->record(['measured' => true, 'agents' => ['pm' => 'nudge'], 'failed_agents' => ['pm']]);
+
+        $this->assertOne(Severity::Unvalidated, 'the agent YAMLs could not be loaded');
+        $this->assertOne(Severity::Fail, '2 ENABLED `idle_nudge` instances (one, two)');
+        $this->assertOne(Severity::Warn, 'the last pass FAILED to push to pm');
+    }
+
+    /** Without the YAMLs the Mezzanine/seat-record split is unknown: the generic reading speaks instead. */
+    public function test_agent_yamls_that_do_not_load_skip_only_the_mezzanine_split_readings(): void
+    {
+        $this->agentYaml('broken', "idle_nudge:\n  seat_record: relative/offer.json\n");
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'agents' => ['impl' => 'no_declaring_seat', 'pm' => 'no_declaring_seat'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, 'every push-routed or seat-record agent was UNMEASURED on the last pass (no_declaring_seat 2)');
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'Mezzanine-sourced agent read')));
+    }
+
+    public function test_a_seat_record_fault_without_the_yamls_names_the_path_the_tick_read_or_says_it_is_not_known(): void
+    {
+        $this->agentYaml('broken', "idle_nudge:\n  seat_record: relative/offer.json\n");
+        $this->nudgeInstance(lastRunAt: Carbon::now());
+        $this->record(['measured' => true, 'seats' => null, 'fleet_unmeasured' => null,
+            'seat_records' => ['a' => '/home/seat/a-offer.json', 'b' => null], 'record_agents' => ['c' => 'seat-c'],
+            'agents' => ['a' => 'seat_record_absent', 'b' => 'seat_record_home_unresolved', 'c' => 'seat_record_agent_mismatch'], 'failed_agents' => []]);
+
+        $this->assertOne(Severity::Warn, "a's seat record /home/seat/a-offer.json was ABSENT on the last pass");
+        $this->assertOne(Severity::Warn, "b's seat record (path not known: the last pass recorded none and the agent YAMLs did not load) could not be resolved");
+        $this->assertOne(Severity::Warn, "c's seat record (path not known: the last pass recorded none and the agent YAMLs did not load) was written for another agent: its `agent` is not `seat-c`, the name the last pass compared it against. If this file is the intended seat's record, set `idle_nudge.seat_agent`");
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'no longer declared')));
+    }
+
+    public function test_more_than_one_instance_does_not_swallow_the_last_pass(): void
+    {
+        $this->nudgeInstance('one', Carbon::now());
+        $this->nudgeInstance('two', Carbon::now());
+        $this->record(['measured' => false, 'reason' => 'the fleet snapshot answered HTTP 401 (token_expired)']);
+
+        $this->assertOne(Severity::Fail, 'exactly one is supported');
+        $this->assertOne(Severity::Warn, 'the last pass was UNMEASURED — the fleet snapshot answered HTTP 401 (token_expired)');
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'NOT RUN yet') || str_contains($f->message, 'last ran')));
+    }
+
+    public function test_an_unreadable_job_registry_does_not_swallow_the_last_pass(): void
+    {
+        $this->record(['measured' => true, 'agents' => ['pm' => 'nudge'], 'failed_agents' => ['pm']]);
+        Schema::drop('scheduled_jobs');
+
+        $this->assertOne(Severity::Unvalidated, 'could not read the periodic-job registry');
+        $this->assertOne(Severity::Warn, 'the last pass FAILED to push to pm');
+    }
+
+    /** An unread registry cannot rule a pass out, so a missing record stays a finding. */
+    public function test_an_unreadable_job_registry_still_reports_a_missing_record(): void
+    {
+        Schema::drop('scheduled_jobs');
+
+        $this->assertOne(Severity::Unvalidated, 'no readable last-pass record');
+    }
+
+    public function test_no_instance_does_not_swallow_a_record_an_earlier_instance_left(): void
+    {
+        $this->record(['measured' => true, 'agents' => ['pm' => 'nudge'], 'failed_agents' => ['pm']]);
+
+        $this->assertOne(Severity::Warn, 'no ENABLED `idle_nudge` job instance exists');
+        $this->assertOne(Severity::Warn, 'the last pass FAILED to push to pm');
+    }
+
+    public function test_an_instance_that_never_ran_does_not_swallow_a_record_an_earlier_instance_left(): void
+    {
+        $this->nudgeInstance();
+        $this->record(['measured' => false, 'reason' => 'the fleet snapshot answered HTTP 401 (token_expired)']);
+
+        $this->assertOne(Severity::Warn, "instance 'idle-nudge' has NOT RUN yet");
+        $this->assertOne(Severity::Warn, 'the last pass was UNMEASURED');
+    }
+
+    /**
+     * Where the registry shows nothing has ever run, no record is expected: its absence is what
+     * the instance warn already says, so it is not reported a second time as a blind read.
+     *
+     * @return array<string, array{\Closure(self): void, string}>
+     */
+    public static function nothingHasRun(): array
+    {
+        return [
+            'no instance' => [fn (self $t) => null, 'no ENABLED `idle_nudge` job instance exists'],
+            'never ran' => [fn (self $t) => $t->nudgeInstance(), 'has NOT RUN yet'],
+            'two, neither ran' => [function (self $t): void {
+                $t->nudgeInstance('one');
+                $t->nudgeInstance('two');
+            }, 'exactly one is supported'],
+        ];
+    }
+
+    /** @param  \Closure(self): void  $arrange */
+    #[DataProvider('nothingHasRun')]
+    public function test_a_missing_record_is_not_reported_where_nothing_has_run(\Closure $arrange, string $says): void
+    {
+        $arrange($this);
+
+        $this->assertCount(1, array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, $says)));
+        $this->assertSame([], array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'last-pass record')));
+    }
+
+    /** The control for the one above: once anything has run, a missing record IS a blind read. */
+    public function test_a_missing_record_is_reported_once_any_of_several_instances_has_run(): void
+    {
+        $this->nudgeInstance('one', Carbon::now());
+        $this->nudgeInstance('two');
+
+        $this->assertOne(Severity::Fail, 'exactly one is supported');
+        $this->assertOne(Severity::Unvalidated, 'no readable last-pass record');
     }
 }

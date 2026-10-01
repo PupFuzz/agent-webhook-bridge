@@ -9,6 +9,7 @@ use App\Bridge\Support\Severity;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Support\Facades\Cache;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -93,16 +94,125 @@ class StandupPostureCheckTest extends TestCase
     public function test_a_misconfigured_digest_warns_and_does_not_claim_to_be_armed(): void
     {
         // `warn`, never `fail`: this leg gates deployment runbooks through `bridge:check`'s
-        // exit code, and an opt-in report with a fat-fingered recipient leaves the receiver
+        // exit code, and a report with a fat-fingered recipient leaves the receiver
         // serving every webhook correctly. The severity is invisible to the golden capture,
         // so a demotion to `ok` — a green line confirming the posture the operator is being
-        // warned about — would be caught only here.
-        config(['bridge.standup.agent' => '']);
+        // warned about — would be caught only here. A recipient SET to a non-name: an unset
+        // one is the separate not-set-up line.
+        config(['bridge.standup.agent' => '../pm']);
 
         $findings = $this->findingsOf(new StandupPostureCheck);
 
         $this->assertSame(Severity::Warn, $findings[0]->severity);
         $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+    }
+
+    /**
+     * Since card#10918 / DL-441 the digest is ON without anyone asking, so an install that never
+     * named a recipient is NOT SET UP rather than broken: the line names the key to set AND the
+     * switch that declines the digest, because either is a complete answer.
+     */
+    public function test_an_unset_recipient_names_the_key_to_set_and_the_switch_to_decline(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('BRIDGE_STANDUP_AGENT', $findings[0]->message);
+        $this->assertStringContainsString('BRIDGE_STANDUP_ENABLED=false', $findings[0]->message);
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an EXPLICIT `BRIDGE_STANDUP_ENABLED=true` with the
+     * recipient still unset is an operator who acted and stopped short, not the default nobody
+     * touched — the MISCONFIGURED line above, not the NOT-SET-UP one. Both tests leave the same
+     * recipient unset; only the tri-state `enabled_explicit` config key differs.
+     */
+    public function test_an_explicit_enable_with_an_unset_recipient_warns_misconfigured_not_not_set_up(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => true]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('names no seat', $findings[0]->message);
+    }
+
+    /**
+     * `env()` casts only `true`/`(true)` (any case) to a bool; `BRIDGE_STANDUP_ENABLED=1` (or
+     * `yes`, `on`) reaches `enabled_explicit` as the raw STRING. Those are explicit enables too
+     * (review round 2 of card#10918), so they take the MISCONFIGURED line above.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function explicitTruthyStrings(): array
+    {
+        return ['1' => ['1'], 'yes' => ['yes'], 'on' => ['on']];
+    }
+
+    #[DataProvider('explicitTruthyStrings')]
+    public function test_an_explicit_enable_spelled_as_a_string_with_an_unset_recipient_warns_misconfigured(string $raw): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => $raw]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('names no seat', $findings[0]->message);
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an earlier cut let `recipientUnset` claim an install
+     * with BOTH an unset recipient and a bad interval, so the interval problem never surfaced —
+     * the NOT-SET-UP line said nothing about it. `recipientUnset` is now true only when the
+     * recipient is the SOLE problem, so this combination falls to the MISCONFIGURED line instead,
+     * which names the interval.
+     */
+    public function test_an_unset_recipient_with_an_also_bad_interval_surfaces_the_interval(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null, 'bridge.standup.interval' => 0]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('positive number of seconds', $findings[0]->message);
+    }
+
+    /**
+     * The interval and the recipient are independent axes, so both reasons land on the one line:
+     * reporting only the first would leave the second to surface on the NEXT run, after the
+     * operator fixed the first and believed the digest was set up.
+     */
+    public function test_a_bad_interval_and_an_unset_recipient_are_both_named(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null, 'bridge.standup.interval' => 0]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString('positive number of seconds', $findings[0]->message);
+        $this->assertStringContainsString('names no seat', $findings[0]->message);
+    }
+
+    public function test_a_non_string_recipient_names_one_agent_reason_not_a_redundant_pair(): void
+    {
+        // A bare `true` is both "not a string" and "no usable name"; the type error is the
+        // specific one, and naming both would describe the same unusable value twice.
+        config(['bridge.standup.agent' => true, 'bridge.standup.interval' => 0]);
+
+        $message = $this->findingsOf(new StandupPostureCheck)[0]->message;
+
+        $this->assertStringContainsString('positive number of seconds', $message);
+        $this->assertStringContainsString('a bare true/false is read as a boolean', $message);
+        $this->assertStringNotContainsString('names no seat', $message);
     }
 
     public function test_the_marker_read_still_happens_on_a_misconfigured_install(): void
@@ -111,7 +221,7 @@ class StandupPostureCheckTest extends TestCase
         // behind the first would cost the operator a round trip — fix the recipient, re-run,
         // discover the digest has also been failing — which is the reason JobsPostureCheck's
         // misconfigured arm deliberately does not return either.
-        config(['bridge.standup.agent' => '']);
+        config(['bridge.standup.agent' => '../pm']);
         Cache::put(StandupGate::ERROR_KEY, ['exception' => 'X', 'error' => 'y', 'at' => 'then'], 60);
 
         $findings = $this->findingsOf(new StandupPostureCheck);
@@ -123,7 +233,7 @@ class StandupPostureCheckTest extends TestCase
 
     public function test_a_disabled_digest_is_silent_even_with_a_standing_fault_marker(): void
     {
-        // The default install, and the arm the whole corpus is the control for. A marker
+        // The declined install (BRIDGE_STANDUP_ENABLED=false). A marker
         // standing under a digest the operator has since switched OFF states a fault about
         // work nobody wants; it expires on its own. Both siblings skip their marker read on
         // the disabled arm, and this mirrors them rather than deciding it afresh.

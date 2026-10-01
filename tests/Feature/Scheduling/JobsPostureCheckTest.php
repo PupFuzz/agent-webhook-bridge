@@ -290,6 +290,49 @@ class JobsPostureCheckTest extends TestCase
         $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
     }
 
+    /**
+     * card#10918 / DL-441: every state-mutating handler is ARMED by default, so the old opt-in
+     * list arms nothing. A key an operator set that no longer does anything must say so rather
+     * than read as a decision still in force.
+     */
+    public function test_the_retired_armed_list_is_named_as_having_no_effect(): void
+    {
+        config(['bridge.jobs.armed_mutators' => 'owed_write_retry']);
+
+        $findings = $this->findingsOf(new JobsPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('BRIDGE_JOBS_ARMED_MUTATORS', $findings[0]->message);
+        $this->assertStringContainsString('has NO effect', $findings[0]->message);
+        $this->assertStringContainsString('BRIDGE_JOBS_DISARMED_MUTATORS', $findings[0]->message);
+    }
+
+    /**
+     * A kill switch naming a handler that is not a state-mutating one in this build — a typo, or
+     * a read-and-alert job — switches NOTHING off, and the operator believes it did.
+     */
+    public function test_a_disarm_entry_that_names_no_state_mutating_handler_is_warned(): void
+    {
+        config(['bridge.jobs.disarmed_mutators' => 'owed_write_retyr,owed_write_watchdog']);
+
+        $findings = $this->findingsOf(new JobsPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('owed_write_retyr', $findings[0]->message);
+        $this->assertStringContainsString('owed_write_watchdog', $findings[0]->message);
+        $this->assertStringContainsString('switches nothing off', $findings[0]->message);
+    }
+
+    /** The control: a disarm list naming a real mutator is a decision, and says nothing. */
+    public function test_a_disarm_entry_naming_a_real_mutator_is_silent(): void
+    {
+        config(['bridge.jobs.disarmed_mutators' => 'owed_write_retry']);
+
+        $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
+    }
+
     public function test_a_single_failure_is_not_reported_but_a_streak_is(): void
     {
         $job = $this->row(['last_status' => ScheduledJob::STATUS_FAILED, 'last_error' => 'blip', 'consecutive_failures' => 1]);

@@ -29,26 +29,26 @@ use Throwable;
  * arrival to gate on, so only a clock can.
  *
  * ⛔ {@see JobCapability::MutatesState} — IT APPLIES BOARD WRITES WITH NO REQUEST BEHIND IT,
- * which is exactly the surface DL-325's arming exists for. UNLIKE every other mutator,
- * though, THIS ONE IS ARMED BY DEFAULT, and its instance is declared by
+ * which is exactly the surface DL-325's arming governs. It is ARMED BY DEFAULT — the first
+ * mutator to be, by operator ruling ahead of card#10918 / DL-441 making that the rule for
+ * every mutator — and, unlike a custom mutator, its instance is declared by
  * {@see OwedWriteQueue::declareJobs()} at every durable write, before its row is inserted — the
  * same trigger as {@see OwedWriteWatchdogJob}'s. Whether it can actually retry an owed write on
  * THIS install — and, when it cannot, the key or command that stopped it — is owned by
  * {@see self::clockRetryGap()}, not restated here; a declare that failed is additionally logged
  * (`owed_write.retry_undeclared`). An install that never makes a durable write grows neither.
  * Operator
- * ruling, 2026-09-29 (card#10849 / DL-440): new functionality defaults on and needs no setup;
- * DL-325's default-off is a bridge-wide question for a separate card, and this is the one
- * named exception ahead of it — see {@see JobHandlerRegistry::armedFromConfig}.
- * `BRIDGE_OWED_WRITE_RETRY_DISABLED=true` is the kill switch back to DL-325's ordinary
- * unarmed state, and `bridge:jobs disable` (an OPERATOR act, independent of arming) stops a
- * declared instance from running without touching the armed set at all.
+ * ruling, 2026-09-29 (card#10849 / DL-440): new functionality defaults on and needs no setup.
+ * `BRIDGE_OWED_WRITE_RETRY_DISABLED=true` (or naming it in `BRIDGE_JOBS_DISARMED_MUTATORS`) is
+ * the kill switch — {@see JobHandlerRegistry::disarmedBy()} — and `bridge:jobs disable` (an
+ * OPERATOR act, independent of arming) stops a declared instance from running without
+ * disarming the handler at all.
  */
 final class OwedWriteRetryJob implements JobHandler
 {
     public const NAME = 'owed_write_retry';
 
-    /** The instance {@see OwedWriteQueue::declareJobs} declares when this job is armed. */
+    /** The instance {@see OwedWriteQueue::declareJobs} declares unless this job is disarmed. */
     public const INSTANCE = 'writeback-owed-writes-retry';
 
     /**
@@ -97,8 +97,9 @@ final class OwedWriteRetryJob implements JobHandler
      */
     public static function clockRetryGap(): ?string
     {
-        if ((bool) config('bridge.jobs.owed_write_retry_disabled')) {
-            return 'BRIDGE_OWED_WRITE_RETRY_DISABLED=true switches the owed-write retry sweep off — unset it to turn it back on';
+        $disarmedBy = JobHandlerRegistry::disarmedBy(self::NAME);
+        if ($disarmedBy !== null) {
+            return $disarmedBy.' switches the owed-write retry sweep off — unset it to turn it back on';
         }
         try {
             $posture = JobsConfig::fromConfig();

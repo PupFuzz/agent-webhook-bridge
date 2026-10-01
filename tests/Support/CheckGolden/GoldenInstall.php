@@ -69,6 +69,9 @@ final class GoldenInstall
             'bridge.retention.batch' => 500,
             'bridge.inbox_layout' => 'shared',
             'bridge.state_dir' => null,
+            // Taken from the HOST's env at config load: a box exporting an unreadable
+            // `BRIDGE_SPAWN_ENABLED` would otherwise add a FAIL line to every capture.
+            'bridge.unreadable_flags' => [],
         ]);
 
         return $this;

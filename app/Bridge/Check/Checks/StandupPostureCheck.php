@@ -26,13 +26,15 @@ use Throwable;
  * ({@see RetentionPostureCheck}, {@see JobsPostureCheck}) each had their reader from the
  * start; this is the third, and it makes the sentence true rather than editing it away.
  *
- * ⭐ SILENT ON AN INSTALL THAT DID NOT ADOPT THE DIGEST, which is the default and the common
- * case. `bridge.standup.enabled` is off unless an operator turns it on (DL-306: a pass makes
- * outbound board reads and a channel push, so it is opt-in per install), and an install that
- * never wanted a digest is not failing by not pushing one. That mirrors
- * {@see JobsPostureCheck} rather than {@see RetentionPostureCheck}: retention is ON by
- * default, so ITS disabled arm is a `warn` about stores that will now grow, and there is no
- * equivalent cost to leaving this off.
+ * ⭐ ON BY DEFAULT, SO AN UNSET RECIPIENT IS "NOT SET UP" (card#10918 / DL-441, amending
+ * DL-306's opt-in). New functionality ships enabled and names its missing setup, so an install
+ * that never named `BRIDGE_STANDUP_AGENT` gets a `warn` naming that key AND the switch that
+ * declines the digest — either is a complete answer. A recipient somebody SET wrongly is the
+ * different, MISCONFIGURED line.
+ *
+ * ⭐ SILENT ON AN INSTALL THAT DECLINED THE DIGEST (`BRIDGE_STANDUP_ENABLED=false`): a declined
+ * capability is a decision, and an install that does not want a digest is not failing by not
+ * pushing one.
  *
  * ⚠ THE DISABLED ARM DOES NOT READ THE FAULT MARKER, and that is inherited from both
  * siblings rather than decided afresh here. A marker standing under a digest the operator
@@ -43,8 +45,8 @@ use Throwable;
  * ⚑ IT NEVER YIELDS `fail`, for the same reason retention's leg does not: every posture it
  * can report leaves the receiver serving correctly. A misconfigured digest pushes nothing
  * and backs off a full day; a failed push costs a report, not a delivery. `fail` flips
- * `bridge:check`'s exit code, and this command gates deployment runbooks — an opt-in report
- * being down must not red a deploy. (The asymmetry with {@see JobsPostureCheck}'s `fail` on
+ * `bridge:check`'s exit code, and this command gates deployment runbooks — a report that is
+ * down, or not set up yet, must not red a deploy. (The asymmetry with {@see JobsPostureCheck}'s `fail` on
  * a misconfigured cadence is the subject's: there, the install's ENTIRE periodic population
  * is dead on both ingresses.)
  *
@@ -69,14 +71,17 @@ final class StandupPostureCheck implements Check
         $cfg = StandupConfig::fromConfig();
 
         if (! $cfg->enabled) {
-            yield Silence::because('the standup digest is off (its default), so this install pushes no digest, has none to be stuck on, and is not failing by not having one');
+            yield Silence::because('the standup digest is declined (BRIDGE_STANDUP_ENABLED=false), so this install pushes no digest, has none to be stuck on, and is not failing by not having one');
 
             return;
         }
 
-        if (! $cfg->isUsable()) {
+        if ($cfg->recipientUnset) {
+            yield Finding::warn('standup: ON (the default since DL-441) but NOT SET UP — BRIDGE_STANDUP_AGENT names no seat, so NOTHING is pushed; the gate logs this once a day and backs off. '
+                .'Name the seat to receive the digest in BRIDGE_STANDUP_AGENT, or decline the digest with BRIDGE_STANDUP_ENABLED=false; then re-run `php artisan config:cache`.');
+        } elseif (! $cfg->isUsable()) {
             yield Finding::warn('standup: enabled but MISCONFIGURED — '.(string) $cfg->problem
-                .'. NOTHING is pushed, and the gate backs off a full DAY once it has seen this, so the only other trace is one log line per day. Fix it and re-run `php artisan config:cache`.');
+                .'. NOTHING is pushed, and the gate backs off a full DAY once it has seen this, so the only other trace is one log line per day. Fix it (or decline the digest with BRIDGE_STANDUP_ENABLED=false) and re-run `php artisan config:cache`.');
         } else {
             yield Finding::ok('standup: on ('.$cfg->summary().')');
         }
