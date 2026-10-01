@@ -236,7 +236,9 @@ class OwedWriteQueueTest extends TestCase
 
     /**
      * Operator ruling, 2026-09-29 (card#10849 / DL-440): `owed_write_retry` ships ARMED and its
-     * instance is declared by default, the one named exception to DL-325's default-off.
+     * instance is declared by default. card#10918 / DL-441 later flipped DL-325's own default to
+     * armed-unless-disarmed for every `MutatesState` handler, so this is no longer a named
+     * exception to that default — it is an instance of the general rule now.
      */
     public function test_the_first_durable_write_also_declares_the_retry_instance_armed_by_default(): void
     {

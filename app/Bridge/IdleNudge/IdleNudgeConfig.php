@@ -29,6 +29,18 @@ use App\Bridge\Support\UrlValidator;
  * fleet either way — and `unsetKeys` says which of them it is, so the preflight can `warn` on
  * the first and keep `fail` for the second. An invalid value outranks an unset one in
  * `problem`, because it is the one an operator already acted on.
+ *
+ * ⛔ "NOBODY SET IT" MEANS NOBODY TOUCHED `BRIDGE_IDLE_NUDGE_ENABLED` AT ALL, NOT "IT READS
+ * TRUE" (card#10918 / DL-441 review round 1). `enabled` alone cannot tell apart an install that
+ * never wrote the key (the NOT-SET-UP state the default-on flip creates) from one that
+ * EXPLICITLY wrote `BRIDGE_IDLE_NUDGE_ENABLED=true` and stopped short of the Mezzanine keys that
+ * flag needs — the second is an operator who acted and left the job unusable, which is what
+ * `unsetKeys` used to (and must again) treat as a `fail`, not a `warn` nobody is told to act on
+ * urgently. `bridge.idle_nudge.enabled_explicit` is the tri-state `env()` read with no default —
+ * null when the key is unset, a real bool when it is — and `unsetKeys` is populated (routing the
+ * preflight to `warn`) only when that tri-state is null; an explicit `true` routes the same unset
+ * keys into `problem` alone, so `unsetKeys` is empty and the preflight falls through to its
+ * existing `fail` branch, exactly as it did before this entry.
  */
 final class IdleNudgeConfig
 {
@@ -69,6 +81,7 @@ final class IdleNudgeConfig
     public static function fromConfig(): self
     {
         $enabled = self::enabled();
+        $explicit = config('bridge.idle_nudge.enabled_explicit');
         $install = self::nonEmptyString(config('bridge.idle_nudge.install'));
         $rawToken = self::nonEmptyString(config('bridge.idle_nudge.token_path'));
         $timeout = self::positiveInt(config('bridge.idle_nudge.timeout'));
@@ -104,6 +117,11 @@ final class IdleNudgeConfig
             };
         }
         $problem = $invalid ?? ($unset === [] ? null : implode('; ', $unset));
+        // An EXPLICIT `true` is an operator who acted and left the job unusable — treat the
+        // unset keys as a plain MISCONFIGURED `problem` (routes the preflight to `fail`, as
+        // before this entry). Only the tri-state's null (nobody touched the key) keeps them in
+        // `unsetKeys` (routes the preflight to the NOT-SET-UP `warn`).
+        $unsetKeys = ($invalid === null && $explicit !== true) ? array_keys($unset) : [];
 
         return new self(
             enabled: $enabled,
@@ -113,7 +131,7 @@ final class IdleNudgeConfig
             timeoutS: $timeout ?? 0,
             defaultAfterS: $defaultAfter ?? 0,
             problem: $problem,
-            unsetKeys: $invalid === null ? array_keys($unset) : [],
+            unsetKeys: $unsetKeys,
         );
     }
 

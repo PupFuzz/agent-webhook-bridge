@@ -113,7 +113,7 @@ class StandupPostureCheckTest extends TestCase
      */
     public function test_an_unset_recipient_names_the_key_to_set_and_the_switch_to_decline(): void
     {
-        config(['bridge.standup.agent' => null]);
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null]);
 
         $findings = $this->findingsOf(new StandupPostureCheck);
 
@@ -121,6 +121,43 @@ class StandupPostureCheckTest extends TestCase
         $this->assertSame(Severity::Warn, $findings[0]->severity);
         $this->assertStringContainsString('BRIDGE_STANDUP_AGENT', $findings[0]->message);
         $this->assertStringContainsString('BRIDGE_STANDUP_ENABLED=false', $findings[0]->message);
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an EXPLICIT `BRIDGE_STANDUP_ENABLED=true` with the
+     * recipient still unset is an operator who acted and stopped short, not the default nobody
+     * touched — the MISCONFIGURED line above, not the NOT-SET-UP one. Both tests leave the same
+     * recipient unset; only the tri-state `enabled_explicit` config key differs.
+     */
+    public function test_an_explicit_enable_with_an_unset_recipient_warns_misconfigured_not_not_set_up(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => true]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('names no seat', $findings[0]->message);
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an earlier cut let `recipientUnset` claim an install
+     * with BOTH an unset recipient and a bad interval, so the interval problem never surfaced —
+     * the NOT-SET-UP line said nothing about it. `recipientUnset` is now true only when the
+     * recipient is the SOLE problem, so this combination falls to the MISCONFIGURED line instead,
+     * which names the interval.
+     */
+    public function test_an_unset_recipient_with_an_also_bad_interval_surfaces_the_interval(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null, 'bridge.standup.interval' => 0]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('positive number of seconds', $findings[0]->message);
     }
 
     public function test_the_marker_read_still_happens_on_a_misconfigured_install(): void

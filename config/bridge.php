@@ -244,6 +244,12 @@ return [
 
     'standup' => [
         'enabled' => (bool) env('BRIDGE_STANDUP_ENABLED', true),
+        // ⭐ NULL MEANS "ON BY DEFAULT" (card#10918 / DL-441): `env()` with no default returns
+        // null when the key is unset and a real bool when it is set, so this is the tri-state
+        // `StandupConfig` reads to tell an install that never touched the key (null — the
+        // NOT-SET-UP state) from one that explicitly typed `BRIDGE_STANDUP_ENABLED=true` and
+        // still left the recipient unset (a MISCONFIGURED state, not a default nobody acted on).
+        'enabled_explicit' => env('BRIDGE_STANDUP_ENABLED'),
         'agent' => env('BRIDGE_STANDUP_AGENT'),
         'interval' => (int) env('BRIDGE_STANDUP_INTERVAL', 86400),
     ],
@@ -276,6 +282,12 @@ return [
 
     'idle_nudge' => [
         'enabled' => (bool) env('BRIDGE_IDLE_NUDGE_ENABLED', true),
+        // ⭐ NULL MEANS "ON BY DEFAULT" (card#10918 / DL-441) — the same tri-state as
+        // `standup.enabled_explicit`, read by `IdleNudgeConfig` so a required-but-unset
+        // Mezzanine key WARNS (NOT SET UP) on a default install and FAILS (MISCONFIGURED) on one
+        // that explicitly typed `BRIDGE_IDLE_NUDGE_ENABLED=true` and stopped short of setting up
+        // the keys it turned the feature on for.
+        'enabled_explicit' => env('BRIDGE_IDLE_NUDGE_ENABLED'),
         'base_url' => env('BRIDGE_IDLE_NUDGE_BASE_URL'),
         'token_path' => env('BRIDGE_IDLE_NUDGE_TOKEN_PATH'),
         'install' => env('BRIDGE_IDLE_NUDGE_INSTALL'),

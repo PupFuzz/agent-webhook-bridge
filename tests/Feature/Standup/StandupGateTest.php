@@ -145,25 +145,32 @@ class StandupGateTest extends TestCase
     }
 
     /**
-     * @return array<string, array{0: array<string, mixed>, 1: string}>
+     * @return array<string, array{0: array<string, mixed>, 1: string, 2: string}>
      */
     public static function misconfiguredCases(): array
     {
+        $misconfigured = 'standup is enabled but misconfigured; nothing pushed';
+        // "No recipient, and nothing else is on the default (`enabled_explicit` null)" is the
+        // NOT-SET-UP state (card#10918 / DL-441 review round 1), and gets its own wording —
+        // `test_an_unset_recipient_on_the_default_warns_not_set_up_not_misconfigured` below pins
+        // it, and its sibling pins the explicit-true case going the OTHER way.
+        $notSetUp = 'standup is on by default but not set up (no recipient named); nothing pushed';
+
         return [
-            'no recipient' => [['bridge.standup.agent' => null], 'names no seat'],
-            'blank recipient' => [['bridge.standup.agent' => '   '], 'names no seat'],
+            'no recipient' => [['bridge.standup.agent' => null], 'names no seat', $notSetUp],
+            'blank recipient' => [['bridge.standup.agent' => '   '], 'names no seat', $notSetUp],
             // BRIDGE_STANDUP_AGENT=true in .env reaches config as a BOOL, exactly as the
             // retention windows do — and `(string) true` is '1', a name-shaped value that
             // would resolve a `1.yml`. A bool is plausible here because the sibling key
             // above IS one.
-            'recipient is a bare true (env bool)' => [['bridge.standup.agent' => true], 'must be an agent name'],
+            'recipient is a bare true (env bool)' => [['bridge.standup.agent' => true], 'must be an agent name', $misconfigured],
             // The name is concatenated into a `<config_dir>/<agent>.yml` path, so a
             // traversal segment would read a YAML outside the config dir and push this
             // install's fleet snapshot at whatever channel that file names.
-            'recipient escapes the config dir' => [['bridge.standup.agent' => '../other/pm'], 'is not an agent name'],
-            'recipient is a dotfile' => [['bridge.standup.agent' => '.hidden'], 'is not an agent name'],
-            'interval is zero' => [['bridge.standup.interval' => 0], 'positive number of seconds'],
-            'interval is negative' => [['bridge.standup.interval' => -1], 'positive number of seconds'],
+            'recipient escapes the config dir' => [['bridge.standup.agent' => '../other/pm'], 'is not an agent name', $misconfigured],
+            'recipient is a dotfile' => [['bridge.standup.agent' => '.hidden'], 'is not an agent name', $misconfigured],
+            'interval is zero' => [['bridge.standup.interval' => 0], 'positive number of seconds', $misconfigured],
+            'interval is negative' => [['bridge.standup.interval' => -1], 'positive number of seconds', $misconfigured],
         ];
     }
 
@@ -171,7 +178,7 @@ class StandupGateTest extends TestCase
      * @param  array<string, mixed>  $cfg
      */
     #[DataProvider('misconfiguredCases')]
-    public function test_a_misconfigured_gate_pushes_nothing_and_warns(array $cfg, string $expect): void
+    public function test_a_misconfigured_gate_pushes_nothing_and_warns(array $cfg, string $expect, string $expectMessage): void
     {
         config($cfg);
         $this->fakeChannel();
@@ -181,7 +188,7 @@ class StandupGateTest extends TestCase
 
         Http::assertNothingSent();
         Log::shouldHaveReceived('warning')
-            ->withArgs(fn (string $m, array $c) => $m === 'standup is enabled but misconfigured; nothing pushed'
+            ->withArgs(fn (string $m, array $c) => $m === $expectMessage
                 && str_contains((string) $c['problem'], $expect))
             ->once();
     }
@@ -196,7 +203,47 @@ class StandupGateTest extends TestCase
         $this->fire();
 
         Log::shouldHaveReceived('warning')
-            ->withArgs(fn (string $m) => $m === 'standup is enabled but misconfigured; nothing pushed')
+            ->withArgs(fn (string $m) => $m === 'standup is on by default but not set up (no recipient named); nothing pushed')
+            ->once();
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an install that never touched `BRIDGE_STANDUP_ENABLED`
+     * gets the NOT-SET-UP wording for an unset recipient; one that explicitly wrote
+     * `BRIDGE_STANDUP_ENABLED=true` and still left the recipient unset gets the MISCONFIGURED
+     * wording instead — the tri-state config key is the ONLY thing that differs between the two.
+     */
+    public function test_an_explicit_enable_with_an_unset_recipient_warns_misconfigured_not_not_set_up(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => true]);
+        $this->fakeChannel();
+        Log::spy();
+
+        $this->fire();
+
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $m, array $c) => $m === 'standup is enabled but misconfigured; nothing pushed'
+                && str_contains((string) $c['problem'], 'names no seat'))
+            ->once();
+    }
+
+    /**
+     * The companion of the test above: nobody wrote the key at all (the tri-state is null, the
+     * ordinary default-on state), and an unset recipient stays the friendlier NOT-SET-UP line.
+     */
+    public function test_an_unset_recipient_on_the_default_warns_not_set_up_not_misconfigured(): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => null]);
+        $this->fakeChannel();
+        Log::spy();
+
+        $this->fire();
+
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $m, array $c) => $m === 'standup is on by default but not set up (no recipient named); nothing pushed'
+                && str_contains((string) $c['problem'], 'names no seat'))
             ->once();
     }
 

@@ -114,10 +114,24 @@ class IdleNudgePostureCheckTest extends TestCase
      */
     public function test_an_unset_mezzanine_key_warns_naming_it_and_the_switch_to_decline(): void
     {
-        config(['bridge.idle_nudge.install' => null]);
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => null]);
 
         $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
         $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_ENABLED=false');
+    }
+
+    /**
+     * card#10918 / DL-441 review round 1: an EXPLICIT `BRIDGE_IDLE_NUDGE_ENABLED=true` with a
+     * required Mezzanine key still unset is an operator who acted and left the job unusable — the
+     * pre-DL-441 `fail`, not the default install's NOT-SET-UP `warn` above. The tri-state
+     * `enabled_explicit` config key is the only thing that differs between this test and the one
+     * above; both leave the same Mezzanine key unset.
+     */
+    public function test_an_explicit_enable_with_an_unset_mezzanine_key_fails_not_warns(): void
+    {
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => true]);
+
+        $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
     }
 
     public function test_every_unset_mezzanine_key_is_named_in_one_line(): void

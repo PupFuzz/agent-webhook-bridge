@@ -33,9 +33,13 @@ final class StandupConfig
         /** Why this config pushes nothing, in operator vocabulary; null when usable. */
         public readonly ?string $problem,
         /**
-         * True when the reason is that nobody named a recipient — the NOT-SET-UP state every
-         * install starts in since the digest ships on (card#10918 / DL-441), as opposed to a
-         * value somebody set wrongly.
+         * True when the reason is that nobody named a recipient, AND the recipient is the ONLY
+         * problem, AND nobody explicitly wrote `BRIDGE_STANDUP_ENABLED=true` — the NOT-SET-UP
+         * state every install starts in since the digest ships on (card#10918 / DL-441), as
+         * opposed to a value somebody set wrongly, an ALSO-bad interval, or an operator who
+         * explicitly turned the digest on and stopped short of naming a recipient (the third is
+         * MISCONFIGURED like the second: an explicit `true` is an act, not a default nobody
+         * touched — review round 1 of card#10918 caught this collapsing the two).
          */
         public readonly bool $recipientUnset,
     ) {}
@@ -45,13 +49,20 @@ final class StandupConfig
         $rawAgent = config('bridge.standup.agent');
         $agent = is_string($rawAgent) ? trim($rawAgent) : null;
         $interval = (int) config('bridge.standup.interval');
+        $explicit = config('bridge.standup.enabled_explicit');
+
+        $agentUnset = $rawAgent === null || $agent === '';
+        $recipientUnset = $agentUnset
+            && ($rawAgent === null || is_string($rawAgent))
+            && $interval >= 1
+            && $explicit !== true;
 
         return new self(
             enabled: (bool) config('bridge.standup.enabled'),
             agent: $agent === '' ? null : $agent,
             interval: $interval,
             problem: self::problemWith($rawAgent, $agent, $interval),
-            recipientUnset: $rawAgent === null || $agent === '',
+            recipientUnset: $recipientUnset,
         );
     }
 
@@ -60,19 +71,29 @@ final class StandupConfig
         return $this->problem === null;
     }
 
+    /**
+     * ⚑ THE INTERVAL IS CHECKED BEFORE THE RECIPIENT (review round 1, card#10918). An earlier
+     * cut returned the "no recipient" message first, so an install with BOTH an unset recipient
+     * and a bad `BRIDGE_STANDUP_INTERVAL` only ever saw the recipient problem — `recipientUnset`
+     * then routed it to the friendlier NOT-SET-UP `warn`, which never mentions the interval at
+     * all, and a bad interval SURVIVED with nothing pointing at it. Checking it first, and
+     * gating `recipientUnset` on the interval also being valid, means a bad interval is always in
+     * `problem` and always drops the recipient-unset branch to the MISCONFIGURED one that reads
+     * `problem` back.
+     */
     private static function problemWith(mixed $rawAgent, ?string $agent, int $interval): ?string
     {
         if ($rawAgent !== null && ! is_string($rawAgent)) {
             return 'standup.agent must be an agent name (a quoted string in .env) — a bare true/false is read as a boolean, not a name';
+        }
+        if ($interval < 1) {
+            return "standup.interval must be a positive number of seconds, got {$interval}";
         }
         if ($agent === null || $agent === '') {
             return 'standup is enabled but standup.agent names no seat (BRIDGE_STANDUP_AGENT) — there is no default recipient for a fleet snapshot';
         }
         if (preg_match(self::AGENT_NAME, $agent) !== 1) {
             return "standup.agent '{$agent}' is not an agent name — it must match the <agent>.yml filename convention (letters, digits, '.', '_', '-')";
-        }
-        if ($interval < 1) {
-            return "standup.interval must be a positive number of seconds, got {$interval}";
         }
 
         return null;

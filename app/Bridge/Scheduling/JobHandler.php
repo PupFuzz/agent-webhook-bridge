@@ -14,8 +14,9 @@ namespace App\Bridge\Scheduling;
  * ⭐ THE HANDLER IS THE GOVERNED SURFACE. Adding one is a code change and gets code review;
  * inserting an INSTANCE of an existing one is ungated and happens at runtime. That is what
  * makes "instances are free" safe: what a job can do never changes without a diff.
- * {@see JobCapability::MutatesState} handlers additionally require the install's operator
- * to arm them by name before they can run at all.
+ * {@see JobCapability::MutatesState} handlers run armed by default (card#10918 / DL-441);
+ * the install's operator disarms one by name via `BRIDGE_JOBS_DISARMED_MUTATORS` to stop it
+ * running at all.
  *
  * ⚑ FAILURE IS A THROW, not a return value — see {@see JobOutcome}. Anything thrown is
  * caught by {@see JobScheduler}, recorded on the instance row and surfaced by `bridge:jobs`

@@ -154,9 +154,16 @@ final class StandupGate
                 // Back off a full DAY rather than the ordinary interval: this runs per
                 // webhook, and a config mistake must not turn every delivery into a log line.
                 $this->gate->backOff(86400);
-                Log::warning('standup is enabled but misconfigured; nothing pushed', [
-                    'problem' => $cfg->problem,
-                ]);
+                // ⚑ THE SAME WORDING SPLIT `StandupPostureCheck` MAKES (card#10918 / DL-441,
+                // review round 1): a recipient nobody ever named is the NOT-SET-UP state every
+                // install starts in since the digest ships on, not a config MISTAKE — the daily
+                // log line said "misconfigured" for both, which reads as a fault on an install
+                // nobody has touched yet.
+                Log::warning($cfg->recipientUnset
+                    ? 'standup is on by default but not set up (no recipient named); nothing pushed'
+                    : 'standup is enabled but misconfigured; nothing pushed', [
+                        'problem' => $cfg->problem,
+                    ]);
 
                 return;
             }

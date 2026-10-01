@@ -43,20 +43,30 @@ class DefaultOnFeatureGatesTest extends TestCase
     }
 
     /**
-     * The retired opt-in list must not come back as a gate: nothing in `app/` may read it except
-     * the preflight leg that says it no longer does anything.
+     * The retired opt-in list must not come back as a gate: no file under `app/` other than the
+     * preflight leg that says it no longer does anything may name the retired key or env var, by
+     * ANY access form — the dotted `config()` path, a bare array key against `config('bridge.jobs')`,
+     * or a direct `env()` read that bypasses `config/bridge.php` altogether. One substring match
+     * per form is deliberately broader than the single dotted-path literal it replaces (that literal
+     * alone would have missed `config('bridge.jobs')['armed_mutators']` or a raw `env('BRIDGE_JOBS_ARMED_MUTATORS')`).
      */
     public function test_the_retired_armed_list_is_read_only_by_the_preflight(): void
     {
+        // Negative lookbehind on 'dis' — `disarmed_mutators` (the live kill-switch key) contains
+        // `armed_mutators` as a bare substring and must not trip this on its own name.
+        $pattern = '/(?<!dis)armed_mutators|BRIDGE_JOBS_ARMED_MUTATORS/';
         $readers = [];
         $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(base_path('app')));
         foreach ($files as $file) {
-            if ($file->isFile() && str_ends_with($file->getFilename(), '.php')
-                && str_contains((string) file_get_contents($file->getPathname()), "'bridge.jobs.armed_mutators'")) {
+            if (! $file->isFile() || ! str_ends_with($file->getFilename(), '.php')) {
+                continue;
+            }
+            $source = (string) file_get_contents($file->getPathname());
+            if (preg_match($pattern, $source) === 1) {
                 $readers[] = substr($file->getPathname(), strlen(base_path()) + 1);
             }
         }
 
-        $this->assertSame(['app/Bridge/Check/Checks/JobsPostureCheck.php'], $readers);
+        $this->assertSame(['app/Bridge/Check/Checks/JobsPostureCheck.php'], array_values(array_unique($readers)));
     }
 }

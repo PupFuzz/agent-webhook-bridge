@@ -62,10 +62,19 @@
 > ⚑ **A CONFIG DEFAULT MOVED UNDER THIS MEASUREMENT (card#10918 / DL-441), and it was not
 > re-run.** The standup digest and the idle nudge now ship ENABLED, so their two legs
 > (`CheckSlot::Standup`, `CheckSlot::IdleNudge`) print a `warn` on every golden capture where
-> they were silent when the run above was taken. Both slots' own predicates are already in the
-> never-measured list in the banner above, so no verdict below claims them. For every OTHER
-> predicate the change can only ADD differing output to a mutant's capture — a line that was
-> already different stays different — so it can turn an UNOBSERVED verdict observed, never an
+> they were silent when the run above was taken — **except a capture whose own fixture already
+> reaches a DIFFERENT branch of that same leg, which keeps printing that branch's line, not the
+> generic default-on one.** Standup: `standup-enabled` (already configured — `OK`),
+> `standup-misconfigured` (a bad recipient — `MISCONFIGURED`) and `standup-last-pass-failed`
+> (configured, plus its own failed-push line) each exercise a branch the new default does not
+> touch, so only the OTHER 48 captures gain the generic NOT-SET-UP `warn`. Idle nudge:
+> `agent-yaml-malformed` and `writeback-move-leg-agent-unread` fail to load the agent YAMLs
+> before the leg ever reaches the default-flip branch, so those two keep the `UNVALIDATED`
+> YAML-load line instead of the generic no-instance `warn`; the other 49 gain it. Both slots'
+> own predicates are already in the never-measured list in the banner above, so no verdict below
+> claims them. For every OTHER predicate the change can only ADD differing output to a mutant's
+> capture — a line that was already different stays different — so it can turn an UNOBSERVED
+> verdict observed, never an
 > observed one unobserved; the table may therefore overstate the gaps, not understate them.
 
 The DL-242 plan holds stages 0-7 to a byte-identical output contract, enforced by
