@@ -9,6 +9,7 @@ use App\Bridge\Support\Severity;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Support\Facades\Cache;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
@@ -132,6 +133,31 @@ class StandupPostureCheckTest extends TestCase
     public function test_an_explicit_enable_with_an_unset_recipient_warns_misconfigured_not_not_set_up(): void
     {
         config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => true]);
+
+        $findings = $this->findingsOf(new StandupPostureCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('names no seat', $findings[0]->message);
+    }
+
+    /**
+     * `env()` casts only `true`/`(true)` (any case) to a bool; `BRIDGE_STANDUP_ENABLED=1` (or
+     * `yes`, `on`) reaches `enabled_explicit` as the raw STRING. Those are explicit enables too
+     * (review round 2 of card#10918), so they take the MISCONFIGURED line above.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function explicitTruthyStrings(): array
+    {
+        return ['1' => ['1'], 'yes' => ['yes'], 'on' => ['on']];
+    }
+
+    #[DataProvider('explicitTruthyStrings')]
+    public function test_an_explicit_enable_spelled_as_a_string_with_an_unset_recipient_warns_misconfigured(string $raw): void
+    {
+        config(['bridge.standup.agent' => null, 'bridge.standup.enabled_explicit' => $raw]);
 
         $findings = $this->findingsOf(new StandupPostureCheck);
 

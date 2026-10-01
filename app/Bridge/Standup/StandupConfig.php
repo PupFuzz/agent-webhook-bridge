@@ -34,12 +34,12 @@ final class StandupConfig
         public readonly ?string $problem,
         /**
          * True when the reason is that nobody named a recipient, AND the recipient is the ONLY
-         * problem, AND nobody explicitly wrote `BRIDGE_STANDUP_ENABLED=true` — the NOT-SET-UP
+         * problem, AND nobody wrote `BRIDGE_STANDUP_ENABLED` at all — the NOT-SET-UP
          * state every install starts in since the digest ships on (card#10918 / DL-441), as
          * opposed to a value somebody set wrongly, an ALSO-bad interval, or an operator who
          * explicitly turned the digest on and stopped short of naming a recipient (the third is
-         * MISCONFIGURED like the second: an explicit `true` is an act, not a default nobody
-         * touched — review round 1 of card#10918 caught this collapsing the two).
+         * MISCONFIGURED like the second: an explicit enable, in any spelling, is an act, not a
+         * default nobody touched — review round 1 of card#10918 caught this collapsing the two).
          */
         public readonly bool $recipientUnset,
     ) {}
@@ -52,10 +52,11 @@ final class StandupConfig
         $explicit = config('bridge.standup.enabled_explicit');
 
         $agentUnset = $rawAgent === null || $agent === '';
+        // `$explicit` is null only when nobody wrote BRIDGE_STANDUP_ENABLED; `env()` passes
+        // `1`/`yes`/`on` through as strings, so "explicitly set" is `!== null`, not `=== true`.
         $recipientUnset = $agentUnset
-            && ($rawAgent === null || is_string($rawAgent))
             && $interval >= 1
-            && $explicit !== true;
+            && $explicit === null;
 
         return new self(
             enabled: (bool) config('bridge.standup.enabled'),

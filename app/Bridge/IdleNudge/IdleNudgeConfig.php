@@ -36,11 +36,12 @@ use App\Bridge\Support\UrlValidator;
  * EXPLICITLY wrote `BRIDGE_IDLE_NUDGE_ENABLED=true` and stopped short of the Mezzanine keys that
  * flag needs — the second is an operator who acted and left the job unusable, which is what
  * `unsetKeys` used to (and must again) treat as a `fail`, not a `warn` nobody is told to act on
- * urgently. `bridge.idle_nudge.enabled_explicit` is the tri-state `env()` read with no default —
- * null when the key is unset, a real bool when it is — and `unsetKeys` is populated (routing the
- * preflight to `warn`) only when that tri-state is null; an explicit `true` routes the same unset
- * keys into `problem` alone, so `unsetKeys` is empty and the preflight falls through to its
- * existing `fail` branch, exactly as it did before this entry.
+ * urgently. `bridge.idle_nudge.enabled_explicit` is the `env()` read with no default — null
+ * when the key is unset; otherwise a bool for `true`/`false` and the RAW STRING for every other
+ * spelling (`1`, `yes`, `on` — `env()` casts only the `true`/`false` words) — and `unsetKeys` is
+ * populated (routing the preflight to `warn`) only when it is null. Any value at all routes the
+ * same unset keys into `problem` alone, so `unsetKeys` is empty and the preflight falls through
+ * to its existing `fail` branch, exactly as it did before this entry.
  */
 final class IdleNudgeConfig
 {
@@ -117,11 +118,11 @@ final class IdleNudgeConfig
             };
         }
         $problem = $invalid ?? ($unset === [] ? null : implode('; ', $unset));
-        // An EXPLICIT `true` is an operator who acted and left the job unusable — treat the
-        // unset keys as a plain MISCONFIGURED `problem` (routes the preflight to `fail`, as
-        // before this entry). Only the tri-state's null (nobody touched the key) keeps them in
-        // `unsetKeys` (routes the preflight to the NOT-SET-UP `warn`).
-        $unsetKeys = ($invalid === null && $explicit !== true) ? array_keys($unset) : [];
+        // Reached with `$unset` non-empty only while `enabled` is true, so a set key here is an
+        // explicit enable in whatever spelling `env()` passed through — an operator who acted
+        // and left the job unusable: a plain MISCONFIGURED `problem` (the preflight's `fail`).
+        // Only null (nobody touched the key) keeps them in `unsetKeys` (the NOT-SET-UP `warn`).
+        $unsetKeys = ($invalid === null && $explicit === null) ? array_keys($unset) : [];
 
         return new self(
             enabled: $enabled,

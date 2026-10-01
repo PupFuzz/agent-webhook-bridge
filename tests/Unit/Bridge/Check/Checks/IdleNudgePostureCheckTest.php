@@ -117,7 +117,9 @@ class IdleNudgePostureCheckTest extends TestCase
         config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => null]);
 
         $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
-        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_ENABLED=false');
+        $notSetUp = array_values(array_filter($this->findings(), fn (Finding $f): bool => str_contains($f->message, 'NOT SET UP')));
+        $this->assertCount(1, $notSetUp);
+        $this->assertStringContainsString('BRIDGE_IDLE_NUDGE_ENABLED=false', $notSetUp[0]->message);
     }
 
     /**
@@ -134,6 +136,42 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
     }
 
+    /**
+     * `env()` casts only `true`/`(true)` (any case) to a bool; every other truthy spelling an
+     * operator writes reaches `enabled_explicit` as the raw STRING (`Illuminate\Support\Env`).
+     * Those are explicit enables too, so "was the key touched" is `!== null`, never `=== true`
+     * (review round 2 of card#10918: `=1` fell into the NOT-SET-UP `warn`).
+     *
+     * @return array<string, array{string}>
+     */
+    public static function explicitTruthyStrings(): array
+    {
+        return ['1' => ['1'], 'yes' => ['yes'], 'on' => ['on']];
+    }
+
+    #[DataProvider('explicitTruthyStrings')]
+    public function test_an_explicit_enable_spelled_as_a_string_with_an_unset_mezzanine_key_fails_not_warns(string $raw): void
+    {
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => $raw]);
+
+        $this->assertOne(Severity::Fail, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+    }
+
+    /**
+     * The NOT-SET-UP `warn` skips only the Mezzanine token-file legs: the job still nudges
+     * seat-record agents and still records its pass with the Mezzanine keys unset, so a second
+     * instance is the same `fail` it is on a set-up install (review round 2 of card#10918).
+     */
+    public function test_the_not_set_up_warn_does_not_swallow_a_second_instance_fail(): void
+    {
+        config(['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => null]);
+        $this->nudgeInstance('idle-nudge-a');
+        $this->nudgeInstance('idle-nudge-b');
+
+        $this->assertOne(Severity::Warn, 'BRIDGE_IDLE_NUDGE_INSTALL is unset');
+        $this->assertOne(Severity::Fail, 'exactly one is supported');
+    }
+
     public function test_every_unset_mezzanine_key_is_named_in_one_line(): void
     {
         config([
@@ -142,8 +180,10 @@ class IdleNudgePostureCheckTest extends TestCase
             'bridge.idle_nudge.install' => null,
         ]);
 
-        $findings = $this->findings();
-        $this->assertCount(1, $findings, implode("\n", array_map(fn (Finding $f) => $f->message, $findings)));
+        $all = $this->findings();
+        $findings = array_values(array_filter($all, fn (Finding $f): bool => str_contains($f->message, 'BRIDGE_IDLE_NUDGE_INSTALL')
+            || str_contains($f->message, 'BRIDGE_IDLE_NUDGE_BASE_URL') || str_contains($f->message, 'BRIDGE_IDLE_NUDGE_TOKEN_PATH')));
+        $this->assertCount(1, $findings, implode("\n", array_map(fn (Finding $f) => $f->message, $all)));
         $this->assertSame(Severity::Warn, $findings[0]->severity);
         foreach (['BRIDGE_IDLE_NUDGE_BASE_URL', 'BRIDGE_IDLE_NUDGE_TOKEN_PATH', 'BRIDGE_IDLE_NUDGE_INSTALL'] as $key) {
             $this->assertStringContainsString($key, $findings[0]->message);

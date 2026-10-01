@@ -44,11 +44,13 @@ class DefaultOnFeatureGatesTest extends TestCase
 
     /**
      * The retired opt-in list must not come back as a gate: no file under `app/` other than the
-     * preflight leg that says it no longer does anything may name the retired key or env var, by
-     * ANY access form — the dotted `config()` path, a bare array key against `config('bridge.jobs')`,
-     * or a direct `env()` read that bypasses `config/bridge.php` altogether. One substring match
-     * per form is deliberately broader than the single dotted-path literal it replaces (that literal
-     * alone would have missed `config('bridge.jobs')['armed_mutators']` or a raw `env('BRIDGE_JOBS_ARMED_MUTATORS')`).
+     * preflight leg that says it no longer does anything may name the retired key or env var in
+     * any LITERAL spelling in `app/*.php` — the dotted `config()` path, a bare array key against
+     * `config('bridge.jobs')`, or a direct `env()` read that bypasses `config/bridge.php`. That is
+     * broader than the single dotted-path literal it replaces (which missed
+     * `config('bridge.jobs')['armed_mutators']` and a raw `env('BRIDGE_JOBS_ARMED_MUTATORS')`).
+     * ⚠ NOT COVERED: a key built at runtime — `config('bridge.jobs.armed_'.'mutators')`, or any
+     * other concatenated / interpolated string — contains no literal spelling and passes green.
      */
     public function test_the_retired_armed_list_is_read_only_by_the_preflight(): void
     {

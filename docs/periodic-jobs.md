@@ -385,8 +385,8 @@ done `bridge:check`'s `idle_nudge.posture` leg `warn`s, naming what is missing;
    ([`config-schema.md`](config-schema.md) § 1 owns them; the install id is then required, because
    the fleet token reads every install). Unset, on the default install that never wrote
    `BRIDGE_IDLE_NUDGE_ENABLED` at all, they are a `warn` naming every one; unset under an EXPLICIT
-   `BRIDGE_IDLE_NUDGE_ENABLED=true` — an operator who already opted in — or SET but invalid, either
-   way, a `fail` (review round 1, card#10918).
+   `BRIDGE_IDLE_NUDGE_ENABLED` in any enabling spelling (`true`, `1`, `yes`, `on`) — an operator who
+   already opted in — or SET but invalid, either way, a `fail` (review rounds 1–2, card#10918).
 2. Per seat-record agent: `idle_nudge.seat_record` in its YAML, plus `idle_nudge.seat_agent` where the
    seat's `$COORD_AGENT` is not the bridge agent name ([`config-schema.md`](config-schema.md)
    § 2 owns both keys and the `~` caveat). Per Mezzanine install: place the `fleet_read` token in a

@@ -67,15 +67,20 @@
 > generic default-on one.** Standup: `standup-enabled` (already configured — `OK`),
 > `standup-misconfigured` (a bad recipient — `MISCONFIGURED`) and `standup-last-pass-failed`
 > (configured, plus its own failed-push line) each exercise a branch the new default does not
-> touch, so only the OTHER 48 captures gain the generic NOT-SET-UP `warn`. Idle nudge:
+> touch, so every other capture gains the generic NOT-SET-UP `warn`. Idle nudge:
 > `agent-yaml-malformed` and `writeback-move-leg-agent-unread` fail to load the agent YAMLs
 > before the leg ever reaches the default-flip branch, so those two keep the `UNVALIDATED`
-> YAML-load line instead of the generic no-instance `warn`; the other 49 gain it. Both slots'
-> own predicates are already in the never-measured list in the banner above, so no verdict below
-> claims them. For every OTHER predicate the change can only ADD differing output to a mutant's
-> capture — a line that was already different stays different — so it can turn an UNOBSERVED
-> verdict observed, never an
-> observed one unobserved; the table may therefore overstate the gaps, not understate them.
+> YAML-load line instead of the generic no-instance `warn`; every other capture gains it. The
+> exceptions are re-derived, not restated — each command prints the captures WITHOUT its line
+> (`-l` in place of `-L`, piped to `wc -l`, counts the ones with it):
+>
+> - `command grep -L 'standup: ON (the default since DL-441) but NOT SET UP' tests/Fixtures/check-golden/*.txt`
+> - `command grep -L 'no ENABLED .idle_nudge. job instance exists' tests/Fixtures/check-golden/*.txt`
+>
+> Both slots' own predicates are already in the never-measured list in the banner above, so no
+> verdict below claims them. For every OTHER predicate the change can only ADD differing output
+> to a mutant's capture — a line that was already different stays different — so it can turn an
+> UNOBSERVED verdict observed, never an observed one unobserved; the table may therefore overstate the gaps, not understate them.
 
 The DL-242 plan holds stages 0-7 to a byte-identical output contract, enforced by
 `tests/Feature/Console/Check/CheckGoldenTest.php`. The plan also requires that the bound on
