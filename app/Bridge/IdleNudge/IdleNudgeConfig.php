@@ -27,8 +27,10 @@ use App\Bridge\Support\UrlValidator;
  * nobody set is the NOT-SET-UP state of every install with a Mezzanine-sourced agent, where a
  * value somebody set wrongly is a broken config. `problem` covers both — the job cannot read the
  * fleet either way — and `unsetKeys` says which of them it is, so the preflight can `warn` on
- * the first and keep `fail` for the second. An invalid value outranks an unset one in
- * `problem`, because it is the one an operator already acted on.
+ * the first and keep `fail` for the second. An invalid value outranks an unset one: it is
+ * named FIRST in `problem` and it alone decides the severity (`unsetKeys` stays empty, so the
+ * preflight `fail`s), because it is the one an operator already acted on — but every unset key
+ * is still named after it, so fixing the invalid value does not reveal them one run later.
  *
  * ⛔ "NOBODY SET IT" MEANS NOBODY TOUCHED `BRIDGE_IDLE_NUDGE_ENABLED` AT ALL, NOT "IT READS
  * TRUE" (card#10918 / DL-441 review round 1). `enabled` alone cannot tell apart an install that
@@ -117,7 +119,8 @@ final class IdleNudgeConfig
                 default => null,
             };
         }
-        $problem = $invalid ?? ($unset === [] ? null : implode('; ', $unset));
+        $reasons = [...($invalid === null ? [] : [$invalid]), ...array_values($unset)];
+        $problem = $reasons === [] ? null : implode('; ', $reasons);
         // Reached with `$unset` non-empty only while `enabled` is true, so a set key here is an
         // explicit enable in whatever spelling `env()` passed through — an operator who acted
         // and left the job unusable: a plain MISCONFIGURED `problem` (the preflight's `fail`).

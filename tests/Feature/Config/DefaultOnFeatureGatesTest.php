@@ -32,6 +32,12 @@ class DefaultOnFeatureGatesTest extends TestCase
     {
         yield 'standup digest' => ["/'enabled'\s*=>\s*\(bool\)\s*env\(\s*'BRIDGE_STANDUP_ENABLED'\s*,\s*true\s*\)/"];
         yield 'idle nudge' => ["/'enabled'\s*=>\s*\(bool\)\s*env\(\s*'BRIDGE_IDLE_NUDGE_ENABLED'\s*,\s*true\s*\)/"];
+        // The tri-state beside each: read with NO default and no cast, so it is null exactly when
+        // nobody touched the key — the one value that routes an unset setup key to NOT SET UP
+        // rather than to the explicit enable's MISCONFIGURED `fail`. A default here would make
+        // every install read as an explicit enable.
+        yield 'standup digest: explicit-enable tri-state' => ["/'enabled_explicit'\s*=>\s*env\(\s*'BRIDGE_STANDUP_ENABLED'\s*\)/"];
+        yield 'idle nudge: explicit-enable tri-state' => ["/'enabled_explicit'\s*=>\s*env\(\s*'BRIDGE_IDLE_NUDGE_ENABLED'\s*\)/"];
         // Every state-mutating job handler is armed unless named here: an empty default.
         yield 'mutator kill-switch list' => ["/'disarmed_mutators'\s*=>\s*env\(\s*'BRIDGE_JOBS_DISARMED_MUTATORS'\s*,\s*''\s*\)/"];
     }

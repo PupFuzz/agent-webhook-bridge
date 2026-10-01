@@ -61,78 +61,93 @@ final class IdleNudgePostureCheck implements Check
             return;
         }
 
+        // ⛔ EVERY LEG BELOW SKIPS ONLY ON ITS OWN MISSING INPUT (card#10918 / DL-441). An early
+        // `return` here silences every later leg, including those that never read what its
+        // branch tested; the declined `return` above is the only one, because there nothing
+        // is left to evaluate.
+        $sources = null;
         try {
             $sources = IdleNudgeSources::of((new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs());
         } catch (Throwable $e) {
             yield Finding::unvalidated('idle_nudge: the agent YAMLs could not be loaded ('.RedactedErrorText::of($e).'), so which agents it judges, and whether any of them needs Mezzanine, is unknown — every pass is unmeasured until they load.');
-
-            return;
         }
 
-        if ($sources->mezzanineNeeded()) {
+        // The Mezzanine keys and the token file bind only while some agent needs Mezzanine, which
+        // only the loaded YAMLs can say — so with `$sources` null both legs are skipped, and the
+        // unvalidated line above already says that question is unanswered.
+        if ($sources?->mezzanineNeeded() === true) {
             // ⚑ NOT SET UP IS A `warn`, SET WRONGLY STAYS A `fail` (card#10918 / DL-441). The
             // nudge is on by default, so unset keys are where every install with a push-routed
             // agent starts — a `fail` there would red the deploy gate of an install nobody
-            // touched, for a feature nobody set up. Either way only the token-file legs below are
-            // skipped: with `problem` set the job still runs, nudges seat-record agents and records
-            // its pass without Mezzanine ({@see IdleNudgeJob}), so the instance and last-pass legs
-            // still have a subject.
+            // touched, for a feature nobody set up. The two are one either/or about the same
+            // keys; neither gates the token-file leg below, nor anything after it.
             if ($cfg->unsetKeys !== []) {
                 yield Finding::warn('idle_nudge: ON (the default since DL-441) but NOT SET UP for the agents it reads from Mezzanine (those with `channel.route_intents: true` and no `idle_nudge.seat_record`) — '
                     .$cfg->problem.'. None of them is nudged. Set '.implode(', ', $cfg->unsetKeys)
                     .', give each such agent an `idle_nudge.seat_record` instead, or decline the nudge with BRIDGE_IDLE_NUDGE_ENABLED=false (docs/periodic-jobs.md § The idle nudge).');
             } elseif ($cfg->problem !== null) {
                 yield Finding::fail('idle_nudge: enabled but MISCONFIGURED — '.$cfg->problem.'. Every Mezzanine-sourced agent is unmeasured and none is nudged.');
-            } else {
-                $tokenPath = (string) $cfg->tokenPath;
-                if (! is_file($tokenPath)) {
-                    yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is absent or unreachable — every Mezzanine-sourced agent is unmeasured.");
-                } elseif (SecretFile::isInsecure($tokenPath)) {
-                    yield Finding::fail("idle_nudge: the fleet token file {$tokenPath} is group/world-readable — chmod 600; the fleet read refuses it, so every Mezzanine-sourced agent is unmeasured.");
+            }
+
+            // Its one input is the path somebody set: a file that is missing or readable by
+            // others is its own fault, whatever the OTHER keys are.
+            if ($cfg->tokenPath !== null) {
+                if (! is_file($cfg->tokenPath)) {
+                    yield Finding::fail("idle_nudge: the fleet token file {$cfg->tokenPath} is absent or unreachable — every Mezzanine-sourced agent is unmeasured.");
+                } elseif (SecretFile::isInsecure($cfg->tokenPath)) {
+                    yield Finding::fail("idle_nudge: the fleet token file {$cfg->tokenPath} is group/world-readable — chmod 600; the fleet read refuses it, so every Mezzanine-sourced agent is unmeasured.");
                 }
             }
         }
 
+        $instances = null;
         try {
             $instances = ScheduledJob::query()->where('handler', IdleNudgeJob::NAME)->where('enabled', true)->get();
         } catch (Throwable $e) {
             yield Finding::unvalidated('idle_nudge: could not read the periodic-job registry ('.RedactedErrorText::of($e).') — whether anything runs the nudge is unknown.');
-
-            return;
         }
 
-        if ($instances->isEmpty()) {
+        if ($instances !== null && $instances->isEmpty()) {
             yield Finding::warn('idle_nudge: enabled, but no ENABLED `'.IdleNudgeJob::NAME.'` job instance exists, so nothing runs it. Insert one with `php artisan bridge:jobs add … --handler='.IdleNudgeJob::NAME.'` (docs/periodic-jobs.md § The idle nudge), '
                 .'or decline the nudge with BRIDGE_IDLE_NUDGE_ENABLED=false.');
-
-            return;
         }
-        if ($instances->count() > 1) {
+        if ($instances !== null && $instances->count() > 1) {
             yield Finding::fail('idle_nudge: '.$instances->count().' ENABLED `'.IdleNudgeJob::NAME.'` instances ('.$instances->pluck('name')->implode(', ')
                 .') — exactly one is supported. Each reads the fleet on its own cadence against one shared dedupe record; disable all but one.');
-
-            return;
         }
 
-        $instance = $instances->first();
-        if ($instance->last_run_at === null) {
+        // The run and staleness legs judge ONE instance's row; with none, or several, there is
+        // no single row to judge.
+        $instance = $instances !== null && $instances->count() === 1 ? $instances->first() : null;
+        if ($instance !== null && $instance->last_run_at === null) {
             yield Finding::warn("idle_nudge: instance '{$instance->name}' has NOT RUN yet, so nothing has been measured.");
-
-            return;
+        }
+        if ($instance !== null && $instance->last_run_at !== null) {
+            $ageS = (int) $instance->last_run_at->diffInSeconds(Carbon::now(), true);
+            $staleAfterS = $instance->interval_s + TickPosture::graceS($instance->interval_s);
+            if ($ageS > $staleAfterS) {
+                yield Finding::warn("idle_nudge: instance '{$instance->name}' last ran {$ageS}s ago, past its interval of {$instance->interval_s}s plus a grace of "
+                    .TickPosture::graceS($instance->interval_s).'s — the result below is old, and idle seats since then have not been looked at.');
+            }
         }
 
-        $ageS = (int) $instance->last_run_at->diffInSeconds(Carbon::now(), true);
-        $staleAfterS = $instance->interval_s + TickPosture::graceS($instance->interval_s);
-        if ($ageS > $staleAfterS) {
-            yield Finding::warn("idle_nudge: instance '{$instance->name}' last ran {$ageS}s ago, past its interval of {$instance->interval_s}s plus a grace of "
-                .TickPosture::graceS($instance->interval_s).'s — the result below is old, and idle seats since then have not been looked at.');
-        }
+        // ⚑ A MISSING RECORD IS A FINDING ONLY WHERE A PASS WAS EXPECTED TO WRITE ONE. With the
+        // registry read and no enabled instance ever having run, its absence is what the warns
+        // above already say, not a measurement the install stopped; a record that IS there (an
+        // earlier instance's) is still reported. An unread registry cannot rule a pass out.
+        $noPassExpected = $instances !== null && $instances->every(fn (ScheduledJob $i): bool => $i->last_run_at === null);
 
-        yield from $this->lastPass($sources);
+        yield from $this->lastPass($sources, $noPassExpected);
     }
 
-    /** @return iterable<Finding> */
-    private function lastPass(IdleNudgeSources $sources): iterable
+    /**
+     * Reads only the stored record, so it runs whatever the instance legs found. `$sources` is
+     * null when the agent YAMLs did not load: the sub-legs that split seat-record agents from
+     * Mezzanine-sourced ones then say less, or are skipped, and every other leg is unchanged.
+     *
+     * @return iterable<Finding>
+     */
+    private function lastPass(?IdleNudgeSources $sources, bool $noPassExpected): iterable
     {
         try {
             $record = IdleNudgePassRecord::read();
@@ -143,6 +158,9 @@ final class IdleNudgePostureCheck implements Check
         }
 
         if ($record === null || $record === []) {
+            if ($noPassExpected) {
+                return;
+            }
             yield Finding::unvalidated('idle_nudge: no readable last-pass record at '.IdleNudgePassRecord::path().' — what the last pass concluded is unknown.');
 
             return;
@@ -185,7 +203,9 @@ final class IdleNudgePostureCheck implements Check
         // enabled (a stale cached config, or an env var only the tick's environment carries).
         // Judged over the Mezzanine-sourced agents alone: a seat-record agent never reads a push
         // time, so counting it would hide this cause on any mixed install.
-        $mezzanineRouted = array_diff_key($routed, $sources->seatRecords);
+        // Without the YAMLs the split cannot be drawn, so both readings are skipped and the
+        // generic all-unmeasured line below speaks for the whole population instead.
+        $mezzanineRouted = $sources === null ? [] : array_diff_key($routed, $sources->seatRecords);
         if ($mezzanineRouted !== [] && array_filter($mezzanineRouted, fn (mixed $code): bool => $code !== 'push_time_unreadable') === []) {
             yield Finding::warn('idle_nudge: every push-routed Mezzanine-sourced agent read push_time_unreadable on the last pass ('.$tally
                 .'), so no pending work could be aged. Two causes: (a) `php artisan migrate` was not run, so `agent_dispatches.push_attempted_at` does not exist; '
@@ -223,7 +243,7 @@ final class IdleNudgePostureCheck implements Check
      * @param  array<mixed>  $record
      * @return iterable<Finding>
      */
-    private function seatRecordFaults(array $agents, array $record, IdleNudgeSources $sources): iterable
+    private function seatRecordFaults(array $agents, array $record, ?IdleNudgeSources $sources): iterable
     {
         $read = is_array($record['seat_records'] ?? null) ? $record['seat_records'] : null;
         $compared = is_array($record['record_agents'] ?? null) ? $record['record_agents'] : null;
@@ -232,9 +252,10 @@ final class IdleNudgePostureCheck implements Check
                 continue;
             }
             $agent = (string) $agent;
-            $declared = $sources->seatRecords[$agent] ?? null;
+            $declared = $sources?->seatRecords[$agent] ?? null;
             $path = match (true) {
                 is_string($read[$agent] ?? null) => $read[$agent],
+                $sources === null => '(path not known: the last pass recorded none and the agent YAMLs did not load)',
                 $declared === null => '(no longer declared)',
                 $read === null => "declared as {$declared} (the last-pass record predates the resolved path, so the path the tick read is not known)",
                 default => "declared as {$declared}",
@@ -261,10 +282,15 @@ final class IdleNudgePostureCheck implements Check
      *
      * @param  array<mixed>|null  $compared  the pass record's `record_agents`
      */
-    private function mismatch(string $agent, ?string $declared, ?array $compared, IdleNudgeSources $sources): string
+    private function mismatch(string $agent, ?string $declared, ?array $compared, ?IdleNudgeSources $sources): string
     {
         $remedy = "set `idle_nudge.seat_agent` to the `agent` value inside it; otherwise point `idle_nudge.seat_record` at the intended seat's record.";
         $then = is_string($compared[$agent] ?? null) ? $compared[$agent] : null;
+        if ($sources === null) {
+            return $then === null
+                ? 'was written for another agent; the last-pass record predates the recorded comparand and the agent YAMLs did not load, so the name it was compared against is not known.'
+                : "was written for another agent: its `agent` is not `{$then}`, the name the last pass compared it against. If this file is the intended seat's record, {$remedy}";
+        }
         if ($declared === null) {
             return $then === null
                 ? 'was written for another agent; the agent is no longer declared, so the name it was compared against is not known.'
