@@ -22,11 +22,12 @@ use LogicException;
  * read, which `bridge:check` reports as a `fail` ({@see InstallFlagValuesCheck}). Laravel's own
  * `null`/`(null)` spelling reaches this as null and is therefore read as UNSET, not unreadable.
  *
- * ⛔ CALL IT FROM config/ ONLY. It reads the env repository directly, which holds the `.env`
- * values only while the config files are being evaluated; once `config:cache` has run, the
- * `.env` is never loaded and this would answer from the process environment alone. Larastan's
- * `noEnvCallsOutsideOfConfig` cannot see an `Env::get()` call, so `BoolEnvGuardTest` pins that
- * nothing under app/ calls it.
+ * ⛔ CALL IT FROM config/ ONLY — both {@see self::get()} and {@see self::unreadable()}. Each reads
+ * the env repository directly, which holds the `.env` values only while the config files are
+ * being evaluated; once `config:cache` has run, the `.env` is never loaded and either would answer
+ * from the process environment alone. Larastan's `noEnvCallsOutsideOfConfig` cannot see an
+ * `Env::get()` call, so `BoolEnvGuardTest` pins that nothing under app/ makes any static call on
+ * this class.
  *
  * ⭐ WHY THE UNREADABLE RECORD IS A CONFIG VALUE: `config/bridge.php` stores
  * {@see self::unreadable()} as `bridge.unreadable_flags`, so `config:cache` freezes the record

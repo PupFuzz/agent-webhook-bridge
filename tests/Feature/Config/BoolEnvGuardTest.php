@@ -16,9 +16,9 @@ use Tests\TestCase;
  *
  * Three legs: no raw bool cast of `env()`; every key `BoolEnv::get()` is called with is in
  * `BoolEnv::KEYS` and every listed key is read somewhere (a listed key nothing reads would be
- * reported by `bridge:check` while changing nothing); and nothing under app/ calls
- * `BoolEnv::get()`, which reads the env repository and so is only right while config/ is being
- * evaluated.
+ * reported by `bridge:check` while changing nothing); and nothing under app/ makes any static
+ * call on `BoolEnv` — `get()` and `unreadable()` both read the env repository, which is right only
+ * while config/ is being evaluated.
  */
 class BoolEnvGuardTest extends TestCase
 {
@@ -61,11 +61,11 @@ class BoolEnvGuardTest extends TestCase
         $this->assertSame($registered, $read);
     }
 
-    public function test_nothing_under_app_calls_the_config_time_reader(): void
+    public function test_nothing_under_app_makes_a_static_call_on_bool_env(): void
     {
-        $calls = SourceScan::sitesInApp(static fn (array $tokens, int $i): ?string => self::boolEnvGetAt($tokens, $i));
+        $calls = SourceScan::sitesInApp(static fn (array $tokens, int $i): ?string => self::boolEnvStaticCallAt($tokens, $i));
 
-        $this->assertSame([], $calls, 'BoolEnv::get() reads the env repository, which holds the .env only while config/ is evaluated — read the config value instead');
+        $this->assertSame([], $calls, 'every BoolEnv static method (get(), unreadable()) reads the env repository, which holds the .env only while config/ is evaluated — read the config value (bridge.* / bridge.unreadable_flags) instead');
     }
 
     /**
@@ -126,17 +126,42 @@ class BoolEnvGuardTest extends TestCase
     }
 
     /**
+     * The method name when the token at $i opens any `BoolEnv::<method>(` call, else null.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function boolEnvStaticCallAt(array $tokens, int $i): ?string
+    {
+        if (! self::isBoolEnvName($tokens[$i])) {
+            return null;
+        }
+        if (($tokens[$i + 1][0] ?? null) !== T_DOUBLE_COLON || ($tokens[$i + 2][0] ?? null) !== T_STRING || ($tokens[$i + 3][1] ?? null) !== '(') {
+            return null;
+        }
+
+        return $tokens[$i + 2][1];
+    }
+
+    /**
+     * @param  array{0: int|string, 1: string}  $token
+     */
+    private static function isBoolEnvName(array $token): bool
+    {
+        if (! in_array($token[0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
+            return false;
+        }
+
+        return $token[1] === 'BoolEnv' || str_ends_with($token[1], '\\BoolEnv');
+    }
+
+    /**
      * The key literal when the token at $i opens `BoolEnv::get(`, else null.
      *
      * @param  list<array{0: int|string, 1: string}>  $tokens
      */
     private static function boolEnvGetAt(array $tokens, int $i): ?string
     {
-        if (! in_array($tokens[$i][0], [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) {
-            return null;
-        }
-        $class = $tokens[$i][1];
-        if ($class !== 'BoolEnv' && ! str_ends_with($class, '\\BoolEnv')) {
+        if (! self::isBoolEnvName($tokens[$i])) {
             return null;
         }
         if (($tokens[$i + 1][0] ?? null) !== T_DOUBLE_COLON || ($tokens[$i + 2][1] ?? null) !== 'get' || ($tokens[$i + 3][1] ?? null) !== '(') {

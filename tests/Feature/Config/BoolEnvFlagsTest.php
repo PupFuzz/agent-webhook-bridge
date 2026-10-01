@@ -8,7 +8,7 @@ use Tests\TestCase;
 /**
  * Every on/off `.env` setting the config files read, resolved THROUGH THE CONFIG FILE that reads
  * it (card#11029): a `BRIDGE_SPAWN_ENABLED=no` used to turn spawn ON, because `(bool) env(...)`
- * casts every non-empty string Laravel does not convert (`no`, `off`, `nope`) to `true`.
+ * casts every non-empty string Laravel does not convert, other than `"0"` (`no`, `off`, `nope`), to `true`.
  *
  * The subject is the RESOLVED CONFIG VALUE, not the parser, so this class reds against the old
  * cast and against any site that stops going through the parser. Each case sets the variable in
