@@ -8,6 +8,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+
+- **card#9022** — **CI: a new `continue-on-error-guard` workflow fails any pull request whose workflows or composite actions carry a `continue-on-error` key**, at job or step level, at any value (`false` included). A failed step under that key leaves its job reporting success, so a merge gate reading CI would pass over it. Copied unchanged from the coord plugin's `templates/workflows/continue-on-error-guard.yml`; keep the job name `continue-on-error-guard`, which the plugin's self-merge and auto-merge gates pin. No workflow or composite action in this repository carries the key today. Contributor-facing only: no runtime, config, migration or route change.
+
 ## [0.95.0] - 2026-10-01
 
 ### Changed

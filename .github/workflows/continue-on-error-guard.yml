@@ -1,0 +1,540 @@
+# continue-on-error-guard.yml — red when ANY workflow, or any composite action, in this repository
+# carries the `continue-on-error` key, at job or step level, at any value (card#9022).
+#
+# WHY IT EXISTS. A step under `continue-on-error` that FAILS leaves its job, and the job's check
+# run, reporting `success`. Every CI-green reader grades that job-level signal — GitHub's own
+# required-status-checks, and both merge gates this plugin ships (`templates/bin/ci-verdict.sh`
+# behind the three self-merge wrappers, and `templates/workflows/coord-auto-merge.yml`'s BOUNDARY 3)
+# — so each of them MERGES over the failed step, and no API read can tell that masked failure from a
+# pass. The defence therefore cannot live in the readers; it lives here, in the one place the
+# masking is written down: this job reads your repository's own workflow and composite-action files
+# and FAILS its check run if the key is present anywhere in them. The gates then see an ordinary red
+# check. `templates/bin/ci-read`'s contract header, the paragraph headed WHAT `CLEAN` DOES NOT SEE
+# (in your coord install), owns the mechanism and its exact width.
+#
+# THERE IS NO EXEMPTION, AND THAT IS A RULING, NOT A GAP. The operator ruled that the key may not
+# appear in any workflow (or composite action) of an adopting repository — no per-step opt-out, no
+# marker, no allow-list (card#9022, item (m), option A). `continue-on-error: false` is refused
+# exactly like `true`: the key is the seed, and flipping it is a one-character diff that reads like
+# configuration rather than like deleting a gate. A check you are not ready to block on is expressed
+# by NOT adopting it yet, never by adopting it advisory. The value is not read, and an expression
+# value is refused like any other.
+#
+# WHAT IT READS. Every tracked-or-untracked `.yml` / `.yaml` (in any letter case) in the checkout
+# that parses as a workflow BY CONTENT (a trigger block plus a `jobs:` mapping) — not only
+# `.github/workflows/`, so a workflow kept in another directory joins the check with it. Keys only,
+# at every depth of the parsed document: a token in a comment, a step `name:` or a `run:` script is
+# prose and never a hit (this file's own text is the live proof — it carries the token in prose
+# throughout and must stay green over itself). A file under `.github/workflows/` that does not parse
+# — one that is not UTF-8 included — FAILS the check, because GitHub runs that directory and an
+# unreadable file there is a hole in the measurement; an unparseable or non-UTF-8 YAML elsewhere
+# cannot be a workflow anything runs and is LISTED, not failed.
+# LOCAL ACTIONS TOO. A composite action's steps take the key as well, and a composite action kept
+# in this repository IS a file in this checkout — so every `action.yml` / `action.yaml` in the
+# checkout whose `runs.using` is `composite` is judged exactly like a workflow, referenced or not.
+# That is a POPULATION, not a walk along `uses:` edges: a composite nested inside another one is
+# judged because it is in the checkout, and a cycle of actions naming each other has nothing to
+# loop on. The edges are still read, for one thing: every step whose `uses:` names a local
+# action — `./<dir>`, `.\<dir>` or `$/<dir>`, in a workflow or in a composite action — must
+# resolve to an action in this checkout: metadata that parses and declares a `runs.using`, or a
+# Dockerfile. One that does not (a missing directory, a path or a symbolic link that leaves the
+# checkout, a `..` after a symbolic link, an action checked out or generated at run time) FAILS
+# the check, because the steps it runs cannot be read and "could not tell" is not a pass. An
+# `action.yml` / `action.yaml` that does not parse, or is not UTF-8, fails the check wherever it
+# sits.
+# READ AS GITHUB'S RUNNER READS IT (actions/runner, read at 15231be): `runs.using` in any letter
+# case (`ActionManifestManagerLegacy.cs`, the `ConvertRuns` compare — the parser the runner uses
+# unless its parser-comparison flag is set; `ActionManifestManager.cs` agrees); metadata and
+# Dockerfile names, and the paths to them, in any letter case, as a Windows or macOS runner's
+# file system opens them
+# (`ActionManager.cs`, `LoadAction`); the three local `uses:` forms, read exactly as written with
+# `\` as a separator (`PipelineTemplateConverter.cs`, `ConvertToStep`;
+# `PipelineConstants.TryParseSelfRepository`); and symbolic links followed to their target, which
+# is judged there. Where the runner's reading depends on its OS, this check takes the one that
+# loads a file; a runner reading it the other way fails that step loudly.
+# ⚠ WHAT IT CANNOT READ, BY NAME: a REMOTE reusable workflow or REMOTE action
+# (`uses: <owner>/<repo>/...@<ref>`), whose file is in another repository; the steps inside a
+# NON-composite action (JavaScript or Docker), which are program code rather than steps — such an
+# action kept locally is only checked to resolve; and ANYTHING AN EARLIER STEP WRITES INTO A LOCAL
+# ACTION'S DIRECTORY. The runner reads a local action from the workspace when the step that uses it
+# STARTS (`ActionRunner.cs`, `RunAsync`, which calls `ActionManager.cs`'s `LoadAction` on the
+# `workspace` path), while this check reads the files as checked out, before any step of the job
+# using them has run — so a change an earlier step of that job makes there is never read here: a new
+# metadata file beside a checked-in one (the runner prefers `action.yml`, then `action.yaml`, then a
+# Dockerfile, so it can outrank the file this check resolved to) and an OVERWRITE of a checked-in
+# composite alike. A `$/<dir>` is read here in this checkout; the runner fetches it from this
+# repository at the workflow's commit, and that that commit is the one this job checked out is not
+# verified here.
+# ⚠ AND WHAT IT CANNOT STOP: on `pull_request` the checkout is the PR's own merge commit, so the PR
+# under review controls THIS file's text too. A PR can edit or delete the guard in the same diff
+# the guard then runs on — and a deleted guard reports no check, which a pinning gate refuses as
+# absent, while an edited one reports whatever the edit made it report. The guard is a check on
+# the workflows a PR carries, not a control over who may change them; changes to this file are for
+# review to catch.
+#
+# THE TWO GATES, AND WHAT EACH OF THEIR MODES DOES WITH THIS CHECK.
+#   * `ci-verdict.sh`, in its required-contexts mode, PINS this check by its job name
+#     `continue-on-error-guard`: absent, still running, or red, it is refused like a required
+#     context. KEEP THE JOB NAME when you copy this file — renamed, the pin reads it as never
+#     reported and every self-merge in that mode is refused. The pin matches by NAME ONLY: ANY
+#     check run named `continue-on-error-guard` satisfies it, whatever produced it — so a PR that
+#     deletes or replaces this file with one of the same job name is caught by review, not by the
+#     pin.
+#   * BOUNDARY 3 of `coord-auto-merge.yml` PINS it the same way, by the same job name: a head with
+#     no check run of that name is not auto-merged (a skip — a human merges), and a red or
+#     still-running one stops that merge like any other check.
+#   * `ci-verdict.sh`'s ALL-RUNS mode (a base that declares no required contexts) does NOT pin it:
+#     a red run here stops that merge, an absent one is not missed. Install it wherever any of
+#     these gates merges.
+# `docs/SELF-MERGE-WRAPPER-COINSTALL.md § The continue-on-error guard workflow` (in your coord
+# install) owns the install step and its ordering.
+#
+# THE PREDICATE IS NOT WRITTEN HERE. The two regions below are GENERATED from
+# `plugins/coord/_vendor/` in the framework repo — the same code that repo runs over its own tree
+# — and carry a stamp naming their source and revision. Do not edit between the markers; a copy
+# of this file refreshed by `/coord:update` replaces them.
+#
+# ⚠ RUNNER PREREQUISITE. This workflow requires an Actions runner that supports node24 (its action
+# references are SHA pins at majors that declare `runs.using: node24`) and network access to PyPI
+# for the one pinned dependency, PyYAML. Do NOT unpin an action to get node20 back: a tag can be
+# repointed and a SHA cannot. If your runner is too old for node24, pin instead to a SHA you have
+# READ as node20 — read the object id itself, never infer the runtime from the major:
+#     curl -sS https://raw.githubusercontent.com/<owner>/<action>/<sha>/action.yml | grep using
+
+name: continue-on-error guard
+
+on:
+  pull_request:
+    # `edited` because the checkout below is the PR's MERGE commit, and a retargeted base arrives
+    # as `pull_request.edited` — without it the verdict would describe a merge into the old base.
+    types: [opened, edited, reopened, synchronize]
+
+# SUPERSEDED PR RUNS ARE CANCELLED; NOTHING ELSE EVER IS (card#11008) — KEEP IT when you copy this
+# file. A newer `pull_request` run for the same PR cancels this workflow's older run for it; every
+# other event gets a group of its own (`github.run_id`), so no push run is cancelled or evicted.
+# `plugins/coord/docs/CUSTOMIZING.md § Superseded PR runs are cancelled in the shipped workflows`
+# (in your coord install) OWNS the rule, the exemption and why the group is not just `github.ref`.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # UTF-8 stdio pinned at WORKFLOW scope (card#7869) — KEEP IT when you copy this file.
+  # `plugins/coord/docs/CUSTOMIZING.md § UTF-8 stdio in the shipped workflows` (in your coord
+  # install) OWNS the argument and the measurement — deliberately not restated.
+  PYTHONUTF8: "1"
+
+jobs:
+  continue-on-error-guard:
+    # THE CHECK NAME IS A CONTRACT: `ci-verdict.sh` pins this exact string. Keep id and name equal.
+    name: continue-on-error-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Install the one dependency, pinned
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+
+      - name: Refuse the continue-on-error key in this repository's workflows
+        run: |
+          set -euo pipefail
+          python3 -X utf8 - <<'COE_GUARD_PY'
+          import codecs
+          import os
+          import posixpath
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          # LF on stdout on every runner OS, before the first line is written: a `windows-*` runner's
+          # text-mode stdout would otherwise emit CRLF into the annotation lines.
+          #
+          # A path whose name is not UTF-8 reaches this program as `surrogateescape` text (see
+          # `checkout_files`). Printed as it is, it either RAISES (a stdout whose error handler is
+          # `strict`, as `PYTHONIOENCODING=utf-8:strict` in the job's env makes it) or writes the
+          # raw byte into a UTF-8 log, where it shows as U+FFFD and no longer names one file. So
+          # stdout writes each such byte as `\xNN`, whatever handler the interpreter was started
+          # with: every line that names a path prints, and names it in that escaped form. The form
+          # is NOT unique — a file literally named `caf\xe9.yml` (a backslash, then `xe9`) prints
+          # the same line as one whose name holds the byte 0xE9 — so the verdict and the count
+          # are exact, and a name carrying `\x` may be either spelling.
+          def _name_byte(exc):
+              bad = exc.object[exc.start:exc.end]
+              if (isinstance(exc, UnicodeEncodeError)
+                      and all(0xDC80 <= ord(c) <= 0xDCFF for c in bad)):
+                  return "".join(f"\\x{ord(c) - 0xDC00:02x}" for c in bad), exc.end
+              raise exc
+
+
+          codecs.register_error("coe_guard_name_byte", _name_byte)
+          sys.stdout.reconfigure(newline="\n", errors="coe_guard_name_byte")
+
+          try:
+              import yaml
+          except ImportError:
+              print("::error::continue-on-error-guard: PyYAML is not importable, so no workflow can "
+                    "be parsed and this check would pass over an EMPTY population. Refusing.")
+              sys.exit(1)
+
+          ROOT = Path.cwd()
+          WORKFLOW_DIR = ".github/workflows/"
+
+
+          def checkout_files():
+              """Every tracked-or-untracked, non-ignored path in this checkout.
+
+              AMBIENT ON PURPOSE: no `-C`, so the subject is the repository this job checked out
+              and nothing an inherited `GIT_*` variable could redirect. `-z` because without it
+              git QUOTES a path holding a non-ASCII byte, and a quoted path names no file.
+              `surrogateescape` because a name that is not UTF-8 must round-trip to the bytes on
+              disk: decoded with `replace`, it became a path that does not exist, was skipped as
+              "not a file", and the check reported clean over a workflow it never read."""
+              out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard",
+                                    "-z"], capture_output=True, text=True, encoding="utf-8",
+                                   errors="surrogateescape", check=True).stdout
+              return sorted({p for p in out.split("\0") if p})
+
+
+          def is_yaml(rel):
+              """A `.yml` / `.yaml` name, in any letter case: a runner on a case-insensitive file
+              system (Windows, macOS) opens `ACTION.YML` when it asks for `action.yml`."""
+              return rel.lower().endswith((".yml", ".yaml"))
+
+          # VENDOR-BEGIN(workflow-discovery)
+          # GENERATED — do not edit; source: plugins/coord/_vendor/workflow-discovery.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: 862dae9c00bca867
+          PARSE_FAIL = "PARSE_FAIL"
+
+
+          def load(path):
+              """Parsed YAML, or the sentinel tuple `(PARSE_FAIL, detail)` — never a silent None.
+
+              A caller that treats an unparseable file as "no findings here" has a hole in its
+              measurement, not a clean file; the sentinel forces the distinction to be handled.
+              A file that is not UTF-8 (Latin-1, UTF-16) is one of those: it cannot be read as
+              the text it is parsed from, so it takes the sentinel like a syntax error rather
+              than escaping as an uncaught `UnicodeDecodeError` that names no file."""
+              try:
+                  return yaml.safe_load(path.read_text(encoding="utf-8"))
+              except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                  return (PARSE_FAIL, f"{type(exc).__name__}: {exc}")
+
+
+          def is_parse_fail(doc):
+              """True for the `load()` sentinel. One spelling, so no caller re-invents the tuple."""
+              return isinstance(doc, tuple) and bool(doc) and doc[0] == PARSE_FAIL
+
+
+          def trigger_block(doc):
+              """The workflow's `on:` mapping, or None if this document has no resolvable one.
+
+              Resolves BOTH spellings. YAML 1.1 folds an unquoted `on:` key to the BOOLEAN `True`,
+              so a reader asking for `doc["on"]` classifies EVERY workflow as not-a-workflow and
+              a scan built on it reports a clean zero over an empty population."""
+              if not isinstance(doc, dict):
+                  return None
+              for key, value in doc.items():
+                  if key is True or (isinstance(key, str) and key.lower() == "on"):
+                      return value
+              return None
+
+
+          def is_workflow(doc):
+              """A GitHub Actions workflow: a mapping with a trigger block AND a `jobs:` mapping.
+
+              Decided BY CONTENT, never by path: a workflow in a directory nobody listed must
+              still join the population."""
+              return (isinstance(doc, dict)
+                      and trigger_block(doc) is not None
+                      and isinstance(doc.get("jobs"), dict))
+          # VENDOR-END(workflow-discovery)
+
+          # VENDOR-BEGIN(continue-on-error-key)
+          # GENERATED — do not edit; source: plugins/coord/_vendor/continue-on-error-key.py.txt; regenerate (framework repo only): python3 tools/gen-vendored.py; fragment-sha256: 0571f96df9b1e83b
+          KEY = "continue-on-error"
+
+
+          def _label(node):
+              """A human handle for the mapping the key sits in, so the red line names something a
+              reader can find in the file rather than only a path expression."""
+              for field in ("name", "uses", "id"):
+                  value = node.get(field)
+                  if isinstance(value, str) and value.strip():
+                      return f"{field}: {value.strip()[:60]}"
+              run = node.get("run")
+              if isinstance(run, str):
+                  for line in run.splitlines():
+                      if line.strip():
+                          return f"run: {line.strip()[:60]}"
+              # A job mapping usually carries none of those, and that is not a gap: the PATH
+              # already names the job. Empty rather than "unnamed", so the red line does not print
+              # a word where a handle would go and send a reader looking for a step called
+              # `unnamed`.
+              return ""
+
+
+          def sites(doc):
+              """(path, key-as-written, value, label) for every `continue-on-error` KEY in `doc`.
+
+              WHOLE-DOCUMENT, KEYS ONLY. Every mapping key at every depth is examined, so job
+              level, step level and any nesting the Actions schema grows next are covered by
+              construction, each reported at its own path (`jobs.<id>`, `jobs.<id>.steps[<n>]`).
+              Values are never inspected for the token: a `run:` body, a step `name:` or a YAML
+              comment that merely MENTIONS it is prose, and prose is what a line grep gets wrong.
+              Keys compare case-INSENSITIVELY. THE VALUE IS NOT READ: `false` is refused exactly
+              like `true`, because the key is the re-mint seed and flipping it is a one-character
+              diff, and an expression value cannot be graded statically at all."""
+              found = []
+
+              def walk(node, path):
+                  if isinstance(node, dict):
+                      for key in node:
+                          if isinstance(key, str) and key.strip().lower() == KEY:
+                              found.append((path or "<document root>", key, node[key], _label(node)))
+                      for key, value in node.items():
+                          walk(value, f"{path}.{key}" if path else str(key))
+                  elif isinstance(node, list):
+                      for idx, value in enumerate(node):
+                          walk(value, f"{path}[{idx}]")
+
+              walk(doc, "")
+              return found
+          # VENDOR-END(continue-on-error-key)
+
+
+          # ── LOCAL ACTIONS (card#9022 r2, r3). A composite action's steps take the key too, and a
+          # composite action kept in this checkout IS a file here — so it is judged like a workflow.
+          # Every decision below about a file the runner also reads follows the runner's own rule
+          # (read from actions/runner's source). Where that rule depends on the runner's OS (letter
+          # case, `\`), this takes the reading that loads a file, and a runner that reads it the
+          # other way fails that step loudly. It reads the files AS CHECKED OUT, and the runner
+          # reads a local action when the step using it starts, so what an earlier step writes
+          # into an action's directory is the header's WHAT IT CANNOT READ, not a file judged here.
+          ACTION_METADATA = ("action.yml", "action.yaml")
+          DOCKERFILE = "dockerfile"
+          REAL_ROOT = os.path.realpath(ROOT)
+
+
+          def basename(rel):
+              """The last path segment, lower-cased: every file name the runner looks up is matched
+              in any letter case, as a runner on a case-insensitive file system opens it."""
+              return rel.rsplit("/", 1)[-1].lower()
+
+
+          def is_action_metadata(rel):
+              """The runner loads an action from `action.yml`, else `action.yaml`, in the directory
+              a `uses:` names, so the NAME admits a file here; its content (`runs.using`) then says
+              what kind of action it is."""
+              return basename(rel) in ACTION_METADATA
+
+
+          def action_runs(doc):
+              """The `runs:` mapping of action metadata, or None if `doc` is not action metadata by
+              content (a mapping whose `runs:` carries a string `using:`)."""
+              runs = doc.get("runs") if isinstance(doc, dict) else None
+              return runs if isinstance(runs, dict) and isinstance(runs.get("using"), str) else None
+
+
+          def is_composite(runs):
+              """`runs.using` names a composite action. The runner compares it
+              case-INSENSITIVELY, so `Composite` and `COMPOSITE` run their steps."""
+              return runs["using"].upper() == "COMPOSITE"
+
+
+          def local_path(uses):
+              """The `./…` path a LOCAL `uses:` names in this checkout, or None if it is not local.
+
+              The runner's three local forms, read from the value exactly as written (it trims
+              nothing, so neither does this): `./<dir>`; `.\\<dir>`, whose `\\` a Windows runner
+              reads as `/`; and `$/<dir>`, this repository's own tree, leading `/`s dropped."""
+              if uses.startswith(("./", ".\\")):
+                  return uses.replace("\\", "/")
+              if uses.startswith("$/"):
+                  return "./" + uses[2:].lstrip("/").replace("\\", "/")
+              return None
+
+
+          def local_uses(steps, prefix):
+              """(where, uses) for every step in `steps` whose `uses:` names a LOCAL action."""
+              if not isinstance(steps, list):
+                  return []
+              return [(f"{prefix}[{idx}]", step["uses"]) for idx, step in enumerate(steps)
+                      if isinstance(step, dict) and isinstance(step.get("uses"), str)
+                      and local_path(step["uses"]) is not None]
+
+
+          def resolve(uses, index):
+              """(target, why): the checkout file the runner loads for a local `uses:` — action
+              metadata read here, or a Dockerfile — else None, and `why` says why not.
+
+              SYMBOLIC LINKS ARE FOLLOWED, as the runner's file system follows them, and the path is
+              judged at its target. A target outside this checkout cannot be read here, so it is
+              refused BY NAME. So is a `..` that follows a link: a POSIX runner applies it at the
+              link's target and a Windows one to the text, so the two can load different files."""
+              rel = local_path(uses)
+              physical = os.path.realpath(os.path.join(REAL_ROOT, rel))
+              lexical = posixpath.normpath(rel)
+              if physical != os.path.realpath(os.path.join(REAL_ROOT, lexical)):
+                  return None, ("a `..` in it follows a symbolic link, so a POSIX and a Windows "
+                                "runner resolve it to different directories")
+              inside = os.path.relpath(physical, REAL_ROOT)
+              if inside == os.pardir or inside.startswith(os.pardir + os.sep):
+                  how = ("climbs out of this checkout"
+                         if lexical == ".." or lexical.startswith("../")
+                         else f"leaves this checkout through a symbolic link, to {physical}")
+                  return None, f"it {how}, where this check cannot read it"
+              base = "" if inside == "." else inside.replace(os.sep, "/") + "/"
+              for name in ACTION_METADATA + (DOCKERFILE,):
+                  target = index.get((base + name).lower())
+                  if target:
+                      return target, ""
+              return None, (f"this checkout holds no action this check can read for it (wanted "
+                            f"{base}action.yml or action.yaml, parsed, with a `runs.using` — or a "
+                            f"Dockerfile)")
+
+
+          def main():
+              discovered, offenders, holes, unclassified = [], {}, [], []
+              # actions: metadata file -> its `runs:`; composites: that subset whose `runs.using` is
+              # composite -> its document; edges: (referring file, where, uses) for every step whose
+              # `uses:` names a local action.
+              actions, composites, edges = {}, {}, []
+              files = checkout_files()
+              candidates = [rel for rel in files if is_yaml(rel)]
+              # A directory holding only a Dockerfile is an action too (the runner builds it); it
+              # has no steps to judge, so it only has to exist.
+              dockerfiles = [rel for rel in files
+                             if basename(rel) == DOCKERFILE and (ROOT / rel).is_file()]
+              for rel in candidates:
+                  path = ROOT / rel
+                  if not path.is_file():
+                      continue
+                  doc = load(path)
+                  if is_action_metadata(rel):
+                      # An action file that does not parse is a hole wherever it sits: anything that
+                      # names its directory in a `uses:` runs it, and this check cannot read it.
+                      if is_parse_fail(doc):
+                          holes.append((rel, f"is action metadata (GitHub runs it for any `uses:` "
+                                             f"naming its directory) and it does not parse as YAML "
+                                             f"({doc[1]})"))
+                          continue
+                      runs = action_runs(doc)
+                      if runs is not None:
+                          actions[rel] = runs
+                          if is_composite(runs):
+                              composites[rel] = doc
+                              edges += [(rel, w, u)
+                                        for w, u in local_uses(runs.get("steps"), "runs.steps")]
+                          continue
+                      # NOT action metadata by content: it falls through and is classified like any
+                      # other YAML, so a WORKFLOW saved under this name is still judged as one.
+                  if is_parse_fail(doc):
+                      if rel.startswith(WORKFLOW_DIR):
+                          holes.append((rel, f"is under {WORKFLOW_DIR}, which GitHub runs, and it "
+                                             f"does not parse as YAML ({doc[1]})"))
+                      else:
+                          unclassified.append((rel, doc[1]))
+                      continue
+                  if not is_workflow(doc):
+                      continue
+                  discovered.append(rel)
+                  for job_id, job in doc["jobs"].items():
+                      if isinstance(job, dict):
+                          edges += [(rel, w, u) for w, u in local_uses(job.get("steps"),
+                                                                       f"jobs.{job_id}.steps")]
+                  hits = sites(doc)
+                  if hits:
+                      offenders[rel] = hits
+
+              # EVERY LOCAL `uses:` MUST RESOLVE to an action this check read. The composite
+              # actions themselves are judged as a POPULATION (every one in the checkout, referenced
+              # or not), so a nested one is judged without following edges and a cycle has nothing
+              # to loop on; the edges are only checked for resolution. One that does not resolve
+              # names steps this check cannot see — "could not tell" is not a pass.
+              index = {m.lower(): m for m in actions}
+              index.update((d.lower(), d) for d in dockerfiles)
+              referrers, unresolved = {}, []
+              for referrer, where, uses in edges:
+                  found, why = resolve(uses, index)
+                  if not found:
+                      unresolved.append((referrer, where, uses, why))
+                  else:
+                      referrers.setdefault(found, []).append(referrer)
+              for rel, cdoc in sorted(composites.items()):
+                  hits = sites(cdoc)
+                  if hits:
+                      offenders[rel] = hits
+
+              failed = False
+              for rel, hits in sorted(offenders.items()):
+                  kind = ""
+                  if rel in composites:
+                      users = sorted(set(referrers.get(rel, ())))
+                      kind = (f" This file is a composite action, used by {', '.join(users)}."
+                              if users else " This file is a composite action, named by no "
+                              "`uses:` in this checkout.")
+                  for where, key, value, label in hits:
+                      handle = f" ({label})" if label else ""
+                      print(f"::error file={rel}::`{key}: {value!r}` at {where}{handle} — this "
+                            f"repository refuses the `{KEY}` key in every workflow and every "
+                            f"composite action, at any value. Remove it; there is no exemption."
+                            f"{kind}")
+                  failed = True
+              if offenders:
+                  print(f"continue-on-error-guard: RED — the `{KEY}` key is present in "
+                        f"{len(offenders)} workflow / composite-action file(s). A step under it "
+                        f"that FAILS leaves its job and check run `success`, so every merge gate "
+                        f"that reads CI would pass "
+                        f"over the failure; a job under it keeps the RUN green over a red job. "
+                        f"`false` is refused like `true`: the key is the seed.")
+              for rel, why in holes:
+                  print(f"::error file={rel}::{rel} {why} — this check cannot read it, so it cannot "
+                        f"pass it.")
+                  failed = True
+              for referrer, where, uses, why in unresolved:
+                  print(f"::error file={referrer}::`uses: {uses}` at {where} names a LOCAL action, "
+                        f"and {why}. The steps it runs cannot be judged, and could-not-tell is not "
+                        f"a pass: refusing.")
+                  failed = True
+
+              # NON-VACUITY. Zero hits is the passing value AND what a discovery that found nothing
+              # prints, so the population must be shown to contain what it has to contain.
+              own = os.environ.get("GITHUB_WORKFLOW_REF", "").split("@", 1)[0]
+              own = own.split("/", 2)[2] if own.count("/") >= 2 else ""
+              if own and own not in discovered:
+                  print(f"::error::continue-on-error-guard: this workflow's own file ({own}) was NOT "
+                        f"discovered, so the derivation is not reaching the files GitHub runs. "
+                        f"Refusing rather than reporting a clean zero over a population that lost it.")
+                  failed = True
+              if not any(r.startswith(WORKFLOW_DIR) for r in discovered):
+                  print(f"::error::continue-on-error-guard: NO workflow under {WORKFLOW_DIR} was "
+                        f"discovered — at the very least this workflow should be. Refusing.")
+                  failed = True
+
+              for rel, why in unclassified:
+                  print(f"continue-on-error-guard: NOTE — {rel} is not valid YAML ({why}); it is "
+                        f"outside {WORKFLOW_DIR}, so nothing runs it as a workflow, and it is not "
+                        f"judged.")
+              if failed:
+                  return 1
+              print(f"continue-on-error-guard: clean — {len(discovered)} workflow(s) and "
+                    f"{len(composites)} composite action(s) derived by content from "
+                    f"{len(candidates)} YAML file(s), and all {len(edges)} local `uses:` step(s) "
+                    f"(`./`, `.\\`, `$/`) resolved to an action read here; 0 carry the `{KEY}` "
+                    f"key. Not read: remote reusable workflows, remote actions, the steps inside "
+                    f"non-composite (JavaScript / Docker) actions, and anything an earlier step "
+                    f"writes into a local action's directory (the runner reads it when the step "
+                    f"using it starts; this check read the files as checked out).")
+              return 0
+
+
+          sys.exit(main())
+          COE_GUARD_PY
