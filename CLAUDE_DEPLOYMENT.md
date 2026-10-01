@@ -20,7 +20,7 @@ One install per agent: its own webroot, `.env`, DB, base dir, and (ideally) PHP-
 ```env
 APP_ENV=production
 APP_KEY=                              # set by `php artisan key:generate`
-APP_DEBUG=false
+APP_DEBUG=false                       # on/off values: docs/config-schema.md § 1 (DL-448)
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1

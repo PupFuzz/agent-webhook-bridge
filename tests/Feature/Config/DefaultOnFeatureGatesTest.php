@@ -30,8 +30,8 @@ class DefaultOnFeatureGatesTest extends TestCase
      */
     public static function defaultOnGates(): iterable
     {
-        yield 'standup digest' => ["/'enabled'\s*=>\s*\(bool\)\s*env\(\s*'BRIDGE_STANDUP_ENABLED'\s*,\s*true\s*\)/"];
-        yield 'idle nudge' => ["/'enabled'\s*=>\s*\(bool\)\s*env\(\s*'BRIDGE_IDLE_NUDGE_ENABLED'\s*,\s*true\s*\)/"];
+        yield 'standup digest' => ["/'enabled'\s*=>\s*BoolEnv::get\(\s*'BRIDGE_STANDUP_ENABLED'\s*,\s*true\s*\)/"];
+        yield 'idle nudge' => ["/'enabled'\s*=>\s*BoolEnv::get\(\s*'BRIDGE_IDLE_NUDGE_ENABLED'\s*,\s*true\s*\)/"];
         // The tri-state beside each: read with NO default and no cast, so it is null exactly when
         // nobody touched the key — the one value that routes an unset setup key to NOT SET UP
         // rather than to the explicit enable's MISCONFIGURED `fail`. A default here would make

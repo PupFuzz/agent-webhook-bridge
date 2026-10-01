@@ -384,6 +384,10 @@ class UnvalidatedCallSiteTest extends TestCase
         // cannot be read is a `warn`, not a site here: the leg did establish that the door answers
         // every seat 503.
         'app/Bridge/Check/Checks/ClientPackSourceCheck.php' => 1,
+        // card#11029: the loaded config carries no `bridge.unreadable_flags` record (a config cache
+        // built by an earlier release), so no on/off value was read at all — limb (a). A record
+        // that IS present and empty is a declared silence, not a site here.
+        'app/Bridge/Check/Checks/InstallFlagValuesCheck.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void
