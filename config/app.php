@@ -1,5 +1,7 @@
 <?php
 
+use App\Bridge\Support\BoolEnv;
+
 return [
 
     /*
@@ -39,7 +41,7 @@ return [
     |
     */
 
-    'debug' => (bool) env('APP_DEBUG', false),
+    'debug' => BoolEnv::get('APP_DEBUG', false),
 
     /*
     |--------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 <?php
 
+use App\Bridge\Support\BoolEnv;
 use App\Bridge\Support\CsvEnv;
 
 return [
@@ -22,6 +23,21 @@ return [
     'secret_dir' => env('BRIDGE_SECRET_DIR') ?: env('BRIDGE_DIR'),
 
     'install_suffix' => env('BRIDGE_INSTALL_SUFFIX', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | On/off settings the bridge could not read (card#11029)
+    |--------------------------------------------------------------------------
+    |
+    | Every on/off `.env` key in config/ is read by BoolEnv::get(): true/1/yes/on,
+    | false/0/no/off/empty, case-insensitive. Any other value runs as that setting's
+    | default, and is recorded here as KEY => value so `bridge:check` can fail
+    | naming it. A config value rather than a check-time `.env` read, so a cached
+    | config reports the value it was cached with.
+    |
+    */
+
+    'unreadable_flags' => BoolEnv::unreadable(),
 
     /*
     |--------------------------------------------------------------------------
@@ -191,7 +207,7 @@ return [
     */
 
     'retention' => [
-        'enabled' => (bool) env('BRIDGE_RETENTION_ENABLED', true),
+        'enabled' => BoolEnv::get('BRIDGE_RETENTION_ENABLED', true),
         'interval' => (int) env('BRIDGE_RETENTION_INTERVAL', 86400),
         // ⚠ The windows are deliberately NOT cast. `env()` coerces the literal
         // `true` to a BOOL, and `(string) true` is `'1'` — which parses as a valid
@@ -243,7 +259,7 @@ return [
     */
 
     'standup' => [
-        'enabled' => (bool) env('BRIDGE_STANDUP_ENABLED', true),
+        'enabled' => BoolEnv::get('BRIDGE_STANDUP_ENABLED', true),
         // ⭐ NULL MEANS "ON BY DEFAULT" (card#10918 / DL-441): `env()` with no default returns
         // null when the key is unset, and otherwise a bool for `true`/`false` or the raw string
         // for any other spelling (`1`, `yes`, `on`). `StandupConfig` reads null-vs-anything to
@@ -281,7 +297,7 @@ return [
     */
 
     'idle_nudge' => [
-        'enabled' => (bool) env('BRIDGE_IDLE_NUDGE_ENABLED', true),
+        'enabled' => BoolEnv::get('BRIDGE_IDLE_NUDGE_ENABLED', true),
         // ⭐ NULL MEANS "ON BY DEFAULT" (card#10918 / DL-441) — the same tri-state as
         // `standup.enabled_explicit`, read by `IdleNudgeConfig` so a required-but-unset
         // Mezzanine key WARNS (NOT SET UP) on a default install and FAILS (MISCONFIGURED) on one
@@ -377,12 +393,12 @@ return [
     */
 
     'jobs' => [
-        'enabled' => (bool) env('BRIDGE_JOBS_ENABLED', true),
+        'enabled' => BoolEnv::get('BRIDGE_JOBS_ENABLED', true),
         'min_pass_interval' => (int) env('BRIDGE_JOBS_MIN_PASS_INTERVAL', 60),
         'max_per_pass' => (int) env('BRIDGE_JOBS_MAX_PER_PASS', 3),
         'disarmed_mutators' => env('BRIDGE_JOBS_DISARMED_MUTATORS', ''),
         'armed_mutators' => env('BRIDGE_JOBS_ARMED_MUTATORS', ''),
-        'owed_write_retry_disabled' => (bool) env('BRIDGE_OWED_WRITE_RETRY_DISABLED', false),
+        'owed_write_retry_disabled' => BoolEnv::get('BRIDGE_OWED_WRITE_RETRY_DISABLED', false),
         // ⚠ Deliberately NOT cast: a null must stay a null. `(int) null` is 0, which
         // this reads back as "declared, zero seconds" — an install that never adopted
         // the tick would then be judged against a horizon it never set.
@@ -514,7 +530,7 @@ return [
     */
 
     'spawn' => [
-        'enabled' => (bool) env('BRIDGE_SPAWN_ENABLED', false),
+        'enabled' => BoolEnv::get('BRIDGE_SPAWN_ENABLED', false),
         'allowlist' => CsvEnv::parse((string) env('BRIDGE_SPAWN_ALLOWLIST', '')),
         // Absolute path to the `setsid` launcher. Null ⇒ auto-detect
         // (/usr/bin/setsid, /bin/setsid). Pinned absolute so a payload env PATH

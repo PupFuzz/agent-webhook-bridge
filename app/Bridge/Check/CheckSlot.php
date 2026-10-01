@@ -32,7 +32,9 @@ enum CheckSlot: string
     /**
      * The HEAD of the run: the two directories the install is built on — the config dir
      * it scans for agent YAMLs, and the secret dir holding the webhook secrets and API
-     * tokens — each reported as resolvable-or-not and then for its permissions.
+     * tokens — each reported as resolvable-or-not and then for its permissions — followed by
+     * any on/off `.env` setting whose value could not be read (card#11029), which is a fact
+     * about the install's `.env` like the two directories are.
      */
     case Install = 'install';
 

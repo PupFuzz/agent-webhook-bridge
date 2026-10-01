@@ -38,6 +38,7 @@ use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
 use App\Bridge\Check\Checks\InstallConfigDirCheck;
 use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
+use App\Bridge\Check\Checks\InstallFlagValuesCheck;
 use App\Bridge\Check\Checks\InstallProviderAdaptersCheck;
 use App\Bridge\Check\Checks\InstallSecretDirCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
@@ -894,7 +895,7 @@ class CheckCommand extends BridgeCommand
     private function registry(SshProbeEnvironment $sshEnv, ?string $probeTools, ?string $probeToolsSsh): CheckRunner
     {
         return (new CheckRunner)
-            ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
+            ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck, new InstallFlagValuesCheck)
             ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck, new WritebackOwedWritesTableCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))

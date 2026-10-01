@@ -48,6 +48,7 @@ class CheckCommandRegistrationTest extends TestCase
         // pre-loop install plane (stage 6)
         'install.config_dir',
         'install.secret_dir',
+        'install.flag_values',
         'database.connectivity',
         'database.install_suffix',
         'writeback.owed_writes_table',

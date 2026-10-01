@@ -20,6 +20,15 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **Deliberately NOT turned on** (each is a security boundary, a consent list or a per-repo policy, and is left to an operator ruling on card#10918): `BRIDGE_SPAWN_ENABLED`, `BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`, and the `writeback.json` mapping opt-ins (`promote_on_release`, `create_dependabot_cards`, `draft_overlay`, `revive_on_reopen`, `create_coord_cards`). `CLAUDE_DECISIONS.md` DL-441 holds the population and why each was or was not flipped.
   - No migration, no route change, no token-scope change; `--format=json` `schema` stays **1**. `.env.example` now lists `BRIDGE_JOBS_DISARMED_MUTATORS` and `BRIDGE_OWED_WRITE_RETRY_DISABLED`.
 
+### Fixed
+
+- **card#11029 / DL-448** — ⚠ **On/off `.env` settings now read `no`, `off` and `0` as off. Before, `BRIDGE_SPAWN_ENABLED=no` turned spawn ON and `APP_DEBUG=no` turned debug ON.** Each setting was read with a plain boolean cast, and every value other than `true`/`false` (and empty) was cast to true.
+  - The settings: `APP_DEBUG`, `BRIDGE_RETENTION_ENABLED`, `BRIDGE_STANDUP_ENABLED`, `BRIDGE_IDLE_NUDGE_ENABLED`, `BRIDGE_JOBS_ENABLED`, `BRIDGE_OWED_WRITE_RETRY_DISABLED`, `BRIDGE_SPAWN_ENABLED`. Each now accepts `true`/`1`/`yes`/`on` and `false`/`0`/`no`/`off`/empty, case-insensitive, surrounding spaces ignored. Unset keeps the documented default.
+  - ⚠ **CONFIG ACCEPTANCE CHANGED.** `yes`/`no`/`on`/`off` now mean what they say, so an install that wrote `=no` or `=off` to turn something off, and was running it ON, now runs it OFF. Check your `.env` for these keys before upgrading.
+  - ⚠ **Any other value (a typo such as `nope` or `2`) now runs as that setting's default, and `bridge:check` FAILS**, one line per key, naming the key and the value. Before, such a value turned the setting on. The bridge keeps serving either way. New `bridge:check` leg `install.flag_values`, so every inventory line moves. It reports the value the config was built with: on a cached config (`config:cache`), fix the `.env` and cache again. A config cache built by an earlier release makes the leg report `unvalidated` until it is rebuilt.
+  - Laravel's `null` / `(null)` spelling is read as unset, so the setting keeps its default.
+  - No migration, route or token-scope change; `--format=json` `schema` stays **1**.
+
 ## [0.94.0] - 2026-09-30
 
 ### Added
