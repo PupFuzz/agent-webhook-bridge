@@ -31,7 +31,7 @@ use Symfony\Component\HttpFoundation\Response;
  * Retention (DL-199) is queued here rather than in DispatchService::dispatch():
  * dispatch() has a second, non-inbound caller — `bridge:replay` — where the gate
  * would fire for no benefit. `receive` is the shared inbound entry across every
- * provider, which is exactly the arrival the gate keys off. The opt-in standup
+ * provider, which is exactly the arrival the gate keys off. The standup
  * digest (DL-306) rides the same arrival for the same reason — a report is not a
  * good enough reason to add a scheduler.
  *

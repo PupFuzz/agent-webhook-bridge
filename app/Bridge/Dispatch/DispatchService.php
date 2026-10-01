@@ -539,10 +539,12 @@ final class DispatchService
      * nudge reads as unmeasured; an EARLIER stamp on a redelivery, which re-opens the false-nudge
      * window for that one delivery (DL-380 names it).
      *
-     * ⚑ WRITTEN ONLY WHILE THE IDLE NUDGE IS ENABLED. The column's one reader is the nudge, so an
-     * install that never asked for it pays no extra UPDATE per delivery and logs no warning when
-     * it has not migrated. Deliveries made while it was off read as unmeasured once it is turned
-     * on, until their idle period ends.
+     * ⚑ WRITTEN ONLY WHILE THE IDLE NUDGE IS ENABLED. The column's one reader is the nudge, which
+     * ships enabled by default (card#10918 / DL-441) — so every install that has not explicitly
+     * declined it (`BRIDGE_IDLE_NUDGE_ENABLED=false`) now pays this extra UPDATE per delivery, and
+     * an unmigrated install now logs this warning on its very first delivery rather than never.
+     * Deliveries made while it was off read as unmeasured once it is turned on, until their idle
+     * period ends.
      */
     private function stampPushAttempt(AgentDispatch $dispatch): void
     {

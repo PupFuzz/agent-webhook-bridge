@@ -556,11 +556,11 @@ OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry 
 
 ### Standup digest config (DL-306)
 
-`bridge:standup` is the **manual** entry point; when `standup.enabled` the receiver pushes the same digest automatically, after the response, at most once per `interval`. **Off by default** — unlike retention, a pass makes outbound calls (one board read per mapped board, then the channel push).
+`bridge:standup` is the **manual** entry point; when `standup.enabled` the receiver pushes the same digest automatically, after the response, at most once per `interval`. **On by default since card#10918 / DL-441** (it was opt-in): a pass makes outbound calls (one board read per mapped board, then the channel push), but only once `standup.agent` names a recipient — until then it pushes nothing, logs once a day, and `bridge:check` warns **NOT SET UP**. `BRIDGE_STANDUP_ENABLED=false` declines it.
 
 | Key | Env | Default | Meaning |
 | --- | --- | --- | --- |
-| `standup.enabled` | `BRIDGE_STANDUP_ENABLED` | **`false`** | Push the digest after a delivery. Disabled ⇒ no terminating callback is registered at all. |
+| `standup.enabled` | `BRIDGE_STANDUP_ENABLED` | **`true`** | Push the digest after a delivery. `false` declines it: no terminating callback is registered at all. |
 | `standup.agent` | `BRIDGE_STANDUP_AGENT` | *(none)* | The recipient seat's `<agent>.yml` name; its own `channel` block is the endpoint and its `channel.auth.token_path` the bearer. **No default recipient.** A missing, non-string, or non-filename-shaped value (`../x`, `.hidden`) is REFUSED — the name is concatenated into a `<config_dir>/<agent>.yml` path. |
 | `standup.interval` | `BRIDGE_STANDUP_INTERVAL` | `86400` | Seconds between passes. ⚠ A **delivery** cadence: the pass runs on the first inbound webhook after this elapses, so a silent install pushes nothing. |
 
@@ -568,7 +568,7 @@ OK: retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry 
 
 A misconfigured posture pushes **nothing** and warns once per day, never per delivery; there is no partial digest and no fallback recipient.
 
-⭐ **`bridge:check`'s `standup.posture` leg (card#8683 / DL-345) is where a WEDGED digest surfaces.** It is **silent** on an install that left the digest off, and on an armed one it prints the posture (`standup: on (push to <agent>, every Ns …)`) or the misconfiguration. Its third line is the one that matters: the gate arms its interval marker BEFORE the push, so a pass that throws — a channel server that is down on the recipient seat is the ordinary case — backs off a full `interval` and the seat simply **stops receiving digests with nothing saying so**. The gate records that throw, and this leg is what reports it; it clears itself on the next clean pass. ⚠ It never `fail`s, so it does not move `bridge:check`'s exit code — an opt-in report being down must not red a deploy.
+⭐ **`bridge:check`'s `standup.posture` leg (card#8683 / DL-345) is where a WEDGED digest surfaces.** It is **silent** on an install that declined the digest (`BRIDGE_STANDUP_ENABLED=false`); on any other it prints the posture (`standup: on (push to <agent>, every Ns …)`), the NOT-SET-UP line naming `BRIDGE_STANDUP_AGENT`, or the misconfiguration. Its third line is the one that matters: the gate arms its interval marker BEFORE the push, so a pass that throws — a channel server that is down on the recipient seat is the ordinary case — backs off a full `interval` and the seat simply **stops receiving digests with nothing saying so**. The gate records that throw, and this leg is what reports it; it clears itself on the next clean pass. ⚠ It never `fail`s, so it does not move `bridge:check`'s exit code — a report being down or not set up must not red a deploy.
 
 ### Periodic jobs (DL-325)
 
@@ -588,7 +588,7 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
 | `jobs.enabled` | `BRIDGE_JOBS_ENABLED` | `true` | The registry as a whole. With no rows it costs one indexed query per `min_pass_interval` on delivery. `false` ⇒ no callback is registered at all. |
 | `jobs.min_pass_interval` | `BRIDGE_JOBS_MIN_PASS_INTERVAL` | `60` | Floor between passes, **shared by both ingresses** (the event gate is evaluated on every delivery). A 5/10/15-minute tick is never affected. |
 | `jobs.max_per_pass` | `BRIDGE_JOBS_MAX_PER_PASS` | `3` | The bound. Oldest-due first; a backlog drains across passes. |
-| `jobs.armed_mutators` | `BRIDGE_JOBS_ARMED_MUTATORS` | *(empty)* | ⭐ The governance gate. A handler declaring the state-mutating capability is INERT until named here — refused at insert **and** at run. Read-and-alert handlers need no entry. |
+| `jobs.disarmed_mutators` | `BRIDGE_JOBS_DISARMED_MUTATORS` | *(empty)* | ⭐ The per-handler kill switch. A handler declaring the state-mutating capability is ARMED by default (card#10918 / DL-441); named here it is refused at insert **and** at run. `owed_write_retry` also has `BRIDGE_OWED_WRITE_RETRY_DISABLED`. The retired `BRIDGE_JOBS_ARMED_MUTATORS` arms nothing, and `bridge:check` warns while it is set. |
 | `jobs.tick_expected_every` | `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the freshness horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. |
 
 ⚠ **The jobs rule is NOT retention's rule.** A `min_pass_interval` / `max_per_pass` value outside its bound is **REFUSED, never clamped**: no pass runs on either ingress, `bridge:check`'s `jobs.posture` leg **FAILS** naming the key, and `bridge:tick` exits **non-zero** — where a misconfigured retention window prunes nothing, warns once a day and leaves the preflight reporting a posture. Same direction (a typo runs nothing), louder surface, because a crontab line has only an exit code to read.

@@ -45,7 +45,7 @@ use Symfony\Component\Process\Process;
  * reading as coverage to whoever audits the config.
  *
  * ⚑ `add` IS AN UPSERT and refuses loudly: an unknown handler, a state-mutating handler
- * this install has not armed, or a missing justification all throw rather than storing a
+ * this install has disarmed, or a missing justification all throw rather than storing a
  * row that could never run. `App\Bridge\Scheduling\JobSpec` owns those rules — this command
  * only parses options, so a hand-added job and a programmatically-inserted one cannot
  * diverge.

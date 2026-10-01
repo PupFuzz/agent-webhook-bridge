@@ -68,12 +68,12 @@ class BridgeServiceProvider extends ServiceProvider
         // container, so a handler wired anywhere but a provider both load exists on ONE
         // ingress and is a loud refusal on the other.
         //
-        // ⭐ The armed-mutators list is a CONSTRUCTOR ARGUMENT, not something the registry
+        // ⭐ The disarmed-mutators list is a CONSTRUCTOR ARGUMENT, not something the registry
         // reads for itself: what a build can do must not depend on config state read at an
         // unpredictable moment, and a test binding its own list must not have to fight the
         // container for it.
         $this->app->singleton(JobHandlerRegistry::class, fn (): JobHandlerRegistry => new JobHandlerRegistry(
-            JobHandlerRegistry::armedFromConfig(),
+            JobHandlerRegistry::disarmedFromConfig(),
             $this->app->make(StandupGate::class),
             $this->app->make(HandlerRegistry::class),
         ));

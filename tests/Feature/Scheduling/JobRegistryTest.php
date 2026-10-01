@@ -25,9 +25,9 @@ class JobRegistryTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function registry(array $armed = []): JobRegistry
+    private function registry(array $disarmed = []): JobRegistry
     {
-        $handlers = new JobHandlerRegistry($armed, $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
+        $handlers = new JobHandlerRegistry($disarmed, $this->app->make(StandupGate::class), $this->app->make(HandlerRegistry::class));
         $handlers->register(new RecordingJobHandler);
         $handlers->register(new RecordingJobHandler('mutating_job', JobCapability::MutatesState));
 
@@ -124,18 +124,19 @@ class JobRegistryTest extends TestCase
         $this->registry()->insert($this->spec(['handler' => 'nope']));
     }
 
-    public function test_a_state_mutating_handler_is_refused_until_this_install_arms_it(): void
+    public function test_a_state_mutating_handler_is_refused_once_this_install_disarms_it(): void
     {
         try {
-            $this->registry()->insert($this->spec(['handler' => 'mutating_job']));
-            $this->fail('an unarmed state-mutating handler must be refused');
+            $this->registry(['mutating_job'])->insert($this->spec(['handler' => 'mutating_job']));
+            $this->fail('a disarmed state-mutating handler must be refused');
         } catch (JobSpecException $e) {
-            $this->assertStringContainsString('BRIDGE_JOBS_ARMED_MUTATORS', $e->getMessage());
+            $this->assertStringContainsString('BRIDGE_JOBS_DISARMED_MUTATORS', $e->getMessage());
         }
 
-        // The SAME insert, on an install whose operator armed it. Without this leg the test
-        // above would pass for a registry that refuses every mutating handler forever.
-        $armed = $this->registry(['mutating_job']);
+        // The SAME insert on an install that switched nothing off — armed by default (DL-441).
+        // Without this leg the test above would pass for a registry that refuses every
+        // mutating handler forever.
+        $armed = $this->registry();
         $armed->insert($this->spec(['handler' => 'mutating_job']));
         $this->assertSame('mutating_job', $armed->find('a-job')?->handler);
     }

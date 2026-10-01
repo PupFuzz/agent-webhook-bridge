@@ -229,15 +229,19 @@ would extinguish its own warn on the first run with nothing wired.
   have is a **LOUD refusal** — at insert, and again at run — never a silent skip: the
   instance records `refused` with the reason, the scheduler logs at error, and
   `bridge:check` fails on it.
-- **Board/state-mutating handlers require operator approval to exist at all.** That is
-  encoded structurally, not as a comment: a handler declares
-  `JobCapability::MutatesState`, and it is **inert** until this install names it in
-  `BRIDGE_JOBS_ARMED_MUTATORS`. Read-and-alert handlers (staleness checks, wakes, watches,
-  cleanups) declare `JobCapability::ReadAndAlert` and exist under normal code review.
-  ⚠ **One named exception:** `owed_write_retry` is armed by default regardless of that list
-  (operator ruling 2026-09-29, card#10849 / DL-440 — new functionality defaults on; DL-325's
-  default-off is a bridge-wide question for a separate card). `JobHandlerRegistry::armedFromConfig()`
-  is the one place this is decided; nothing else reads `BRIDGE_JOBS_ARMED_MUTATORS` directly.
+- **Board/state-mutating handlers ship ARMED, and each has a kill switch.** A handler
+  declares `JobCapability::MutatesState` or `JobCapability::ReadAndAlert`; the declaration is
+  structural, not a comment. Since card#10918 / DL-441 a `mutates_state` handler is **armed by
+  default** — DL-325 shipped it inert until an operator named it in `BRIDGE_JOBS_ARMED_MUTATORS`,
+  and the operator reversed that (2026-09-29): new functionality ships on, and missing setup is
+  loud. Naming a handler in `BRIDGE_JOBS_DISARMED_MUTATORS` switches it off: it is then refused at
+  insert and at run, loudly (`bridge:check` fails on the refused instance), never skipped in
+  silence. `owed_write_retry` also keeps its own `BRIDGE_OWED_WRITE_RETRY_DISABLED` (DL-440).
+  `JobHandlerRegistry` is the one place either switch is read. Read-and-alert handlers
+  (staleness checks, wakes, watches, cleanups) are never disarmed that way — disable their
+  instance. `bridge:check` warns on a `BRIDGE_JOBS_DISARMED_MUTATORS` entry that names no
+  state-mutating handler (it switches nothing off), and on a still-set `BRIDGE_JOBS_ARMED_MUTATORS`
+  (it arms nothing now).
 - **Instances are free.** Inserting or removing an instance of an already-reviewed handler
   is ungated, programmatic and runtime. The only thing an inserter owes is the
   `justification` sentence — **a required documentation slot, not an approval and not a
@@ -246,8 +250,8 @@ would extinguish its own warn on the first run with nothing wired.
 
 ⚠ What the capability declaration does NOT establish: it records what the author *claims*.
 A handler that writes to a board while declaring `ReadAndAlert` is mis-declared, and nothing
-detects that. Its job is to make the claim reviewable and to make arming an explicit
-operator act — not to sandbox the handler.
+detects that. Its job is to make the claim reviewable and to give the operator a per-handler
+kill switch — not to sandbox the handler.
 
 ## Inserting a job from code
 
@@ -355,9 +359,9 @@ backstop, not permission.
 | handler | capability | what it does |
 |---|---|---|
 | `standup_digest` | `read_and_alert` | Asks `App\Bridge\Standup\StandupGate::runPass()` — the PM digest (DL-306), on a wall clock instead of a delivery cadence. Both ingresses share the digest's own interval marker, so the digest is still pushed at most once per `BRIDGE_STANDUP_INTERVAL` however many things asked. The instance's `interval_s` is how often the scheduler **asks**; `BRIDGE_STANDUP_INTERVAL` is how often it **pushes**. |
-| `idle_nudge` | `read_and_alert` | Pushes ONE live event at a seat that has sat idle past its horizon with work waiting — judged from the seat's own offer record where its YAML declares one (DL-424), otherwise from Mezzanine's fleet snapshot and the intents pushed at it since it went idle (DL-380). **Off and inert until configured** — see [*The idle nudge*](#the-idle-nudge-idle_nudge) below. |
+| `idle_nudge` | `read_and_alert` | Pushes ONE live event at a seat that has sat idle past its horizon with work waiting — judged from the seat's own offer record where its YAML declares one (DL-424), otherwise from Mezzanine's fleet snapshot and the intents pushed at it since it went idle (DL-380). **On by default (DL-441); it runs once an instance is inserted**, and `bridge:check` names each piece of setup still missing — see [*The idle nudge*](#the-idle-nudge-idle_nudge) below. |
 | `owed_write_watchdog` | `read_and_alert` | Gives up, with a named `writeback_owed_write_gave_up` alert, any durable writeback the bridge has owed longer than `OwedWriteQueue::MAX_AGE_S` (card#10849 / DL-440). **Its instance, `writeback-owed-writes-watchdog`, is declared by the bridge itself at every durable write, before the write's row is inserted** — one of two shipped handlers whose instance nobody has to insert (the other is its neighbour below). It reads and deletes rows of the bridge's own `writeback_owed_writes` table and alerts; it never calls kanban or GitHub. |
-| `owed_write_retry` | `mutates_state` | **The first shipped state-mutating handler — and, by explicit operator ruling (2026-09-29, card#10849 / DL-440: new functionality defaults on and needs no setup), the ONE exception to this table's `mutates_state` rule below: armed BY DEFAULT, and its instance is declared by the bridge itself at every durable write, same as the watchdog above.** Drains every subject whose oldest owed write is due, through the same `OwedWriteQueue::drain()` a live delivery uses. Owed writes are already retried inline by the subject's next live event; this adds a retry for a subject that sees none. `BRIDGE_OWED_WRITE_RETRY_DISABLED=true` is the kill switch back to the ordinary unarmed state (§ *Board/state-mutating handlers* below then governs it exactly like every other mutator). [`writeback.md`](writeback.md) § *Failure behaviour* has the rest. |
+| `owed_write_retry` | `mutates_state` | **The first shipped state-mutating handler — armed by default like every mutator (card#10849 / DL-440, generalised by DL-441), and, unlike a custom one, its instance is declared by the bridge itself at every durable write, same as the watchdog above.** Drains every subject whose oldest owed write is due, through the same `OwedWriteQueue::drain()` a live delivery uses. Owed writes are already retried inline by the subject's next live event; this adds a retry for a subject that sees none. `BRIDGE_OWED_WRITE_RETRY_DISABLED=true` — or naming it in `BRIDGE_JOBS_DISARMED_MUTATORS` — is the kill switch (§ *Governance* above), and its instance is then never (re-)declared either. [`writeback.md`](writeback.md) § *Failure behaviour* has the rest. |
 
 ### The idle nudge (`idle_nudge`)
 
@@ -373,11 +377,16 @@ this bridge any, so step 4 of the decision order is the only one that holds.
 to it. Every other agent is **Mezzanine-sourced** and judged as below. Mezzanine is read only when a
 Mezzanine-sourced agent sets `channel.route_intents: true` — no other one can be judged from it.
 
-**Adopting it** — all of these, or it does nothing:
+**Setting it up** — it is ENABLED by default (card#10918 / DL-441), and until each of these is
+done `bridge:check`'s `idle_nudge.posture` leg `warn`s, naming what is missing;
+`BRIDGE_IDLE_NUDGE_ENABLED=false` declines the nudge instead:
 
-1. Set `BRIDGE_IDLE_NUDGE_ENABLED=true`. The other `BRIDGE_IDLE_NUDGE_*` keys are Mezzanine's and
-   bind only while some agent needs Mezzanine ([`config-schema.md`](config-schema.md) § 1 owns them;
-   the install id is then required, because the fleet token reads every install).
+1. The `BRIDGE_IDLE_NUDGE_*` Mezzanine keys bind only while some agent needs Mezzanine
+   ([`config-schema.md`](config-schema.md) § 1 owns them; the install id is then required, because
+   the fleet token reads every install). Unset, on the default install that never wrote
+   `BRIDGE_IDLE_NUDGE_ENABLED` at all, they are a `warn` naming every one; unset under an EXPLICIT
+   `BRIDGE_IDLE_NUDGE_ENABLED` in any enabling spelling (`true`, `1`, `yes`, `on`) — an operator who
+   already opted in — or SET but invalid, either way, a `fail` (review rounds 1–2, card#10918).
 2. Per seat-record agent: `idle_nudge.seat_record` in its YAML, plus `idle_nudge.seat_agent` where the
    seat's `$COORD_AGENT` is not the bridge agent name ([`config-schema.md`](config-schema.md)
    § 2 owns both keys and the `~` caveat). Per Mezzanine install: place the `fleet_read` token in a
@@ -474,6 +483,7 @@ malformed record is `unmeasured`; the only action is a nudge; and age is the bri
 | `BRIDGE_JOBS_ENABLED` | `true` | The registry as a whole. With no rows it costs one indexed query per `min_pass_interval` on delivery. `false` registers no callback at all. |
 | `BRIDGE_JOBS_MIN_PASS_INTERVAL` | `60` | Floor between passes, **shared by both ingresses** (the event gate is evaluated on every delivery). A 5/10/15-minute tick is never affected by it. ⚠ A value that is not a positive integer is **REFUSED, never clamped**: no pass runs on either ingress, `bridge:check`'s `jobs.posture` leg **fails**, and `bridge:tick` exits non-zero. (`sixty` reads as `0`; clamping it to 1 would have turned an intended 60-second floor into a pass per second, silently.) |
 | `BRIDGE_JOBS_MAX_PER_PASS` | `3` | The bound. A backlog drains across passes; a pass is never unbounded. ⚠ Refused the same way outside `1…1000`. |
-| `BRIDGE_JOBS_ARMED_MUTATORS` | *(empty)* | Comma-separated handler names this install has armed. The ask-the-operator gate for every `mutates_state` handler except `owed_write_retry`, which ships armed by default (card#10849 / DL-440) — see `BRIDGE_OWED_WRITE_RETRY_DISABLED` below. |
-| `BRIDGE_OWED_WRITE_RETRY_DISABLED` | `false` | Kill switch for `owed_write_retry`, the one `mutates_state` handler armed by default (card#10849 / DL-440). Withholds it from the armed set exactly as if never named, and its instance is then never (re-)declared either. `bridge:jobs disable writeback-owed-writes-retry` stops an already-declared instance instead, independent of arming. |
+| `BRIDGE_JOBS_DISARMED_MUTATORS` | *(empty)* | Comma-separated `mutates_state` handler names this install has switched OFF — the per-handler kill switch (card#10918 / DL-441). Every state-mutating handler is armed unless named here. A disarmed handler's instance is refused at insert and at run. An entry naming no state-mutating handler in this build switches nothing off, and `bridge:check` warns on it. |
+| `BRIDGE_OWED_WRITE_RETRY_DISABLED` | `false` | `owed_write_retry`'s own kill switch (card#10849 / DL-440): `true` disarms it exactly as naming it in `BRIDGE_JOBS_DISARMED_MUTATORS` does, and its instance is then never (re-)declared either. `bridge:jobs disable writeback-owed-writes-retry` stops an already-declared instance instead, independent of arming. |
+| `BRIDGE_JOBS_ARMED_MUTATORS` | *(retired)* | DL-325's opt-in arming list. **It arms nothing since DL-441** — every state-mutating handler is armed by default — and `bridge:check` warns while it is set. Remove it. |
 | `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the death-is-the-alarm horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. ⚠ A value that is not a positive integer arms **nothing** and reads as unadopted — `bridge:check` warns on one, because that is the only place an operator who set it wrongly finds out. ⛔ Setting it is not the same as being watched: `bridge:check` also **warns while nothing has ever run `bridge:jobs --assert-tick` here**, because a horizon with no reader is a dead alarm that reads as coverage. |
