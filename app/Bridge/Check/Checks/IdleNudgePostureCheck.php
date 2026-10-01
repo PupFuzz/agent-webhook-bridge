@@ -73,17 +73,16 @@ final class IdleNudgePostureCheck implements Check
             // ⚑ NOT SET UP IS A `warn`, SET WRONGLY STAYS A `fail` (card#10918 / DL-441). The
             // nudge is on by default, so unset keys are where every install with a push-routed
             // agent starts — a `fail` there would red the deploy gate of an install nobody
-            // touched, for a feature nobody set up. It skips only the token-file legs below: the
-            // job still runs, nudges seat-record agents and records its pass without Mezzanine
-            // ({@see IdleNudgeJob}), so the instance and last-pass legs still have a subject.
+            // touched, for a feature nobody set up. Either way only the token-file legs below are
+            // skipped: with `problem` set the job still runs, nudges seat-record agents and records
+            // its pass without Mezzanine ({@see IdleNudgeJob}), so the instance and last-pass legs
+            // still have a subject.
             if ($cfg->unsetKeys !== []) {
                 yield Finding::warn('idle_nudge: ON (the default since DL-441) but NOT SET UP for the agents it reads from Mezzanine (those with `channel.route_intents: true` and no `idle_nudge.seat_record`) — '
                     .$cfg->problem.'. None of them is nudged. Set '.implode(', ', $cfg->unsetKeys)
                     .', give each such agent an `idle_nudge.seat_record` instead, or decline the nudge with BRIDGE_IDLE_NUDGE_ENABLED=false (docs/periodic-jobs.md § The idle nudge).');
             } elseif ($cfg->problem !== null) {
                 yield Finding::fail('idle_nudge: enabled but MISCONFIGURED — '.$cfg->problem.'. Every Mezzanine-sourced agent is unmeasured and none is nudged.');
-
-                return;
             } else {
                 $tokenPath = (string) $cfg->tokenPath;
                 if (! is_file($tokenPath)) {

@@ -172,6 +172,39 @@ class IdleNudgePostureCheckTest extends TestCase
         $this->assertOne(Severity::Fail, 'exactly one is supported');
     }
 
+    /**
+     * Both ways into the MISCONFIGURED `fail`: a value set wrongly, and an explicit enable with a
+     * key left unset.
+     *
+     * @return array<string, array{array<string, mixed>, string}>
+     */
+    public static function misconfigured(): array
+    {
+        return [
+            'invalid base url' => [['bridge.idle_nudge.base_url' => 'http://mezzanine.example'], 'BRIDGE_IDLE_NUDGE_BASE_URL'],
+            'explicit enable, key unset' => [['bridge.idle_nudge.install' => null, 'bridge.idle_nudge.enabled_explicit' => true], 'BRIDGE_IDLE_NUDGE_INSTALL is unset'],
+        ];
+    }
+
+    /**
+     * The MISCONFIGURED `fail` skips only the token-file legs, like the NOT-SET-UP `warn`: the job
+     * still judges seat-record agents and records its pass with `problem` set (`IdleNudgeJob::mezzanine()`),
+     * so a second instance is still its own `fail`.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    #[DataProvider('misconfigured')]
+    public function test_the_misconfigured_fail_does_not_swallow_a_second_instance_fail(array $config, string $names): void
+    {
+        config($config);
+        $this->nudgeInstance('idle-nudge-a');
+        $this->nudgeInstance('idle-nudge-b');
+
+        $this->assertOne(Severity::Fail, 'MISCONFIGURED');
+        $this->assertOne(Severity::Fail, $names);
+        $this->assertOne(Severity::Fail, 'exactly one is supported');
+    }
+
     public function test_every_unset_mezzanine_key_is_named_in_one_line(): void
     {
         config([
