@@ -18,11 +18,17 @@ use RuntimeException;
  * `$installFault` marks a refusal built by {@see BoardCallRefusal::readRefusal()}: the board or
  * the install refused a READ, which the caller's arguments cannot fix. {@see BoardToolDispatcher}
  * adds no "update your channel client" sentence to one (card#10566 / DL-426), deciding by this
- * marker rather than by the message text.
+ * marker rather than by the message text. A WRITE the board refuses for a reason no argument can
+ * fix (its 401 and 403) carries the marker too, for the same reason.
+ *
+ * `$reason` is an optional machine-readable code for the refusal, relayed beside the message as
+ * the response body's `reason` (card#11150 / DL-449): a caller that BRANCHES on a refusal reads
+ * the code, never the wording. It is absent on every refusal that does not set one; which
+ * refusals set one, and the codes, are `docs/board-tools.md`'s to list.
  */
 final class ToolRefusalException extends RuntimeException
 {
-    public function __construct(string $message, public readonly bool $installFault = false)
+    public function __construct(string $message, public readonly bool $installFault = false, public readonly ?string $reason = null)
     {
         parent::__construct($message);
     }

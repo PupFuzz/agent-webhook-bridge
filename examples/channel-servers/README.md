@@ -302,7 +302,8 @@ one is wrong) and
 your bridge identity, never from the payload, so there is no argument for a user id
 and a seat can claim only for itself; since card#10869 a card another user holds is taken
 over with a warning and a card comment naming them, and only a card in a finished column
-is refused) and `board_comment_card` (DL-381: append a comment to
+is refused; since card#11150 / DL-449, `start: true` also moves the card to In Progress in
+the same write) and `board_comment_card` (DL-381: append a comment to
 a live card on your own board; the bridge writes the `FROM: <seat>` attribution line, and
 nothing is edited or deleted) and `board_get_cards` (DL-435: read known card ids in one call,
 each answered with an explicit status — never silently omitted) and `board_search` (DL-437: the

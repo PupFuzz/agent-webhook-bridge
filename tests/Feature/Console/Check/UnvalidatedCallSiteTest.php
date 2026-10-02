@@ -242,7 +242,10 @@ class UnvalidatedCallSiteTest extends TestCase
         //      would accuse an install that may need none of them; the per-agent loop already
         //      reports the load failure itself.
         'app/Bridge/Check/Checks/IdleNudgePostureCheck.php' => 4,
-        'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
+        // PLUS (card#11150 / DL-449) the role-permission leg: the board read carried no
+        // readable list of the caller's permissions, so whether the role grants `task.update`
+        // was never measured — limb (a), and the only other way to find out is to write.
+        'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 4,
         // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
         // three incidental disclosures, so it is spelled out here where a maintainer will
         // read it when the number moves:

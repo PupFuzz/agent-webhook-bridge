@@ -14,7 +14,7 @@ The tools that ship today — the table is held against the bridge's own registr
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
 | `board_correct_card` | write | **Correct a card that is YOURS** — its `name`, `description` or `tags`. Scoped to cards on your own board that carry your own bridge-stamped `created-by:<you>` **or** are assigned to your own kanban user (DL-376); the response says which of the two authorized it; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
-| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⛔ **It takes `card_id` and nothing else:** the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
+| `board_take_card` | write | **Claim a card for YOURSELF** — write your own kanban user into the board's `assigned_user_id`, so a card you are working is visibly taken even when its column never moved. ⭐ **`start: true` STARTS the card (card#11150 / DL-449):** ONE write moves it into the board's In Progress column AND assigns it to you, both read back — only from a `started_from_stages` column (a card already In Progress is assigned without a move); anything else is refused by name, with a `reason` code, and nothing is written. ⛔ **No argument names a user** (`card_id` and `start` are the whole accepted set): the assignee is resolved server-side from your own `identity.kanban_user_id`, never from the payload, so a seat can claim a card for itself and for **nobody else**. A card a **different** user holds is **taken over with a warning** and a card comment naming them (card#10869) — except that replacing the **assignee** of a card in a **finished** column is **refused by name** and nothing is written. |
 | `board_comment_card` | write | **Append a comment to a live card on YOUR board.** Nothing on the card is read or replaced, so it is the safe way to add a note, including to a card outside your `board_my_cards` window. Any live card on your own board qualifies: no mint, assignment or lane requirement. The bridge writes `FROM: <your seat>` as the first line, from your bridge identity. **Append-only**: no edit, no delete. |
 | `board_get_cards` | read | **Read cards you already know the ids of**, in one call, whatever lane, column or archive state they are in. **Every id comes back exactly once**, in request order, with an explicit `status` — `found`, `archived`, `other_board` or `not_found` — never a silent omission. A `fields` projection selects what each card carries; `description` is opt-in per call. |
 | `board_search` | read | **Search YOUR board by filter** — tags (all / any), columns, PR number, name text, updated-since date, archived, lane (`mine` / `any` / `none`) — and get **the matches only**: no lane list, no column list. `summary: true` returns counts per column (and per named tag) instead of cards. Every filter is applied by the board and **confirmed applied**, or the call is refused; the window says `total`, `truncated` and `total_is_lower_bound`. |
@@ -877,7 +877,8 @@ through the one privileged seat, which is the serial hub this door exists to rem
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. **This is the only argument this tool has.** |
+| `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced. |
+| `start` | no | A **boolean**. `true` STARTS the card — moves it to In Progress and assigns it to you in one write (§ [The start form](#the-start-form-start-true-card11150--dl-449) below). `false` or omitted is the plain claim, which never moves the card. A string, number or `null` is refused, never coerced. |
 
 > ⛔⭐ **THERE IS NO ARGUMENT FOR THE USER, AND THERE NEVER WILL BE.** The assignee is
 > resolved **server-side** from the agent registry — your own `identity.kanban_user_id`,
@@ -890,14 +891,14 @@ through the one privileged seat, which is the serial hub this door exists to rem
 > away from false, and one seat could assign work to another or impersonate a take. Here
 > there is no expressible call that writes another seat's id.
 >
-> `card_id` is the whole accepted set, so **every** other key is refused (422) **before any
+> `card_id` and `start` are the whole accepted set, so **every** other key is refused (422) **before any
 > board request is made** — never silently ignored, which would leave you believing you had
 > assigned somebody. The user-naming spellings the tool enumerates (`assigned_user_id`,
 > `assignee`, `user_id`, `kanban_user_id`, `agent`, and the rest of `USER_NAMING_ARGS`) are
 > refused in a sentence that **names the key** and says why it will never exist; anything else
 > — `owner`, `assigned_to`, a padded spelling — is refused as an unknown argument, with the
 > reminder that the assignee is resolved from your bridge identity, never from your arguments,
-> and `card_id` named as the whole accepted set. The list changes the message, not the
+> and the accepted set named. The list changes the message, not the
 > outcome (§ [An argument the tool does not declare is refused](#an-argument-the-tool-does-not-declare-is-refused-on-every-tool-dl-379)).
 >
 > **Assigning work to a DIFFERENT seat is not something any board tool can do.** That is
@@ -1011,6 +1012,86 @@ knowing who is looking at a frozen card is useful rather than harmful.
   "already_held": false       // true ⇒ you already held it and NOTHING was written
 }
 ```
+
+### The start form (`start: true`, card#11150 / DL-449)
+
+**Start a card: one write moves it into In Progress AND assigns it to you.** A card your branch
+push moves is moved by the writeback, which names no seat (the push comes from one shared GitHub
+account), so it lands In Progress with nobody on it and the bridge can only alert
+(`owner.moved_without_owner`, [`writeback.md`](writeback.md)). You know you are starting, so the
+start is where the owner is recorded: kanban v0.50.0 and later applies a column change and the
+assignee in **one transaction**, so this never leaves a card moved but unowned. The later push
+finds the card already In Progress and assigned, which is the writeback's existing no-op.
+
+**Which columns.** Both come from this install's `writeback.json` mapping(s) on your board — no
+new configuration:
+
+- **In Progress** is the mapping's `stages.started`. No mapping on your board maps `started` (or
+  `writeback.json` is missing or will not parse, or two mappings name different `started`
+  columns) ⇒ **refused, nothing written**, as an INSTALL fault.
+- A card is **start-eligible** in a `started_from_stages` column — exactly the columns the
+  writeback's own `started` move promotes a card from (DL-160). One write: `workflow_stage_id` +
+  `assigned_user_id`.
+- A card **already In Progress** is assigned with no move (`moved: false`); one you already hold
+  there writes nothing.
+- **Every other column is refused, nothing written** — a finished one by name (the same
+  finished set the takeover uses, below), and any other (Backlog when it is not a
+  `started_from_stages` column, In Review, …) because the writeback refuses to drag a card
+  there too. ⛔ `unpark_from_stages` is **not** start-eligible: the writeback moves a parked card
+  only by overriding a human hold and alerting (DL-194), and this door does not override.
+- A row naming **no readable column** is refused, nothing written.
+- ⛔ **A PINNED card is not moved.** A `block_reason` or `no-automove` holds the card's column,
+  and the writeback's `started` move is refused on it, so a start from a `started_from_stages`
+  column is refused. A take **without** `start` still claims it where it is, and a pinned card
+  already In Progress is still assigned (the pin holds the column, not the claim).
+
+**Another holder** is handled exactly as the plain take handles one (the takeover rules above):
+named in the log before the write, an assignee replaced only outside a finished column, and a
+card comment naming them once the read-back confirms the start.
+
+**⛔ A 2xx is not a start.** After the write the bridge reads the card back and answers success
+only when the board now says **In Progress AND you**. Anything else is **refused** (`not_stored`)
+naming what the board stored. A read-back the board does not answer is the retryable 502; calling
+again is safe, because a start that landed answers `already_held: true` with nothing written.
+
+**Returns** (beside the plain take's keys):
+
+```jsonc
+{
+  "moved": true,          // THIS call moved the card into In Progress (false: it was already there)
+  "assigned": true,       // THIS call wrote you as assignee (false: you already held it)
+  "replaced": null,       // or {assigned_user_id, owner_tags}: whom this call took the card from
+  "from_stage_id": 47,    // the column the card was read in
+  "stage_id": 49          // In Progress, as read back
+  // on a takeover, also: warning, takeover_confirmed (true), takeover_comment
+}
+```
+
+**Refusal codes.** A start refusal carries a machine-readable `reason` beside `error` in the
+`{ok: false, error, reason}` body — branch on it, never on the wording: `finished_column`,
+`not_start_eligible`, `pinned`, `column_unreadable`, `not_stored`, `card_gone`,
+`board_rejected` (a board 422 — an enforced WIP limit on In Progress is one), and the INSTALL
+faults `install_fault.write_forbidden` (403), `install_fault.token_rejected` (401),
+`install_fault.start_unmapped`, `install_fault.start_ambiguous` and
+`install_fault.writeback_unreadable`; `not_confirmed` is a write the board answered 2xx whose
+read-back was a broken read, so whether it landed is unknown (calling again is safe). Resolving WHO you are can refuse before any board request,
+on every tool that resolves your kanban user (this one and `board_correct_card`):
+`install_fault.no_kanban_user`, `install_fault.shared_kanban_user`, `install_fault.not_in_roster`
+and `install_fault.agent_config_unreadable` — so a seat with no id is refused by name, never moved
+unassigned. The plain take's write refusals and finished-column refusal carry the same codes; a
+refusal with no code carries no `reason` key.
+
+**Permissions.** The combined PATCH carries more than `workflow_stage_id`, so kanban authorizes it
+as **`task.update`**, the same as the plain take; a start on a card you already hold sends the
+column alone and needs `task.move`. `bridge:check`'s `board_tools.board_state` leg reads whether
+the writeback user's role on your board grants `task.update` and **warns** when it does not; when
+the board's answer carries no permissions list it says **UNMEASURED**, never a pass. ⚠ It reads
+the ROLE only: the token's own `write` ability and an archived board's write gate are the other
+two sources of the same 403, and no read shows them.
+
+**Cost:** a start from an eligible column is the lookup, the PATCH and the read-back (three
+requests), plus the takeover's two column reads and comment when another user holds the card; a
+refusal for the column costs the lookup and two column reads, and writes nothing.
 
 **⚠ It needs `task.update` on your board, and a narrowed role gets a permanent 403.**
 `assigned_user_id` is not `workflow_stage_id`, so kanban authorizes this PATCH as
@@ -1365,7 +1446,7 @@ exceeds one page, and every count is kanban's.
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
+| 422 | A caller-fixable bad request (a request body that is not a JSON object — empty, not valid JSON, or valid JSON of another type — which is refused **for the body, in the same words on both doors**, and never as a missing `tool` (card#10106); over HTTP, a body sent without a JSON `Content-Type`; an argument key the tool does not declare, missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, an `idempotency_key` longer than `idem:<you>:` leaves of the tag cap, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **every tool on this door** (DL-339, extending DL-326 and inherited by DL-372's take: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). A refusal that carries a machine-readable code adds `reason` beside `error` (`{ok: false, error, reason}`); the codes are listed in [`board_take_card`'s start form](#the-start-form-start-true-card11150--dl-449). |
 | 502 | Upstream kanban error (may be retryable) — a kanban 5xx or another non-permanent status, **or a call kanban never answered** (a timeout or a failed connection, DL-387), **or a paged board read kanban answered `2xx` that the bridge could not report complete** (card#10653; see the **2xx, read refused** row of the mapping table below). The body is the same for all of them. ⚠ On a WRITE a 502 may follow a write that landed: read the tool's own section before re-sending. |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 

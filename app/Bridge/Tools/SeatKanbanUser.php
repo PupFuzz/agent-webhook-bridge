@@ -137,7 +137,7 @@ final class SeatKanbanUser
                 'agent' => $callingAgentName, 'tool' => $tool,
             ]);
 
-            throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: the seat's kanban user id is kept in the coord roster (`roster[].kanban_user_id` in coordination.config.json, keyed by kanban host) and this bridge reads its copy from `identity.kanban_user_id` in that agent's YAML — set it there to the roster's value (`bridge:check` holds the two against each other; no id exists until the seat has its own kanban account) and report it to your operator.");
+            throw new ToolRefusalException("{$tool}: this bridge's config for agent `{$callingAgentName}` declares no `identity.kanban_user_id`, so there is no kanban user for the bridge to record as YOU — and this door writes only your own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault: the seat's kanban user id is kept in the coord roster (`roster[].kanban_user_id` in coordination.config.json, keyed by kanban host) and this bridge reads its copy from `identity.kanban_user_id` in that agent's YAML — set it there to the roster's value (`bridge:check` holds the two against each other; no id exists until the seat has its own kanban account) and report it to your operator.", installFault: true, reason: 'install_fault.no_kanban_user');
         }
 
         return $kanbanUserId;
@@ -201,7 +201,7 @@ final class SeatKanbanUser
                 'agent' => $callingAgentName, 'tool' => $tool, 'error' => $e->getMessage(),
             ]);
 
-            throw new ToolRefusalException("{$tool}: the bridge could not read its own agent configuration, so it cannot establish WHICH kanban user you are — and this door writes only the calling seat's own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault, not something your arguments can fix; report it to your operator.");
+            throw new ToolRefusalException("{$tool}: the bridge could not read its own agent configuration, so it cannot establish WHICH kanban user you are — and this door writes only the calling seat's own id, never one from your arguments. NOTHING WAS WRITTEN. This is an INSTALL fault, not something your arguments can fix; report it to your operator.", installFault: true, reason: 'install_fault.agent_config_unreadable');
         }
 
         $mine = null;
@@ -236,7 +236,7 @@ final class SeatKanbanUser
                     'agents' => $sharing, 'reason' => self::SHARED_KANBAN_USER_ID,
                 ]);
 
-                throw new ToolRefusalException("{$tool}: this bridge's config declares `identity.kanban_user_id` {$kanbanUserId} for MORE THAN ONE agent (".implode(', ', $sharing).'), so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each agent a distinct `identity.kanban_user_id` (`bridge:check` already WARNS on this collision — it does not fail, so an install can run in this state for a long time) and report it to your operator.');
+                throw new ToolRefusalException("{$tool}: this bridge's config declares `identity.kanban_user_id` {$kanbanUserId} for MORE THAN ONE agent (".implode(', ', $sharing).'), so that id does not say WHICH seat you are — and a card recorded under it would tell every other seat that somebody holds the work without saying who, which is the one question this door exists to answer. NOTHING WAS WRITTEN. This is an INSTALL fault: give each agent a distinct `identity.kanban_user_id` (`bridge:check` already WARNS on this collision — it does not fail, so an install can run in this state for a long time) and report it to your operator.', installFault: true, reason: 'install_fault.shared_kanban_user');
             }
 
             return [$callingAgentName, $kanbanUserId, $seatName];
@@ -246,6 +246,6 @@ final class SeatKanbanUser
             'agent' => $callingAgentName, 'tool' => $tool, 'reason' => self::NOT_IN_ROSTER,
         ]);
 
-        throw new ToolRefusalException("{$tool}: this bridge has no configuration for agent `{$callingAgentName}`, so it cannot establish which kanban user you are — the roster this call authenticated against no longer carries you (a YAML removed or renamed under the running bridge). NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator.");
+        throw new ToolRefusalException("{$tool}: this bridge has no configuration for agent `{$callingAgentName}`, so it cannot establish which kanban user you are — the roster this call authenticated against no longer carries you (a YAML removed or renamed under the running bridge). NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator.", installFault: true, reason: 'install_fault.not_in_roster');
     }
 }

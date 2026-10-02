@@ -5715,7 +5715,7 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('`assignee` is not an argument here, and it never will be', $error);
         $this->assertStringContainsString('from the bridge identity your call authenticated as', $error);
         $this->assertStringContainsString('Unknown argument `owner` — the assignee is resolved from your bridge identity, never from your arguments.', $error);
-        $this->assertStringContainsString('This tool accepts: `card_id`.', $error);
+        $this->assertStringContainsString('This tool accepts: `card_id`, `start`.', $error);
     }
 
     /**
@@ -5731,7 +5731,7 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
         $res->assertStatus(422);
         $this->assertSame(
-            'board_take_card: unknown argument `assigned_to` — the assignee is resolved from your bridge identity, never from your arguments. This tool accepts: `card_id`. Nothing was sent to the board — no card was read or written.',
+            'board_take_card: unknown argument `assigned_to` — the assignee is resolved from your bridge identity, never from your arguments. This tool accepts: `card_id`, `start`. Nothing was sent to the board — no card was read or written.',
             $res->json('error'),
         );
     }

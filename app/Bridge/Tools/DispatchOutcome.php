@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
+
 /**
  * The transport-neutral result of a {@see BoardToolDispatcher::dispatch} call
  * (Finding A, card 4952) — the shape both board-tools front doors map from:
@@ -13,7 +15,8 @@ namespace App\Bridge\Tools;
  * 422 bad tool/args/refusal, 502 upstream, 503 writeback-unavailable); the exit
  * code derives from it so the ssh client can tell a caller-fixable 4xx (exit 1)
  * from a service-fault 5xx (exit 2). The response BODY is transport-native-free:
- * both doors serialize the identical `{ok, tool, result}` / `{ok, error}` shape
+ * both doors serialize the identical `{ok, tool, result}` / `{ok, error}` shape (plus `reason` on a
+ * refusal that carries a code)
  * from {@see body()} (DR4 body-shape parity), so the .mjs relay yields the same
  * MCP content whichever door served it.
  */
@@ -28,6 +31,7 @@ final class DispatchOutcome
         public readonly ?string $toolName,
         public readonly ?array $result,
         public readonly ?string $error,
+        public readonly ?string $reason = null,
     ) {}
 
     /**
@@ -38,9 +42,12 @@ final class DispatchOutcome
         return new self(true, 200, $toolName, $result, null);
     }
 
-    public static function failure(int $status, string $error): self
+    /**
+     * @param  ?string  $reason  a refusal's machine-readable code ({@see ToolRefusalException::$reason}); null leaves the body's `reason` key out
+     */
+    public static function failure(int $status, string $error, ?string $reason = null): self
     {
-        return new self(false, $status, null, null, $error);
+        return new self(false, $status, null, null, $error, $reason);
     }
 
     /**
@@ -55,7 +62,7 @@ final class DispatchOutcome
     {
         return $this->ok
             ? ['ok' => true, 'tool' => $this->toolName, 'result' => $this->result]
-            : ['ok' => false, 'error' => $this->error];
+            : ['ok' => false, 'error' => $this->error] + ($this->reason === null ? [] : ['reason' => $this->reason]);
     }
 
     /**

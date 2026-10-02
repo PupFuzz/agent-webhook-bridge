@@ -10,6 +10,7 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
@@ -147,6 +148,56 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $this->assertStringContainsString('board 10 returned no workflow stages', $unmeasured['message']);
     }
 
+    /**
+     * card#11150 / DL-449: `board_take_card` writes `assigned_user_id`, and its start form moves
+     * AND assigns in one PATCH — both authorized as `task.update` (kanban DL-204). A role without
+     * it refuses every take with a 403, so the leg says so before the first one.
+     */
+    public function test_a_role_without_task_update_warns_that_every_take_and_start_will_be_refused(): void
+    {
+        $this->fakeBoard(total: 3, swimlaneIds: [4], permissions: ['board.view', 'task.move']);
+
+        $lines = array_values(array_filter($this->findings($this->agent()), fn (array $f) => str_contains($f['message'], 'task.update')));
+
+        $this->assertCount(1, $lines);
+        $this->assertSame(Severity::Warn, $lines[0]['severity']);
+        $this->assertStringContainsString("the writeback user's role on board 10 does not grant `task.update`", $lines[0]['message']);
+        $this->assertStringContainsString('board_take_card', $lines[0]['message']);
+        $this->assertStringContainsString('start form', $lines[0]['message']);
+    }
+
+    /** The control for the warn above: the same fixture whose role grants it says nothing. */
+    public function test_a_role_granting_task_update_is_silent(): void
+    {
+        $this->fakeBoard(total: 3, swimlaneIds: [4]);
+
+        $this->assertStringNotContainsString('task.update', $this->joined($this->findings($this->agent())));
+    }
+
+    /**
+     * A board read that carries no permissions list cannot say whether the write is allowed, and
+     * the only other way to find out is to WRITE — so the leg says UNMEASURED, by name, and is
+     * never read as a pass.
+     *
+     * @return array<string, array{mixed}>
+     */
+    public static function unreadablePermissions(): array
+    {
+        return ['the key absent' => [false], 'not a list' => [['task.update' => true]], 'a non-string element' => [['task.update', 7]]];
+    }
+
+    #[DataProvider('unreadablePermissions')]
+    public function test_a_read_carrying_no_permissions_list_is_unmeasured_by_name(mixed $permissions): void
+    {
+        $this->fakeBoard(total: 3, swimlaneIds: [4], permissions: $permissions);
+
+        $lines = array_values(array_filter($this->findings($this->agent()), fn (array $f) => str_contains($f['message'], 'task.update')));
+
+        $this->assertCount(1, $lines);
+        $this->assertSame(Severity::Unvalidated, $lines[0]['severity']);
+        $this->assertStringContainsString('UNMEASURED', $lines[0]['message']);
+    }
+
     public function test_a_blind_coord_board_warns(): void
     {
         $this->fakeBoard(total: 3, swimlaneIds: [4], stages: [['id' => 55, 'name' => 'Backlog', 'position' => 1.0]], coordTotal: 0);
@@ -180,7 +231,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         // Two preloads, not one: boardSwimlaneIds and boardStageOrder each read
         // `preload.json` (no per-run cache), which is the pre-existing behavior this
         // migration preserves rather than the count the leg names.
-        Http::assertSentCount(3);   // visibility + swimlane preload + stage preload
+        Http::assertSentCount(4);   // visibility + swimlane preload + stage preload + permissions preload
     }
 
     /**
@@ -282,15 +333,21 @@ class BoardToolsBoardStateCheckTest extends TestCase
     /**
      * @param  bool  $omitSwimlanes  drop the `data.swimlanes` KEY — a different response from
      *                               `swimlaneIds: []`, which an `[]` default cannot express.
+     * @param  mixed  $permissions  the `data.permissions` value, or false to drop the key
      */
-    private function fakeBoard(int $total = 1, array $swimlaneIds = [], ?array $stages = null, ?int $coordTotal = null, bool $omitSwimlanes = false): void
+    private function fakeBoard(int $total = 1, array $swimlaneIds = [], ?array $stages = null, ?int $coordTotal = null, bool $omitSwimlanes = false, mixed $permissions = ['board.view', 'task.move', 'task.update']): void
     {
         $stages ??= [['id' => 55, 'name' => 'Backlog', 'position' => 1.0]];
-        Http::fake(function (Request $request) use ($total, $swimlaneIds, $stages, $coordTotal, $omitSwimlanes) {
+        Http::fake(function (Request $request) use ($total, $swimlaneIds, $stages, $coordTotal, $omitSwimlanes, $permissions) {
             if (str_contains($request->url(), 'preload.json')) {
                 $data = ['workflows' => [['stages' => $stages]]];
                 if (! $omitSwimlanes) {
                     $data['swimlanes'] = array_map(fn (int $id) => ['id' => $id], $swimlaneIds);
+                }
+                // kanban's board resource carries the CALLER's effective permissions; `false`
+                // here drops the key, which is the response the leg must call UNMEASURED.
+                if ($permissions !== false) {
+                    $data['permissions'] = $permissions;
                 }
 
                 return Http::response(['data' => $data]);

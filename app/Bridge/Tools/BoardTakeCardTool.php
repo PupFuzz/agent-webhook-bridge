@@ -12,6 +12,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\OwnerTag;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
@@ -29,7 +30,8 @@ use Illuminate\Support\Facades\Log;
  * which is the serial hub this door exists to remove.
  *
  * ⛔⭐ THE ID IS RESOLVED FROM THE AGENT REGISTRY AND THERE IS NO ARGUMENT FOR IT. This
- * tool accepts `card_id` AND NOTHING ELSE; the value written is
+ * tool accepts `card_id` and the boolean `start` (card#11150) AND NOTHING ELSE, and neither names
+ * a user; the value written is
  * {@see SeatKanbanUser::forCallingSeat}'s answer for the seat the DOOR sealed at dispatch
  * entry ({@see CallingSeat}) — never a value that travelled in the request, and not even a
  * name this method could pass, because that method takes none. That is the constraint the
@@ -38,8 +40,8 @@ use Illuminate\Support\Facades\Log;
  * accepted an `assigned_user_id` — even a validated one — would put "a seat may claim
  * only for itself" one forgotten branch away from false, letting one seat assign work to
  * another or impersonate a take. Here there is no expressible call that writes another
- * seat's id. ⚠ AND THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST: `card_id` is
- * the whole of it, and EVERY other key throws before any board request. What
+ * seat's id. ⚠ AND THE ACCEPT SET IS WHERE THAT HOLDS, NOT THE REFUSAL LIST: `card_id` and
+ * `start` are the whole of it, and EVERY other key throws before any board request. What
  * {@see USER_NAMING_ARGS} changes is the MESSAGE and never the outcome — the spellings it
  * enumerates are refused in a sentence that names the key and says why the tool will never
  * have it, and every other unknown key (`owner`, `assigned_to`, a padded spelling) is
@@ -158,8 +160,8 @@ final class BoardTakeCardTool implements Tool
      * one of these has a MODEL of the tool that is wrong in the one way that matters.
      *
      * ⛔ IT IS A MESSAGE-QUALITY LIST, NOT A BOUNDARY, and reading it as one inverts where
-     * the guarantee lives. The boundary is {@see acceptedArguments} — the single exact key
-     * `card_id` — which {@see BoardToolDispatcher} enforces, so a user-naming spelling absent
+     * the guarantee lives. The boundary is {@see acceptedArguments} — the exact keys `card_id`
+     * and `start` — which {@see BoardToolDispatcher} enforces, so a user-naming spelling absent
      * from this list is refused too, with that reason, before any board request. Adding a spelling
      * here buys a better sentence; it does not widen or narrow what this tool accepts.
      *
@@ -181,13 +183,14 @@ final class BoardTakeCardTool implements Tool
     }
 
     /**
-     * `card_id` is the whole accepted set, and that is the tool's central property rather than
-     * a small contract — so the two classes of near-miss get their own reason, and every other
-     * key is still told where the assignee comes from.
+     * `card_id` and the `start` flag are the whole accepted set, and no member of it names a user
+     * — that is the tool's central property rather than a small contract — so the two classes of
+     * near-miss get their own reason, and every other key is still told where the assignee comes
+     * from.
      */
     public function acceptedArguments(): array
     {
-        return ['card_id'];
+        return ['card_id', 'start'];
     }
 
     public function refusedArgumentReason(string $key): string
@@ -210,6 +213,7 @@ final class BoardTakeCardTool implements Tool
         // nothing and writes nothing, and an install fault is reported as itself rather
         // than as a board lookup that went nowhere.
         $cardId = $this->requireCardId($args);
+        $start = $this->requireStart($args);
         $userId = SeatKanbanUser::forCallingSeat($this->name());
 
         $boardId = (int) $cfg->boardId;
@@ -229,6 +233,10 @@ final class BoardTakeCardTool implements Tool
             'already_held' => $holder === $userId,
         ];
 
+        if ($start) {
+            return $result + $this->start($client, $row, $boardId, $cardId, $userId, $holder, $agentName);
+        }
+
         if ($holder === $userId) {
             Log::info('board_take_card: already held by the calling seat — nothing written', [
                 'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
@@ -242,7 +250,7 @@ final class BoardTakeCardTool implements Tool
             try {
                 $client->patchCard($cardId, ['assigned_user_id' => $userId]);
             } catch (RequestException $e) {
-                throw $this->writeRefusal($e, $cardId, $userId, $agentName);
+                throw $this->writeRefusal($e, $cardId, ['assigned_user_id' => $userId], $agentName);
             }
 
             Log::info('board_take_card: taken', [
@@ -287,7 +295,7 @@ final class BoardTakeCardTool implements Tool
         try {
             $client->patchCard($cardId, ['assigned_user_id' => $userId]);
         } catch (RequestException $e) {
-            throw $this->writeRefusal($e, $cardId, $userId, $agentName);
+            throw $this->writeRefusal($e, $cardId, ['assigned_user_id' => $userId], $agentName);
         }
 
         $nowNames = $this->assigneeAfterWrite($client, $boardId, $cardId, $agentName);
@@ -316,6 +324,252 @@ final class BoardTakeCardTool implements Tool
             'takeover_confirmed' => $confirmed,
             'takeover_comment' => $comment,
         ] + ($confirmed || $nowNames === null ? [] : ['board_now_names' => $nowNames]);
+    }
+
+    /**
+     * THE START FORM (card#11150, DL-449): in ONE write, move the card into the board's In
+     * Progress column AND assign it to the calling seat, then read both back.
+     *
+     * ⭐ WHY ONE WRITE. A card the seat's branch push moves is moved by the writeback, which names
+     * no seat (one shared GitHub actor), so it lands In Progress with nobody on it and the bridge
+     * can only alert (`owner.moved_without_owner`, DL-439). The seat DECIDES to start, so the
+     * decision is where the owner is known: kanban applies a stage change and another field in one
+     * transaction (`docs/kanban-integration-contract.md`'s task PATCH row declares that dependency),
+     * so this write never leaves a card moved but unowned. The later
+     * push finds the card already in the `started` column, which is the writeback's existing
+     * no-op — the writeback is unchanged.
+     *
+     * ⭐ THE COLUMNS ARE THE WRITEBACK'S OWN. In Progress is the `started` stage writeback.json maps
+     * on this board, and a card is start-eligible exactly when it sits in that mapping's
+     * `started_from_stages` — the set the writeback's `started` move promotes from (DL-160), so the
+     * start form moves a card only where the push would have. A card already In Progress is a take
+     * with no move. Everything else is refused with NOTHING WRITTEN: a finished column by name, any
+     * other column (Backlog when it is not declared, In Review, …) because the writeback refuses to
+     * drag it there too, a column the row cannot name, and a board writeback.json does not map to
+     * one In Progress column. ⛔ `unpark_from_stages` is deliberately NOT start-eligible: the
+     * writeback moves a parked card only by OVERRIDING a human hold and alerting (DL-194), and this
+     * door does not reproduce that override.
+     *
+     * ⛔ THE PIN HOLDS THE MOVE. A pinned card (DL-178: a `block_reason` or `no-automove`) is one the
+     * writeback's `started` move refuses, and this is that move made earlier — so a start on one is
+     * refused, and a take WITHOUT `start` still claims it (the pin governs the column and the name,
+     * not the claim; {@see PinGuard::PINNED_FIELDS}).
+     *
+     * Takeover is the plain take's rule (DL-439 Decision 3): another holder is named in the log
+     * before the write, an ASSIGNEE is replaced only outside a finished column, and a comment names
+     * whom the start replaced once the read-back confirms it.
+     *
+     * ⛔ A 2xx IS NOT A START. The card is read back after the write and the call succeeds only when
+     * the board now says In Progress AND this seat; anything else is refused naming what the board
+     * stored. A read-back the board does not answer is the dispatcher's retryable 502, and calling
+     * again is safe: a start that landed answers `already_held` with nothing written.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    private function start(KanbanClient $client, array $row, int $boardId, int $cardId, int $userId, ?int $holder, string $agentName): array
+    {
+        $inProgress = $this->inProgressColumn($boardId, $cardId, $agentName);
+        $from = $row['workflow_stage_id'] ?? null;
+        if (! is_numeric($from)) {
+            throw new ToolRefusalException("board_take_card: the board's row for card {$cardId} names no readable column, so whether it may be started cannot be read — NOTHING WAS WRITTEN. This is an INSTALL fault (the board is answering a shape the bridge does not recognise); report it to your operator.", installFault: true, reason: 'column_unreadable');
+        }
+        $from = (int) $from;
+        $moves = $from !== $inProgress['stage'];
+        if ($moves) {
+            $this->refuseUnstartable($client, $row, $boardId, $cardId, $from, $inProgress, $agentName);
+        }
+
+        $ownerTags = $holder === null ? $this->otherSeatsOwnerTags($row) : [];
+        $replacesAssignee = $holder !== null && $holder !== $userId;
+        $replacing = $replacesAssignee || $ownerTags !== [];
+        $report = [
+            'moved' => $moves,
+            'assigned' => $holder !== $userId,
+            'replaced' => $replacing ? ['assigned_user_id' => $holder, 'owner_tags' => $ownerTags] : null,
+            'from_stage_id' => $from,
+            'stage_id' => $inProgress['stage'],
+        ];
+        if (! $moves && $holder === $userId) {
+            Log::info('board_take_card: start — already In Progress and held by the calling seat — nothing written', [
+                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+            ]);
+
+            return $report;
+        }
+
+        $replaced = $this->holderPhrase($holder, $ownerTags);
+        if ($replacesAssignee) {
+            $this->refuseIfFinished($client, $row, $boardId, $cardId, $replaced, $agentName);
+        }
+        if ($replacing) {
+            Log::warning('board_take_card: TAKING a card another holder has — named before the write', [
+                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+                'replaced_assignee' => $holder, 'replaced_owner_tags' => $ownerTags, 'assigned_user_id' => $userId,
+            ]);
+        }
+
+        $assignTo = $holder === $userId ? null : $userId;
+        $fields = ($moves ? ['workflow_stage_id' => $inProgress['stage']] : []) + ($assignTo === null ? [] : ['assigned_user_id' => $assignTo]);
+        try {
+            if ($moves) {
+                $client->moveCard($cardId, $inProgress['stage'], $assignTo);
+            } else {
+                $client->patchCard($cardId, ['assigned_user_id' => $userId]);
+            }
+        } catch (RequestException $e) {
+            throw $this->writeRefusal($e, $cardId, $fields, $agentName);
+        }
+
+        $this->confirmStarted($client, $boardId, $cardId, $userId, $inProgress['stage'], $agentName);
+        Log::info('board_take_card: started', [
+            'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'assigned_user_id' => $userId,
+            'from_stage' => $from, 'stage' => $inProgress['stage'], 'moved' => $moves, 'replaced' => $replacing ? $replaced : null,
+        ]);
+        if (! $replacing) {
+            return $report;
+        }
+
+        $comment = 'posted';
+        try {
+            $client->addComment($cardId, "{$agentName} (kanban user {$userId}) took this card over from {$replaced} with board_take_card.");
+        } catch (RequestException|ConnectionException $e) {
+            Log::warning('board_take_card: the card was taken, but the comment naming the replaced holder could not be posted — the holder is in this log line and in the response', [
+                'agent' => $agentName, 'card_id' => $cardId, 'replaced' => $replaced, 'error' => RedactedErrorText::of($e),
+            ]);
+            $comment = 'failed';
+        }
+
+        return $report + [
+            'warning' => "card {$cardId} was held by {$replaced}; it has been reassigned to you (kanban user {$userId}). If that holder is still working it, talk to them.",
+            'takeover_confirmed' => true,
+            'takeover_comment' => $comment,
+        ];
+    }
+
+    /**
+     * The board's In Progress column and the columns a start may move a card from, read off the
+     * writeback.json mappings on THIS board — or a refusal naming why there is no one answer.
+     * Mappings that map no `started` stage contribute nothing; several that map one must agree,
+     * because a start that picked one of two In Progress columns would be a guess.
+     *
+     * @return array{stage: int, from: list<int>, mappings: list<WritebackMapping>}
+     */
+    private function inProgressColumn(int $boardId, int $cardId, string $agentName): array
+    {
+        try {
+            $writeback = WritebackConfig::loadDefault();
+        } catch (ConfigException $e) {
+            Log::warning('board_take_card: start refused — writeback.json will not parse, so the In Progress column is unknown', [
+                'agent' => $agentName, 'card_id' => $cardId, 'error' => $e->getMessage(),
+            ]);
+
+            throw new ToolRefusalException("board_take_card: the bridge cannot read its own writeback.json, which names this board's In Progress column, so card {$cardId} cannot be started — NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator. A take without `start` does not need it.", installFault: true, reason: 'install_fault.writeback_unreadable');
+        }
+
+        $mappings = $writeback?->mappingsOnBoard($boardId) ?? [];
+        $stages = [];
+        $from = [];
+        foreach ($mappings as $mapping) {
+            $stage = $mapping->stageFor('started');
+            if ($stage === null) {
+                continue;
+            }
+            $stages[] = $stage;
+            array_push($from, ...($mapping->startedFromStages ?? []));
+        }
+        $stages = array_values(array_unique($stages));
+
+        if ($stages === []) {
+            throw new ToolRefusalException("board_take_card: no writeback.json mapping on board {$boardId} maps `started` (the In Progress column), so the bridge does not know where a start moves card {$cardId} — NOTHING WAS WRITTEN. This is an INSTALL fault: map `stages.started` for this board (docs/writeback.md), and report it to your operator. A take without `start` claims the card without moving it.", installFault: true, reason: 'install_fault.start_unmapped');
+        }
+        if (count($stages) > 1) {
+            throw new ToolRefusalException("board_take_card: the writeback.json mappings on board {$boardId} map `started` to DIFFERENT columns (".implode(', ', $stages).'), so which one is In Progress cannot be told — NOTHING WAS WRITTEN. This is an INSTALL fault; report it to your operator.', installFault: true, reason: 'install_fault.start_ambiguous');
+        }
+
+        return ['stage' => $stages[0], 'from' => array_values(array_unique($from)), 'mappings' => $mappings];
+    }
+
+    /**
+     * Refuse a start from a column the writeback's `started` move would not promote from, or on a
+     * card the pin holds — each by name, NOTHING WRITTEN. The board's columns are read only to
+     * name a refused column; an eligible card costs no read here.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array{stage: int, from: list<int>, mappings: list<WritebackMapping>}  $inProgress
+     */
+    private function refuseUnstartable(KanbanClient $client, array $row, int $boardId, int $cardId, int $from, array $inProgress, string $agentName): void
+    {
+        if (in_array($from, $inProgress['from'], true)) {
+            if (PinGuard::isPinned($row)) {
+                Log::warning('board_take_card: start refused — the card is pinned, so its column is held', [
+                    'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+                ]);
+
+                throw new ToolRefusalException("board_take_card: card {$cardId} is PINNED (a block_reason or a no-automove tag): a human is holding its column, and the bridge's own start move is refused on a pinned card — NOTHING WAS WRITTEN. Call board_take_card without `start` to claim it where it is, or ask whoever pinned it to lift the hold.", reason: 'pinned');
+            }
+
+            return;
+        }
+
+        try {
+            $structure = $client->boardStructure($boardId);
+            $order = $client->boardStageOrder($boardId);
+        } catch (RequestException $e) {
+            $status = BoardCallRefusal::permanentOnRead($e);
+            if ($status === null) {
+                throw $e;
+            }
+
+            throw BoardCallRefusal::readRefusal($this->name(), BoardReadRoute::BoardScoped, $status, "board {$boardId}'s columns to name why card {$cardId} cannot be started", 'so nothing was written');
+        }
+        $name = static fn (int $stage): string => isset($structure->stageNames[$stage]) ? "{$structure->stageNames[$stage]} ({$stage})" : "column {$stage}";
+
+        $mappings = $inProgress['mappings'];
+        if (FinishedStages::unanswerable($from, $mappings, $structure, $order) === null && FinishedStages::isFinished($from, $mappings, $structure, $order)) {
+            throw new ToolRefusalException("board_take_card: card {$cardId} is in a FINISHED column (".($structure->stageNames[$from] ?? "column {$from}").') — a finished card is not started again — NOTHING WAS WRITTEN.', reason: 'finished_column');
+        }
+
+        $eligible = $inProgress['from'] === []
+            ? 'writeback.json declares no `started_from_stages` for this board, so no column is start-eligible (the writeback refuses every `started` move here too)'
+            : 'a start moves a card only from '.implode(', ', array_map($name, $inProgress['from'])).' — the `started_from_stages` the writeback\'s own `started` move promotes from — or takes one already in '.$name($inProgress['stage']).' without moving it';
+        Log::info('board_take_card: start refused — the card is not in a start-eligible column', [
+            'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'stage' => $from,
+        ]);
+
+        throw new ToolRefusalException("board_take_card: card {$cardId} is in ".$name($from).", which is not a column a start moves a card from: {$eligible}. NOTHING WAS WRITTEN. Call board_take_card without `start` to claim it where it is.", reason: 'not_start_eligible');
+    }
+
+    /**
+     * Read the card back after the start's write and refuse unless the board now says In Progress
+     * AND this seat. A read the board does not answer is re-thrown for the retryable 502. A BROKEN
+     * read-back is re-worded rather than relayed: {@see BoardScopedRow}'s refusal says nothing was
+     * written, which after this write is false.
+     */
+    private function confirmStarted(KanbanClient $client, int $boardId, int $cardId, int $userId, int $inProgress, string $agentName): void
+    {
+        try {
+            $live = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName)->live;
+        } catch (ToolRefusalException) {
+            throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but reading it back answered a row that is not that card on your board — so whether the start landed is UNKNOWN. Calling again is safe: a start that landed answers `already_held` and writes nothing. Report the broken read to your operator.", reason: 'not_confirmed');
+        }
+        $stage = $live === null ? null : ($live['workflow_stage_id'] ?? null);
+        $assignee = $live === null ? null : ($live['assigned_user_id'] ?? null);
+        $stage = is_numeric($stage) ? (int) $stage : null;
+        $assignee = is_numeric($assignee) ? (int) $assignee : null;
+        if ($stage === $inProgress && $assignee === $userId) {
+            return;
+        }
+
+        $now = $live === null
+            ? 'the card is no longer live on your board'
+            : 'reading it back shows it in '.($stage === null ? 'no readable column' : "column {$stage}").' with '.($assignee === null ? 'no assignee' : "kanban user {$assignee} as assignee");
+        Log::warning('board_take_card: start write answered 2xx, but the read-back does not show it stored', [
+            'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+            'expected_stage' => $inProgress, 'stage' => $stage, 'assignee' => $assignee,
+        ]);
+
+        throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but {$now} — not column {$inProgress} with you (kanban user {$userId}). The start did NOT land as asked; another writer may have changed the card in between. Read the card with board_get_cards before calling again.", reason: 'not_stored');
     }
 
     /**
@@ -372,7 +626,7 @@ final class BoardTakeCardTool implements Tool
                 'agent' => $agentName, 'card_id' => $cardId, 'replaced' => $replaced, 'why' => $why,
             ]);
 
-            throw new ToolRefusalException("board_take_card: card {$cardId} is held by {$replaced}, and {$why}. A finished card's assignee is the record of who did the work, and replacing it needs an explicit steal, which this door does not have — NOTHING WAS WRITTEN. If the card really must change hands, your operator can do it with `kbcard patch --assign <seat> --steal`.");
+            throw new ToolRefusalException("board_take_card: card {$cardId} is held by {$replaced}, and {$why}. A finished card's assignee is the record of who did the work, and replacing it needs an explicit steal, which this door does not have — NOTHING WAS WRITTEN. If the card really must change hands, your operator can do it with `kbcard patch --assign <seat> --steal`.", reason: 'finished_column');
         };
 
         $stage = $row['workflow_stage_id'] ?? null;
@@ -455,6 +709,25 @@ final class BoardTakeCardTool implements Tool
         }
 
         return $cardId;
+    }
+
+    /**
+     * `start` is optional and strictly boolean — the same no-coercion rule {@see requireCardId}
+     * states, because `"false"` coerced to true would move a card the caller asked not to move.
+     *
+     * @param  array<string, mixed>  $args
+     */
+    private function requireStart(array $args): bool
+    {
+        if (! array_key_exists('start', $args)) {
+            return false;
+        }
+        $start = $args['start'];
+        if (! is_bool($start)) {
+            throw new ToolRefusalException('board_take_card: `start` must be a boolean when provided — true to move the card to In Progress as you take it, false or omitted for a plain take. A string, number or null is refused, never coerced. Nothing was sent to the board.');
+        }
+
+        return $start;
     }
 
     /**
@@ -649,9 +922,13 @@ final class BoardTakeCardTool implements Tool
      * — the same ability `board_correct_card` needs and the one a NARROWED custom board role
      * can lack. An install in that state gets this answer on EVERY take, permanently, so the
      * refusal names it as an INSTALL FAULT and enumerates the gates rather than surfacing a
-     * bare 403 the seat would retry.
+     * bare 403 the seat would retry. The start form's column-only move (a card the seat already
+     * holds) is the one write here that is authorized as `task.move` instead, and its refusal
+     * says so.
+     *
+     * @param  array<string, int>  $fields  exactly what the PATCH carried
      */
-    private function writeRefusal(RequestException $e, int $cardId, int $userId, string $agentName): \Throwable
+    private function writeRefusal(RequestException $e, int $cardId, array $fields, string $agentName): \Throwable
     {
         // ⛔ CLASSIFY FIRST, LOG SECOND — the order {@see lookupRefusal} has, and the first cut
         // of this method had backwards. A 500 / 429 / 400 is re-thrown for the dispatcher's
@@ -663,15 +940,28 @@ final class BoardTakeCardTool implements Tool
             return $e;
         }
 
-        Log::warning('board_take_card: the board refused the assignment write', [
+        $moves = array_key_exists('workflow_stage_id', $fields);
+        $assigns = array_key_exists('assigned_user_id', $fields);
+        $write = match (true) {
+            $moves && $assigns => 'start write (the In Progress move and the assignment, in one PATCH)',
+            $moves => 'start move',
+            default => 'assignment write',
+        };
+
+        Log::warning("board_take_card: the board refused the {$write}", [
             'agent' => $agentName, 'card_id' => $cardId, 'status' => $status,
         ]);
 
-        return new ToolRefusalException(match ($status) {
-            404 => "board_take_card: card {$cardId} no longer exists — it was removed between the scope check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
-            403 => "board_take_card: the board refused the assignment write to card {$cardId} (403) — the card is one you may take, but the bridge's writeback user may not write it. ".BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — an assignee PATCH carries a field other than `workflow_stage_id` alone, so kanban authorizes it as update rather than move (kanban DL-204)').' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
-            401 => "board_take_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.",
-            422 => "board_take_card: the board REJECTED the assignment write to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. The only value this call sends is `assigned_user_id: {$userId}`, resolved from this bridge's config for your agent — so if the reason at the end of this message names that field, this install's `identity.kanban_user_id` for you does not name a user the board accepts. Report it to your operator. ".BoardCallRefusal::boardReason($e),
-        });
+        $sent = implode(' and ', array_map(static fn (string $field, int $value): string => "`{$field}: {$value}`", array_keys($fields), $fields));
+        $forbidden = $assigns
+            ? BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — '.($moves ? 'a PATCH that moves the column AND sets the assignee' : 'an assignee PATCH').' carries a field other than `workflow_stage_id` alone, so kanban authorizes it as update rather than move (kanban DL-204); `bridge:check` reads whether the role grants it')
+            : BoardCallRefusal::writeGatesClause('PATCH', 'task.move', ' — a column-only PATCH is authorized as move');
+
+        return match ($status) {
+            404 => new ToolRefusalException("board_take_card: card {$cardId} no longer exists — it was removed between the scope check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.", reason: 'card_gone'),
+            403 => new ToolRefusalException("board_take_card: the board refused the {$write} to card {$cardId} (403) — the card is one you may take, but the bridge's writeback user may not write it. ".$forbidden.' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.', installFault: true, reason: 'install_fault.write_forbidden'),
+            401 => new ToolRefusalException("board_take_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.", installFault: true, reason: 'install_fault.token_rejected'),
+            422 => new ToolRefusalException("board_take_card: the board REJECTED the {$write} to card {$cardId} (422), so nothing was written, and re-sending the same call unchanged will be refused the same way. This call sends {$sent} and nothing else".($assigns ? ", and the assignee is resolved from this bridge's config for your agent — so if the reason at the end of this message names `assigned_user_id`, this install's `identity.kanban_user_id` for you does not name a user the board accepts" : '').($moves ? '; a move the board refuses (an enforced WIP limit on the In Progress column, for one) is named in that reason too' : '').'. Report it to your operator. '.BoardCallRefusal::boardReason($e), reason: 'board_rejected'),
+        };
     }
 }

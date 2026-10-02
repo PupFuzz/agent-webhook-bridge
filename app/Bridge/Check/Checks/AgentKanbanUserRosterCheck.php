@@ -116,7 +116,7 @@ final class AgentKanbanUserRosterCheck implements Check
                     .($mine === null
                         ? ' Until it does, board_take_card refuses every call from this agent (it has no id to record).'
                         : " This agent's identity.kanban_user_id ({$mine}) is therefore UNVERIFIED against the roster: board_take_card still writes it as this seat's owner id (operator ruling C, card#10869), and nothing confirms it is this seat's user. This warn becomes a fail once the roster carries the ids.")
-                    .' The id is never guessed or defaulted; the framework\'s install/upgrade writes it once the seat has its own kanban account (kanban card#10867).');
+                    .' The id is never guessed or defaulted. The coord framework\'s install/upgrade writes it for pm and solo seats only, once the seat has its own kanban account (kanban card#10867); any other seat\'s roster id is set by hand.');
 
                 continue;
             }

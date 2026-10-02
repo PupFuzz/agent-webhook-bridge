@@ -426,7 +426,16 @@ const TOOL_DEFINITIONS = [
       'has not moved. (It is a numeric id, never a name: nothing here resolves a seat ' +
       'name, which is why no user-naming argument exists.) Use it the moment you start ' +
       'on a card, not when you finish. ' +
-      'IT TAKES card_id AND NOTHING ELSE: the bridge works out which kanban user you ' +
+      'START FORM: pass start: true when you BEGIN work on the card. In ONE write it ' +
+      'moves the card to your board\'s In Progress column AND assigns it to you, then ' +
+      'reads both back; the result says moved, assigned (whether THIS call wrote each), ' +
+      'replaced (whom it took the card from, or null) and stage_id. A card already In ' +
+      'Progress is assigned without a move. A card in any other column — Backlog when it ' +
+      'is not a start column, In Review, a finished column — or a PINNED card it would ' +
+      'have to move is REFUSED ' +
+      '(422) and nothing is written; the refusal carries a reason code, and a take ' +
+      'without start still claims the card where it is. ' +
+      'NO argument names a user: the bridge works out which kanban user you ' +
       'are from the identity your call authenticated as, so there is NO argument for ' +
       'a user id and there never will be — you can claim a card for yourself and for ' +
       'nobody else. Sending assigned_user_id, assignee, user_id or any other ' +
@@ -461,8 +470,15 @@ const TOOL_DEFINITIONS = [
           type: 'integer',
           description:
             'The id of the card to claim, as board_my_cards reports it. Must be an ' +
-            'integer — a decorated string is refused, never coerced. This is the ' +
-            'ONLY argument this tool has.',
+            'integer — a decorated string is refused, never coerced.',
+        },
+        start: {
+          type: 'boolean',
+          description:
+            'true to START the card: move it to In Progress and assign it to you in one ' +
+            'write (see the tool description for which columns it starts from). Omit it, ' +
+            'or pass false, for a plain claim that never moves the card. Must be a ' +
+            'boolean — a string, number or null is refused, never coerced.',
         },
       },
       required: ['card_id'],

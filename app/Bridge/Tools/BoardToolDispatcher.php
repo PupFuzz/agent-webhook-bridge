@@ -158,7 +158,7 @@ final class BoardToolDispatcher
             $refusal = $e->installFault ? $e->getMessage() : $e->getMessage().$this->clientUpdateClause($tool, $rawArgs, $clientVersion);
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
-            return DispatchOutcome::failure(422, $refusal);
+            return DispatchOutcome::failure(422, $refusal, $e->reason);
         } catch (RequestException $e) {
             // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
             // leak the upstream body.
