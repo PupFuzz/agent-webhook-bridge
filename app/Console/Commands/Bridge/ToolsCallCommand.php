@@ -86,7 +86,7 @@ class ToolsCallCommand extends BridgeCommand
 
         $agentName = $this->strOption('agent');
         if ($agentName === null) {
-            return $this->emit($io, ['ok' => false, 'error' => 'bridge:tools-call requires a non-empty --agent (set by the pinned forced command)'], 1);
+            return $this->emit($io, ['ok' => false, 'error' => 'bridge:tools-call requires a non-empty --agent (set by the pinned forced command)', 'reason' => 'install_fault.no_agent'], 1);
         }
 
         try {

@@ -300,7 +300,8 @@ final class BoardTakeCardTool implements Tool
             throw $this->writeRefusal($e, $cardId, ['assigned_user_id' => $userId], $agentName);
         }
 
-        $nowNames = $this->assigneeAfterWrite($client, $boardId, $cardId, $agentName);
+        $nowNames = $this->rowAfterWrite($client, $boardId, $cardId, $agentName)['assigned_user_id'] ?? null;
+        $nowNames = is_numeric($nowNames) ? (int) $nowNames : null;
         $confirmed = $nowNames === $userId;
         $comment = $confirmed ? $this->postTakeoverComment($client, $cardId, $userId, $replaced, $agentName) : 'not_attempted';
 
@@ -355,9 +356,9 @@ final class BoardTakeCardTool implements Tool
      *
      * ⛔ A 2xx IS NOT A START. The card is read back after the write and the call succeeds only when
      * the board now says In Progress AND this seat; anything else is refused naming what the board
-     * stored. On a takeover a read-back that does not answer is reported as `takeover_confirmed:
-     * false` naming the displaced holder; otherwise it is the dispatcher's retryable 502, and calling
-     * again is safe: a start that landed answers `already_held` with nothing written.
+     * stored, and one that does not answer is refused `not_confirmed` — calling again is safe: a
+     * start that landed answers `already_held` with nothing written. On a takeover both name the
+     * displaced holder.
      *
      * @param  array<string, mixed>  $row
      * @return array<string, mixed>
@@ -416,11 +417,10 @@ final class BoardTakeCardTool implements Tool
             throw $this->writeRefusal($e, $cardId, $fields, $agentName);
         }
 
-        $confirmed = $this->confirmStarted($client, $boardId, $cardId, $userId, $inProgress['stage'], $replacing ? $replaced : null, $agentName);
+        $this->confirmStarted($client, $boardId, $cardId, $userId, $inProgress['stage'], $replacing ? $replaced : null, $agentName);
         Log::info('board_take_card: started', [
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'assigned_user_id' => $userId,
             'from_stage' => $from, 'stage' => $inProgress['stage'], 'moved' => $moves, 'replaced' => $replacing ? $replaced : null,
-            'confirmed' => $confirmed,
         ]);
         if (! $replacing) {
             return $report;
@@ -428,8 +428,8 @@ final class BoardTakeCardTool implements Tool
 
         return $report + [
             'warning' => "card {$cardId} was held by {$replaced}; it has been reassigned to you (kanban user {$userId}). If that holder is still working it, talk to them.",
-            'takeover_confirmed' => $confirmed,
-            'takeover_comment' => $confirmed ? $this->postTakeoverComment($client, $cardId, $userId, $replaced, $agentName) : 'not_attempted',
+            'takeover_confirmed' => true,
+            'takeover_comment' => $this->postTakeoverComment($client, $cardId, $userId, $replaced, $agentName),
         ];
     }
 
@@ -509,21 +509,23 @@ final class BoardTakeCardTool implements Tool
     private function refuseUnstartable(KanbanClient $client, array $row, int $boardId, int $cardId, int $from, array $inProgress, string $agentName): void
     {
         if (in_array($from, $inProgress['from'], true)) {
-            if (PinGuard::isPinned($row)) {
-                Log::warning('board_take_card: start refused — the card is pinned, so its column is held', [
-                    'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'reason' => PinGuard::REASON,
-                ]);
-
-                throw new ToolRefusalException("board_take_card: card {$cardId} is PINNED (a block_reason or a no-automove tag): a human is holding its column, and the bridge's own start move is refused on a pinned card — NOTHING WAS WRITTEN. Call board_take_card without `start` to claim it where it is, or ask whoever pinned it to lift the hold.", reason: 'pinned');
-            }
             // The writeback writes NOTHING to a `program` parent (DL-403), its `started` move
-            // included (`KanbanMoveCardHandler`'s consult), so a start does not move one either.
+            // included (`KanbanMoveCardHandler`'s consult), so a start does not move one either. Asked
+            // BEFORE the pin, in the handler's order, so a pinned parent is refused as a parent.
             if (ProgramCardGuard::isProgramParent($row)) {
                 Log::warning('board_take_card: start refused — the card is a program parent, which no single start may move', [
                     'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'reason' => ProgramCardGuard::REASON,
                 ]);
 
                 throw new ToolRefusalException("board_take_card: card {$cardId} carries the `program` tag — it is a PARENT naming several legs, and the bridge moves no parent card on any one piece of work (the writeback refuses the same move) — NOTHING WAS WRITTEN. Start the LEG you are working, or call board_take_card without `start` to claim the parent where it is.", reason: 'program_parent');
+            }
+
+            if (PinGuard::isPinned($row)) {
+                Log::warning('board_take_card: start refused — the card is pinned, so its column is held', [
+                    'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'reason' => PinGuard::REASON,
+                ]);
+
+                throw new ToolRefusalException("board_take_card: card {$cardId} is PINNED (a block_reason or a no-automove tag): a human is holding its column, and the bridge's own start move is refused on a pinned card — NOTHING WAS WRITTEN. Call board_take_card without `start` to claim it where it is, or ask whoever pinned it to lift the hold.", reason: 'pinned');
             }
 
             return;
@@ -549,50 +551,57 @@ final class BoardTakeCardTool implements Tool
 
     /**
      * Read the card back after the start's write and refuse unless the board now says In Progress
-     * AND this seat. Returns true when it does. On a TAKEOVER, a read-back that does not answer
-     * (transport, or a broken read) returns false instead, so the response still names the holder
-     * this call displaced — the way {@see takeOver} degrades — rather than losing it in an error.
-     * Without a takeover, a read the board does not answer is re-thrown for the retryable 502, and
-     * a BROKEN read-back is re-worded rather than relayed: {@see BoardScopedRow}'s refusal says
-     * nothing was written, which after this write is false.
+     * AND this seat. A start is NEVER answered `ok` on an unverified write: a read-back that does not
+     * answer — a transport failure, a broken read, or a card no longer live on the board — is
+     * refused `not_confirmed` (whether it landed is unknown; calling again is safe, because a start
+     * that landed answers `already_held` and writes nothing), and one that answers something else
+     * is refused `not_stored`. On a takeover both name the holder the write was sent over, so the
+     * displaced holder is never lost.
      *
      * @param  ?string  $replaced  the displaced holder's phrase on a takeover, else null
      */
-    private function confirmStarted(KanbanClient $client, int $boardId, int $cardId, int $userId, int $inProgress, ?string $replaced, string $agentName): bool
+    private function confirmStarted(KanbanClient $client, int $boardId, int $cardId, int $userId, int $inProgress, ?string $replaced, string $agentName): void
     {
-        try {
-            $live = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName)->live;
-        } catch (RequestException|ConnectionException|ToolRefusalException $e) {
-            if ($replaced !== null) {
-                Log::warning('board_take_card: the takeover start was sent, but the re-read that confirms it failed', [
-                    'agent' => $agentName, 'card_id' => $cardId, 'replaced' => $replaced, 'error' => RedactedErrorText::of($e),
-                ]);
-
-                return false;
-            }
-            if (! $e instanceof ToolRefusalException) {
-                throw $e;
-            }
-
-            throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but reading it back answered a row that is not that card on your board — so whether the start landed is UNKNOWN. Calling again is safe: a start that landed answers `already_held` and writes nothing. Report the broken read to your operator.", reason: 'not_confirmed');
+        $over = $replaced === null ? '' : " The write was sent over {$replaced}, who held the card before it.";
+        $live = $this->rowAfterWrite($client, $boardId, $cardId, $agentName);
+        if ($live === null) {
+            throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but the card could not be read back (the read failed, answered a row that is not this card, or the card is no longer live on your board) — so whether the start landed is UNKNOWN.{$over} Calling again is safe: a start that landed answers `already_held` and writes nothing.", reason: 'not_confirmed');
         }
-        $stage = $live === null ? null : ($live['workflow_stage_id'] ?? null);
-        $assignee = $live === null ? null : ($live['assigned_user_id'] ?? null);
+        $stage = $live['workflow_stage_id'] ?? null;
+        $assignee = $live['assigned_user_id'] ?? null;
         $stage = is_numeric($stage) ? (int) $stage : null;
         $assignee = is_numeric($assignee) ? (int) $assignee : null;
         if ($stage === $inProgress && $assignee === $userId) {
-            return true;
+            return;
         }
 
-        $now = $live === null
-            ? 'the card is no longer live on your board'
-            : 'reading it back shows it in '.($stage === null ? 'no readable column' : "column {$stage}").' with '.($assignee === null ? 'no assignee' : "kanban user {$assignee} as assignee");
         Log::warning('board_take_card: start write answered 2xx, but the read-back does not show it stored', [
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
             'expected_stage' => $inProgress, 'stage' => $stage, 'assignee' => $assignee, 'replaced' => $replaced,
         ]);
 
-        throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but {$now} — not column {$inProgress} with you (kanban user {$userId}). The start did NOT land as asked; another writer may have changed the card in between.".($replaced === null ? '' : " The write was sent over {$replaced}, who held the card before it.").' Read the card with board_get_cards before calling again.', reason: 'not_stored');
+        throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but reading it back shows it in ".($stage === null ? 'no readable column' : "column {$stage}").' with '.($assignee === null ? 'no assignee' : "kanban user {$assignee} as assignee")." — not column {$inProgress} with you (kanban user {$userId}). The start did NOT land as asked; another writer may have changed the card in between.{$over} Read the card with board_get_cards before calling again.", reason: 'not_stored');
+    }
+
+    /**
+     * The card's live row as a re-read finds it after a write, or null when the re-read did not
+     * answer it (a transport failure, a broken read) or the card is no longer live on the board —
+     * never an exception: the write has landed or not by now, and each caller reports what it
+     * could establish. The ONE read-back both the takeover and the start use.
+     *
+     * @return ?array<string, mixed>
+     */
+    private function rowAfterWrite(KanbanClient $client, int $boardId, int $cardId, string $agentName): ?array
+    {
+        try {
+            return BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName)->live;
+        } catch (RequestException|ConnectionException|ToolRefusalException $e) {
+            Log::warning('board_take_card: the write was sent, but the re-read that confirms it failed', [
+                'agent' => $agentName, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
+            ]);
+
+            return null;
+        }
     }
 
     /**
@@ -704,28 +713,6 @@ final class BoardTakeCardTool implements Tool
 
             throw BoardCallRefusal::readRefusal($this->name(), BoardReadRoute::BoardScoped, $status, $what, 'so nothing was written');
         }
-    }
-
-    /**
-     * The row's assignee as a re-read finds it after the write, or null when the re-read did not
-     * answer — never an exception: the write has landed or not by now, and the caller reports
-     * what it could establish.
-     */
-    private function assigneeAfterWrite(KanbanClient $client, int $boardId, int $cardId, string $agentName): ?int
-    {
-        try {
-            $live = BoardScopedRow::lookUp($client, $boardId, $cardId, $this->name(), $agentName)->live;
-        } catch (RequestException|ConnectionException|ToolRefusalException $e) {
-            Log::warning('board_take_card: the takeover write was sent, but the re-read that confirms it failed', [
-                'agent' => $agentName, 'card_id' => $cardId, 'error' => RedactedErrorText::of($e),
-            ]);
-
-            return null;
-        }
-
-        $assignee = $live['assigned_user_id'] ?? null;
-
-        return is_numeric($assignee) ? (int) $assignee : null;
     }
 
     /**

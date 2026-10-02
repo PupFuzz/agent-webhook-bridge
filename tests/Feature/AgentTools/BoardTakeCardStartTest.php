@@ -367,17 +367,32 @@ class BoardTakeCardStartTest extends TestCase
     }
 
     /**
-     * A takeover start whose read-back the board does not answer still reports WHOM it displaced,
-     * unconfirmed — the way the plain takeover degrades — and posts no comment.
+     * A start whose read-back the board does not answer is NOT reported as a start: `ok:false`,
+     * `not_confirmed`, and on a takeover the message names the holder the write was sent over —
+     * never `ok:true` with an unverified `moved`/`assigned`.
+     *
+     * @return array<string, array{array<string, mixed>, ?string}>
      */
-    public function test_a_takeover_start_whose_read_back_fails_reports_the_replaced_holder_unconfirmed(): void
+    public static function unansweredReadBacks(): array
     {
-        $this->board(['assigned_user_id' => 4242], readBackStatus: 500);
+        return [
+            'a takeover' => [['assigned_user_id' => 4242], 'kanban user 4242'],
+            'no other holder' => [[], null],
+        ];
+    }
 
-        $this->start()->assertStatus(200)
-            ->assertJsonPath('result.replaced.assigned_user_id', 4242)
-            ->assertJsonPath('result.takeover_confirmed', false)
-            ->assertJsonPath('result.takeover_comment', 'not_attempted');
+    /** @param array<string, mixed> $overrides */
+    #[DataProvider('unansweredReadBacks')]
+    public function test_a_start_whose_read_back_fails_is_refused_not_confirmed(array $overrides, ?string $holder): void
+    {
+        $this->board($overrides, readBackStatus: 500);
+
+        $res = $this->start()->assertStatus(422)->assertJsonPath('ok', false)->assertJsonPath('reason', 'not_confirmed');
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('UNKNOWN', $error);
+        if ($holder !== null) {
+            $this->assertStringContainsString($holder, $error);
+        }
         $this->assertCount(1, $this->patches);
         $this->assertSame([], $this->comments);
     }
@@ -452,6 +467,18 @@ class BoardTakeCardStartTest extends TestCase
         $this->board(['assigned_user_id' => 4242, 'workflow_stage_id' => $stage]);
 
         $this->take(['card_id' => 42])->assertStatus(422)->assertJsonPath('reason', $reason);
+        $this->assertSame([], $this->patches);
+    }
+
+    /**
+     * The program-parent consult runs BEFORE the pin, as `KanbanMoveCardHandler` orders them, so a
+     * pinned parent is refused as a parent.
+     */
+    public function test_a_pinned_program_parent_is_refused_as_a_program_parent(): void
+    {
+        $this->board(['tags' => ['program', 'no-automove']]);
+
+        $this->start()->assertStatus(422)->assertJsonPath('reason', 'program_parent');
         $this->assertSame([], $this->patches);
     }
 

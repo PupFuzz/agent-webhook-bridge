@@ -1053,10 +1053,11 @@ card comment naming them once the read-back confirms the start.
 
 **⛔ A 2xx is not a start.** After the write the bridge reads the card back and answers success
 only when the board now says **In Progress AND you**. Anything else is **refused** (`not_stored`)
-naming what the board stored. On a TAKEOVER, a read-back that does not answer is not an error: the
-call answers with `replaced`, `takeover_confirmed: false` and no comment, so the holder it displaced
-is never lost. Otherwise a read-back the board does not answer is the retryable 502; calling
-again is safe, because a start that landed answers `already_held: true` with nothing written.
+naming what the board stored. A read-back that does not answer — the read failed, answered a row
+that is not this card, or the card is no longer live — is **refused** too (`not_confirmed`): whether
+the start landed is unknown, and a start is never answered `ok` on an unverified write. Calling
+again is safe, because a start that landed answers `already_held: true` with nothing written. On a
+takeover both refusals name the holder the write was sent over, so it is never lost.
 
 **Returns** (beside the plain take's keys):
 
@@ -1066,17 +1067,21 @@ again is safe, because a start that landed answers `already_held: true` with not
   "assigned": true,       // THIS call wrote you as assignee (false: you already held it)
   "replaced": null,       // or {assigned_user_id, owner_tags}: whom this call took the card from
   "from_stage_id": 47,    // the column the card was read in
-  "stage_id": 49          // In Progress, as read back
-  // on a takeover, also: warning, takeover_confirmed, takeover_comment — takeover_confirmed is
-  // false (and takeover_comment not_attempted) when the read-back did not answer: the write was
-  // sent over the named holder and could not be confirmed
+  "stage_id": 49          // In Progress: the column the read-back confirmed (or, when nothing
+                          // was written, the column the card was already in)
+  // on a takeover, also: warning, takeover_confirmed (always true on a start — an unconfirmed
+  // start is refused), takeover_comment
 }
 ```
 
-**Refusal codes.** Every refusal a start can reach carries a machine-readable `reason` beside
-`error` in the `{ok: false, error, reason}` body — branch on it, never on the wording.
-`BoardTakeCardRefusalReasonCoverageTest` derives the refusal sites from the code and reds on an
-uncoded one.
+**Refusal codes.** A start's refusals carry a machine-readable `reason` beside `error` in the
+`{ok: false, error, reason}` body — branch on it, never on the wording. What is HELD to that is what
+`BoardTakeCardRefusalReasonCoverageTest` scans, and it reds on an uncoded site in any of three
+derived populations: every `new ToolRefusalException(` (any spelling) in the transitive closure of
+`App\` classes the tool's code names, plus the dispatcher and the body parser; every
+`DispatchOutcome::failure(422, …)` in `app/`; and, in each door (the `app/` callers of
+`ToolCallBody::parse`), the HTTP door's `refuse(422, …)` and the ssh door's exit-1 refusal bodies.
+Its class docblock states the bounds (a class reached only by a dynamic name is outside the closure).
 
 | `reason` | Where | Means |
 | --- | --- | --- |
@@ -1094,7 +1099,7 @@ uncoded one.
 | `pinned` | start | a pinned card would have to move |
 | `program_parent` | start | a `program` parent card would have to move |
 | `not_stored` | start | the board answered 2xx and the read-back shows something else |
-| `not_confirmed` | start | the board answered 2xx and the read-back was a broken read: whether it landed is unknown (calling again is safe) |
+| `not_confirmed` | start | the board answered 2xx and the read-back did not answer (it failed, was a broken read, or the card is no longer live): whether it landed is unknown (calling again is safe); a takeover's names the displaced holder |
 | `card_gone` | `board_take_card` write | the card was removed between the check and the write |
 | `board_rejected` | `board_take_card` write | a board 422 (an enforced WIP limit on In Progress is one) |
 | `install_fault.write_forbidden` | `board_take_card` write | 403 on the write |
@@ -1102,11 +1107,15 @@ uncoded one.
 | `install_fault.start_unmapped` / `install_fault.start_ambiguous` | start | no mapping on the board maps `started`, or mappings name different columns |
 | `install_fault.writeback_config_unreadable` | `board_take_card` | writeback.json will not parse (a start, or a takeover of an assignee) |
 | `install_fault.no_kanban_user` | `board_take_card` | your agent declares no `identity.kanban_user_id`, so a seat with no id is refused by name, never moved unassigned |
+| `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
 | `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id two agents share, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these three only, because a seat with no id simply has no assignee there |
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
-body byte for byte for every cause (DL-387), and the 401 (bearer) and 503 (install) door answers
-are told apart by status. Other tools' own refusals (`board_create_card`, `board_correct_card`,
+body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
+are told apart by status; and the ssh door's install answers exit **2** with no code — an agent
+config that will not load, an unknown `--agent`, an agent that is not a live ssh board-tools agent.
+The ssh door's one exit-1 install answer, a missing `--agent` (set by the pinned forced command),
+IS coded, `install_fault.no_agent`, because exit 1 otherwise means the caller's own fault. Other tools' own refusals (`board_create_card`, `board_correct_card`,
 `board_comment_card`, …) are not all coded; a refusal with no code carries no `reason` key.
 
 **Permissions.** The combined PATCH carries more than `workflow_stage_id`, so kanban authorizes it
