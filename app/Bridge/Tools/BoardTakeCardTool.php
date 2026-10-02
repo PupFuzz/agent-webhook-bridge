@@ -565,7 +565,7 @@ final class BoardTakeCardTool implements Tool
         $over = $replaced === null ? '' : " The write was sent over {$replaced}, who held the card before it.";
         $live = $this->rowAfterWrite($client, $boardId, $cardId, $agentName);
         if ($live === null) {
-            throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but the card could not be read back (the read failed, answered a row that is not this card, or the card is no longer live on your board) — so whether the start landed is UNKNOWN.{$over} Calling again is safe: a start that landed answers `already_held` and writes nothing.", reason: 'not_confirmed');
+            throw new ToolRefusalException("board_take_card: the board answered the start of card {$cardId} with success, but the card could not be read back (the read failed, answered a row that is not this card, or the card is no longer live on your board) — so whether the start landed is UNKNOWN.{$over}".($replaced === null ? '' : ' Check with that holder: if the write landed, nothing on the card told them (the takeover comment is posted only after a confirmed read-back).').' Calling again is safe: a start that landed answers `already_held` and writes nothing.', reason: 'not_confirmed');
         }
         $stage = $live['workflow_stage_id'] ?? null;
         $assignee = $live['assigned_user_id'] ?? null;

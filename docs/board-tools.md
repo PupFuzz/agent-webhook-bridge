@@ -1075,13 +1075,11 @@ takeover both refusals name the holder the write was sent over, so it is never l
 ```
 
 **Refusal codes.** A start's refusals carry a machine-readable `reason` beside `error` in the
-`{ok: false, error, reason}` body — branch on it, never on the wording. What is HELD to that is what
-`BoardTakeCardRefusalReasonCoverageTest` scans, and it reds on an uncoded site in any of three
-derived populations: every `new ToolRefusalException(` (any spelling) in the transitive closure of
-`App\` classes the tool's code names, plus the dispatcher and the body parser; every
-`DispatchOutcome::failure(422, …)` in `app/`; and, in each door (the `app/` callers of
-`ToolCallBody::parse`), the HTTP door's `refuse(422, …)` and the ssh door's exit-1 refusal bodies.
-Its class docblock states the bounds (a class reached only by a dynamic name is outside the closure).
+`{ok: false, error, reason}` body — branch on it, never on the wording. Which refusal sites a test
+holds to carrying a code, and that check's bounds, are stated in ONE place:
+`BoardTakeCardRefusalReasonCoverageTest`'s class docblock — read it there; it is not restated here.
+The table below is the source of the codes' VALUES: the same test reads it and fails on a code no
+`app/` literal spells.
 
 | `reason` | Where | Means |
 | --- | --- | --- |
@@ -1112,10 +1110,13 @@ Its class docblock states the bounds (a class reached only by a dynamic name is 
 
 A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
 body byte for byte for every cause (DL-387); the HTTP door's 401 (bearer) and 503 (install) answers
-are told apart by status; and the ssh door's install answers exit **2** with no code — an agent
-config that will not load, an unknown `--agent`, an agent that is not a live ssh board-tools agent.
-The ssh door's one exit-1 install answer, a missing `--agent` (set by the pinned forced command),
-IS coded, `install_fault.no_agent`, because exit 1 otherwise means the caller's own fault. Other tools' own refusals (`board_create_card`, `board_correct_card`,
+are told apart by status; and the ssh door's answers that exit **2** carry no code — an agent
+config that will not load, an unknown `--agent`, an agent that is not a live ssh board-tools agent,
+and the dispatcher's 503 when the writeback token is unusable (`DispatchOutcome::exitCodeFor` maps
+every status from 500 up to exit 2). ⚠ **Exit 1 is not "your own fault"**: every status below 500
+maps to it, so the `install_fault.*` 422s above exit 1 as well — branch on `reason`, not on the exit
+code. A missing `--agent` (set by the pinned forced command) is the ssh door's own exit-1 install
+answer, coded `install_fault.no_agent`. Other tools' own refusals (`board_create_card`, `board_correct_card`,
 `board_comment_card`, …) are not all coded; a refusal with no code carries no `reason` key.
 
 **Permissions.** The combined PATCH carries more than `workflow_stage_id`, so kanban authorizes it

@@ -8,6 +8,7 @@ use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\ToolCallBody;
 use App\Console\Commands\Bridge\ToolsCallCommand;
 use App\Http\Controllers\AgentTools\AgentToolsController;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
 
@@ -35,8 +36,10 @@ use Tests\TestCase;
  * ⚠ BOUNDS, named. NOT held: a 502 (`upstream board error`, one body for every cause — DL-387), the
  * HTTP door's 401/503 and the ssh door's exit-2 answers, all told apart by status or exit code. A
  * class reached only through a DYNAMIC name (a string, the container) is outside the closure. The
- * check is that a reason is PASSED, not its run-time value; the behaviour tests in
- * {@see BoardTakeCardStartTest} assert the actual codes. Argument counts are top-level commas, so a
+ * check is that a reason is PASSED, not its run-time value. Each code's VALUE is pinned separately:
+ * {@see test_every_tabled_reason_code_is_emitted_by_the_code} reads the codes off
+ * `docs/board-tools.md`'s table — the table is the source — and asserts each is a string literal in
+ * `app/`; that pins spelling, not which site emits it. Argument counts are top-level commas, so a
  * trailing comma reads as one more argument. Whole files are held, not only the methods the tool
  * reaches — the stricter direction.
  */
@@ -117,6 +120,81 @@ class BoardTakeCardRefusalReasonCoverageTest extends TestCase
 
         $this->assertGreaterThan(2, $sites, 'the scan must find the door refusals it is about');
         $this->assertSame([], $uncoded, 'these door refusals carry no reason');
+    }
+
+    /**
+     * The codes `docs/board-tools.md` tables, read off the table itself.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function tabledReasonCodes(): array
+    {
+        $codes = [];
+        foreach (self::tableCodes((string) file_get_contents(dirname(__DIR__, 3).'/docs/board-tools.md')) as $code) {
+            $codes[$code] = [$code];
+        }
+
+        return $codes;
+    }
+
+    #[DataProvider('tabledReasonCodes')]
+    public function test_every_tabled_reason_code_is_emitted_by_the_code(string $code): void
+    {
+        $this->assertContains($code, self::appStringLiterals(), "docs/board-tools.md tables the reason `{$code}`, and no string literal in app/ spells it — a misspelt code, or a tabled code nothing emits");
+    }
+
+    /** The CONTROL for the table read: it finds the rows it must, and nothing outside the table. */
+    public function test_the_table_read_finds_the_codes_and_only_them(): void
+    {
+        $doc = "intro `not_a_code`\n\n| `reason` | Where | Means |\n| --- | --- | --- |\n| `a_code` | x | y `not_this` |\n| `b.one` / `b.two`, `b.three` | x | y |\n\nafter `nor_this`\n";
+
+        $this->assertSame(['a_code', 'b.one', 'b.two', 'b.three'], self::tableCodes($doc));
+        $this->assertGreaterThan(20, count(self::tabledReasonCodes()), 'the real table must yield its codes');
+        $this->assertNotContains('no_such_reason_code', self::appStringLiterals());
+    }
+
+    /** @return list<string> the backticked tokens in the FIRST column of the `| \`reason\` |` table */
+    private static function tableCodes(string $doc): array
+    {
+        $codes = [];
+        $inTable = false;
+        foreach (explode("\n", $doc) as $line) {
+            if (str_starts_with($line, '| `reason` |')) {
+                $inTable = true;
+
+                continue;
+            }
+            if (! $inTable) {
+                continue;
+            }
+            if (! str_starts_with($line, '|')) {
+                break;
+            }
+            $first = explode('|', $line)[1] ?? '';
+            preg_match_all('/`([^`]+)`/', $first, $m);
+            array_push($codes, ...$m[1]);
+        }
+
+        return $codes;
+    }
+
+    /** @return list<string> every single-quoted or double-quoted constant string literal in app/, unquoted */
+    private static function appStringLiterals(): array
+    {
+        static $literals = null;
+        if ($literals === null) {
+            $literals = [];
+            foreach (SourceScan::appFiles() as $file) {
+                foreach (token_get_all((string) file_get_contents($file)) as $t) {
+                    if (is_array($t) && $t[0] === T_CONSTANT_ENCAPSED_STRING) {
+                        $literals[substr($t[1], 1, -1)] = true;
+                    }
+                }
+            }
+            $literals = array_keys($literals);
+        }
+
+        return $literals;
     }
 
     /** The CONTROL: each scanner tells a coded site from an uncoded one, in every spelling it claims. */

@@ -392,6 +392,9 @@ class BoardTakeCardStartTest extends TestCase
         $this->assertStringContainsString('UNKNOWN', $error);
         if ($holder !== null) {
             $this->assertStringContainsString($holder, $error);
+            $this->assertStringContainsString('Check with that holder', $error, 'the holder was never told on the card if the write landed');
+        } else {
+            $this->assertStringNotContainsString('Check with that holder', $error);
         }
         $this->assertCount(1, $this->patches);
         $this->assertSame([], $this->comments);
@@ -412,9 +415,8 @@ class BoardTakeCardStartTest extends TestCase
     }
 
     /**
-     * Every refusal a start can reach carries a `reason` — a sample of the shared ones here, beside
-     * the start's own codes above. `BoardTakeCardRefusalReasonCoverageTest` holds the whole
-     * population by source.
+     * A sample of the shared refusal codes on the start path; what is covered is
+     * `BoardTakeCardRefusalReasonCoverageTest`'s class docblock.
      *
      * @return array<string, array{\Closure(self): void, array<string, mixed>, string}>
      */
@@ -429,6 +431,13 @@ class BoardTakeCardStartTest extends TestCase
             'a column read the board refuses' => [static fn (self $t) => $t->board(['workflow_stage_id' => 48], preloadStatus: 403), ['card_id' => 42, 'start' => true], 'board_read_failed'],
             'a non-integer card_id' => [static fn (self $t) => $t->board(), ['card_id' => '42', 'start' => true], 'bad_arguments'],
             'an undeclared argument' => [static fn (self $t) => $t->board(), ['card_id' => 42, 'start' => true, 'stage' => 49], 'bad_arguments'],
+            'the card removed before the write (404)' => [static fn (self $t) => $t->board(patchStatus: 404), ['card_id' => 42, 'start' => true], 'card_gone'],
+            'the board rejects the write (422)' => [static fn (self $t) => $t->board(patchStatus: 422), ['card_id' => 42, 'start' => true], 'board_rejected'],
+            'the token is not accepted on the write (401)' => [static fn (self $t) => $t->board(patchStatus: 401), ['card_id' => 42, 'start' => true], 'install_fault.token_rejected'],
+            'two agents share this seat\'s kanban user id' => [static function (self $t): void {
+                $t->board();
+                File::put($t->dir.'/other.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+            }, ['card_id' => 42, 'start' => true], 'install_fault.shared_kanban_user'],
         ];
     }
 
@@ -439,7 +448,21 @@ class BoardTakeCardStartTest extends TestCase
         $setUp($this);
 
         $this->take($args)->assertStatus(422)->assertJsonPath('reason', $reason);
-        $this->assertSame([], $this->patches);
+        // The write-status refusals are refusals OF the write: it was sent once and refused.
+        $this->assertLessThanOrEqual(1, count($this->patches));
+    }
+
+    public function test_an_unknown_tool_is_refused_with_its_reason(): void
+    {
+        $this->board();
+        CallingSeatSeal::forANewServingProcess();
+
+        $this->call('POST', '/agent-tools/call', [], [], [], [
+            'CONTENT_TYPE' => 'application/json', 'HTTP_ACCEPT' => 'application/json',
+            'REMOTE_ADDR' => '127.0.0.1', 'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
+        ], (string) json_encode(['tool' => 'board_start_card', 'args' => ['card_id' => 42]]))
+            ->assertStatus(422)->assertJsonPath('reason', 'unknown_tool');
+        Http::assertNothingSent();
     }
 
     /**
