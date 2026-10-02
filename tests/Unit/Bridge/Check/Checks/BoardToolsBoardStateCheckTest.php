@@ -153,7 +153,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
      * AND assigns in one PATCH — both authorized as `task.update` (kanban DL-204). A role without
      * it refuses every take with a 403, so the leg says so before the first one.
      */
-    public function test_a_role_without_task_update_warns_that_every_take_and_start_will_be_refused(): void
+    public function test_a_role_without_task_update_warns_that_assignee_writes_and_starts_will_be_refused(): void
     {
         $this->fakeBoard(total: 3, swimlaneIds: [4], permissions: ['board.view', 'task.move']);
 
@@ -163,7 +163,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $this->assertSame(Severity::Warn, $lines[0]['severity']);
         $this->assertStringContainsString("the writeback user's role on board 10 does not grant `task.update`", $lines[0]['message']);
         $this->assertStringContainsString('board_take_card', $lines[0]['message']);
-        $this->assertStringContainsString('start form', $lines[0]['message']);
+        $this->assertStringContainsString("a start's In Progress move with the assignee in one PATCH", $lines[0]['message']);
     }
 
     /** The control for the warn above: the same fixture whose role grants it says nothing. */

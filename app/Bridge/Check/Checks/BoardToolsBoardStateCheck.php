@@ -120,9 +120,9 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
             // Silent when the role grants it, like the stage and swimlane legs above.
             $permissions = $client->boardPermissions($bt->boardId);
             if ($permissions === null) {
-                yield Finding::unvalidated("board_tools: agent {$name}: UNMEASURED whether the writeback user may write an assignee on board {$bt->boardId} — the board's preload read carried no list of the caller's permissions, so whether its role grants `task.update` cannot be read without making a write. board_take_card (an assignee write) and its start form (the In Progress move and the assignee in one PATCH) both need it; a role without it refuses every take with a 403.");
+                yield Finding::unvalidated("board_tools: agent {$name}: UNMEASURED whether the writeback user may write an assignee on board {$bt->boardId} — the board's preload read carried no list of the caller's permissions, so whether its role grants `task.update` cannot be read without making a write. board_take_card (an assignee write) and its start form (the In Progress move and the assignee in one PATCH) both need it; a role without it refuses every take that writes an assignee with a 403.");
             } elseif (! in_array('task.update', $permissions, true)) {
-                yield Finding::warn("board_tools: agent {$name}: the writeback user's role on board {$bt->boardId} does not grant `task.update` — every board_take_card (an assignee write) and its start form (the In Progress move and the assignee in one PATCH) will be refused with a 403 INSTALL fault, and so will every board_correct_card. Grant that role `task.update` on board {$bt->boardId}.");
+                yield Finding::warn("board_tools: agent {$name}: the writeback user's role on board {$bt->boardId} does not grant `task.update` — every board_take_card that writes an assignee (a plain take of a card you do not hold, and a start's In Progress move with the assignee in one PATCH) will be refused with a 403 INSTALL fault, and so will every board_correct_card. Grant that role `task.update` on board {$bt->boardId}.");
             }
 
             if ($bt->coordBoardId !== null) {

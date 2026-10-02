@@ -1019,7 +1019,7 @@ knowing who is looking at a frozen card is useful rather than harmful.
 push moves is moved by the writeback, which names no seat (the push comes from one shared GitHub
 account), so it lands In Progress with nobody on it and the bridge can only alert
 (`owner.moved_without_owner`, [`writeback.md`](writeback.md)). You know you are starting, so the
-start is where the owner is recorded: kanban v0.50.0 and later applies a column change and the
+start is where the owner is recorded: kanban v0.49.0 and later applies a column change and the
 assignee in **one transaction**, so this never leaves a card moved but unowned. The later push
 finds the card already In Progress and assigned, which is the writeback's existing no-op.
 
@@ -1044,6 +1044,8 @@ new configuration:
   and the writeback's `started` move is refused on it, so a start from a `started_from_stages`
   column is refused. A take **without** `start` still claims it where it is, and a pinned card
   already In Progress is still assigned (the pin holds the column, not the claim).
+- ⛔ **A `program` parent is not moved either** (`program_parent`): the writeback writes nothing to
+  a parent card (DL-403), its `started` move included.
 
 **Another holder** is handled exactly as the plain take handles one (the takeover rules above):
 named in the log before the write, an assignee replaced only outside a finished column, and a
@@ -1051,7 +1053,9 @@ card comment naming them once the read-back confirms the start.
 
 **⛔ A 2xx is not a start.** After the write the bridge reads the card back and answers success
 only when the board now says **In Progress AND you**. Anything else is **refused** (`not_stored`)
-naming what the board stored. A read-back the board does not answer is the retryable 502; calling
+naming what the board stored. On a TAKEOVER, a read-back that does not answer is not an error: the
+call answers with `replaced`, `takeover_confirmed: false` and no comment, so the holder it displaced
+is never lost. Otherwise a read-back the board does not answer is the retryable 502; calling
 again is safe, because a start that landed answers `already_held: true` with nothing written.
 
 **Returns** (beside the plain take's keys):
@@ -1063,23 +1067,47 @@ again is safe, because a start that landed answers `already_held: true` with not
   "replaced": null,       // or {assigned_user_id, owner_tags}: whom this call took the card from
   "from_stage_id": 47,    // the column the card was read in
   "stage_id": 49          // In Progress, as read back
-  // on a takeover, also: warning, takeover_confirmed (true), takeover_comment
+  // on a takeover, also: warning, takeover_confirmed, takeover_comment — takeover_confirmed is
+  // false (and takeover_comment not_attempted) when the read-back did not answer: the write was
+  // sent over the named holder and could not be confirmed
 }
 ```
 
-**Refusal codes.** A start refusal carries a machine-readable `reason` beside `error` in the
-`{ok: false, error, reason}` body — branch on it, never on the wording: `finished_column`,
-`not_start_eligible`, `pinned`, `column_unreadable`, `not_stored`, `card_gone`,
-`board_rejected` (a board 422 — an enforced WIP limit on In Progress is one), and the INSTALL
-faults `install_fault.write_forbidden` (403), `install_fault.token_rejected` (401),
-`install_fault.start_unmapped`, `install_fault.start_ambiguous` and
-`install_fault.writeback_unreadable`; `not_confirmed` is a write the board answered 2xx whose
-read-back was a broken read, so whether it landed is unknown (calling again is safe). Resolving WHO you are can refuse before any board request,
-on every tool that resolves your kanban user (this one and `board_correct_card`):
-`install_fault.no_kanban_user`, `install_fault.shared_kanban_user`, `install_fault.not_in_roster`
-and `install_fault.agent_config_unreadable` — so a seat with no id is refused by name, never moved
-unassigned. The plain take's write refusals and finished-column refusal carry the same codes; a
-refusal with no code carries no `reason` key.
+**Refusal codes.** Every refusal a start can reach carries a machine-readable `reason` beside
+`error` in the `{ok: false, error, reason}` body — branch on it, never on the wording.
+`BoardTakeCardRefusalReasonCoverageTest` derives the refusal sites from the code and reds on an
+uncoded one.
+
+| `reason` | Where | Means |
+| --- | --- | --- |
+| `bad_request` | the door, any tool | the request body is not a JSON object, is not labelled JSON (HTTP), names no `tool`, or (ssh) could not be read from stdin |
+| `unknown_tool` | the door, any tool | no such tool |
+| `bad_arguments` | the door and every tool | an undeclared argument, a malformed one (`card_id` not a positive integer, `start` not a boolean), or a value over kanban's own bound |
+| `out_of_scope` | `board_take_card` | not a card on your board in a lane you work (or a board the writeback token cannot see — one answer) |
+| `archived` | `board_take_card` | the card is archived |
+| `holder_unreadable` | `board_take_card` | the row says nothing readable about who holds the card |
+| `broken_read` | every card-id tool | the board-scoped lookup answered a row that is not this card |
+| `board_read_failed` | every tool | the board refused a read permanently (401/403/404); an INSTALL fault |
+| `column_unknown` | `board_take_card` | the card's column cannot be read, or cannot be shown not to be finished |
+| `finished_column` | `board_take_card` | the card is in a finished column |
+| `not_start_eligible` | start | the column is neither a `started_from_stages` column nor In Progress |
+| `pinned` | start | a pinned card would have to move |
+| `program_parent` | start | a `program` parent card would have to move |
+| `not_stored` | start | the board answered 2xx and the read-back shows something else |
+| `not_confirmed` | start | the board answered 2xx and the read-back was a broken read: whether it landed is unknown (calling again is safe) |
+| `card_gone` | `board_take_card` write | the card was removed between the check and the write |
+| `board_rejected` | `board_take_card` write | a board 422 (an enforced WIP limit on In Progress is one) |
+| `install_fault.write_forbidden` | `board_take_card` write | 403 on the write |
+| `install_fault.token_rejected` | `board_take_card` write | 401 on the write |
+| `install_fault.start_unmapped` / `install_fault.start_ambiguous` | start | no mapping on the board maps `started`, or mappings name different columns |
+| `install_fault.writeback_config_unreadable` | `board_take_card` | writeback.json will not parse (a start, or a takeover of an assignee) |
+| `install_fault.no_kanban_user` | `board_take_card` | your agent declares no `identity.kanban_user_id`, so a seat with no id is refused by name, never moved unassigned |
+| `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` | the bridge cannot say which kanban user you are (an id two agents share, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these three only, because a seat with no id simply has no assignee there |
+
+A failure whose STATUS is the answer carries no code: the 502 `upstream board error` stays one
+body byte for byte for every cause (DL-387), and the 401 (bearer) and 503 (install) door answers
+are told apart by status. Other tools' own refusals (`board_create_card`, `board_correct_card`,
+`board_comment_card`, …) are not all coded; a refusal with no code carries no `reason` key.
 
 **Permissions.** The combined PATCH carries more than `workflow_stage_id`, so kanban authorizes it
 as **`task.update`**, the same as the plain take; a start on a card you already hold sends the

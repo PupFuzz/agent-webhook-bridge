@@ -3,6 +3,7 @@
 namespace Tests\Feature\AgentTools;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -46,6 +47,9 @@ class BoardTakeCardStartTest extends TestCase
 
     /** @var list<array<string, mixed>> */
     private array $comments = [];
+
+    /** @var list<string> */
+    private array $sequence = [];
 
     protected function setUp(): void
     {
@@ -94,21 +98,28 @@ class BoardTakeCardStartTest extends TestCase
      *
      * @param  array<string, mixed>  $overrides
      */
-    private function board(array $overrides = [], int $patchStatus = 200, bool $storesNothing = false, bool $brokenReadBack = false): void
+    private function board(array $overrides = [], int $patchStatus = 200, bool $storesNothing = false, bool $brokenReadBack = false, ?int $readBackStatus = null, ?int $preloadStatus = null, bool $broken = false): void
     {
         $card = array_merge([
             'id' => 42, 'board_id' => 10, 'swimlane_id' => 4, 'name' => 'queued for me',
             'tags' => ['type:feature'], 'assigned_user_id' => null, 'workflow_stage_id' => 47,
         ], $overrides);
 
-        Http::fake(function ($request) use (&$card, $patchStatus, $storesNothing, $brokenReadBack) {
+        Http::fake(function ($request) use (&$card, $patchStatus, $storesNothing, $brokenReadBack, $readBackStatus, $preloadStatus, $broken) {
             $url = urldecode($request->url());
             if (str_contains($url, '/tasks/search.json')) {
-                $row = $brokenReadBack && $this->patches !== [] ? array_merge($card, ['id' => 777]) : $card;
+                if ($readBackStatus !== null && $this->patches !== []) {
+                    return Http::response('nope', $readBackStatus);
+                }
+                $row = $broken || ($brokenReadBack && $this->patches !== []) ? array_merge($card, ['id' => 777]) : $card;
 
                 return Http::response(['data' => str_contains($url, 'archived=1') ? [] : [$row]]);
             }
             if (str_contains($url, '/boards/10/preload.json')) {
+                if ($preloadStatus !== null) {
+                    return Http::response('nope', $preloadStatus);
+                }
+
                 return Http::response(['data' => ['workflows' => [['stages' => self::STAGES]]]]);
             }
             if (str_contains($url, '/comments.json')) {
@@ -117,6 +128,7 @@ class BoardTakeCardStartTest extends TestCase
                 return Http::response(['data' => ['id' => 1]], 201);
             }
             if ($request->method() === 'PATCH') {
+                $this->sequence[] = 'PATCH';
                 $this->patches[] = $request->data();
                 if ($patchStatus !== 200) {
                     return Http::response('nope', $patchStatus);
@@ -319,7 +331,7 @@ class BoardTakeCardStartTest extends TestCase
             }, 'install_fault.start_ambiguous'],
             'writeback.json will not parse' => [static function (self $t): void {
                 File::put($t->dir.'/writeback.json', '{not json');
-            }, 'install_fault.writeback_unreadable'],
+            }, 'install_fault.writeback_config_unreadable'],
         ];
     }
 
@@ -337,7 +349,109 @@ class BoardTakeCardStartTest extends TestCase
     {
         $this->board(['workflow_stage_id' => null]);
 
-        $this->start()->assertStatus(422)->assertJsonPath('reason', 'column_unreadable');
+        $this->start()->assertStatus(422)->assertJsonPath('reason', 'column_unknown');
+        $this->assertSame([], $this->patches);
+    }
+
+    /**
+     * The writeback refuses EVERY write to a `program` parent (DL-403, `KanbanMoveCardHandler`'s
+     * consult), its `started` move included — so the start refuses to move one too.
+     */
+    public function test_start_refuses_to_move_a_program_parent_and_writes_nothing(): void
+    {
+        $this->board(['tags' => ['program']]);
+
+        $res = $this->start()->assertStatus(422)->assertJsonPath('reason', 'program_parent');
+        $this->assertStringContainsString('without `start`', (string) $res->json('error'));
+        $this->assertSame([], $this->patches);
+    }
+
+    /**
+     * A takeover start whose read-back the board does not answer still reports WHOM it displaced,
+     * unconfirmed — the way the plain takeover degrades — and posts no comment.
+     */
+    public function test_a_takeover_start_whose_read_back_fails_reports_the_replaced_holder_unconfirmed(): void
+    {
+        $this->board(['assigned_user_id' => 4242], readBackStatus: 500);
+
+        $this->start()->assertStatus(200)
+            ->assertJsonPath('result.replaced.assigned_user_id', 4242)
+            ->assertJsonPath('result.takeover_confirmed', false)
+            ->assertJsonPath('result.takeover_comment', 'not_attempted');
+        $this->assertCount(1, $this->patches);
+        $this->assertSame([], $this->comments);
+    }
+
+    /** The holder is named in the durable log BEFORE the PATCH, so a call cut off after it still leaves the record. */
+    public function test_a_takeover_start_logs_the_holder_before_the_write(): void
+    {
+        Log::listen(function (MessageLogged $e): void {
+            if (str_contains($e->message, 'TAKING a card another holder has')) {
+                $this->sequence[] = 'HOLDER_LOGGED';
+            }
+        });
+        $this->board(['assigned_user_id' => 4242]);
+
+        $this->start()->assertStatus(200);
+        $this->assertSame(['HOLDER_LOGGED', 'PATCH'], $this->sequence);
+    }
+
+    /**
+     * Every refusal a start can reach carries a `reason` — a sample of the shared ones here, beside
+     * the start's own codes above. `BoardTakeCardRefusalReasonCoverageTest` holds the whole
+     * population by source.
+     *
+     * @return array<string, array{\Closure(self): void, array<string, mixed>, string}>
+     */
+    public static function sharedRefusals(): array
+    {
+        return [
+            'not in your lane' => [static fn (self $t) => $t->board(['swimlane_id' => 99]), ['card_id' => 42, 'start' => true], 'out_of_scope'],
+            'holder unreadable' => [static function (self $t): void {
+                $t->board(['assigned_user_id' => 'x']);
+            }, ['card_id' => 42, 'start' => true], 'holder_unreadable'],
+            'a broken lookup' => [static fn (self $t) => $t->board(broken: true), ['card_id' => 42, 'start' => true], 'broken_read'],
+            'a column read the board refuses' => [static fn (self $t) => $t->board(['workflow_stage_id' => 48], preloadStatus: 403), ['card_id' => 42, 'start' => true], 'board_read_failed'],
+            'a non-integer card_id' => [static fn (self $t) => $t->board(), ['card_id' => '42', 'start' => true], 'bad_arguments'],
+            'an undeclared argument' => [static fn (self $t) => $t->board(), ['card_id' => 42, 'start' => true, 'stage' => 49], 'bad_arguments'],
+        ];
+    }
+
+    /** @param array<string, mixed> $args */
+    #[DataProvider('sharedRefusals')]
+    public function test_a_shared_refusal_on_the_start_path_carries_its_reason(\Closure $setUp, array $args, string $reason): void
+    {
+        $setUp($this);
+
+        $this->take($args)->assertStatus(422)->assertJsonPath('reason', $reason);
+        $this->assertSame([], $this->patches);
+    }
+
+    /**
+     * The plain take's finished-column refusal used to send four causes under one code; each is
+     * now its own (round-1 review of #850).
+     *
+     * @return array<string, array{\Closure(self): void, int|null, string}>
+     */
+    public static function takeoverColumnRefusals(): array
+    {
+        return [
+            'truly finished' => [static function (self $t): void {}, 52, 'finished_column'],
+            'a column the order does not place' => [static function (self $t): void {}, 777, 'column_unknown'],
+            'no readable column on the row' => [static function (self $t): void {}, null, 'column_unknown'],
+            'writeback.json will not parse' => [static function (self $t): void {
+                File::put($t->dir.'/writeback.json', '{not json');
+            }, 49, 'install_fault.writeback_config_unreadable'],
+        ];
+    }
+
+    #[DataProvider('takeoverColumnRefusals')]
+    public function test_the_plain_takeover_codes_each_finished_column_cause_separately(\Closure $setUp, ?int $stage, string $reason): void
+    {
+        $setUp($this);
+        $this->board(['assigned_user_id' => 4242, 'workflow_stage_id' => $stage]);
+
+        $this->take(['card_id' => 42])->assertStatus(422)->assertJsonPath('reason', $reason);
         $this->assertSame([], $this->patches);
     }
 

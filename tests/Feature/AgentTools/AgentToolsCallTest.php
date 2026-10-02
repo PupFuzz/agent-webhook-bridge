@@ -5462,7 +5462,7 @@ class AgentToolsCallTest extends TestCase
             'HTTP_AUTHORIZATION' => 'Bearer '.$this->token,
         ], $body)
             ->assertStatus(422)
-            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?, caller?, launch?}']);
+            ->assertExactJson(['ok' => false, 'error' => 'request Content-Type must be application/json — the body is read as a JSON object {tool, args?, client_version?, caller?, launch?}', 'reason' => 'bad_request']);
         Http::assertNothingSent();
     }
 
@@ -5518,7 +5518,7 @@ class AgentToolsCallTest extends TestCase
         ], $body)->assertStatus($status);
 
         if ($error !== null) {
-            $response->assertExactJson(['ok' => false, 'error' => $error]);
+            $response->assertExactJson(['ok' => false, 'error' => $error, 'reason' => 'bad_request']);
             Http::assertNothingSent();
 
             return;

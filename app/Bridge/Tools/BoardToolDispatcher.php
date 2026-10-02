@@ -123,15 +123,15 @@ final class BoardToolDispatcher
         SeatClientLedger::recordCall($agentName, $clientVersion, $caller);
 
         if ($toolName === '') {
-            return DispatchOutcome::failure(422, 'request must carry a non-empty `tool`');
+            return DispatchOutcome::failure(422, 'request must carry a non-empty `tool`', 'bad_request');
         }
         $tool = $this->tools->resolve($toolName);
         if ($tool === null) {
-            return DispatchOutcome::failure(422, "unknown tool `{$toolName}` (known: ".implode(', ', $this->tools->known()).')');
+            return DispatchOutcome::failure(422, "unknown tool `{$toolName}` (known: ".implode(', ', $this->tools->known()).')', 'unknown_tool');
         }
 
         if (! is_array($rawArgs)) {
-            return DispatchOutcome::failure(422, '`args` must be an object');
+            return DispatchOutcome::failure(422, '`args` must be an object', 'bad_arguments');
         }
 
         try {
@@ -147,7 +147,7 @@ final class BoardToolDispatcher
             $refusal .= $this->clientUpdateClause($tool, $rawArgs, $clientVersion);
             Log::info('agent-tools: refused', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport, 'reason' => $refusal]);
 
-            return DispatchOutcome::failure(422, $refusal);
+            return DispatchOutcome::failure(422, $refusal, 'bad_arguments');
         }
 
         try {

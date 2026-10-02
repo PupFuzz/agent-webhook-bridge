@@ -121,7 +121,7 @@ class ToolsCallCommand extends BridgeCommand
 
         [$raw, $stdinError] = $this->readStdin($io);
         if ($stdinError !== null) {
-            return $this->emit($io, ['ok' => false, 'error' => $stdinError], 1);
+            return $this->emit($io, ['ok' => false, 'error' => $stdinError, 'reason' => 'bad_request'], 1);
         }
 
         // The same parse, and so the same refusal in the same words, as the HTTP door (card#10106).

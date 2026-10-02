@@ -458,8 +458,9 @@ const TOOL_DEFINITIONS = [
       'whose column the bridge cannot show is unfinished. A card held only by a legacy ' +
       'owner: tag is taken wherever it sits (the tag stays on it). There is no override ' +
       'here; replacing a finished card\'s assignee is a decision for your operator. ' +
-      'Re-taking a card you already hold SUCCEEDS, writes nothing, and answers ' +
-      'already_held: true, so it is safe to call again if you are unsure. ' +
+      'Re-taking a card you already hold SUCCEEDS and answers already_held: true, so it ' +
+      'is safe to call again if you are unsure; it writes nothing, except that start: true ' +
+      'on a held card still in a start column moves it to In Progress. ' +
       'A board fault that cannot clear (the bridge token revoked/rotated, or the ' +
       'writeback role unable to update tasks) is REFUSED (422) naming the INSTALL ' +
       'fault — do not retry it; tell your operator, quoting the message as-is.',
