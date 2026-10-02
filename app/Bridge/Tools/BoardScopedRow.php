@@ -76,7 +76,7 @@ final class BoardScopedRow
                 'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId, 'rows' => count($liveRows),
             ]);
 
-            throw new ToolRefusalException("{$toolName}: the board lookup for card {$cardId} answered a row that is not that card on your board — that is a BROKEN READ, not a verdict about the card, so nothing was written. Report it to your operator.");
+            throw new ToolRefusalException("{$toolName}: the board lookup for card {$cardId} answered a row that is not that card on your board — that is a BROKEN READ, not a verdict about the card, so nothing was written. Report it to your operator.", reason: 'broken_read');
         }
 
         return new self(null, self::forCard($client->cardRowsOnBoard($boardId, $cardId, archivedOnly: true), $boardId, $cardId));

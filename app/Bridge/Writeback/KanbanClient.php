@@ -177,10 +177,19 @@ final class KanbanClient
         $this->http()->patch("/tasks/{$cardId}.json", $fields)->throw();
     }
 
-    /** Move the card to a workflow stage (column-only; never touches payload/other fields). */
-    public function moveCard(int $cardId, int $stageId): void
+    /**
+     * Move the card to a workflow stage — column-only, never touching payload or any other field,
+     * unless $assignTo is given: then the SAME PATCH also sets `assigned_user_id` (card#11150 /
+     * DL-449), which kanban applies with the move in one transaction, so the card is never moved
+     * but unowned. ⚠ That mixed write is authorized as `task.update`, not `task.move` (kanban
+     * DL-204: anything beside `workflow_stage_id` is an update), so a role that may move cards
+     * but not edit them is refused it. Every column change of an existing card is a call to this
+     * method, which is what keeps the pin and `program`-parent censuses (keyed on `moveCard(`)
+     * complete.
+     */
+    public function moveCard(int $cardId, int $stageId, ?int $assignTo = null): void
     {
-        $this->patchCard($cardId, ['workflow_stage_id' => $stageId]);
+        $this->patchCard($cardId, ['workflow_stage_id' => $stageId] + ($assignTo === null ? [] : ['assigned_user_id' => $assignTo]));
     }
 
     /**
@@ -953,6 +962,35 @@ final class KanbanClient
             self::idList(is_array($data) ? ($data['swimlanes'] ?? null) : null),
             $basis,
         );
+    }
+
+    /**
+     * The writeback user's EFFECTIVE permissions on a board, as kanban reports them for the caller
+     * on the board resource (`data.permissions` of `GET /boards/{id}/preload.json` — kanban's
+     * `BoardResource`, resolved by `BoardPermissions::effectivePermissionsFor`, custom roles
+     * included), or null when the response carries no list of strings to read.
+     *
+     * ⚠ THE ROLE, AND ONLY THE ROLE. kanban answers a write 403 from three independent gates
+     * (the board-tools write refusal enumerates them); the token's own abilities (`read`/`write`)
+     * and the board's write gate (archived or trashed) are not in this list, so a caller reading
+     * it measures one gate of three and must say so.
+     *
+     * @return ?list<string>
+     */
+    public function boardPermissions(int $boardId): ?array
+    {
+        $permissions = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.permissions');
+        if (! is_array($permissions) || ! array_is_list($permissions)) {
+            return null;
+        }
+        foreach ($permissions as $permission) {
+            if (! is_string($permission)) {
+                return null;
+            }
+        }
+
+        /** @var list<string> $permissions */
+        return $permissions;
     }
 
     /**

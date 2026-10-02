@@ -61,6 +61,11 @@ class AgentKanbanUserRosterCheckTest extends TestCase
         $this->assertStringContainsString("seat 'impl' carries no kanban user id for this kanban instance ('kanban.example.com')", $findings[0]->message);
         $this->assertStringContainsString('`nofield`', $findings[0]->message);
         $this->assertStringContainsString('identity.kanban_user_id (7) is therefore UNVERIFIED against the roster', $findings[0]->message);
+        // card#11147's residual: the coord framework writes the roster id for pm and solo seats
+        // ONLY (`roster-kanban-uid.py` refuses an impl seat), so the remedy must not promise
+        // that an install/upgrade writes it for every seat.
+        $this->assertStringContainsString('writes it for pm and solo seats only', $findings[0]->message);
+        $this->assertStringContainsString('set by hand', $findings[0]->message);
     }
 
     public function test_a_board_tools_seat_with_no_id_anywhere_warns_that_every_take_refuses(): void

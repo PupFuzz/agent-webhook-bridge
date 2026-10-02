@@ -128,6 +128,22 @@ class KanbanClientTest extends TestCase
             && ! isset($r['task']));            // column-only, no other fields
     }
 
+    /**
+     * card#11150 / DL-449: `moveCard` gained an optional assignee. WITHOUT one, the body must stay
+     * `workflow_stage_id` alone — a stray `assigned_user_id` key (even null) would make every
+     * existing mover's PATCH a `task.update` and could clear a card's assignee.
+     */
+    public function test_move_card_without_an_assignee_sends_the_stage_and_no_assignee_key(): void
+    {
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->moveCard(5, 52);
+        $this->client()->moveCard(6, 49, 815);
+
+        $bodies = array_map(fn (array $pair): array => $pair[0]->data(), Http::recorded()->all());
+        $this->assertSame([['workflow_stage_id' => 52], ['workflow_stage_id' => 49, 'assigned_user_id' => 815]], $bodies);
+    }
+
     public function test_patch_card_sends_exactly_the_named_fields_flat(): void
     {
         // The general flat-field PATCH verb (card#8377): it writes what the caller names

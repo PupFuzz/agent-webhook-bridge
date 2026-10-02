@@ -61,7 +61,7 @@ final class ToolCallBody
 
     private static function refuse(string $what, string $shape): DispatchOutcome
     {
-        return DispatchOutcome::failure(422, $what.' — expected '.$shape);
+        return DispatchOutcome::failure(422, $what.' — expected '.$shape, 'bad_request');
     }
 
     /**

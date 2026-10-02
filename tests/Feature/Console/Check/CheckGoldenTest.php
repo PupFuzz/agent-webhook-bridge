@@ -507,7 +507,7 @@ class CheckGoldenTest extends TestCase
                     '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
                     '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                         ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
-                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']], 'permissions' => ['board.view', 'task.move', 'task.update']]]),
                 ]);
 
                 return $default;
@@ -540,7 +540,7 @@ class CheckGoldenTest extends TestCase
                     '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
                     '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                         ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
-                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']], 'permissions' => ['board.view', 'task.move', 'task.update']]]),
                 ]);
 
                 return $default;
@@ -1465,7 +1465,7 @@ class CheckGoldenTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
                 ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
-            ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+            ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']], 'permissions' => ['board.view', 'task.move', 'task.update']]]),
         ]);
     }
 

@@ -63,8 +63,10 @@ use App\Bridge\Tools\ToolsCallStdio;
  * before userland is uncatchable here — the client-side JSON.parse in the .mjs is
  * the real backstop, F2).
  *
- * Exit code: 0 iff ok; 1 for a CALLER-fixable fault (empty --agent, malformed /
- * oversize stdin, missing tool, a dispatch 4xx); 2 for a BRIDGE-side config/service
+ * Exit code: 0 iff ok; 1 for a 4xx-class answer — a caller-fixable fault (malformed /
+ * oversize stdin, missing tool, a dispatch 4xx) OR an install fault reported as one (an empty
+ * --agent, coded `install_fault.no_agent`, and every dispatch 422 whose `reason` starts
+ * `install_fault.`), so a caller tells the two apart by `reason`; 2 for a BRIDGE-side config/service
  * fault (unknown agent, malformed agent YAML, an agent that is not a live ssh
  * board-tools agent, a dispatch 5xx) — so the ssh client can tell "fix your call"
  * from "the bridge is misconfigured / retry".
@@ -86,7 +88,7 @@ class ToolsCallCommand extends BridgeCommand
 
         $agentName = $this->strOption('agent');
         if ($agentName === null) {
-            return $this->emit($io, ['ok' => false, 'error' => 'bridge:tools-call requires a non-empty --agent (set by the pinned forced command)'], 1);
+            return $this->emit($io, ['ok' => false, 'error' => 'bridge:tools-call requires a non-empty --agent (set by the pinned forced command)', 'reason' => 'install_fault.no_agent'], 1);
         }
 
         try {
@@ -121,7 +123,7 @@ class ToolsCallCommand extends BridgeCommand
 
         [$raw, $stdinError] = $this->readStdin($io);
         if ($stdinError !== null) {
-            return $this->emit($io, ['ok' => false, 'error' => $stdinError], 1);
+            return $this->emit($io, ['ok' => false, 'error' => $stdinError, 'reason' => 'bad_request'], 1);
         }
 
         // The same parse, and so the same refusal in the same words, as the HTTP door (card#10106).

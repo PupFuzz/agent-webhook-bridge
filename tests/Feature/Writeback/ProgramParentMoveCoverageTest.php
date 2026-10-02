@@ -101,6 +101,9 @@ class ProgramParentMoveCoverageTest extends TestCase
         // "no refusal" entry rested on the premise that such a card cannot be a parent, and was
         // never an operator ruling; the operator approved guarding it (card#10068 comment 6446).
         'Bridge/Handlers/KanbanDependabotCardHandler.php::handle#1' => self::CONSULTS,
+        // `board_take_card`'s start form (card#11150 / DL-449): a seat moves its own card into the
+        // board's mapped `started` column, from a `started_from_stages` column only.
+        'Bridge/Tools/BoardTakeCardTool.php::start#1' => 'NON-TERMINAL: the start form moves a card only INTO the mapped `started` (In Progress) column, and only from a `started_from_stages` column, so it makes no completion claim about a parent',
         // The GitHub-PR event path — the FIRST consult (card#9929).
         'Bridge/Handlers/KanbanMoveCardHandler.php::handle#1' => self::CONSULTS,
         // Shipped → Released. ⚠ THE WRITER THAT ACTUALLY FIRES on this install's releases.

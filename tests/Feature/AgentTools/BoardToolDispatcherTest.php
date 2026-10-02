@@ -371,7 +371,7 @@ class BoardToolDispatcherTest extends TestCase
         $this->assertSame(422, $refused->status);
         $this->assertSame(1, $refused->exitCode());
         $this->assertSame(
-            ['ok' => false, 'error' => 'operator_tool: `explained` has a reason. Unknown argument `lowered` — a reason that opens in lower case. Unknown argument `other`. This tool accepts: `wanted`. Nothing was sent to the board — no card was read or written.'],
+            ['ok' => false, 'error' => 'operator_tool: `explained` has a reason. Unknown argument `lowered` — a reason that opens in lower case. Unknown argument `other`. This tool accepts: `wanted`. Nothing was sent to the board — no card was read or written.', 'reason' => 'bad_arguments'],
             $refused->body(),
         );
 

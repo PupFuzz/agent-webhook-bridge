@@ -144,7 +144,7 @@ final class BoardCallRefusal
      */
     public static function readRefusal(string $tool, BoardReadRoute $route, int $status, string $what, string $consequence): ToolRefusalException
     {
-        return new ToolRefusalException("{$tool}: the bridge could not read {$what} (the board answered {$status}) — {$consequence}. This is an INSTALL fault, not something your arguments can fix: ".self::readCause($route, $status).'. Retrying will not change it; report it to your operator.', installFault: true);
+        return new ToolRefusalException("{$tool}: the bridge could not read {$what} (the board answered {$status}) — {$consequence}. This is an INSTALL fault, not something your arguments can fix: ".self::readCause($route, $status).'. Retrying will not change it; report it to your operator.', installFault: true, reason: 'board_read_failed');
     }
 
     /**
@@ -330,6 +330,6 @@ final class BoardCallRefusal
             return null;
         }
 
-        return new ToolRefusalException("{$tool}: `{$field}` is ".mb_strlen($value).' characters — kanban accepts at most '.KanbanFieldLimits::NAME_MAX.' (`name => string|max:255`), so the board would reject the write. '.$nothingHappened.'; shorten it.');
+        return new ToolRefusalException("{$tool}: `{$field}` is ".mb_strlen($value).' characters — kanban accepts at most '.KanbanFieldLimits::NAME_MAX.' (`name => string|max:255`), so the board would reject the write. '.$nothingHappened.'; shorten it.', reason: 'bad_arguments');
     }
 }

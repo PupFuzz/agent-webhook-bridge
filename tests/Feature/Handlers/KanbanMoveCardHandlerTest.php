@@ -755,6 +755,31 @@ class KanbanMoveCardHandlerTest extends TestCase
         }
     }
 
+    /**
+     * card#11150 / DL-449: a seat that started its card with `board_take_card`'s start form has
+     * already moved it to In Progress AND assigned it, so the `started` move its later branch push
+     * fires finds the card in the target column. That push is the existing no-op — no write, no
+     * ownerless alert — so the start form leaves the writeback exactly as it was. The control is
+     * the data provider above: the same event on a card still in a start column is moved.
+     */
+    public function test_a_started_push_on_a_card_already_started_and_assigned_writes_nothing_and_raises_nothing(): void
+    {
+        $this->writeWritebackWithAlert(['started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'assigned_user_id' => 7, 'tags' => []]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/5.json'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        Log::shouldNotHaveReceived('warning', [\Mockery::any(), \Mockery::on(fn ($ctx): bool => is_array($ctx) && ($ctx['catalog_id'] ?? null) === 'owner.moved_without_owner')]);
+    }
+
     public function test_an_opened_move_out_of_a_start_column_alerts_on_a_card_with_no_owner(): void
     {
         // `opened` is not only `started` that leaves Backlog: a PR opened on a card still in a

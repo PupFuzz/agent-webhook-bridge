@@ -4,6 +4,7 @@ namespace Tests\Feature\Writeback;
 
 use App\Bridge\Writeback\PinGuard;
 use Tests\Feature\AgentTools\AgentToolsCallTest;
+use Tests\Feature\AgentTools\BoardTakeCardStartTest;
 use Tests\Feature\Handlers\KanbanBlockReasonHandlerTest;
 use Tests\Feature\Handlers\KanbanCoordCardHandlerTest;
 use Tests\Feature\Handlers\KanbanDependabotCardHandlerTest;
@@ -193,6 +194,15 @@ class PinnedFieldWriteCoverageTest extends TestCase
         // (`assigned_user_id`), so the same ruling holds: the claim lands on a pinned card.
         'Bridge/Tools/BoardTakeCardTool.php::takeOver#1' => [
             AgentToolsCallTest::class.'::test_a_takeover_lands_on_a_pinned_card_because_the_pin_governs_the_name_and_not_the_claim',
+        ],
+        // UNGOVERNED — the card#11150 start form's assignee write on a card ALREADY In Progress
+        // (no move, so the column is not touched): the same single field as the take above, so
+        // it lands on a pinned card. Its MOVE is a `moveCard(` site and the pin holds it there —
+        // the second witness is that refusal, so a start is seen to honour the pin on the column
+        // and not on the claim.
+        'Bridge/Tools/BoardTakeCardTool.php::start#1' => [
+            BoardTakeCardStartTest::class.'::test_a_start_on_a_pinned_card_already_in_progress_still_assigns_it',
+            BoardTakeCardStartTest::class.'::test_start_refuses_to_move_a_pinned_card_and_writes_nothing',
         ],
         // UNGOVERNED BY THE FIELD RULE, and refused anyway — by the STAGE rule, at this
         // primitive's CALL SITES rather than here (`PinGuard`'s docblock owns that census).

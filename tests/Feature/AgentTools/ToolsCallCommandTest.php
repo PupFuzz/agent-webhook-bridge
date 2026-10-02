@@ -349,6 +349,7 @@ class ToolsCallCommandTest extends TestCase
         $r = $this->runCommand(null, (string) json_encode(['tool' => 'board_my_cards']));
         $this->assertSame(1, $r['exit']);
         $this->assertFalse(json_decode($r['stdout'], true)['ok']);
+        $this->assertSame('install_fault.no_agent', json_decode($r['stdout'], true)['reason'] ?? null);
     }
 
     public function test_unknown_agent_is_exit_2(): void
