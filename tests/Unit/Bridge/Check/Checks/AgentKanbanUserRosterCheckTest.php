@@ -48,7 +48,7 @@ class AgentKanbanUserRosterCheckTest extends TestCase
         parent::tearDown();
     }
 
-    // ---- the id-ABSENT path: the only state any install is in today (kanban card#10867) ----
+    // ---- the id-ABSENT path: WARN until the roster carries the ids (DL-439 ruling C; flip not built) ----
 
     public function test_a_roster_seat_with_no_kanban_user_id_warns_and_never_fails(): void
     {

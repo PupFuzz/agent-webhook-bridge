@@ -2852,9 +2852,9 @@ class BridgeCommandsTest extends TestCase
     }
 
     /**
-     * card#10869 — THE RELEASE PROPERTY, at the command level: no coord roster carries
-     * `kanban_user_id` yet (kanban card#10867), so an install whose seat lacks one must be told so
-     * by name and must still EXIT 0 (operator ruling C: WARN until the ids exist). A unit test pins
+     * card#10869 — THE RELEASE PROPERTY, at the command level: an install whose roster seat has no
+     * `kanban_user_id` must be told so by name and must still EXIT 0 (operator ruling C: WARN
+     * until the roster carries the ids; the flip to fail is not built). A unit test pins
      * the severity; this pins that the severity is the one that leaves the exit code alone.
      */
     public function test_check_warns_on_a_roster_seat_with_no_kanban_user_id_and_still_exits_zero(): void
