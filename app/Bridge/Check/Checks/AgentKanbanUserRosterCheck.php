@@ -24,10 +24,9 @@ use App\Bridge\Writeback\CoordConfigTerminals;
  * check the ruling requires of a copy: a YAML id that disagrees with the roster FAILS.
  *
  * ⚠ A MISSING ROSTER ID WARNS, IT DOES NOT FAIL — and that is a release decision, not the end
- * state. No roster carries `kanban_user_id` yet (kanban card#10867 must first give agents their
- * own accounts; the framework's install/upgrade then writes the field), so a fail here would
- * redden every install with a seat. It flips to fail once the ids exist; `docs/config-schema.md`
- * § identity carries that reopen condition.
+ * state. DL-439 (operator ruling C) makes it a fail once the roster carries the ids; that flip is
+ * not built, so the warn here is unconditional. `docs/config-schema.md` § identity carries the
+ * same condition.
  *
  * THE POPULATION is every agent whose kanban id is, or must be, a seat's: one that declares
  * `identity.kanban_user_id`, or has `board_tools` enabled (it can take cards, so it needs a seat's

@@ -12,6 +12,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#9022** — **CI: a new `continue-on-error-guard` workflow fails any pull request whose workflows or composite actions carry a `continue-on-error` key**, at job or step level, at any value (`false` included). A failed step under that key leaves its job reporting success, so a merge gate reading CI would pass over it. Copied unchanged from the coord plugin's `templates/workflows/continue-on-error-guard.yml`; keep the job name `continue-on-error-guard`, which the plugin's self-merge and auto-merge gates pin. No workflow or composite action in this repository carries the key today. Contributor-facing only: no runtime, config, migration or route change.
 
+### Fixed
+
+- **card#11147** — **Docs: the `agent.kanban_user_roster` check's docblock and `docs/config-schema.md` § identity no longer claim that no roster carries `kanban_user_id` yet.** That was a census, and it stopped being true when a roster did. Both now state the condition: a roster seat with no id for this host warns, and DL-439 (operator ruling C) makes that a fail once the roster carries the ids, a flip that is not built. Two test comments that repeated the census are corrected the same way. No behaviour change: the check's severity is still WARN.
+
 ## [0.95.0] - 2026-10-01
 
 ### Changed
