@@ -434,6 +434,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | CI awaits — the `ci_settled` wake (card#11200 / DL-452)
+    |--------------------------------------------------------------------------
+    |
+    | ttl — how long a seat's `ci_await` registration lives before the bridge
+    | gives up on it and emits `ci_await_expired`, in seconds (default 6 h).
+    | Re-registering the same head restarts it. A value outside 60..604800 is
+    | REFUSED, not clamped: `ci_await` refuses as an install fault and
+    | `bridge:check` (`ci_await.awaits`) fails, naming the value.
+    |
+    */
+
+    'ci_await' => [
+        'ttl' => env('BRIDGE_CI_AWAIT_TTL', 21600),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Channel-server client pack (DL-430)
     |--------------------------------------------------------------------------
     |

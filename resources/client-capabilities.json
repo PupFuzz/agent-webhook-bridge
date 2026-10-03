@@ -171,6 +171,38 @@
       },
       "removed_in": null,
       "since": "0.9.18"
+    },
+    "ci_await": {
+      "arguments": {
+        "head_sha": {
+          "removed_in": null,
+          "since": "0.9.41"
+        },
+        "pr": {
+          "removed_in": null,
+          "since": "0.9.41"
+        },
+        "repo": {
+          "removed_in": null,
+          "since": "0.9.41"
+        }
+      },
+      "removed_in": null,
+      "since": "0.9.41"
+    },
+    "ci_await_cancel": {
+      "arguments": {
+        "head_sha": {
+          "removed_in": null,
+          "since": "0.9.41"
+        },
+        "repo": {
+          "removed_in": null,
+          "since": "0.9.41"
+        }
+      },
+      "removed_in": null,
+      "since": "0.9.41"
     }
   }
 }

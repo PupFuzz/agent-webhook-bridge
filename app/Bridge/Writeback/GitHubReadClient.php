@@ -65,6 +65,15 @@ final class GitHubReadClient
      */
     private const COMMENT_PAGE_LIMIT = 10;
 
+    /** GitHub's maximum page size for `GET /repos/{repo}/actions/runs`. */
+    private const RUNS_PAGE_SIZE = 100;
+
+    /**
+     * How many run pages {@see self::workflowRunsForHead} walks before it throws. A bound on a loop,
+     * not a belief about how many runs one commit has, exactly as HOOK_PAGE_LIMIT.
+     */
+    private const RUNS_PAGE_LIMIT = 10;
+
     /**
      * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
      * @param  ?int  $timeoutSeconds  per-request timeout override — the SYNCHRONOUS promote-on-release
@@ -486,7 +495,55 @@ final class GitHubReadClient
     }
 
     /**
-     * The CAUSE clause both unreadable-200 lines in this client end with. It is a const and not
+     * Every workflow run GitHub lists for one head SHA (`GET /repos/{repo}/actions/runs?head_sha=`),
+     * walked to the end of the list — the read behind `ci_settled` (card#11200 / DL-452).
+     *
+     * ⛔ IT ANSWERS THE WHOLE LIST OR THROWS. The caller decides "every run is terminal" from
+     * this, and a partial list can make that true of a head where it is not — so a 200 whose body
+     * is not a readable run list, a run entry without a readable `status`, and a walk that reaches
+     * {@see self::RUNS_PAGE_LIMIT} each throw {@see UnexpectedValueException} rather than return
+     * what was seen. A non-2xx throws RequestException, like every read here.
+     *
+     * @return list<array{workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     */
+    public function workflowRunsForHead(string $repo, string $headSha): array
+    {
+        $runs = [];
+        for ($page = 1; $page <= self::RUNS_PAGE_LIMIT; $page++) {
+            $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", [
+                'head_sha' => $headSha,
+                'per_page' => self::RUNS_PAGE_SIZE,
+                'page' => $page,
+                'exclude_pull_requests' => 'true',
+            ])->throw()->json();
+
+            $list = is_array($body) ? ($body['workflow_runs'] ?? null) : null;
+            if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
+                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} returned a 200 whose body is not a run list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
+            }
+            foreach ($list as $run) {
+                if (! is_array($run) || ! is_string($run['status'] ?? null)) {
+                    throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries a run with no readable `status`, so whether every run is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+                }
+                $runs[] = [
+                    'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
+                    'status' => $run['status'],
+                    'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
+                    'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
+                    'event' => is_string($run['event'] ?? null) ? $run['event'] : '',
+                ];
+            }
+
+            if (count($list) < self::RUNS_PAGE_SIZE || count($runs) >= $body['total_count']) {
+                return $runs;
+            }
+        }
+
+        throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} did not end within ".self::RUNS_PAGE_LIMIT.' pages of '.self::RUNS_PAGE_SIZE.' — the list was not read to its end, so whether every run is terminal is unknown');
+    }
+
+    /**
+     * The CAUSE clause every unreadable-200 report in this client ends with. It is a const and not
      * a repeated literal because it is the only part of those lines that is the SAME fact —
      * what an unreadable body means and what to look at — while each read's consequence
      * legitimately differs. It is deliberately NOT shared with {@see KanbanClient}'s twin: that

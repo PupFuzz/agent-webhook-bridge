@@ -307,7 +307,9 @@ the same write) and `board_comment_card` (DL-381: append a comment to
 a live card on your own board; the bridge writes the `FROM: <seat>` attribution line, and
 nothing is edited or deleted) and `board_get_cards` (DL-435: read known card ids in one call,
 each answered with an explicit status — never silently omitted) and `board_search` (DL-437: the
-cards on your board matching filters, matches only, or `summary: true` for counts) — and acts as a
+cards on your board matching filters, matches only, or `summary: true` for counts) and `ci_await` /
+`ci_await_cancel` (DL-452: wait for CI on one commit without polling — the bridge sends one
+`ci_settled` event when every workflow run on that head is terminal) — and acts as a
 **dumb proxy** for them: on a `tools/call` it
 forwards `{tool, args, client_version}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
 `Authorization: Bearer <token>` and returns the bridge's response verbatim.

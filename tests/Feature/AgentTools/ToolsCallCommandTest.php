@@ -634,9 +634,10 @@ class ToolsCallCommandTest extends TestCase
     }
 
     /**
-     * Every registered tool, derived from the registry: the first board request gets no answer,
-     * and the door writes the 502 envelope alone on stdout and exits 2 — never an uncaught
-     * exception where the envelope belongs.
+     * Every registered tool that reaches a board, derived from the registry: the first board
+     * request gets no answer, and the door writes the 502 envelope alone on stdout and exits 2 —
+     * never an uncaught exception where the envelope belongs. The tools that reach no board are
+     * {@see AgentToolsCallTest::BOARDLESS_TOOLS}, held there to sending no board request.
      */
     public function test_a_board_call_that_gets_no_answer_is_the_502_envelope_and_exit_2_on_every_registered_tool(): void
     {
@@ -648,7 +649,7 @@ class ToolsCallCommandTest extends TestCase
             return Http::failedConnection()($request);
         });
 
-        $tools = (new BoardToolsRegistry)->known();
+        $tools = array_diff((new BoardToolsRegistry)->known(), AgentToolsCallTest::BOARDLESS_TOOLS);
         $this->assertNotEmpty($tools);
         foreach ($tools as $tool) {
             $sent = 0;

@@ -652,6 +652,68 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'ci_await',
+    description:
+      'Tell the bridge you are WAITING for CI on one commit, instead of polling GitHub. When every ' +
+      'workflow run GitHub lists for that head SHA is terminal (status completed), the bridge sends ' +
+      'you ONE ci_settled event on this channel, carrying each run\'s workflow, conclusion and url, ' +
+      'and forgets the wait. ci_settled is NOT a verdict: run ci-read once on the head for green or ' +
+      'red. If the runs never all finish (or the bridge never gets to see them) before the wait ' +
+      'expires (6 h by default), you get ONE ci_await_expired event instead, with the last read ' +
+      'error if a read failed. The wait is YOURS — no argument names a seat. Calling it again for ' +
+      'the same head refreshes the wait and reads the runs again. It reads the runs once now: if ' +
+      'they have already all finished, ci_settled is sent immediately (state: settled). A head ' +
+      'with no runs yet keeps waiting. A repo this bridge receives no GitHub events for is ' +
+      'REFUSED (reason repo_not_received) — poll with ci-read there. A workflow that only starts ' +
+      'after the others finish (on: workflow_run) can appear after ci_settled; ci-read then reports ' +
+      'it pending, and you re-register.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: 'The GitHub repository, as owner/name.',
+        },
+        head_sha: {
+          type: 'string',
+          description:
+            'The FULL 40-character commit SHA to wait on (git rev-parse <ref>). An abbreviated SHA ' +
+            'is refused: GitHub matches runs on the full SHA only.',
+        },
+        pr: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Optional: the pull request number, carried back in the events. Omit it when there is none.',
+        },
+      },
+      required: ['repo', 'head_sha'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ci_await_cancel',
+    description:
+      'Stop waiting for CI on one commit: removes YOUR OWN ci_await on that head, so no ci_settled ' +
+      'or ci_await_expired is sent for it. Answers cancelled: false when you had no wait there ' +
+      '(never registered, already settled or expired, or only another seat waits on it) — safe to ' +
+      'call unconditionally. No argument names a seat.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: 'The GitHub repository, as owner/name.',
+        },
+        head_sha: {
+          type: 'string',
+          description: 'The FULL 40-character commit SHA the wait was registered on.',
+        },
+      },
+      required: ['repo', 'head_sha'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // LOCAL-EXEC self-management tool (card 5089). NOT part of TOOL_DEFINITIONS — those are

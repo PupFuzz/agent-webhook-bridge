@@ -19,9 +19,10 @@ use App\Bridge\Exceptions\HandlerException;
  * the registry (rather than constructing the handler) keeps an operator's registered
  * replacement in force.
  *
- * ⚠ LIVE PATH ONLY. Nothing here stages to the inbox: `IntentLog::stage()` derives the line
- * id and `ts` from a stored webhook event, and a bridge-authored intent has none. What the
- * push reached is reported by the handler as UNCONFIRMED (DL-370).
+ * ⚠ LIVE PATH ONLY. Nothing here stages to the inbox: a caller that wants the inbox backstop
+ * as well stages first, through `IntentLog::stageAuthored()`, supplying the line id and `ts` a
+ * stored webhook event would otherwise give (the `ci_await` intents do; the standup digest and
+ * the idle nudge do not). What the push reached is reported by the handler as UNCONFIRMED (DL-370).
  */
 final class AuthoredIntentPush
 {
