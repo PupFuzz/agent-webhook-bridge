@@ -40,6 +40,10 @@ return new class extends Migration
             $table->string('last_error', 1000)->nullable();
             // When a RATE-LIMITED read said its quota returns; the sweep does not retry the head before it.
             $table->timestamp('retry_not_before', 3)->nullable();
+            // A registration whose own read was SKIPPED (inside the read cooldown): it was answered
+            // `waiting` without a read of its own, so it must never depend on a concurrent read to
+            // wake it. The sweep reads every head holding such a row; a read that answers clears it.
+            $table->boolean('read_deferred')->default(false);
 
             // One await per seat per head; re-registering refreshes this row.
             $table->unique(['agent', 'repo', 'head_sha']);

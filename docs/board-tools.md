@@ -1545,13 +1545,16 @@ register nor cancel another's.
    `state: unmeasured` with the await kept.
 4. **Reads the head's runs once**, so CI that already finished settles now — unless:
    - a read of the same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60;
-     `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request. A
-     read that answers "all terminal" settles every await on the head — including one stored while
-     that read was in flight, which it loads again before it finishes — so a recent answered read
-     on a stored await means CI was still running then;
+     `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request.
+     The cooldown means the head was read recently, **not that your await was part of that read**
+     (a read settles only the awaits it loaded, and yours may have been stored while it ran), so a
+     skipped registration is marked and **never depends on a concurrent read to wake it**: a
+     concurrent settle may wake it sooner, and at the latest the next `ci-await-sweep` pass (every
+     300 s by default) reads the head, settling it if every run is terminal;
    - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
      with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
-     `settled`.
+     `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
+     sweep reads it after the reset.
 
 The answer:
 
@@ -1619,15 +1622,18 @@ logged naming it, and the head is read again on its next completed run and by th
 job. A rate-limited read that names when its quota returns (`X-RateLimit-Reset`, else `Retry-After`)
 records that instant on every await on the head, and **no read of that head is made before it** — not
 by a delivery, a registration or the sweep; the error says until when, and a registration in that
-window answers `read_skipped: "rate_limited"`. If no read ever answers, the
+window answers `read_skipped: "rate_limited"`. The instant is `Retry-After` when the refusal carries
+one (seconds or an HTTP date — GitHub's secondary limit, which can also carry a primary reset an hour
+out), else `X-RateLimit-Reset` only when `X-RateLimit-Remaining` is `0`. If no read ever answers, the
 await ends in `ci_await_expired` carrying the last error.
 
 **Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
 anything else refuses every `ci_await` as `install_fault.ci_await_config_invalid` and fails `bridge:check`,
 as does a cap or cooldown outside its range).
 The `ci-await-sweep` periodic job, declared at the first registration, emits `ci_await_expired` once
-per await past its expiry and re-reads heads whose last read failed — never a head whose read
-answered, which is re-read only when its next run completes. It runs on the job registry's two
+per await past its expiry and re-reads heads whose last read failed or that hold a registration
+whose own read was skipped (a one-shot mark that a read clears) — never a head whose read answered
+and holds none, which is re-read only when its next run completes. It runs on the job registry's two
 ingresses ([`periodic-jobs.md`](periodic-jobs.md)), so expiry lands at the first job pass after
 `expires_at`: on a busy install with the next webhook, on a silent one only with `bridge:tick`.
 

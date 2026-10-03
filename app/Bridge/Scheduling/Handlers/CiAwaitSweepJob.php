@@ -15,7 +15,8 @@ use Throwable;
 
 /**
  * The clock half of `ci_await` (card#11200 / DL-452): emits `ci_await_expired` once per await
- * past its expiry, and re-reads heads whose last workflow-run read FAILED.
+ * past its expiry, and re-reads heads whose last workflow-run read FAILED or that hold a registration
+ * whose own read was skipped inside the read cooldown (`read_deferred`).
  *
  * ⭐ WHY IT IS A JOB (docs/periodic-jobs.md's decision order, step 4). An await is settled by the
  * arrival of a `workflow_run.completed` on its head, so the common path needs no clock. What has
@@ -23,8 +24,9 @@ use Throwable;
  * does not send workflow runs, a read that keeps failing — and a seat that registered a wait must
  * not wait silently forever. Only a clock can notice that.
  *
- * ⚑ NO POLLING. The retry half re-reads only heads whose previous read FAILED; a head whose read
- * answered is read again when its next run completes, never on this clock.
+ * ⚑ NO POLLING. The retry half re-reads only heads whose previous read FAILED or that hold a deferred
+ * registration (one-shot: a read that answers clears the mark); a head whose read answered and that
+ * holds none is read again when its next run completes, never on this clock.
  *
  * ⚑ {@see JobCapability::ReadAndAlert}: it deletes rows of the bridge's own `ci_awaits` bookkeeping,
  * reads GitHub and tells a seat. It writes nothing on kanban or GitHub.
@@ -62,7 +64,7 @@ final class CiAwaitSweepJob implements JobHandler
         $expired = $this->awaits->expireDue(self::MAX_EXPIRED_PER_PASS);
         $retried = $this->awaits->retryUnmeasured(self::MAX_RETRIES_PER_PASS);
 
-        return JobOutcome::ok("expired {$expired} ci_await(s); re-read {$retried} head(s) whose last read failed");
+        return JobOutcome::ok("expired {$expired} ci_await(s); re-read {$retried} head(s) whose last read failed or whose registration read was deferred");
     }
 
     /**

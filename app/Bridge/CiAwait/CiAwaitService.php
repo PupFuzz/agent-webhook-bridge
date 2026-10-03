@@ -11,6 +11,7 @@ use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Support\AuthoredIntentPush;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\RedactedErrorText;
+use App\Bridge\Support\RefusalContext;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -155,11 +156,16 @@ final class CiAwaitService
      * claim, the inbox write — is reported as `unmeasured`, never as "nothing was stored".
      *
      * A head whose read ANSWERED within `$cooldownSeconds` is not read again: the answer is
-     * `waiting` from the stored state, with `read_skipped: 'cooldown'`. That is sound because a
-     * read that answers "all terminal" claims every await on the head, including one stored while
-     * it was reading ({@see evaluate()}), so a fresh answered read on a stored await means CI was
-     * still running then. A head that is rate limited until a known instant is not read either:
-     * `waiting`, `read_skipped: 'rate_limited'`, with `retry_not_before`.
+     * `waiting` from the stored state, with `read_skipped: 'cooldown'`. ⛔ A SKIPPED REGISTRATION
+     * NEVER DEPENDS ON A CONCURRENT READ TO WAKE IT: the cooldown only means the head was read
+     * recently, not that this await was part of that read, and a read that finds every run terminal
+     * can claim only the awaits it can see. So the row is marked `read_deferred`, and the sweep
+     * reads every head holding such a row ({@see retryUnmeasured()}). A concurrent settle may wake
+     * it sooner; at the latest the next sweep pass does. A head that is rate limited until a known
+     * instant is not read either: `waiting`, `read_skipped: 'rate_limited'`, with
+     * `retry_not_before` — its row already carries the failed read's error and that instant
+     * ({@see evaluate()} copies them onto every await on the head), which is what the sweep retries
+     * after the reset.
      *
      * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: ?string, retry_not_before: ?string}
      */
@@ -173,6 +179,7 @@ final class CiAwaitService
                 ->whereNull('last_error')->where('last_read_at', '>=', Carbon::now()->subSeconds($cooldownSeconds))->exists();
             if ($cooling) {
                 $skipped = 'cooldown';
+                CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->update(['read_deferred' => true]);
             } else {
                 $read = $this->evaluate($key, $headSha, null);
                 $skipped = $read['rate_limited_until'] === null ? null : 'rate_limited';
@@ -249,16 +256,17 @@ final class CiAwaitService
     }
 
     /**
-     * Re-read up to `$limit` heads whose last read FAILED and that have not expired, least recently
-     * read first. Only failed reads are retried on the clock: a head whose read answered is
-     * re-read when its next run completes, never on a timer. A head whose failure was a rate limit
-     * that named its reset is skipped until that reset. Returns how many heads were read.
+     * Re-read up to `$limit` heads that have not expired and either whose last read FAILED or that
+     * hold an await whose registration read was SKIPPED (`read_deferred`), least recently read
+     * first. A head whose read answered and that holds no deferred await is re-read when its next
+     * run completes, never on a timer. A head whose failure was a rate limit that named its reset
+     * is skipped until that reset. Returns how many heads were read.
      */
     public function retryUnmeasured(int $limit): int
     {
         $now = Carbon::now();
         $heads = CiAwait::query()
-            ->whereNotNull('last_error')
+            ->where(fn ($q) => $q->whereNotNull('last_error')->orWhere('read_deferred', true))
             ->where('expires_at', '>', $now)
             ->where(fn ($q) => $q->whereNull('retry_not_before')->orWhere('retry_not_before', '<=', $now))
             ->select('repo', 'head_sha')
@@ -279,12 +287,10 @@ final class CiAwaitService
      *
      * ⚠ The awaits are loaded BEFORE the read, deliberately: the read is slow, and a concurrent
      * evaluation of the same head may claim them meanwhile — {@see claimAndEmit()} is what makes
-     * that safe, not the order. ⛔ And an "all terminal" read claims those, THEN loads the head
-     * again and claims what it finds: a seat that registered during the read was answered from the
-     * read cooldown without a read of its own ({@see evaluateRegistration()}), so this read is the
-     * one that must settle it. Claiming first and re-loading second closes the window — a
-     * registration whose cooldown check still saw a pre-loaded row stored its await before that
-     * row was claimed, so the re-load finds it.
+     * that safe, not the order. An await stored while the read runs is NOT in that set and is not
+     * settled by it; a registration answered from the read cooldown is marked `read_deferred` and is
+     * read by the sweep ({@see evaluateRegistration()}), so no await depends on this read finding it.
+     * A successful read clears `read_deferred` on the awaits it covered.
      *
      * ⚠ A head any of whose awaits carries a `retry_not_before` still in the future is not read:
      * the answer carries `rate_limited_until`, and every await on the head is given that instant
@@ -326,7 +332,7 @@ final class CiAwaitService
 
             return ['runs' => null, 'error' => $error, 'all_terminal' => false, 'rate_limited_until' => null];
         }
-        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null]);
+        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null, 'read_deferred' => false]);
 
         if ($deliveredRun !== null) {
             $runs = self::overlay($runs, $deliveredRun);
@@ -336,9 +342,6 @@ final class CiAwaitService
         $allTerminal = $runs !== [] && array_filter($runs, static fn (array $r): bool => $r['status'] !== 'completed') === [];
         if ($allTerminal) {
             foreach ($awaits as $await) {
-                $this->claimAndEmit($await, self::SETTLED, self::settledPayload($await, $runs, $measuredAt), self::settledSummary($await, count($runs)));
-            }
-            foreach (CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)->orderBy('id')->get() as $await) {
                 $this->claimAndEmit($await, self::SETTLED, self::settledPayload($await, $runs, $measuredAt), self::settledSummary($await, count($runs)));
             }
         }
@@ -448,18 +451,22 @@ final class CiAwaitService
     }
 
     /**
-     * When a rate-limited read says the quota comes back: `X-RateLimit-Reset` (epoch seconds), else
-     * `Retry-After` (seconds from now) — or null when it names neither in a readable form.
+     * When a rate-limited read says the quota comes back: `Retry-After` when present (what GitHub
+     * names for a secondary limit, and the more specific of the two — a secondary-limit 403 can
+     * also carry a primary `X-RateLimit-Reset` an hour out), read by
+     * {@see RefusalContext::retryAfterSeconds()} so an HTTP-date is understood too; else
+     * `X-RateLimit-Reset` (epoch seconds), but only when `X-RateLimit-Remaining` is `0` — a reset
+     * beside a quota that is not spent says nothing about this refusal. Null when neither applies.
      */
     private static function rateLimitReset(RequestException $e): ?Carbon
     {
-        $reset = $e->response->header('X-RateLimit-Reset');
-        if (preg_match('/\A[0-9]{1,12}\z/', $reset) === 1) {
-            return Carbon::createFromTimestamp((int) $reset, 'UTC');
+        $after = RefusalContext::retryAfterSeconds($e);
+        if ($after !== null) {
+            return Carbon::now()->addSeconds($after);
         }
-        $after = $e->response->header('Retry-After');
-        if (preg_match('/\A[0-9]{1,6}\z/', $after) === 1) {
-            return Carbon::now()->addSeconds((int) $after);
+        $reset = $e->response->header('X-RateLimit-Reset');
+        if ($e->response->header('X-RateLimit-Remaining') === '0' && preg_match('/\A[0-9]{1,12}\z/', $reset) === 1) {
+            return Carbon::createFromTimestamp((int) $reset, 'UTC');
         }
 
         return null;
