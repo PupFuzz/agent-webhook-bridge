@@ -34,16 +34,17 @@ return new class extends Migration
             $table->timestamp('created_at', 3)->useCurrent();
             $table->timestamp('updated_at', 3)->nullable();
             $table->timestamp('expires_at', 3)->useCurrent();
-            // The last runs read for this head: when it ran and, when it FAILED, why. A null
-            // error with a non-null time is a read that answered.
+            // The last runs read for this head: when it ran and, when it FAILED, why. The sweep selects
+            // on `last_read_at` (a head whose oldest read is stale is read again); `last_error` is
+            // diagnostic only — carried on `ci_await_expired` and named by `bridge:check`.
             $table->timestamp('last_read_at', 3)->nullable();
             $table->string('last_error', 1000)->nullable();
-            // When a RATE-LIMITED read said its quota returns; the sweep does not retry the head before it.
+            // When a RATE-LIMITED read said its quota returns; no read of the head is made before it.
             $table->timestamp('retry_not_before', 3)->nullable();
-            // A registration whose own read was SKIPPED (inside the read cooldown): it was answered
-            // `waiting` without a read of its own, so it must never depend on a concurrent read to
-            // wake it. The sweep reads every head holding such a row; a read that answers clears it.
-            $table->boolean('read_deferred')->default(false);
+            // When this await's event last failed to reach its seat's inbox. The row is kept and
+            // emitted again on a later pass; expiry does not retry it within one sweep interval, and
+            // drops it, logged as an error, once it is far enough past `expires_at`.
+            $table->timestamp('emit_failed_at', 3)->nullable();
 
             // One await per seat per head; re-registering refreshes this row.
             $table->unique(['agent', 'repo', 'head_sha']);

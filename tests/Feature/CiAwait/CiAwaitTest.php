@@ -6,6 +6,7 @@ use App\Bridge\CiAwait\CiAwaitService;
 use App\Bridge\ClientUpdate\CallerReport;
 use App\Bridge\Scheduling\Handlers\CiAwaitSweepJob;
 use App\Bridge\Scheduling\JobContext;
+use App\Bridge\Scheduling\JobOutcome;
 use App\Bridge\Scheduling\JobPassSource;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\BoardToolDispatcher;
@@ -14,12 +15,16 @@ use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\DispatchOutcome;
 use App\Models\CiAwait;
 use App\Models\ScheduledJob;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
+use Mockery;
 use Tests\Support\CallingSeatSeal;
 use Tests\TestCase;
 
@@ -467,72 +472,230 @@ class CiAwaitTest extends TestCase
         $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
     }
 
+    // ---- the level-triggered sweep (round 4) ---------------------------------------------
+
+    /** A lost final delivery: the read answered `waiting`, nothing else arrives, and the sweep settles it once S has passed. */
+    public function test_an_await_whose_final_delivery_is_lost_is_settled_by_the_next_eligible_sweep(): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])], [$this->runs([['CI', 'completed', 'success']])]]);
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        $this->assertSame('waiting', $out->body()['result']['state']);
+
+        $this->runSweep();
+        $this->assertSentRunsReads(1);
+
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+
+        $this->assertSentRunsReads(2);
+        $this->assertSame(0, CiAwait::query()->count(), 'the await is stranded until it expires');
+        $this->assertChannelPushes(['seat-a' => ['ci_settled']]);
+    }
+
     /**
-     * Round 2 item 2, restated in round 3. Seat B registers while a delivery's read of the head is in
-     * flight and is answered from the read cooldown; the in-flight read settles only the awaits it
-     * loaded. B must not wait for another delivery: it is marked deferred and the next sweep reads it.
+     * H1 (round 4 design read): seat B registers while the final delivery's read is in flight, reads
+     * for itself while the list still lags (`in_progress`), and the delivery claims only the await it
+     * loaded. Nothing marks B; the sweep reads its head once the read is S old.
      */
-    public function test_a_seat_that_registered_during_an_all_terminal_read_is_settled_by_the_next_sweep(): void
+    public function test_a_registration_that_read_in_progress_during_the_final_deliverys_read_is_settled_by_the_sweep(): void
     {
         config(['bridge.ci_await.read_cooldown' => 60]);
         $this->seedAwait('seat-a');
-        CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(10)]);
         $service = $this->app->make(CiAwaitService::class);
-        $bAnswer = null;
         $reads = 0;
+        $bAnswer = null;
         Http::fake([
-            self::RUNS_URL => function () use (&$bAnswer, &$reads) {
-                if (++$reads === 1) {
+            self::RUNS_URL => function () use (&$reads, &$bAnswer) {
+                $n = ++$reads;
+                if ($n === 1) {
                     $bAnswer = $this->callTool('seat-b', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result'];
                 }
 
-                return Http::response($this->runs([['CI', 'completed', 'success']]));
+                return Http::response($this->runs([['CI', $n === 2 ? 'in_progress' : 'completed', $n === 2 ? null : 'success']]));
             },
             '127.0.0.1:*' => Http::response('ok', 200),
         ]);
 
         $service->onWorkflowRunCompleted(self::REPO, self::SHA);
 
-        $this->assertNotNull($bAnswer, 'seat B never registered during the read, so this measured nothing');
-        $this->assertSame('cooldown', $bAnswer['read_skipped'] ?? null, 'seat B read for itself, so the race was not reproduced');
-        $b = CiAwait::query()->where('agent', 'seat-b')->sole();
-        $this->assertTrue($b->read_deferred);
+        $this->assertSame('waiting', $bAnswer['state'] ?? null, 'seat B did not register mid-read, so this measured nothing');
+        $this->assertArrayNotHasKey('read_skipped', $bAnswer, 'seat B must have read for itself');
+        $this->assertSame(['seat-b'], CiAwait::query()->pluck('agent')->all());
+        $this->assertNull(CiAwait::query()->sole()->last_error);
 
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
         $this->runSweep();
 
-        $this->assertSame(0, CiAwait::query()->count(), 'seat B is stranded');
+        $this->assertSame(0, CiAwait::query()->count(), 'seat B is stranded until it expires');
         $this->assertChannelPushes(['seat-a' => ['ci_settled'], 'seat-b' => ['ci_settled']]);
     }
 
-    /** Control: the sweep reads a skipped row only because of its marker — without it the row is stranded. */
-    public function test_a_skipped_registration_without_its_marker_is_not_read_by_the_sweep(): void
+    public function test_the_sweep_reads_at_most_its_cap_oldest_read_first_and_never_a_head_read_within_s(): void
+    {
+        config(['bridge.ci_await.sweep_reads' => 2]);
+        $heads = ['fresh' => [str_repeat('1', 40), 60], 'old' => [str_repeat('2', 40), 600], 'never' => [str_repeat('3', 40), null], 'older' => [str_repeat('4', 40), 3600]];
+        foreach ($heads as [$sha, $age]) {
+            $this->seedAwait('seat-a', sha: $sha);
+            CiAwait::query()->where('head_sha', $sha)->update(['last_read_at' => $age === null ? null : Carbon::now()->subSeconds($age)]);
+        }
+        Http::fake([self::RUNS_URL => Http::response($this->runs([['CI', 'in_progress', null]])), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $this->runSweep();
+        $this->assertSame([$heads['never'][0], $heads['older'][0]], $this->readHeads());
+
+        $this->runSweep();
+        $this->assertSame([$heads['never'][0], $heads['older'][0], $heads['old'][0]], $this->readHeads(), 'a head read within S is not read again');
+    }
+
+    /** Round 4 NIT: a head the HAVING leaves out is not read, and the pass does not count it as read. */
+    public function test_a_head_any_of_whose_awaits_is_rate_limited_is_neither_read_nor_counted_by_the_sweep(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->seedAwait('seat-b');
+        CiAwait::query()->where('agent', 'seat-a')->update(['last_error' => 'GitHub answered HTTP 502 to the workflow-run read', 'last_read_at' => Carbon::now()->subSeconds(900)]);
+        CiAwait::query()->where('agent', 'seat-b')->update(['last_error' => 'GitHub answered HTTP 429 to the workflow-run read (rate limited until 2026-10-03T10:10:00.000Z)', 'retry_not_before' => Carbon::now()->addSeconds(600)]);
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $outcome = $this->runSweep();
+
+        $this->assertSentRunsReads(0);
+        $this->assertStringContainsString('read 0 head(s)', $outcome->summary);
+    }
+
+    public function test_a_rate_limited_head_does_not_take_a_sweep_slot_from_a_readable_one(): void
+    {
+        config(['bridge.ci_await.sweep_reads' => 1]);
+        $this->seedAwait('seat-a', sha: self::OTHER_SHA);
+        CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(3600), 'last_error' => 'GitHub answered HTTP 429 to the workflow-run read', 'retry_not_before' => Carbon::now()->addSeconds(600)]);
+        $this->seedAwait('seat-a');
+        CiAwait::query()->where('head_sha', self::SHA)->update(['last_read_at' => Carbon::now()->subSeconds(900)]);
+        Http::fake([self::RUNS_URL => Http::response($this->runs([['CI', 'in_progress', null]])), '127.0.0.1:*' => Http::response('ok', 200)]);
+
+        $this->runSweep();
+
+        $this->assertSame([self::SHA], $this->readHeads());
+    }
+
+    public function test_an_inbox_that_cannot_be_written_holds_back_only_its_own_seat(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent']);
+        $blocked = $this->dir.'/state/inbox-seat-a.jsonl';
+        File::ensureDirectoryExists($blocked);   // a directory where seat-a's inbox file goes
+        $this->seedAwait('seat-a');
+        $this->seedAwait('seat-b');
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])], [$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->app->make(CiAwaitService::class)->onWorkflowRunCompleted(self::REPO, self::SHA);
+
+        $this->assertSame(['seat-a'], CiAwait::query()->pluck('agent')->all(), "seat-a's unwritable inbox kept seat-b from settling");
+        $this->assertSame(['ci_settled'], array_column($this->agentInbox('seat-b'), 'kind'));
+        $this->assertChannelPushes(['seat-b' => ['ci_settled']]);
+        $this->assertNotNull(CiAwait::query()->sole()->emit_failed_at);
+
+        File::deleteDirectory($blocked);
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+
+        $this->assertSame(0, CiAwait::query()->count());
+        $this->assertSame(['ci_settled'], array_column($this->agentInbox('seat-a'), 'kind'));
+        $this->assertChannelPushes(['seat-a' => ['ci_settled'], 'seat-b' => ['ci_settled']]);
+    }
+
+    public function test_expiries_whose_inbox_cannot_be_written_block_no_other_expiry_and_are_dropped_past_the_ceiling(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent']);
+        File::ensureDirectoryExists($this->dir.'/state/inbox-seat-a.jsonl');
+        for ($i = 1; $i <= CiAwaitSweepJob::MAX_EXPIRED_PER_PASS; $i++) {
+            $this->seedAwait('seat-a', sha: sprintf('%040x', $i), expiresIn: 60);
+        }
+        $this->seedAwait('seat-b', expiresIn: 120);
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+        $this->runSweep();
+        $this->assertSame(1, CiAwait::query()->where('agent', 'seat-b')->count(), 'the poison rows did not fill the pass, so this measured nothing');
+        $this->assertSame(CiAwaitSweepJob::MAX_EXPIRED_PER_PASS, CiAwait::query()->whereNotNull('emit_failed_at')->count());
+
+        // A late pass, past the retry interval: the failed rows are due again and must not fill it.
+        Carbon::setTestNow('2026-10-03T10:12:00.000Z');
+        $this->runSweep();
+        $this->assertSame(['ci_await_expired'], array_column($this->agentInbox('seat-b'), 'kind'));
+
+        // Within the interval of their last failure the failed rows are not tried again.
+        $recent = CiAwait::query()->where('emit_failed_at', Carbon::parse('2026-10-03T10:12:00.000Z'))->pluck('id')->all();
+        $this->assertNotEmpty($recent, 'the late pass retried no failed row, so this measures nothing');
+        Carbon::setTestNow('2026-10-03T10:13:00.000Z');
+        $this->runSweep();
+        $this->assertSame($recent, CiAwait::query()->where('emit_failed_at', Carbon::parse('2026-10-03T10:12:00.000Z'))->pluck('id')->all(), 'a row that failed within the interval was tried again');
+
+        Log::spy();
+        Carbon::setTestNow(Carbon::parse('2026-10-03T10:01:00.000Z')->addSeconds(CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS + 1));
+        $this->runSweep();
+        $this->assertSame(0, CiAwait::query()->count(), 'a row whose inbox never takes the line is dropped past the ceiling');
+        Log::shouldHaveReceived('error')->with(Mockery::pattern('/gave up/'), Mockery::on(fn (array $c): bool => ($c['agent'] ?? null) === 'seat-a'))->atLeast()->once();
+    }
+
+    public function test_an_await_whose_settle_failed_is_tried_as_an_expiry_before_it_can_be_dropped(): void
+    {
+        $this->seedAwait('seat-a', expiresIn: 60);
+        CiAwait::query()->update(['emit_failed_at' => Carbon::now()]);
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+
+        Carbon::setTestNow(Carbon::parse('2026-10-03T10:01:00.000Z')->addSeconds(CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS + 60));
+        $this->runSweep();
+
+        $this->assertSame(['ci_await_expired'], array_column($this->inbox(), 'kind'), 'dropped without its expiry ever being tried');
+    }
+
+    public function test_a_read_half_that_throws_does_not_skip_the_expiry_half(): void
+    {
+        config(['bridge.ci_await.sweep_reads' => 0]);
+        $this->seedAwait('seat-a', expiresIn: 60);
+        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
+
+        $thrown = null;
+        try {
+            $this->runSweep();
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertNotNull($thrown, 'a pass whose read half failed must report it');
+        $this->assertStringContainsString('BRIDGE_CI_AWAIT_SWEEP_READS', $thrown->getMessage());
+        $this->assertSame(['ci_await_expired'], array_column($this->inbox(), 'kind'));
+    }
+
+    public function test_a_cooled_registration_whose_await_a_concurrent_settle_claimed_answers_settled(): void
     {
         config(['bridge.ci_await.read_cooldown' => 60]);
         $this->seedAwait('seat-b');
         CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(10)]);
-        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+        Http::fake();
+        $claimed = false;
+        DB::listen(function (QueryExecuted $q) use (&$claimed): void {
+            if (! $claimed && str_contains($q->sql, 'exists') && str_contains($q->sql, 'last_read_at')) {
+                $claimed = true;
+                CiAwait::query()->where('agent', 'seat-a')->delete();
+            }
+        });
+
         $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
-        $this->assertSame('cooldown', $out->body()['result']['read_skipped'] ?? null);
 
-        CiAwait::query()->update(['read_deferred' => false]);
-        $this->runSweep();
-
-        $this->assertSentRunsReads(0);
-        $this->assertSame(2, CiAwait::query()->count(), 'with no marker and no error nothing reads the head — the stranding the marker exists to prevent');
+        $this->assertTrue($claimed, 'the cooldown query never ran, so this measured nothing');
+        $this->assertSame('settled', $out->body()['result']['state']);
+        $this->assertNull($out->body()['result']['expires_at']);
     }
 
-    public function test_a_successful_read_clears_the_deferred_mark_of_the_awaits_it_covered(): void
+    public function test_a_registration_whose_own_read_is_rate_limited_answers_when_it_is_read_again(): void
     {
-        $this->seedAwait('seat-a');
-        CiAwait::query()->update(['read_deferred' => true]);
-        $this->fakeGitHub([[$this->runs([['CI', 'in_progress', null]])]]);
+        Http::fake([self::RUNS_URL => Http::response(['message' => 'secondary rate limit'], 403, ['Retry-After' => '120']), '127.0.0.1:*' => Http::response('ok', 200)]);
 
-        $this->runSweep();
+        $result = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA])->body()['result'];
 
-        $this->assertFalse(CiAwait::query()->sole()->read_deferred);
-        $this->assertSentRunsReads(1);
-        $this->runSweep();
-        $this->assertSentRunsReads(1);
+        $this->assertSame('unmeasured', $result['state']);
+        $this->assertArrayNotHasKey('read_skipped', $result, 'the read was made, so it was not skipped');
+        $this->assertSame('2026-10-03T10:02:00.000Z', $result['retry_not_before'] ?? null);
     }
 
     // ---- what the tool may say after the store (round 1, MINOR 3) ------------------------
@@ -549,8 +712,9 @@ class CiAwaitTest extends TestCase
 
         $this->assertTrue($out->ok, json_encode($out->body()) ?: '');
         $this->assertSame('unmeasured', $out->body()['result']['state']);
-        $this->assertStringContainsString('the await is stored, but evaluating it failed', $out->body()['result']['read_error']);
+        $this->assertStringContainsString('ci_settled could not be written to your inbox', $out->body()['result']['read_error']);
         $this->assertSame(1, CiAwait::query()->count(), 'the claim rolled back with the failed stage, so the await is still there');
+        $this->assertNotNull(CiAwait::query()->sole()->emit_failed_at);
     }
 
     public function test_a_store_that_cannot_be_written_is_refused_as_nothing_stored(): void
@@ -792,6 +956,7 @@ class CiAwaitTest extends TestCase
         $this->assertSame([], $this->inbox());
         $this->assertNoChannelPush();
 
+        Carbon::setTestNow('2026-10-03T10:05:00.000Z');
         $this->runSweep();
 
         $this->assertSame(0, CiAwait::query()->count());
@@ -844,10 +1009,11 @@ class CiAwaitTest extends TestCase
     public function test_expiry_emits_ci_await_expired_exactly_once(): void
     {
         $this->seedAwait('seat-a', pr: 3);
-        Http::fake(['127.0.0.1:*' => Http::response('ok', 200)]);
+        Http::fake([self::RUNS_URL => Http::response($this->runs([['CI', 'in_progress', null]])), '127.0.0.1:*' => Http::response('ok', 200)]);
 
         $this->runSweep();
         $this->assertSame([], $this->inbox(), 'not yet expired');
+        $this->assertSentRunsReads(1);
 
         Carbon::setTestNow('2026-10-03T16:00:00.000Z');
         $this->runSweep();
@@ -861,7 +1027,7 @@ class CiAwaitTest extends TestCase
             'pr' => 3,
             'registered_at' => '2026-10-03T10:00:00.000Z',
             'expires_at' => '2026-10-03T16:00:00.000Z',
-            'last_read_at' => null,
+            'last_read_at' => '2026-10-03T10:00:00.000Z',
             'last_error' => null,
         ], $lines[0]['payload']);
         $this->assertChannelPushes(['seat-a' => ['ci_await_expired']]);
@@ -891,14 +1057,24 @@ class CiAwaitTest extends TestCase
         return (new BoardToolDispatcher(new BoardToolsRegistry))->dispatch($tool, $args, $cfg, $agent, CallProvenance::NotSshd, null, CallerReport::unreported());
     }
 
-    private function seedAwait(string $agent, ?int $pr = null, string $sha = self::SHA): void
+    private function seedAwait(string $agent, ?int $pr = null, string $sha = self::SHA, int $expiresIn = 21600): void
     {
-        CiAwait::query()->create(['agent' => $agent, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => $pr, 'expires_at' => Carbon::now()->addSeconds(21600)]);
+        CiAwait::query()->create(['agent' => $agent, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => $pr, 'expires_at' => Carbon::now()->addSeconds($expiresIn)]);
     }
 
-    private function runSweep(): void
+    private function runSweep(): JobOutcome
     {
-        $this->app->make(CiAwaitSweepJob::class)->run(new JobContext(CiAwaitSweepJob::INSTANCE, [], null, 300, JobPassSource::Tick));
+        return $this->app->make(CiAwaitSweepJob::class)->run(new JobContext(CiAwaitSweepJob::INSTANCE, [], null, 300, JobPassSource::Tick));
+    }
+
+    /** @return list<string> the head SHAs the runs reads asked for, in order */
+    private function readHeads(): array
+    {
+        return array_values(array_map(static function (array $pair): string {
+            parse_str((string) parse_url($pair[0]->url(), PHP_URL_QUERY), $query);
+
+            return (string) $query['head_sha'];
+        }, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/repos/octo/widgets/actions/runs'))->all()));
     }
 
     /**
@@ -975,6 +1151,14 @@ class CiAwaitTest extends TestCase
             array_map(fn (string $l): array => (array) json_decode($l, true), file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []),
             fn (array $line): bool => str_starts_with((string) ($line['kind'] ?? ''), 'ci_'),
         ));
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function agentInbox(string $agent): array
+    {
+        $path = $this->dir."/state/inbox-{$agent}.jsonl";
+
+        return is_file($path) ? array_map(fn (string $l): array => (array) json_decode($l, true), file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) : [];
     }
 
     private function assertSentRunsReads(int $n): void

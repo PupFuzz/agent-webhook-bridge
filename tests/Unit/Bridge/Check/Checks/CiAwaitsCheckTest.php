@@ -62,6 +62,29 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertStringContainsString('(rate limited)', $findings[0]->message);
     }
 
+    public function test_an_await_whose_event_could_not_be_written_warns_naming_the_agent(): void
+    {
+        $this->await(['emit_failed_at' => now()]);
+        $this->recordWorkflowRun();
+        app(JobRegistry::class)->insert(CiAwaitSweepJob::spec());
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('inbox of agent `seat-a`', $findings[0]->message);
+    }
+
+    public function test_a_sweep_read_cap_the_bridge_refuses_fails_naming_the_key(): void
+    {
+        config(['bridge.ci_await.sweep_reads' => 0]);
+
+        $findings = $this->findingsOf(new CiAwaitsCheck);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('BRIDGE_CI_AWAIT_SWEEP_READS', $findings[0]->message);
+    }
+
     public function test_an_awaited_repo_with_no_stored_workflow_run_warns_and_says_what_that_does_not_prove(): void
     {
         $this->await();

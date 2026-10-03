@@ -19,6 +19,8 @@ final class CiAwaitConfig
 
     public const READ_COOLDOWN_MAX = 3600;
 
+    public const SWEEP_READS_MAX = 100;
+
     /** @throws ConfigException naming the value read */
     public static function ttlSeconds(): int
     {
@@ -38,6 +40,15 @@ final class CiAwaitConfig
     public static function readCooldownSeconds(): int
     {
         return self::int('read_cooldown', 'BRIDGE_CI_AWAIT_READ_COOLDOWN', 0, self::READ_COOLDOWN_MAX, '60');
+    }
+
+    /**
+     * How many heads one `ci-await-sweep` pass may read, install-wide. It bounds the sweep's GitHub
+     * cost per hour at this times 3600 over the sweep's interval. @throws ConfigException naming the value read
+     */
+    public static function sweepReads(): int
+    {
+        return self::int('sweep_reads', 'BRIDGE_CI_AWAIT_SWEEP_READS', 1, self::SWEEP_READS_MAX, '10');
     }
 
     private static function int(string $key, string $env, int $min, int $max, string $default): int

@@ -446,7 +446,13 @@ return [
     |
     | read_cooldown — a registration skips its own runs read when a read of the
     | same head ANSWERED within this many seconds (default 60, 0..3600; 0
-    | always reads).
+    | always reads). A cost knob only: an await skipped by it is read by the
+    | sweep like any other.
+    |
+    | sweep_reads — how many heads one `ci-await-sweep` pass may read,
+    | install-wide (default 10, 1..100). The sweep reads a head whose oldest
+    | read is at least one sweep interval old, oldest first, so its GitHub cost
+    | is at most sweep_reads × 3600 / the sweep's interval head reads per hour.
     |
     | A value outside its range is REFUSED, not clamped: `ci_await` refuses as
     | `install_fault.ci_await_config_invalid` and `bridge:check`
@@ -458,6 +464,7 @@ return [
         'ttl' => env('BRIDGE_CI_AWAIT_TTL', 21600),
         'max_per_seat' => env('BRIDGE_CI_AWAIT_MAX_PER_SEAT', 50),
         'read_cooldown' => env('BRIDGE_CI_AWAIT_READ_COOLDOWN', 60),
+        'sweep_reads' => env('BRIDGE_CI_AWAIT_SWEEP_READS', 10),
     ],
 
     /*

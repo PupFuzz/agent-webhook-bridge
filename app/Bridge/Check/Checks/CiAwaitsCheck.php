@@ -21,8 +21,9 @@ use Throwable;
  * FAILs on a `BRIDGE_CI_AWAIT_*` value the bridge refuses — every `ci_await` call refuses with it.
  * WARNs when the `ci_awaits` table is missing (every `ci_await` refuses until `php artisan
  * migrate`). With awaits stored, WARNs for each thing that would leave one waiting until it
- * expires or forever: no clock to expire them ({@see CiAwaitSweepJob::clockGap()}); a runs read that
- * last failed; and an awaited repo this install holds no stored `workflow_run` delivery from — the
+ * expires or forever: no clock to read or expire them ({@see CiAwaitSweepJob::clockGap()}); a runs
+ * read that last failed; a seat whose inbox the bridge could not write an await's event to, naming
+ * the seat; and an awaited repo this install holds no stored `workflow_run` delivery from — the
  * evidence that the repo's webhook sends Workflow runs here at all. ⚠ That last one is the
  * bridge's own record, not the webhook's configuration: none stored means none RETAINED, so a
  * correctly configured repo whose deliveries were pruned, or whose runs have not completed since
@@ -40,7 +41,7 @@ final class CiAwaitsCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
-        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...)] as $read) {
+        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...), CiAwaitConfig::sweepReads(...)] as $read) {
             try {
                 $read();
             } catch (ConfigException $e) {
@@ -70,11 +71,12 @@ final class CiAwaitsCheck implements Check
 
         $gap = CiAwaitSweepJob::clockGap();
         if ($gap !== null) {
-            yield Finding::warn("ci_await: {$awaits} await(s) stored and nothing expires them on a clock — {$gap}. An await whose CI never settles then waits silently, and a failed read is retried only by the next completed run on its head.");
+            yield Finding::warn("ci_await: {$awaits} await(s) stored and nothing reads or expires them on a clock — {$gap}. Only a completed-run delivery on its head can then settle an await: one whose final delivery is lost, or whose CI never finishes, waits silently.");
         }
 
         try {
             $failing = CiAwait::query()->whereNotNull('last_error')->orderByDesc('last_read_at')->get(['repo_name', 'head_sha', 'last_error']);
+            $undeliverable = CiAwait::query()->toBase()->whereNotNull('emit_failed_at')->selectRaw('agent, count(*) as awaits, max(emit_failed_at) as latest')->groupBy('agent')->orderBy('agent')->get();
             $repos = CiAwait::query()->distinct()->pluck('repo_name')->all();
             $silentRepos = array_values(array_filter($repos, static fn (string $repo): bool => ! CiAwaitService::hasRecordedWorkflowRun($repo)));
         } catch (Throwable $e) {
@@ -85,14 +87,17 @@ final class CiAwaitsCheck implements Check
 
         if ($failing->isNotEmpty()) {
             $latest = $failing->first();
-            yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. Each is re-read on its head's next completed run and by the ci_await sweep, and expires with the error if none answers.");
+            yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. The ci_await sweep reads each head again, and an await expires with the error if no read answers.");
+        }
+        foreach ($undeliverable as $row) {
+            yield Finding::warn("ci_await: the bridge could not write ci_settled / ci_await_expired to the inbox of agent `{$row->agent}` for {$row->awaits} await(s) (last attempt {$row->latest}) — each is kept and retried every sweep pass, and dropped undelivered ".CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS.' s past its expiry. Look for `bridge ci_await:` warnings naming that agent: its inbox file or state directory is not writable by the bridge.');
         }
         foreach ($silentRepos as $repo) {
-            yield Finding::warn("ci_await: an await is stored on {$repo}, and this install holds no stored workflow_run delivery from it — if that repo's webhook does not send \"Workflow runs\" to this bridge, the await only ever ends in ci_await_expired. Add the event on the repo webhook. (None stored is not proof of a missing subscription: retention prunes deliveries, and a new hook has sent none yet.)");
+            yield Finding::warn("ci_await: an await is stored on {$repo}, and this install holds no stored workflow_run delivery from it — if that repo's webhook does not send \"Workflow runs\" to this bridge, only the ci-await-sweep's own reads settle the await, at least one sweep interval after CI finishes and only while the sweep runs. Add the event on the repo webhook. (None stored is not proof of a missing subscription: retention prunes deliveries, and a new hook has sent none yet.)");
         }
 
-        if ($gap === null && $failing->isEmpty() && $silentRepos === []) {
-            yield Silence::because('every stored await has a clock to expire it, its last read answered, and its repo has delivered workflow runs here');
+        if ($gap === null && $failing->isEmpty() && $undeliverable->isEmpty() && $silentRepos === []) {
+            yield Silence::because('every stored await has a clock to read and expire it, its last read answered, its seat\'s inbox took every event written to it, and its repo has delivered workflow runs here');
         }
     }
 }

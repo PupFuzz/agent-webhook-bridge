@@ -16,15 +16,15 @@ use Throwable;
 /**
  * ci_await (card#11200 / DL-452) — the calling seat declares that it is waiting for CI on one head
  * SHA, and the bridge sends it ONE `ci_settled` intent when every workflow run on that head is
- * terminal, instead of the seat polling GitHub. {@see CiAwaitService} owns detection, the claim
- * that makes the emit once-only, and the read-failure rules; this class owns the door.
+ * terminal, instead of the seat polling GitHub. {@see CiAwaitService} owns detection, the sweep,
+ * the claim that makes it one event per await, and the read-failure rules; this class owns the door.
  *
  * ⛔ SELF-SCOPED. The await belongs to the agent the front door resolved; no argument names a
  * seat ({@see CiAwaitArgs::identityReason()} only picks the refusal's message). It reads no board
  * and writes none, so it works on any install whose seat has board tools, coordination repo or not.
  *
  * ⛔ A REPO THIS INSTALL RECEIVES NO GITHUB EVENTS FOR IS REFUSED (`repo_not_received`): no agent
- * here subscribes to it, so no `workflow_run.completed` would ever arrive to settle the await.
+ * here subscribes to it, so no `workflow_run.completed` would ever arrive for it.
  */
 final class CiAwaitTool implements Tool
 {
@@ -119,7 +119,7 @@ final class CiAwaitTool implements Tool
             $response['retry_not_before'] = $result['retry_not_before'];
         }
         if ($deliveryKnown === false && $result['state'] !== 'settled') {
-            $response['warning'] = "this bridge holds no stored workflow_run delivery from {$configured}: if that repo's webhook does not send Workflow runs here, nothing settles this await and it ends in ci_await_expired. (None stored is not proof — retention prunes old deliveries.)";
+            $response['warning'] = "this bridge holds no stored workflow_run delivery from {$configured}: if that repo's webhook does not send Workflow runs here, only the ci-await-sweep's own reads settle this await — at least one sweep interval after CI finishes, and only while that sweep runs. (None stored is not proof — retention prunes old deliveries.)";
         }
 
         return $response;

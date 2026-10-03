@@ -78,7 +78,9 @@ are sent and nothing else would carry them to a seat whose channel was down (the
 `<kind>:<await id>`).
 
 **`ci_settled`** (card#11200 / DL-452) — every workflow run GitHub lists for a head this seat
-registered with `ci_await` is terminal. Sent once per await. ⛔ **It is not a verdict:** run
+registered with `ci_await` is terminal. One terminal event per await, written to the inbox at least
+once — collapse duplicates on the line `id` — and pushed live once; the live push carries no line id, so a
+seat reading both its channel and `bridge:inbox` sees it on each. ⛔ **It is not a verdict:** run
 `ci-read` once on the head for green/red ([`board-tools.md`](board-tools.md) § *`ci_await` and
 `ci_await_cancel`* owns why and the limits). `subject_id` is `ci:<repo>@<head_sha>`. `payload`:
 
@@ -92,7 +94,7 @@ registered with `ci_await` is terminal. Sent once per await. ⛔ **It is not a v
 There is no `late_runs_possible` key; board-tools.md § *Limits* says why.
 
 **`ci_await_expired`** (card#11200 / DL-452) — the await reached its expiry before every run was seen
-terminal. Sent once per await, never after a `ci_settled` for the same await. `subject_id` as above.
+terminal. One per await (inbox at least once, by line `id`, as above), never after a `ci_settled` for the same await. `subject_id` as above.
 `payload`:
 
 | key | meaning |
@@ -100,7 +102,7 @@ terminal. Sent once per await, never after a `ci_settled` for the same await. `s
 | `repo`, `head_sha`, `pr` | the awaited head |
 | `registered_at`, `expires_at` | when the await was first stored, and when it expired (UTC, milliseconds) |
 | `last_read_at` | when the bridge last read the run list for it, or null if it never did |
-| `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running, or no completed-run delivery arrived after it |
+| `last_error` | why that last read failed, or null when it answered — a null here with a non-null `last_read_at` means CI was still running at that read |
 
 **`seat_idle_nudge`** (DL-380, DL-424) — this seat has sat idle past its horizon with work waiting.
 **Branch on `payload.source`**: the two sources send different evidence under the same kind.

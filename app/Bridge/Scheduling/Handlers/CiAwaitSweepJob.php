@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Scheduling\Handlers;
 
+use App\Bridge\CiAwait\CiAwaitConfig;
 use App\Bridge\CiAwait\CiAwaitService;
 use App\Bridge\Scheduling\JobCapability;
 use App\Bridge\Scheduling\JobContext;
@@ -11,22 +12,27 @@ use App\Bridge\Scheduling\JobsConfig;
 use App\Bridge\Scheduling\JobSpec;
 use App\Bridge\Support\RedactedErrorText;
 use App\Models\ScheduledJob;
+use RuntimeException;
 use Throwable;
 
 /**
- * The clock half of `ci_await` (card#11200 / DL-452): emits `ci_await_expired` once per await
- * past its expiry, and re-reads heads whose last workflow-run read FAILED or that hold a registration
- * whose own read was skipped inside the read cooldown (`read_deferred`).
+ * The clock half of `ci_await` (card#11200 / DL-452), and the half that carries its correctness:
+ * each pass reads unsettled heads whose last read is stale ({@see CiAwaitService::sweepUnsettled()})
+ * and emits `ci_await_expired` once per await past its expiry ({@see CiAwaitService::expireDue()}).
  *
- * ⭐ WHY IT IS A JOB (docs/periodic-jobs.md's decision order, step 4). An await is settled by the
- * arrival of a `workflow_run.completed` on its head, so the common path needs no clock. What has
- * no arrival to gate on is the await that never settles — CI that never finishes, a webhook that
- * does not send workflow runs, a read that keeps failing — and a seat that registered a wait must
- * not wait silently forever. Only a clock can notice that.
+ * ⭐ WHY IT IS A JOB (docs/periodic-jobs.md's decision order, step 4). A delivery settles only the
+ * awaits its read loaded, a registration's read can see a lagging list, a final delivery can be
+ * lost, and CI may never finish — in each case no further arrival will touch the await. Only a clock
+ * can. So the sweep is LEVEL-TRIGGERED: it reads every unexpired head whose oldest read is one
+ * interval old, never on the strength of an event having happened.
  *
- * ⚑ NO POLLING. The retry half re-reads only heads whose previous read FAILED or that hold a deferred
- * registration (one-shot: a read that answers clears the mark); a head whose read answered and that
- * holds none is read again when its next run completes, never on this clock.
+ * ⭐ ITS COST IS BOUNDED BY CONSTRUCTION: one read per HEAD (shared by every seat awaiting it), only
+ * for a head not read within the interval, at most `BRIDGE_CI_AWAIT_SWEEP_READS` per pass — so at
+ * most that × 3600 / the interval head reads per hour, install-wide.
+ *
+ * ⚑ THE TWO HALVES ARE ISOLATED: one throwing does not skip the other, and the pass still throws
+ * afterwards so the registry records the failure ({@see JobOutcome}'s one failure channel). The read
+ * half runs first, so an await whose CI finished just before its expiry is settled, not expired.
  *
  * ⚑ {@see JobCapability::ReadAndAlert}: it deletes rows of the bridge's own `ci_awaits` bookkeeping,
  * reads GitHub and tells a seat. It writes nothing on kanban or GitHub.
@@ -44,9 +50,6 @@ final class CiAwaitSweepJob implements JobHandler
     /** Expired awaits emitted per pass; a backlog drains across passes. */
     public const MAX_EXPIRED_PER_PASS = 50;
 
-    /** Heads re-read per pass — each is one paginated GitHub read. */
-    public const MAX_RETRIES_PER_PASS = 5;
-
     public function __construct(private readonly CiAwaitService $awaits) {}
 
     public function name(): string
@@ -61,10 +64,27 @@ final class CiAwaitSweepJob implements JobHandler
 
     public function run(JobContext $ctx): JobOutcome
     {
-        $expired = $this->awaits->expireDue(self::MAX_EXPIRED_PER_PASS);
-        $retried = $this->awaits->retryUnmeasured(self::MAX_RETRIES_PER_PASS);
+        $done = [];
+        $failed = [];
+        try {
+            $read = $this->awaits->sweepUnsettled(CiAwaitConfig::sweepReads(), $ctx->intervalS);
+            $done[] = "read {$read} head(s) not read within {$ctx->intervalS} s";
+        } catch (Throwable $e) {
+            $failed[] = 'reading unsettled heads failed: '.RedactedErrorText::of($e);
+        }
+        try {
+            $expiry = $this->awaits->expireDue(self::MAX_EXPIRED_PER_PASS, $ctx->intervalS);
+            $done[] = "expired {$expiry['emitted']} ci_await(s)"
+                .($expiry['failed'] === 0 ? '' : ", {$expiry['failed']} could not be written to their seat's inbox")
+                .($expiry['dropped'] === 0 ? '' : ", dropped {$expiry['dropped']} undelivered past the give-up ceiling");
+        } catch (Throwable $e) {
+            $failed[] = 'expiring awaits failed: '.RedactedErrorText::of($e);
+        }
+        if ($failed !== []) {
+            throw new RuntimeException('ci_await sweep: '.implode('; ', [...$failed, ...$done]));
+        }
 
-        return JobOutcome::ok("expired {$expired} ci_await(s); re-read {$retried} head(s) whose last read failed or whose registration read was deferred");
+        return JobOutcome::ok(implode('; ', $done));
     }
 
     /**
@@ -80,7 +100,7 @@ final class CiAwaitSweepJob implements JobHandler
         try {
             $posture = JobsConfig::fromConfig();
             if (! $posture->enabled) {
-                return 'BRIDGE_JOBS_ENABLED=false — no periodic job runs on this install, so no await expires and no failed read is retried on a clock';
+                return 'BRIDGE_JOBS_ENABLED=false — no periodic job runs on this install, so no await expires and no head is read on a clock';
             }
             if ($posture->problem !== null) {
                 return 'the job registry can run no pass on this install, so no await expires: '.$posture->problem;
@@ -110,7 +130,7 @@ final class CiAwaitSweepJob implements JobHandler
             intervalS: 300,
             owner: 'bridge',
             docsRef: 'docs/board-tools.md#ci_await-and-ci_await_cancel',
-            justification: 'an await whose CI never settles has no arrival to gate on, so only a clock can expire it and tell the waiting seat',
+            justification: 'an await no arrival will touch again (a lost or lagging delivery, CI that never finishes) can only be read again or expired on a clock',
         );
     }
 }

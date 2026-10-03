@@ -1533,7 +1533,7 @@ register nor cancel another's.
 **What `ci_await` does, in order:**
 
 1. Refuses a repo **this install receives no GitHub events for** — no agent on this install
-   subscribes to it — as `repo_not_received`, because nothing would ever arrive to settle it. Poll
+   subscribes to it — as `repo_not_received`, because no completed-run delivery would ever arrive for it. Poll
    with `ci-read` there.
 2. Refuses a NEW await past the per-seat cap, `BRIDGE_CI_AWAIT_MAX_PER_SEAT` (default 50), as
    `too_many_awaits`. Refreshing a head you already await is never capped. The count and the store
@@ -1546,15 +1546,14 @@ register nor cancel another's.
 4. **Reads the head's runs once**, so CI that already finished settles now — unless:
    - a read of the same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60;
      `0` always reads): it answers `waiting` with `read_skipped: "cooldown"` and sends no request.
-     The cooldown means the head was read recently, **not that your await was part of that read**
-     (a read settles only the awaits it loaded, and yours may have been stored while it ran), so a
-     skipped registration is marked and **never depends on a concurrent read to wake it**: a
-     concurrent settle may wake it sooner, and at the latest the next `ci-await-sweep` pass (every
-     300 s by default) reads the head, settling it if every run is terminal;
+     That is a cost knob only: the sweep reads your head like any other (*The sweep* below);
    - the head is **rate limited** until a known instant (see *Read failures*): it answers `waiting`
      with `read_skipped: "rate_limited"` and `retry_not_before`, sends no request, and never answers
      `settled`. Your await carries the limit's error and reset like the rest of the head's, so the
      sweep reads it after the reset.
+
+   Whatever this read answers, nothing depends on it: an await it leaves `waiting` is settled by a
+   later delivery's read or by the sweep.
 
 The answer:
 
@@ -1570,21 +1569,22 @@ The answer:
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
   "read_skipped": "cooldown", // only when no read was made: "cooldown" or "rate_limited"
-  "retry_not_before": "…",   // only with read_skipped: "rate_limited" — when the head is read again
+  "retry_not_before": "…",   // only when the head is rate limited (skipped, or your own read was) — when it is read again
   "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
 }
 ```
 
-- **`settled`** — every run was already terminal: `ci_settled` has been sent to you and nothing is
-  stored.
+- **`settled`** — every run was already terminal, or a concurrent read settled your await while you
+  registered: `ci_settled` has been sent to you and nothing is stored.
 - **`waiting`** — stored; at least one run is not finished, **or there are no runs yet** (CI not
   queued yet looks exactly like that, so an empty list is never treated as settled).
-- **`unmeasured`** — stored, but the read failed, or evaluating the stored await failed (an inbox
-  that could not be written, a database error after the store); `read_error` says which. Nothing is
-  sent; see *Read failures* below.
+- **`unmeasured`** — stored, but the read failed (with `retry_not_before` when GitHub rate limited
+  it), every run is terminal but `ci_settled` could not be written to your inbox, or evaluating the
+  stored await failed (a database error after the store); `read_error` says which. Nothing is sent
+  yet; the sweep reads the head again (see *Read failures* and *The sweep* below).
 - **`warning`** — this bridge has no stored `workflow_run` delivery from that repo. If the repo's
-  webhook does not send **Workflow runs** to this bridge, nothing settles the await and it ends in
-  `ci_await_expired`. None stored is not proof — retention prunes old deliveries and a new webhook has
+  webhook does not send **Workflow runs** to this bridge, only the sweep's own reads settle the
+  await — at least one sweep interval after CI finishes, and only while the sweep runs. None stored is not proof — retention prunes old deliveries and a new webhook has
   sent none yet. `bridge:check`'s `ci_await.awaits` leg reports the same per awaited repo.
 
 **How it settles.** On each `workflow_run.completed` delivery whose repo and `head_sha` match at
@@ -1608,6 +1608,8 @@ indexed query and no GitHub request, so a green push to `dev` wakes nobody. ⭐ 
 under concurrency:** two deliveries for a head's last two runs can both read "all terminal"; each
 emit first deletes its await row in a transaction and only the one whose delete removed it emits.
 The same claim decides between a settle and an expiry, so an await gets one or the other, never both.
+⚠ **A delivery's read settles only the awaits it loaded before reading**, so an await stored while it
+read — or one whose own registration read saw a list that still lagged — is left for the sweep.
 
 **The verdict is `ci-read`'s, never the bridge's.** `ci_settled` means only *every listed run has
 finished*. It carries each run's conclusion as data, and **it does not say green or red**: a verdict
@@ -1618,9 +1620,8 @@ definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` *
 or with `Retry-After`, GitHub's secondary limit), a 5xx, no answer, no GitHub read
 token, a 200 whose body is not a run list, a list that does not end within the read's page bound, or
 a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
-logged naming it, and the head is read again on its next completed run and by the `ci-await-sweep`
-job. A rate-limited read that names when its quota returns (`X-RateLimit-Reset`, else `Retry-After`)
-records that instant on every await on the head, and **no read of that head is made before it** — not
+logged naming it, and the head is read again on its next completed run and by the sweep. A
+rate-limited read that names when its quota returns records that instant on every await on the head, and **no read of that head is made before it** — not
 by a delivery, a registration or the sweep; the error says until when, and a registration in that
 window answers `read_skipped: "rate_limited"`. The instant is `Retry-After` when the refusal carries
 one (seconds or an HTTP date — GitHub's secondary limit, which can also carry a primary reset an hour
@@ -1629,17 +1630,38 @@ await ends in `ci_await_expired` carrying the last error.
 
 **Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
 anything else refuses every `ci_await` as `install_fault.ci_await_config_invalid` and fails `bridge:check`,
-as does a cap or cooldown outside its range).
-The `ci-await-sweep` periodic job, declared at the first registration, emits `ci_await_expired` once
-per await past its expiry and re-reads heads whose last read failed or that hold a registration
-whose own read was skipped (a one-shot mark that a read clears) — never a head whose read answered
-and holds none, which is re-read only when its next run completes. It runs on the job registry's two
-ingresses ([`periodic-jobs.md`](periodic-jobs.md)), so expiry lands at the first job pass after
-`expires_at`: on a busy install with the next webhook, on a silent one only with `bridge:tick`.
+as does a cap, cooldown or sweep read cap outside its range). `ci_await_expired` is emitted by the
+sweep, at the first pass after `expires_at`.
+
+**The sweep — what every await relies on.** A delivery settles only the awaits its read loaded, a
+registration's read can see a list that lags, a final delivery can be lost, and CI may never finish:
+in each case no further event touches the await. So the `ci-await-sweep` periodic job, declared at
+the first registration, is **level-triggered** — each pass first reads up to
+`BRIDGE_CI_AWAIT_SWEEP_READS` (default 10) unexpired heads whose **oldest** read is at least one sweep
+interval old (or that were never read), oldest first, skipping a head that is rate limited, and
+settles every await on a head it finds all terminal; then it emits `ci_await_expired` once per await
+past its expiry. A head is read once per pass however many seats await it. Deliveries, the read
+cooldown, `retry_not_before` and the claim only make a settle sooner or cheaper.
+⚠ **The sweep runs only when a job pass runs**: on the job registry's two ingresses
+([`periodic-jobs.md`](periodic-jobs.md)) — with the next webhook this install receives, or with
+`bridge:tick` on a silent one. With no pass, nothing here is read or expired.
+
+**What a seat can rely on.** One terminal event per await — `ci_settled` or `ci_await_expired`, never
+both. It is written to your inbox **at least once**, idempotent by its line id
+(`<kind>:<await id>`, which `bridge:inbox` collapses), and pushed live once after that line is
+written. ⚠ The live push carries **no** line id and the reference channel server forwards every push
+it accepts, so nothing deduplicates the live path against the inbox: a seat reading both sees the
+wake on each. Once every run on a head is terminal, `ci_settled` comes at the latest from the first
+sweep pass that starts at least one sweep interval after the head's oldest read — later by one pass
+for every `BRIDGE_CI_AWAIT_SWEEP_READS` eligible heads read before it — provided the sweep runs. An event
+that cannot be written to your inbox keeps the await, logged naming you and shown by `bridge:check`,
+and is tried again on later passes; an expiry that still cannot be written
+`CiAwaitService::EMIT_GIVE_UP_AFTER_SECONDS` past `expires_at` is dropped undelivered, logged as an
+error.
 
 **The events.** Both are bridge-authored intents (`provider: "bridge"`, null actor), **staged to the
 inbox and pushed live** — the await is gone once emitted, so the inbox line is what reaches a seat
-whose channel was down. `subject_id` is `ci:<repo>@<head_sha>`. The payloads and the inbox shape are
+whose channel was down (*What a seat can rely on* above). `subject_id` is `ci:<repo>@<head_sha>`. The payloads and the inbox shape are
 [`consumer-guide.md`](consumer-guide.md) § *Bridge-authored intents*'s to state.
 
 **Limits, named:**
@@ -1652,11 +1674,8 @@ whose channel was down. `subject_id` is `ci:<repo>@<head_sha>`. The payloads and
   awaited head's SHA at all is **not measured here**.
 - ⚠ **Runs not yet created.** A registration made before GitHub has created every run for the push
   can see some runs finished and others absent; it settles only when what is listed is all terminal.
-- ⚠ **A lost final delivery.** If the delivery for the last run to finish never reaches the bridge,
-  nothing re-reads a head whose read answered, and the await ends in `ci_await_expired`.
-  Re-registering reads the head again (outside the read cooldown).
 - ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
-  read fails as inconsistent and the await waits for the next delivery or the sweep. No case of it is
+  read fails as inconsistent and the await waits for the next delivery or sweep read. No case of it is
   measured. Taken from GitHub's REST documentation, not checked: that `total_count` counts exactly
   what the pages carry, and that a new run is listed first (newest first), which is what the page-1
   re-read relies on. A single-page list is checked only against its own `total_count`, and a run
@@ -1667,9 +1686,12 @@ whose channel was down. `subject_id` is `ci:<repo>@<head_sha>`. The payloads and
 - ⚠ **Installs with several bridges.** An await lives on the bridge the seat called; only that
   bridge's deliveries settle it.
 
-**Cost:** one read of the head at registration (none inside the read cooldown or a rate limit), and
-one per completed run on an awaited head — each one request per 100 runs, plus one more for the page-1
-re-read when the list spans more than one page. Nothing for heads nobody awaits.
+**Cost:** one read of the head at registration (none inside the read cooldown or a rate limit), one
+per completed run on an awaited head, and the sweep's: at most `BRIDGE_CI_AWAIT_SWEEP_READS` × 3600 /
+the `ci-await-sweep` interval (seconds) head reads per hour, install-wide — a head counts once however
+many seats await it, and one read within the interval is not repeated. Each read is one request per
+100 runs, plus one more for the page-1 re-read when the list spans more than one page. Nothing for
+heads nobody awaits.
 
 ## Errors
 

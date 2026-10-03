@@ -22,7 +22,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $last_read_at
  * @property string|null $last_error
  * @property Carbon|null $retry_not_before
- * @property bool $read_deferred
+ * @property Carbon|null $emit_failed_at
  */
 class CiAwait extends Model
 {
@@ -38,7 +38,7 @@ class CiAwait extends Model
         'last_read_at',
         'last_error',
         'retry_not_before',
-        'read_deferred',
+        'emit_failed_at',
     ];
 
     protected $casts = [
@@ -46,6 +46,6 @@ class CiAwait extends Model
         'expires_at' => 'datetime',
         'last_read_at' => 'datetime',
         'retry_not_before' => 'datetime',
-        'read_deferred' => 'boolean',
+        'emit_failed_at' => 'datetime',
     ];
 }
