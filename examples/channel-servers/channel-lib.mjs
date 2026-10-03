@@ -255,13 +255,28 @@ export function sshRoundTrip({ target, key = '', port = '', input, deadlineMs, s
 // reason ("unexpected redirect") is on `.cause`, one level down, and is lost if a caller reads
 // only `.message` (review r2 minor 5).
 //
-// Any URL userinfo in the text is withheld: `fetch` refuses a URL carrying credentials with a
-// message that quotes the whole URL, password included, and this text reaches a tool result or a
-// script's stderr (canon #20).
+// It quotes the error as raised and does no URL surgery: the endpoint a caller hands `fetch` has
+// already been parsed and refused when it carries a credential (`boardToolsTransport`), so
+// `fetch`'s own messages that quote a URL — "Failed to parse URL from …", "…includes
+// credentials: …" — cannot occur for it. A caller printing an endpoint itself uses `redactUrl`.
 export function errorDetail(err) {
   const message = err && err.message ? err.message : String(err);
   const cause = err && err.cause && err.cause.message ? err.cause.message : null;
-  return (cause ? `${message}: ${cause}` : message).replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/?#@]*@/g, '$1[credential withheld]@');
+  return cause ? `${message}: ${cause}` : message;
+}
+
+// The ONE way an endpoint reaches an output stream (canon #20): origin + path, parsed by the
+// WHATWG parser `fetch` itself uses — never userinfo, query or fragment, any of which can carry a
+// credential — and a fixed placeholder for a value that does not parse, never the value.
+export const UNPARSEABLE_ENDPOINT = '<unparseable endpoint>';
+
+export function redactUrl(raw) {
+  try {
+    const u = new URL(raw);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return UNPARSEABLE_ENDPOINT;
+  }
 }
 
 // One HTTP POST to a bridge door with the agent's bearer. Resolves {status, ok, text}; REJECTS
@@ -300,7 +315,11 @@ export async function httpRoundTrip({ url, token, body, signal }) {
 // A seat's board-tools transport, from the environment its channel server runs with — the ONE
 // statement of the rules, read by the channel server and by bin/bridge-board-call.mjs:
 //   { kind: 'ssh', target, key, port }   BRIDGE_TOOLS_SSH_TARGET (bearer-free, DR2-5)
-//   { kind: 'http', url, token }         BRIDGE_TOOLS_ENDPOINT and a bearer `resolveToolsToken` finds
+//   { kind: 'http', url, token }         BRIDGE_TOOLS_ENDPOINT, a URL with no credential in it, and
+//                                        a bearer `resolveToolsToken` finds
+//   { kind: 'invalid', why }             an endpoint and a bearer, but an endpoint `fetch` would
+//                                        refuse: it does not parse, or it carries userinfo. `why`
+//                                        never quotes the value, which may hold a credential.
 //   { kind: 'conflict' }                 both set: a seat has exactly one transport
 //   { kind: 'incomplete', missing }      neither usable; `missing` names the settings to set
 // Pure but for `resolveToolsToken`'s read of a configured token FILE, so a rotated file is read at
@@ -316,6 +335,15 @@ export function boardToolsTransport(env) {
   }
   const token = resolveToolsToken(env);
   if (endpoint && token) {
+    let url;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      return { kind: 'invalid', why: 'BRIDGE_TOOLS_ENDPOINT is not a URL that parses (its value is not shown: it may carry a credential)' };
+    }
+    if (url.username || url.password) {
+      return { kind: 'invalid', why: `BRIDGE_TOOLS_ENDPOINT carries a credential in its userinfo, which fetch refuses to send; the bearer belongs in BRIDGE_TOOLS_TOKEN or BRIDGE_TOOLS_TOKEN_FILE (endpoint: ${redactUrl(endpoint)})` };
+    }
     return { kind: 'http', url: endpoint, token };
   }
   return {

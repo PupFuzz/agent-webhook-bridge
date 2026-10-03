@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // bridge-board-call — call ONE board tool from a script or a hook, as this seat (card#11151, DL-451).
 //
-//   bridge-board-call [--channel <name>] [--project-dir <dir>] <tool> ['<json-args>']
+//   bridge-board-call [--channel <name>] [--project-dir <dir>] [--deadline-ms <n>] <tool> ['<json-args>']
 //
 // It sends the same request the channel server sends for an MCP tools/call, over the same
 // transport and credential, and prints the bridge's answer. It takes NO identity argument: the
@@ -24,12 +24,12 @@
 // server reports to the fleet ledger.
 //
 // EXIT — the contract, and why each answer lands where it does, is owned by README.md § Calling a
-// board tool from a script: 0 ok · 1 the tool refused · 2 the call reached no tool (transport, auth,
-// install) · 3 unmeasured · 4 usage.
+// board tool from a script: 0 ok · 1 the tool refused · 2 the call provably reached no tool
+// (configuration, transport, auth, install) · 3 unmeasured · 4 usage.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sshRoundTrip, httpRoundTrip, boardToolsTransport, scrubSnippet, errorDetail, readClientVersion } from '../channel-lib.mjs';
+import { sshRoundTrip, httpRoundTrip, boardToolsTransport, redactUrl, scrubSnippet, errorDetail, readClientVersion } from '../channel-lib.mjs';
 
 const EXIT_OK = 0;
 const EXIT_REFUSED = 1;
@@ -191,6 +191,9 @@ function transportOf(env, source) {
   if (t.kind === 'conflict') {
     throw new Stop(EXIT_NO_TOOL, `BRIDGE_TOOLS_SSH_TARGET and BRIDGE_TOOLS_ENDPOINT are both set (read from ${source}) — a seat has exactly one board-tools transport`);
   }
+  if (t.kind === 'invalid') {
+    throw new Stop(EXIT_NO_TOOL, `${t.why} (read from ${source}); nothing was sent`);
+  }
   if (t.kind === 'incomplete') {
     throw new Stop(
       EXIT_NO_TOOL,
@@ -200,21 +203,6 @@ function transportOf(env, source) {
     );
   }
   return t;
-}
-
-/** A URL for an output stream: any userinfo (a credential) removed. */
-function shown(url) {
-  try {
-    const u = new URL(url);
-    if (u.username || u.password) {
-      u.username = '';
-      u.password = '';
-      return `${u.toString()} (credential in the URL withheld)`;
-    }
-    return u.toString();
-  } catch {
-    return '(BRIDGE_TOOLS_ENDPOINT, not a URL)';
-  }
 }
 
 /** The body as a JSON object, or null. */
@@ -251,18 +239,16 @@ function unmeasured(what, raw) {
 // that dropped after the forced command started ("closed by remote host", "Broken pipe") — the
 // same may-have-landed case as a reset after an HTTP request — and a bridge process that died
 // with 255 before its envelope. Those, and a 255 that says nothing, are unmeasured.
+// Each pattern is anchored on a whole line in the shape OpenSSH's client writes, so the far end's
+// own stderr — a forced command mentioning "Connection refused" about its database — does not
+// match. A remote process that prints one of these exact lines can still; that bound is DL-451's.
 const SSH_BEFORE_SESSION = [
-  /Connection refused/,
-  /Could not resolve hostname/,
-  /Name or service not known/,
-  /Temporary failure in name resolution/,
-  /No route to host/,
-  /Network is unreachable/,
-  /connect to host .* port \d+: Connection timed out/,
-  /Host key verification failed/,
-  /Permission denied \(/,
-  /Too many authentication failures/,
-  /Unable to negotiate with/,
+  /^ssh: connect to host \S+ port \d+: (Connection refused|No route to host|Network is unreachable|Connection timed out)\r?$/m,
+  /^ssh: Could not resolve hostname \S+: .+$/m,
+  /^Host key verification failed\.\r?$/m,
+  /^\S+: Permission denied \([^)]*\)\.\r?$/m,
+  /^Received disconnect from \S+ port \d+:\d+: Too many authentication failures/m,
+  /^Unable to negotiate with \S+ port \d+: /m,
 ];
 
 async function overSsh(t, payload, deadlineMs) {
@@ -307,7 +293,7 @@ function neverSent(err) {
 }
 
 async function overHttp(t, payload, deadlineMs) {
-  const url = shown(t.url);
+  const url = redactUrl(t.url);
   const signal = AbortSignal.timeout(deadlineMs);
   let res;
   try {
@@ -318,10 +304,6 @@ async function overHttp(t, payload, deadlineMs) {
     }
     if (err && err.status !== undefined) {
       return unmeasured(`${url} answered HTTP ${err.status} and its body could not be read (${errorDetail(err)})`, '');
-    }
-    // fetch refuses a URL carrying credentials before it opens a connection.
-    if (/includes credentials/.test(String(err && err.message))) {
-      return { code: EXIT_NO_TOOL, stderr: `could not call ${url}: ${errorDetail(err)}` };
     }
     return neverSent(err)
       ? { code: EXIT_NO_TOOL, stderr: `could not reach ${url}: ${errorDetail(err)}` }

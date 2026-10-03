@@ -37,6 +37,7 @@ import {
   satisfiesEngines,
   checkPackPath,
   clientDoorUrl,
+  doorFromEnv,
   renameWithRetry,
   shimFor,
   clipBytes,
@@ -1733,4 +1734,11 @@ test('a bootstrap that runs past its budget stops before its next irreversible s
   assert.ok(!fs.existsSync(path.join(root, 'staging')), 'the staged pack is removed');
   assert.ok(!fs.existsSync(path.join(root, '.lock')), 'the lock is released');
   assert.equal(logObjs(root).at(-1).action, 'fail');
+});
+
+test('doorFromEnv never quotes an endpoint\'s credential or query (card#11151 review r2)', () => {
+  assert.throws(() => doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://u:pa/SECRETTAIL@127.0.0.1/agent-tools/call', BRIDGE_TOOLS_TOKEN: 'b' }), (err) => !/SECRETTAIL|u:pa/.test(err.message) && /not a URL that parses/.test(err.message));
+  assert.throws(() => doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://u:hunter2@127.0.0.1/agent-tools/call', BRIDGE_TOOLS_TOKEN: 'b' }), (err) => !/hunter2/.test(err.message) && /userinfo/.test(err.message));
+  assert.throws(() => doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1/elsewhere?token=SECRETQ', BRIDGE_TOOLS_TOKEN: 'b' }), (err) => !/SECRETQ/.test(err.message));
+  assert.equal(doorFromEnv({ BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1:9/agent-tools/call?token=SECRETQ', BRIDGE_TOOLS_TOKEN: 'b' }).source, 'bridge-http:http://127.0.0.1:9/agent-tools/client');
 });

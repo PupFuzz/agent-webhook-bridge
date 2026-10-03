@@ -49,6 +49,7 @@ import {
   deriveMeta,
   relayBridgeResponse,
   boardToolsTransport,
+  redactUrl,
   sshRoundTrip,
   httpRoundTrip,
   launchIdentity,
@@ -135,8 +136,10 @@ function shouldAdvertiseTools() {
   // Unset: observable-intent default. The ssh branch is BEARER-FREE (DR2-5) — an ssh
   // target alone enables it, with NO token term (an `&& token` here would leave an
   // ssh-only seat dark). The HTTP branch still needs the endpoint line AND a bearer.
+  // `invalid` is advertised too, as the endpoint+bearer rule always did: a call then refuses,
+  // naming the fault, rather than the seat going dark with no tools and no reason.
   const kind = boardToolsTransport(process.env).kind;
-  return kind === 'ssh' || kind === 'http';
+  return kind === 'ssh' || kind === 'http' || kind === 'invalid';
 }
 
 const TOOLS_ENABLED = shouldAdvertiseTools();
@@ -897,18 +900,19 @@ async function callToolOverSsh(payload) {
   );
 }
 
-// HTTP loopback transport: POST the call body with the per-agent bearer.
-async function callToolOverHttp(payload, token) {
+// HTTP loopback transport: POST the call body with the per-agent bearer. The endpoint reaches the
+// tool result only through `redactUrl` — this text lands in the agent's transcript (canon #20).
+async function callToolOverHttp(payload, url, token) {
   try {
-    const res = await httpRoundTrip({ url: TOOLS_ENDPOINT, token, body: payload });
-    return relayBridgeResponse(res.text, res.ok, TOOLS_ENDPOINT);
+    const res = await httpRoundTrip({ url, token, body: payload });
+    return relayBridgeResponse(res.text, res.ok, redactUrl(url));
   } catch (err) {
     return {
       isError: true,
       content: [
         {
           type: 'text',
-          text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${errorDetail(err)}`,
+          text: `could not reach the bridge tool endpoint ${redactUrl(url)}: ${errorDetail(err)}`,
         },
       ],
     };
@@ -1011,6 +1015,10 @@ if (ADVERTISE_ANY_TOOL) {
       return await callToolOverSsh(payload);
     }
 
+    if (transport.kind === 'invalid') {
+      return { isError: true, content: [{ type: 'text', text: `${transport.why}. No call was made to the bridge.` }] };
+    }
+
     if (transport.kind !== 'http') {
       const { missing } = transport;
       return {
@@ -1030,7 +1038,7 @@ if (ADVERTISE_ANY_TOOL) {
     // Still a dumb pipe with the third key: `client_version` is this server's own manifest
     // version (read once, above), NOT anything derived from the call — no board logic, no
     // retry, and nothing about the request influences it.
-    return await callToolOverHttp(payload, transport.token);
+    return await callToolOverHttp(payload, transport.url, transport.token);
   });
 }
 
@@ -1039,7 +1047,7 @@ await mcp.connect(new StdioServerTransport());
 if (TOOLS_ENABLED) {
   const target = TOOLS_SSH_TARGET
     ? `ssh:${TOOLS_SSH_TARGET}`
-    : TOOLS_ENDPOINT || '(BRIDGE_TOOLS_ENDPOINT unset)';
+    : TOOLS_ENDPOINT ? redactUrl(TOOLS_ENDPOINT) : '(BRIDGE_TOOLS_ENDPOINT unset)';
   const why =
     CHANNEL_TOOLS_ENV === '1'
       ? 'BRIDGE_CHANNEL_TOOLS=1'

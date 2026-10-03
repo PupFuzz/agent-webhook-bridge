@@ -478,3 +478,40 @@ for (const [stderr, code, label] of [
     assert.equal(r.stdout, '');
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Review round 2 (PR #852): one URL-redaction primitive. An endpoint is parsed before anything is
+// sent; a value that does not parse, or carries a credential, is a configuration fault (exit 2)
+// and is never echoed; a printed endpoint is origin + path only.
+
+async function closedPort() {
+  const s = http.createServer();
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const port = s.address().port;
+  await new Promise((r) => s.close(r));
+  return port;
+}
+
+for (const [label, endpoint, code] of [
+  ['an @ inside the password', (p) => `http://u:hunter2@SECRETTAIL@127.0.0.1:${p}/agent-tools/call`, 2],
+  ['an unparseable credentialed endpoint', (p) => `http://u:pa/SECRETTAIL@127.0.0.1:${p}/agent-tools/call`, 2],
+  ['whitespace in the userinfo', (p) => `http://u:pa SECRETTAIL@127.0.0.1:${p}/agent-tools/call`, 2],
+  ['a secret in the query string', (p) => `http://127.0.0.1:${p}/agent-tools/call?token=SECRETQ`, 2],
+]) {
+  test(`endpoint with ${label}: exit ${code}, and no part of the secret on stdout or stderr`, async (t) => {
+    const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: endpoint(await closedPort()), BRIDGE_TOOLS_TOKEN: 'tkn' } });
+
+    assert.equal(r.code, code, r.stderr);
+    const out = r.stdout + r.stderr;
+    for (const secret of ['hunter2', 'SECRETTAIL', 'SECRETQ', 'pa SECRET', 'u:pa']) {
+      assert.ok(!out.includes(secret), `${secret} leaked: ${out}`);
+    }
+  });
+}
+
+test('ssh: exit 255 whose stderr carries the REMOTE side\'s "Connection refused" exits 3', async (t) => {
+  const ssh = fakeSsh(t, { exit: 255, stderr: 'bridge:tools-call: could not reach the database: SQLSTATE[HY000] [2002] Connection refused\n' });
+  const r = await run(t, START, { env: { ...ssh.env, BRIDGE_TOOLS_SSH_TARGET: TARGET } });
+
+  assert.equal(r.code, 3, r.stderr);
+});

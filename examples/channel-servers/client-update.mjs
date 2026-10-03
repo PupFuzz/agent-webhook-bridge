@@ -70,7 +70,7 @@ import {
   resolveInstalled,
   REQUIRED_CLIENT_FILES,
 } from './entry.mjs';
-import { sshRoundTrip, httpRoundTrip, resolveToolsToken, scrubSnippet, errorDetail } from './channel-lib.mjs';
+import { sshRoundTrip, httpRoundTrip, boardToolsTransport, redactUrl, scrubSnippet, errorDetail } from './channel-lib.mjs';
 
 // ⚑ PINNED PROTOCOL CONSTANTS, checked against the bridge by
 // tests/Unit/ClientUpdate/ClientReportLimitsLockstepTest.php: `client_report` refuses a report
@@ -450,10 +450,10 @@ export function clientDoorUrl(endpoint) {
   try {
     url = new URL(endpoint);
   } catch {
-    throw new Failure(`BRIDGE_TOOLS_ENDPOINT ${JSON.stringify(endpoint)} is not a URL`);
+    throw new Failure('BRIDGE_TOOLS_ENDPOINT is not a URL (its value is not shown: it may carry a credential)');
   }
   if (!url.pathname.endsWith('/agent-tools/call')) {
-    throw new Failure(`BRIDGE_TOOLS_ENDPOINT ${endpoint} does not end in /agent-tools/call, so the update door's address (…/agent-tools/client beside it) cannot be derived from it`);
+    throw new Failure(`BRIDGE_TOOLS_ENDPOINT ${redactUrl(endpoint)} does not end in /agent-tools/call, so the update door's address (…/agent-tools/client beside it) cannot be derived from it`);
   }
   url.pathname = `${url.pathname.slice(0, -'call'.length)}client`;
   url.search = '';
@@ -487,19 +487,24 @@ function interpret(op, text, legOk, legWhy, serverSide) {
  * single update path).
  */
 export function doorFromEnv(env) {
-  const target = env.BRIDGE_TOOLS_SSH_TARGET || '';
-  const endpoint = env.BRIDGE_TOOLS_ENDPOINT || '';
-  if (target && endpoint) {
+  // channel-lib's `boardToolsTransport` is the one statement of the transport rules; the refusals
+  // below are this door's own words for its outcomes.
+  const transport = boardToolsTransport(env);
+  if (transport.kind === 'conflict') {
     throw new Failure('BRIDGE_TOOLS_SSH_TARGET and BRIDGE_TOOLS_ENDPOINT are both set; the update door is reached through exactly one board-tools transport');
   }
-  if (target) {
+  if (transport.kind === 'invalid') {
+    throw new Failure(`${transport.why}, so the update door cannot be asked`);
+  }
+  if (transport.kind === 'ssh') {
+    const { target, key, port } = transport;
     return {
       source: `bridge-ssh:${target}`,
       async call(body, signal, deadlineMs) {
         const r = await sshRoundTrip({
           target,
-          key: env.BRIDGE_TOOLS_SSH_KEY || '',
-          port: env.BRIDGE_TOOLS_SSH_PORT || '',
+          key,
+          port,
           input: JSON.stringify(body),
           deadlineMs,
           signal,
@@ -516,24 +521,26 @@ export function doorFromEnv(env) {
       },
     };
   }
-  if (endpoint) {
-    const url = clientDoorUrl(endpoint);
-    const token = resolveToolsToken(env);
-    if (!token) {
-      throw new Failure('BRIDGE_TOOLS_ENDPOINT is set but no bearer resolves (BRIDGE_TOOLS_TOKEN, BRIDGE_TOOLS_TOKEN_FILE or BRIDGE_CHANNEL_TOKEN), so the update door cannot be asked');
-    }
+  if (transport.kind === 'http') {
+    const url = clientDoorUrl(transport.url);
+    const token = transport.token;
+    // The source label lands in the install log, which is reported to the bridge: redacted, like
+    // every printed endpoint (canon #20).
     return {
-      source: `bridge-http:${url}`,
+      source: `bridge-http:${redactUrl(url)}`,
       async call(body, signal) {
         let r;
         try {
           r = await httpRoundTrip({ url, token, body: JSON.stringify(body), signal });
         } catch (err) {
-          throw new Failure(`bridge unreachable (${url}: ${errorDetail(err)})`);
+          throw new Failure(`bridge unreachable (${redactUrl(url)}: ${errorDetail(err)})`);
         }
         return interpret(body.op, r.text, r.ok, () => `HTTP ${r.status}`, r.status >= 500);
       },
     };
+  }
+  if (env.BRIDGE_TOOLS_ENDPOINT) {
+    throw new Failure('BRIDGE_TOOLS_ENDPOINT is set but no bearer resolves (BRIDGE_TOOLS_TOKEN, BRIDGE_TOOLS_TOKEN_FILE or BRIDGE_CHANNEL_TOKEN), so the update door cannot be asked');
   }
   throw new Failure('no board-tools transport is configured (BRIDGE_TOOLS_SSH_TARGET or BRIDGE_TOOLS_ENDPOINT), so this seat cannot reach its bridge\'s update door');
 }

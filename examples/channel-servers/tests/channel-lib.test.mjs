@@ -14,7 +14,7 @@ import './live-state-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { scrubSnippet, relayBridgeResponse, deriveMeta, boardToolsTransport, httpRoundTrip, errorDetail } from '../channel-lib.mjs';
+import { scrubSnippet, relayBridgeResponse, deriveMeta, boardToolsTransport, httpRoundTrip, errorDetail, redactUrl } from '../channel-lib.mjs';
 
 // ---------------------------------------------------------------------------
 // scrubSnippet — credential redaction + truncation
@@ -239,10 +239,16 @@ test('httpRoundTrip: a body that fails AFTER the status arrived rejects with tha
   await assert.rejects(httpRoundTrip({ url, token: 't', body: '{}' }), (err) => err.status === 200);
 });
 
-test('errorDetail withholds URL userinfo, in the message and in its cause', () => {
-  const err = new TypeError('Request cannot be constructed from a URL that includes credentials: http://u:p4ss@h/x');
-  err.cause = new Error('at https://a:b@c.example/y');
-  const out = errorDetail(err);
-  assert.doesNotMatch(out, /p4ss|a:b/);
-  assert.match(out, /http:\/\/\[credential withheld\]@h\/x/);
+test('redactUrl: origin and path only — never userinfo, query or fragment; a fixed placeholder when it does not parse', () => {
+  assert.equal(redactUrl('http://u:hunter2@SECRETTAIL@127.0.0.1:8787/agent-tools/call?token=SECRETQ#frag'), 'http://127.0.0.1:8787/agent-tools/call');
+  assert.equal(redactUrl('http://u:pa/SECRETTAIL@127.0.0.1/x'), redactUrl('not a url'));
+  assert.doesNotMatch(redactUrl('http://u:pa/SECRETTAIL@127.0.0.1/x'), /SECRETTAIL|u:pa/);
+});
+
+test('boardToolsTransport: an endpoint that does not parse, or carries userinfo, is invalid and never quoted', () => {
+  for (const endpoint of ['http://u:pa/SECRETTAIL@127.0.0.1/agent-tools/call', 'http://u:hunter2@SECRETTAIL@127.0.0.1/agent-tools/call', '::not a url SECRETTAIL']) {
+    const t = boardToolsTransport({ BRIDGE_TOOLS_ENDPOINT: endpoint, BRIDGE_TOOLS_TOKEN: 'b' });
+    assert.equal(t.kind, 'invalid', endpoint);
+    assert.doesNotMatch(t.why, /SECRETTAIL|hunter2/);
+  }
 });
