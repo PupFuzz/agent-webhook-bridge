@@ -72,6 +72,7 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'App\Bridge\Exceptions\ChannelTokenException' => 'a local channel-token read fault, composed by ChannelToken from a path and a file-read fault',
         'App\Bridge\Exceptions\ConfigException' => 'composed by this app from its own config files and env; a wrap site that builds one from another exception is itself a site here',
         'App\Bridge\Exceptions\InsecureSecretPermsException' => 'a local secret-file mode check: the path and its octal mode',
+        'App\Bridge\Exceptions\PathResolvesToNoFileException' => 'an UnreadableFileException subtype raised only by UntrustedPathContents for a path that resolves to no bytes (a directory, FIFO, socket or device, a dangling or looping symlink chain): the subject, the path and its own fixed phrase',
         'App\Bridge\Exceptions\MalformedStateFileException' => 'a local state-file parse fault: the record\'s own path and a fixed problem phrase',
         'App\Bridge\Exceptions\ToolRefusalException' => 'composed by a board tool from its own refusal vocabulary',
         'App\Bridge\Exceptions\UnreadableFileException' => 'a local file read fault: the subject and path plus a fixed sentence — `permissionsFault()`\'s, or one of `UntrustedPathContents`\'s own refusals (file type, size, inode); both reads are `@`-suppressed, so no PHP warning text reaches it',
@@ -122,6 +123,8 @@ class ExceptionMessageRedactionCensusTest extends TestCase
         'Bridge/Support/ChannelToken.php::read#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         // `ClassifierResolver::for()`: a method named `for` tokenizes as T_FOR, so `SourceScan` keys its arm to the file scope.
         'Bridge/Support/ClassifierResolver.php::(file scope)#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Support/CoordConfigFile.php::read#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
+        'Bridge/Support/CoordConfigFile.php::read#2' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Support/RedactedErrorText.php::of#1' => 'the primitive\'s own non-RequestException branch — the one read that is the redaction, not a relay of it',
         'Bridge/Support/TokenFile.php::readTrimmed#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,
         'Bridge/Tools/BoardCorrectCardTool.php::installHoldTags#1' => self::BINDING_EXCLUDES_REQUEST_EXCEPTION,

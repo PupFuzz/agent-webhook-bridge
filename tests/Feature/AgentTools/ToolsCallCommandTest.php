@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CallingSeatSeal;
+use Tests\Support\CoordRosterFixture;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\Support\FakeToolsCallStdio;
 use Tests\TestCase;
@@ -34,6 +35,9 @@ class ToolsCallCommandTest extends TestCase
     use RefreshDatabase;
 
     private string $dir;
+
+    /** @var array<string, int> roster seat => kanban user id, for the agents written so far */
+    private array $rosterSeats = [];
 
     protected function setUp(): void
     {
@@ -64,7 +68,10 @@ class ToolsCallCommandTest extends TestCase
     /** An ssh-transport agent (no bearer — identity is the forced-command --agent). */
     private function writeSshAgent(string $name = 'me', int $board = 10, int $swimlane = 4, int $stage = 55): void
     {
-        File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n"
+        // Its kanban user id is its coord roster seat's (DL-450), never a YAML key.
+        $this->rosterSeats[$name] = crc32($name);
+        CoordRosterFixture::configure($this->dir.'/coord', $this->rosterSeats);
+        File::put($this->dir."/{$name}.yml", "subscriptions: []\n"
             ."board_tools:\n  transport: ssh\n  board_id: {$board}\n  swimlane_id: {$swimlane}\n  create_stage_id: {$stage}\n");
     }
 
@@ -150,7 +157,7 @@ class ToolsCallCommandTest extends TestCase
         // Force the config-error path (malformed agent YAML) — it writes a diagnostic
         // to STDERR — and assert stdout is EXACTLY one JSON object, no leading/trailing
         // non-JSON bytes.
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: [ : broken");
+        File::put($this->dir.'/me.yml', 'subscriptions: [ : broken');
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']));
 
         $this->assertSame(2, $r['exit']);
@@ -363,7 +370,7 @@ class ToolsCallCommandTest extends TestCase
         // An http-transport agent is NOT ssh-invocable (bridge-side config fault).
         $channelTokenFile = $this->dir.'/me-channel-token';
         $this->writeSecret($channelTokenFile, 'chan-value');   // gitleaks:allow — test fixture
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+        File::put($this->dir.'/me.yml', "subscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
             ."board_tools:\n  transport: http\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
@@ -373,7 +380,7 @@ class ToolsCallCommandTest extends TestCase
 
     public function test_disabled_agent_over_ssh_door_is_exit_2(): void
     {
-        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+        File::put($this->dir.'/me.yml', "subscriptions: []\n"
             ."board_tools:\n  enabled: false\n");
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']));
         $this->assertSame(2, $r['exit']);

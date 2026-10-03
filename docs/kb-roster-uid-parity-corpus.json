@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#10869: the bridge holds each agent's identity.kanban_user_id against it in `bridge:check`). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
+  "about": "The behavioural corpus for the bridge's PORT of the agent-board-toolkit's roster reader — which kanban user a coord roster says ONE seat is on ONE board instance (card#10868 Q1: the roster is the single store; card#11172 / DL-450: the bridge reads each agent's kanban user id from it at runtime). The toolkit OWNS the rule. tests/Unit/Support/RosterKanbanUserParityTest.php runs every vector against the port on every test run; bin/kb-owner-parity.sh runs the same vectors through a toolkit checkout's own `kb_owner_resolve`.",
   "mirror": {
     "repo": "PupFuzz/agent-webhook-bridge",
     "class": "App\\Bridge\\Support\\RosterKanbanUser",
@@ -28,7 +28,9 @@
     "method": "`bin/kb-owner-parity.sh --corpus docs/kb-roster-uid-parity-corpus.json --toolkit <that export>` executed every vector, every known divergence and every pinned constant against the authority named above; `--control` over the same export reported every perturbed expectation (exit 0). As a discrimination check the runner was also run against a copy of the same lib with the trailing-dot strip removed and the id floor lowered to 0, and reported those vectors DISAGREE.",
     "result": "exit 1 — agreed 29 · disagreed 3 · unmeasured 0, and the three disagreements are DELIBERATE: they are the integral-float vectors (`7.0`, `7.00`, `7e0`), published with the verdict `bad` that the toolkit's in-flight fix for card#10868 comment 7670 (a false self-takeover on a float id) is to return, and 11a6d150 still accepts them (`7e0` reaches it as `7`, since jq normalises the literal at parse). `--control` reported every perturbed row (exit 0). Re-take this measurement against the toolkit commit that lands that fix; exit 0 is then required, and the PHP_INT_MAX divergence is expected to converge with it and be deleted. Whoever adds, changes or deletes a vector re-takes this measurement over the whole corpus: the bridge-side test reds on the digest until they do."
   },
-  "mirror_local": {},
+  "mirror_local": {
+    "seatIds": "A bridge-local ENUMERATION with no far-end counterpart: the toolkit resolves one seat at a time (kb_owner_resolve) and never lists every seat's id. It adds no rule of its own — each entry is read through the same private verdict lookUp uses, first entry by name deciding — so the per-seat answer it relies on is the one the lookUp vectors hold; what it adds (which seats are enumerated) has nothing at the far end to compare against. Used by the bridge to refuse identity.peer_kanban_user_id that duplicates a seat's id (card#11172 / DL-450)."
+  },
   "mirrored_but_not_driven": {},
   "known_divergences": {
     "lookUp": [

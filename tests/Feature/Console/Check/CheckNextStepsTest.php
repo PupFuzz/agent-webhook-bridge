@@ -42,6 +42,9 @@ use Tests\TestCase;
  */
 class CheckNextStepsTest extends TestCase
 {
+    /** Every agent these fixtures configure is a coord roster seat with a kanban user (DL-450). */
+    private const SEATS = ['agent-a' => 1, 'agent-b' => 2, 'agent-c' => 3, 'agent-d' => 4, 'agent-e' => 5];
+
     use AssertsDocPointers;
     use BootsGoldenInstall;
     use RefreshDatabase;
@@ -167,6 +170,7 @@ class CheckNextStepsTest extends TestCase
         $this->bootGoldenInstall('next-steps-nothing-outstanding', function (GoldenInstall $i) {
             $this->fakeBoard();
             $i->boot()
+                ->roster(self::SEATS)
                 ->agent('agent-c', $this->boardToolsAgentYaml($i->path('bearer-c')))
                 ->secret('bearer-c', self::BEARER_C)
                 ->secret('kanban/writeback-token', 'wb-token');
@@ -206,6 +210,7 @@ class CheckNextStepsTest extends TestCase
         $this->bootGoldenInstall('next-steps-stale-client', function (GoldenInstall $i) {
             $this->fakeBoard();
             $i->boot()
+                ->roster(self::SEATS)
                 ->agent('agent-c', $this->boardToolsAgentYaml($i->path('bearer-c')))
                 ->secret('bearer-c', self::BEARER_C)
                 ->secret('kanban/writeback-token', 'wb-token');
@@ -240,7 +245,7 @@ class CheckNextStepsTest extends TestCase
         // DEFAULT-suppressed one: both end up `enabled === false`, and only
         // `suppressedReason` tells them apart.
         $this->bootGoldenInstall('next-steps-opt-out', function (GoldenInstall $i) {
-            $i->boot()->agent('agent-a', $this->kanbanOnlyAgentYaml()."board_tools:\n  enabled: false\n");
+            $i->boot()->roster(self::SEATS)->agent('agent-a', $this->kanbanOnlyAgentYaml()."board_tools:\n  enabled: false\n");
         });
 
         Artisan::call('bridge:check');
@@ -258,6 +263,7 @@ class CheckNextStepsTest extends TestCase
         $this->bootGoldenInstall('next-steps-exit-contract', function (GoldenInstall $i) {
             $this->fakeBoard();
             $i->boot()
+                ->roster(self::SEATS)
                 ->agent('agent-a', $this->kanbanOnlyAgentYaml())
                 ->agent('agent-b', $this->boardToolsAgentYaml($i->path('bearer-b')))
                 ->secret('bearer-b', self::BEARER_B)
@@ -309,6 +315,7 @@ class CheckNextStepsTest extends TestCase
             // for the other answer, and reaches this same state by the other sentence).
             $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
             $i->boot()
+                ->roster(self::SEATS)
                 ->agent('agent-a', $this->kanbanOnlyAgentYaml())
                 ->agent('agent-b', $this->boardToolsAgentYaml($i->path('bearer-b')))
                 ->agent('agent-c', $this->boardToolsAgentYaml($i->path('bearer-c')))
@@ -374,8 +381,7 @@ class CheckNextStepsTest extends TestCase
 
     private function kanbanOnlyAgentYaml(): string
     {
-        return "identity:\n  kanban_user_id: 137\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+        return "subscriptions:\n  - provider: kanban\n    scopes: [5]\n";
     }
 
     /**

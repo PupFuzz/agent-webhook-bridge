@@ -68,6 +68,7 @@ use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AgentKanbanUsers;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
@@ -429,7 +430,10 @@ class CheckCommand extends BridgeCommand
             $shared = AgentRegistry::readSharedIdentities($ctx->configDir);
             $ctx->sharedIdentities = $shared;
             if ($configs !== []) {
-                $ctx->registry = AgentRegistry::fromAgentConfigs($configs, $shared->identities);
+                // The kanban ids this run COULD read: the roster leg reports a roster it
+                // could not, so the registry here must not throw on one (DL-450).
+                $kanban = AgentKanbanUsers::of($configs);
+                $ctx->registry = AgentRegistry::fromAgentConfigs($configs, $shared->identities, $kanban->readable() ? $kanban->ids() : []);
             }
         }
 
