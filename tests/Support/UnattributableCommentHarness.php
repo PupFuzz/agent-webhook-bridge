@@ -75,7 +75,6 @@ trait UnattributableCommentHarness
             'bridge.config_dir' => $this->dir,
             'bridge.secret_dir' => $this->dir,
             'bridge.state_dir' => $this->dir.'/state',
-            'bridge.providers.github.credential_helper' => '',
             'bridge.protocol_invalid_label.repos' => ['Acme/Coord'],   // case differs from the scope on purpose
         ]);
         $this->origGhToken = getenv('GH_TOKEN');

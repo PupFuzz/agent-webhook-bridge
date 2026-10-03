@@ -67,14 +67,10 @@ return [
             // (e.g. ~/.config/coord/github-pat) without a per-install symlink;
             // when set it is AUTHORITATIVE (no GH_TOKEN fallback) so a wrong path
             // fails loud instead of silently resolving a different credential.
+            // Since DL-456 it is the LAST configured leg: a repo the coord credential
+            // store maps (coord_credentials_path below) or that declares a
+            // write_token_path in writeback.json never reads it.
             'token_path' => env('BRIDGE_GITHUB_TOKEN_PATH'),
-            // Store-native resolution (DL-185): when no explicit token file is
-            // placed, bridge:reconcile resolves a per-repo least-privilege PAT from
-            // the coordination store via this helper (git wire-format on
-            // stdin/stdout), keyed on the store's [git-credential-map]. Default is
-            // the framework helper name (PATH-resolved); an absolute path is used
-            // as-is; empty disables the store leg (falls back to GH_TOKEN).
-            'credential_helper' => env('BRIDGE_GITHUB_CREDENTIAL_HELPER', 'git-credential-coord'),
         ],
     ],
 
@@ -126,6 +122,30 @@ return [
     */
 
     'coord_config_path' => env('BRIDGE_COORD_CONFIG_PATH'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | The coord credential store (DL-456, card#11208)
+    |--------------------------------------------------------------------------
+    | The coordination framework's `credentials.ini`. The bridge reads two of its
+    | sections IN-PROCESS — `[git-credential-map]` (repo -> key) and
+    | `[github] <key>_file` (key -> a token file) — to pick each repo's GitHub
+    | token, under PHP-FPM and the CLI alike. No helper subprocess is run and no
+    | token is copied: the bridge reads the file the store points at.
+    |
+    | Unset ⇒ `credentials.ini` beside BRIDGE_COORD_CONFIG_PATH, which is where
+    | the framework keeps both. Must be ABSOLUTE, for the reason the roster path
+    | must (DL-450 Decision 1). The ambient $COORD_CREDENTIALS is never read: FPM
+    | does not inherit it, and a CLI-only answer would let bridge:check vouch for a
+    | store the receiver does not read.
+    |
+    | A store that is absent is an EMPTY store (every repo unmapped). A store that
+    | is present and cannot be read or parsed resolves NO token for any repo — it
+    | may map the repo, and the single token file must never stand in for a
+    | mapped repo's own token.
+    */
+
+    'coord_credentials_path' => env('BRIDGE_COORD_CREDENTIALS_PATH'),
 
     /*
     |--------------------------------------------------------------------------

@@ -29,11 +29,10 @@ class GitHubRepoProbeTest extends TestCase
         $this->dir = sys_get_temp_dir().'/repo-probe-'.uniqid();
         File::ensureDirectoryExists($this->dir);
         config([
-            // No conventional token file and no store helper on this host, so the
-            // GH_TOKEN leg resolves deterministically (source label = 'GH_TOKEN').
+            // No conventional token file and no store (the base TestCase names an absent
+            // one), so the GH_TOKEN leg resolves deterministically (source label = 'GH_TOKEN').
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.github.token_path' => null,
-            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
         ]);
         $this->origGhToken = getenv('GH_TOKEN');
         putenv('GH_TOKEN=ghp_probe');

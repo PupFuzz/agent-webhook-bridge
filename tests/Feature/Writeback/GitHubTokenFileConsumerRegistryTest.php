@@ -20,11 +20,13 @@ use Tests\TestCase;
  * `app/`, over comment-stripped tokens ({@see SourceScan}) — and each caller must be either
  * registered or ruled CLI-only here, with the reason.
  *
- * ⛔ BOTH METHODS ARE THE POPULATION, not `resolveFromFile()` alone. The promote-on-release leg
- * calls `resolveFor()` and is a file consumer all the same: under PHP-FPM the store helper and
- * `GH_TOKEN` resolve nothing (DL-184), so the file is all it ever gets. A census of
- * `resolveFromFile()` callers alone would have missed it; this one makes a new `resolveFor()`
- * caller choose a side.
+ * ⛔ BOTH METHODS ARE THE POPULATION. Since DL-456 every runtime leg calls `resolveFor()` (the
+ * repo's override, the coord credential store, the single file) and `resolveFromFile()` is the
+ * single file alone; a new caller of either must choose a side.
+ *
+ * ⛔ A RUNTIME LEG NEVER ASKS FOR `GH_TOKEN`. `resolveFor(…, ambient: true)` is the CLI form; a
+ * registered consumer that passed it would resolve a token in a shell `bridge:replay` that the
+ * receiver never has, and post as an identity the receiver never uses. Checked lexically below.
  *
  * WHAT IT DOES NOT DO: it cannot tell whether a class ruled CLI-only below has since been wired
  * into the runtime — the ruling is prose, and a reviewer reads it. It is lexical: a call through a
@@ -66,7 +68,7 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
             }
         }
         foreach ($callers['resolveFor'] as $class) {
-            if (! in_array($class, $registered, true) && ! array_key_exists($class, self::CLI_ONLY)) {
+            if (! in_array($class, $registered, true) && ! array_key_exists($class, self::CLI_ONLY) && $class !== self::THE_CHECK_ITSELF) {
                 $unregistered[] = "{$class} calls resolveFor()";
             }
         }
@@ -89,6 +91,16 @@ class GitHubTokenFileConsumerRegistryTest extends TestCase
         }
         foreach (array_keys(self::CLI_ONLY) as $class) {
             $this->assertContains($class, $callers['resolveFor'], "{$class} is ruled CLI-only but no longer calls resolveFor() — drop the ruling");
+        }
+    }
+
+    public function test_no_registered_consumer_asks_for_the_ambient_gh_token(): void
+    {
+        foreach (GitHubTokenFileCheck::CONSUMERS as $consumer) {
+            $file = app_path(str_replace('\\', '/', substr($consumer, strlen('App\\'))).'.php');
+            $words = array_column(SourceScan::significantTokens((string) file_get_contents($file)), 1);
+            $this->assertContains('resolveFor', $words, "the scan read {$file} and found no resolveFor call — the scan is broken, not the code");
+            $this->assertNotContains('ambient', $words, "{$consumer} runs in the receiver and must resolve as the receiver does — never with GH_TOKEN");
         }
     }
 

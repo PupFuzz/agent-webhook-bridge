@@ -2,130 +2,233 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\InsecureSecretPermsException;
+use App\Bridge\Support\CoordCredentialStore;
 use App\Bridge\Support\PathHelper;
+use App\Bridge\Support\ProcessIdentity;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\SecretScrubber;
 use App\Bridge\Support\TokenPath;
-use App\Bridge\Support\UntrustedText;
-use Illuminate\Support\Facades\Process;
-use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 
 /**
- * Resolves the GitHub read token bridge:reconcile uses to read PR state, per repo.
- * The SINGLE home of the token precedence (DL-184 core + DL-185 store-native) — both
- * bridge:reconcile and bridge:check consume this so their view of "is a token
- * available?" can never diverge from what reconcile actually does.
+ * Resolves the GitHub token for a repo — the ONE resolver every bridge leg that reaches GitHub uses:
+ * the receiver's writes (the DL-390 correlation comment, the DL-408 label), promote-on-release, and
+ * the CLI commands (`bridge:reconcile` among them). So `bridge:check` and the code it vouches for
+ * cannot disagree about which token a repo gets (DL-185, DL-456).
  *
- * Precedence (per repo, most-authoritative first):
- *   1. bridge.providers.github.token_path override — AUTHORITATIVE: read only that
- *      file; blank/missing → fail loud; NO store/env fallback (a wrong path must
- *      fail loud, not silently resolve a different credential). (DL-184)
- *   2. the conventional <secret_dir>/github/token file, when present. (DL-183/184)
- *   3. store-native: `git-credential-coord get`, keyed on the store's
- *      [git-credential-map] (host/owner/repo, most-specific-first) → a per-repo
- *      least-privilege PAT. The default when no explicit token file is placed.
- *      (DL-185)
- *   4. ambient GH_TOKEN (present in an operator shell, absent in the FPM receiver,
- *      so the fallback self-scopes to the reconcile CLI). (DL-184)
+ * Precedence (per repo, most specific first — DL-456, card#11208):
+ *   1. the repo's own `write_token_path` in `writeback.json` — for a repo whose store key is
+ *      deliberately read-only. A PATH, never a copy. Authoritative: missing/blank fails loud.
+ *   2. the coord credential store, read in-process ({@see CoordCredentialStore}):
+ *      `[git-credential-map]` routes the repo to a key, `[github] <key>_file` names the file.
+ *      A MAPPED repo whose file is missing, blank, unreadable or misdeclared fails loud — it never
+ *      falls through to the single file, which may belong to another owner (a fine-grained PAT
+ *      covers one). A store that is present and unreadable or unparseable resolves nothing for any
+ *      repo, because it may map the repo.
+ *   3. the single file: `providers.github.token_path` (authoritative within this leg: missing or
+ *      blank fails loud), else the conventional `<secret_dir>/github/token`.
+ *   4. `GH_TOKEN` — ONLY for a caller that asks (`$ambient`: the artisan commands), and only when no
+ *      source above applies. The receiver never asks: under PHP-FPM it is absent anyway, and a
+ *      shell `bridge:replay` must resolve the token the receiver would.
  *
- * Guardrails (framework contract — coord docs/CREDENTIALS.md § Non-git consumers):
- *   - GH_TOKEN (4) is a consumer-side fallback consulted ONLY after the store (3)
- *     returns nothing; it can never shadow a store-mapped token.
- *   - The store's empty output is a REAL answer: an unmapped repo falls through to
- *     GH_TOKEN, but a REPLACE_ME placeholder, an unreadable `*_file` (the helper
- *     writes stderr, exits 0, emits no password=), or a helper crash FAIL LOUD —
- *     never a silent fall-through to a wrong-scoped token.
+ * Nothing here spawns a process or reads `$HOME`/`$COORD_CREDENTIALS`, so the receiver and a shell
+ * get one answer for one install. A problem names its source ({@see TokenSource}) and carries a
+ * {@see TokenFileFault}; a resolved token carries the source and the file it was read from. Never
+ * throws.
  */
 final class GitHubTokenResolver
 {
-    /** The placeholder the credentials store template seeds for an unfilled slot. */
-    private const STORE_PLACEHOLDER = 'REPLACE_ME';
+    private bool $writebackLoaded = false;
 
-    private const DEFAULT_HELPER = 'git-credential-coord';
+    private ?WritebackConfig $writeback = null;
 
-    /** @var array<string, TokenResolution> memoized per RAW repo key. */
+    private ?string $writebackFault = null;
+
+    private ?CoordCredentialStore $store = null;
+
+    /** @var array<string, TokenResolution> memoized per (ambient, RAW repo key). */
     private array $memo = [];
 
     /**
-     * The token for a repo (the raw writeback.json mapping key — NOT canonicalized:
-     * [git-credential-map] is case-sensitive). Never throws.
+     * A resolver over an already-loaded `writeback.json` (null: this install has none), so a
+     * command that loaded it does not load it twice and resolves against the copy it acts on. The
+     * plain constructor loads `writeback.json` itself, on first use.
      */
-    public function resolveFor(string $repo): TokenResolution
+    public static function forWriteback(?WritebackConfig $writeback): self
     {
-        return $this->memo[$repo] ??= $this->resolve($repo);
+        $resolver = new self;
+        $resolver->writebackLoaded = true;
+        $resolver->writeback = $writeback;
+
+        return $resolver;
     }
 
-    private function resolve(string $repo): TokenResolution
+    /** A resolver for a run whose `writeback.json` did not load: no repo's override is known. */
+    public static function forUnreadWriteback(string $why): self
     {
-        // 1 + 2: explicit token file — the override path when configured, else the
-        // conventional <secret_dir>/github/token. Either short-circuits the store.
-        $file = $this->resolveFileLeg();
-        if ($file !== null) {
-            return $file;
-        }
-        // 3: store-native (per-repo).
-        $store = $this->resolveFromStore($repo);
-        if ($store !== null) {
-            return $store;   // a resolved token OR a fail-loud problem
-        }
+        $resolver = new self;
+        $resolver->writebackLoaded = true;
+        $resolver->writebackFault = $why;
 
-        // 4: ambient GH_TOKEN.
-        $env = $this->envToken();
-        if ($env !== null) {
-            return TokenResolution::resolved($env, 'GH_TOKEN');
-        }
-
-        [, $unplaced] = self::unplaced($this->tokenPath());
-
-        return TokenResolution::problem("no github token: {$unplaced}, no [git-credential-map] entry for {$repo}, and GH_TOKEN is unset");
+        return $resolver;
     }
 
     /**
-     * Legs 1 + 2 ONLY: the placed file the receiver resolves under PHP-FPM, for a caller whose GitHub
-     * identity must be the same wherever it runs (DL-390's pull-request comment, which `bridge:replay`
-     * also reaches from a shell, where the store and `GH_TOKEN` would otherwise resolve). The override
-     * stays authoritative. Not memoized: it spawns nothing. Never throws.
+     * The token for a repo, any spelling: the store is asked with the spelling `writeback.json`
+     * uses for it where it maps the repo, because `[git-credential-map]` is case-sensitive.
+     * `$ambient` adds the `GH_TOKEN` leg — for an artisan command, never for the receiver.
      */
-    public function resolveFromFile(): TokenResolution
+    public function resolveFor(string $repo, bool $ambient = false): TokenResolution
     {
-        $path = $this->tokenPath();
+        return $this->memo[($ambient ? 'ambient:' : 'runtime:').$repo] ??= $this->resolve($repo, $ambient);
+    }
+
+    private function resolve(string $repo, bool $ambient): TokenResolution
+    {
+        $this->loadWriteback();
+        if ($this->writebackFault !== null) {
+            return TokenResolution::problem("writeback.json did not load ({$this->writebackFault}), so whether {$repo} declares a write_token_path was NOT determined, and no other source stands in for it", TokenFileFault::Undetermined, TokenSource::WriteTokenPath);
+        }
+        $configured = $this->writeback?->configuredRepoFor($repo) ?? $repo;
+
+        // 1: the repo's own override.
+        $override = $this->writeback?->mappingFor($repo)?->writeTokenPath;
+        if ($override !== null) {
+            return $this->readTokenFile($override, TokenSource::WriteTokenPath, "write_token_path for {$configured} ({$override})", "the write_token_path writeback.json declares for {$configured}") ?? self::unplacedProblem($override, "the write_token_path writeback.json declares for {$configured}", TokenSource::WriteTokenPath);
+        }
+
+        // 2: the store.
+        $store = $this->store ??= CoordCredentialStore::configured();
+        if (! $store->readable()) {
+            return TokenResolution::problem(
+                $store->faultClause().', so which repos it maps was NOT determined, and the single token file does not stand in for a repo it may map',
+                $store->fault === CoordCredentialStore::UNREADABLE ? TokenFileFault::Unreadable : TokenFileFault::Misconfigured,
+                TokenSource::Store,
+                $store->path,
+            );
+        }
+        $route = $store->routeFor($configured);
+        if ($route !== null) {
+            return $this->resolveStoreKey($store, $configured, $route['key'], $route['matched']);
+        }
+
+        // 3: the single file.
         if (($file = $this->resolveFileLeg()) !== null) {
             return $file;
         }
+        $path = $this->tokenPath();
         [$fault, $clause] = self::unplaced($path);
 
-        return TokenResolution::problem("no github token file: {$clause}", $fault);
+        // 4: GH_TOKEN, for a caller that asked.
+        if ($ambient) {
+            $env = $this->envToken();
+            if ($env !== null) {
+                return TokenResolution::resolved($env, 'GH_TOKEN', TokenSource::Ambient);
+            }
+
+            return TokenResolution::problem("no github token: {$clause}, no [git-credential-map] entry for {$configured}, and GH_TOKEN is unset", $fault, TokenSource::TokenFile, $path);
+        }
+
+        return TokenResolution::problem("no github token file: {$clause}", $fault, TokenSource::TokenFile, $path);
     }
 
     /**
-     * Legs 1 + 2: a resolution, a fail-loud problem, or null when neither applies (no override set,
-     * no token placed). Every problem carries its {@see TokenFileFault}.
+     * The single file ONLY — what `bridge:check` asks about when it knows of no repo to resolve for
+     * (its `writeback.json` did not load). The override stays authoritative. Never throws.
+     */
+    public function resolveFromFile(): TokenResolution
+    {
+        if (($file = $this->resolveFileLeg()) !== null) {
+            return $file;
+        }
+        $path = $this->tokenPath();
+        [$fault, $clause] = self::unplaced($path);
+
+        return TokenResolution::problem("no github token file: {$clause}", $fault, TokenSource::TokenFile, $path);
+    }
+
+    /**
+     * A repo the store maps: its key's file, or a problem naming the key. Never the single file.
+     *
+     * ⛔ THE FILE MUST BELONG TO THE STORE'S OWNER. The store lives in the coordination project's
+     * account, and `bridge:check` may run as root: without this rule the store's owner would choose
+     * a file root opens and sends to GitHub as a bearer token.
+     */
+    private function resolveStoreKey(CoordCredentialStore $store, string $repo, string $key, string $matched): TokenResolution
+    {
+        $label = "store key {$key} ([git-credential-map] {$matched})";
+        [$path, $why] = $store->tokenFileFor($key);
+        if ($path === null) {
+            return TokenResolution::problem("{$label} for {$repo}: {$why}. Fix the coord credential store at {$store->path}; the single token file does not stand in for a repo the store maps", TokenFileFault::Misconfigured, TokenSource::Store, $store->path);
+        }
+        clearstatcache(true, $path);
+        if (file_exists($path)) {
+            $identity = app(ProcessIdentity::class);
+            $fileOwner = $identity->ownerOf($path);
+            $storeOwner = $store->owner();
+            if ($fileOwner === null || $storeOwner === null) {
+                return TokenResolution::problem("{$label} for {$repo} names {$path}, and this process could not read the owner of ".($fileOwner === null ? 'that file' : "the store at {$store->path}").', so whether it belongs to the store\'s owner was NOT determined', TokenFileFault::Undetermined, TokenSource::Store, $path);
+            }
+            if ($fileOwner !== $storeOwner) {
+                $name = fn (int $uid): string => $identity->accountName($uid) ?? "uid {$uid}";
+
+                return TokenResolution::problem("{$label} for {$repo} names {$path}, which is owned by {$name($fileOwner)} and not by the store's owner {$name($storeOwner)} — the bridge reads a file the store names only when the store's owner owns it", TokenFileFault::Misconfigured, TokenSource::Store, $path);
+            }
+        }
+
+        return $this->readTokenFile($path, TokenSource::Store, "{$label} ({$path})", "the file {$label} names for {$repo}")
+            ?? self::unplacedProblem($path, "the file {$label} names for {$repo}", TokenSource::Store);
+    }
+
+    /**
+     * Leg 3: a resolution, a fail-loud problem, or null when it does not apply (no override set, and
+     * nothing at the conventional path). Every problem carries its {@see TokenFileFault}.
      */
     private function resolveFileLeg(): ?TokenResolution
     {
         $override = $this->hasTokenPathOverride();
         $path = $this->tokenPath();
+        $resolution = $this->readTokenFile($path, TokenSource::TokenFile, $override ? "token_path override ({$path})" : "token file ({$path})", 'the configured token_path');
+        if ($resolution === null && $override) {
+            // Authoritative but missing/blank → fail loud; nothing below stands in.
+            return self::unplacedProblem($path, 'the configured token_path', TokenSource::TokenFile);
+        }
+
+        return $resolution;
+    }
+
+    /**
+     * One read of a token file, for every source: the resolved token, a problem, or null when the
+     * file is absent or blank (each caller decides whether that is fatal). An unfilled
+     * `REPLACE_ME` is never handed out as a token.
+     */
+    private function readTokenFile(string $path, TokenSource $kind, string $source, string $what): ?TokenResolution
+    {
+        $named = $kind === TokenSource::TokenFile ? "github token file {$path}" : "{$what}: github token file {$path}";
         try {
-            $fileToken = SecretFile::read($path);   // throws on insecure perms; null when absent or blank
+            $token = SecretFile::read($path);   // throws on insecure perms; null when absent or blank
         } catch (InsecureSecretPermsException $e) {
-            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e), TokenFileFault::InsecurePermissions);
+            return TokenResolution::problem("{$named}: ".RedactedErrorText::of($e), TokenFileFault::InsecurePermissions, $kind, $path);
         } catch (Throwable $e) {
-            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e), TokenFileFault::Unreadable);
+            return TokenResolution::problem("{$named}: ".RedactedErrorText::of($e), TokenFileFault::Unreadable, $kind, $path);
         }
-        if ($fileToken !== null && $fileToken !== '') {
-            return TokenResolution::resolved($fileToken, $override ? "token_path override ({$path})" : "token file ({$path})");
+        if ($token === null) {
+            return null;
         }
-        if ($override) {
-            // Authoritative but missing/blank → fail loud; NO store/env fallback.
-            [$fault, $clause] = self::unplaced($path);
-
-            return TokenResolution::problem("no github token at the configured token_path: {$clause}", $fault);
+        if ($token === CoordCredentialStore::PLACEHOLDER) {
+            return TokenResolution::problem("no github token at {$what}: {$path} holds the unfilled ".CoordCredentialStore::PLACEHOLDER.' placeholder', TokenFileFault::Empty, $kind, $path);
         }
 
-        return null;
+        return TokenResolution::resolved($token, $source, $kind, $path);
+    }
+
+    private static function unplacedProblem(string $path, string $what, TokenSource $kind): TokenResolution
+    {
+        [$fault, $clause] = self::unplaced($path);
+
+        return TokenResolution::problem("no github token at {$what}: {$clause}", $fault, $kind, $path);
     }
 
     /**
@@ -149,122 +252,22 @@ final class GitHubTokenResolver
         return [TokenFileFault::Absent, "{$path} absent"];
     }
 
-    /**
-     * The store-native leg. Returns a resolved TokenResolution (a mapped token), a
-     * PROBLEM TokenResolution (REPLACE_ME / helper crash / unreadable `*_file`), or
-     * null when the leg is NOT APPLICABLE (helper absent, or the repo is unmapped) —
-     * in which case the caller falls through to GH_TOKEN.
-     */
-    private function resolveFromStore(string $repo): ?TokenResolution
+    private function loadWriteback(): void
     {
-        $bin = $this->locateHelper();
-        if ($bin === null) {
-            return null;   // no store helper on this host → GH_TOKEN-only install
+        if ($this->writebackLoaded) {
+            return;
         }
-
-        // git-credential wire format on stdin; shell-free argv exec (no metacharacter
-        // surface). Process inherits the CLI env, so the helper sees HOME /
-        // COORD_CREDENTIALS to locate the store. A start failure (proc_open unable to
-        // fork under resource pressure — distinct from the exit-127 missing-binary
-        // case already excluded above) fails loud rather than escaping: the resolver
-        // is total (bridge:check depends on it never throwing).
-        $request = "protocol=https\nhost=github.com\npath={$repo}\n\n";
+        $this->writebackLoaded = true;
         try {
-            $result = Process::input($request)->run([$bin, 'get']);
-        } catch (Throwable $e) {
-            return TokenResolution::problem("git-credential-coord could not be run for {$repo}: ".RedactedErrorText::of($e));
+            $this->writeback = WritebackConfig::loadDefault();
+        } catch (ConfigException $e) {
+            $this->writebackFault = RedactedErrorText::of($e);
         }
-
-        if (! $result->successful()) {
-            // ⛔ REDUCED HERE, AT THE PRODUCER, so `TokenResolution::$problem` carries no
-            // live control codepoint and no credential-shaped value (card#9200, DL-366).
-            // These are a SUBPROCESS's stderr bytes: `git-credential-coord` is a separate
-            // program — operator-swappable via `bridge.providers.github.credential_helper` —
-            // and what it writes there can include an error relayed from a store file or a
-            // remote.
-            // ⭐ BOTH REDUCTIONS, AND THE ORDER IS LOAD-BEARING. "Safe to print" has TWO
-            // declared meanings in this app and this span owes both: {@see UntrustedText}
-            // makes bytes safe for a TERMINAL, {@see SecretScrubber} (card#8433) makes them
-            // safe to DISCLOSE — and a credential helper's stderr is the one foreign span
-            // whose whole subject is credentials. The scrub runs FIRST because it is a
-            // LEXICAL, positional rule over the real bytes: it must see the source text
-            // before the escape doubles backslashes, collapses whitespace runs and applies
-            // its 200-character display cap, or a redactor's run can be cut short and leave
-            // the tail it was about to redact standing.
-            // ⚠ IT IS NOT AN UNQUALIFIED GUARANTEE, and an earlier revision of this comment
-            // made one — it claimed no consumer "can now get it wrong, including one added
-            // tomorrow" while the only reduction applied was the terminal escape, which
-            // carries a credential through byte for byte. What holds is exactly the two
-            // rules' own bounds: this repo's code, checked in `GitHubTokenResolverTest`, with
-            // {@see SecretScrubber}'s declared limits (a secret in a URL PATH is not
-            // redacted) and {@see UntrustedText}'s (`\p{Mn}`/`\p{Me}`/`\p{Co}` pass) applying
-            // unchanged. `$problem` is composed prose, so both go round the foreign SPAN and
-            // not round the sentence — the bridge's own words must not consume the cap.
-            $err = UntrustedText::forOperator(SecretScrubber::text(trim($result->errorOutput())));
-
-            return TokenResolution::problem("git-credential-coord get failed for {$repo} (exit {$result->exitCode()})".($err !== '' ? ": {$err}" : ''));
-        }
-
-        $password = $this->parsePassword($result->output());
-        if ($password !== null && $password !== '') {
-            if ($password === self::STORE_PLACEHOLDER) {
-                return TokenResolution::problem("[git-credential-map] resolves {$repo} to a {$password} placeholder — fill in the store slot, do not run reconcile with an unset token");
-            }
-
-            return TokenResolution::resolved($password, "store (git-credential-coord: {$repo})");
-        }
-
-        // No password line. Non-empty stderr ⇒ a helper-side error (an unreadable
-        // `*_file`) that must FAIL LOUD per the framework fail-loud-on-`*_file`
-        // contract; empty stderr ⇒ genuinely unmapped → fall through to GH_TOKEN.
-        // Same two reductions, same order, as the non-zero-exit arm above — one arm reduced
-        // and the other not is the omission shape the move to the producer exists to end.
-        $err = UntrustedText::forOperator(SecretScrubber::text(trim($result->errorOutput())));
-        if ($err !== '') {
-            return TokenResolution::problem("git-credential-coord could not resolve {$repo}: {$err}");
-        }
-
-        return null;   // unmapped (or a blank inline slot) → GH_TOKEN
     }
 
     /**
-     * The configured credential helper, resolved to an executable path, or null when
-     * it is absent/unexecutable (leg not applicable) or explicitly disabled (empty
-     * config). A bare name is PATH-resolved; a value containing '/' is an explicit
-     * path (~ expanded).
-     */
-    private function locateHelper(): ?string
-    {
-        $configured = config('bridge.providers.github.credential_helper');
-        $helper = is_string($configured) ? trim($configured) : self::DEFAULT_HELPER;
-        if ($helper === '') {
-            return null;   // explicitly disabled
-        }
-
-        if (str_contains($helper, '/')) {
-            $path = PathHelper::expandUser($helper);
-
-            return is_executable($path) ? $path : null;
-        }
-
-        return (new ExecutableFinder)->find($helper) ?: null;
-    }
-
-    private function parsePassword(string $stdout): ?string
-    {
-        foreach (preg_split('/\r?\n/', $stdout) ?: [] as $line) {
-            if (str_starts_with($line, 'password=')) {
-                return substr($line, strlen('password='));
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * The token file path legs 1/2 read: an explicit
-     * `bridge.providers.github.token_path` override (e.g. a centralized credential
-     * reused without a per-install symlink), else the conventional
+     * The single file leg 3 reads: an explicit `bridge.providers.github.token_path` override (e.g.
+     * a centralized credential reused without a per-install symlink), else the conventional
      * <secret_dir>/github/token.
      */
     public function tokenPath(): string
@@ -277,7 +280,7 @@ final class GitHubTokenResolver
         return TokenPath::for((string) config('bridge.secret_dir'), 'github');
     }
 
-    /** True when an explicit token_path override is configured (authoritative — no store/env fallback). */
+    /** True when an explicit token_path override is configured (authoritative within the single-file leg). */
     public function hasTokenPathOverride(): bool
     {
         $override = config('bridge.providers.github.token_path');
