@@ -394,6 +394,10 @@ class UnvalidatedCallSiteTest extends TestCase
         // built by an earlier release), so no on/off value was read at all — limb (a). A record
         // that IS present and empty is a declared silence, not a site here.
         'app/Bridge/Check/Checks/InstallFlagValuesCheck.php' => 1,
+        // card#11200 / DL-452: TWO sites, both limb (a) — the database did not answer whether the
+        // `ci_awaits` table exists, or the stored awaits could not be read after it did, so no
+        // await was judged. A MISSING table is a `warn`, not a site here: the leg did establish it.
+        'app/Bridge/Check/Checks/CiAwaitsCheck.php' => 2,
         // card#11201, one per arm: the token file is there and THIS process could not read it
         // (limb 2 — the receiver runs as its own user); writeback.json did not load, so which
         // legs need the file was not determined (limb a — two sites: no file resolves, and one
