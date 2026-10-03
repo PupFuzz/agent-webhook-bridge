@@ -10,8 +10,9 @@
 > (card#8683 / DL-345), the `foreach` that renders the NEXT STEPS block (card#8959 /
 > DL-352), the `CheckSlot::BoardToolsLost` emit for the LOST-block leg (card#8973 /
 > DL-360), the `CheckSlot::GithubWebhook` emit for the github webhook-subscription leg
-> (card#9150 / DL-368), and the `CheckSlot::IdleNudge` emit for the idle nudge's posture leg
-> (card#9422 / DL-380). ⛔ **Re-derive the live count with
+> (card#9150 / DL-368), the `CheckSlot::IdleNudge` emit for the idle nudge's posture leg
+> (card#9422 / DL-380), and the `CheckSlot::GithubTokenFile` emit for the GitHub token-file leg
+> (card#11201 / DL-453). ⛔ **Re-derive the live count with
 > `php bin/check-golden-predicates.php --json | jq length` rather than reading one here** —
 > it is the DENOMINATOR the currency guard compares, it moves with the source, and a figure
 > written into this banner is a second copy of it that goes stale on the next predicate
@@ -27,8 +28,9 @@
 > `foreach $this->nextStepsOutput($nextSteps)` (card#8959 / DL-352),
 > `if ! $this->emitReport($runner->run(CheckSlot::BoardToolsLost, $ctx))` (card#8973 / DL-360)
 > `if ! $this->emitReport($runner->run(CheckSlot::GithubWebhook, $ctx))` (card#9150 /
-> DL-368) and `if ! $this->emitReport($runner->run(CheckSlot::IdleNudge, $ctx))` (card#9422 /
-> DL-380). ⛔ **This list is a set of NAMES, deliberately carrying no count**: the last
+> DL-368), `if ! $this->emitReport($runner->run(CheckSlot::IdleNudge, $ctx))` (card#9422 /
+> DL-380) and `if ! $this->emitReport($runner->run(CheckSlot::GithubTokenFile, $ctx))`
+> (card#11201 / DL-453). ⛔ **This list is a set of NAMES, deliberately carrying no count**: the last
 > revision opened by saying how many there were, and the figure was falsified by the very next
 > predicate added. `php bin/check-golden-predicates.php --json` is what enumerates them.
 > Their verdicts are therefore UNKNOWN here, in either direction — they are
@@ -44,7 +46,11 @@
 > `tests/Feature/Console/Check/GitHubWebhookSubscriptionCheckTest.php` drives both of its
 > branches end to end — a confirmed-missing hook exits 1, every could-not-look state exits 0 —
 > and the `github-webhook-missing` golden capture pins the same pair; covered by named suites,
-> and still not by THIS artifact's measurement. Re-running the ~50-minute mutation pass for an
+> and still not by THIS artifact's measurement. ⚑ **The DL-453 predicate likewise:**
+> `tests/Feature/Console/Check/GitHubTokenFileCheckTest.php` drives both of its branches end to
+> end — a proven-unusable token file exits 1, a usable one exits 0 — and the writeback golden
+> captures without a token file pin the `fail` arm; covered by named suites, and still not by
+> THIS artifact's measurement. Re-running the ~50-minute mutation pass for an
 > added predicate was not warranted. Re-run
 > `php bin/check-golden-mutate.php` to retire both banners.
 

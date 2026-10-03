@@ -412,8 +412,18 @@ final class CheckContext
      */
     public ?string $secretDir = null;
 
-    /** Parsed writeback.json, or null when the file is absent (⇒ writeback off). */
+    /**
+     * Parsed writeback.json, or null when the file is absent (⇒ writeback off) — or present and
+     * not loaded, which {@see $writebackUnread} says.
+     */
     public ?WritebackConfig $writeback = null;
+
+    /**
+     * True when writeback.json is present and did not load: the one state in which a null
+     * {@see $writeback} does NOT mean writeback is off, so a leg asking "is writeback on?" must
+     * not read it as no (card#11201).
+     */
+    public bool $writebackUnread = false;
 
     /**
      * The writeback kanban client, or null when it could not be constructed (no

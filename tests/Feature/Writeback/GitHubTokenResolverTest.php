@@ -4,6 +4,7 @@ namespace Tests\Feature\Writeback;
 
 use App\Bridge\Support\UntrustedText;
 use App\Bridge\Writeback\GitHubTokenResolver;
+use App\Bridge\Writeback\TokenFileFault;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -338,6 +339,89 @@ class GitHubTokenResolverTest extends TestCase
         config(['bridge.providers.github.token_path' => $this->dir.'/missing']);
 
         $this->assertFalse($this->resolver()->resolveFromFile()->ok());
+    }
+
+    /**
+     * card#11201: WHY the file did not resolve is a type on the resolution, so `bridge:check` can
+     * tell a fault every reader shares from one only this process has, and so the problem text
+     * stops calling a 0-byte file "absent" — the wording that sent an operator looking for a file
+     * that was there.
+     *
+     * @return array<string, array{0: callable(string): void, 1: TokenFileFault, 2: string}>
+     */
+    public static function fileFaults(): array
+    {
+        return [
+            'absent' => [fn (string $p) => null, TokenFileFault::Absent, 'no github token file: %s absent'],
+            'zero bytes' => [function (string $p) {
+                File::put($p, '');
+                chmod($p, 0o600);
+            }, TokenFileFault::Empty, 'no github token file: %s is empty'],
+            'whitespace only' => [function (string $p) {
+                File::put($p, " \n");
+                chmod($p, 0o600);
+            }, TokenFileFault::Empty, 'no github token file: %s is empty'],
+            'a directory' => [fn (string $p) => File::ensureDirectoryExists($p), TokenFileFault::NotAFile, 'no github token file: %s is not a regular file'],
+            'group-readable' => [function (string $p) {
+                File::put($p, 'ghp_x');
+                chmod($p, 0o644);
+            }, TokenFileFault::InsecurePermissions, 'github token file %s: secret file at %s is group/world-readable'],
+        ];
+    }
+
+    /** @param  callable(string): void  $place */
+    #[DataProvider('fileFaults')]
+    public function test_a_file_that_does_not_resolve_says_why(callable $place, TokenFileFault $fault, string $problem): void
+    {
+        $path = $this->dir.'/github/token';
+        $place($path);
+
+        $r = $this->resolver()->resolveFromFile();
+
+        $this->assertFalse($r->ok());
+        $this->assertSame($fault, $r->fileFault);
+        $this->assertStringStartsWith(sprintf($problem, $path, $path), (string) $r->problem);
+    }
+
+    public function test_a_file_this_process_cannot_read_is_unreadable_not_absent(): void
+    {
+        $this->writeFileToken('ghp_file', 0o000);
+        clearstatcache();
+        if (is_readable($this->dir.'/github/token')) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+
+        $this->assertSame(TokenFileFault::Unreadable, $this->resolver()->resolveFromFile()->fileFault);
+    }
+
+    public function test_an_empty_override_says_so_and_stays_authoritative(): void
+    {
+        $custom = $this->dir.'/coord-pat';
+        File::put($custom, '');
+        chmod($custom, 0o600);
+        config(['bridge.providers.github.token_path' => $custom]);
+        putenv('GH_TOKEN=ghp_env');
+
+        $r = $this->resolver()->resolveFor('owner/repo');
+
+        $this->assertFalse($r->ok());
+        $this->assertSame(TokenFileFault::Empty, $r->fileFault);
+        $this->assertSame("no github token at the configured token_path: {$custom} is empty", $r->problem);
+    }
+
+    public function test_an_empty_conventional_file_still_falls_through_and_the_problem_says_empty(): void
+    {
+        // Unchanged precedence: a blank conventional file is not a token, so the store and
+        // GH_TOKEN are still consulted — only the words for the file moved.
+        $this->writeFileToken('');
+
+        $r = $this->resolver()->resolveFor('owner/repo');
+
+        $this->assertFalse($r->ok());
+        $this->assertSame('no github token: '.$this->dir.'/github/token is empty, no [git-credential-map] entry for owner/repo, and GH_TOKEN is unset', $r->problem);
+
+        putenv('GH_TOKEN=ghp_env');
+        $this->assertSame('ghp_env', $this->resolver()->resolveFor('owner/repo')->token);
     }
 
     public function test_resolution_is_memoized_per_repo(): void

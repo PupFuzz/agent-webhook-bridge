@@ -68,6 +68,10 @@ final class GoldenInstall
             'bridge.retention.null_payloads_older_than' => '7d',
             'bridge.retention.batch' => 500,
             'bridge.inbox_layout' => 'shared',
+            // Taken from the HOST's env at config load (`BRIDGE_PROTOCOL_INVALID_LABEL_REPOS`):
+            // a box that lists a repo would switch on a GitHub token-file consumer and add a
+            // `github.token_file` line to every capture (card#11201).
+            'bridge.protocol_invalid_label.repos' => [],
             'bridge.state_dir' => null,
             // Taken from the HOST's env at config load: a box exporting an unreadable
             // `BRIDGE_SPAWN_ENABLED` would otherwise add a FAIL line to every capture.

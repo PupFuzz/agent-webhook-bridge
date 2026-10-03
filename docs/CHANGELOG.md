@@ -27,6 +27,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#11201 / DL-453** — ⚠ **`bridge:check` now FAILS when the GitHub token file cannot serve a leg that needs it, for every such leg — not only promote-on-release.** The DL-390 correlation comment, the DL-408 `protocol:invalid` label and promote-on-release reach GitHub with the placed token file (`<secret_dir>/github/token`, or `BRIDGE_GITHUB_TOKEN_PATH`) and nothing else. The only check of that file sat inside `promote_on_release`, so an install with that switch off was told nothing while its correlation comments were dropped.
+  - New leg `github.token_file`, so every inventory line moves. It names each switched-on leg and its repos, the path, and the remedy. It **fails** for a file that is absent, empty, not a regular file or group/world-readable, and for a token GitHub answers `401`. It is **`unvalidated`** where this run could not tell (a file this user cannot read, a directory it cannot traverse, a `writeback.json` that did not load, GitHub unreachable).
+  - A token that resolves is put to one read GitHub does not count against the rate limit. A classic token without `repo` or `public_repo` **fails**, one with `public_repo` only **warns**, and a fine-grained token is reported *write scope UNMEASURED*.
+  - It **warns** with the count of comments and labels the owed-writes record holds as dropped for want of a token, naming `bridge:github-owed --fix`.
+  - ⚠ **EXIT CODE MOVES on an install nobody touched:** any install with a `writeback.json` mapping and no usable token file now exits non-zero, because the correlation comment is on for every mapped repo. Place a token with Issues and Pull requests WRITE on the mapped repos (`chmod 600`), then run `php artisan bridge:github-owed --fix`. The promote-on-release line moves from `warn` under `writeback.mapping_config` to this leg's `fail`.
+  - The resolver's message now calls a 0-byte token file "empty" and a directory "not a regular file", where both said "absent". Which token is used is unchanged.
+  - No migration, no route change, no token-scope change; `--format=json` `schema` stays **1**.
+
 - **card#11147** — **Docs: the `agent.kanban_user_roster` check's docblock and `docs/config-schema.md` § identity no longer claim that no roster carries `kanban_user_id` yet.** That was a census, and it stopped being true when a roster did. Both now state the condition: a roster seat with no id for this host warns, and DL-439 (operator ruling C) makes that a fail once the roster carries the ids, a flip that is not built. Two test comments that repeated the census are corrected the same way. No behaviour change: the check's severity is still WARN.
 
 ## [0.95.0] - 2026-10-01
