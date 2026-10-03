@@ -116,3 +116,14 @@ test('the version SENT tracks the manifest rather than a literal in the entry po
   const sent = await envelopeOf(t);
   assert.equal(sent.client_version, version);
 });
+
+// The server reads its transport through channel-lib's `boardToolsTransport` (card#11151 review
+// r1): forced on with an endpoint and no bearer, a call is refused naming the missing setting,
+// and nothing is sent.
+test('forced-on board tools with an endpoint and no bearer refuse the call, naming the bearer settings', async (t) => {
+  const client = await connectServer(t, { BRIDGE_CHANNEL_TOOLS: '1', BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1:1/agent-tools/call' }, serverOpts);
+  const res = await client.callTool({ name: 'board_my_cards', arguments: {} });
+
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /not fully configured on this channel server: set BRIDGE_TOOLS_TOKEN \(or BRIDGE_TOOLS_TOKEN_FILE\)\. No call was made/);
+});

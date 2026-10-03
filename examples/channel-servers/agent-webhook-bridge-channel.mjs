@@ -48,7 +48,7 @@ import { spawn } from 'node:child_process';
 import {
   deriveMeta,
   relayBridgeResponse,
-  resolveToolsToken,
+  boardToolsTransport,
   sshRoundTrip,
   httpRoundTrip,
   launchIdentity,
@@ -135,10 +135,8 @@ function shouldAdvertiseTools() {
   // Unset: observable-intent default. The ssh branch is BEARER-FREE (DR2-5) — an ssh
   // target alone enables it, with NO token term (an `&& token` here would leave an
   // ssh-only seat dark). The HTTP branch still needs the endpoint line AND a bearer.
-  if (TOOLS_SSH_TARGET !== '') {
-    return true;
-  }
-  return TOOLS_ENDPOINT !== '' && resolveToolsToken(process.env) !== '';
+  const kind = boardToolsTransport(process.env).kind;
+  return kind === 'ssh' || kind === 'http';
 }
 
 const TOOLS_ENABLED = shouldAdvertiseTools();
@@ -796,7 +794,7 @@ if (TRANSPORT !== 'unix' && TRANSPORT !== 'http') {
 // UNCONDITIONALLY — OUTSIDE the TOOLS_ENABLED guard (DR2-5) — so a
 // BRIDGE_CHANNEL_TOOLS=0 seat with both env vars set is still caught, not silently
 // skipped past the advertise gate.
-if (TOOLS_SSH_TARGET !== '' && TOOLS_ENDPOINT !== '') {
+if (boardToolsTransport(process.env).kind === 'conflict') {
   refuseDeaf(
     `BRIDGE_TOOLS_SSH_TARGET and BRIDGE_TOOLS_ENDPOINT are both set — ` +
       `choose exactly ONE board-tools transport (single-valued per seat) — ` +
@@ -1008,16 +1006,13 @@ if (ADVERTISE_ANY_TOOL) {
 
     // Guard branches on the TRANSPORT (DR2-5), not on a bearer: the ssh transport
     // carries no bearer, so `!token` must not gate it.
-    if (TOOLS_SSH_TARGET) {
+    const transport = boardToolsTransport(process.env);
+    if (transport.kind === 'ssh') {
       return await callToolOverSsh(payload);
     }
 
-    const token = resolveToolsToken(process.env);
-    if (!TOOLS_ENDPOINT || !token) {
-      const missing = [
-        TOOLS_ENDPOINT ? null : 'BRIDGE_TOOLS_ENDPOINT',
-        token ? null : 'BRIDGE_TOOLS_TOKEN (or BRIDGE_TOOLS_TOKEN_FILE)',
-      ].filter(Boolean);
+    if (transport.kind !== 'http') {
+      const { missing } = transport;
       return {
         isError: true,
         content: [
@@ -1035,7 +1030,7 @@ if (ADVERTISE_ANY_TOOL) {
     // Still a dumb pipe with the third key: `client_version` is this server's own manifest
     // version (read once, above), NOT anything derived from the call — no board logic, no
     // retry, and nothing about the request influences it.
-    return await callToolOverHttp(payload, token);
+    return await callToolOverHttp(payload, transport.token);
   });
 }
 

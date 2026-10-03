@@ -368,3 +368,112 @@ test('package.json bin and the programs under bin/ name the same set', () => {
   assert.ok(present.length > 0, 'no program under bin/ — this check has stopped measuring');
   assert.deepEqual(declared, present, 'a bin/ program is shimmed on a seat under its name without .mjs; package.json must declare that same name');
 });
+
+// ---------------------------------------------------------------------------------------------
+// Review round 1 (PR #852): exit 2 only where nothing can have reached a tool; nothing secret on
+// an output stream; a deadline a hook outlives.
+
+/** A local door whose handler the test writes; resolves its URL. */
+async function rawDoor(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  return `http://127.0.0.1:${server.address().port}/agent-tools/call`;
+}
+
+test('http: a connection reset AFTER the bridge received the request exits 3, never 2', async (t) => {
+  const url = await rawDoor(t, (req) => {
+    req.on('data', () => {});
+    req.on('end', () => req.socket.destroy());
+  });
+  const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: url, BRIDGE_TOOLS_TOKEN: 'tkn' } });
+
+  assert.equal(r.code, 3, r.stderr);
+  assert.equal(r.stdout, '');
+});
+
+test('http: a 200 whose body is cut off exits 3, never 2', async (t) => {
+  const url = await rawDoor(t, (req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '200' });
+      res.write('{"ok":tr');
+      setTimeout(() => req.socket.destroy(), 50);
+    });
+  });
+  const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: url, BRIDGE_TOOLS_TOKEN: 'tkn' } });
+
+  assert.equal(r.code, 3, r.stderr);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /HTTP 200/);
+});
+
+test('http: a redirect is refused before any tool, so it exits 2', async (t) => {
+  const url = await rawDoor(t, (req, res) => {
+    res.writeHead(307, { Location: 'http://127.0.0.1:1/elsewhere' });
+    res.end();
+  });
+  const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: url, BRIDGE_TOOLS_TOKEN: 'tkn' } });
+
+  assert.equal(r.code, 2, r.stderr);
+  assert.match(r.stderr, /redirect/);
+});
+
+test('http: an answer slower than --deadline-ms exits 3 at the deadline', async (t) => {
+  const url = await rawDoor(t, () => {});
+  const started = Date.now();
+  const r = await run(t, ['--deadline-ms', '300', ...START], { env: { BRIDGE_TOOLS_ENDPOINT: url, BRIDGE_TOOLS_TOKEN: 'tkn' } });
+
+  assert.equal(r.code, 3, r.stderr);
+  assert.match(r.stderr, /300ms/);
+  assert.ok(Date.now() - started < 10000, 'the deadline, not the default, ended the call');
+});
+
+for (const bad of ['0', '-5', 'abc', '600001']) {
+  test(`usage: --deadline-ms ${bad} exits 4`, async (t) => {
+    const r = await run(t, ['--deadline-ms', bad, ...START], { env: { BRIDGE_TOOLS_SSH_TARGET: TARGET } });
+
+    assert.equal(r.code, 4);
+  });
+}
+
+const FAKE_TOKEN = 'tok-LEAK-CANARY-9f3a';
+
+test('a malformed .mcp.json never echoes its content (a token in it must not reach stdout or stderr)', async (t) => {
+  const dir = scratch(t, 'bbc-proj-');
+  // Unquoted and smart-quoted values: V8's JSON.parse message quotes the input around the error.
+  fs.writeFileSync(path.join(dir, '.mcp.json'), `{"mcpServers":{"seat":{"env":{"BRIDGE_TOOLS_TOKEN": ${FAKE_TOKEN}, "X": “${FAKE_TOKEN}”}}}}`);
+  const r = await run(t, START, { cwd: dir, env: { CLAUDE_PROJECT_DIR: dir } });
+
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /not valid JSON/);
+  assert.ok(!(r.stdout + r.stderr).includes('LEAK'), r.stderr);
+});
+
+test('a credential in the endpoint URL is never printed', async (t) => {
+  const closed = http.createServer();
+  await new Promise((r) => closed.listen(0, '127.0.0.1', r));
+  const port = closed.address().port;
+  await new Promise((r) => closed.close(r));
+  const r = await run(t, START, { env: { BRIDGE_TOOLS_ENDPOINT: `http://user:${FAKE_TOKEN}@127.0.0.1:${port}/agent-tools/call`, BRIDGE_TOOLS_TOKEN: 'tkn' } });
+
+  assert.equal(r.code, 2, r.stderr);
+  assert.ok(!(r.stdout + r.stderr).includes('LEAK'), r.stderr);
+});
+
+for (const [stderr, code, label] of [
+  ['ssh: connect to host bridgehost port 22: Connection refused\n', 2, 'connection refused'],
+  ['ssh: Could not resolve hostname bridgehost: Name or service not known\n', 2, 'no such host'],
+  ['Host key verification failed.\n', 2, 'host key'],
+  ['Connection to bridgehost closed by remote host.\n', 3, 'a session the far end closed'],
+  ['client_loop: send disconnect: Broken pipe\n', 3, 'a broken pipe mid-session'],
+  ['', 3, 'no stderr at all'],
+]) {
+  test(`ssh: exit 255 with ${label} exits ${code}`, async (t) => {
+    const ssh = fakeSsh(t, { exit: 255, stderr });
+    const r = await run(t, START, { env: { ...ssh.env, BRIDGE_TOOLS_SSH_TARGET: TARGET } });
+
+    assert.equal(r.code, code, r.stderr);
+    assert.equal(r.stdout, '');
+  });
+}

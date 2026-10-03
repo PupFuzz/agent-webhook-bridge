@@ -9,7 +9,8 @@
 //   - PURE helpers (scrubSnippet, relayBridgeResponse, deriveMeta, launchIdentity,
 //     clientUpdateInstruction, resolveToolsToken's precedence) — no I/O beyond what an
 //     argument names;
-//   - the bridge TRANSPORT primitives (sshRoundTrip, httpRoundTrip) — they do I/O (a child
+//   - the bridge TRANSPORT primitives (sshRoundTrip, httpRoundTrip, and boardToolsTransport, which
+//     chooses between them) — they do I/O (a child
 //     process, a fetch), but only to the target their caller passes, and they return what
 //     happened rather than deciding what it means. The board-tools proxy relays that as a
 //     tool result; the updater reads it as a client-update door answer; bridge-board-call
@@ -253,10 +254,14 @@ export function sshRoundTrip({ target, key = '', port = '', input, deadlineMs, s
 // `redirect: 'error'` rejects a redirect with a generic `TypeError: fetch failed` — the actual
 // reason ("unexpected redirect") is on `.cause`, one level down, and is lost if a caller reads
 // only `.message` (review r2 minor 5).
+//
+// Any URL userinfo in the text is withheld: `fetch` refuses a URL carrying credentials with a
+// message that quotes the whole URL, password included, and this text reaches a tool result or a
+// script's stderr (canon #20).
 export function errorDetail(err) {
   const message = err && err.message ? err.message : String(err);
   const cause = err && err.cause && err.cause.message ? err.cause.message : null;
-  return cause ? `${message}: ${cause}` : message;
+  return (cause ? `${message}: ${cause}` : message).replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/?#@]*@/g, '$1[credential withheld]@');
 }
 
 // One HTTP POST to a bridge door with the agent's bearer. Resolves {status, ok, text}; REJECTS
@@ -264,6 +269,11 @@ export function errorDetail(err) {
 // answer is a REDIRECT — a bearer call is never re-sent elsewhere (DL-217: the doors are
 // loopback, and a redirect off them would carry the bearer to wherever it points). The caller
 // words that failure with {@see errorDetail} — the two callers say different things around it.
+//
+// A rejection AFTER the status arrived (the body cut off, a reset mid-body) carries that status as
+// `err.status`: the far end answered, so the request reached it — which a caller deciding whether
+// a write may have landed must be able to tell from a call that never got that far. The error
+// itself, and so its message, is the one the body read raised.
 export async function httpRoundTrip({ url, token, body, signal }) {
   const res = await fetch(url, {
     method: 'POST',
@@ -275,7 +285,43 @@ export async function httpRoundTrip({ url, token, body, signal }) {
     signal,
     redirect: 'error',
   });
-  return { status: res.status, ok: res.ok, text: await res.text() };
+  let text;
+  try {
+    text = await res.text();
+  } catch (err) {
+    if (err && typeof err === 'object') {
+      err.status = res.status;
+    }
+    throw err;
+  }
+  return { status: res.status, ok: res.ok, text };
+}
+
+// A seat's board-tools transport, from the environment its channel server runs with — the ONE
+// statement of the rules, read by the channel server and by bin/bridge-board-call.mjs:
+//   { kind: 'ssh', target, key, port }   BRIDGE_TOOLS_SSH_TARGET (bearer-free, DR2-5)
+//   { kind: 'http', url, token }         BRIDGE_TOOLS_ENDPOINT and a bearer `resolveToolsToken` finds
+//   { kind: 'conflict' }                 both set: a seat has exactly one transport
+//   { kind: 'incomplete', missing }      neither usable; `missing` names the settings to set
+// Pure but for `resolveToolsToken`'s read of a configured token FILE, so a rotated file is read at
+// each call.
+export function boardToolsTransport(env) {
+  const target = env.BRIDGE_TOOLS_SSH_TARGET || '';
+  const endpoint = env.BRIDGE_TOOLS_ENDPOINT || '';
+  if (target && endpoint) {
+    return { kind: 'conflict' };
+  }
+  if (target) {
+    return { kind: 'ssh', target, key: env.BRIDGE_TOOLS_SSH_KEY || '', port: env.BRIDGE_TOOLS_SSH_PORT || '' };
+  }
+  const token = resolveToolsToken(env);
+  if (endpoint && token) {
+    return { kind: 'http', url: endpoint, token };
+  }
+  return {
+    kind: 'incomplete',
+    missing: [endpoint ? null : 'BRIDGE_TOOLS_ENDPOINT', token ? null : 'BRIDGE_TOOLS_TOKEN (or BRIDGE_TOOLS_TOKEN_FILE)'].filter(Boolean),
+  };
 }
 
 // The `launch` object a board-tools call carries (card#10568; the bridge reads it through

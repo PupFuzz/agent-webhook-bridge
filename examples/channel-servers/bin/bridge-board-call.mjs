@@ -29,7 +29,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sshRoundTrip, httpRoundTrip, resolveToolsToken, scrubSnippet, errorDetail, readClientVersion } from '../channel-lib.mjs';
+import { sshRoundTrip, httpRoundTrip, boardToolsTransport, scrubSnippet, errorDetail, readClientVersion } from '../channel-lib.mjs';
 
 const EXIT_OK = 0;
 const EXIT_REFUSED = 1;
@@ -38,12 +38,14 @@ const EXIT_UNMEASURED = 3;
 const EXIT_USAGE = 4;
 
 const CALLER = 'script';
-// The whole call, either door: the channel server's own ssh deadline. A start's read-back is part
-// of the call, so this is a hang guard, not a latency budget.
-const DEADLINE_MS = 60000;
+// The whole call, either door. Below the 60 s a Claude Code hook gets by default, so a hook that
+// keeps its default timeout sees this program's own exit 3 rather than a kill; `--deadline-ms`
+// overrides it. A start's read-back is part of the call, so this is a hang guard, not a budget.
+const DEFAULT_DEADLINE_MS = 45000;
+const MAX_DEADLINE_MS = 600000;
 const SSH_STDERR_CAPTURE_LIMIT = 2000;
 
-const USAGE = 'usage: bridge-board-call [--channel <name>] [--project-dir <dir>] <tool> [\'<json-args>\']';
+const USAGE = 'usage: bridge-board-call [--channel <name>] [--project-dir <dir>] [--deadline-ms <1-600000>] <tool> [\'<json-args>\']';
 
 class Stop extends Error {
   constructor(code, message) {
@@ -53,16 +55,23 @@ class Stop extends Error {
 }
 
 function parseArgv(argv) {
-  const opts = { channel: null, projectDir: null };
+  const opts = { channel: null, projectDir: null, deadlineMs: DEFAULT_DEADLINE_MS };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--channel' || a === '--project-dir') {
+    if (a === '--channel' || a === '--project-dir' || a === '--deadline-ms') {
       const value = argv[++i];
       if (value === undefined || value === '') {
         throw new Stop(EXIT_USAGE, `${a} needs a value\n${USAGE}`);
       }
-      opts[a === '--channel' ? 'channel' : 'projectDir'] = value;
+      if (a === '--deadline-ms') {
+        if (!/^[0-9]{1,6}$/.test(value) || Number(value) < 1 || Number(value) > MAX_DEADLINE_MS) {
+          throw new Stop(EXIT_USAGE, `--deadline-ms must be a whole number of milliseconds from 1 to ${MAX_DEADLINE_MS}\n${USAGE}`);
+        }
+        opts.deadlineMs = Number(value);
+      } else {
+        opts[a === '--channel' ? 'channel' : 'projectDir'] = value;
+      }
     } else if (a === '-h' || a === '--help') {
       throw new Stop(EXIT_USAGE, USAGE);
     } else if (a.startsWith('-')) {
@@ -78,8 +87,8 @@ function parseArgv(argv) {
   if (rest.length === 2) {
     try {
       args = JSON.parse(rest[1]);
-    } catch (err) {
-      throw new Stop(EXIT_USAGE, `the arguments are not JSON (${err.message})\n${USAGE}`);
+    } catch {
+      throw new Stop(EXIT_USAGE, `the arguments are not valid JSON\n${USAGE}`);
     }
     if (args === null || typeof args !== 'object' || Array.isArray(args)) {
       throw new Stop(EXIT_USAGE, `the arguments must be a JSON object\n${USAGE}`);
@@ -135,8 +144,10 @@ function seatEnvironment(base, { channel, projectDir }) {
   let servers;
   try {
     servers = JSON.parse(text).mcpServers;
-  } catch (err) {
-    throw new Stop(EXIT_NO_TOOL, `${file} is not JSON (${err.message})`);
+  } catch {
+    // ⛔ Never `err.message`: V8 quotes the input around the error, and the input here is a file
+    // that holds bearer tokens (canon #20).
+    throw new Stop(EXIT_NO_TOOL, `${file} is not valid JSON`);
   }
   if (servers === null || typeof servers !== 'object' || Array.isArray(servers)) {
     throw new Stop(EXIT_NO_TOOL, `${file} has no \`mcpServers\` object`);
@@ -171,27 +182,39 @@ function seatEnvironment(base, { channel, projectDir }) {
   return { env, source: `${where} over this environment` };
 }
 
-/** The seat's board-tools transport, under the channel server's own rules. */
+/** The seat's board-tools transport — channel-lib's `boardToolsTransport`, the server's own rules. */
 function transportOf(env, source) {
   if (env.BRIDGE_CHANNEL_TOOLS === '0' || env.BRIDGE_CHANNEL_TOOLS === '') {
     throw new Stop(EXIT_NO_TOOL, `board tools are switched off for this channel (BRIDGE_CHANNEL_TOOLS=${JSON.stringify(env.BRIDGE_CHANNEL_TOOLS)}, read from ${source}), so its channel server offers none and this call was not made`);
   }
-  const target = env.BRIDGE_TOOLS_SSH_TARGET || '';
-  const endpoint = env.BRIDGE_TOOLS_ENDPOINT || '';
-  if (target && endpoint) {
+  const t = boardToolsTransport(env);
+  if (t.kind === 'conflict') {
     throw new Stop(EXIT_NO_TOOL, `BRIDGE_TOOLS_SSH_TARGET and BRIDGE_TOOLS_ENDPOINT are both set (read from ${source}) — a seat has exactly one board-tools transport`);
   }
-  if (target) {
-    return { kind: 'ssh', target, key: env.BRIDGE_TOOLS_SSH_KEY || '', port: env.BRIDGE_TOOLS_SSH_PORT || '' };
+  if (t.kind === 'incomplete') {
+    throw new Stop(
+      EXIT_NO_TOOL,
+      env.BRIDGE_TOOLS_ENDPOINT
+        ? `BRIDGE_TOOLS_ENDPOINT is set but no bearer resolves (BRIDGE_TOOLS_TOKEN, BRIDGE_TOOLS_TOKEN_FILE or BRIDGE_CHANNEL_TOKEN; read from ${source})`
+        : `no board-tools transport is configured: neither BRIDGE_TOOLS_SSH_TARGET nor BRIDGE_TOOLS_ENDPOINT is set in ${source}`,
+    );
   }
-  if (endpoint) {
-    const token = resolveToolsToken(env);
-    if (!token) {
-      throw new Stop(EXIT_NO_TOOL, `BRIDGE_TOOLS_ENDPOINT is set but no bearer resolves (BRIDGE_TOOLS_TOKEN, BRIDGE_TOOLS_TOKEN_FILE or BRIDGE_CHANNEL_TOKEN; read from ${source})`);
+  return t;
+}
+
+/** A URL for an output stream: any userinfo (a credential) removed. */
+function shown(url) {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password) {
+      u.username = '';
+      u.password = '';
+      return `${u.toString()} (credential in the URL withheld)`;
     }
-    return { kind: 'http', url: endpoint, token };
+    return u.toString();
+  } catch {
+    return '(BRIDGE_TOOLS_ENDPOINT, not a URL)';
   }
-  throw new Stop(EXIT_NO_TOOL, `no board-tools transport is configured: neither BRIDGE_TOOLS_SSH_TARGET nor BRIDGE_TOOLS_ENDPOINT is set in ${source}`);
 }
 
 /** The body as a JSON object, or null. */
@@ -223,8 +246,27 @@ function unmeasured(what, raw) {
   return { code: EXIT_UNMEASURED, stderr: `the outcome is NOT established — ${what}${said ? `: ${said}` : ''}` };
 }
 
-async function overSsh(t, payload) {
-  const r = await sshRoundTrip({ target: t.target, key: t.key, port: t.port, input: payload, deadlineMs: DEADLINE_MS, stderrLimit: SSH_STDERR_CAPTURE_LIMIT });
+// ssh's own exit 255 proves nothing reached the bridge only when ssh says the session never
+// opened: it could not connect, resolve, trust the host or authenticate. 255 is also a session
+// that dropped after the forced command started ("closed by remote host", "Broken pipe") — the
+// same may-have-landed case as a reset after an HTTP request — and a bridge process that died
+// with 255 before its envelope. Those, and a 255 that says nothing, are unmeasured.
+const SSH_BEFORE_SESSION = [
+  /Connection refused/,
+  /Could not resolve hostname/,
+  /Name or service not known/,
+  /Temporary failure in name resolution/,
+  /No route to host/,
+  /Network is unreachable/,
+  /connect to host .* port \d+: Connection timed out/,
+  /Host key verification failed/,
+  /Permission denied \(/,
+  /Too many authentication failures/,
+  /Unable to negotiate with/,
+];
+
+async function overSsh(t, payload, deadlineMs) {
+  const r = await sshRoundTrip({ target: t.target, key: t.key, port: t.port, input: payload, deadlineMs, stderrLimit: SSH_STDERR_CAPTURE_LIMIT });
   if (r.failure) {
     return r.failure.kind === 'spawn' || r.failure.kind === 'error'
       ? { code: EXIT_NO_TOOL, stderr: r.failure.message }
@@ -236,29 +278,60 @@ async function overSsh(t, payload) {
   if (body !== null && ((r.code === 0 && body.ok === true) || (r.code === 1 && body.ok === false))) {
     return answered(r.stdout, body);
   }
-  // 255 is ssh's own failure (no connection, no authentication). A bridge process that died with
-  // 255 before writing its envelope looks the same from here; that bound is in the README.
-  if (r.code === 255 && body === null) {
-    return { code: EXIT_NO_TOOL, stderr: `${how}${stderr ? `: ${stderr}` : ' and wrote nothing to stderr'}` };
+  if (r.code === 255 && body === null && SSH_BEFORE_SESSION.some((re) => re.test(r.stderrHead))) {
+    return { code: EXIT_NO_TOOL, stderr: `${how} before a session opened: ${stderr}` };
   }
   return unmeasured(`${how}${stderr ? ` (stderr: ${stderr})` : ''}`, r.stdout);
 }
 
-async function overHttp(t, payload) {
-  const signal = AbortSignal.timeout(DEADLINE_MS);
+// A rejection proves nothing reached the bridge only for these causes; any other — a reset, a
+// socket closed mid-answer, a body cut off after its status — may follow a request the bridge
+// received and acted on, so it is unmeasured.
+const HTTP_NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+
+function neverSent(err) {
+  if (err && err.status !== undefined) {
+    return false;
+  }
+  const cause = err && err.cause;
+  if (!cause) {
+    return false;
+  }
+  // `redirect: 'error'` refuses a 3xx before following it: the bridge's door never redirects, so
+  // whatever answered is not the door and no tool ran.
+  if (/redirect/i.test(String(cause.message))) {
+    return true;
+  }
+  const codes = Array.isArray(cause.errors) && cause.errors.length > 0 ? cause.errors.map((e) => e && e.code) : [cause.code];
+  return codes.every((code) => HTTP_NOT_SENT.has(code));
+}
+
+async function overHttp(t, payload, deadlineMs) {
+  const url = shown(t.url);
+  const signal = AbortSignal.timeout(deadlineMs);
   let res;
   try {
     res = await httpRoundTrip({ url: t.url, token: t.token, body: payload, signal });
   } catch (err) {
-    return signal.aborted
-      ? unmeasured(`${t.url} did not answer within ${DEADLINE_MS}ms`, '')
-      : { code: EXIT_NO_TOOL, stderr: `could not reach ${t.url}: ${errorDetail(err)}` };
+    if (signal.aborted) {
+      return unmeasured(`${url} did not answer within ${deadlineMs}ms`, '');
+    }
+    if (err && err.status !== undefined) {
+      return unmeasured(`${url} answered HTTP ${err.status} and its body could not be read (${errorDetail(err)})`, '');
+    }
+    // fetch refuses a URL carrying credentials before it opens a connection.
+    if (/includes credentials/.test(String(err && err.message))) {
+      return { code: EXIT_NO_TOOL, stderr: `could not call ${url}: ${errorDetail(err)}` };
+    }
+    return neverSent(err)
+      ? { code: EXIT_NO_TOOL, stderr: `could not reach ${url}: ${errorDetail(err)}` }
+      : unmeasured(`the connection to ${url} failed after the request may have been sent (${errorDetail(err)})`, '');
   }
   const body = objectOf(res.text);
   if (body !== null && ((res.status === 200 && body.ok === true) || (res.status === 422 && body.ok === false))) {
     return answered(res.text, body);
   }
-  const how = `${t.url} answered HTTP ${res.status}`;
+  const how = `${url} answered HTTP ${res.status}`;
   if ((res.status >= 400 && res.status < 500 && res.status !== 422) || res.status === 503) {
     const said = saidBy(res.text);
     return { code: EXIT_NO_TOOL, stderr: `${how} — the call reached no tool${said ? `: ${said}` : ''}` };
@@ -272,7 +345,7 @@ async function main(argv, env) {
   const transport = transportOf(seatEnv, source);
   const version = readClientVersion();
   const payload = JSON.stringify({ tool: call.tool, args: call.args, caller: CALLER, ...(version === null ? {} : { client_version: version }) });
-  return transport.kind === 'ssh' ? overSsh(transport, payload) : overHttp(transport, payload);
+  return transport.kind === 'ssh' ? overSsh(transport, payload, call.deadlineMs) : overHttp(transport, payload, call.deadlineMs);
 }
 
 // `stderr` is printed with this program's name in front, except a refusal's `error`, which is
