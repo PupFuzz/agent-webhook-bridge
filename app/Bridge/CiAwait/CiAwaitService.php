@@ -16,6 +16,7 @@ use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Models\CiAwait;
 use App\Models\WebhookEvent;
+use DateTimeInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
@@ -49,6 +50,15 @@ use UnexpectedValueException;
  * read again on the next completed run on that head or by {@see CiAwaitSweepJob}; if no read ever
  * answers, the seat gets `ci_await_expired` carrying the last error at expiry.
  *
+ * ⭐ THE DELIVERED RUN IS OVERLAID. The list API can lag the webhook: the run whose completion was
+ * just delivered may still read `in_progress` (or be absent) in the list read for that delivery. A
+ * last run lost that way would strand the wake until the TTL, so the read for a delivery treats the
+ * delivered run, keyed by id, as completed with the delivery's conclusion.
+ *
+ * ⚠ `repo` IS STORED LOWER-CASE and every lookup lower-cases its input, so SQLite (case-sensitive
+ * `=`) and MariaDB (case-insensitive collation) find the same rows; `repo_name` keeps the configured
+ * subscription spelling, which is what the token resolver, the API and the events use.
+ *
  * Emitted intents are STAGED to the inbox and then pushed live: the await is gone once claimed, so
  * the inbox line is what carries the wake to a seat whose channel was down at the moment.
  */
@@ -66,6 +76,12 @@ final class CiAwaitService
         private readonly IntentLog $intents,
     ) {}
 
+    /** The stored lookup key of a repo: lower-case, as GitHub compares repo names. */
+    public static function key(string $repo): string
+    {
+        return strtolower($repo);
+    }
+
     /**
      * The configured spelling of `$repo` among this install's GitHub subscriptions (compared
      * case-insensitively, as GitHub compares repo names), or null when no agent here subscribes to
@@ -75,7 +91,7 @@ final class CiAwaitService
     {
         foreach ((new SubscriptionRegistry((string) config('bridge.config_dir')))->agentConfigs() as $cfg) {
             foreach ($cfg->subscriptions as $sub) {
-                if ($sub->provider === 'github' && strcasecmp($sub->scopeId, $repo) === 0) {
+                if ($sub->provider === 'github' && self::key($sub->scopeId) === self::key($repo)) {
                     return $sub->scopeId;
                 }
             }
@@ -85,33 +101,80 @@ final class CiAwaitService
     }
 
     /**
-     * Whether this install holds a stored `workflow_run` delivery from `$repo`. TRUE is evidence the
-     * repo's webhook sends workflow runs here; FALSE is not evidence it does not — retention may have
-     * pruned them, or no run has completed since the webhook was added.
+     * Whether this install holds a stored `workflow_run` delivery from `$repoName` (the configured
+     * spelling, which is the delivered one). TRUE is evidence the repo's webhook sends workflow runs
+     * here; FALSE is not evidence it does not — retention may have pruned them, or no run has
+     * completed since the webhook was added.
      */
-    public static function hasRecordedWorkflowRun(string $repo): bool
+    public static function hasRecordedWorkflowRun(string $repoName): bool
     {
         return WebhookEvent::query()
             ->where('provider', 'github')
-            ->where('scope_id', $repo)
+            ->where('scope_id', $repoName)
             ->where('event_type', 'like', 'workflow_run.%')
             ->exists();
     }
 
     /**
-     * Store (or refresh) `$agent`'s await on the head, then read the head once — so CI that
-     * finished before the seat registered settles it now.
+     * How many OTHER heads `$agent` is awaiting, and whether it already awaits this one — what the
+     * per-seat cap is judged on. A refresh of an existing await is never capped.
      *
-     * @return array{refreshed: bool, state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string}
+     * @return array{others: int, this_head: bool}
      */
-    public function register(string $agent, string $repo, string $headSha, ?int $pr, int $ttlSeconds): array
+    public function seatLoad(string $agent, string $repoName, string $headSha): array
     {
-        $expiresAt = Carbon::now()->addSeconds($ttlSeconds);
-        $refreshed = $this->upsert($agent, $repo, $headSha, $pr, $expiresAt);
+        $mine = CiAwait::query()->where('agent', $agent);
+        $thisHead = $mine->clone()->where('repo', self::key($repoName))->where('head_sha', $headSha)->exists();
+
+        return ['others' => $mine->clone()->count() - ($thisHead ? 1 : 0), 'this_head' => $thisHead];
+    }
+
+    /**
+     * Store (or refresh) `$agent`'s await on the head and make sure the sweep exists. A database
+     * failure propagates: until this returns, nothing is stored and the caller may say so.
+     *
+     * @return bool whether an existing await was refreshed
+     */
+    public function store(string $agent, string $repoName, string $headSha, ?int $pr, int $ttlSeconds): bool
+    {
+        $refreshed = $this->upsert($agent, $repoName, $headSha, $pr, Carbon::now()->addSeconds($ttlSeconds));
         $this->declareSweep();
 
-        $read = $this->evaluate($repo, $headSha);
-        $mine = CiAwait::query()->where('agent', $agent)->where('repo', $repo)->where('head_sha', $headSha)->first();
+        return $refreshed;
+    }
+
+    /**
+     * Read the head once for a just-stored await, so CI that finished before the seat registered
+     * settles it now. NEVER THROWS: the await is already stored, so a failure here — the read, the
+     * claim, the inbox write — is reported as `unmeasured`, never as "nothing was stored".
+     *
+     * A head whose read ANSWERED within `$cooldownSeconds` is not read again: the answer is
+     * `waiting` from the stored state, with `read_skipped: true`. (A read that answered "all
+     * terminal" deleted the head's awaits, so a fresh answered read on a stored await means CI was
+     * still running then.)
+     *
+     * @return array{state: string, pr: ?int, expires_at: ?string, runs_total: ?int, runs_completed: ?int, read_error: ?string, read_skipped: bool}
+     */
+    public function evaluateRegistration(string $agent, string $repoName, string $headSha, ?int $pr, int $cooldownSeconds): array
+    {
+        $key = self::key($repoName);
+        $read = ['runs' => null, 'error' => null, 'all_terminal' => false];
+        $skipped = false;
+        try {
+            $skipped = $cooldownSeconds > 0 && CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)
+                ->whereNull('last_error')->where('last_read_at', '>=', Carbon::now()->subSeconds($cooldownSeconds))->exists();
+            if (! $skipped) {
+                $read = $this->evaluate($key, $headSha, null);
+            }
+            $mine = CiAwait::query()->where('agent', $agent)->where('repo', $key)->where('head_sha', $headSha)->first();
+        } catch (Throwable $e) {
+            Log::warning('bridge ci_await: the await is stored, but evaluating it at registration failed — it is evaluated again on the next completed run on this head or by the ci_await sweep', [
+                'agent' => $agent, 'repo' => $repoName, 'head_sha' => $headSha,
+            ] + RedactedErrorText::logContext($e));
+
+            return ['state' => 'unmeasured', 'pr' => $pr, 'expires_at' => null, 'runs_total' => null, 'runs_completed' => null,
+                'read_error' => 'the await is stored, but evaluating it failed: '.RedactedErrorText::of($e), 'read_skipped' => false];
+        }
 
         $state = match (true) {
             $read['error'] !== null => 'unmeasured',
@@ -120,13 +183,13 @@ final class CiAwaitService
         };
 
         return [
-            'refreshed' => $refreshed,
             'state' => $state,
             'pr' => $mine === null ? $pr : $mine->pr,
             'expires_at' => $mine === null ? null : self::instant($mine->expires_at),
             'runs_total' => $read['runs'] === null ? null : count($read['runs']),
             'runs_completed' => $read['runs'] === null ? null : count(array_filter($read['runs'], static fn (array $r): bool => $r['status'] === 'completed')),
             'read_error' => $read['error'],
+            'read_skipped' => $skipped,
         ];
     }
 
@@ -135,19 +198,22 @@ final class CiAwaitService
     {
         return CiAwait::query()
             ->where('agent', $agent)
-            ->whereRaw('lower(repo) = ?', [strtolower($repo)])
+            ->where('repo', self::key($repo))
             ->where('head_sha', $headSha)
             ->delete() > 0;
     }
 
     /**
-     * A `workflow_run.completed` arrived for `$repo` at `$headSha`. Never throws: it runs after the
-     * response, where nothing would report a throw.
+     * A `workflow_run.completed` arrived for `$repo` at `$headSha`, delivering `$deliveredRun`
+     * (null when the payload named no readable run id). Never throws: it runs after the response,
+     * where nothing would report a throw.
+     *
+     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string}  $deliveredRun
      */
-    public function onWorkflowRunCompleted(string $repo, string $headSha): void
+    public function onWorkflowRunCompleted(string $repo, string $headSha, ?array $deliveredRun = null): void
     {
         try {
-            $this->evaluate($repo, $headSha);
+            $this->evaluate(self::key($repo), $headSha, $deliveredRun);
         } catch (Throwable $e) {
             Log::warning('bridge ci_await: evaluating a completed workflow run failed — any await on this head is kept and re-read on the next completed run or by the ci_await sweep', [
                 'repo' => $repo, 'head_sha' => $headSha,
@@ -173,13 +239,16 @@ final class CiAwaitService
     /**
      * Re-read up to `$limit` heads whose last read FAILED and that have not expired, least recently
      * read first. Only failed reads are retried on the clock: a head whose read answered is
-     * re-read when its next run completes, never on a timer. Returns how many heads were read.
+     * re-read when its next run completes, never on a timer. A head whose failure was a rate limit
+     * that named its reset is skipped until that reset. Returns how many heads were read.
      */
     public function retryUnmeasured(int $limit): int
     {
+        $now = Carbon::now();
         $heads = CiAwait::query()
             ->whereNotNull('last_error')
-            ->where('expires_at', '>', Carbon::now())
+            ->where('expires_at', '>', $now)
+            ->where(fn ($q) => $q->whereNull('retry_not_before')->orWhere('retry_not_before', '<=', $now))
             ->select('repo', 'head_sha')
             ->selectRaw('min(last_read_at) as oldest_read')
             ->groupBy('repo', 'head_sha')
@@ -187,7 +256,7 @@ final class CiAwaitService
             ->limit($limit)
             ->get();
         foreach ($heads as $head) {
-            $this->evaluate((string) $head->repo, (string) $head->head_sha);
+            $this->evaluate((string) $head->repo, (string) $head->head_sha, null);
         }
 
         return $heads->count();
@@ -200,30 +269,36 @@ final class CiAwaitService
      * evaluation of the same head may claim them meanwhile — {@see claimAndEmit()} is what makes
      * that safe, not the order.
      *
-     * @return array{runs: ?list<array{workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>, error: ?string, all_terminal: bool}
+     * @param  ?array{id: int, workflow: string, conclusion: ?string, html_url: string}  $deliveredRun
+     * @return array{runs: ?list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>, error: ?string, all_terminal: bool}
      */
-    private function evaluate(string $repo, string $headSha): array
+    private function evaluate(string $key, string $headSha, ?array $deliveredRun): array
     {
-        $awaits = CiAwait::query()->where('repo', $repo)->where('head_sha', $headSha)->orderBy('id')->get();
+        $awaits = CiAwait::query()->where('repo', $key)->where('head_sha', $headSha)->orderBy('id')->get();
         if ($awaits->isEmpty()) {
             return ['runs' => null, 'error' => null, 'all_terminal' => false];
         }
 
+        $repoName = $awaits->first()->repo_name;
         $measuredAt = Carbon::now();
         $ids = $awaits->pluck('id')->all();
         try {
-            $runs = $this->readRuns($repo, $headSha);
+            $runs = $this->readRuns($repoName, $headSha);
         } catch (CiRunsReadException $e) {
             // The column holds 1000 characters; a longer error would fail the write that records it.
             $error = mb_substr($e->getMessage(), 0, 1000);
-            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error]);
+            CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => $error, 'retry_not_before' => $e->retryNotBefore]);
             Log::warning('bridge ci_await: the workflow-run read failed, so nothing was emitted — the await is kept and re-read on the next completed run on this head or by the ci_await sweep, and expires with this error if no read answers', [
-                'repo' => $repo, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $error,
+                'repo' => $repoName, 'head_sha' => $headSha, 'awaits' => count($ids), 'error' => $error,
             ]);
 
             return ['runs' => null, 'error' => $error, 'all_terminal' => false];
         }
-        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null]);
+        CiAwait::query()->whereKey($ids)->update(['last_read_at' => $measuredAt, 'last_error' => null, 'retry_not_before' => null]);
+
+        if ($deliveredRun !== null) {
+            $runs = self::overlay($runs, $deliveredRun);
+        }
 
         // No run at all is NOT settled: CI that has not been queued yet looks exactly like this.
         $allTerminal = $runs !== [] && array_filter($runs, static fn (array $r): bool => $r['status'] !== 'completed') === [];
@@ -237,6 +312,30 @@ final class CiAwaitService
     }
 
     /**
+     * The list as it stands once the delivered run is known to be completed: its row is marked
+     * completed (taking the delivery's conclusion where the list has none), or appended when the
+     * list does not carry it yet.
+     *
+     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>  $runs
+     * @param  array{id: int, workflow: string, conclusion: ?string, html_url: string}  $delivered
+     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     */
+    private static function overlay(array $runs, array $delivered): array
+    {
+        foreach ($runs as $i => $run) {
+            if ($run['id'] === $delivered['id']) {
+                $runs[$i]['status'] = 'completed';
+                $runs[$i]['conclusion'] = $delivered['conclusion'] ?? $run['conclusion'];
+
+                return $runs;
+            }
+        }
+        $runs[] = $delivered + ['status' => 'completed', 'event' => ''];
+
+        return $runs;
+    }
+
+    /**
      * Claim the await by deleting it, and emit only if this call's delete removed it. The inbox
      * line is written inside the same transaction, so a staging failure rolls the claim back and
      * the await survives to be emitted later; the live push runs after the commit and is best-effort.
@@ -247,7 +346,7 @@ final class CiAwaitService
     {
         $intent = new Intent(
             kind: $kind,
-            subjectId: "ci:{$await->repo}@{$await->head_sha}",
+            subjectId: "ci:{$await->repo_name}@{$await->head_sha}",
             provider: 'bridge',
             actor: new Actor(id: null),
             summary: $summary,
@@ -266,12 +365,12 @@ final class CiAwaitService
             return false;
         }
 
-        Log::info("bridge ci_await: {$kind} emitted", ['agent' => $await->agent, 'repo' => $await->repo, 'head_sha' => $await->head_sha]);
+        Log::info("bridge ci_await: {$kind} emitted", ['agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha]);
         try {
             (new AuthoredIntentPush($this->handlers))->send($intent, $await->agent);
         } catch (Throwable $e) {
             Log::warning("bridge ci_await: the live push of {$kind} failed — the intent is staged in the agent's inbox, which bridge:inbox surfaces", [
-                'agent' => $await->agent, 'repo' => $await->repo, 'head_sha' => $await->head_sha,
+                'agent' => $await->agent, 'repo' => $await->repo_name, 'head_sha' => $await->head_sha,
             ] + RedactedErrorText::logContext($e));
         }
 
@@ -279,40 +378,61 @@ final class CiAwaitService
     }
 
     /**
-     * @return list<array{workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
      *
      * @throws CiRunsReadException naming why no complete run list was read
      */
-    private function readRuns(string $repo, string $headSha): array
+    private function readRuns(string $repoName, string $headSha): array
     {
-        $token = (new GitHubTokenResolver)->resolveFor($repo);
+        $token = (new GitHubTokenResolver)->resolveFor($repoName);
         if (! $token->ok()) {
             throw new CiRunsReadException('no GitHub read token: '.$token->problem);
         }
 
         try {
-            return (new GitHubReadClient((string) $token->token, self::TIMEOUT_SECONDS))->workflowRunsForHead($repo, $headSha);
+            return (new GitHubReadClient((string) $token->token, self::TIMEOUT_SECONDS))->workflowRunsForHead($repoName, $headSha);
         } catch (RequestException $e) {
             $status = $e->response->status();
-            $remaining = $e->response->header('X-RateLimit-Remaining');
-            $limited = $status === 429 || ($status === 403 && $remaining === '0');
+            $limited = $status === 429 || ($status === 403 && $e->response->header('X-RateLimit-Remaining') === '0');
+            $resetAt = $limited ? self::rateLimitReset($e) : null;
 
-            throw new CiRunsReadException("GitHub answered HTTP {$status} to the workflow-run read".($limited ? ' (rate limited)' : ''));
+            throw new CiRunsReadException(
+                "GitHub answered HTTP {$status} to the workflow-run read".($limited ? ' (rate limited'.($resetAt === null ? '' : ' until '.self::instant($resetAt)).')' : ''),
+                $resetAt,
+            );
         } catch (ConnectionException|UnexpectedValueException $e) {
             throw new CiRunsReadException(RedactedErrorText::of($e));
         }
     }
 
-    private function upsert(string $agent, string $repo, string $headSha, ?int $pr, Carbon $expiresAt): bool
+    /**
+     * When a rate-limited read says the quota comes back: `X-RateLimit-Reset` (epoch seconds), else
+     * `Retry-After` (seconds from now) — or null when it names neither in a readable form.
+     */
+    private static function rateLimitReset(RequestException $e): ?Carbon
     {
-        $mine = CiAwait::query()->where('agent', $agent)->where('repo', $repo)->where('head_sha', $headSha);
+        $reset = $e->response->header('X-RateLimit-Reset');
+        if (preg_match('/\A[0-9]{1,12}\z/', $reset) === 1) {
+            return Carbon::createFromTimestamp((int) $reset, 'UTC');
+        }
+        $after = $e->response->header('Retry-After');
+        if (preg_match('/\A[0-9]{1,6}\z/', $after) === 1) {
+            return Carbon::now()->addSeconds((int) $after);
+        }
+
+        return null;
+    }
+
+    private function upsert(string $agent, string $repoName, string $headSha, ?int $pr, Carbon $expiresAt): bool
+    {
+        $mine = CiAwait::query()->where('agent', $agent)->where('repo', self::key($repoName))->where('head_sha', $headSha);
         // A re-registration WITHOUT a pr keeps the one already recorded; one with a pr replaces it.
         $refresh = ['expires_at' => $expiresAt] + ($pr === null ? [] : ['pr' => $pr]);
         if ($mine->clone()->update($refresh) > 0) {
             return true;
         }
         try {
-            CiAwait::query()->create(['agent' => $agent, 'repo' => $repo, 'head_sha' => $headSha, 'pr' => $pr, 'expires_at' => $expiresAt]);
+            CiAwait::query()->create(['agent' => $agent, 'repo' => self::key($repoName), 'repo_name' => $repoName, 'head_sha' => $headSha, 'pr' => $pr, 'expires_at' => $expiresAt]);
 
             return false;
         } catch (UniqueConstraintViolationException) {
@@ -341,13 +461,13 @@ final class CiAwaitService
     }
 
     /**
-     * @param  list<array{workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>  $runs
+     * @param  list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>  $runs
      * @return array<string, mixed>
      */
     private static function settledPayload(CiAwait $await, array $runs, Carbon $measuredAt): array
     {
         return [
-            'repo' => $await->repo,
+            'repo' => $await->repo_name,
             'head_sha' => $await->head_sha,
             'pr' => $await->pr,
             'runs' => array_map(static fn (array $r): array => ['workflow' => $r['workflow'], 'conclusion' => $r['conclusion'], 'html_url' => $r['html_url']], $runs),
@@ -358,7 +478,7 @@ final class CiAwaitService
 
     private static function settledSummary(CiAwait $await, int $runs): string
     {
-        return "CI settled on {$await->repo}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
+        return "CI settled on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
             .": all {$runs} workflow run(s) are terminal. This is not a verdict — run ci-read once on this head for green/red.";
     }
 
@@ -366,7 +486,7 @@ final class CiAwaitService
     private static function expiredPayload(CiAwait $await): array
     {
         return [
-            'repo' => $await->repo,
+            'repo' => $await->repo_name,
             'head_sha' => $await->head_sha,
             'pr' => $await->pr,
             'registered_at' => self::instant($await->created_at),
@@ -378,14 +498,14 @@ final class CiAwaitService
 
     private static function expiredSummary(CiAwait $await): string
     {
-        return "Stopped waiting for CI on {$await->repo}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
+        return "Stopped waiting for CI on {$await->repo_name}@".substr($await->head_sha, 0, 12).($await->pr === null ? '' : " (PR #{$await->pr})")
             .' — the await expired before every workflow run was seen terminal'
             .($await->last_error === null ? '' : " (last read failed: {$await->last_error})")
             .'. Run ci-read on this head, or re-register with ci_await.';
     }
 
-    private static function instant(Carbon $at): string
+    private static function instant(DateTimeInterface $at): string
     {
-        return $at->copy()->utc()->format('Y-m-d\TH:i:s.v\Z');
+        return Carbon::instance($at)->utc()->format('Y-m-d\TH:i:s.v\Z');
     }
 }

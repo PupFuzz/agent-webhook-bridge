@@ -438,15 +438,26 @@ return [
     |--------------------------------------------------------------------------
     |
     | ttl — how long a seat's `ci_await` registration lives before the bridge
-    | gives up on it and emits `ci_await_expired`, in seconds (default 6 h).
-    | Re-registering the same head restarts it. A value outside 60..604800 is
-    | REFUSED, not clamped: `ci_await` refuses as an install fault and
-    | `bridge:check` (`ci_await.awaits`) fails, naming the value.
+    | gives up on it and emits `ci_await_expired`, in seconds (default 6 h,
+    | 60..604800). Re-registering the same head restarts it.
+    |
+    | max_per_seat — how many heads one seat may await at once (default 50,
+    | 1..10000); a NEW await past it is refused `too_many_awaits`.
+    |
+    | read_cooldown — a registration skips its own runs read when a read of the
+    | same head ANSWERED within this many seconds (default 60, 0..3600; 0
+    | always reads).
+    |
+    | A value outside its range is REFUSED, not clamped: `ci_await` refuses as
+    | `install_fault.ci_await_config_invalid` and `bridge:check`
+    | (`ci_await.awaits`) fails, naming the key and the value.
     |
     */
 
     'ci_await' => [
         'ttl' => env('BRIDGE_CI_AWAIT_TTL', 21600),
+        'max_per_seat' => env('BRIDGE_CI_AWAIT_MAX_PER_SEAT', 50),
+        'read_cooldown' => env('BRIDGE_CI_AWAIT_READ_COOLDOWN', 60),
     ],
 
     /*

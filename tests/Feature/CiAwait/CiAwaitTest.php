@@ -352,6 +352,219 @@ class CiAwaitTest extends TestCase
         $this->assertSame($before->created_at->toIso8601String(), $after->created_at->toIso8601String());
     }
 
+    // ---- a consistent run list (round 1, MAJOR) -------------------------------------------
+
+    public function test_a_run_created_between_pages_is_a_failed_read_not_a_settle(): void
+    {
+        $this->seedAwait('seat-a');
+        // Page 1 is ids 1..100 of 101. A new run is then created ahead of them, so page 2 carries
+        // id 100 AGAIN (shifted down) and the new, queued run is on neither page.
+        $page1 = array_fill(0, 100, ['CI', 'completed', 'success']);
+        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['CI', 'completed', 'success']], total: 102, firstId: 100)]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertStringContainsString('changed while it was being read', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    public function test_a_run_deleted_between_pages_is_a_failed_read_not_a_settle(): void
+    {
+        $this->seedAwait('seat-a');
+        // Page 1 is ids 1..100 of 101. One of them is then deleted, so run 101 moves up onto page 1,
+        // already read, and page 2 comes back empty: the walk never sees run 101.
+        $page1 = array_fill(0, 100, ['CI', 'completed', 'success']);
+        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([], total: 100)]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertNotNull(CiAwait::query()->sole()->last_error);
+    }
+
+    public function test_pages_whose_distinct_runs_do_not_add_up_to_the_total_are_a_failed_read(): void
+    {
+        $this->seedAwait('seat-a');
+        // The total holds still, and a duplicate still fills the count: only de-duplicating by id sees it.
+        $page1 = array_fill(0, 100, ['CI', 'completed', 'success']);
+        $this->fakeGitHub([[$this->runs($page1, total: 101), $this->runs([['CI', 'completed', 'success']], total: 101, firstId: 100)]]);
+
+        $this->postRunCompleted(self::SHA)->assertOk();
+
+        $this->assertSame([], $this->inbox());
+        $this->assertStringContainsString('100 distinct run(s)', (string) CiAwait::query()->sole()->last_error);
+    }
+
+    // ---- the delivered run (round 1, MINOR 2) --------------------------------------------
+
+    public function test_the_delivered_run_counts_as_completed_where_the_list_still_says_in_progress(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success'], ['E2E', 'in_progress', null]])]]);
+
+        $this->postRunCompleted(self::SHA, runId: 2, conclusion: 'failure')->assertOk();
+
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertSame(['success', 'failure'], array_column($lines[0]['payload']['runs'], 'conclusion'));
+    }
+
+    public function test_the_delivered_run_is_counted_where_the_list_does_not_carry_it_yet(): void
+    {
+        $this->seedAwait('seat-a');
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+
+        $this->postRunCompleted(self::SHA, runId: 7)->assertOk();
+
+        $lines = $this->inbox();
+        $this->assertSame(['ci_settled'], array_column($lines, 'kind'));
+        $this->assertCount(2, $lines[0]['payload']['runs']);
+    }
+
+    // ---- what the tool may say after the store (round 1, MINOR 3) ------------------------
+
+    public function test_a_failure_after_the_await_is_stored_answers_unmeasured_and_keeps_the_await(): void
+    {
+        $this->fakeGitHub([[$this->runs([['CI', 'completed', 'success']])]]);
+        // Every run is terminal, so the registration claims and stages — and the inbox cannot be
+        // written: its directory sits under a regular file.
+        File::put($this->dir.'/blocker', 'x');
+        config(['bridge.state_dir' => $this->dir.'/blocker/state']);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertTrue($out->ok, json_encode($out->body()) ?: '');
+        $this->assertSame('unmeasured', $out->body()['result']['state']);
+        $this->assertStringContainsString('the await is stored, but evaluating it failed', $out->body()['result']['read_error']);
+        $this->assertSame(1, CiAwait::query()->count(), 'the claim rolled back with the failed stage, so the await is still there');
+    }
+
+    public function test_a_store_that_cannot_be_written_is_refused_as_nothing_stored(): void
+    {
+        Http::fake();
+        $migration = require glob(database_path('migrations/*_create_ci_awaits_table.php'))[0];
+        $migration->down();
+        try {
+            $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+        } finally {
+            $migration->up();
+        }
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('install_fault.ci_await_store_unavailable', $out->body()['reason']);
+        Http::assertNothingSent();
+    }
+
+    // ---- quota (round 1, MINOR 4) --------------------------------------------------------
+
+    public function test_a_new_await_past_the_per_seat_cap_is_refused_and_a_refresh_is_not(): void
+    {
+        config(['bridge.ci_await.max_per_seat' => 2]);
+        $this->seedAwait('seat-a', sha: self::OTHER_SHA);
+        $this->seedAwait('seat-a', sha: str_repeat('c', 40));
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('too_many_awaits', $out->body()['reason']);
+        $this->assertSame(2, CiAwait::query()->count());
+        Http::assertNothingSent();
+
+        $this->fakeGitHub([[$this->runs([['CI', 'queued', null]], firstId: 1)]]);
+        $refresh = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::OTHER_SHA]);
+        $this->assertTrue($refresh->ok);
+        $this->assertTrue($refresh->body()['result']['refreshed']);
+    }
+
+    public function test_a_registration_inside_the_read_cooldown_answers_waiting_without_a_read(): void
+    {
+        config(['bridge.ci_await.read_cooldown' => 60]);
+        $this->seedAwait('seat-b');
+        CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(10)]);
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertSame('waiting', $out->body()['result']['state']);
+        $this->assertTrue($out->body()['result']['read_skipped']);
+        $this->assertSame(2, CiAwait::query()->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_a_registration_past_the_read_cooldown_reads(): void
+    {
+        config(['bridge.ci_await.read_cooldown' => 60]);
+        $this->seedAwait('seat-b');
+        CiAwait::query()->update(['last_read_at' => Carbon::now()->subSeconds(120)]);
+        $this->fakeGitHub([[$this->runs([['CI', 'queued', null]])]]);
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA]);
+
+        $this->assertArrayNotHasKey('read_skipped', $out->body()['result']);
+        $this->assertSentRunsReads(1);
+    }
+
+    public function test_the_sweep_does_not_retry_a_rate_limited_head_before_its_reset(): void
+    {
+        $this->seedAwait('seat-a');
+        $reset = Carbon::now()->addSeconds(600);
+        Http::fake([
+            self::RUNS_URL => Http::sequence()
+                ->push(['message' => 'API rate limit exceeded'], 403, ['X-RateLimit-Remaining' => '0', 'X-RateLimit-Reset' => (string) $reset->getTimestamp()])
+                ->push($this->runs([['CI', 'completed', 'success']])),
+            '127.0.0.1:*' => Http::response('ok', 200),
+        ]);
+        $this->postRunCompleted(self::SHA)->assertOk();
+        $this->assertStringContainsString('(rate limited until 2026-10-03T10:10:00.000Z)', (string) CiAwait::query()->sole()->last_error);
+
+        $this->runSweep();
+        $this->assertSentRunsReads(1);
+
+        Carbon::setTestNow('2026-10-03T10:10:01.000Z');
+        $this->runSweep();
+        $this->assertSentRunsReads(2);
+        $this->assertSame(['ci_settled'], array_column($this->inbox(), 'kind'));
+    }
+
+    // ---- case (round 1, MINOR 5) and pr bound (MINOR 6) ----------------------------------
+
+    public function test_repo_spellings_that_differ_only_in_case_name_one_await(): void
+    {
+        File::put($this->dir.'/seat-a.yml', "subscriptions:\n  - provider: github\n    scopes: [Octo/Widgets]\n");
+        Http::fake(fn (Request $r) => stripos($r->url(), 'api.github.com/repos/octo/widgets/actions/runs') !== false
+            ? Http::response($this->runs([['CI', 'in_progress', null]]))
+            : Http::response('ok', 200));
+
+        $this->callTool('seat-a', 'ci_await', ['repo' => 'octo/WIDGETS', 'head_sha' => self::SHA]);
+        $this->callTool('seat-a', 'ci_await', ['repo' => 'OCTO/widgets', 'head_sha' => self::SHA]);
+
+        $await = CiAwait::query()->sole();
+        $this->assertSame('octo/widgets', $await->repo);
+        $this->assertSame('Octo/Widgets', $await->repo_name);
+
+        // One read at the first registration (the second sits inside the read cooldown), and one for
+        // the detector, which is handed a spelling the store never saw — all against the configured one.
+        $this->app->make(CiAwaitService::class)->onWorkflowRunCompleted('octo/widgets', self::SHA);
+        $this->assertSentRunsReadsMatching('/repos/Octo/Widgets/actions/runs', 2);
+
+        $cancel = $this->callTool('seat-a', 'ci_await_cancel', ['repo' => 'Octo/WIDGETS', 'head_sha' => self::SHA]);
+        $this->assertTrue($cancel->body()['result']['cancelled']);
+        $this->assertSame(0, CiAwait::query()->count());
+    }
+
+    public function test_a_pr_above_the_column_maximum_is_refused_before_any_write(): void
+    {
+        Http::fake();
+
+        $out = $this->callTool('seat-a', 'ci_await', ['repo' => self::REPO, 'head_sha' => self::SHA, 'pr' => 4294967296]);
+
+        $this->assertFalse($out->ok);
+        $this->assertSame('bad_arguments', $out->body()['reason']);
+        $this->assertSame(0, CiAwait::query()->count());
+        Http::assertNothingSent();
+    }
+
     // ---- read failures -------------------------------------------------------------------
 
     public function test_a_failed_read_keeps_the_await_emits_nothing_and_is_retried(): void
@@ -472,7 +685,7 @@ class CiAwaitTest extends TestCase
 
     private function seedAwait(string $agent, ?int $pr = null, string $sha = self::SHA): void
     {
-        CiAwait::query()->create(['agent' => $agent, 'repo' => self::REPO, 'head_sha' => $sha, 'pr' => $pr, 'expires_at' => Carbon::now()->addSeconds(21600)]);
+        CiAwait::query()->create(['agent' => $agent, 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => $sha, 'pr' => $pr, 'expires_at' => Carbon::now()->addSeconds(21600)]);
     }
 
     private function runSweep(): void
@@ -513,16 +726,20 @@ class CiAwaitTest extends TestCase
         return ['total_count' => $total ?? count($list), 'workflow_runs' => $list];
     }
 
-    private function postRunCompleted(string $sha): TestResponse
+    /**
+     * A delivery for run `$runId` — by default run 1, which every list fixture here carries, so the
+     * overlay of the delivered run changes nothing unless a test means it to.
+     */
+    private function postRunCompleted(string $sha, int $runId = 1, string $conclusion = 'success'): TestResponse
     {
-        return $this->postWorkflowRun('completed', $sha);
+        return $this->postWorkflowRun('completed', $sha, $runId, $conclusion);
     }
 
-    private function postWorkflowRun(string $action, string $sha): TestResponse
+    private function postWorkflowRun(string $action, string $sha, int $runId = 1, string $conclusion = 'success'): TestResponse
     {
         $body = (string) json_encode([
             'action' => $action,
-            'workflow_run' => ['id' => 9, 'name' => 'CI', 'head_sha' => $sha, 'status' => $action, 'conclusion' => $action === 'completed' ? 'success' : null],
+            'workflow_run' => ['id' => $runId, 'name' => 'CI', 'head_sha' => $sha, 'status' => $action, 'conclusion' => $action === 'completed' ? $conclusion : null, 'html_url' => "https://github.com/octo/widgets/actions/runs/{$runId}"],
             'repository' => ['full_name' => self::REPO],
             'sender' => ['id' => 4242],
         ]);
@@ -552,6 +769,11 @@ class CiAwaitTest extends TestCase
     private function assertSentRunsReads(int $n): void
     {
         $this->assertCount($n, Http::recorded(fn (Request $r): bool => str_contains($r->url(), '/repos/octo/widgets/actions/runs')));
+    }
+
+    private function assertSentRunsReadsMatching(string $path, int $n): void
+    {
+        $this->assertCount($n, Http::recorded(fn (Request $r): bool => str_contains($r->url(), $path)));
     }
 
     private function assertNoChannelPush(): void

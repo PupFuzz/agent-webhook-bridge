@@ -13,6 +13,7 @@ use Illuminate\Support\Carbon;
  * @property int $id
  * @property string $agent
  * @property string $repo
+ * @property string $repo_name
  * @property string $head_sha
  * @property int|null $pr
  * @property Carbon $created_at
@@ -20,6 +21,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon $expires_at
  * @property Carbon|null $last_read_at
  * @property string|null $last_error
+ * @property Carbon|null $retry_not_before
  */
 class CiAwait extends Model
 {
@@ -28,16 +30,19 @@ class CiAwait extends Model
     protected $fillable = [
         'agent',
         'repo',
+        'repo_name',
         'head_sha',
         'pr',
         'expires_at',
         'last_read_at',
         'last_error',
+        'retry_not_before',
     ];
 
     protected $casts = [
         'pr' => 'integer',
         'expires_at' => 'datetime',
         'last_read_at' => 'datetime',
+        'retry_not_before' => 'datetime',
     ];
 }

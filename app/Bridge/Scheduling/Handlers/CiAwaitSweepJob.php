@@ -29,7 +29,7 @@ use Throwable;
  * ⚑ {@see JobCapability::ReadAndAlert}: it deletes rows of the bridge's own `ci_awaits` bookkeeping,
  * reads GitHub and tells a seat. It writes nothing on kanban or GitHub.
  *
- * ⚑ ITS INSTANCE IS DECLARED BY `ci_await`, not shipped: {@see CiAwaitService::register()} declares
+ * ⚑ ITS INSTANCE IS DECLARED BY `ci_await`, not shipped: {@see CiAwaitService::store()} declares
  * {@see self::spec()} at every registration, so an install whose seats never register an await
  * never grows this job. Whether it can run on this install is {@see self::clockGap()}'s answer.
  */

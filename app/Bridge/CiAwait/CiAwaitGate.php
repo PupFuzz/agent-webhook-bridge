@@ -34,6 +34,15 @@ final class CiAwaitGate
             return;
         }
 
-        $this->app->terminating(fn () => $this->awaits->onWorkflowRunCompleted($scopeId, $headSha));
+        // The delivered run, so the read for this delivery can count it completed even where the
+        // list API still lags the webhook (CiAwaitService's overlay). No readable id, no overlay.
+        $delivered = is_int($run['id'] ?? null) ? [
+            'id' => $run['id'],
+            'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
+            'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
+            'html_url' => is_string($run['html_url'] ?? null) ? $run['html_url'] : '',
+        ] : null;
+
+        $this->app->terminating(fn () => $this->awaits->onWorkflowRunCompleted($scopeId, $headSha, $delivered));
     }
 }

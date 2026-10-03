@@ -500,15 +500,23 @@ final class GitHubReadClient
      *
      * ⛔ IT ANSWERS THE WHOLE LIST OR THROWS. The caller decides "every run is terminal" from
      * this, and a partial list can make that true of a head where it is not — so a 200 whose body
-     * is not a readable run list, a run entry without a readable `status`, and a walk that reaches
-     * {@see self::RUNS_PAGE_LIMIT} each throw {@see UnexpectedValueException} rather than return
-     * what was seen. A non-2xx throws RequestException, like every read here.
+     * is not a readable run list, a run entry without a readable integer `id` or `status`, and a
+     * walk that reaches {@see self::RUNS_PAGE_LIMIT} each throw {@see UnexpectedValueException}
+     * rather than return what was seen. A non-2xx throws RequestException, like every read here.
      *
-     * @return list<array{workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
+     * ⛔ AND THE WALK MUST BE CONSISTENT. Pages are separate requests, so a run created or deleted
+     * between them shifts rows across a page boundary: a created run pushes a row already seen onto
+     * the next page (a duplicate fills the count while the new, unfinished run is never seen), and
+     * a deleted one pulls an unseen row back onto a page already read. So runs are keyed by `id`,
+     * and the walk throws unless every page reported the SAME `total_count` and the distinct ids
+     * seen equal it. One page cannot shift against itself, so a single-page list needs neither.
+     *
+     * @return list<array{id: int, workflow: string, status: string, conclusion: ?string, html_url: string, event: string}>
      */
     public function workflowRunsForHead(string $repo, string $headSha): array
     {
         $runs = [];
+        $total = null;
         for ($page = 1; $page <= self::RUNS_PAGE_LIMIT; $page++) {
             $body = $this->http()->get(self::API_BASE."/repos/{$repo}/actions/runs", [
                 'head_sha' => $headSha,
@@ -521,11 +529,16 @@ final class GitHubReadClient
             if (! is_array($list) || ! array_is_list($list) || ! is_int($body['total_count'] ?? null)) {
                 throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} returned a 200 whose body is not a run list with a total_count; ".self::UNREADABLE_BODY_CAUSE);
             }
+            if ($total !== null && $body['total_count'] !== $total) {
+                throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} changed while it was being read (total_count {$total}, then {$body['total_count']} on page {$page}) — a run was created or deleted between pages, so the pages do not add up to one list");
+            }
+            $total = $body['total_count'];
             foreach ($list as $run) {
-                if (! is_array($run) || ! is_string($run['status'] ?? null)) {
-                    throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries a run with no readable `status`, so whether every run is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
+                if (! is_array($run) || ! is_int($run['id'] ?? null) || ! is_string($run['status'] ?? null)) {
+                    throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} carries a run with no readable integer `id` or `status`, so whether every run is terminal is unknown; ".self::UNREADABLE_BODY_CAUSE);
                 }
-                $runs[] = [
+                $runs[$run['id']] = [
+                    'id' => $run['id'],
                     'workflow' => is_string($run['name'] ?? null) ? $run['name'] : '',
                     'status' => $run['status'],
                     'conclusion' => is_string($run['conclusion'] ?? null) ? $run['conclusion'] : null,
@@ -534,8 +547,12 @@ final class GitHubReadClient
                 ];
             }
 
-            if (count($list) < self::RUNS_PAGE_SIZE || count($runs) >= $body['total_count']) {
-                return $runs;
+            if (count($list) < self::RUNS_PAGE_SIZE || count($runs) >= $total) {
+                if (count($runs) !== $total) {
+                    throw new UnexpectedValueException("the workflow-run list for {$repo}@{$headSha} reported total_count {$total} and its pages carried ".count($runs).' distinct run(s) — the pages do not add up to one list, so whether every run is terminal is unknown');
+                }
+
+                return array_values($runs);
             }
         }
 

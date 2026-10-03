@@ -18,7 +18,7 @@ use Throwable;
 /**
  * Can a seat's `ci_await` be settled or expired on this install (card#11200 / DL-452)?
  *
- * FAILs on a `BRIDGE_CI_AWAIT_TTL` the bridge refuses — every `ci_await` call refuses with it.
+ * FAILs on a `BRIDGE_CI_AWAIT_*` value the bridge refuses — every `ci_await` call refuses with it.
  * WARNs when the `ci_awaits` table is missing (every `ci_await` refuses until `php artisan
  * migrate`). With awaits stored, WARNs for each thing that would leave one waiting until it
  * expires or forever: no clock to expire them ({@see CiAwaitSweepJob::clockGap()}); a runs read that
@@ -40,10 +40,12 @@ final class CiAwaitsCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
-        try {
-            CiAwaitConfig::ttlSeconds();
-        } catch (ConfigException $e) {
-            yield Finding::fail('ci_await: '.$e->getMessage().' — every ci_await call refuses (install_fault.ci_await_ttl_invalid) until it is fixed.');
+        foreach ([CiAwaitConfig::ttlSeconds(...), CiAwaitConfig::maxPerSeat(...), CiAwaitConfig::readCooldownSeconds(...)] as $read) {
+            try {
+                $read();
+            } catch (ConfigException $e) {
+                yield Finding::fail('ci_await: '.$e->getMessage().' — every ci_await call refuses (install_fault.ci_await_config_invalid) until it is fixed.');
+            }
         }
 
         try {
@@ -72,8 +74,8 @@ final class CiAwaitsCheck implements Check
         }
 
         try {
-            $failing = CiAwait::query()->whereNotNull('last_error')->orderByDesc('last_read_at')->get(['repo', 'head_sha', 'last_error']);
-            $repos = CiAwait::query()->distinct()->pluck('repo')->all();
+            $failing = CiAwait::query()->whereNotNull('last_error')->orderByDesc('last_read_at')->get(['repo_name', 'head_sha', 'last_error']);
+            $repos = CiAwait::query()->distinct()->pluck('repo_name')->all();
             $silentRepos = array_values(array_filter($repos, static fn (string $repo): bool => ! CiAwaitService::hasRecordedWorkflowRun($repo)));
         } catch (Throwable $e) {
             yield Finding::unvalidated('ci_await: the stored awaits could NOT be read ('.RedactedErrorText::of($e).')');
@@ -83,7 +85,7 @@ final class CiAwaitsCheck implements Check
 
         if ($failing->isNotEmpty()) {
             $latest = $failing->first();
-            yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo}@{$latest->head_sha}: {$latest->last_error}. Each is re-read on its head's next completed run and by the ci_await sweep, and expires with the error if none answers.");
+            yield Finding::warn("ci_await: the last workflow-run read FAILED for {$failing->count()} await(s), so none of them can settle until a read answers — most recent: {$latest->repo_name}@{$latest->head_sha}: {$latest->last_error}. Each is re-read on its head's next completed run and by the ci_await sweep, and expires with the error if none answers.");
         }
         foreach ($silentRepos as $repo) {
             yield Finding::warn("ci_await: an await is stored on {$repo}, and this install holds no stored workflow_run delivery from it — if that repo's webhook does not send \"Workflow runs\" to this bridge, the await only ever ends in ci_await_expired. Add the event on the repo webhook. (None stored is not proof of a missing subscription: retention prunes deliveries, and a new hook has sent none yet.)");

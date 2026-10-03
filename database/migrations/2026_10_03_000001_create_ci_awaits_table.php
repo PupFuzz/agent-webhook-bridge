@@ -17,9 +17,12 @@ return new class extends Migration
             $table->id();
             // The agent the board-tools door resolved — never an argument (self-scoped).
             $table->string('agent', 191);
-            // The configured GitHub subscription scope's spelling (`owner/name`), which is what
-            // the receiver compares a delivery's `repository.full_name` against.
+            // The lookup key: the repo LOWER-CASED, so every lookup (which lower-cases its input) finds
+            // the same rows on SQLite's case-sensitive `=` as on MariaDB's case-insensitive collation.
             $table->string('repo', 128);
+            // The configured GitHub subscription spelling (`owner/name`) — what the token resolver's
+            // case-sensitive credential map, the runs read and the emitted events use.
+            $table->string('repo_name', 128);
             $table->char('head_sha', 40);
             $table->unsignedInteger('pr')->nullable();
             // ⛔ EVERY TIMESTAMP HERE IS NULLABLE OR CARRIES AN EXPLICIT DEFAULT. Under MariaDB's
@@ -35,6 +38,8 @@ return new class extends Migration
             // error with a non-null time is a read that answered.
             $table->timestamp('last_read_at', 3)->nullable();
             $table->string('last_error', 1000)->nullable();
+            // When a RATE-LIMITED read said its quota returns; the sweep does not retry the head before it.
+            $table->timestamp('retry_not_before', 3)->nullable();
 
             // One await per seat per head; re-registering refreshes this row.
             $table->unique(['agent', 'repo', 'head_sha']);

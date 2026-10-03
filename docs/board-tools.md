@@ -1124,7 +1124,8 @@ The table below is the source of the codes' VALUES: the same test reads it and f
 | `install_fault.no_kanban_user` | `board_take_card` | your seat carries no kanban user id for this kanban host (or the install's kanban API base names no host), so a seat with no id is refused by name, never moved unassigned |
 | `install_fault.no_agent` | the ssh door (exit 1) | the forced command passed no `--agent` |
 | `repo_not_received` | `ci_await` | no agent on this install subscribes to that GitHub repo, so no `workflow_run` delivery would ever settle the await; nothing was stored |
-| `install_fault.ci_await_ttl_invalid` | `ci_await` | `BRIDGE_CI_AWAIT_TTL` is not a whole number of seconds from 60 to 604800 |
+| `too_many_awaits` | `ci_await` | a NEW await would take you past `BRIDGE_CI_AWAIT_MAX_PER_SEAT`; nothing was stored (a refresh is never refused for it) |
+| `install_fault.ci_await_config_invalid` | `ci_await` | a `BRIDGE_CI_AWAIT_*` setting (`TTL`, `MAX_PER_SEAT`, `READ_COOLDOWN`) is outside its range |
 | `install_fault.ci_await_store_unavailable` | `ci_await`, `ci_await_cancel` | the `ci_awaits` table is missing (`php artisan migrate`) or the database did not answer |
 | `install_fault.shared_kanban_user`, `install_fault.not_in_roster`, `install_fault.agent_config_unreadable` | `board_take_card` and `board_correct_card` (and `ci_await`, `install_fault.agent_config_unreadable` only: an agent config that will not load, so whether the repo is received cannot be told) | the bridge cannot say which kanban user you are (an id the roster gives two seats this install serves, a seat more than one board-tools agent here serves, an agent no longer configured, an unreadable agent config) — `board_correct_card` reaches these and the `coord_config_*` codes only, because a seat with no id simply has no assignee there |
 
@@ -1514,9 +1515,9 @@ door, including the `bridge-board-call` CLI card#11151 adds.
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `repo` | yes | The GitHub repository as `owner/name`. Matched case-insensitively against this install's GitHub subscriptions; the answer and the events carry the configured spelling. |
+| `repo` | yes | The GitHub repository as `owner/name`. Matched case-insensitively, as GitHub matches repo names: `Octo/Widgets` and `octo/widgets` name ONE await, here and in `ci_await_cancel`. The answer and the events carry the spelling this install's subscription is configured with. |
 | `head_sha` | yes | The **full** 40-hex commit SHA (`git rev-parse <ref>`), case-insensitive, stored lower-case. ⛔ An **abbreviated** SHA is refused (`bad_arguments`): GitHub's run list filters on the exact SHA and answers an abbreviation with an empty list, so the wait would never settle. |
-| `pr` | no | The pull-request number, a positive integer (or `null`), carried back in the events. A re-registration that omits it keeps the one already recorded. |
+| `pr` | no | The pull-request number, a positive integer no larger than 4294967295 (or `null`), carried back in the events. A re-registration that omits it keeps the one already recorded. |
 
 **`ci_await_cancel` arguments:** `repo` and `head_sha`, with the same rules. It removes **your own**
 await on that head and answers `cancelled: true`, or `cancelled: false` when you had none there —
@@ -1534,9 +1535,19 @@ register nor cancel another's.
 1. Refuses a repo **this install receives no GitHub events for** — no agent on this install
    subscribes to it — as `repo_not_received`, because nothing would ever arrive to settle it. Poll
    with `ci-read` there.
-2. Stores the await, or **refreshes** yours on the same head (its expiry restarts; `refreshed: true`).
-   One await per seat per head.
-3. **Reads the head's runs once**, so CI that already finished settles now.
+2. Refuses a NEW await past the per-seat cap, `BRIDGE_CI_AWAIT_MAX_PER_SEAT` (default 50), as
+   `too_many_awaits`. Refreshing a head you already await is never capped. The count and the store
+   are two statements, so two concurrent registrations by one seat can each pass at the cap — it
+   bounds a seat that forgets to cancel, not a race.
+3. Stores the await, or **refreshes** yours on the same head (its expiry restarts; `refreshed: true`).
+   One await per seat per head. A database failure here is the only answer that says nothing was
+   stored (`install_fault.ci_await_store_unavailable`); anything that fails after it answers
+   `state: unmeasured` with the await kept.
+4. **Reads the head's runs once**, so CI that already finished settles now — unless a read of the
+   same head ANSWERED within `BRIDGE_CI_AWAIT_READ_COOLDOWN` seconds (default 60; `0` always reads),
+   in which case it answers `waiting` with `read_skipped: true` and sends no request. A read that
+   answered "all terminal" would have settled every await on the head, so a recent answered read on
+   a stored await means CI was still running then.
 
 The answer:
 
@@ -1547,10 +1558,11 @@ The answer:
   "pr": 12,                  // or null
   "state": "waiting",        // waiting | settled | unmeasured
   "refreshed": false,
-  "expires_at": "2026-10-03T16:00:00.000Z",   // null once settled
+  "expires_at": "2026-10-03T16:00:00.000Z",   // null once settled, or when evaluating failed
   "runs_total": 3,           // null when the read failed
   "runs_completed": 1,
   "read_error": "…",         // only on state: unmeasured
+  "read_skipped": true,      // only when the read cooldown skipped the read
   "warning": "…"             // only when this bridge holds no stored workflow_run delivery from the repo
 }
 ```
@@ -1559,8 +1571,9 @@ The answer:
   stored.
 - **`waiting`** — stored; at least one run is not finished, **or there are no runs yet** (CI not
   queued yet looks exactly like that, so an empty list is never treated as settled).
-- **`unmeasured`** — stored, but the read failed (`read_error` says why). Nothing is sent on a failed
-  read; see *Read failures* below.
+- **`unmeasured`** — stored, but the read failed, or evaluating the stored await failed (an inbox
+  that could not be written, a database error after the store); `read_error` says which. Nothing is
+  sent; see *Read failures* below.
 - **`warning`** — this bridge has no stored `workflow_run` delivery from that repo. If the repo's
   webhook does not send **Workflow runs** to this bridge, nothing settles the await and it ends in
   `ci_await_expired`. None stored is not proof — retention prunes old deliveries and a new webhook has
@@ -1568,9 +1581,15 @@ The answer:
 
 **How it settles.** On each `workflow_run.completed` delivery whose repo and `head_sha` match at
 least one await, the bridge makes **one** read — `GET /repos/{repo}/actions/runs?head_sha=<sha>`,
-walked page by page to the end of the list — after the delivery has been answered. When every run on
-the list has `status: completed`, every seat awaiting that head gets **one** `ci_settled` and its
-await is deleted. ⭐ **No await, no read:** a run completing on a head nobody awaits costs one
+walked page by page to the end of the list — after the delivery has been answered. The run that
+delivery reports is counted as completed, with its conclusion, even when the list still shows it
+running or does not show it yet: the list API can lag the webhook, and a last run lost that way
+would strand the wait until it expired. When every run on the list has `status: completed`, every
+seat awaiting that head gets **one** `ci_settled` and its await is deleted. ⛔ **A list that moved
+while it was read is not an answer:** pages are separate requests, and a run created or deleted
+between them shifts rows across a page boundary (a duplicate can fill the count while a new,
+unfinished run is never seen). Runs are keyed by id, and the read fails unless every page reported
+the same `total_count` and the distinct runs equal it. ⭐ **No await, no read:** a run completing on a head nobody awaits costs one
 indexed query and no GitHub request, so a green push to `dev` wakes nobody. ⭐ **Once per await,
 under concurrency:** two deliveries for a head's last two runs can both read "all terminal"; each
 emit first deletes its await row in a transaction and only the one whose delete removed it emits.
@@ -1582,13 +1601,16 @@ needs the base branch's required contexts and the latest run per workflow, which
 definition, and the bridge does not restate it. On `ci_settled`, run `ci-read` **once** on the head.
 
 **Read failures.** A read that fails — a 403 or 429 rate limit, a 5xx, no answer, no GitHub read
-token, a 200 whose body is not a run list, or a list that does not end within the read's page bound
-— **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
+token, a 200 whose body is not a run list, a list that does not end within the read's page bound, or
+a list that changed between pages — **sends nothing**. The await is kept with the error recorded, a `bridge ci_await:` warning is
 logged naming it, and the head is read again on its next completed run and by the `ci-await-sweep`
-job. If no read ever answers, the await ends in `ci_await_expired` carrying the last error.
+job. A rate-limited read that names when its quota returns (`X-RateLimit-Reset`, else `Retry-After`)
+is not retried by the sweep before then; the error says until when. If no read ever answers, the
+await ends in `ci_await_expired` carrying the last error.
 
 **Expiry.** An await lives `BRIDGE_CI_AWAIT_TTL` seconds (default 21600, 6 h; 60 to 604800 accepted —
-anything else refuses every `ci_await` as `install_fault.ci_await_ttl_invalid` and fails `bridge:check`).
+anything else refuses every `ci_await` as `install_fault.ci_await_config_invalid` and fails `bridge:check`,
+as does a cap or cooldown outside its range).
 The `ci-await-sweep` periodic job, declared at the first registration, emits `ci_await_expired` once
 per await past its expiry and re-reads heads whose last read failed — never a head whose read
 answered, which is re-read only when its next run completes. It runs on the job registry's two
@@ -1612,12 +1634,19 @@ whose channel was down. `subject_id` is `ci:<repo>@<head_sha>`. The payloads and
   can see some runs finished and others absent; it settles only when what is listed is all terminal.
 - ⚠ **A lost final delivery.** If the delivery for the last run to finish never reaches the bridge,
   nothing re-reads a head whose read answered, and the await ends in `ci_await_expired`.
-  Re-registering reads the head again.
+  Re-registering reads the head again (outside the read cooldown).
+- ⚠ **A list that keeps moving.** On a head whose runs are created or deleted during every read, each
+  read fails as inconsistent and the await waits for the next delivery or the sweep. No case of it is
+  measured; GitHub's `total_count` is taken to count exactly what the list pages carry, from its REST
+  documentation, and a single page is never checked against itself beyond that count.
+- ⚠ **The per-seat cap is soft under concurrency** (step 2 above).
+- ⚠ **The sweep's retry waits only for a rate limit that names its reset.** A rate limit without
+  either header is retried at the next pass.
 - ⚠ **Installs with several bridges.** An await lives on the bridge the seat called; only that
   bridge's deliveries settle it.
 
-**Cost:** one read of the head at registration, and one per completed run on an awaited head — each
-one request per 100 runs. Nothing for heads nobody awaits.
+**Cost:** one read of the head at registration (none inside the read cooldown), and one per completed
+run on an awaited head — each one request per 100 runs. Nothing for heads nobody awaits.
 
 ## Errors
 

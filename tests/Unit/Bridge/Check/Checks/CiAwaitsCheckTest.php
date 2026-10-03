@@ -86,6 +86,17 @@ class CiAwaitsCheckTest extends TestCase
         $this->assertStringContainsString("'6h'", $findings[0]->message);
     }
 
+    public function test_each_ci_await_setting_the_bridge_refuses_fails_naming_its_key(): void
+    {
+        config(['bridge.ci_await.max_per_seat' => 0, 'bridge.ci_await.read_cooldown' => 'soon']);
+
+        $messages = array_map(fn ($f): string => $f->message, $this->findingsOf(new CiAwaitsCheck));
+
+        $this->assertCount(2, $messages);
+        $this->assertStringContainsString('BRIDGE_CI_AWAIT_MAX_PER_SEAT is 0', $messages[0]);
+        $this->assertStringContainsString("BRIDGE_CI_AWAIT_READ_COOLDOWN is 'soon'", $messages[1]);
+    }
+
     public function test_a_missing_table_warns_and_names_the_remedy(): void
     {
         $file = glob(database_path('migrations/*_create_ci_awaits_table.php'));
@@ -109,7 +120,7 @@ class CiAwaitsCheckTest extends TestCase
     /** @param  array<string, mixed>  $extra */
     private function await(array $extra = []): void
     {
-        CiAwait::query()->create($extra + ['agent' => 'seat-a', 'repo' => self::REPO, 'head_sha' => str_repeat('a', 40), 'expires_at' => now()->addHour()]);
+        CiAwait::query()->create($extra + ['agent' => 'seat-a', 'repo' => self::REPO, 'repo_name' => self::REPO, 'head_sha' => str_repeat('a', 40), 'expires_at' => now()->addHour()]);
     }
 
     private function recordWorkflowRun(): void
