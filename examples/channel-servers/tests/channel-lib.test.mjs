@@ -13,7 +13,8 @@
 import './live-state-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scrubSnippet, relayBridgeResponse, deriveMeta } from '../channel-lib.mjs';
+import http from 'node:http';
+import { scrubSnippet, relayBridgeResponse, deriveMeta, boardToolsTransport, httpRoundTrip, errorDetail, redactUrl } from '../channel-lib.mjs';
 
 // ---------------------------------------------------------------------------
 // scrubSnippet — credential redaction + truncation
@@ -201,4 +202,53 @@ test('deriveMeta returns an empty object for a JSON scalar (no intent property)'
   assert.deepEqual(deriveMeta('42'), {});
   assert.deepEqual(deriveMeta('"a string"'), {});
   assert.deepEqual(deriveMeta('null'), {});
+});
+
+// ---------------------------------------------------------------------------
+// boardToolsTransport — the one statement of a seat's board-tools transport rules (the channel
+// server and bridge-board-call both read it; card#11151 review r1)
+// ---------------------------------------------------------------------------
+
+test('boardToolsTransport: an ssh target alone is the ssh transport, bearer-free', () => {
+  assert.deepEqual(boardToolsTransport({ BRIDGE_TOOLS_SSH_TARGET: 'a@h', BRIDGE_TOOLS_SSH_KEY: '/k', BRIDGE_TOOLS_SSH_PORT: '22' }), { kind: 'ssh', target: 'a@h', key: '/k', port: '22' });
+});
+
+test('boardToolsTransport: an endpoint with a bearer is http; the channel token is the last-resort bearer', () => {
+  assert.deepEqual(boardToolsTransport({ BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1/agent-tools/call', BRIDGE_CHANNEL_TOKEN: 'c' }), { kind: 'http', url: 'http://127.0.0.1/agent-tools/call', token: 'c' });
+});
+
+test('boardToolsTransport: both set is a conflict; neither, or an endpoint with no bearer, names what is missing', () => {
+  assert.deepEqual(boardToolsTransport({ BRIDGE_TOOLS_SSH_TARGET: 'a@h', BRIDGE_TOOLS_ENDPOINT: 'http://x' }), { kind: 'conflict' });
+  assert.deepEqual(boardToolsTransport({}), { kind: 'incomplete', missing: ['BRIDGE_TOOLS_ENDPOINT', 'BRIDGE_TOOLS_TOKEN (or BRIDGE_TOOLS_TOKEN_FILE)'] });
+  assert.deepEqual(boardToolsTransport({ BRIDGE_TOOLS_ENDPOINT: 'http://x' }), { kind: 'incomplete', missing: ['BRIDGE_TOOLS_TOKEN (or BRIDGE_TOOLS_TOKEN_FILE)'] });
+});
+
+test('httpRoundTrip: a body that fails AFTER the status arrived rejects with that status on the error', async (t) => {
+  const server = http.createServer((req, res) => {
+    req.on('data', () => {});
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '200' });
+      res.write('{"ok":tr');
+      setTimeout(() => req.socket.destroy(), 50);
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/agent-tools/call`;
+
+  await assert.rejects(httpRoundTrip({ url, token: 't', body: '{}' }), (err) => err.status === 200);
+});
+
+test('redactUrl: origin and path only — never userinfo, query or fragment; a fixed placeholder when it does not parse', () => {
+  assert.equal(redactUrl('http://u:hunter2@SECRETTAIL@127.0.0.1:8787/agent-tools/call?token=SECRETQ#frag'), 'http://127.0.0.1:8787/agent-tools/call');
+  assert.equal(redactUrl('http://u:pa/SECRETTAIL@127.0.0.1/x'), redactUrl('not a url'));
+  assert.doesNotMatch(redactUrl('http://u:pa/SECRETTAIL@127.0.0.1/x'), /SECRETTAIL|u:pa/);
+});
+
+test('boardToolsTransport: an endpoint that does not parse, or carries userinfo, is invalid and never quoted', () => {
+  for (const endpoint of ['http://u:pa/SECRETTAIL@127.0.0.1/agent-tools/call', 'http://u:hunter2@SECRETTAIL@127.0.0.1/agent-tools/call', '::not a url SECRETTAIL']) {
+    const t = boardToolsTransport({ BRIDGE_TOOLS_ENDPOINT: endpoint, BRIDGE_TOOLS_TOKEN: 'b' });
+    assert.equal(t.kind, 'invalid', endpoint);
+    assert.doesNotMatch(t.why, /SECRETTAIL|hunter2/);
+  }
 });

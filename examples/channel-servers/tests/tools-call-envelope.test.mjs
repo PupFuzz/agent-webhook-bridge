@@ -116,3 +116,51 @@ test('the version SENT tracks the manifest rather than a literal in the entry po
   const sent = await envelopeOf(t);
   assert.equal(sent.client_version, version);
 });
+
+// The server reads its transport through channel-lib's `boardToolsTransport` (card#11151 review
+// r1): forced on with an endpoint and no bearer, a call is refused naming the missing setting,
+// and nothing is sent.
+test('forced-on board tools with an endpoint and no bearer refuse the call, naming the bearer settings', async (t) => {
+  const client = await connectServer(t, { BRIDGE_CHANNEL_TOOLS: '1', BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1:1/agent-tools/call' }, serverOpts);
+  const res = await client.callTool({ name: 'board_my_cards', arguments: {} });
+
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /not fully configured on this channel server: set BRIDGE_TOOLS_TOKEN \(or BRIDGE_TOOLS_TOKEN_FILE\)\. No call was made/);
+});
+
+// card#11151 review r2: the endpoint reaches the agent's transcript and the server log only
+// through channel-lib's `redactUrl` (origin + path) — never its userinfo or query.
+test('a tool result that names the HTTP endpoint carries neither its query nor a credential', async (t) => {
+  const s = (await import('node:http')).createServer();
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const port = s.address().port;
+  await new Promise((r) => s.close(r));
+  for (const endpoint of [`http://127.0.0.1:${port}/agent-tools/call?token=SECRETQ`, `http://u:hunter2@SECRETTAIL@127.0.0.1:${port}/agent-tools/call`]) {
+    const client = await connectServer(t, { BRIDGE_TOOLS_ENDPOINT: endpoint, BRIDGE_TOOLS_TOKEN: 'b' }, serverOpts);
+    const res = await client.callTool({ name: 'board_my_cards', arguments: {} });
+
+    assert.equal(res.isError, true);
+    assert.doesNotMatch(res.content[0].text, /SECRETQ|SECRETTAIL|hunter2/, res.content[0].text);
+  }
+});
+
+test('the start-up log names the HTTP endpoint without its query or credential', async (t) => {
+  const { spawn } = await import('node:child_process');
+  const runtime = scratch(t, 'envelope-log-');
+  const child = spawn(process.execPath, [path.join(path.dirname(PACKAGE_JSON), 'agent-webhook-bridge-channel.mjs')], {
+    env: { PATH: process.env.PATH, BRIDGE_CHANNEL_TRANSPORT: 'unix', BRIDGE_CHANNEL_SOCKET: path.join(runtime, 'c.sock'), BRIDGE_CHANNEL_NAME: 'envelope-log', BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1:1/agent-tools/call?token=SECRETQ', BRIDGE_TOOLS_TOKEN: 'b' },
+    stdio: ['pipe', 'ignore', 'pipe'],
+  });
+  t.after(() => child.kill('SIGKILL'));
+  let err = '';
+  await new Promise((resolve) => {
+    child.stderr.on('data', (c) => {
+      err += c;
+      if (/board tools ENABLED/.test(err)) resolve();
+    });
+    setTimeout(resolve, 10000);
+  });
+
+  assert.match(err, /proxying tools\/call to http:\/\/127\.0\.0\.1:1\/agent-tools\/call/);
+  assert.doesNotMatch(err, /SECRETQ/);
+});

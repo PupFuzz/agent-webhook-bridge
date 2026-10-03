@@ -40,7 +40,7 @@ return new class extends Migration
             $table->timestamp('running_launch_first_seen_at', 3)->nullable();
             $table->timestamp('running_seen_at', 3)->nullable();
 
-            // A probe, a self-certification or an operator's hand-run: stamped here and nowhere else.
+            // A call declaring an App\Bridge\ClientUpdate\ExemptCaller case (the enum is the list): stamped here and nowhere else.
             $table->timestamp('last_exempt_call_at', 3)->nullable();
             $table->string('last_exempt_caller', 16)->nullable();
 

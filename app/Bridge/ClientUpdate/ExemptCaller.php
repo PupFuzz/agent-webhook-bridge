@@ -28,6 +28,13 @@ enum ExemptCaller: string
     case Operator = 'operator';
 
     /**
+     * The seat's `bridge-board-call` CLI (card#11151 / DL-451): a hook or script calling one tool
+     * with the seat's own credential. It ships in the client, so it is not the seat's channel
+     * server and must not overwrite what that server reports.
+     */
+    case Script = 'script';
+
+    /**
      * The one request body a bridge-side probe sends: a real `board_my_cards`, declared as a probe.
      *
      * @return array{tool: string, args: object, caller: string}

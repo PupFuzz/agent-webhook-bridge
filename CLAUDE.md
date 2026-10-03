@@ -129,6 +129,10 @@ check-channel-snapshot.py <deployed channel-server dir | client root>
                                          # `python3 bin/check-channel-snapshot.py` is the same program.
                                          # `bridge:check` deliberately never executes node: it runs as a
                                          # different OS user, so a launch from there answers for the wrong one.
+bridge-board-call <tool> '<json-args>'   # ONE board-tools call as this seat, from a hook or script, over the seat's
+                                         # configured transport (DL-451). A client program, not a seat tool: the client
+                                         # updater shims it into <root>/bin. Exit codes are a contract owned by
+                                         # examples/channel-servers/README.md § Calling a board tool from a script
 ```
 
 ## Standing rules

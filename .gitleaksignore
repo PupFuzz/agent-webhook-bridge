@@ -1,0 +1,8 @@
+# One fingerprint per line; each entry suppresses exactly one finding at one commit, file, rule
+# and line, and nothing else. Add an entry only for a value shown NOT to be a credential, and say why.
+#
+# card#11151 (PR #852): a deliberately fake test canary in a bridge-board-call leak test, committed
+# in dffa0c3a and replaced in the next commit by a low-entropy marker the scanner does not flag.
+# The commit stays in the PR's history (no force-push), so its finding is suppressed here by its
+# exact fingerprint.
+dffa0c3ac1fb9fd1c4c6b2dbdc9a3f9e46d862a3:examples/channel-servers/tests/bridge-board-call.test.mjs:generic-api-key:440
