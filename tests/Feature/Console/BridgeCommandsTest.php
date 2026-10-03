@@ -17,6 +17,7 @@ use App\Models\BoardToolsClientCall;
 use App\Models\BoardToolsConfigSeen;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
@@ -97,6 +98,56 @@ class BridgeCommandsTest extends TestCase
     private function writeAgent(): void
     {
         File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+    }
+
+    /**
+     * A usable GitHub token FILE, as an install whose runtime GitHub legs work has one. Without
+     * it `github.token_file` FAILs every install that maps a repo (card#11201 / DL-453), and a
+     * test asserting some OTHER leg's exit code would be measuring that instead. The stub
+     * answers exactly the two reads a placed file adds — {@see isGithubTokenFileRead()} — and
+     * returns null for everything else, so a test's own stubs still answer what they did.
+     * Call it FIRST: stubs are tried in the order registered.
+     *
+     * ⚑ A THIRD READ FOLLOWS WHERE AN AGENT SUBSCRIBES TO GITHUB: the webhook-subscription leg
+     * lists the repo's hooks with the same file, but only where `BRIDGE_RECEIVER_BASE_URL`
+     * composes a receiver URL — so it is reached on a runner whose `.env` sets one and not on a
+     * box without one. It is answered `403` (a token that may not list hooks), which that leg
+     * reports as COULD NOT LOOK and never as a fail, so these tests stay about their own leg.
+     */
+    private function placeUsableGithubTokenFile(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/github');
+        File::put($this->dir.'/github/token', 'ghp_usable');
+        chmod($this->dir.'/github/token', 0o600);
+        Http::fake(function (Request $request) {
+            if (preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+/hooks\?#', $request->url()) === 1) {
+                return Http::response(['message' => 'Must have admin rights to Repository.'], 403);
+            }
+            if (! self::isGithubTokenFileRead($request->url())) {
+                return null;
+            }
+
+            return str_ends_with($request->url(), '/rate_limit')
+                ? Http::response([], 200, ['X-OAuth-Scopes' => 'repo'])
+                : Http::response(['full_name' => 'owner/repo']);
+        });
+    }
+
+    /** The token-file leg's scope read, or the reconcile probe of one mapped repo. */
+    private static function isGithubTokenFileRead(string $url): bool
+    {
+        return $url === 'https://api.github.com/rate_limit'
+            || preg_match('#^https://api\.github\.com/repos/[^/]+/[^/]+$#', $url) === 1;
+    }
+
+    /**
+     * For a test whose subject is that the BOARD is never asked: with a usable token file placed,
+     * the only requests are the two GitHub reads it adds, and anything else is the defect.
+     */
+    private function assertOnlyTheGithubTokenFileReadsWereSent(): void
+    {
+        Http::assertSent(fn (Request $request): bool => $request->url() === 'https://api.github.com/rate_limit');
+        Http::assertNotSent(fn (Request $request): bool => ! self::isGithubTokenFileRead($request->url()));
     }
 
     /**
@@ -284,6 +335,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_missing_writeback_token(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
@@ -295,7 +347,7 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('writeback token')
             ->assertExitCode(0);   // warn, not fail
-        Http::assertNothingSent();
+        $this->assertOnlyTheGithubTokenFileReadsWereSent();
     }
 
     private function writeSshAgent(): void
@@ -618,6 +670,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_malformed_alert_channel(): void
     {
+        $this->placeUsableGithubTokenFile();
         // FR-4: alert_channel with both socket+url is malformed → warn, never fail
         // (an opt-in diagnostic must not fail the install check).
         $this->writeAgent();
@@ -634,6 +687,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_non_localhost_alert_channel_url(): void
     {
+        $this->placeUsableGithubTokenFile();
         // FR-4: a non-loopback alert url is rejected (warn).
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
@@ -649,6 +703,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_alert_channel_url_with_userinfo(): void
     {
+        $this->placeUsableGithubTokenFile();
         // card#4495: the check must not green-light a userinfo URL that the
         // runtime sender (LocalhostUrl::assertValid) rejects at send time —
         // http://user:pass@127.0.0.1/ passes the scheme+host checks but is a
@@ -704,9 +759,14 @@ class BridgeCommandsTest extends TestCase
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
         ] + $this->fakePreload());
 
-        $this->artisan('bridge:check')
-            ->expectsOutputToContain('token from token file')
-            ->assertExitCode(0);
+        // The reconcile leg still WARNS (DL-186) — asserted on its severity-marked line, so a
+        // reconcile line that turned FAIL would red here. The run now exits 1 because the same
+        // stale file is the token the receiver's GitHub legs use, and `github.token_file` FAILs a
+        // token GitHub answers 401 (card#11201 / DL-453).
+        $this->assertSame(1, Artisan::call('bridge:check'));
+        $out = Artisan::output();
+        $this->assertMatchesRegularExpression('/^WARN: reconcile: owner\/repo: token from token file \(/m', $out);
+        $this->assertMatchesRegularExpression('/^FAIL: github token file: GitHub REFUSES the token in token file/m', $out);
     }
 
     public function test_check_classifies_the_reconcile_token_probe_status_into_a_hint(): void
@@ -725,9 +785,9 @@ class BridgeCommandsTest extends TestCase
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
         ] + $this->fakePreload());
 
-        $this->artisan('bridge:check')
-            ->expectsOutputToContain('HTTP 401 (token expired/revoked)')
-            ->assertExitCode(0);
+        // Exit 1 from `github.token_file`, not from this leg: see the test above (card#11201).
+        $this->assertSame(1, Artisan::call('bridge:check'));
+        $this->assertMatchesRegularExpression('/^WARN: reconcile: owner\/repo: token from .* HTTP 401 \(token expired\/revoked\)/m', Artisan::output());
     }
 
     public function test_check_classifies_a_403_probe_as_a_scope_hint(): void
@@ -774,15 +834,16 @@ class BridgeCommandsTest extends TestCase
         ] + $this->fakePreload());
     }
 
-    public function test_check_warns_when_promote_on_release_lacks_a_github_token_file(): void
+    public function test_check_fails_when_promote_on_release_lacks_a_github_token_file(): void
     {
         // DL-207: the promote leg runs under FPM where GH_TOKEN is absent + the store helper
         // is CLI-only, so only a placed token FILE works. No file ⇒ the leg is inert at runtime.
+        // Since card#11201 the `github.token_file` leg says so for every file consumer, and FAILs.
         $this->writePromoteConfig([], withGithubTokenFile: false);
 
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('promote_on_release but no GitHub read token resolves from a FILE')
-            ->assertExitCode(0);
+            ->expectsOutputToContain('promote-on-release (DL-207) on owner/repo')
+            ->assertExitCode(1);
     }
 
     public function test_check_warns_when_promote_on_release_maps_shipped_and_released_to_one_stage(): void
@@ -800,13 +861,14 @@ class BridgeCommandsTest extends TestCase
         $this->writePromoteConfig([], withGithubTokenFile: true);
 
         $this->artisan('bridge:check')
-            ->doesntExpectOutputToContain('promote_on_release but no GitHub read token')
+            ->doesntExpectOutputToContain('FAIL: github token file')
             ->doesntExpectOutputToContain('stages.merged and stages.merged_to_main are the same stage')
             ->assertExitCode(0);
     }
 
     public function test_check_warns_when_the_writeback_token_sees_zero_cards(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-026: a 200 + empty board read = blind/degraded token (user not a
         // board member / wrong board_id). bridge:check must surface it LOUDLY at
         // config time, but stay a warning (exit 0) — an empty new board is legit.
@@ -820,6 +882,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_reports_visible_card_count_when_token_can_see_the_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeWritebackWithToken();
         // DL-029: the visibility probe reads the DL-146 pagination meta.total.
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])] + $this->fakePreload());
@@ -831,6 +894,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_a_board_exceeds_the_scan_ceiling_in_scan_mode(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-029: in scan mode (default), a board larger than the scan ceiling would
         // silently miss correlations — bridge:check surfaces it (warn, not fail) and
         // points at BRIDGE_WRITEBACK_CORRELATION=ref. The probe reads meta.total, so
@@ -846,6 +910,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_reports_a_failed_board_read_as_unvalidated(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeWritebackWithToken();
         Http::fake(['*/tasks/search.json*' => Http::response(['error' => 'forbidden'], 403)]);
 
@@ -856,6 +921,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_confirms_by_ref_reachable_in_ref_mode(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-031: ref is the default; bridge:check probes by-ref reachability.
         $this->writeWritebackWithToken();
         config(['bridge.writeback.correlation' => 'ref']);
@@ -871,6 +937,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_ref_mode_but_kanban_lacks_by_ref(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-031: the safety net for the ref default — a kanban predating by-ref
         // (404 on the route) would 404 every correlation. Warn loudly (exit 0).
         $this->writeWritebackWithToken();
@@ -887,6 +954,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_dl_card_with_null_source_on_a_shared_board_in_ref_mode(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #3399 + DL-174: only on a SHARED board is correlation repo-qualified, so only
         // there does a null-source dl card silently never self-move. Warn (exit 0).
         $this->writeWritebackWithToken(sharedBoard: true);
@@ -906,6 +974,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_no_null_source_warning_on_a_non_shared_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-174: on a 1:1 board the source qualifier is omitted, so a null-source
         // dl card correlates fine — the #3399 warn must NOT fire (false alarm).
         $this->writeWritebackWithToken();
@@ -925,6 +994,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_no_source_warning_when_dl_card_has_a_mapped_pr_url(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #3399: a dl_number card whose pr_url yields a source matching a mapped repo
         // (owner/repo) self-moves fine → no source warning.
         $this->writeWritebackWithToken();
@@ -944,6 +1014,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_no_source_warning_when_dl_card_sources_via_payload_repo(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #3399 (review): the kanban derives source from payload.repo too (not just pr_url),
         // so a dl card with `repo` set (no pr_url) self-moves fine → NO false source=null warn.
         $this->writeWritebackWithToken();
@@ -963,6 +1034,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_an_orphaned_writeback_mapping(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #2162: a writeback.json mapping with no agent running a writeback-emitting
         // classifier subscribed to its github scope is inert — warn (exit 0). The
         // default writeAgent() only subscribes to kanban, so owner/repo is orphaned.
@@ -976,6 +1048,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_orphaned_mapping_even_without_a_writeback_client(): void
     {
+        $this->placeUsableGithubTokenFile();
         // M1 regression: orphan detection must be INDEPENDENT of the board probe —
         // it must fire even when the writeback client can't be constructed (no
         // api_base_url / token), the half-configured install where it matters most.
@@ -989,11 +1062,12 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('mapping for owner/repo is ORPHANED')
             ->assertExitCode(0);
-        Http::assertNothingSent();   // never reached the probe, yet still warned
+        $this->assertOnlyTheGithubTokenFileReadsWereSent();   // never reached the probe, yet still warned
     }
 
     public function test_check_no_orphan_warning_when_an_emitting_agent_is_subscribed(): void
     {
+        $this->placeUsableGithubTokenFile();
         // An agent running GitHubPrCardMoveClassifier (EmitsWritebackReactions)
         // subscribed to github:owner/repo DRIVES the mapping → not orphaned.
         File::put($this->dir.'/wb-agent.yml',
@@ -1020,6 +1094,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_no_orphan_warning_when_the_agent_scope_and_the_mapping_differ_only_in_case(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-293 + the card#7124 review, end to end (the agent YAML's scope AND the
         // writeback.json key, through the real CheckCommand derivation). TWO assertions,
         // and the second is the load-bearing one:
@@ -1263,6 +1338,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_confirms_a_mapping_swimlane_id_that_exists_on_the_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-027: when a mapping pins a swimlane_id, bridge:check validates it
         // against the board's lanes so a deleted/wrong lane is caught at config
         // time rather than as a silent 422-no-op on the first created card.
@@ -1290,6 +1366,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_a_mapping_swimlane_id_is_not_on_the_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
@@ -1314,6 +1391,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_a_dependabot_mapping_board_lacks_the_create_payload_custom_fields(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #2949: create_dependabot_cards=true but the board is missing a custom
         // field the create payload sets (here pr_url) → every create 422s and is
         // silently swallowed. bridge:check names it at config time (DL-026 posture).
@@ -1342,6 +1420,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_confirms_a_dependabot_mapping_board_with_all_create_payload_custom_fields(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
@@ -1406,6 +1485,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_passes_when_issue_population_all_and_board_registers_issue_number(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeCoordAllMapping();
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
@@ -1419,6 +1499,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_bridge_all_disagrees_with_reconcile_prefixed(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The load-bearing DISAGREE: bridge=all + reconcile=prefixed = the non-prefixed
         // no-backstop gap, now checkable rather than silent.
         $coordPath = $this->dir.'/coord.json';
@@ -1436,6 +1517,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_reports_issue_population_agreement_when_reconcile_also_all(): void
     {
+        $this->placeUsableGithubTokenFile();
         $coordPath = $this->dir.'/coord.json';
         File::put($coordPath, (string) json_encode(['kanban' => ['boards' => [['board_id' => 8, 'issue_population' => 'all']]]]));
         $this->writeCoordAllMapping(coordConfigPath: $coordPath);
@@ -1497,6 +1579,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_population_all_paired_with_scan_correlation(): void
     {
+        $this->placeUsableGithubTokenFile();
         // by-ref correlation is only correct in `ref` mode; scan can't repo-disambiguate.
         $this->writeCoordAllMapping();   // helper pins correlation=scan
         Http::fake([
@@ -1511,6 +1594,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_skips_the_dependabot_custom_field_probe_when_the_flag_is_off(): void
     {
+        $this->placeUsableGithubTokenFile();
         // create_dependabot_cards absent → the mapping never creates cards, so the
         // custom-field requirement does not apply and the probe must not fire.
         $this->writeAgent();
@@ -1537,6 +1621,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_started_stage_is_set_without_started_from_stages(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #2652: the DL-160 `started` trigger needs BOTH; with only stages.started
         // it's silently inert (refused for lack of a promote-from set).
         $this->writeAgent();
@@ -1554,6 +1639,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_started_from_stages_is_set_without_started_stage(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
@@ -1569,6 +1655,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_no_started_half_config_warning_when_both_are_set(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
@@ -1584,6 +1671,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_on_a_mapped_stage_id_not_on_the_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         // #2652: a typo'd stage id silently 422s the move / never matches the guard.
         $this->writeAgent();
         File::put($this->dir.'/writeback.json', (string) json_encode([
@@ -1608,6 +1696,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_coord_card_stage_id_is_not_on_the_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-198: a typo'd coord_card_stage_id silently 422s every coord-card create,
         // same class as a mapped stage id not on the board.
         $this->writeAgent();
@@ -1633,6 +1722,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_create_coord_cards_set_but_identity_id_null(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-198 R5: the echo-gate guard. Without identity_id a created coord card's
         // task.created echoes back and could self-wake a kanban-triage session.
         // Config-only warn (no board read needed), never fails.
@@ -1692,6 +1782,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_falls_back_to_the_ambient_coord_config_env_when_no_override_is_set(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The getenv() leg. Pinned because it is the ONLY leg that survives
         // `php artisan optimize`: config/bridge.php resolves BRIDGE_COORD_CONFIG_PATH
         // via env(), which config-caching FREEZES at deploy time. If the ambient
@@ -1722,6 +1813,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_prefers_the_per_install_override_over_the_ambient_env(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Two installs on one host share ONE ambient $COORD_CONFIG. The .env override
         // must WIN, or a -prod install silently compares against a -dev operator's
         // coordination project and reports a confident, wrong answer.
@@ -1749,6 +1841,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_agrees_when_the_coord_config_terminal_resolves_to_the_mapped_stage(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The lane-model fallback path: the canonical `issues` board declares user_lanes
         // and NO terminal_columns → resolves to "Done" → stage 53 → agrees with the
         // mapping. This is the case a literal terminal_columns read would have MISSED.
@@ -1764,6 +1857,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_the_two_movers_disagree_on_the_terminal(): void
     {
+        $this->placeUsableGithubTokenFile();
         // THE case the compare exists for (Q1): the bridge concludes cards into stage 53
         // while the reconcile treats "Won't Do" (54) as terminal → they fight every cycle.
         $this->writeMoveLegInstall(terminalStageId: 53);
@@ -1778,6 +1872,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_cannot_verify_when_coord_config_is_absent(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Condition (a): a missing input is NOT evidence of agreement — it is evidence
         // we could not ask. Must NOT print "agrees".
         $this->writeMoveLegInstall();
@@ -1794,6 +1889,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_cannot_verify_when_coord_config_is_malformed(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeMoveLegInstall();
         $p = $this->dir.'/coordination.config.json';
         File::put($p, '{not json');
@@ -1810,6 +1906,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_cannot_verify_when_the_board_has_no_coord_config_entry(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The coord config exists but knows nothing about this board — we cannot ask.
         $this->writeMoveLegInstall();
         $this->writeCoordConfig(['kanban' => ['boards' => [
@@ -1824,6 +1921,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_cannot_verify_when_the_board_resolves_several_terminals(): void
     {
+        $this->placeUsableGithubTokenFile();
         // >1 terminal is legal framework-wide, but the MOVER needs exactly one column to
         // write into — so which one it should agree with is genuinely unknowable here.
         $this->writeMoveLegInstall();
@@ -1840,6 +1938,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_cannot_verify_when_the_terminal_name_is_not_on_the_board(): void
     {
+        $this->placeUsableGithubTokenFile();
         $this->writeMoveLegInstall();
         $this->writeCoordConfig(['kanban' => ['boards' => [
             ['key' => 'issues', 'board_id' => 8, 'terminal_columns' => ['Nonexistent Column']],
@@ -1855,6 +1954,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_the_coord_card_move_family_is_enabled_but_the_terminal_is_unset(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Gate 1 (coord-card-move family) on, gate 2 inert (no coord_card_terminal_stage_id ⇒ the
         // fleet default resolves move_coord_cards false): issues.closed/reopened are classified but
         // no card moves — silent-inert. The config-only nudge names the activation path.
@@ -1871,6 +1971,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_does_not_nudge_the_move_leg_for_a_pure_pr_writeback_install(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The nudge is scoped to family-enabled scopes — a pure PR-lifecycle writeback (no
         // coord-card-move family) gets NO coord-move noise even with a terminal-less mapping
         // (DL-196 no-false-alarm posture).
@@ -1887,6 +1988,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_the_terminal_is_set_but_the_move_family_is_not_enabled(): void
     {
+        $this->placeUsableGithubTokenFile();
         // DL-204 MIRROR silent-inert: gate 2 on (terminal present ⇒ default move_coord_cards true)
         // but gate 1 off (the serving coord agent lacks the coord-card-move family) ⇒ the handler
         // would move but nothing classifies a move ⇒ dead leg. bridge:check must nudge (the
@@ -1907,6 +2009,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_warns_when_the_coord_card_relane_family_is_enabled_but_the_lane_model_is_missing(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Gate 1 (the coord-card-relane family) on, gate 2 half-configured: `move_coord_cards`
         // is on but no `coord_card_lane_stage_ids`, so there is no lane to move a card into
         // and the classifier emits nothing at all. No other leg reports that silence — a
@@ -1925,6 +2028,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_names_both_missing_keys_when_the_relane_family_has_neither(): void
     {
+        $this->placeUsableGithubTokenFile();
         // A mapping with neither key: the operator is told both once, not one per run.
         // `move_coord_cards` resolves FALSE here through the DL-204 default (no terminal).
         $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-relane');
@@ -1940,6 +2044,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_does_not_nudge_the_relane_leg_when_the_family_is_not_enabled(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The negative the warn above needs to mean anything: the SAME lane-less mapping,
         // with only the move family enabled. The relane advisory is family-scoped, so an
         // install that never opted in gets no relane noise — while the DL-204 arm still
@@ -1959,6 +2064,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_is_silent_about_the_relane_leg_when_both_of_its_keys_are_set(): void
     {
+        $this->placeUsableGithubTokenFile();
         // The other direction of the same gate: a fully configured relane install draws no
         // advisory. Without this leg a check that warned unconditionally would satisfy the
         // two above.
@@ -1977,6 +2083,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_skips_the_terminal_compare_when_the_move_family_is_not_enabled(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Finding-1 gate: after the DL-204 flip move_coord_cards can resolve true from
         // terminal-presence alone. Without the coord-card-move family (gate 1) the leg cannot
         // fire, so the terminal-agreement compare must NOT run and imply the leg is live.
@@ -1998,6 +2105,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_does_not_run_the_coord_compare_when_the_move_leg_is_off(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Nothing to verify when the leg is off — no CANNOT-VERIFY noise on the
         // overwhelming majority of installs that never enable it.
         $this->writeAgent();
@@ -2014,6 +2122,7 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_skips_the_board_probe_without_a_base_url_and_makes_no_request(): void
     {
+        $this->placeUsableGithubTokenFile();
         // Guard-lock (S3): the probe block IS reached (writeback.json + mapping),
         // but with no api_base_url the factory throws → the probe self-skips and
         // must make NO stray network call. Locks the base-url guard so a refactor
@@ -2038,7 +2147,7 @@ class BridgeCommandsTest extends TestCase
             ->expectsOutputToContain('names no kanban host')
             ->assertExitCode(1);
 
-        Http::assertNothingSent();
+        $this->assertOnlyTheGithubTokenFileReadsWereSent();
     }
 
     public function test_check_warns_on_group_accessible_config_dir(): void

@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Support\PathHelper;
 use App\Bridge\Support\RedactedErrorText;
 use App\Bridge\Support\SecretFile;
@@ -65,8 +66,6 @@ final class GitHubTokenResolver
         if ($file !== null) {
             return $file;
         }
-        $path = $this->tokenPath();
-
         // 3: store-native (per-repo).
         $store = $this->resolveFromStore($repo);
         if ($store !== null) {
@@ -79,7 +78,9 @@ final class GitHubTokenResolver
             return TokenResolution::resolved($env, 'GH_TOKEN');
         }
 
-        return TokenResolution::problem("no github token: {$path} absent, no [git-credential-map] entry for {$repo}, and GH_TOKEN is unset");
+        [, $unplaced] = self::unplaced($this->tokenPath());
+
+        return TokenResolution::problem("no github token: {$unplaced}, no [git-credential-map] entry for {$repo}, and GH_TOKEN is unset");
     }
 
     /**
@@ -90,28 +91,62 @@ final class GitHubTokenResolver
      */
     public function resolveFromFile(): TokenResolution
     {
-        return $this->resolveFileLeg() ?? TokenResolution::problem('no github token file at '.$this->tokenPath());
+        $path = $this->tokenPath();
+        if (($file = $this->resolveFileLeg()) !== null) {
+            return $file;
+        }
+        [$fault, $clause] = self::unplaced($path);
+
+        return TokenResolution::problem("no github token file: {$clause}", $fault);
     }
 
-    /** Legs 1 + 2: a resolution, a fail-loud problem, or null when neither applies (no override set, no file placed). */
+    /**
+     * Legs 1 + 2: a resolution, a fail-loud problem, or null when neither applies (no override set,
+     * no token placed). Every problem carries its {@see TokenFileFault}.
+     */
     private function resolveFileLeg(): ?TokenResolution
     {
         $override = $this->hasTokenPathOverride();
         $path = $this->tokenPath();
         try {
-            $fileToken = SecretFile::read($path);   // throws on insecure perms; null when absent
+            $fileToken = SecretFile::read($path);   // throws on insecure perms; null when absent or blank
+        } catch (InsecureSecretPermsException $e) {
+            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e), TokenFileFault::InsecurePermissions);
         } catch (Throwable $e) {
-            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e));
+            return TokenResolution::problem("github token file {$path}: ".RedactedErrorText::of($e), TokenFileFault::Unreadable);
         }
         if ($fileToken !== null && $fileToken !== '') {
             return TokenResolution::resolved($fileToken, $override ? "token_path override ({$path})" : "token file ({$path})");
         }
         if ($override) {
             // Authoritative but missing/blank → fail loud; NO store/env fallback.
-            return TokenResolution::problem("no github token at the configured token_path {$path}");
+            [$fault, $clause] = self::unplaced($path);
+
+            return TokenResolution::problem("no github token at the configured token_path: {$clause}", $fault);
         }
 
         return null;
+    }
+
+    /**
+     * Which of the three no-bytes states a token path is in once {@see SecretFile::read()} has
+     * answered null, and how to say it. `SecretFile` folds them into one answer because no reader
+     * can USE any of them; an operator fixes each differently, and a 0-byte file reported as
+     * "absent" sends them looking for a file that is there (card#11201).
+     *
+     * @return array{0: TokenFileFault, 1: string}
+     */
+    private static function unplaced(string $path): array
+    {
+        clearstatcache(true, $path);
+        if (is_file($path)) {
+            return [TokenFileFault::Empty, "{$path} is empty"];
+        }
+        if (file_exists($path)) {
+            return [TokenFileFault::NotAFile, "{$path} is not a regular file"];
+        }
+
+        return [TokenFileFault::Absent, "{$path} absent"];
     }
 
     /**

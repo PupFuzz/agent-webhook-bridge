@@ -34,6 +34,7 @@ use App\Bridge\Check\Checks\ClientPackSourceCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\Checks\GitHubDeliveryHistoryCheck;
+use App\Bridge\Check\Checks\GitHubTokenFileCheck;
 use App\Bridge\Check\Checks\GitHubWebhookSubscriptionCheck;
 use App\Bridge\Check\Checks\IdleNudgePostureCheck;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
@@ -520,6 +521,7 @@ class CheckCommand extends BridgeCommand
                 // could not be loaded" would be a confident diagnosis for any check that
                 // threw after it parsed — contradicting the error line printed below it.
                 $wbAborted = 'the writeback checks could not be completed (see the error above)';
+                $ctx->writebackUnread = $ctx->writeback === null;
                 $runner
                     ->noteNotRun(CheckSlot::Writeback, $wbAborted)
                     ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
@@ -531,6 +533,14 @@ class CheckCommand extends BridgeCommand
             $runner
                 ->noteNotRun(CheckSlot::Writeback, $noWriteback)
                 ->noteNotRun(CheckSlot::WritebackProbe, $noWriteback);
+        }
+
+        // card#11201: the legs that reach GitHub with the placed token file and nothing else.
+        // OUTSIDE the writeback envelope because the `protocol:invalid` label needs no
+        // writeback.json; it reads the envelope's outcome (`writeback`, `writebackUnread`), so
+        // it runs after it.
+        if (! $this->emitReport($runner->run(CheckSlot::GithubTokenFile, $ctx))) {
+            $ok = false;
         }
 
         // card#4183 (DL-196): event-follows-consumer — WARN (never fail) when a github
@@ -942,6 +952,7 @@ class CheckCommand extends BridgeCommand
                 new WritebackBoardStateCheck,
                 new WritebackSourceCoverageCheck,
             )
+            ->register(CheckSlot::GithubTokenFile, new GitHubTokenFileCheck)
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
             ->register(CheckSlot::GithubWebhook, new GitHubWebhookSubscriptionCheck, new GitHubDeliveryHistoryCheck)
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)

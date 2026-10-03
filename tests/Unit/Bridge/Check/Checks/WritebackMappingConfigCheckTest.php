@@ -30,8 +30,8 @@ use Tests\TestCase;
  *  - every branch of `issuePopulationAgreement()`, which no fixture enters at all —
  *    reaching it needs both an `all` mapping AND an ambient coordination config, and a
  *    golden fixture pins the ambient host precisely so it does NOT depend on one;
- *  - the two `promote_on_release` legs (same-stage no-op, and the file-token
- *    requirement), whose outcome depends on the host's token resolution;
+ *  - the `promote_on_release` same-stage no-op (its token-FILE requirement moved to
+ *    `GitHubTokenFileCheck` with card#11201, and its tests with it);
  *  - every coord-card FAMILY leg except the DL-204 pair — the create legs (card#8292 and
  *    card#8305) and the relane legs (card#6393 and card#8290). No golden fixture enables
  *    `coord-card-create` or `coord-card-relane` in an agent's `classifier.config.families`,
@@ -55,8 +55,6 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     private string $dir;
 
-    private string|false $origGhToken;
-
     private string|false $origCoordConfig;
 
     protected function setUp(): void
@@ -64,27 +62,19 @@ class WritebackMappingConfigCheckTest extends TestCase
         parent::setUp();
 
         $this->dir = sys_get_temp_dir().'/wb-mapping-check-'.uniqid();
-        File::ensureDirectoryExists($this->dir.'/github');
+        File::ensureDirectoryExists($this->dir);
         config([
-            // No conventional token file and no store helper, so the promote-token leg
-            // resolves deterministically from GH_TOKEN alone (source label 'GH_TOKEN').
-            'bridge.secret_dir' => $this->dir,
-            'bridge.providers.github.token_path' => null,
-            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
             'bridge.writeback.correlation' => 'ref',
             'bridge.coord_config_path' => null,
         ]);
 
-        $this->origGhToken = getenv('GH_TOKEN');
         $this->origCoordConfig = getenv('COORD_CONFIG');
-        putenv('GH_TOKEN');
         putenv('COORD_CONFIG');
     }
 
     protected function tearDown(): void
     {
         File::deleteDirectory($this->dir);
-        $this->restoreEnv('GH_TOKEN', $this->origGhToken);
         $this->restoreEnv('COORD_CONFIG', $this->origCoordConfig);
         parent::tearDown();
     }
@@ -242,12 +232,10 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertStringContainsString('(all, prefixed)', $findings[1]['message']);
     }
 
-    // ---- DL-207: the two promote_on_release legs ----
+    // ---- DL-207: the promote_on_release no-op leg ----
 
     public function test_promote_on_release_with_both_stages_on_one_column_reports_the_no_op(): void
     {
-        $this->placeTokenFile();   // isolates the no-op leg from the file-token leg below
-
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 52));
 
         $this->assertCount(1, $this->warnings($findings));
@@ -260,91 +248,12 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_promote_on_release_with_distinct_stages_reports_no_no_op(): void
     {
-        $this->placeTokenFile();
-
         // Orphaned on purpose — the witness for the two absences below.
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
 
         $this->assertCount(1, $this->warnings($findings));
         $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
         $this->assertStringNotContainsString('the same stage', $this->joined($findings));
-        $this->assertStringNotContainsString('no GitHub read token resolves from a FILE', $this->joined($findings));
-    }
-
-    public function test_a_gh_token_only_promote_leg_is_reported_inert_in_the_fpm_runtime(): void
-    {
-        // The sharp case: the token RESOLVES (bridge:reconcile works fine) but not from a
-        // file, so the FPM webhook runtime — no GH_TOKEN, CLI-only credential helper —
-        // resolves nothing and the promote leg is inert with no reconcile backstop.
-        putenv('GH_TOKEN=ghp_ambient');
-
-        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
-
-        $this->assertCount(1, $this->warnings($findings));
-        $this->assertSame(Severity::Warn, $findings[0]['severity']);
-        $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
-        $this->assertStringContainsString('the credential-store helper is CLI-only', $findings[0]['message']);
-    }
-
-    public function test_a_promote_leg_with_no_token_at_all_is_reported_inert_too(): void
-    {
-        // GH_TOKEN unset in setUp and no file placed: resolution FAILS outright, a
-        // different upstream state than the resolves-but-not-from-a-file case above.
-        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
-
-        $this->assertCount(1, $this->warnings($findings));
-        $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
-    }
-
-    public function test_a_token_path_override_counts_as_a_file_token(): void
-    {
-        $override = $this->dir.'/override-token';
-        File::put($override, 'ghp_override');
-        chmod($override, 0o600);
-        config(['bridge.providers.github.token_path' => $override]);
-
-        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
-
-        $this->assertCount(1, $this->warnings($findings));
-        $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
-    }
-
-    public function test_a_placed_token_file_counts_as_a_file_token_beside_a_gh_token(): void
-    {
-        $this->placeTokenFile();
-        putenv('GH_TOKEN=ghp_ambient');
-
-        // Orphaned on purpose — the witness for the absence below.
-        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
-
-        $this->assertCount(1, $this->warnings($findings));
-        $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
-        $this->assertStringNotContainsString('no GitHub read token resolves from a FILE', $this->joined($findings));
-    }
-
-    public function test_a_token_path_override_whose_file_is_missing_is_reported_inert_even_with_a_gh_token(): void
-    {
-        // The override is authoritative: a missing file resolves nothing, and GH_TOKEN is not consulted.
-        config(['bridge.providers.github.token_path' => $this->dir.'/no-such-override-token']);
-        putenv('GH_TOKEN=ghp_ambient');
-
-        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
-
-        $this->assertCount(1, $this->warnings($findings));
-        $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
-    }
-
-    public function test_a_credential_store_only_promote_leg_is_reported_inert_in_the_fpm_runtime(): void
-    {
-        $helper = $this->dir.'/store-helper';
-        File::put($helper, "#!/bin/sh\nprintf 'password=ghp_from_the_store\\n'\n");
-        chmod($helper, 0o700);
-        config(['bridge.providers.github.credential_helper' => $helper]);
-
-        $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
-
-        $this->assertCount(1, $this->warnings($findings));
-        $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
     }
 
     // ---- card#7348 / DL-305: the mention-vs-closure setup line ----
@@ -668,13 +577,6 @@ class WritebackMappingConfigCheckTest extends TestCase
         )]]));
 
         return $path;
-    }
-
-    private function placeTokenFile(): void
-    {
-        $path = $this->dir.'/github/token';
-        File::put($path, 'ghp_from_a_file');
-        chmod($path, 0o600);
     }
 
     // ---- card#7124 review: the github scope SPELLING SPLIT (the dispatcher does not

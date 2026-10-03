@@ -87,6 +87,10 @@ class CheckCommandRegistrationTest extends TestCase
         'writeback.by_ref',
         'writeback.board_state',
         'writeback.source_coverage',
+        // card#11201 — the legs that reach GitHub with the placed token file only. Its own slot,
+        // right after the writeback envelope and OUTSIDE it: the protocol:invalid label needs no
+        // writeback.json, and every slot inside the envelope is skipped without one.
+        'github.token_file',
         // event-follows-consumer (stage 7a)
         'event.follows_consumer',
         // card#9150 — the only leg that asks GITHUB about a github subscription. Registered

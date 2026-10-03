@@ -58,7 +58,7 @@ use Throwable;
  * cannot establish absence, NOTHING is posted — a missed comment is logged, a duplicate would repeat
  * on every delivery.
  */
-final class PrCorrelationCommenter
+final class PrCorrelationCommenter implements GitHubTokenFileConsumer
 {
     /**
      * Per request to GitHub. One attempt makes at most `GitHubReadClient::COMMENT_PAGE_LIMIT` GETs and
@@ -108,6 +108,22 @@ final class PrCorrelationCommenter
     public function __construct(private readonly GitHubTokenResolver $tokens = new GitHubTokenResolver)
     {
         $this->attempted = new OncePerKey;
+    }
+
+    public static function fileTokenLeg(): string
+    {
+        return 'PR correlation comments (DL-390)';
+    }
+
+    /** Every mapped repo: the comment has no switch of its own, it reports on the mapping's writeback. */
+    public static function fileTokenRepos(?WritebackConfig $writeback): array
+    {
+        return array_map(strval(...), array_keys($writeback === null ? [] : $writeback->mappings));
+    }
+
+    public static function fileTokenWrites(): bool
+    {
+        return true;
     }
 
     /**
